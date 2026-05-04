@@ -1,5 +1,42 @@
 # Growth Journal
 
+## 2026-05-11 (research scan) — Week 2 competitive intelligence
+
+Scanned four sectors: agent memory systems, MCP ecosystem, LLM wiki variants, multi-agent protocols. Filed 0 issues. Here's what I found and why none of it changes our strategy this sprint.
+
+### What moved since last scan (May 3)
+
+**Graphiti v0.29.0** shipped combined extraction (single LLM call for nodes+edges → cheaper ingest), `SagaNode` (multi-episode narrative rollup), and `fact_triple` episode type. The SagaNode pattern validates our article-synthesis-from-sources approach. Worth studying for Phase 5, not actionable now.
+
+**Cognee v1.0.5** rebranded from "memory control plane" to "brain for agents" — expanding toward knowledge territory. Added JSON/CSV export, tag-based grouping, `--dry-run` CLI. Moving closer to our space but still single-agent, no provenance or trust.
+
+**Mem0** shipped OpenClaw plugin with triage→recall→dream lifecycle, MCP event tools (`list_events`, `get_event_status`), and security patches (SQL/prompt injection). Their `memory_update` over delete+add mirrors our revision model.
+
+**Letta** — zero commits since April 12. Effectively stalled.
+
+### The Karpathy "LLM Wiki" wave
+
+The Karpathy gist spawned a category. Key projects: nashsu/llm_wiki (5,705⭐, desktop app with 4-signal knowledge graph), SwarmVault (365⭐ in 1 month, local-first markdown+MCP), Beever Atlas (243⭐, chat→wiki extraction), and ~10 smaller implementations. All are personal/single-user. None have trust scores, multi-author attribution, or the collaborative commons model. Our niche holds.
+
+### MCP protocol: six SEPs to watch
+
+SEP-2127 (Server Cards, `.well-known/mcp.json`) — HTTP server discovery. Premature for us (stdio-only MCP). SEP-2640 (Skills Extension, `skill://`) — knowledge domains as discoverable skills. SEP-2663 (Tasks Extension) — async tool operations with polling. SEP-2668 (Behavioral Trust, April 30) — validates our trust score concept at the protocol level but still a bare proposal. SEP-2575/2567 (Stateless MCP, Sessionless MCP) — transport layer changes. All target June 30, 2026 spec release.
+
+### Multi-agent layer
+
+A2A protocol moved to `a2aproject/A2A` (23.6K⭐), v1.0.0 stable. Agent Cards define identity schema. A2A deliberately preserves opacity — no shared memory. Yopedia fills the gap A2A leaves open. OriginTrail/DKG (31⭐) has a three-layer memory promotion model (Working→Shared→Verified) with blockchain provenance — philosophically closest to our vision but heavy infrastructure. Mycelium (89⭐) does shared markdown rooms for agent coordination. Semiont (57⭐, AI Alliance backed) pitches "human+AI knowledge platform" with composable flows — most overlapping vision statement but tiny and institutional.
+
+### Why 0 issues
+
+All three Week 1 issues shipped (MCP server, entity dedup, temporal validity). This week's findings are either premature (MCP SEPs need HTTP transport we don't have yet, which is blocked on Cloudflare), validation signals (trust SEP-2668 confirms our direction), or interesting-but-not-actionable (Graphiti's SagaNode for Phase 5, Cognee's rebrand). The right response is to keep shipping Phase 4 and revisit MCP Server Cards once HTTP transport is unblocked.
+
+### Holding for future scans
+
+- **SEP-2668 Behavioral Trust** — align our `ContributorProfile.trustScore` with this when it matures
+- **SEP-2127 Server Cards** — implement `.well-known/mcp.json` once we have HTTP MCP transport
+- **Graphiti SagaNode pattern** — study for Phase 5 structured claims research
+- **Beever Atlas chat→wiki extraction** — potential ingest model for conversation sources
+
 ## 2026-05-04 06:35 — Bulk StorageProvider migration: revisions, raw, wiki-log, query-history, wiki
 
 Migrated five more modules off raw filesystem calls onto the `StorageProvider` abstraction — `revisions.ts`, `raw.ts`, `wiki-log.ts`, `query-history.ts`, and `wiki.ts`. The big one was `wiki.ts`: every `readFile`, `writeFile`, `readdir`, `mkdir`, `stat`, and `unlink` replaced with storage methods, plus a new `rawRelPath` helper to mirror `wikiRelPath`. All existing tests pass unchanged, which is the best kind of confirmation that the abstraction boundary is right. Next: migrate the remaining holdouts (talk pages, search, ingest) to finish the storage migration, then the backend is fully swappable.
