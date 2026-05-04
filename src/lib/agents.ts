@@ -157,6 +157,168 @@ export async function deleteAgent(id: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
+// updateAgent — partial updates to an existing agent profile
+// ---------------------------------------------------------------------------
+
+/** A page to add during a partial agent update. */
+export interface UpdateAgentPage {
+  slug: string;
+  title: string;
+  type: "identity" | "learnings" | "social";
+  /** Markdown content (without frontmatter — frontmatter is generated). */
+  content: string;
+}
+
+/** Options for {@link updateAgent}. */
+export interface UpdateAgentOptions {
+  /** Scalar field: new display name. */
+  name?: string;
+  /** Scalar field: new description. */
+  description?: string;
+  /** Pages to create and add to the profile's page lists. */
+  addPages?: UpdateAgentPage[];
+  /** Slugs to remove from the profile's page lists (does NOT delete wiki pages). */
+  removePages?: string[];
+}
+
+/**
+ * Apply a partial update to an existing agent profile.
+ *
+ * - Scalar fields (`name`, `description`) update in place.
+ * - `addPages` creates wiki pages via {@link writeWikiPageWithSideEffects}
+ *   and appends slugs to the appropriate page list on the profile.
+ * - `removePages` removes slugs from page lists but does NOT delete the
+ *   underlying wiki pages (they may be referenced elsewhere).
+ * - `lastUpdated` is always bumped.
+ *
+ * @returns The updated {@link AgentProfile}, or null if the agent doesn't exist.
+ */
+export async function updateAgent(
+  id: string,
+  options: UpdateAgentOptions,
+): Promise<AgentProfile | null> {
+  validateAgentId(id);
+
+  // Fetch existing profile — return null if not found.
+  const existing = await getAgent(id);
+  if (!existing) return null;
+
+  // Apply scalar updates
+  if (options.name !== undefined) {
+    if (typeof options.name !== "string" || options.name.trim().length === 0) {
+      throw new Error("Agent name must be a non-empty string");
+    }
+    existing.name = options.name;
+  }
+  if (options.description !== undefined) {
+    if (
+      typeof options.description !== "string" ||
+      options.description.trim().length === 0
+    ) {
+      throw new Error("Agent description must be a non-empty string");
+    }
+    existing.description = options.description;
+  }
+
+  // Remove pages from lists (before adding, so add-then-remove of same slug
+  // results in removal — simpler mental model).
+  if (options.removePages && options.removePages.length > 0) {
+    const toRemove = new Set(options.removePages);
+    existing.identityPages = existing.identityPages.filter(
+      (s) => !toRemove.has(s),
+    );
+    existing.learningPages = existing.learningPages.filter(
+      (s) => !toRemove.has(s),
+    );
+    existing.socialPages = existing.socialPages.filter(
+      (s) => !toRemove.has(s),
+    );
+  }
+
+  // Add pages — create wiki pages and append slugs to lists.
+  if (options.addPages && options.addPages.length > 0) {
+    const now = new Date();
+    const oneYearFromNow = new Date(now);
+    oneYearFromNow.setFullYear(oneYearFromNow.getFullYear() + 1);
+    const expiryStr = oneYearFromNow.toISOString().slice(0, 10);
+
+    for (const page of options.addPages) {
+      // Build frontmatter
+      const frontmatter: Record<string, string | string[] | number | boolean> =
+        {
+          type: "agent-identity",
+          authors: [id],
+          confidence: 0.9,
+          expiry: expiryStr,
+          created: now.toISOString(),
+          updated: now.toISOString(),
+        };
+
+      // If the page already exists, preserve `created` and merge contributors.
+      const existingPage = await readWikiPageWithFrontmatter(page.slug).catch(
+        () => null,
+      );
+      if (existingPage) {
+        if (existingPage.frontmatter.created) {
+          frontmatter.created = existingPage.frontmatter.created;
+        }
+        const existingContribs = Array.isArray(
+          existingPage.frontmatter.contributors,
+        )
+          ? existingPage.frontmatter.contributors
+          : [];
+        const contribs = new Set([...existingContribs, id]);
+        frontmatter.contributors = [...contribs];
+      } else {
+        frontmatter.contributors = [id];
+      }
+
+      const bodyWithTitle = `# ${page.title}\n\n${page.content}`;
+      const fullContent = serializeFrontmatter(frontmatter, bodyWithTitle);
+
+      const summaryLine =
+        page.content
+          .split("\n")
+          .map((l) => l.trim())
+          .find((l) => l.length > 0) ?? page.title;
+      const summary =
+        summaryLine.length > 120
+          ? summaryLine.slice(0, 117) + "..."
+          : summaryLine;
+
+      await writeWikiPageWithSideEffects({
+        slug: page.slug,
+        title: page.title,
+        content: fullContent,
+        summary,
+        logOp: "other",
+        crossRefSource: null,
+        author: id,
+      });
+
+      // Append slug to the right list (avoid duplicates)
+      const targetList =
+        page.type === "identity"
+          ? existing.identityPages
+          : page.type === "learnings"
+            ? existing.learningPages
+            : existing.socialPages;
+      if (!targetList.includes(page.slug)) {
+        targetList.push(page.slug);
+      }
+    }
+  }
+
+  // Bump lastUpdated
+  existing.lastUpdated = new Date().toISOString();
+
+  // Persist the updated profile
+  await registerAgent(existing);
+
+  return existing;
+}
+
+// ---------------------------------------------------------------------------
 // seedAgent — create wiki pages for an agent and register them
 // ---------------------------------------------------------------------------
 
