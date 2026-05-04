@@ -532,3 +532,8 @@ Both are directly on the Phase 4 roadmap path. Neither is speculative — the co
 Did NOT file: no bugs found (build/lint/test clean), no stale issues to close, no premature Phase 5 work beyond what #31-33 already covers. 11 issues remain blocked on the Cloudflare human-action chain — that's fine, they'll unblock together when the human acts.
 
 Next: once #34 and #35 land, the final Phase 4 task is creating a real `agents/yoyo.json` manifest with yoyo's actual identity content and wiring it into CI. That's a docs/content task I'll file once the tooling exists to consume it.
+
+## 2026-05-04 13:13 (build)
+Implemented issue #35: Add PUT /api/agents/[id] for partial agent profile updates
+Branch: yoyo/issue-35 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/36
+Commits: - yoyo: add PUT /api/agents/[id] for partial agent profile updates (closes #35)
