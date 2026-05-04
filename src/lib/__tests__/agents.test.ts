@@ -10,7 +10,9 @@ import {
   registerAgent,
   deleteAgent,
   seedAgent,
+  updateAgent,
 } from "../agents";
+import type { UpdateAgentPage } from "../agents";
 import { readWikiPage, readWikiPageWithFrontmatter } from "../wiki";
 import type { AgentProfile } from "../types";
 import { _resetStorage } from "../storage";
@@ -688,5 +690,215 @@ describe("seedAgent", () => {
     const agent = await getAgent("empty-agent");
     expect(agent).not.toBeNull();
     expect(agent!.name).toBe("Empty");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// updateAgent tests
+// ---------------------------------------------------------------------------
+
+describe("updateAgent", () => {
+  const baseProfile = (): AgentProfile =>
+    makeProfile({
+      id: "yoyo",
+      name: "Yoyo",
+      description: "A small octopus",
+      identityPages: ["yoyo-identity"],
+      learningPages: ["yoyo-learnings"],
+      socialPages: ["yoyo-social"],
+    });
+
+  it("returns null for non-existent agent", async () => {
+    const result = await updateAgent("nope", { name: "New Name" });
+    expect(result).toBeNull();
+  });
+
+  it("throws on invalid agent ID", async () => {
+    await expect(updateAgent("INVALID", { name: "X" })).rejects.toThrow(
+      /Invalid agent ID/,
+    );
+  });
+
+  it("updates name without touching pages", async () => {
+    await registerAgent(baseProfile());
+
+    const result = await updateAgent("yoyo", { name: "Yoyo v2" });
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe("Yoyo v2");
+    expect(result!.description).toBe("A small octopus");
+    expect(result!.identityPages).toEqual(["yoyo-identity"]);
+    expect(result!.learningPages).toEqual(["yoyo-learnings"]);
+    expect(result!.socialPages).toEqual(["yoyo-social"]);
+
+    // Persisted to disk
+    const onDisk = await getAgent("yoyo");
+    expect(onDisk!.name).toBe("Yoyo v2");
+  });
+
+  it("updates description without touching pages", async () => {
+    await registerAgent(baseProfile());
+
+    const result = await updateAgent("yoyo", {
+      description: "A big octopus now",
+    });
+    expect(result).not.toBeNull();
+    expect(result!.description).toBe("A big octopus now");
+    expect(result!.name).toBe("Yoyo");
+  });
+
+  it("rejects empty name", async () => {
+    await registerAgent(baseProfile());
+    await expect(updateAgent("yoyo", { name: "" })).rejects.toThrow(
+      /non-empty string/,
+    );
+  });
+
+  it("rejects empty description", async () => {
+    await registerAgent(baseProfile());
+    await expect(updateAgent("yoyo", { description: "" })).rejects.toThrow(
+      /non-empty string/,
+    );
+  });
+
+  it("removes pages from all lists", async () => {
+    await registerAgent(baseProfile());
+
+    const result = await updateAgent("yoyo", {
+      removePages: ["yoyo-identity", "yoyo-learnings"],
+    });
+    expect(result).not.toBeNull();
+    expect(result!.identityPages).toEqual([]);
+    expect(result!.learningPages).toEqual([]);
+    expect(result!.socialPages).toEqual(["yoyo-social"]);
+  });
+
+  it("removePages with non-matching slugs is a no-op", async () => {
+    await registerAgent(baseProfile());
+
+    const result = await updateAgent("yoyo", {
+      removePages: ["does-not-exist"],
+    });
+    expect(result!.identityPages).toEqual(["yoyo-identity"]);
+    expect(result!.learningPages).toEqual(["yoyo-learnings"]);
+    expect(result!.socialPages).toEqual(["yoyo-social"]);
+  });
+
+  it("adds pages and creates wiki files", async () => {
+    await registerAgent(baseProfile());
+
+    const newPages: UpdateAgentPage[] = [
+      {
+        slug: "yoyo-new-learning",
+        title: "New Learning",
+        type: "learnings",
+        content: "I learned something today.",
+      },
+      {
+        slug: "yoyo-social-2",
+        title: "Social Wisdom 2",
+        type: "social",
+        content: "People are interesting.",
+      },
+    ];
+
+    const result = await updateAgent("yoyo", { addPages: newPages });
+    expect(result).not.toBeNull();
+    expect(result!.learningPages).toContain("yoyo-new-learning");
+    expect(result!.learningPages).toContain("yoyo-learnings");
+    expect(result!.socialPages).toContain("yoyo-social-2");
+    expect(result!.socialPages).toContain("yoyo-social");
+
+    // Verify wiki pages were actually created
+    const page = await readWikiPageWithFrontmatter("yoyo-new-learning");
+    expect(page).not.toBeNull();
+    expect(page!.frontmatter.authors).toContain("yoyo");
+    expect(page!.body).toContain("I learned something today.");
+  });
+
+  it("does not duplicate slugs when adding existing page", async () => {
+    await registerAgent(baseProfile());
+
+    // Write a wiki page for the slug that's already in identityPages
+    await writeTestWikiPage(
+      "yoyo-identity",
+      "---\ntitle: Identity\n---\n# Identity\n\nOld content.",
+    );
+
+    const result = await updateAgent("yoyo", {
+      addPages: [
+        {
+          slug: "yoyo-identity",
+          title: "Identity Updated",
+          type: "identity",
+          content: "Updated content.",
+        },
+      ],
+    });
+    expect(result).not.toBeNull();
+    // Should still have exactly one "yoyo-identity" in identityPages
+    const count = result!.identityPages.filter(
+      (s) => s === "yoyo-identity",
+    ).length;
+    expect(count).toBe(1);
+  });
+
+  it("handles combined update: name + addPages + removePages", async () => {
+    await registerAgent(baseProfile());
+
+    const result = await updateAgent("yoyo", {
+      name: "Yoyo v3",
+      addPages: [
+        {
+          slug: "yoyo-identity-2",
+          title: "Identity Part 2",
+          type: "identity",
+          content: "More identity.",
+        },
+      ],
+      removePages: ["yoyo-social"],
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe("Yoyo v3");
+    expect(result!.identityPages).toContain("yoyo-identity");
+    expect(result!.identityPages).toContain("yoyo-identity-2");
+    expect(result!.socialPages).toEqual([]);
+  });
+
+  it("bumps lastUpdated timestamp", async () => {
+    const profile = baseProfile();
+    profile.lastUpdated = "2020-01-01T00:00:00.000Z";
+    await registerAgent(profile);
+
+    const result = await updateAgent("yoyo", { name: "Updated" });
+    expect(result).not.toBeNull();
+    // lastUpdated should be newer than the original
+    expect(new Date(result!.lastUpdated).getTime()).toBeGreaterThan(
+      new Date("2020-01-01T00:00:00.000Z").getTime(),
+    );
+  });
+
+  it("preserves registered timestamp", async () => {
+    const profile = baseProfile();
+    profile.registered = "2020-01-01T00:00:00.000Z";
+    await registerAgent(profile);
+
+    const result = await updateAgent("yoyo", { name: "Updated" });
+    expect(result).not.toBeNull();
+    expect(result!.registered).toBe("2020-01-01T00:00:00.000Z");
+  });
+
+  it("empty update just bumps lastUpdated", async () => {
+    const profile = baseProfile();
+    profile.lastUpdated = "2020-01-01T00:00:00.000Z";
+    await registerAgent(profile);
+
+    const result = await updateAgent("yoyo", {});
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe("Yoyo");
+    expect(result!.description).toBe("A small octopus");
+    expect(new Date(result!.lastUpdated).getTime()).toBeGreaterThan(
+      new Date("2020-01-01T00:00:00.000Z").getTime(),
+    );
   });
 });
