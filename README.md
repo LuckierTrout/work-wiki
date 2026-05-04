@@ -35,14 +35,14 @@ A wiki designed for both humans and agents to read and write.
 
 ## Live Growth
 
-The agent runs every 4 hours. Here's what it's doing right now:
+Five independent agents run on schedule, communicate through GitHub Issues, and leave a visible trail:
 
 | | |
 |-|-|
-| **Latest session** | [GitHub Actions](https://github.com/yologdev/karpathy-llm-wiki/actions/workflows/grow.yml) |
+| **Agent runs** | [GitHub Actions](https://github.com/yologdev/karpathy-llm-wiki/actions) |
 | **Growth journal** | [.yoyo/journal.md](https://github.com/yologdev/karpathy-llm-wiki/blob/main/.yoyo/journal.md) |
 | **What it learned** | [.yoyo/learnings.md](https://github.com/yologdev/karpathy-llm-wiki/blob/main/.yoyo/learnings.md) |
-| **Commit history** | [All commits](https://github.com/yologdev/karpathy-llm-wiki/commits/main) |
+| **Issue board** | [Open issues](https://github.com/yologdev/karpathy-llm-wiki/issues) |
 | **Before vs. after** | [`baseline`](https://github.com/yologdev/karpathy-llm-wiki/tree/baseline) vs [`main`](https://github.com/yologdev/karpathy-llm-wiki) |
 
 ---
@@ -57,29 +57,75 @@ We took Karpathy's [LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf55
 
 Now the experiment evolves. The product yoyo built is becoming **yopedia** — a wiki for the agent age.
 
-## How the Agent Works
+## How the Agents Work
 
-Every growth session runs a 4-phase pipeline — not one big prompt, but separate agents with mechanical verification between each step:
+Five specialized agents form a pipeline. No single agent does everything — each has one job, runs on its own schedule, and communicates through GitHub Issues:
 
 ```
- ASSESS            PLAN              BUILD              COMMUNICATE
- ──────            ────              ─────              ───────────
- Read the vision   Compare vision    For each task:     Write journal
- Read codebase     to current state  |                  Record learnings
- Check build       Decide what's     |-> Implement      Respond to issues
- Map the gaps      most impactful    |-> Build + test
-                   Write tasks       |-> Evaluate (separate agent)
-                   (up to 3)         |-> Fix if rejected
-                                     '-> Revert if unfixable
+                           GitHub Issues
+                     (the shared communication bus)
+                                 |
+     ┌───────────┐    ┌─────────┴─────────┐    ┌───────────┐
+     |  RESEARCH  |    |    OFFICE HOUR     |    |   REVIEW   |
+     |  Sun 9am   |--->|  Daily 7am +      |    |  On PR     |
+     |            |    |  on issue open     |    |  opened    |
+     | Scans the  |    |                    |    |            |
+     | field for  |    | Triages issues:    |    | Reviews    |
+     | competitor |    | triage -> ready    |    | the diff   |
+     | intel      |    | or -> close        |    | against    |
+     |            |    | Adds priority      |    | acceptance |
+     | Files max  |    | (p0-p3)            |    | criteria   |
+     | 3 issues   |    |                    |    |            |
+     └─────┬──────┘    └────────┬───────────┘    | Approves + |
+           |                    |                 | auto-merge |
+           v                    v                 | or request |
+      ┌─────────┐    ┌─────────────────┐         | changes    |
+      |   PM    |    |     BUILD        |         └──────┬─────┘
+      | Daily   |--->|  On 'ready'      |                |
+      | 6am     |    |  label + 4h      |                |
+      |         |    |                   |                |
+      | Reads   |    | Claims issue     |----> PR -------┘
+      | vision, |    | Creates branch   |
+      | assesses|    | Implements       |
+      | gaps    |    | Build-fix loop   |
+      |         |    | (5 attempts)     |
+      | Files   |    | Opens PR         |
+      | max 3   |    | or reverts       |
+      | issues  |    |                   |
+      └────┬────┘    └───────────────────┘
+           |
+           v
+     [triage] issues
 ```
 
-The agent decides its own priorities. If there are open issues, it factors them in. If there aren't, it keeps building toward the vision anyway.
+**The lifecycle of an idea:**
 
-The key insight: **the harness enforces quality, not the LLM.**
+```
+  Human files issue          PM spots a gap           Research finds intel
+        |                        |                          |
+        v                        v                          v
+   ┌─────────┐  Office   ┌───────────┐  Build    ┌──────────────┐
+   | [triage] |  Hour     | [ready]   |  Agent    | [in-progress]|
+   |          |---------->| + priority|---------->|  + branch    |
+   └─────────┘  grooms   └───────────┘  claims   └──────┬───────┘
+                                                         |
+                                              PR opened  |
+                                                         v
+                                                  ┌─────────────┐
+                                         Review   |  [merged]   |
+                                         Agent    |  issue      |
+                                         approves |  closed     |
+                                                  └─────────────┘
+```
 
-Build fails? A fix agent gets 5 attempts. Evaluator rejects the diff? Another 3 attempts. Still broken? Automatic revert to the last known-good commit. Protected files (the founding prompt, workflows, core skills) are checked by the shell script after every single task — not by asking the LLM "did you modify anything you shouldn't have?"
+**Each agent has its own expertise** — not just instructions, but judgment:
+- **Research** has a signal filter (distinguishes "this exists" from "this changes our strategy")
+- **PM** has product thinking (challenges premises, files 0 issues if nothing compelling)
+- **Office Hour** has taste (evaluates issues like pitches — forcing questions, banned phrases, push-back patterns)
+- **Build** has craft (minimal correct changes, stop triggers, knows when to re-queue vs. implement)
+- **Review** has code standards (confidence scoring, knows what NOT to flag)
 
-The LLM is powerful but unreliable. The shell script is dumb but consistent. Trust the shell script.
+**The harness enforces quality, not the LLM.** Build fails? A fix agent gets 5 attempts. Still broken? Automatic revert, issue re-queued. Protected files checked mechanically after every task. The LLM is powerful but unreliable. The shell script is dumb but consistent. Trust the shell script.
 
 ### Security
 
@@ -151,14 +197,18 @@ karpathy-llm-wiki/
 ├── yopedia-concept.md             # The north star — where we're going (immutable)
 ├── SCHEMA.md                      # Wiki conventions and operations (LLM-readable)
 ├── YOYO.md                        # Project context + phased roadmap
-├── .github/workflows/grow.yml     # The automation
-├── src/                           # Everything here was written by the agent
+├── .github/workflows/
+│   ├── pm.yml                     # Daily 6am — file issues
+│   ├── office-hour.yml            # Daily 7am + on issue open — triage
+│   ├── build.yml                  # On 'ready' label + every 4h — implement
+│   ├── review.yml                 # On PR opened — code review
+│   └── research.yml               # Sundays 9am — competitive scan
+├── src/                           # Everything here was written by agents
 └── .yoyo/
-    ├── scripts/grow.sh            # Growth session orchestrator
-    ├── scripts/format_issues.py   # Issue sanitization + author filtering
-    ├── skills/                    # Agent instructions (grow, communicate, research)
+    ├── yoyo.toml                  # Agent config (enabled/disabled, build commands)
+    ├── skills/                    # Project-local agent skills
     ├── journal.md                 # What happened each session
-    └── learnings.md               # What the agent learned about this project
+    └── learnings.md               # What the agents learned about this project
 ```
 
 ## Run It Locally
@@ -203,20 +253,23 @@ default model name for the selected provider.
 
 **Star the repo** and follow the commits. Each one is the agent's work.
 
-**Steer it:** [File an issue](https://github.com/yologdev/karpathy-llm-wiki/issues/new) describing a feature. Label it `agent-input`. The agent factors it into its next session. Or don't — it'll keep building anyway.
+**Steer it:** [File an issue](https://github.com/yologdev/karpathy-llm-wiki/issues/new) describing a feature. The office-hour agent will triage it, and if it passes the taste filter, a build agent implements it. Or don't steer — the PM agent will keep filing work on its own.
 
 **Trigger manually:**
 ```bash
-gh workflow run grow.yml --repo yologdev/karpathy-llm-wiki
+# Trigger any agent
+gh workflow run pm.yml            # PM scans for work
+gh workflow run office-hour.yml   # Triage open issues
+gh workflow run build.yml         # Build next ready issue
+gh workflow run research.yml      # Competitive scan
 
-# Or give it a specific task:
-gh workflow run grow.yml --repo yologdev/karpathy-llm-wiki \
-  -f task="Add dark mode to the browse page"
+# Give PM a focus area
+gh workflow run pm.yml -f focus="search performance"
 ```
 
 ## Built With
 
-[yoyo-evolve](https://github.com/yologdev/yoyo-evolve) — A self-evolving coding agent that grows itself in public, one session at a time.
+[yoyo](https://github.com/yologdev/yoyo-evolve) — A self-evolving coding agent. The engine is a Rust binary; identity, skills, and judgment are loaded at runtime from [yoyo-harness](https://github.com/yologdev/yoyo-harness). Agents run via [yoyo-action](https://github.com/yologdev/yoyo-action) on GitHub Actions.
 
 ---
 
