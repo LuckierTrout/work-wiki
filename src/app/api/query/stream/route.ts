@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!hasLLMKey()) {
+    if (!(await hasLLMKey())) {
       return NextResponse.json(
         {
           error:
@@ -106,7 +106,7 @@ export async function POST(request: NextRequest) {
     );
 
     // Stream the LLM response
-    const result = callLLMStream(systemPrompt, trimmedQuestion);
+    const result = await callLLMStream(systemPrompt, trimmedQuestion);
 
     return result.toTextStreamResponse({
       headers: {

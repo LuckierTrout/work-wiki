@@ -199,7 +199,7 @@ export async function searchIndex(
   // Phase 2 — LLM re-ranking of fusion candidates (if available)
   // Instead of sending the full wiki index, we send only the fusion candidates
   // with content snippets so the LLM can make quality relevance judgments.
-  if (hasLLMKey() && fusedSlugs.length > 0) {
+  if ((await hasLLMKey()) && fusedSlugs.length > 0) {
     try {
       // Load content snippets for each candidate
       const candidateLines: string[] = [];

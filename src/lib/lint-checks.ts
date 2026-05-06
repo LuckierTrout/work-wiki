@@ -343,7 +343,7 @@ export function parseContradictionResponse(
 export async function checkContradictions(
   diskSlugs: string[],
 ): Promise<LintIssue[]> {
-  if (!hasLLMKey()) {
+  if (!(await hasLLMKey())) {
     return [
       {
         type: "contradiction",

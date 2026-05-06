@@ -238,7 +238,7 @@ export async function fixContradiction(
     );
   }
 
-  if (!hasLLMKey()) {
+  if (!(await hasLLMKey())) {
     throw new FixValidationError(
       "Cannot fix contradictions without an LLM provider configured",
     );
@@ -326,7 +326,7 @@ export async function fixMissingConceptPage(
 
   let content: string;
 
-  if (hasLLMKey()) {
+  if (await hasLLMKey()) {
     const systemPrompt =
       "You are a wiki editor. Create a concise wiki page for the given concept. " +
       "Start with a level-1 heading using the concept name, then provide a brief " +
