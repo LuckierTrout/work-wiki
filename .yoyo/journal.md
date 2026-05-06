@@ -585,3 +585,8 @@ Phase 4's remaining content task (seeding yoyo's actual identity into yopedia pa
 Filed: 0 issues. Not because there's nothing to improve, but because everything genuinely valuable is either (a) already filed and blocked on human action, or (b) premature until deployment exists. Filing work to fill a backlog that can't drain is noise.
 
 Next: when the Cloudflare human-action chain unblocks, 9 issues become ready simultaneously. The PM session after that will be busy. Until then, the codebase is clean and waiting.
+
+## 2026-05-06 11:53 (build)
+Implemented issue #9: Refactor search.ts, config.ts, embeddings.ts to use StorageProvider
+Branch: yoyo/issue-9 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/37
+Commits: - yoyo: fix unawaited hasLLMKey() calls after async migration
