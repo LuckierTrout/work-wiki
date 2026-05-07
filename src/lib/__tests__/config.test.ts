@@ -5,7 +5,6 @@ import os from "os";
 import {
   loadConfig,
   saveConfig,
-  loadConfigSync,
   maskApiKey,
   isValidProvider,
   getEffectiveProvider,
@@ -18,6 +17,7 @@ import {
   _resetConfigCache,
   type AppConfig,
 } from "../config";
+import { _resetStorage } from "../storage";
 
 // ---------------------------------------------------------------------------
 // Helpers — use a temp dir so tests don't touch the real project root
@@ -62,6 +62,7 @@ beforeEach(async () => {
 
   // Always start with a fresh cache
   _resetConfigCache();
+  _resetStorage();
 });
 
 afterEach(async () => {
@@ -76,6 +77,7 @@ afterEach(async () => {
   }
 
   _resetConfigCache();
+  _resetStorage();
 
   // Clean up temp dir
   await fs.rm(tmpDir, { recursive: true, force: true });
@@ -123,45 +125,6 @@ describe("saveConfig / loadConfig round-trip", () => {
     const loaded = await loadConfig();
     expect(loaded.provider).toBe("google");
     expect(loaded.apiKey).toBe("google-key");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// loadConfigSync
-// ---------------------------------------------------------------------------
-
-describe("loadConfigSync", () => {
-  it("returns {} when config file is missing", () => {
-    const cfg = loadConfigSync();
-    expect(cfg).toEqual({});
-  });
-
-  it("reads config from file", async () => {
-    await saveConfig({ provider: "openai", model: "gpt-4o" });
-    _resetConfigCache();
-    const cfg = loadConfigSync();
-    expect(cfg.provider).toBe("openai");
-  });
-
-  it("caches results within TTL", async () => {
-    await saveConfig({ provider: "openai" });
-    _resetConfigCache();
-
-    const first = loadConfigSync();
-    expect(first.provider).toBe("openai");
-
-    // Write a different value directly (bypassing cache invalidation)
-    const configPath = path.join(tmpDir, ".llm-wiki-config.json");
-    await fs.writeFile(configPath, JSON.stringify({ provider: "google" }));
-
-    // Cache should still return old value
-    const second = loadConfigSync();
-    expect(second.provider).toBe("openai");
-
-    // After reset, should read new value
-    _resetConfigCache();
-    const third = loadConfigSync();
-    expect(third.provider).toBe("google");
   });
 });
 
@@ -215,8 +178,8 @@ describe("isValidProvider", () => {
 // ---------------------------------------------------------------------------
 
 describe("getEffectiveProvider — merge priority", () => {
-  it("returns not configured when neither env nor config set", () => {
-    const info = getEffectiveProvider();
+  it("returns not configured when neither env nor config set", async () => {
+    const info = await getEffectiveProvider();
     expect(info.configured).toBe(false);
     expect(info.provider).toBeNull();
   });
@@ -225,7 +188,7 @@ describe("getEffectiveProvider — merge priority", () => {
     await saveConfig({ provider: "openai", apiKey: "sk-config-key", model: "gpt-4o-mini" });
     _resetConfigCache();
 
-    const info = getEffectiveProvider();
+    const info = await getEffectiveProvider();
     expect(info.configured).toBe(true);
     expect(info.provider).toBe("openai");
     expect(info.model).toBe("gpt-4o-mini");
@@ -236,7 +199,7 @@ describe("getEffectiveProvider — merge priority", () => {
     _resetConfigCache();
     process.env.ANTHROPIC_API_KEY = "sk-ant-env-key";
 
-    const info = getEffectiveProvider();
+    const info = await getEffectiveProvider();
     expect(info.provider).toBe("anthropic");
   });
 
@@ -245,7 +208,7 @@ describe("getEffectiveProvider — merge priority", () => {
     _resetConfigCache();
     process.env.LLM_MODEL = "gpt-4-turbo";
 
-    const info = getEffectiveProvider();
+    const info = await getEffectiveProvider();
     expect(info.model).toBe("gpt-4-turbo");
   });
 
@@ -253,7 +216,7 @@ describe("getEffectiveProvider — merge priority", () => {
     await saveConfig({ provider: "anthropic", apiKey: "sk-key" });
     _resetConfigCache();
 
-    const info = getEffectiveProvider();
+    const info = await getEffectiveProvider();
     expect(info.model).toBe("claude-sonnet-4-20250514");
   });
 });
@@ -267,23 +230,23 @@ describe("getEffectiveSettings", () => {
     await saveConfig({ provider: "openai", apiKey: "sk-test-key-1234567890" });
     _resetConfigCache();
 
-    const settings = getEffectiveSettings();
+    const settings = await getEffectiveSettings();
     expect(settings.providerSource).toBe("config");
     expect(settings.apiKeySource).toBe("config");
     expect(settings.maskedApiKey).not.toBeNull();
     expect(settings.maskedApiKey).not.toContain("sk-test-key-1234567890");
   });
 
-  it("reports source as 'env' when set via env var", () => {
+  it("reports source as 'env' when set via env var", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-env-key-1234567890";
 
-    const settings = getEffectiveSettings();
+    const settings = await getEffectiveSettings();
     expect(settings.providerSource).toBe("env");
     expect(settings.apiKeySource).toBe("env");
   });
 
-  it("reports source as 'none' when nothing is set", () => {
-    const settings = getEffectiveSettings();
+  it("reports source as 'none' when nothing is set", async () => {
+    const settings = await getEffectiveSettings();
     expect(settings.providerSource).toBe("none");
     expect(settings.apiKeySource).toBe("none");
     expect(settings.configured).toBe(false);
@@ -293,7 +256,7 @@ describe("getEffectiveSettings", () => {
     await saveConfig({ provider: "anthropic", apiKey: "sk-key" });
     _resetConfigCache();
 
-    const settings = getEffectiveSettings();
+    const settings = await getEffectiveSettings();
     expect(settings.modelSource).toBe("default");
     expect(settings.model).toBe("claude-sonnet-4-20250514");
   });
@@ -304,8 +267,8 @@ describe("getEffectiveSettings", () => {
 // ---------------------------------------------------------------------------
 
 describe("getResolvedCredentials", () => {
-  it("returns null provider when nothing configured", () => {
-    const creds = getResolvedCredentials();
+  it("returns null provider when nothing configured", async () => {
+    const creds = await getResolvedCredentials();
     expect(creds.provider).toBeNull();
     expect(creds.apiKey).toBeNull();
   });
@@ -314,7 +277,7 @@ describe("getResolvedCredentials", () => {
     await saveConfig({ provider: "openai", apiKey: "sk-file-key", model: "gpt-4o-mini" });
     _resetConfigCache();
 
-    const creds = getResolvedCredentials();
+    const creds = await getResolvedCredentials();
     expect(creds.provider).toBe("openai");
     expect(creds.apiKey).toBe("sk-file-key");
     expect(creds.model).toBe("gpt-4o-mini");
@@ -325,7 +288,7 @@ describe("getResolvedCredentials", () => {
     _resetConfigCache();
     process.env.OPENAI_API_KEY = "sk-env-key";
 
-    const creds = getResolvedCredentials();
+    const creds = await getResolvedCredentials();
     expect(creds.apiKey).toBe("sk-env-key");
   });
 
@@ -333,7 +296,7 @@ describe("getResolvedCredentials", () => {
     await saveConfig({ provider: "ollama", ollamaBaseUrl: "http://myhost:11434/api" });
     _resetConfigCache();
 
-    const creds = getResolvedCredentials();
+    const creds = await getResolvedCredentials();
     expect(creds.provider).toBe("ollama");
     expect(creds.ollamaBaseUrl).toBe("http://myhost:11434/api");
     expect(creds.apiKey).toBeNull();
@@ -393,25 +356,25 @@ describe("getEmbeddingModelOverride", () => {
 // ---------------------------------------------------------------------------
 
 describe("getOllamaBaseUrl", () => {
-  it("returns undefined when neither env nor config set", () => {
-    expect(getOllamaBaseUrl()).toBeUndefined();
+  it("returns undefined when neither env nor config set", async () => {
+    expect(await getOllamaBaseUrl()).toBeUndefined();
   });
 
-  it("returns env var value when OLLAMA_BASE_URL is set", () => {
+  it("returns env var value when OLLAMA_BASE_URL is set", async () => {
     process.env.OLLAMA_BASE_URL = "http://env-host:11434";
-    expect(getOllamaBaseUrl()).toBe("http://env-host:11434");
+    expect(await getOllamaBaseUrl()).toBe("http://env-host:11434");
   });
 
   it("returns config file value when env var is not set", async () => {
     await saveConfig({ ollamaBaseUrl: "http://config-host:11434" });
     _resetConfigCache();
-    expect(getOllamaBaseUrl()).toBe("http://config-host:11434");
+    expect(await getOllamaBaseUrl()).toBe("http://config-host:11434");
   });
 
   it("env var wins over config file value", async () => {
     await saveConfig({ ollamaBaseUrl: "http://config-host:11434" });
     _resetConfigCache();
     process.env.OLLAMA_BASE_URL = "http://env-host:11434";
-    expect(getOllamaBaseUrl()).toBe("http://env-host:11434");
+    expect(await getOllamaBaseUrl()).toBe("http://env-host:11434");
   });
 });
