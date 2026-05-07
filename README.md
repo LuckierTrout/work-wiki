@@ -62,55 +62,44 @@ Now the experiment evolves. The product yoyo built is becoming **yopedia** — a
 Six specialized agents form a self-healing pipeline. No single agent does everything — each has one job, runs on its own schedule, and communicates through GitHub Issues:
 
 ```
-                           GitHub Issues
-                     (the shared communication bus)
-                                 |
-     ┌───────────┐    ┌─────────┴─────────┐    ┌───────────┐
-     |  RESEARCH  |    |    OFFICE HOUR     |    |   REVIEW   |
-     |  Sun 9am   |--->|  Daily 7am +      |    |  On PR     |
-     |            |    |  on issue open     |    |  opened    |
-     | Scans the  |    |                    |    |            |
-     | field for  |    | Triages issues:    |    | Reviews    |
-     | competitor |    | triage -> ready    |    | the diff   |
-     | intel      |    | or -> close        |    | against    |
-     |            |    | Adds priority      |    | acceptance |
-     | Files max  |    | (p0-p3)            |    | criteria   |
-     | 3 issues   |    |                    |    |            |
-     └─────┬──────┘    └────────┬───────────┘    | Approves + |
-           |                    |                 | auto-merge |
-           v                    v                 | or request |
-      ┌─────────┐    ┌─────────────────┐         | changes    |
-      |   PM    |    |     BUILD        |         └──────┬─────┘
-      | Daily   |--->|  On 'ready'      |                |
-      | 6am     |    |  label + 4h      |                |
-      |         |    |                   |                |
-      | Reads   |    | Claims issue     |----> PR -------┘
-      | vision, |    | Creates branch   |
-      | assesses|    | Implements       |
-      | gaps    |    | Build-fix loop   |
-      |         |    | (5 attempts)     |
-      | Files   |    | Opens PR         |
-      | max 3   |    | or reverts       |
-      | issues  |    |                   |
-      └────┬────┘    └────────┬──────────┘
-           |                  |
-           v             fails 3x
-     [triage] issues          |
-                              v
-                     ┌──────────────────┐
-                     |    ARCHITECT      |
-                     |  Daily 8am +     |
-                     |  on help-wanted  |
-                     |                  |
-                     | Reads codebase + |
-                     | failed attempts  |
-                     |                  |
-                     | Splits, rewrites |
-                     | or closes issue  |
-                     └────────┬─────────┘
-                              |
-                              v
-                        back to triage
+                          GitHub Issues
+                    (the shared communication bus)
+                                |
+    ┌───────────┐    ┌──────────┴──────────┐    ┌───────────┐
+    |  RESEARCH  |    |    OFFICE HOUR       |    |   REVIEW   |
+    |  Sun 9am   |--->|  Daily 7am +        |    |  On PR     |
+    |            |    |  on issue open       |    |  opened    |
+    | Scans the  |    |                      |    |            |
+    | field for  |    | Triages issues:      |    | Reviews    |
+    | competitor |    |  simple → [ready]    |    | the diff   |
+    | intel      |    |  complex → architect |    | against    |
+    |            |    |  bad → close         |    | acceptance |
+    | Files max  |    |                      |    | criteria   |
+    | 3 issues   |    | Adds priority        |    |            |
+    └─────┬──────┘    └───┬─────────┬────────┘    | Approves + |
+          |               |         |              | auto-merge |
+          v               |         |              | or request |
+     ┌─────────┐          |         |              | changes    |
+     |   PM    |          |         |              └──────┬─────┘
+     | Daily   |          |         |                     |
+     | 6am     |          v         v                     |
+     |         |   ┌────────┐  ┌──────────────────┐       |
+     | Reads   |   | BUILD  |  |    ARCHITECT      |       |
+     | vision, |   | On     |  |  On complex issue |       |
+     | assesses|   | ready  |  |  + on build fail  |       |
+     | gaps    |   | + 4h   |  |  + daily 8am      |       |
+     |         |   |        |  |                    |       |
+     | Files   |   | Claims |  | Reads codebase    |       |
+     | max 3   |   | issue  |  | Designs plan      |       |
+     | issues  |   | Builds |  | Splits or rewrites|       |
+     |         |   | Opens  |->| issue with step-  |       |
+     └────┬────┘   | PR ----+->| by-step guide     |       |
+          |        |        |  |                    |       |
+          v        └────┬───┘  └────────┬───────────┘       |
+    [triage] issues     |               |                   |
+                        |       back to triage / ready      |
+                        |                                   |
+                        └──────────> PR ────────────────────┘
 ```
 
 **The lifecycle of an idea:**
@@ -119,21 +108,25 @@ Six specialized agents form a self-healing pipeline. No single agent does everyt
   Human files issue          PM spots a gap           Research finds intel
         |                        |                          |
         v                        v                          v
-   ┌─────────┐  Office   ┌───────────┐  Build    ┌──────────────┐
-   | [triage] |  Hour     | [ready]   |  Agent    | [in-progress]|
-   |          |---------->| + priority|---------->|  + branch    |
-   └─────────┘  grooms   └───────────┘  claims   └──────┬───────┘
-                  ^                                      |
-                  |                           PR opened  |
-                  |                                      v
-                  |                               ┌─────────────┐
-                  |                      Review   |  [merged]   |
-                  |                      Agent    |  issue      |
-                  |                      approves |  closed     |
-                  |                               └─────────────┘
-                  |
-                  |  fails 3x → Architect splits/rewrites
-                  └──────────── back to triage
+   ┌─────────┐  Office   ┌───────────────────────────────────────┐
+   | [triage] |  Hour     |                                       |
+   |          |---------->|  simple?  ──> [ready] ──> Build ──> PR ──> Review
+   └─────────┘  triages   |                                       |
+                          |  complex? ──> [needs-architecture]    |
+                          |                    |                   |
+                          |              Architect designs         |
+                          |                    |                   |
+                          |              sub-issues or plan        |
+                          |                    |                   |
+                          |              back to [triage]          |
+                          |                                       |
+                          |  build fails 3x? ──> [help-wanted]   |
+                          |                    |                   |
+                          |              Architect rescues         |
+                          |                    |                   |
+                          |              splits / rewrites         |
+                          |              back to [triage]          |
+                          └───────────────────────────────────────┘
 ```
 
 **Each agent has its own expertise** — not just instructions, but judgment:

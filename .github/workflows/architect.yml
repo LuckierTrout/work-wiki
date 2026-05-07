@@ -26,6 +26,7 @@ jobs:
 
     if: >
       github.event_name != 'issues' ||
+      github.event.label.name == 'needs-architecture' ||
       github.event.label.name == 'agent-help-wanted'
 
     steps:
