@@ -1,4 +1,3 @@
-import fs from "fs/promises";
 import type { IndexEntry } from "./types";
 import { callLLM, hasLLMKey } from "./llm";
 import { withFileLock } from "./lock";
@@ -6,14 +5,15 @@ import { hasLinkTo } from "./links";
 import { parseFrontmatter } from "./frontmatter";
 import { logger } from "./logger";
 import {
-  getWikiDir,
   readWikiPage,
   writeWikiPage,
   listWikiPages,
   withPageCache,
+  wikiRelPath,
 } from "./wiki";
 import { isEnoent } from "./errors";
 import { getAgent } from "./agents";
+import { getStorage } from "./storage";
 
 // ---------------------------------------------------------------------------
 // Cross-referencing helpers
@@ -292,14 +292,13 @@ export async function searchWikiContent(
     .filter((t) => t.length > 0);
   if (terms.length === 0) return [];
 
-  const wikiDir = getWikiDir();
+  const storage = getStorage();
   let files: string[];
   try {
-    files = await fs.readdir(wikiDir);
+    const entries = await storage.listFiles(wikiRelPath(""));
+    files = entries.map((e) => e.name);
   } catch (err) {
-    if (!isEnoent(err)) {
-      logger.warn("wiki", "searchWikiContent failed to read wiki directory:", err);
-    }
+    logger.warn("wiki", "searchWikiContent failed to read wiki directory:", err);
     return [];
   }
 
@@ -323,7 +322,7 @@ export async function searchWikiContent(
 
     let content: string;
     try {
-      content = await fs.readFile(`${wikiDir}/${file}`, "utf-8");
+      content = await storage.readFile(wikiRelPath(file));
     } catch (err) {
       logger.warn("wiki", `searchWikiContent failed to read "${file}":`, err);
       continue;
@@ -419,14 +418,13 @@ export async function fuzzySearchWikiContent(
   // Don't bother with fuzzy if all terms are too short
   if (terms.every((t) => t.length <= 2)) return exactResults;
 
-  const wikiDir = getWikiDir();
+  const storage = getStorage();
   let files: string[];
   try {
-    files = await fs.readdir(wikiDir);
+    const entries = await storage.listFiles(wikiRelPath(""));
+    files = entries.map((e) => e.name);
   } catch (err) {
-    if (!isEnoent(err)) {
-      logger.warn("wiki", "fuzzySearchWikiContent failed to read wiki directory:", err);
-    }
+    logger.warn("wiki", "fuzzySearchWikiContent failed to read wiki directory:", err);
     return exactResults;
   }
 
@@ -448,7 +446,7 @@ export async function fuzzySearchWikiContent(
 
     let content: string;
     try {
-      content = await fs.readFile(`${wikiDir}/${file}`, "utf-8");
+      content = await storage.readFile(wikiRelPath(file));
     } catch (err) {
       if (!isEnoent(err)) {
         logger.warn("search", `unexpected error reading wiki file "${file}":`, err);
