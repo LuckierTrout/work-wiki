@@ -35,7 +35,7 @@ A wiki designed for both humans and agents to read and write.
 
 ## Live Growth
 
-Five independent agents run on schedule, communicate through GitHub Issues, and leave a visible trail:
+Six independent agents run on schedule, communicate through GitHub Issues, and leave a visible trail:
 
 | | |
 |-|-|
@@ -59,7 +59,7 @@ Now the experiment evolves. The product yoyo built is becoming **yopedia** — a
 
 ## How the Agents Work
 
-Five specialized agents form a pipeline. No single agent does everything — each has one job, runs on its own schedule, and communicates through GitHub Issues:
+Six specialized agents form a self-healing pipeline. No single agent does everything — each has one job, runs on its own schedule, and communicates through GitHub Issues:
 
 ```
                            GitHub Issues
@@ -92,10 +92,25 @@ Five specialized agents form a pipeline. No single agent does everything — eac
       | Files   |    | Opens PR         |
       | max 3   |    | or reverts       |
       | issues  |    |                   |
-      └────┬────┘    └───────────────────┘
-           |
-           v
-     [triage] issues
+      └────┬────┘    └────────┬──────────┘
+           |                  |
+           v             fails 3x
+     [triage] issues          |
+                              v
+                     ┌──────────────────┐
+                     |    ARCHITECT      |
+                     |  Daily 8am +     |
+                     |  on help-wanted  |
+                     |                  |
+                     | Reads codebase + |
+                     | failed attempts  |
+                     |                  |
+                     | Splits, rewrites |
+                     | or closes issue  |
+                     └────────┬─────────┘
+                              |
+                              v
+                        back to triage
 ```
 
 **The lifecycle of an idea:**
@@ -108,14 +123,17 @@ Five specialized agents form a pipeline. No single agent does everything — eac
    | [triage] |  Hour     | [ready]   |  Agent    | [in-progress]|
    |          |---------->| + priority|---------->|  + branch    |
    └─────────┘  grooms   └───────────┘  claims   └──────┬───────┘
-                                                         |
-                                              PR opened  |
-                                                         v
-                                                  ┌─────────────┐
-                                         Review   |  [merged]   |
-                                         Agent    |  issue      |
-                                         approves |  closed     |
-                                                  └─────────────┘
+                  ^                                      |
+                  |                           PR opened  |
+                  |                                      v
+                  |                               ┌─────────────┐
+                  |                      Review   |  [merged]   |
+                  |                      Agent    |  issue      |
+                  |                      approves |  closed     |
+                  |                               └─────────────┘
+                  |
+                  |  fails 3x → Architect splits/rewrites
+                  └──────────── back to triage
 ```
 
 **Each agent has its own expertise** — not just instructions, but judgment:
@@ -124,6 +142,7 @@ Five specialized agents form a pipeline. No single agent does everything — eac
 - **Office Hour** has taste (evaluates issues like pitches — forcing questions, banned phrases, push-back patterns)
 - **Build** has craft (minimal correct changes, stop triggers, knows when to re-queue vs. implement)
 - **Review** has code standards (confidence scoring, knows what NOT to flag)
+- **Architect** has decomposition (splits hard problems into atomic pieces, diagnoses why builds fail)
 
 **The harness enforces quality, not the LLM.** Build fails? A fix agent gets 5 attempts. Still broken? Automatic revert, issue re-queued. Protected files checked mechanically after every task. The LLM is powerful but unreliable. The shell script is dumb but consistent. Trust the shell script.
 
@@ -202,7 +221,8 @@ karpathy-llm-wiki/
 │   ├── office-hour.yml            # Daily 7am + on issue open — triage
 │   ├── build.yml                  # On 'ready' label + every 4h — implement
 │   ├── review.yml                 # On PR opened — code review
-│   └── research.yml               # Sundays 9am — competitive scan
+│   ├── research.yml               # Sundays 9am — competitive scan
+│   └── architect.yml              # On 'help-wanted' + daily 8am — decompose hard issues
 ├── src/                           # Everything here was written by agents
 └── .yoyo/
     ├── yoyo.toml                  # Agent config (enabled/disabled, build commands)
@@ -262,6 +282,7 @@ gh workflow run pm.yml            # PM scans for work
 gh workflow run office-hour.yml   # Triage open issues
 gh workflow run build.yml         # Build next ready issue
 gh workflow run research.yml      # Competitive scan
+gh workflow run architect.yml    # Decompose stuck issues
 
 # Give PM a focus area
 gh workflow run pm.yml -f focus="search performance"
