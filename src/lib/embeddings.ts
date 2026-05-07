@@ -3,9 +3,8 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOllama } from "ollama-ai-provider-v2";
 import type { EmbeddingModel } from "ai";
-import fs from "fs/promises";
-
-import { getWikiDir, listWikiPages, readWikiPage } from "./wiki";
+import { wikiRelPath, listWikiPages, readWikiPage } from "./wiki";
+import { getStorage } from "./storage";
 import { detectEnvProvider, loadConfigSync, getEmbeddingModelOverride, getOllamaBaseUrl } from "./config";
 import { withFileLock } from "./lock";
 import { isEnoent } from "./errors";
@@ -248,9 +247,9 @@ export function contentHash(content: string): string {
 
 const VECTOR_STORE_FILENAME = ".vectors.json";
 
-/** Path to the vector store file on disk. */
-function vectorStorePath(): string {
-  return `${getWikiDir()}/${VECTOR_STORE_FILENAME}`;
+/** Storage-relative path to the vector store file. */
+function vectorStoreRelPath(): string {
+  return wikiRelPath(VECTOR_STORE_FILENAME);
 }
 
 /**
@@ -258,7 +257,7 @@ function vectorStorePath(): string {
  */
 export async function loadVectorStore(): Promise<VectorStore | null> {
   try {
-    const raw = await fs.readFile(vectorStorePath(), "utf-8");
+    const raw = await getStorage().readFile(vectorStoreRelPath());
     return JSON.parse(raw) as VectorStore;
   } catch (err) {
     if (!isEnoent(err)) {
@@ -269,17 +268,16 @@ export async function loadVectorStore(): Promise<VectorStore | null> {
 }
 
 /**
- * Write the vector store to disk atomically. Creates the wiki directory if
- * needed.  Writes to a `.tmp` file first, then renames — so a crash mid-write
- * cannot corrupt the store (rename is atomic on POSIX).
+ * Write the vector store to disk atomically.
+ *
+ * The StorageProvider's `writeFile` handles directory creation and atomicity
+ * (the filesystem provider uses write-to-tmp + rename internally).
  */
 export async function saveVectorStore(store: VectorStore): Promise<void> {
-  const dir = getWikiDir();
-  await fs.mkdir(dir, { recursive: true });
-  const dest = vectorStorePath();
-  const tmp = dest + ".tmp";
-  await fs.writeFile(tmp, JSON.stringify(store, null, 2), "utf-8");
-  await fs.rename(tmp, dest);
+  await getStorage().writeFile(
+    vectorStoreRelPath(),
+    JSON.stringify(store, null, 2),
+  );
 }
 
 // ---------------------------------------------------------------------------
