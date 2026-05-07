@@ -608,3 +608,9 @@ Assessed project state: build green (1,619 tests), no bugs, no regressions.
 Implemented issue #38: Refactor search.ts to use StorageProvider
 Branch: yoyo/issue-38 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/41
 Commits: - yoyo: refactor search.ts to use StorageProvider instead of fs (closes #38)
+
+## 2026-05-07 08:04 (build)
+Implemented issue #39: Refactor embeddings.ts to use StorageProvider
+Branch: yoyo/issue-39 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/42
+Commits: - yoyo: refactor embeddings.ts to use StorageProvider (closes #39)
+- yoyo: build session (2026-05-07) — issue #38
