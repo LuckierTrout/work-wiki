@@ -6,7 +6,7 @@ lint = "pnpm lint"
 [protected]
 paths = [".github/", ".yoyo/yoyo.toml"]
 
-# 5 agents available. 3 enabled by default, 2 opt-in.
+# 6 agents available.
 [agents.pm]
 enabled = true
 
@@ -20,4 +20,7 @@ enabled = true
 enabled = true
 
 [agents.research]
+enabled = true
+
+[agents.architect]
 enabled = true

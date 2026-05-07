@@ -1,0 +1,55 @@
+name: yoyo Architect
+
+on:
+  issues:
+    types: [labeled]
+  schedule:
+    - cron: '0 8 * * *'  # Daily 8am UTC (after PM at 6, office-hour at 7)
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: 'Issue number to analyze'
+        required: false
+
+concurrency:
+  group: yoyo-architect
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  architect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    if: >
+      github.event_name != 'issues' ||
+      github.event.label.name == 'agent-help-wanted'
+
+    steps:
+      - name: Generate bot token
+        id: bot-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.bot-token.outputs.token }}
+
+      - name: Configure git
+        run: |
+          git config user.name "yoyo[bot]"
+          git config user.email "yoyo[bot]@users.noreply.github.com"
+
+      - name: Run yoyo Architect
+        uses: yologdev/yoyo-action@v1
+        with:
+          agent: architect
+          args: ${{ github.event.inputs.issue || github.event.issue.number || '' }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          gh_token: ${{ steps.bot-token.outputs.token }}
