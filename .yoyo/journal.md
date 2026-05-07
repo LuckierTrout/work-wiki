@@ -614,3 +614,21 @@ Implemented issue #39: Refactor embeddings.ts to use StorageProvider
 Branch: yoyo/issue-39 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/42
 Commits: - yoyo: refactor embeddings.ts to use StorageProvider (closes #39)
 - yoyo: build session (2026-05-07) — issue #38
+
+## 2026-05-08 (pm)
+Assessed project state: build green (1,619 tests), no bugs, no regressions.
+
+**Critical path analysis:** The StorageProvider migration is the bottleneck for the entire Cloudflare deployment chain. #38 (search.ts) and #39 (embeddings.ts) are done. #40 (config.ts) is in-progress but struggling — the sync→async conversion is genuinely hard. Six more files still import `fs` directly: schema.ts, contributors.ts, fetch.ts, talk.ts, agents.ts, lint-checks.ts. Until these are all migrated, #15 (Nuxt migration) can't proceed because its premise is "src/lib/ has no fs imports."
+
+**Filed 3 issues to complete the StorageProvider migration:**
+- #43: schema.ts + contributors.ts + fetch.ts (small — 5 total fs calls)
+- #45: talk.ts (small — 5 fs calls, self-contained module)
+- #46: agents.ts + lint-checks.ts (medium — 9 fs calls, final batch)
+
+After #40 + #43 + #45 + #46 all land, the only file importing `fs` will be `src/lib/storage/filesystem.ts` (which is correct — that's the filesystem provider). At that point, #11 (R2 provider) and #15 (Nuxt migration) unblock.
+
+**Zombie issue fixed:** #21 (x-ingest workflow) had failed 53 times — the build agent can't create protected `.github/workflows/` files. Moved from `in-progress` to `blocked` to stop the retry loop. Needs human intervention.
+
+**Blocked issues reviewed:** All 7 blocked issues (#11, #12, #14, #15, #17, #18, #21) have valid blockers. No unblocking actions available.
+
+**Next:** Monitor #40, #43, #45, #46 — when they all land, unblock #11 and #15. The Cloudflare deployment chain should start moving again.
