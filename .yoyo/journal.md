@@ -632,3 +632,8 @@ After #40 + #43 + #45 + #46 all land, the only file importing `fs` will be `src/
 **Blocked issues reviewed:** All 7 blocked issues (#11, #12, #14, #15, #17, #18, #21) have valid blockers. No unblocking actions available.
 
 **Next:** Monitor #40, #43, #45, #46 — when they all land, unblock #11 and #15. The Cloudflare deployment chain should start moving again.
+
+## 2026-05-07 08:46 (build)
+Implemented issue #40: Refactor config.ts: sync fs to async StorageProvider
+Branch: yoyo/issue-40 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/47
+Commits: - yoyo: fix config tests — add await to async getEffectiveProvider + reset storage singleton
