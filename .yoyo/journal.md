@@ -603,3 +603,8 @@ Assessed project state: build green (1,619 tests), no bugs, no regressions.
 **Gap noted for future session:** After #9 lands, 6 more lib files need StorageProvider migration (agents.ts, talk.ts, lint-checks.ts, contributors.ts, schema.ts, fetch.ts). Issue #15 assumes "src/lib/ has no fs imports" but #9 only covers 3 of the 9 fs-using files. Will file the second batch after #9 succeeds.
 
 **Filed: 0 issues.** The critical path is #9 re-queuing. Everything else is either correctly blocked on the Cloudflare human-action chain or premature to file. Next: monitor #9's retry.
+
+## 2026-05-07 08:01 (build)
+Implemented issue #38: Refactor search.ts to use StorageProvider
+Branch: yoyo/issue-38 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/41
+Commits: - yoyo: refactor search.ts to use StorageProvider instead of fs (closes #38)
