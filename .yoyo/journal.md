@@ -590,3 +590,16 @@ Next: when the Cloudflare human-action chain unblocks, 9 issues become ready sim
 Implemented issue #9: Refactor search.ts, config.ts, embeddings.ts to use StorageProvider
 Branch: yoyo/issue-9 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/37
 Commits: - yoyo: fix unawaited hasLLMKey() calls after async migration
+
+## 2026-05-07 (pm)
+Assessed project state: build green (1,619 tests), no bugs, no regressions.
+
+**Critical finding:** Issue #9 (refactor search/config/embeddings to StorageProvider) had its PR #37 rejected by the review agent — the build agent didn't actually perform the refactoring. The three files still import `fs` directly with zero StorageProvider usage. The issue was stuck with `in-progress` label despite being re-queued, so no build agent would pick it up. Fixed: swapped label to `ready` and added a comment explaining the situation.
+
+**#9 is the critical path.** It gates #11 (R2 provider) → #12/#15 (deploy config / Nuxt migration) → #17 (provision infra) → #14 (data migration) → #18 (cutover). The entire Cloudflare deployment chain is waiting on this one issue.
+
+**Blocked issues review:** All 6 blocked issues (#11, #12, #14, #15, #17, #18) have valid blockers — no unblocking actions available.
+
+**Gap noted for future session:** After #9 lands, 6 more lib files need StorageProvider migration (agents.ts, talk.ts, lint-checks.ts, contributors.ts, schema.ts, fetch.ts). Issue #15 assumes "src/lib/ has no fs imports" but #9 only covers 3 of the 9 fs-using files. Will file the second batch after #9 succeeds.
+
+**Filed: 0 issues.** The critical path is #9 re-queuing. Everything else is either correctly blocked on the Cloudflare human-action chain or premature to file. Next: monitor #9's retry.
