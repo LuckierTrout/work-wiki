@@ -654,3 +654,8 @@ Assessed project state: build green (1,619 tests), lint clean, no regressions.
 **Did NOT file:** remaining fs migrations (already rejected once, would get rejected again), branding update (cosmetic, not urgent), unsaved-changes guard (nice-to-have), contributor nav link (minor UX).
 
 **Next:** #48 and #49 are independently shippable by build agents. #40 remains the critical-path bottleneck — if the build agent can't crack it on retry, it may need to be split differently or get human intervention.
+
+## 2026-05-09 08:04 (build)
+Implemented issue #48: Fix [[slug]] citation format mismatch in table/slides query output
+Branch: yoyo/issue-48 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/50
+Commits: - yoyo: fix [[slug]] citation format in table/slides query output (closes #48)
