@@ -59,7 +59,7 @@ Wiki pages:
  * its presence without duplicating the string.
  */
 export const TABLE_FORMAT_INSTRUCTION =
-  "Format your answer as a markdown comparison table where possible. Include a short prose lead-in (1-2 sentences) before the table. Every column header should be meaningful. Cite sources as [[slug]] in a final 'Sources' row or paragraph.";
+  "Format your answer as a markdown comparison table where possible. Include a short prose lead-in (1-2 sentences) before the table. Every column header should be meaningful. Cite sources as [Page Title](slug.md) in a final 'Sources' row or paragraph.";
 
 /**
  * Extra system-prompt instruction appended when the caller requests a
@@ -69,7 +69,7 @@ export const SLIDES_FORMAT_INSTRUCTION = `Format your answer as a Marp slide dec
 The first slide should be a title slide with \`# {question}\`.
 Each subsequent slide should cover one key point with a heading and 2-4 bullet points.
 Keep slides concise — aim for 5-8 slides total.
-Include a final "Sources" slide citing wiki pages as [[slug]].
+Include a final "Sources" slide citing wiki pages as [Page Title](slug.md).
 Use standard Marp markdown (no custom directives needed).
 Start the response with the Marp front matter:
 ---

@@ -53,4 +53,55 @@ describe("extractCitedSlugs", () => {
     const result = extractCitedSlugs(answer, ["foo"]);
     expect(result).toEqual([]);
   });
+
+  it("extracts citations from table-format output", () => {
+    const tableOutput = `Here is a comparison of the two approaches:
+
+| Feature | Transformers | RNNs |
+|---------|-------------|------|
+| Parallelism | Yes | No |
+| Memory | O(n²) | O(n) |
+
+**Sources:** [Transformers](transformers.md), [Recurrent Networks](recurrent-networks.md)`;
+    const result = extractCitedSlugs(tableOutput, [
+      "transformers",
+      "recurrent-networks",
+      "other-page",
+    ]);
+    expect(result).toContain("transformers");
+    expect(result).toContain("recurrent-networks");
+    expect(result).not.toContain("other-page");
+    expect(result).toHaveLength(2);
+  });
+
+  it("extracts citations from slides-format output", () => {
+    const slidesOutput = `---
+marp: true
+---
+
+# What is Attention?
+
+---
+
+## Key Concept
+
+- Attention allows models to focus on relevant parts of the input
+- Introduced in [Attention Mechanisms](attention.md)
+
+---
+
+## Sources
+
+- [Attention Mechanisms](attention.md)
+- [Deep Learning Overview](deep-learning.md)`;
+    const result = extractCitedSlugs(slidesOutput, [
+      "attention",
+      "deep-learning",
+      "unrelated",
+    ]);
+    expect(result).toContain("attention");
+    expect(result).toContain("deep-learning");
+    expect(result).not.toContain("unrelated");
+    expect(result).toHaveLength(2);
+  });
 });
