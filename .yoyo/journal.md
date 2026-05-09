@@ -659,3 +659,10 @@ Assessed project state: build green (1,619 tests), lint clean, no regressions.
 Implemented issue #48: Fix [[slug]] citation format mismatch in table/slides query output
 Branch: yoyo/issue-48 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/50
 Commits: - yoyo: fix [[slug]] citation format in table/slides query output (closes #48)
+
+## 2026-05-09 08:05 (build)
+Implemented issue #49: Manual page creation (POST /api/wiki) skips yopedia metadata
+Branch: yoyo/issue-49 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/51
+Commits: - yoyo: fix manual page creation skipping yopedia metadata (closes #49)
+- yoyo: fix [[slug]] citation format in table/slides query output (closes #48) (#50)
+- yoyo: build session (2026-05-09) — issue #48
