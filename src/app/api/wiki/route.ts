@@ -54,6 +54,14 @@ export async function POST(req: Request) {
       body && typeof body === "object" && "content" in body
         ? (body as { content: unknown }).content
         : undefined;
+    const author =
+      body && typeof body === "object" && "author" in body
+        ? (body as { author: unknown }).author
+        : undefined;
+    const authorStr =
+      typeof author === "string" && author.trim().length > 0
+        ? author.trim()
+        : undefined;
 
     if (typeof slug !== "string" || slug.trim().length === 0) {
       return NextResponse.json(
@@ -87,7 +95,19 @@ export async function POST(req: Request) {
     const summary = extractSummary(bodyForSummary);
 
     const today = new Date().toISOString().slice(0, 10);
-    const frontmatter: Frontmatter = { created: today };
+    // Compute a default expiry 6 months from now
+    const expiryDate = new Date();
+    expiryDate.setMonth(expiryDate.getMonth() + 6);
+    const expiry = expiryDate.toISOString().slice(0, 10);
+
+    const frontmatter: Frontmatter = {
+      created: today,
+      confidence: 0.5,
+      authors: [authorStr ?? "anonymous"],
+      contributors: [],
+      expiry,
+      sources: [],
+    };
     const fullContent = serializeFrontmatter(frontmatter, content);
 
     const result = await writeWikiPageWithSideEffects({
@@ -97,6 +117,7 @@ export async function POST(req: Request) {
       summary,
       logOp: "ingest",
       crossRefSource: content,
+      author: authorStr,
       logDetails: (ctx) =>
         `created · found ${ctx.updatedSlugs.length} cross-ref(s)`,
     });

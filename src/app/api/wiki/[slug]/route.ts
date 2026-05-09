@@ -101,7 +101,8 @@ export async function PUT(
 
     // Merge frontmatter: preserve everything the existing page had, then
     // bump `updated` (and backfill `created` for legacy pages that predate
-    // frontmatter entirely).
+    // frontmatter entirely). Also append the editor to `contributors` if not
+    // already present.
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
     const mergedFrontmatter: Frontmatter = { ...existing.frontmatter };
     if (
@@ -111,6 +112,16 @@ export async function PUT(
       mergedFrontmatter.created = today;
     }
     mergedFrontmatter.updated = today;
+
+    // Track contributors: append the editor if they're not already listed.
+    if (authorStr) {
+      const existingContributors = Array.isArray(mergedFrontmatter.contributors)
+        ? (mergedFrontmatter.contributors as string[])
+        : [];
+      if (!existingContributors.includes(authorStr)) {
+        mergedFrontmatter.contributors = [...existingContributors, authorStr];
+      }
+    }
 
     const mergedContent = serializeFrontmatter(mergedFrontmatter, newBody);
 
