@@ -6,6 +6,7 @@ import { hasEmbeddingSupport } from "./embeddings";
 import { isEnoent } from "./errors";
 import { VALID_PROVIDERS, DEFAULT_MODELS } from "./providers";
 import { logger } from "./logger";
+import { getDataDir } from "./paths";
 
 // Re-export provider constants so existing consumers can import from config
 export { PROVIDER_INFO, VALID_PROVIDERS, DEFAULT_MODELS, providerLabel } from "./providers";
@@ -50,23 +51,10 @@ export function isValidProvider(p: string): p is AppConfig["provider"] & string 
 }
 
 // ---------------------------------------------------------------------------
-// Data / directory helpers — centralise all process.env reads for paths
+// Data / directory helpers — re-exported from paths.ts to avoid circular deps
 // ---------------------------------------------------------------------------
 
-/** Base data directory: `DATA_DIR` env var or `process.cwd()`. */
-export function getDataDir(): string {
-  return process.env.DATA_DIR ?? process.cwd();
-}
-
-/** Wiki pages directory: `WIKI_DIR` env var or `<dataDir>/wiki`. */
-export function getWikiDir(): string {
-  return process.env.WIKI_DIR ?? `${getDataDir()}/wiki`;
-}
-
-/** Raw sources directory: `RAW_DIR` env var or `<dataDir>/raw`. */
-export function getRawDir(): string {
-  return process.env.RAW_DIR ?? `${getDataDir()}/raw`;
-}
+export { getDataDir, getWikiDir, getRawDir } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Config file path

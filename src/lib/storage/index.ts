@@ -13,7 +13,7 @@
 
 import type { StorageProvider } from "./types";
 import { FilesystemStorageProvider } from "./filesystem";
-import { getDataDir } from "../config";
+import { getDataDir } from "../paths";
 
 // ---------------------------------------------------------------------------
 // Runtime detection
