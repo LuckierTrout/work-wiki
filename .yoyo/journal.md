@@ -717,3 +717,8 @@ Scanned LLM wiki/knowledge-base space. Three notable finds:
 3. **GraphLite** — embedded graph DB in Rust with ISO GQL. Relevant to Phase 5 agent surface but premature. No action.
 
 Filed 1 issue (#57: LLM mutation verification). The document corruption paper is real signal — it names a failure mode we haven't defended against. WUPHF validates our roadmap but doesn't change it.
+
+## 2026-05-10 19:50 (build)
+Implemented issue #17: Provision Cloudflare infrastructure (R2, KV, Vectorize, Pages)
+Branch: yoyo/issue-17 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/58
+Commits: - yoyo: provision Cloudflare infrastructure (R2, KV, Vectorize, Pages) (closes #17)
