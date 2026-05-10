@@ -8,10 +8,14 @@ import {
   handleListPages,
   handleCreatePage,
   handleUpdatePage,
+  handleDeletePage,
+  handleIngestUrl,
+  handleQueryWiki,
   handleAgentContext,
   handleSeedAgent,
 } from "../../mcp";
 import { _resetStorage } from "../storage";
+import { _resetConfigCache } from "../config";
 
 let tmpDir: string;
 let originalWikiDir: string | undefined;
@@ -554,5 +558,173 @@ describe("seed_agent tool", () => {
     );
     expect(pageContent).toContain("Version 2 content.");
     expect(pageContent).not.toContain("Version 1 content.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// delete_page tests
+// ---------------------------------------------------------------------------
+
+describe("delete_page", () => {
+  it("deletes an existing page and returns confirmation", async () => {
+    // Create a page first
+    await handleCreatePage({
+      slug: "to-delete",
+      content: "# To Delete\n\nThis page will be deleted.",
+    });
+
+    // Verify it exists
+    const page = await handleReadPage({ slug: "to-delete" });
+    expect(page.slug).toBe("to-delete");
+
+    // Delete it
+    const result = await handleDeletePage({ slug: "to-delete" });
+    expect(result.slug).toBe("to-delete");
+    expect(result.removedFromIndex).toBe(true);
+
+    // Verify it's gone
+    await expect(handleReadPage({ slug: "to-delete" })).rejects.toThrow(
+      "Page not found",
+    );
+  });
+
+  it("throws error for non-existent slug", async () => {
+    await expect(
+      handleDeletePage({ slug: "does-not-exist" }),
+    ).rejects.toThrow("page not found");
+  });
+
+  it("strips backlinks from other pages when deleting", async () => {
+    // Create two pages, one linking to the other
+    await handleCreatePage({
+      slug: "keeper",
+      content:
+        "# Keeper\n\nThis page links to [Target](target.md).\n\n**See also:** [Target](target.md)",
+    });
+    await handleCreatePage({
+      slug: "target",
+      content: "# Target\n\nThis is the target page.",
+    });
+
+    // Delete the target
+    const result = await handleDeletePage({ slug: "target" });
+    expect(result.slug).toBe("target");
+
+    // The keeper page should have had backlinks stripped
+    const keeper = await handleReadPage({ slug: "keeper" });
+    expect(keeper.content).not.toContain("[Target](target.md)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ingest_url tests
+// ---------------------------------------------------------------------------
+
+describe("ingest_url", () => {
+  it("rejects invalid URLs", async () => {
+    await expect(
+      handleIngestUrl({ url: "not-a-url" }),
+    ).rejects.toThrow("Invalid URL");
+  });
+
+  it("rejects URLs without http/https protocol", async () => {
+    await expect(
+      handleIngestUrl({ url: "ftp://example.com/page" }),
+    ).rejects.toThrow("Invalid URL");
+  });
+
+  it("validates URL format before calling ingest", async () => {
+    // Should throw immediately for obviously bad URLs
+    // (not after trying to fetch)
+    await expect(
+      handleIngestUrl({ url: "" }),
+    ).rejects.toThrow("Invalid URL");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// query_wiki tests
+// ---------------------------------------------------------------------------
+
+describe("query_wiki", () => {
+  it("returns structured result with answer and sources fields on empty wiki", async () => {
+    const result = await handleQueryWiki({ question: "What is AI?" });
+    expect(result).toHaveProperty("answer");
+    expect(result).toHaveProperty("sources");
+    expect(typeof result.answer).toBe("string");
+    expect(Array.isArray(result.sources)).toBe(true);
+  });
+
+  it("returns informative message when wiki is empty", async () => {
+    const result = await handleQueryWiki({ question: "Tell me about neural networks" });
+    expect(result.answer).toContain("empty");
+    expect(result.sources).toEqual([]);
+  });
+
+  it("returns no-API-key fallback when wiki has pages but no LLM key", async () => {
+    // Write a page directly to the filesystem (avoids side effects from create)
+    await writeTestPage(
+      "test-topic",
+      "---\ntags: [test]\n---\n# Test Topic\n\nSome content about testing.",
+    );
+    await writeIndex([
+      {
+        title: "Test Topic",
+        slug: "test-topic",
+        summary: "Some content about testing",
+      },
+    ]);
+
+    // Temporarily clear all LLM keys so query() takes the no-key fallback path
+    const savedKeys: Record<string, string | undefined> = {};
+    const keyNames = [
+      "ANTHROPIC_API_KEY",
+      "OPENAI_API_KEY",
+      "GOOGLE_API_KEY",
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+      "OLLAMA_BASE_URL",
+      "OLLAMA_MODEL",
+    ];
+    for (const k of keyNames) {
+      savedKeys[k] = process.env[k];
+      delete process.env[k];
+    }
+    _resetConfigCache(); // ensure loadConfigSync doesn't return cached provider
+
+    try {
+      const result = await handleQueryWiki({ question: "What about testing?" });
+      // Without an API key, it should return the "No API key" message with page list
+      expect(result.answer).toContain("test-topic");
+      expect(result.sources).toEqual([]);
+    } finally {
+      // Restore all keys
+      for (const k of keyNames) {
+        if (savedKeys[k] === undefined) {
+          delete process.env[k];
+        } else {
+          process.env[k] = savedKeys[k];
+        }
+      }
+      _resetConfigCache();
+    }
+  });
+
+  it("accepts format parameter without error", async () => {
+    // Verify each format value is accepted
+    const formats = ["prose", "table", "slides"] as const;
+    for (const format of formats) {
+      const result = await handleQueryWiki({
+        question: "What is AI?",
+        format,
+      });
+      expect(result).toHaveProperty("answer");
+      expect(result).toHaveProperty("sources");
+    }
+  });
+
+  it("defaults to prose format when not specified", async () => {
+    const result = await handleQueryWiki({ question: "What is AI?" });
+    // Should work without error — prose is the default
+    expect(result).toHaveProperty("answer");
   });
 });
