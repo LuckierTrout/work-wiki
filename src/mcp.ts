@@ -8,6 +8,9 @@
  *   list_pages     — List all wiki pages with optional sort/limit
  *   create_page    — Create a new wiki page
  *   update_page    — Update an existing wiki page
+ *   delete_page    — Delete a wiki page by slug
+ *   ingest_url     — Ingest a URL into the wiki (fetch → chunk → summarize → write)
+ *   query_wiki     — Ask the wiki a question with LLM synthesis
  *   agent_context  — Get an agent's full context by agent ID
  *   seed_agent     — Register an agent and create its wiki pages
  *
@@ -27,12 +30,16 @@ import {
   validateSlug,
   serializeFrontmatter,
   writeWikiPageWithSideEffects,
+  deleteWikiPage,
   type Frontmatter,
 } from "./lib/wiki";
-import { extractSummary } from "./lib/ingest";
+import { extractSummary, ingestUrl } from "./lib/ingest";
+import { query, type QueryFormat } from "./lib/query";
+import { isUrl } from "./lib/fetch";
 import { getAgent, seedAgent } from "./lib/agents";
 import type { SeedAgentSection } from "./lib/agents";
-import type { AgentProfile } from "./lib/types";
+import type { AgentProfile, IngestResult, QueryResult } from "./lib/types";
+import type { DeletePageResult } from "./lib/lifecycle";
 import type { ContentSearchResult } from "./lib/search";
 
 // ---------------------------------------------------------------------------
@@ -211,6 +218,64 @@ export async function handleUpdatePage(args: {
   });
 
   return { slug: args.slug, title, updated: true };
+}
+
+// ---------------------------------------------------------------------------
+// Delete page handler
+// ---------------------------------------------------------------------------
+
+export async function handleDeletePage(args: {
+  slug: string;
+}): Promise<DeletePageResult> {
+  return deleteWikiPage(args.slug);
+}
+
+// ---------------------------------------------------------------------------
+// Ingest URL handler
+// ---------------------------------------------------------------------------
+
+export async function handleIngestUrl(args: {
+  url: string;
+  tags?: string[] | undefined;
+}): Promise<{
+  slug: string;
+  title: string;
+  summary: string;
+  sourceUrl: string;
+}> {
+  if (!isUrl(args.url)) {
+    throw new Error(
+      `Invalid URL: "${args.url}" — must start with http:// or https://`,
+    );
+  }
+
+  const result: IngestResult = await ingestUrl(args.url);
+
+  // Read the written page to extract title and summary for the response
+  const page = await readWikiPageWithFrontmatter(result.primarySlug);
+  const title = page?.title ?? result.primarySlug;
+  const summary = page
+    ? extractSummary(page.body)
+    : `Ingested from ${args.url}`;
+
+  return {
+    slug: result.primarySlug,
+    title,
+    summary,
+    sourceUrl: args.url,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Query wiki handler
+// ---------------------------------------------------------------------------
+
+export async function handleQueryWiki(args: {
+  question: string;
+  format?: "prose" | "table" | "slides" | undefined;
+}): Promise<QueryResult> {
+  const format: QueryFormat = args.format ?? "prose";
+  return query(args.question, format);
 }
 
 // ---------------------------------------------------------------------------
@@ -465,6 +530,118 @@ export function createMcpServer(): McpServer {
   }, async (args) => {
     try {
       const result = await handleUpdatePage(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // delete_page — Delete a wiki page
+  server.registerTool("delete_page", {
+    description: "Delete a yopedia wiki page by slug",
+    inputSchema: {
+      slug: z.string().describe("Slug of the page to delete (e.g. 'neural-networks')"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleDeletePage(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // ingest_url — Ingest a URL into the wiki
+  server.registerTool("ingest_url", {
+    description:
+      "Ingest a URL into the wiki — fetches the page, chunks the content, summarizes with an LLM, and creates/updates a wiki page with cross-references",
+    inputSchema: {
+      url: z.string().describe("URL to ingest (must start with http:// or https://)"),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe("Optional tags to apply to the created page"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: true,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleIngestUrl(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // query_wiki — Ask the wiki a question with LLM synthesis
+  server.registerTool("query_wiki", {
+    description:
+      "Ask the wiki a question — searches relevant pages, synthesizes an answer with citations using an LLM",
+    inputSchema: {
+      question: z.string().describe("The question to ask the wiki"),
+      format: z
+        .enum(["prose", "table", "slides"])
+        .optional()
+        .describe("Answer format: prose (default), table, or slides"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleQueryWiki(args);
       return {
         content: [
           {
