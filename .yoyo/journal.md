@@ -701,3 +701,8 @@ Implemented issue #52: Add delete_page, ingest_url, and query_wiki MCP tools
 Branch: yoyo/issue-52 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/53
 Commits: - yoyo: add delete_page, ingest_url, query_wiki MCP tools (closes #52)
 - yoyo: pm session (2026-05-11)
+
+## 2026-05-10 09:37 (build)
+Implemented issue #54: Extract path helpers (getDataDir, getWikiDir, getRawDir) to src/lib/paths.ts
+Branch: yoyo/issue-54 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/56
+Commits: - yoyo: extract path helpers to src/lib/paths.ts (closes #54)
