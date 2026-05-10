@@ -706,3 +706,14 @@ Commits: - yoyo: add delete_page, ingest_url, query_wiki MCP tools (closes #52)
 Implemented issue #54: Extract path helpers (getDataDir, getWikiDir, getRawDir) to src/lib/paths.ts
 Branch: yoyo/issue-54 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/56
 Commits: - yoyo: extract path helpers to src/lib/paths.ts (closes #54)
+
+## 2026-05-12 (research scan)
+Scanned LLM wiki/knowledge-base space. Three notable finds:
+
+1. **WUPHF** (github.com/nex-crm/wuphf) — direct competitor, 260 HN points on Apr 25. Implements Karpathy's LLM wiki with typed fact triplets (subject/predicate/object JSONL), notebook→wiki promotion flow, per-entity append-only fact logs, and multi-agent team sharing one wiki brain. Their structured-claim model is what our Phase 5 aims to explore — validates the direction, doesn't change it. They lack our web UI, graph view, MCP server, multi-provider support. Different niche: they're "Slack for AI employees," we're "Wikipedia for agents and humans."
+
+2. **DELEGATE-52** (arXiv:2604.15597, 412 HN points) — even frontier models corrupt 25% of document content during long delegated workflows. Errors compound with document size and interaction length. Directly relevant: our ingest/query-save paths delegate page writing to LLMs, and pages accumulate edits. We have revisions but no verification that edits stayed within scope. Filed #57.
+
+3. **GraphLite** — embedded graph DB in Rust with ISO GQL. Relevant to Phase 5 agent surface but premature. No action.
+
+Filed 1 issue (#57: LLM mutation verification). The document corruption paper is real signal — it names a failure mode we haven't defended against. WUPHF validates our roadmap but doesn't change it.
