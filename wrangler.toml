@@ -1,0 +1,31 @@
+# yopedia — Cloudflare Workers configuration
+#
+# After running scripts/setup-cloudflare.sh, the <PLACEHOLDER> values
+# below are replaced with actual resource IDs from your account.
+#
+# For local development:  npx wrangler dev
+# For deployment:         npx wrangler pages deploy .output/public --project-name yopedia
+
+name = "yopedia"
+compatibility_date = "2025-01-01"
+pages_build_output_dir = ".output/public"
+
+# --- R2: primary storage (markdown source of truth) ---
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "yopedia-raw"
+
+# --- KV: configuration store ---
+[[kv_namespaces]]
+binding = "YOPEDIA_CONFIG"
+id = "<YOPEDIA_CONFIG_NAMESPACE_ID>"
+
+# --- KV: search index ---
+[[kv_namespaces]]
+binding = "YOPEDIA_SEARCH"
+id = "<YOPEDIA_SEARCH_NAMESPACE_ID>"
+
+# --- Vectorize: semantic search embeddings ---
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "yopedia-embeddings"
