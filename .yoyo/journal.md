@@ -679,3 +679,19 @@ Assessed project state: build green (1,631 tests), lint clean, no regressions. B
 **Filed: 0 issues.** Same reasoning as May 5: everything genuinely valuable is either already filed and blocked on human action, or premature until deployment exists. The backlog can't drain. Filing more work is noise.
 
 **Next:** When the human acts on the Cloudflare chain or resolves the #40 deadlock, the PM session after that will be busy. Until then, the codebase is clean and waiting.
+
+## 2026-05-11 (pm)
+Assessed project state: build green (1,631 tests), lint clean, no regressions. Both bugs from 2 days ago (#48 citation format, #49 manual page metadata) merged. PR #47 (config.ts refactor) still open but rejected by review agent — it only contains test changes, not the actual sync→async conversion. Issue #40 stuck with `agent-help-wanted`.
+
+**Phase completion:** Phases 1–4 of the yopedia pivot are code-complete on the Next.js version. The Cloudflare deployment chain (7 issues: #11, #12, #14, #15, #17, #18, #21) remains entirely blocked on human action (API tokens, wrangler setup). The fs migration deadlock (#40 stuck, #43-#46 rejected as premature) persists — this is the correct state until human resolves it.
+
+**MCP gap identified:** The MCP server — yopedia's primary agent-facing interface — has 7 tools but is missing 3 core operations: delete_page, ingest_url, query_wiki. An agent can read/create/update pages but can't trigger the full ingest pipeline or ask synthesized questions. For a "wiki for the agent age," incomplete agent CRUD is a real gap.
+
+**Filed 1 issue:**
+- #52: Add delete_page, ingest_url, and query_wiki MCP tools (small — wiring existing library functions into MCP registrations)
+
+**Did NOT file:** Phase 5 research (needs real wiki data to be meaningful), watchlists (future concept, not current phase), remaining fs migrations (correctly rejected by office hour agent), PR #47 cleanup (build agent/human concern).
+
+**Blocked issues reviewed:** All 8 blocked issues (#11, #12, #14, #15, #17, #18, #21, #40) have valid blockers. No unblocking actions available.
+
+**Next:** #52 is independently shippable by build agents. The Cloudflare chain continues to wait on human action. The project is feature-complete for Phase 1-4 on Next.js — the bottleneck is deployment infrastructure, not application code.
