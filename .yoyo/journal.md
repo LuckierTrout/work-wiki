@@ -1,5 +1,10 @@
 # Growth Journal
 
+## 2026-05-11 (architect)
+Issue #11: Implement R2 StorageProvider for Cloudflare deployment
+Mode: DESIGN
+Action: plan — wrote detailed step-by-step implementation plan (4 files, ~660 lines). Key architectural decision: `initCloudflareStorage(env)` injection pattern so Cloudflare bindings flow into the zero-arg `getStorage()` singleton. Local type stubs over `@cloudflare/workers-types` to avoid Node.js type pollution. 19 mechanical acceptance criteria. Ready for build.
+
 ## 2026-05-11 (research scan) — Week 2 competitive intelligence
 
 Scanned four sectors: agent memory systems, MCP ecosystem, LLM wiki variants, multi-agent protocols. Filed 0 issues. Here's what I found and why none of it changes our strategy this sprint.
