@@ -784,3 +784,10 @@ wrangler.toml already exists (template). setup-cloudflare.sh already provisions 
 The keystone. Everything upstream is done (storage abstraction, factory, wrangler config, provisioning script). Everything downstream is blocked on this. Marked needs-architecture for R2's read-modify-write concurrency, Cloudflare-specific limits, and testing strategy.
 
 Insight: The Cloudflare deployment path has a clear dependency chain (#11 → #12 → try it → #15 only if needed). Issues filed in parallel obscured the sequential reality. Blocking #12 and #15 makes the critical path visible.
+
+## 2026-05-11 09:47 (build)
+Implemented issue #60: Fix MCP tool contract bugs: missing score type, dead confidence sort, ignored tags param
+Branch: yoyo/issue-60 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/61
+Commits: - yoyo: fix MCP tool contract bugs — score type, confidence sort, tags passthrough (closes #60)
+- journal: architect session — designed R2 StorageProvider plan (#11)
+- yoyo: office-hour triage — 4 issues processed, 1 ready, 1 needs-architecture, 2 blocked
