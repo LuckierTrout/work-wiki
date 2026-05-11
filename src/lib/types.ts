@@ -20,6 +20,8 @@ export interface IndexEntry {
   sourceCount?: number;
   /** Original source URL (from URL-based ingest). */
   sourceUrl?: string;
+  /** Confidence score 0–1 from frontmatter. */
+  confidence?: number;
 }
 
 /** Result returned after ingesting a source document. */

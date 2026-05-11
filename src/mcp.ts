@@ -55,12 +55,11 @@ export async function handleSearchWiki(args: {
     args.query,
     limit,
   );
-  // searchWikiContent returns objects with score (not in the interface but present)
   return results.map((r) => ({
     slug: r.slug,
     title: r.title,
     snippet: r.snippet,
-    score: (r as unknown as { score: number }).score ?? 0,
+    score: r.score,
   }));
 }
 
@@ -109,10 +108,8 @@ export async function handleListPages(args: {
     });
   } else if (sortBy === "confidence") {
     sorted.sort((a, b) => {
-      // Parse confidence from frontmatter; entries don't have confidence directly
-      // so fall back to 0 for sorting purposes
-      const aC = (a as unknown as { confidence?: number }).confidence ?? 0;
-      const bC = (b as unknown as { confidence?: number }).confidence ?? 0;
+      const aC = a.confidence ?? 0;
+      const bC = b.confidence ?? 0;
       return bC - aC; // highest first
     });
   } else {
@@ -128,6 +125,7 @@ export async function handleListPages(args: {
     slug: e.slug,
     title: e.title,
     ...(e.tags && e.tags.length > 0 ? { tags: e.tags } : {}),
+    ...(e.confidence !== undefined ? { confidence: e.confidence } : {}),
     ...(e.updated ? { updated: e.updated } : {}),
   }));
 }
@@ -249,7 +247,9 @@ export async function handleIngestUrl(args: {
     );
   }
 
-  const result: IngestResult = await ingestUrl(args.url);
+  const result: IngestResult = await ingestUrl(args.url, {
+    ...(args.tags && args.tags.length > 0 ? { tags: args.tags } : {}),
+  });
 
   // Read the written page to extract title and summary for the response
   const page = await readWikiPageWithFrontmatter(result.primarySlug);

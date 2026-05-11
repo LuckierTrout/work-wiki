@@ -166,6 +166,8 @@ export interface ContentSearchResult {
   summary: string;
   /** Short snippet showing the match context */
   snippet: string;
+  /** Relevance score — number of matching query terms */
+  score: number;
   /** True when this result came from fuzzy (typo-tolerant) matching */
   fuzzy?: boolean;
 }
@@ -481,7 +483,7 @@ export async function fuzzySearchWikiContent(
       .trim();
     const snippet = snippetText + (snippetText.length >= 120 ? "…" : "");
 
-    fuzzyResults.push({ slug, title, summary, snippet, fuzzy: true });
+    fuzzyResults.push({ slug, title, summary, snippet, score: 0, fuzzy: true });
   }
 
   // Sort fuzzy results alphabetically by title

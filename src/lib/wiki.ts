@@ -334,12 +334,26 @@ export async function listWikiPages(): Promise<IndexEntry[]> {
             ? fm.source_url
             : undefined;
 
+        // Parse confidence (0–1 number from frontmatter)
+        const confidenceRaw = fm.confidence;
+        const confidenceNum =
+          typeof confidenceRaw === "number"
+            ? confidenceRaw
+            : typeof confidenceRaw === "string" && confidenceRaw.length > 0
+              ? Number.parseFloat(confidenceRaw)
+              : NaN;
+        const confidence =
+          Number.isFinite(confidenceNum) && confidenceNum >= 0 && confidenceNum <= 1
+            ? confidenceNum
+            : undefined;
+
         return {
           ...entry,
           ...(tags && tags.length > 0 ? { tags } : {}),
           ...(updated ? { updated } : {}),
           ...(sourceCount !== undefined ? { sourceCount } : {}),
           ...(sourceUrl ? { sourceUrl } : {}),
+          ...(confidence !== undefined ? { confidence } : {}),
         };
       } catch (err) {
         logger.warn(

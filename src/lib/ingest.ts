@@ -330,6 +330,11 @@ export interface IngestOptions {
    * Passed through to the `triggered_by` field on the `SourceEntry`.
    */
   triggeredBy?: string;
+  /**
+   * Tags to apply to the created/updated page. Merged with any existing tags
+   * when re-ingesting an existing page.
+   */
+  tags?: string[];
 }
 
 /**
@@ -461,6 +466,11 @@ export async function ingest(
   const sourceEntry = buildSourceEntry(sourceUrl, sourceType, options?.triggeredBy);
   frontmatter.sources = serializeSources([sourceEntry]);
 
+  // Apply tags from options (will be merged with existing tags below for re-ingests).
+  if (options?.tags && options.tags.length > 0) {
+    frontmatter.tags = options.tags;
+  }
+
   const existing = await readWikiPageWithFrontmatter(slug);
   if (existing) {
     const existingCreated = existing.frontmatter.created;
@@ -478,7 +488,13 @@ export async function ingest(
       (Number.isFinite(prevCount) ? prevCount : 0) + 1,
     );
     if (Array.isArray(existing.frontmatter.tags)) {
-      frontmatter.tags = existing.frontmatter.tags;
+      // Merge existing tags with any new tags from options (deduplicated)
+      const existingTags = existing.frontmatter.tags.filter(
+        (t): t is string => typeof t === "string",
+      );
+      const newTags = options?.tags ?? [];
+      const merged = [...new Set([...existingTags, ...newTags])];
+      frontmatter.tags = merged;
     }
     // Preserve existing source_url if the new ingest doesn't provide one.
     if (

@@ -212,6 +212,36 @@ describe("list_pages", () => {
     expect(result[1].slug).toBe("old");
   });
 
+  it("sorts by confidence when requested", async () => {
+    await writeTestPage(
+      "low-conf",
+      "---\nconfidence: 0.3\nupdated: '2025-01-01'\n---\n# Low Confidence\n\nLow confidence page.",
+    );
+    await writeTestPage(
+      "high-conf",
+      "---\nconfidence: 0.9\nupdated: '2025-01-01'\n---\n# High Confidence\n\nHigh confidence page.",
+    );
+    await writeTestPage(
+      "no-conf",
+      "---\nupdated: '2025-01-01'\n---\n# No Confidence\n\nNo confidence field.",
+    );
+    await writeIndex([
+      { title: "Low Confidence", slug: "low-conf", summary: "Low" },
+      { title: "High Confidence", slug: "high-conf", summary: "High" },
+      { title: "No Confidence", slug: "no-conf", summary: "None" },
+    ]);
+
+    const result = await handleListPages({ sort: "confidence" });
+    expect(result.length).toBe(3);
+    // Highest confidence first
+    expect(result[0].slug).toBe("high-conf");
+    expect(result[0].confidence).toBe(0.9);
+    expect(result[1].slug).toBe("low-conf");
+    expect(result[1].confidence).toBe(0.3);
+    // No confidence field → sorted last (confidence defaults to 0)
+    expect(result[2].slug).toBe("no-conf");
+  });
+
   it("returns empty array when no pages exist", async () => {
     const result = await handleListPages({});
     expect(result).toEqual([]);
