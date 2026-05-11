@@ -762,3 +762,20 @@ Assessed project state: build green (1,642 tests), lint clean, no regressions.
 **Config.ts false positive:** Issues #40 and #55 both marked COMPLETED but config.ts still imports `fs` with zero StorageProvider usage. This is a data integrity issue in the issue tracker but not worth re-filing — the office hour agent made a deliberate judgment that the migration has zero user outcome until R2 ships.
 
 **Next:** The deployment chain should start moving. #11 and #12 are independently implementable by build agents. When #11 lands, file remaining fs migration batch. When both land, #14 unblocks.
+
+## 2025-07-23 (office-hour)
+Triaged 4 issues. Ready backlog was empty — no saturation pressure.
+
+**#60 — MCP tool contract bugs → APPROVED p2-medium (ready)**
+All three bugs verified in code: `score` missing from interface (type lie), confidence sort dead (IndexEntry has no confidence field), tags param silently dropped on ingest. ~20-25 lines across 2-3 files. The MCP server is the agent surface — contract lies erode trust.
+
+**#15 — Migrate Next.js to Nuxt 4 → BLOCKED**
+Full frontend rewrite (33,600 lines) justified by "Nuxt has first-class Cloudflare support" — but `@cloudflare/next-on-pages` exists and hasn't been tried. The storage abstraction already decoupled src/lib/. Ship R2 provider → deploy on Next.js → hit a wall → *then* rewrite earns its cost. Pushed back on creator's issue — respectfully but firmly.
+
+**#12 — wrangler.toml and deploy.yml → BLOCKED**
+wrangler.toml already exists (template). setup-cloudflare.sh already provisions resources. What's missing is deploy.yml, but that depends on #11 (R2 provider). Without R2 provider, app crashes on any storage call on Cloudflare.
+
+**#11 — R2 StorageProvider → APPROVED p1-high (needs-architecture)**
+The keystone. Everything upstream is done (storage abstraction, factory, wrangler config, provisioning script). Everything downstream is blocked on this. Marked needs-architecture for R2's read-modify-write concurrency, Cloudflare-specific limits, and testing strategy.
+
+Insight: The Cloudflare deployment path has a clear dependency chain (#11 → #12 → try it → #15 only if needed). Issues filed in parallel obscured the sequential reality. Blocking #12 and #15 makes the critical path visible.
