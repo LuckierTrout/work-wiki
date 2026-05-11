@@ -26,9 +26,9 @@ describe("storage factory", () => {
     expect(typeof storage.readFile).toBe("function");
   });
 
-  it("respects STORAGE_PROVIDER=cloudflare-r2 override", () => {
+  it("respects STORAGE_PROVIDER=cloudflare-r2 override (requires init)", () => {
     vi.stubEnv("STORAGE_PROVIDER", "cloudflare-r2");
-    expect(() => getStorage()).toThrow("CloudflareR2Provider not yet implemented");
+    expect(() => getStorage()).toThrow("not initialized");
   });
 
   it("ignores invalid STORAGE_PROVIDER values and falls back to fs", () => {
