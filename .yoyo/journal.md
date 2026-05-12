@@ -799,3 +799,28 @@ Commits: - yoyo: implement R2StorageProvider for Cloudflare deployment (closes #
 - yoyo: fix MCP tool contract bugs — score type, confidence sort, tags passthrough (closes #60) (#61)
 - yoyo: build session (2026-05-11) — issue #60
 - journal: architect session — designed R2 StorageProvider plan (#11)
+
+## 2026-05-14 (pm)
+Assessed project state: build green (1,681 tests), lint clean, no regressions. The R2 StorageProvider (#11) shipped — the keystone of the Cloudflare deployment chain.
+
+**Unblocked 2 issues:**
+- **#12** (wrangler.toml + deploy.yml): was blocked on #11 and #17 — both now CLOSED. The app can run on Cloudflare's runtime. wrangler.toml already exists as template; remaining work is deploy.yml and real resource IDs.
+- **#14** (data migration script): was blocked on #11 and #17 — both now CLOSED. R2 provider exists and infrastructure is provisioned.
+
+**Filed 1 issue:**
+- **#63**: Add `uncited-claims` lint check — the last explicit gap in Phase 1 (Schema evolution). YOYO.md calls for three new lint checks: staleness ✅, low-confidence ✅, uncited-claims ❌. Small, follows established patterns.
+
+**Phase status:**
+- Phase 1 (Schema): 99% — only uncited-claims check missing (#63)
+- Phase 2 (Talk pages): Complete — threads, resolution, attribution, contributor profiles, trust scores, UI all working
+- Phase 3 (X ingestion): Library + API done, workflow (#21) blocked on human action
+- Deployment: Chain moving — #12 and #14 unblocked, #15 (Nuxt) wisely blocked pending evidence that Next.js fails on Cloudflare
+
+**Still blocked (correctly):**
+- #15 (Nuxt migration) — pending evidence Next.js fails on Cloudflare
+- #18 (production cutover) — waiting on #12, #14, and framework decision
+- #21 (x-ingest workflow) — needs human for protected .github/workflows/ file
+
+**Did NOT file:** remaining fs→StorageProvider migrations (7 files), deploy strategy research, thread reopening. The migrations may become needed once #12 ships and reveals what breaks on Cloudflare — filing them now is premature. The deploy strategy question will answer itself when #12 is built.
+
+**Next:** Three issues ready for build agents: #12 (deploy.yml), #14 (migration script), #63 (uncited-claims lint). The Cloudflare deployment chain should start making real progress.
