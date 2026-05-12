@@ -14,6 +14,7 @@ import {
   checkStalePages,
   checkLowConfidence,
   checkUnmigratedPages,
+  checkUncitedClaims,
   LOW_CONFIDENCE_THRESHOLD,
   STALE_VERIFICATION_DAYS,
   buildSummary,
@@ -23,6 +24,7 @@ import type { LintIssue } from "../types";
 // We use writeWikiPage / ensureDirectories to set up wiki pages on disk.
 import { writeWikiPage, updateIndex, ensureDirectories } from "../wiki";
 import { serializeFrontmatter } from "../frontmatter";
+import { serializeSources } from "../sources";
 import type { IndexEntry } from "../types";
 import { _resetStorage } from "../storage";
 
@@ -740,6 +742,94 @@ describe("checkUnmigratedPages", () => {
     // The index isn't in the listWikiPages results by convention,
     // but even if somehow it appears the INFRASTRUCTURE_FILES check guards it
     const issues = await checkUnmigratedPages();
+    expect(issues).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkUncitedClaims
+// ---------------------------------------------------------------------------
+describe("checkUncitedClaims", () => {
+  it("flags a page with no sources and no inline citations", async () => {
+    await createPageWithIndex("bare-claims", "Bare Claims", {
+      created: "2025-01-01",
+      confidence: 0.5,
+    }, "# Bare Claims\n\nThis page makes claims without any citations or sources.");
+
+    const issues = await checkUncitedClaims();
+    expect(issues).toHaveLength(1);
+    expect(issues[0].type).toBe("uncited-claims");
+    expect(issues[0].slug).toBe("bare-claims");
+    expect(issues[0].severity).toBe("warning");
+    expect(issues[0].message).toContain("no sources");
+    expect(issues[0].message).toContain("no inline citations");
+    expect(issues[0].suggestion).toBeDefined();
+    expect(issues[0].suggestion).toContain("Bare Claims");
+  });
+
+  it("does NOT flag a page with structured sources", async () => {
+    const sources = serializeSources([{
+      type: "url",
+      url: "https://example.com/article",
+      fetched: "2025-01-01",
+      triggered_by: "system",
+    }]);
+    await createPageWithIndex("sourced-page", "Sourced Page", {
+      created: "2025-01-01",
+      sources,
+    }, "# Sourced Page\n\nThis page has a source in frontmatter.");
+
+    const issues = await checkUncitedClaims();
+    expect(issues).toHaveLength(0);
+  });
+
+  it("does NOT flag a page with numbered inline citations", async () => {
+    await createPageWithIndex("numbered-cites", "Numbered Cites", {
+      created: "2025-01-01",
+    }, "# Numbered Cites\n\nThe sky is blue [1] and grass is green [2].");
+
+    const issues = await checkUncitedClaims();
+    expect(issues).toHaveLength(0);
+  });
+
+  it("does NOT flag a page with named inline citations", async () => {
+    await createPageWithIndex("named-cites", "Named Cites", {
+      created: "2025-01-01",
+    }, "# Named Cites\n\nAccording to recent research [source], this is true.");
+
+    const issues = await checkUncitedClaims();
+    expect(issues).toHaveLength(0);
+  });
+
+  it("does NOT flag a page with wikilink citations", async () => {
+    await createPageWithIndex("wikilink-cites", "Wikilink Cites", {
+      created: "2025-01-01",
+    }, "# Wikilink Cites\n\nSee [[related-topic]] for more details.");
+
+    const issues = await checkUncitedClaims();
+    expect(issues).toHaveLength(0);
+  });
+
+  it("flags multiple uncited pages", async () => {
+    await createPageWithIndex("uncited-a", "Uncited A", {
+      created: "2025-01-01",
+    }, "# Uncited A\n\nNo citations here.");
+    await createPageWithIndex("uncited-b", "Uncited B", {
+      created: "2025-01-01",
+    }, "# Uncited B\n\nNo citations here either.");
+
+    const issues = await checkUncitedClaims();
+    expect(issues).toHaveLength(2);
+    expect(issues.map((i) => i.slug).sort()).toEqual(["uncited-a", "uncited-b"]);
+  });
+
+  it("does NOT flag a page with empty sources string but inline citations", async () => {
+    await createPageWithIndex("empty-sources-with-cites", "Empty Sources With Cites", {
+      created: "2025-01-01",
+      sources: "[]",
+    }, "# Page\n\nSome fact [1] supported by inline citation.");
+
+    const issues = await checkUncitedClaims();
     expect(issues).toHaveLength(0);
   });
 });

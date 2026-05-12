@@ -6,6 +6,7 @@ import { extractWikiLinks } from "./links";
 import type { LintIssue } from "./types";
 import { logger } from "./logger";
 import { findDuplicateEntities } from "./alias-index";
+import { parseSources } from "./sources";
 
 /** All known lint check types. */
 export const ALL_CHECK_TYPES: LintIssue["type"][] = [
@@ -20,6 +21,7 @@ export const ALL_CHECK_TYPES: LintIssue["type"][] = [
   "low-confidence",
   "unmigrated-page",
   "duplicate-entity",
+  "uncited-claims",
 ];
 
 // Files that are part of the wiki infrastructure, not content pages.
@@ -707,5 +709,58 @@ export async function checkDuplicateEntities(): Promise<LintIssue[]> {
     });
   }
 
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
+// Uncited-claims check — flags pages with no sources and no inline citations.
+// ---------------------------------------------------------------------------
+
+/**
+ * Regex that matches common inline citation patterns in wiki content:
+ *  - `[1]`, `[2]`, etc. (numbered references)
+ *  - `[source]`, `[citation]`, etc. (named references)
+ *  - `[[page-name]]` (wikilink citations)
+ */
+const INLINE_CITATION_RE = /\[\d+\]|\[[a-zA-Z][a-zA-Z0-9_-]*\]|\[\[[^\]]+\]\]/;
+
+/**
+ * Check for uncited claims — pages that have an empty `sources` array AND no
+ * inline citation markers in their body. These pages have no provenance trail
+ * and cannot be trusted without further verification.
+ *
+ * A page is considered cited if it has:
+ *  - At least one entry in its structured `sources[]` frontmatter field, OR
+ *  - At least one inline citation marker in the body text (e.g. `[1]`, `[source]`, `[[link]]`)
+ */
+export async function checkUncitedClaims(): Promise<LintIssue[]> {
+  const pages = await listWikiPages();
+  const issues: LintIssue[] = [];
+
+  for (const entry of pages) {
+    const page = await readWikiPageWithFrontmatter(entry.slug);
+    if (!page) continue;
+
+    // Check structured sources from frontmatter
+    const sourcesRaw = page.frontmatter.sources;
+    const sources = parseSources(sourcesRaw as string | string[] | undefined);
+    const hasSources = sources.length > 0;
+
+    if (hasSources) continue;
+
+    // Check for inline citation markers in the body
+    const hasInlineCitations = INLINE_CITATION_RE.test(page.body);
+
+    if (hasInlineCitations) continue;
+
+    // Neither structured sources nor inline citations — flag it
+    issues.push({
+      type: "uncited-claims",
+      slug: entry.slug,
+      message: `Page has no sources and no inline citations — claims are unverifiable`,
+      severity: "warning",
+      suggestion: `Ingest a source URL about "${entry.title}" to add provenance, or add inline citations manually`,
+    });
+  }
   return issues;
 }
