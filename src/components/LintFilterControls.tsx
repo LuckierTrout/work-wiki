@@ -28,6 +28,7 @@ const checkTypeLabels: Record<LintIssue["type"], string> = {
   "low-confidence": "Low confidence",
   "unmigrated-page": "Unmigrated pages",
   "duplicate-entity": "Duplicate entities",
+  "uncited-claims": "Uncited claims",
 };
 
 const severityFilterLabels: Record<SeverityFilter, string> = {

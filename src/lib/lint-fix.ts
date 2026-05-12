@@ -580,6 +580,12 @@ export async function fixLintIssue(
       throw new FixValidationError(
         "Low-confidence pages cannot be auto-fixed. Ingest additional sources about this topic to improve confidence.",
       );
+    case "uncited-claims":
+      // Full auto-fix would require LLM-driven citation generation — out of scope.
+      // Users should ingest a source URL or add inline citations manually.
+      throw new FixValidationError(
+        "Uncited-claims pages cannot be auto-fixed. Ingest a source URL for this topic or add inline citations manually.",
+      );
     default:
       throw new FixValidationError(
         "Auto-fix not supported for this issue type",
