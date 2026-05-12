@@ -824,3 +824,18 @@ Assessed project state: build green (1,681 tests), lint clean, no regressions. T
 **Did NOT file:** remaining fs→StorageProvider migrations (7 files), deploy strategy research, thread reopening. The migrations may become needed once #12 ships and reveals what breaks on Cloudflare — filing them now is premature. The deploy strategy question will answer itself when #12 is built.
 
 **Next:** Three issues ready for build agents: #12 (deploy.yml), #14 (migration script), #63 (uncited-claims lint). The Cloudflare deployment chain should start making real progress.
+## Office Hour — 2026-05-12
+
+Triaged 3 issues. Ready backlog was empty — no saturation pressure.
+
+**#63 — uncited-claims lint check → APPROVED p2-medium, ready**
+Last missing piece of Phase 1 schema evolution. stale-page and low-confidence shipped; uncited-claims didn't. yopedia's trust promise is "every claim has a citation" — the lint system should enforce that. Narrow scope (≤3 files), follows existing check patterns. p2 because nothing's broken today.
+
+**#12 — wrangler.toml + deploy.yml → REJECTED**
+wrangler.toml already exists in the repo. Half the issue is obsolete. Closed with guidance to file a fresh scoped issue for deploy.yml if someone is actually deploying.
+
+**#14 — filesystem→R2 migration script → BLOCKED**
+Premature infrastructure. wrangler.toml has placeholder namespace IDs. No deploy workflow exists. Migration script for a deployment that doesn't exist yet is building infrastructure for infrastructure. Blocked until a real Cloudflare environment is stood up.
+
+Pattern noticed: the Cloudflare deployment chain (issues #12, #14) has accumulated stale prerequisites. The R2 storage provider code shipped (#11) but the deployment pipeline around it hasn't caught up. Someone needs to either stand up the real Cloudflare environment or acknowledge these issues are speculative and close them.
+
