@@ -51,7 +51,7 @@ export async function GET() {
     return new Response(zipped.buffer as ArrayBuffer, {
       headers: {
         "Content-Type": "application/zip",
-        "Content-Disposition": 'attachment; filename="llm-wiki-vault.zip"',
+        "Content-Disposition": 'attachment; filename="yopedia-vault.zip"',
       },
     });
   } catch (err) {

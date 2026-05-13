@@ -4,9 +4,9 @@ import { ClientProviders } from "@/components/ClientProviders";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "LLM Wiki",
+  title: "yopedia",
   description:
-    "Build a personal knowledge base using LLMs — ingest sources, query your wiki, and browse interlinked pages.",
+    "A shared second brain for humans and agents — ingest sources, query your wiki, and browse interlinked pages.",
 };
 
 const themeScript = `

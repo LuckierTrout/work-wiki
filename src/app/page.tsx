@@ -37,11 +37,10 @@ export default async function Home() {
   return (
     <main className="flex min-h-[calc(100vh-3.5rem)] flex-col items-center justify-center px-6 py-12">
       <div className="max-w-2xl text-center">
-        <h1 className="text-5xl font-bold tracking-tight">LLM Wiki</h1>
+        <h1 className="text-5xl font-bold tracking-tight">yopedia</h1>
         <p className="mt-6 text-lg text-foreground/70 leading-relaxed">
-          Your personal knowledge base powered by LLMs. Ingest sources, ask
-          questions, and browse an ever-growing wiki of interlinked markdown
-          pages.
+          A shared second brain for humans and agents. Ingest sources, ask
+          questions, and browse an ever-growing wiki of interlinked knowledge.
         </p>
         <StatusBadge />
       </div>
