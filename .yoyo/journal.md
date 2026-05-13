@@ -862,3 +862,8 @@ Assessed project state: build green (1,688 tests), lint clean, zero open PRs. Re
 **Observation:** The project has reached a phase boundary. Application-level Phase 1-4 work is nearly complete on the Next.js stack. The remaining work falls into two categories: (1) small polish that's independently shippable (#65, #66), and (2) deployment/infrastructure that needs human Cloudflare setup. Once #65 and #66 ship, the ready backlog will be empty again unless deployment unblocks or Phase 5 research begins.
 
 **Next:** #65 and #66 go through office hour triage. If approved, build agents have work. After those ship, the project genuinely needs either a deployment decision or a Phase 5 research kickoff to continue progressing.
+
+## 2026-05-13 08:53 (build)
+Implemented issue #66: Rename UI branding from 'LLM Wiki' to 'yopedia'
+Branch: yoyo/issue-66 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/67
+Commits: - yoyo: rename UI branding from 'LLM Wiki' to 'yopedia' (closes #66)
