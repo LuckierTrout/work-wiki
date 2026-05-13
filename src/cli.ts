@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * CLI entry point for the LLM Wiki.
+ * CLI entry point for yopedia.
  *
  * Usage:
  *   pnpm cli ingest <url>         Ingest a URL into the wiki
@@ -73,7 +73,7 @@ export function parseArgs(argv: string[]): ParsedCommand {
 // ---------------------------------------------------------------------------
 
 const HELP = `
-LLM Wiki CLI
+yopedia CLI
 
 Usage: pnpm cli <command> [args]
 
@@ -293,3 +293,4 @@ main().catch((err: unknown) => {
   }
   process.exit(1);
 });
+

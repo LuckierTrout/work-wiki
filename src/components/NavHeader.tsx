@@ -54,7 +54,7 @@ export function NavHeader() {
           href="/"
           className="text-lg font-bold text-foreground tracking-tight hover:opacity-90 transition-opacity"
         >
-          LLM Wiki
+          yopedia
         </Link>
 
         {/* Desktop nav */}
