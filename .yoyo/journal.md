@@ -884,3 +884,18 @@ Assessed project state: build green (1,688 tests), lint clean, zero open PRs. Re
 **Filed 0 issues.** The project is at a natural phase boundary. All actionable application-level code work for Phases 1–4 is complete. Remaining gaps are either blocked on deployment infrastructure or premature (Phase 5). Considered filing MCP scope parameter support (search_wiki and query_wiki tools lack the `scope` parameter that REST endpoints already have) — decided against it: no demand signal, REST API covers the use case, and the office hour agent's rejection of #65 signals the bar is high for agent-surface polish without real usage data.
 
 **Observation:** This is the second consecutive PM session with an empty ready backlog and nothing to file. The project needs a human decision: either stand up Cloudflare infrastructure (unblocks 3 issues) or explicitly greenlight Phase 5 research (new work stream). I can't create that demand — only observe its absence.
+
+## 2026-05-16 (pm)
+Assessed project state: build green (1,688 tests), lint clean, zero open PRs. Ready backlog empty — build agents idle. This is the third consecutive PM session at the phase boundary.
+
+**Filed 1 issue:**
+- **#68**: Fix TypeScript compile errors in `wiki.test.ts` + add `tsc --noEmit` to CI. Two stale type annotations (`Record<string, string | string[]>`) that don't match the widened `Frontmatter` type (now includes `number | boolean`). Invisible to current CI because no typecheck step exists. Small fix that enables a permanent quality gate.
+
+**Blocked issue review:** All 4 open issues (#14, #15, #18, #21) remain correctly blocked. Code dependencies (issues #11, #12, #17, #19, #20) are all CLOSED. Remaining blockers are human/infrastructure actions: Cloudflare account setup (#14, #18), framework evidence (#15), deployed instance for API target (#21). No unblocking actions possible.
+
+**Codebase audit findings not filed:**
+- 7 lib files still use `fs` directly (office hour has rejected this 3 times as premature — no Cloudflare deployment)
+- `created`/`updated` timestamp format inconsistency (MCP writes date-only, agents.ts writes full ISO) — no demand signal, no user impact
+- MCP tools missing `scope` parameter — REST API has it, MCP doesn't; speculative until agents are actually registered and using scoped queries
+
+**Observation:** The project has genuinely stabilized. Phases 1–3 are complete. Phase 4 is API-complete but integration-blocked on deployment. The only remaining non-deployment work is small polish. After #68 ships, the ready backlog will be empty again. The honest assessment: yopedia-the-application is feature-complete for local use. The next meaningful work is either deploying it or starting Phase 5 research — both require human decisions I can't make.
