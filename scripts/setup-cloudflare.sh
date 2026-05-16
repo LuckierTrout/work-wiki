@@ -32,6 +32,67 @@ ok()    { echo -e "${GREEN}✓${NC}  $*"; }
 warn()  { echo -e "${YELLOW}⚠${NC}  $*"; }
 fail()  { echo -e "${RED}✗${NC}  $*"; exit 1; }
 
+extract_kv_id_from_create_output() {
+  sed -n 's/.*id = "\([^"]*\)".*/\1/p' | head -n 1
+}
+
+lookup_kv_id() {
+  local title="$1"
+  local output
+
+  output=$($WRANGLER kv namespace list 2>/dev/null) || return 0
+  printf '%s' "$output" | node -e '
+const title = process.argv[1];
+let input = "";
+process.stdin.on("data", chunk => { input += chunk; });
+process.stdin.on("end", () => {
+  const start = input.indexOf("[");
+  const end = input.lastIndexOf("]");
+  if (start === -1 || end === -1 || end < start) process.exit(0);
+  const namespaces = JSON.parse(input.slice(start, end + 1));
+  const namespace = namespaces.find(item => item.title === title);
+  if (namespace?.id) console.log(namespace.id);
+});
+' "$title"
+}
+
+create_kv_namespace() {
+  local title="$1"
+  KV_RESULT_ID=""
+
+  info "Creating KV namespace: $title ..."
+
+  local existing_id
+  existing_id="$(lookup_kv_id "$title" || true)"
+  if [[ -n "$existing_id" ]]; then
+    KV_RESULT_ID="$existing_id"
+    ok "KV namespace $title already exists: $KV_RESULT_ID"
+    echo ""
+    return
+  fi
+
+  local output
+  output=$($WRANGLER kv namespace create "$title" 2>&1) || true
+  echo "$output"
+
+  KV_RESULT_ID="$(echo "$output" | extract_kv_id_from_create_output || true)"
+  if [[ -n "$KV_RESULT_ID" ]]; then
+    ok "KV namespace $title created: $KV_RESULT_ID"
+  elif echo "$output" | grep -qi "already exists"; then
+    KV_RESULT_ID="$(lookup_kv_id "$title" || true)"
+    if [[ -n "$KV_RESULT_ID" ]]; then
+      ok "KV namespace $title already exists: $KV_RESULT_ID"
+    else
+      warn "KV namespace $title already exists, but its ID could not be found."
+      info "Run 'npx wrangler kv namespace list' to find the ID."
+    fi
+  else
+    warn "Could not extract KV namespace ID for $title from output."
+    info "Run 'npx wrangler kv namespace list' to find the ID."
+  fi
+  echo ""
+}
+
 # ---------- Pre-flight checks ----------
 
 if ! command -v npx &>/dev/null; then
@@ -72,39 +133,11 @@ echo ""
 KV_CONFIG_ID=""
 KV_SEARCH_ID=""
 
-info "Creating KV namespace: YOPEDIA_CONFIG ..."
-KV_CONFIG_OUTPUT=$($WRANGLER kv namespace create YOPEDIA_CONFIG 2>&1) || true
-echo "$KV_CONFIG_OUTPUT"
+create_kv_namespace "YOPEDIA_CONFIG"
+KV_CONFIG_ID="$KV_RESULT_ID"
 
-# Extract namespace ID from output like: id = "abc123..."
-KV_CONFIG_ID=$(echo "$KV_CONFIG_OUTPUT" | grep -oP 'id\s*=\s*"\K[^"]+' || true)
-if [[ -n "$KV_CONFIG_ID" ]]; then
-  ok "KV namespace YOPEDIA_CONFIG created: $KV_CONFIG_ID"
-elif echo "$KV_CONFIG_OUTPUT" | grep -qi "already exists"; then
-  warn "KV namespace YOPEDIA_CONFIG already exists."
-  info "Run 'npx wrangler kv namespace list' to find the ID."
-else
-  # Try to extract ID even from "already exists" responses
-  warn "Could not extract KV namespace ID for YOPEDIA_CONFIG from output."
-  info "Run 'npx wrangler kv namespace list' to find the ID."
-fi
-echo ""
-
-info "Creating KV namespace: YOPEDIA_SEARCH ..."
-KV_SEARCH_OUTPUT=$($WRANGLER kv namespace create YOPEDIA_SEARCH 2>&1) || true
-echo "$KV_SEARCH_OUTPUT"
-
-KV_SEARCH_ID=$(echo "$KV_SEARCH_OUTPUT" | grep -oP 'id\s*=\s*"\K[^"]+' || true)
-if [[ -n "$KV_SEARCH_ID" ]]; then
-  ok "KV namespace YOPEDIA_SEARCH created: $KV_SEARCH_ID"
-elif echo "$KV_SEARCH_OUTPUT" | grep -qi "already exists"; then
-  warn "KV namespace YOPEDIA_SEARCH already exists."
-  info "Run 'npx wrangler kv namespace list' to find the ID."
-else
-  warn "Could not extract KV namespace ID for YOPEDIA_SEARCH from output."
-  info "Run 'npx wrangler kv namespace list' to find the ID."
-fi
-echo ""
+create_kv_namespace "YOPEDIA_SEARCH"
+KV_SEARCH_ID="$KV_RESULT_ID"
 
 # ---------- 3. Vectorize Index ----------
 
