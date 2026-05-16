@@ -1,0 +1,59 @@
+name: Cloudflare Infra Setup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Cloudflare secrets are configured
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+
+      - name: Provision Cloudflare resources
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: ./scripts/setup-cloudflare.sh
+
+      - name: Check generated wrangler.toml
+        run: |
+          set -euo pipefail
+          if grep -q '<YOPEDIA_.*_NAMESPACE_ID>' wrangler.toml; then
+            echo "::error::wrangler.toml still contains placeholder namespace IDs."
+            exit 1
+          fi
+
+      - name: Upload generated wrangler.toml
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflare-wrangler-toml
+          path: wrangler.toml
+          if-no-files-found: error
