@@ -13,6 +13,8 @@ import {
   handleQueryWiki,
   handleAgentContext,
   handleSeedAgent,
+  handleLintWiki,
+  handleFixLintIssue,
 } from "../../mcp";
 import { _resetStorage } from "../storage";
 import { _resetConfigCache } from "../config";
@@ -756,5 +758,200 @@ describe("query_wiki", () => {
     const result = await handleQueryWiki({ question: "What is AI?" });
     // Should work without error — prose is the default
     expect(result).toHaveProperty("answer");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lint_wiki tests
+// ---------------------------------------------------------------------------
+
+describe("lint_wiki", () => {
+  it("returns empty issues for a clean wiki", async () => {
+    await writeTestPage(
+      "test-page",
+      '---\ntags: [test]\nconfidence: 0.8\nexpiry: 2099-01-01\ncreated: 2025-01-01\nupdated: 2025-01-01\nauthors: [tester]\nsources: \'[{"type":"url","url":"https://example.com","fetched":"2025-01-01","triggered_by":"tester"}]\'\n---\n# Test Page\n\nSome content here.',
+    );
+    await writeIndex([
+      { title: "Test Page", slug: "test-page", summary: "Some content here." },
+    ]);
+
+    const result = await handleLintWiki({});
+    expect(result).toHaveProperty("issues");
+    expect(result).toHaveProperty("summary");
+    expect(result).toHaveProperty("checkedAt");
+    expect(Array.isArray(result.issues)).toBe(true);
+  });
+
+  it("detects orphan pages", async () => {
+    // Page exists on disk but not in index
+    await writeTestPage(
+      "orphan-page",
+      "---\ntags: [test]\n---\n# Orphan Page\n\nThis page is not in the index.",
+    );
+    await writeIndex([]); // empty index
+
+    const result = await handleLintWiki({ checks: ["orphan-page"] });
+    expect(result.issues.length).toBeGreaterThanOrEqual(1);
+    const orphanIssues = result.issues.filter((i) => i.type === "orphan-page");
+    expect(orphanIssues.length).toBe(1);
+    expect(orphanIssues[0].slug).toBe("orphan-page");
+  });
+
+  it("detects stale index entries", async () => {
+    // Index references a page that doesn't exist on disk
+    await writeIndex([
+      { title: "Ghost Page", slug: "ghost-page", summary: "Not on disk." },
+    ]);
+
+    const result = await handleLintWiki({ checks: ["stale-index"] });
+    const staleIssues = result.issues.filter((i) => i.type === "stale-index");
+    expect(staleIssues.length).toBe(1);
+    expect(staleIssues[0].slug).toBe("ghost-page");
+  });
+
+  it("scopes checks via the checks parameter", async () => {
+    await writeTestPage(
+      "lonely-page",
+      "---\ntags: [test]\n---\n# Lonely\n\nNo index entry.",
+    );
+    await writeIndex([]);
+
+    // Only run stale-index — should not find orphan-page issues
+    const result = await handleLintWiki({ checks: ["stale-index"] });
+    const orphanIssues = result.issues.filter((i) => i.type === "orphan-page");
+    expect(orphanIssues.length).toBe(0);
+  });
+
+  it("filters by minSeverity", async () => {
+    // Create a setup that produces info-level issues (orphan is warning)
+    await writeTestPage(
+      "orphan-sev",
+      "---\ntags: [test]\n---\n# Orphan\n\nOrphan page.",
+    );
+    await writeIndex([]);
+
+    // With minSeverity=error, warning-level orphan issues should be excluded
+    const result = await handleLintWiki({
+      checks: ["orphan-page"],
+      minSeverity: "error",
+    });
+    expect(result.issues.length).toBe(0);
+  });
+
+  it("rejects invalid check types", async () => {
+    await expect(
+      handleLintWiki({ checks: ["nonexistent-check"] }),
+    ).rejects.toThrow("Invalid check type");
+  });
+
+  it("rejects invalid minSeverity", async () => {
+    await expect(
+      handleLintWiki({ minSeverity: "extreme" }),
+    ).rejects.toThrow("Invalid minSeverity");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fix_lint_issue tests
+// ---------------------------------------------------------------------------
+
+describe("fix_lint_issue", () => {
+  it("fixes an orphan page by adding it to the index", async () => {
+    await writeTestPage(
+      "orphan-fix",
+      "---\ntags: [test]\n---\n# Orphan Fix\n\nThis page should be added to the index.",
+    );
+    await writeIndex([]);
+
+    const result = await handleFixLintIssue({
+      type: "orphan-page",
+      slug: "orphan-fix",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.slug).toBe("orphan-fix");
+    expect(result.message).toContain("orphan-fix");
+  });
+
+  it("fixes a stale index entry by removing it", async () => {
+    await writeIndex([
+      { title: "Stale Entry", slug: "stale-entry", summary: "Gone." },
+    ]);
+
+    const result = await handleFixLintIssue({
+      type: "stale-index",
+      slug: "stale-entry",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.slug).toBe("stale-entry");
+  });
+
+  it("fixes an empty page by deleting it", async () => {
+    await writeTestPage("empty-page", "---\ntags: []\n---\n");
+    await writeIndex([
+      { title: "Empty Page", slug: "empty-page", summary: "" },
+    ]);
+
+    const result = await handleFixLintIssue({
+      type: "empty-page",
+      slug: "empty-page",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.slug).toBe("empty-page");
+  });
+
+  it("throws for page not found", async () => {
+    await writeIndex([]);
+    await expect(
+      handleFixLintIssue({
+        type: "orphan-page",
+        slug: "nonexistent-page",
+      }),
+    ).rejects.toThrow("Page not found");
+  });
+
+  it("throws for unsupported fix type", async () => {
+    await expect(
+      handleFixLintIssue({
+        type: "made-up-type",
+        slug: "some-page",
+      }),
+    ).rejects.toThrow("not supported");
+  });
+
+  it("throws for low-confidence (not auto-fixable)", async () => {
+    await expect(
+      handleFixLintIssue({
+        type: "low-confidence",
+        slug: "some-page",
+      }),
+    ).rejects.toThrow("cannot be auto-fixed");
+  });
+
+  it("passes target parameter for cross-ref fixes", async () => {
+    // Set up source and target pages
+    await writeTestPage(
+      "source-page",
+      "---\ntags: [test]\n---\n# Source Page\n\nSome content about a topic.",
+    );
+    await writeTestPage(
+      "target-page",
+      "---\ntags: [test]\n---\n# Target Page\n\nRelated content.",
+    );
+    await writeIndex([
+      { title: "Source Page", slug: "source-page", summary: "Source." },
+      { title: "Target Page", slug: "target-page", summary: "Target." },
+    ]);
+
+    const result = await handleFixLintIssue({
+      type: "missing-crossref",
+      slug: "source-page",
+      target: "target-page",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.slug).toBe("source-page");
   });
 });
