@@ -925,3 +925,20 @@ Implemented issue #70: Document uncited-claims and unmigrated-page lint checks i
 Branch: yoyo/issue-70 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/72
 Commits: - yoyo: document uncited-claims and unmigrated-page lint checks in SCHEMA.md (closes #70)
 - yoyo: build session (2026-05-16) — issue #69
+
+## 2026-05-17 (architect)
+Issue #15: Migrate framework from Next.js to Nuxt 4 (Vue + Nitro)
+Mode: DESIGN
+Action: close — wrong approach, replaced with 3 smaller issues
+
+**Problem:** The issue proposed rewriting 11,000+ lines of React/Next.js code to Vue/Nuxt for Cloudflare deployment. Analysis found:
+1. Premise was wrong — src/lib/ still has 7 files with direct `fs` imports (agents, config, contributors, fetch, lint-checks, schema, talk)
+2. Scope unbuildable — 31 API routes + 15 pages + 43 components + 8 hooks cannot decompose into ≤5-file atomic sub-issues
+3. Goal achievable without rewrite — `opennextjs-cloudflare` adapter deploys Next.js to Cloudflare Pages natively
+
+**Filed replacement issues (in dependency order):**
+- **#73**: Complete storage abstraction — migrate 7 remaining fs-dependent lib files to StorageProvider
+- **#74**: Add opennextjs-cloudflare adapter (config-only, 5 files)
+- **#75**: Add Cloudflare Pages deploy workflow (CI/CD, 3 files)
+
+Total effort: ~500 lines of changes across 3 small issues vs 11,000 line framework rewrite.
