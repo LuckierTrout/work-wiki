@@ -13,6 +13,8 @@
  *   query_wiki     — Ask the wiki a question with LLM synthesis
  *   agent_context  — Get an agent's full context by agent ID
  *   seed_agent     — Register an agent and create its wiki pages
+ *   lint_wiki      — Run quality checks on the wiki
+ *   fix_lint_issue — Auto-fix a lint issue found by lint_wiki
  *
  * Usage:
  *   pnpm mcp          # starts the stdio server
@@ -38,9 +40,11 @@ import { query, type QueryFormat } from "./lib/query";
 import { isUrl } from "./lib/fetch";
 import { getAgent, seedAgent } from "./lib/agents";
 import type { SeedAgentSection } from "./lib/agents";
-import type { AgentProfile, IngestResult, QueryResult } from "./lib/types";
+import type { AgentProfile, IngestResult, QueryResult, LintResult, LintIssue } from "./lib/types";
 import type { DeletePageResult } from "./lib/lifecycle";
 import type { ContentSearchResult } from "./lib/search";
+import { lint, ALL_CHECK_TYPES } from "./lib/lint";
+import { fixLintIssue, type FixResult } from "./lib/lint-fix";
 
 // ---------------------------------------------------------------------------
 // Tool handler logic — exported for direct testing without transport
@@ -378,6 +382,49 @@ export async function handleSeedAgent(args: {
     description: args.description,
     sections,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Lint handlers
+// ---------------------------------------------------------------------------
+
+const VALID_CHECK_TYPES = new Set<string>(ALL_CHECK_TYPES);
+
+export async function handleLintWiki(args: {
+  checks?: string[] | undefined;
+  minSeverity?: string | undefined;
+}): Promise<LintResult> {
+  // Validate check types if provided
+  if (args.checks) {
+    const invalid = args.checks.filter((c) => !VALID_CHECK_TYPES.has(c));
+    if (invalid.length > 0) {
+      throw new Error(
+        `Invalid check type(s): ${invalid.join(", ")}. Valid types: ${ALL_CHECK_TYPES.join(", ")}`,
+      );
+    }
+  }
+
+  // Validate minSeverity if provided
+  const validSeverities = new Set(["error", "warning", "info"]);
+  if (args.minSeverity !== undefined && !validSeverities.has(args.minSeverity)) {
+    throw new Error(
+      `Invalid minSeverity: "${args.minSeverity}". Valid values: error, warning, info`,
+    );
+  }
+
+  return lint({
+    ...(args.checks ? { checks: args.checks as LintIssue["type"][] } : {}),
+    ...(args.minSeverity ? { minSeverity: args.minSeverity as LintIssue["severity"] } : {}),
+  });
+}
+
+export async function handleFixLintIssue(args: {
+  type: string;
+  slug: string;
+  target?: string | undefined;
+  message?: string | undefined;
+}): Promise<FixResult> {
+  return fixLintIssue(args.type, args.slug, args.target, args.message);
 }
 
 // ---------------------------------------------------------------------------
@@ -720,6 +767,94 @@ export function createMcpServer(): McpServer {
   }, async (args) => {
     try {
       const result = await handleSeedAgent(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // lint_wiki — Run quality checks on the wiki
+  server.registerTool("lint_wiki", {
+    description:
+      "Run quality checks on the yopedia wiki. Returns an array of issues with type, severity, slug, and message. Optionally scope to specific check types or minimum severity.",
+    inputSchema: {
+      checks: z
+        .array(z.string())
+        .optional()
+        .describe(
+          `Check types to run (default: all). Valid: ${ALL_CHECK_TYPES.join(", ")}`,
+        ),
+      minSeverity: z
+        .enum(["error", "warning", "info"])
+        .optional()
+        .describe("Minimum severity to include (default: info)"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleLintWiki(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // fix_lint_issue — Auto-fix a lint issue
+  server.registerTool("fix_lint_issue", {
+    description:
+      "Auto-fix a lint issue found by lint_wiki. Takes the issue type, slug, and optional target/message. Not all issue types are auto-fixable.",
+    inputSchema: {
+      type: z.string().describe("Lint issue type (e.g. 'orphan-page', 'stale-index', 'empty-page')"),
+      slug: z.string().describe("Slug of the affected page"),
+      target: z
+        .string()
+        .optional()
+        .describe("Target slug for cross-ref, contradiction, broken-link, and duplicate-entity fixes"),
+      message: z
+        .string()
+        .optional()
+        .describe("Message context for contradiction or missing-concept-page fixes"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleFixLintIssue(args);
       return {
         content: [
           {
