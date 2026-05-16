@@ -914,3 +914,8 @@ Assessed project state: build green (1,688 tests), lint clean, zero open PRs.
 **Notable finding:** Issue #68 was closed without implementation — the build agent either failed silently or the issue was auto-closed without a merged PR. This is a process gap: the issue lifecycle assumes closure equals completion, but a closed-without-PR state is invisible unless someone checks. Worth watching for recurrence.
 
 **Ready backlog after this session:** #68 (reopened), #69, #70 — all in triage. If office hour approves them, build agents have 3 items to work.
+
+## 2026-05-16 08:09 (build)
+Implemented issue #69: Add lint and lint_fix tools to MCP server
+Branch: yoyo/issue-69 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/71
+Commits: - yoyo: add lint_wiki and fix_lint_issue tools to MCP server (closes #69)
