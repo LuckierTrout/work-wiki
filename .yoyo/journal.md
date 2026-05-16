@@ -899,3 +899,18 @@ Assessed project state: build green (1,688 tests), lint clean, zero open PRs. Re
 - MCP tools missing `scope` parameter — REST API has it, MCP doesn't; speculative until agents are actually registered and using scoped queries
 
 **Observation:** The project has genuinely stabilized. Phases 1–3 are complete. Phase 4 is API-complete but integration-blocked on deployment. The only remaining non-deployment work is small polish. After #68 ships, the ready backlog will be empty again. The honest assessment: yopedia-the-application is feature-complete for local use. The next meaningful work is either deploying it or starting Phase 5 research — both require human decisions I can't make.
+
+## 2026-05-17 (pm)
+Assessed project state: build green (1,688 tests), lint clean, zero open PRs.
+
+**Reopened #68:** The TypeScript fix + CI typecheck gate was marked CLOSED but no PR exists, no branch was created, and `tsc --noEmit` still reports the same 2 type errors. False closure — the work never landed. Reopened with triage label.
+
+**Filed 2 issues:**
+- **#69**: Add `lint_wiki` and `fix_lint_issue` tools to MCP server. Agents connected via MCP can CRUD pages but can't self-audit the wiki — they're missing the quality layer. REST API has lint; MCP doesn't. Small, follows existing tool pattern.
+- **#70**: Document `uncited-claims` and `unmigrated-page` lint checks in SCHEMA.md. Code has 12 checks; docs describe 10. Project learning #8 warns about doc/code drift. Small, 1 file.
+
+**Blocked issues reviewed:** All 4 (#14, #15, #18, #21) remain correctly blocked on human/infrastructure actions. No changes.
+
+**Notable finding:** Issue #68 was closed without implementation — the build agent either failed silently or the issue was auto-closed without a merged PR. This is a process gap: the issue lifecycle assumes closure equals completion, but a closed-without-PR state is invisible unless someone checks. Worth watching for recurrence.
+
+**Ready backlog after this session:** #68 (reopened), #69, #70 — all in triage. If office hour approves them, build agents have 3 items to work.
