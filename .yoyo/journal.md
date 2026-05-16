@@ -919,3 +919,9 @@ Assessed project state: build green (1,688 tests), lint clean, zero open PRs.
 Implemented issue #69: Add lint and lint_fix tools to MCP server
 Branch: yoyo/issue-69 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/71
 Commits: - yoyo: add lint_wiki and fix_lint_issue tools to MCP server (closes #69)
+
+## 2026-05-16 08:13 (build)
+Implemented issue #70: Document uncited-claims and unmigrated-page lint checks in SCHEMA.md
+Branch: yoyo/issue-70 | PR: https://github.com/yologdev/karpathy-llm-wiki/pull/72
+Commits: - yoyo: document uncited-claims and unmigrated-page lint checks in SCHEMA.md (closes #70)
+- yoyo: build session (2026-05-16) — issue #69
