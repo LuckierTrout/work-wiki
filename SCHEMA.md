@@ -566,6 +566,14 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
   aliases, suggesting they may be about the same concept. The `target` field
   contains the slug of the other page. No auto-fix — requires human judgment
   to merge pages and update aliases.
+- **`uncited-claims`** (warning) — page has no structured sources in
+  frontmatter and no inline citation markers in the body, meaning its claims
+  are unsupported. No auto-fix — requires ingesting a source URL for the
+  topic or adding inline citations manually.
+- **`unmigrated-page`** (info) — page is missing all three core yopedia
+  frontmatter fields (`confidence`, `expiry`, `authors`), indicating it
+  predates the schema migration. Auto-fix: add sensible defaults
+  (confidence 0.5, expiry 90 days out, authors `["system"]`, etc.).
 
 ## Provider configuration
 
@@ -597,17 +605,21 @@ sessions should pick from this list:
   via RRF. Batch rebuild of the full vector index is available via the Settings
   page (`/api/settings/rebuild-embeddings`).
   Anthropic-only users see no regression (pure BM25 fallback).
-- Lint auto-fix handles eight of nine checks (`orphan-page`, `stale-index`,
+- Lint auto-fix handles nine of twelve checks (`orphan-page`, `stale-index`,
   `empty-page`, `broken-link`, `missing-crossref`, `contradiction`,
-  `missing-concept-page`, `stale-page`) via `POST /api/lint/fix`.
+  `missing-concept-page`, `stale-page`, `unmigrated-page`) via
+  `POST /api/lint/fix`.
   The `contradiction` fix uses the LLM to rewrite the affected page.
   The `missing-concept-page` fix generates a stub page via the LLM.
   The `broken-link` fix removes broken links from the source page.
   The `stale-page` fix bumps the expiry date forward by 90 days and
   refreshes `valid_from` to today.
-  The sole exception is `low-confidence`, which has no auto-fix by design —
-  raising confidence requires ingesting additional sources, not rewriting
-  what's already there.
+  The `unmigrated-page` fix adds sensible yopedia defaults (confidence 0.5,
+  expiry 90 days out, authors `["system"]`).
+  The three exceptions without auto-fix are: `low-confidence` (requires
+  ingesting additional sources), `duplicate-entity` (requires human judgment
+  to merge), and `uncited-claims` (requires adding citations or ingesting
+  sources).
 - Long documents are chunked at ingest time (12K chars per chunk ≈ 3K
   tokens) so they fit within provider context windows. Token counting is
   character-based (not tokenizer-exact), which is conservative but not
