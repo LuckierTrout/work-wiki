@@ -1,4 +1,6 @@
-import { readFile } from "fs/promises";
+import path from "path";
+import { getStorage } from "./storage";
+import { getDataDir } from "./paths";
 import { isEnoent } from "./errors";
 import { logger } from "./logger";
 
@@ -20,7 +22,7 @@ function extractSection(schema: string, heading: string): string {
 }
 
 /**
- * Read SCHEMA.md from disk.
+ * Read SCHEMA.md via the storage provider.
  *
  * Returns the full file content, or empty string if SCHEMA.md is missing.
  * Accepts an optional `schemaPath` override for tests; defaults to
@@ -29,7 +31,8 @@ function extractSection(schema: string, heading: string): string {
 async function readSchema(schemaPath?: string): Promise<string> {
   try {
     const resolved = schemaPath ?? `${process.cwd()}/SCHEMA.md`;
-    return await readFile(resolved, "utf-8");
+    const rel = path.relative(getDataDir(), resolved);
+    return await getStorage().readFile(rel);
   } catch (err) {
     if (!isEnoent(err)) {
       logger.warn("schema", "read SCHEMA.md failed:", err);
