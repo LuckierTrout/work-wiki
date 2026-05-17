@@ -152,7 +152,7 @@ discuss/             # talk pages for conflict resolution (future)
 
 ## How yoyo Works Here
 
-Five independent agents communicate through GitHub Issues. Each has one job,
+Six independent agents communicate through GitHub Issues. Each has one job,
 runs on its own schedule, and leaves a visible trail. Multiple build agents
 can run in parallel on different issues.
 
@@ -172,14 +172,29 @@ can run in parallel on different issues.
   Size Estimate
 - Labels: `agent-self` + `triage` + type (feature/bug/refactor/docs)
 - Closes stale or superseded issues
+- When blocking an issue or filing a dependent issue, adds blocker metadata
+  using the format in "Blocker Bookkeeping" below
 
-**3. Office Hour Agent** (daily 7am UTC + on issue open via `office-hour.yml`):
+**3. Office Hour Agent** (daily 7am UTC + issue open/close/reopen via `office-hour.yml`):
 - Triages all `triage` issues: groom → `ready`, reject → close, or → `blocked`
 - Adds priority label (p0–p3), verifies acceptance criteria
 - Reviews existing `ready` issues for reprioritization
+- Performs dependency bookkeeping: scans open `blocked` issues for
+  `Blocked-By: #N` metadata, and if every dependency is closed, comments,
+  removes `blocked`, and adds the issue's `Unblock-To` label
+- Never auto-unblocks `Blocker-Type: human` or `Blocker-Type: architecture`
 - Adding the `ready` label triggers build agents
 
-**4. Build Agent** (on `ready` label + every 4h fallback via `build.yml`):
+**4. Architect Agent** (daily 8am UTC + `needs-architecture` /
+`agent-help-wanted` labels via `architect.yml`):
+- Resolves design blockers: feasibility, approach, decomposition, sequencing,
+  and architectural risk
+- When blocking work, distinguishes `dependency`, `human`, and `architecture`
+  blockers using the metadata format below
+- Does not own dependency cleanup after prerequisites land; Office Hour owns
+  that bookkeeping
+
+**5. Build Agent** (on `ready` label + every 4h fallback via `build.yml`):
 - Claims one issue: swaps `ready` → `in-progress`
 - Creates branch `yoyo/issue-{N}`, implements, runs build/lint/test
 - Build-fix loop: up to 5 attempts to fix failures
@@ -188,11 +203,44 @@ can run in parallel on different issues.
 - **No concurrency limit** — multiple build agents run in parallel on
   different issues
 
-**5. Review Agent** (on PR opened/updated via `review.yml`):
+**6. Review Agent** (on PR opened/updated via `review.yml`):
 - Reviews PR diff against linked issue's acceptance criteria
 - Checks: build passes, tests added, protected files untouched
 - Approves + auto-merges if passing; requests changes if not
 - Handles merge conflicts via rebase
+
+### Blocker Bookkeeping
+
+Use machine-readable blocker metadata whenever an issue is marked `blocked`.
+This lets Office Hour clear stale dependency blockers without adding a new
+agent.
+
+For dependency blockers:
+
+```md
+Blocked-By: #79
+Blocker-Type: dependency
+Unblock-To: ready
+```
+
+Rules:
+- `Blocked-By` may contain one or more issue numbers, separated by commas or
+  spaces, for example `Blocked-By: #79, #80`
+- `Blocker-Type: dependency` means Office Hour may auto-unblock only after all
+  listed dependencies are closed
+- `Unblock-To` is the label to add when dependencies resolve, usually `ready`
+  or `needs-architecture`
+- Office Hour must leave human/product/architecture blockers untouched:
+
+```md
+Blocked-By: owner decision on deployment path
+Blocker-Type: human
+Unblock-To: needs-architecture
+```
+
+Architect and PM should include this metadata in the final paragraph of any
+comment that marks an issue blocked. Office Hour should comment when it
+unblocks an issue, naming the resolved dependencies.
 
 ### Issue Lifecycle
 
