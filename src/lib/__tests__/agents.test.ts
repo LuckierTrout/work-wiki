@@ -15,7 +15,7 @@ import {
 import type { UpdateAgentPage } from "../agents";
 import { readWikiPage, readWikiPageWithFrontmatter } from "../wiki";
 import type { AgentProfile } from "../types";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 
 // ---------------------------------------------------------------------------
 // Test setup — temp directory with DATA_DIR override
@@ -86,17 +86,15 @@ describe("getAgentsDir", () => {
 });
 
 describe("ensureAgentsDir", () => {
-  it("creates the agents directory", async () => {
+  it("is a no-op (storage creates dirs on write)", async () => {
+    // ensureAgentsDir is now a no-op since the storage provider creates
+    // parent directories automatically on write. Just verify it doesn't throw.
     await ensureAgentsDir();
-    const stat = await fs.stat(getAgentsDir());
-    expect(stat.isDirectory()).toBe(true);
   });
 
   it("is idempotent", async () => {
     await ensureAgentsDir();
     await ensureAgentsDir(); // should not throw
-    const stat = await fs.stat(getAgentsDir());
-    expect(stat.isDirectory()).toBe(true);
   });
 });
 
@@ -125,8 +123,8 @@ describe("listAgents", () => {
   });
 
   it("skips non-JSON files in agents dir", async () => {
-    await ensureAgentsDir();
-    await fs.writeFile(path.join(getAgentsDir(), "README.md"), "hello");
+    const storage = getStorage();
+    await storage.writeFile("agents/README.md", "hello");
     await registerAgent(makeProfile());
 
     const agents = await listAgents();
@@ -134,11 +132,8 @@ describe("listAgents", () => {
   });
 
   it("skips malformed JSON files gracefully", async () => {
-    await ensureAgentsDir();
-    await fs.writeFile(
-      path.join(getAgentsDir(), "bad.json"),
-      "not valid json {{{",
-    );
+    const storage = getStorage();
+    await storage.writeFile("agents/bad.json", "not valid json {{{");
     await registerAgent(makeProfile());
 
     const agents = await listAgents();
