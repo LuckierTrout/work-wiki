@@ -1,0 +1,48 @@
+{
+  // yopedia — Cloudflare Pages deployment via @opennextjs/cloudflare
+  //
+  // Binding names match src/lib/storage/cloudflare-types.ts CloudflareEnv:
+  //   YOPEDIA_BUCKET   → R2Bucket
+  //   YOPEDIA_CONFIG   → KVNamespace
+  //   YOPEDIA_VECTORIZE → VectorizeIndex (optional)
+  //
+  // After provisioning resources, update bucket_name / id / index_name
+  // to match your Cloudflare account. Run:
+  //   npx wrangler r2 bucket list
+  //   npx wrangler kv namespace list
+  //   npx wrangler vectorize list
+
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "yopedia",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+
+  // --- R2: Primary storage (wiki pages, raw sources, assets) ---
+  "r2_buckets": [
+    {
+      "binding": "YOPEDIA_BUCKET",
+      "bucket_name": "yopedia-storage"
+    }
+  ],
+
+  // --- KV: Config and derived indexes ---
+  "kv_namespaces": [
+    {
+      "binding": "YOPEDIA_CONFIG",
+      "id": "<KV_NAMESPACE_ID>"
+    }
+  ],
+
+  // --- Vectorize: Semantic search embeddings (optional) ---
+  "vectorize": [
+    {
+      "binding": "YOPEDIA_VECTORIZE",
+      "index_name": "yopedia-embeddings"
+    }
+  ]
+}
