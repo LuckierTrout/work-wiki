@@ -1,5 +1,6 @@
-import fs from "fs/promises";
-import { readWikiPage, readWikiPageWithFrontmatter, listWikiPages } from "./wiki";
+import { getStorage } from "./storage";
+import type { FileEntry } from "./storage";
+import { readWikiPage, readWikiPageWithFrontmatter, listWikiPages, wikiRelPath } from "./wiki";
 import { hasLLMKey, callLLM } from "./llm";
 import { loadPageConventions } from "./schema";
 import { extractWikiLinks } from "./links";
@@ -30,18 +31,18 @@ export const INFRASTRUCTURE_FILES = new Set(["index.md", "log.md"]);
 /**
  * Get all content page slugs that exist on disk (excluding infrastructure files).
  */
-export async function getOnDiskSlugs(wikiDir: string): Promise<string[]> {
-  let files: string[];
+export async function getOnDiskSlugs(_wikiDir: string): Promise<string[]> {
+  let entries: FileEntry[];
   try {
-    files = await fs.readdir(wikiDir);
+    entries = await getStorage().listFiles(wikiRelPath(""));
   } catch (err) {
-    logger.warn("lint", "readdir wiki directory failed:", err);
+    logger.warn("lint", "listFiles wiki directory failed:", err);
     return [];
   }
 
-  return files
-    .filter((f) => f.endsWith(".md") && !INFRASTRUCTURE_FILES.has(f))
-    .map((f) => f.replace(/\.md$/, ""));
+  return entries
+    .filter((e) => e.name.endsWith(".md") && !INFRASTRUCTURE_FILES.has(e.name))
+    .map((e) => e.name.replace(/\.md$/, ""));
 }
 
 /**
