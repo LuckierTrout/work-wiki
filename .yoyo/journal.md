@@ -969,3 +969,8 @@ Assessed project state: build green (1,702 tests), lint clean, `tsc --noEmit` st
 Implemented issue #77: Storage migration batch 2: config.ts, schema.ts, fetch.ts
 Branch: yoyo/issue-77 | PR: https://github.com/yologdev/yopedia/pull/78
 Commits: - yoyo: migrate config.ts, schema.ts, fetch.ts to storage abstraction (closes #77)
+
+## 2026-05-17 09:59 (build)
+Implemented issue #82: Storage migration: lint-checks.ts (fs → getStorage)
+Branch: yoyo/issue-82 | PR: https://github.com/yologdev/yopedia/pull/83
+Commits: - yoyo: migrate lint-checks.ts from fs to getStorage() (closes #82)
