@@ -8,8 +8,8 @@
 // to round-trip through frontmatter.
 // ---------------------------------------------------------------------------
 
-import fs from "fs/promises";
-import { getDataDir } from "./config";
+import { getStorage } from "./storage";
+import { getDataDir } from "./paths";
 import { withFileLock } from "./lock";
 import { isEnoent } from "./errors";
 import type { TalkThread, TalkComment } from "./types";
@@ -27,12 +27,17 @@ export function getDiscussDir(): string {
 
 /** Creates the `discuss/` directory if it doesn't exist. */
 export async function ensureDiscussDir(): Promise<void> {
-  await fs.mkdir(getDiscussDir(), { recursive: true });
+  /* Storage provider creates parent directories on write — no-op. */
 }
 
-/** Path to the JSON file for a given page's discussions. */
-function discussFilePath(pageSlug: string): string {
-  return `${getDiscussDir()}/${pageSlug}.json`;
+/** Storage-relative path for a discuss file. */
+function discussRelPath(pageSlug: string): string {
+  return `${DISCUSS_DIR_NAME}/${pageSlug}.json`;
+}
+
+/** Storage-relative path prefix for discuss files — used by contributors.ts. */
+export function getDiscussRelPrefix(): string {
+  return DISCUSS_DIR_NAME;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,7 +64,7 @@ export function _resetTimestamp(): void {
 /** Read and parse the discuss JSON file for a page. Returns [] if not found. */
 async function readDiscussFile(pageSlug: string): Promise<TalkThread[]> {
   try {
-    const raw = await fs.readFile(discussFilePath(pageSlug), "utf-8");
+    const raw = await getStorage().readFile(discussRelPath(pageSlug));
     return JSON.parse(raw) as TalkThread[];
   } catch (err) {
     if (isEnoent(err)) return [];
@@ -72,8 +77,7 @@ async function writeDiscussFile(
   pageSlug: string,
   threads: TalkThread[],
 ): Promise<void> {
-  await ensureDiscussDir();
-  await fs.writeFile(discussFilePath(pageSlug), JSON.stringify(threads, null, 2), "utf-8");
+  await getStorage().writeFile(discussRelPath(pageSlug), JSON.stringify(threads, null, 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +241,8 @@ export async function getDiscussionStatsForSlugs(
   // Read directory listing once to find which discuss files exist.
   let files: string[] = [];
   try {
-    files = await fs.readdir(getDiscussDir());
+    const entries = await getStorage().listFiles(DISCUSS_DIR_NAME);
+    files = entries.map((e) => e.name);
   } catch (err) {
     if (isEnoent(err)) return result; // No discuss dir → all zeros.
     throw err;
@@ -273,7 +278,7 @@ export async function getDiscussionStatsForSlugs(
  */
 export async function deleteDiscussions(pageSlug: string): Promise<void> {
   try {
-    await fs.unlink(discussFilePath(pageSlug));
+    await getStorage().deleteFile(discussRelPath(pageSlug));
   } catch (err) {
     if (!isEnoent(err)) throw err;
     // File didn't exist — nothing to delete.

@@ -16,6 +16,7 @@ import {
   _resetTimestamp,
 } from "../talk";
 import { _resetLocks } from "../lock";
+import { _resetStorage } from "../storage";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -26,6 +27,7 @@ beforeEach(async () => {
   process.env.DATA_DIR = tmpDir;
   _resetTimestamp();
   _resetLocks();
+  _resetStorage();
 });
 
 afterEach(async () => {
@@ -34,16 +36,19 @@ afterEach(async () => {
   } else {
     process.env.DATA_DIR = originalDataDir;
   }
+  _resetStorage();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
 describe("talk page data layer", () => {
   describe("ensureDiscussDir", () => {
-    it("creates the discuss directory", async () => {
+    it("is a no-op (storage provider creates directories on write)", async () => {
+      // ensureDiscussDir is now a no-op — the storage provider handles
+      // directory creation automatically when writing files.
       await ensureDiscussDir();
+      // Verify getDiscussDir still returns a sensible path
       const dir = getDiscussDir();
-      const stat = await fs.stat(dir);
-      expect(stat.isDirectory()).toBe(true);
+      expect(dir).toContain("discuss");
     });
   });
 
