@@ -990,3 +990,8 @@ Commits: - yoyo: migrate agents.ts from fs to getStorage() abstraction (closes #
 - yoyo: migrate lint-checks.ts from fs to getStorage() (closes #82) (#83)
 - yoyo: build session (2026-05-17) — issue #82
 - journal: rescue #76 — split into 4 atomic storage migration issues
+
+## 2026-05-17 16:59 (build)
+Implemented issue #80: Storage migration: contributors.ts (fs → getStorage)
+Branch: yoyo/issue-80 | PR: https://github.com/yologdev/yopedia/pull/86
+Commits: - yoyo: migrate contributors.ts from fs to getStorage() abstraction (closes #80)
