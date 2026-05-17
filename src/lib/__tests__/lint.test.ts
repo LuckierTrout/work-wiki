@@ -660,11 +660,16 @@ Every page must start with a level-1 heading.
 
 ## Operations
 `;
-    // loadPageConventions reads from process.cwd()/SCHEMA.md by default;
-    // we write into tmpDir and temporarily change cwd.
+    // loadPageConventions reads SCHEMA.md via storage provider relative to
+    // process.cwd(). Set DATA_DIR to tmpDir and reset storage so the
+    // provider picks up the temp directory.
     const origCwd = process.cwd();
+    const origDataDir = process.env.DATA_DIR;
     const schemaPath = path.join(tmpDir, "SCHEMA.md");
     await fs.writeFile(schemaPath, schemaContent, "utf-8");
+    process.env.DATA_DIR = tmpDir;
+    const { _resetStorage } = await import("../storage");
+    _resetStorage();
     process.chdir(tmpDir);
 
     try {
@@ -690,6 +695,12 @@ Every page must start with a level-1 heading.
       expect(systemPromptArg).toContain("Every page must start with a level-1 heading");
     } finally {
       process.chdir(origCwd);
+      if (origDataDir === undefined) {
+        delete process.env.DATA_DIR;
+      } else {
+        process.env.DATA_DIR = origDataDir;
+      }
+      _resetStorage();
     }
   });
 
