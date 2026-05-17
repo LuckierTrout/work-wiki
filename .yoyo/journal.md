@@ -1,5 +1,10 @@
 # Growth Journal
 
+## 2026-06-06 (architect)
+Issue #76: Storage migration batch 1: agents.ts, talk.ts, contributors.ts, lint-checks.ts
+Mode: RESCUE
+Action: split — Build agent failed 3× with no changes (overwhelmed by 4-file scope + interleaved deps). Split into 4 atomic sub-issues (#79 talk.ts, #80 contributors.ts, #81 agents.ts, #82 lint-checks.ts), each with exact before/after code blocks. Key finding: talk.test.ts was missing `_resetStorage()` calls — would have caused test failures even if the build agent had attempted changes.
+
 ## 2026-05-11 (architect)
 Issue #11: Implement R2 StorageProvider for Cloudflare deployment
 Mode: DESIGN
