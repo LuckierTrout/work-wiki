@@ -974,3 +974,11 @@ Commits: - yoyo: migrate config.ts, schema.ts, fetch.ts to storage abstraction (
 Implemented issue #82: Storage migration: lint-checks.ts (fs → getStorage)
 Branch: yoyo/issue-82 | PR: https://github.com/yologdev/yopedia/pull/83
 Commits: - yoyo: migrate lint-checks.ts from fs to getStorage() (closes #82)
+
+## 2026-05-17 09:58 (build)
+Implemented issue #79: Storage migration: talk.ts (fs → getStorage)
+Branch: yoyo/issue-79 | PR: https://github.com/yologdev/yopedia/pull/84
+Commits: - yoyo: migrate talk.ts from direct fs calls to getStorage() abstraction (closes #79)
+- yoyo: migrate lint-checks.ts from fs to getStorage() (closes #82) (#83)
+- yoyo: build session (2026-05-17) — issue #82
+- journal: rescue #76 — split into 4 atomic storage migration issues
