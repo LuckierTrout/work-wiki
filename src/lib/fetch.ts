@@ -7,7 +7,6 @@
  * "@/lib/fetch" continue to work unchanged.
  */
 
-import fs from "fs/promises";
 import path from "path";
 import {
   MAX_RESPONSE_SIZE,
@@ -23,6 +22,8 @@ import {
   extractWithReadability,
 } from "./html-parse";
 import { validateUrlSafety } from "./url-safety";
+import { getStorage } from "./storage";
+import { rawRelPath } from "./wiki";
 
 // Re-export HTML parsing utilities for backwards compatibility
 export { stripHtml, htmlToMarkdown, extractTitle, extractWithReadability } from "./html-parse";
@@ -258,18 +259,21 @@ function sanitizeImageFilename(rawUrl: string): string {
 }
 
 /**
- * Download images referenced in markdown content to the local filesystem.
- * Rewrites image URLs in the markdown to point to local paths.
+ * Download images referenced in markdown content and store them via
+ * the storage provider. Rewrites image URLs in the markdown to point
+ * to local paths.
  *
  * @param markdown - Markdown content with `![alt](url)` image references
  * @param slug - The source slug (used to namespace image files)
- * @param rawDir - The raw directory path
+ * @param _rawDir - Unused (kept for API compatibility); assets are stored
+ *                  via `rawRelPath("assets/<slug>/<filename>")`
  * @returns The markdown with rewritten image URLs
  */
 export async function downloadImages(
   markdown: string,
   slug: string,
-  rawDir: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _rawDir: string,
 ): Promise<string> {
   // Collect all absolute-URL image references
   const matches: Array<{ full: string; alt: string; url: string }> = [];
@@ -288,9 +292,7 @@ export async function downloadImages(
   // Limit to MAX_IMAGES_PER_SOURCE to avoid abuse
   const toDownload = matches.slice(0, MAX_IMAGES_PER_SOURCE);
 
-  // Ensure the asset directory exists
-  const assetDir = `${rawDir}/assets/${slug}`;
-  await fs.mkdir(assetDir, { recursive: true });
+  const storage = getStorage();
 
   // Track used filenames for deduplication
   const usedNames = new Map<string, number>();
@@ -336,8 +338,9 @@ export async function downloadImages(
         count + 1,
       );
 
-      const filePath = `${assetDir}/${filename}`;
-      await fs.writeFile(filePath, Buffer.from(arrayBuf));
+      // Write via storage provider using relative path
+      const storagePath = rawRelPath(`assets/${slug}/${filename}`);
+      await storage.writeAsset(storagePath, arrayBuf);
 
       // Rewrite the markdown reference to the local path
       const localPath = `assets/${slug}/${filename}`;

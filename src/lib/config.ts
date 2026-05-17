@@ -1,12 +1,10 @@
-import fs from "fs/promises";
-import fsSync from "fs";
-import path from "path";
 import type { ProviderInfo } from "./types";
 import { hasEmbeddingSupport } from "./embeddings";
 import { isEnoent } from "./errors";
 import { VALID_PROVIDERS, DEFAULT_MODELS } from "./providers";
 import { logger } from "./logger";
 import { getDataDir } from "./paths";
+import { getStorage } from "./storage";
 
 // Re-export provider constants so existing consumers can import from config
 export { PROVIDER_INFO, VALID_PROVIDERS, DEFAULT_MODELS, providerLabel } from "./providers";
@@ -60,6 +58,11 @@ export { getDataDir, getWikiDir, getRawDir } from "./paths";
 // Config file path
 // ---------------------------------------------------------------------------
 
+/** Relative path for config file within the storage root. */
+function configRelPath(): string {
+  return ".llm-wiki-config.json";
+}
+
 export function getConfigPath(): string {
   return `${getDataDir()}/.llm-wiki-config.json`;
 }
@@ -88,11 +91,15 @@ export function getOllamaBaseUrl(): string | undefined {
 
 /**
  * Read and parse the config file. Returns `{}` if the file doesn't exist.
+ * Also populates the sync cache as a side effect so that subsequent
+ * `loadConfigSync()` calls return the up-to-date config.
  */
 export async function loadConfig(): Promise<AppConfig> {
   try {
-    const raw = await fs.readFile(getConfigPath(), "utf-8");
-    return JSON.parse(raw) as AppConfig;
+    const raw = await getStorage().readFile(configRelPath());
+    const data = JSON.parse(raw) as AppConfig;
+    _configCache = { data, ts: Date.now() };
+    return data;
   } catch (err) {
     if (!isEnoent(err)) {
       logger.warn("config", "load config failed:", err);
@@ -102,14 +109,13 @@ export async function loadConfig(): Promise<AppConfig> {
 }
 
 /**
- * Write config JSON atomically (write tmp → rename).
+ * Write config JSON via storage provider.
  */
 export async function saveConfig(config: AppConfig): Promise<void> {
-  const configPath = getConfigPath();
-  await fs.mkdir(path.dirname(configPath), { recursive: true });
-  const tmp = configPath + ".tmp";
-  await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", "utf-8");
-  await fs.rename(tmp, configPath);
+  await getStorage().writeFile(
+    configRelPath(),
+    JSON.stringify(config, null, 2) + "\n",
+  );
   // Invalidate the sync cache so subsequent reads see the new data
   _configCache = null;
 }
@@ -123,25 +129,24 @@ const CACHE_TTL_MS = 5_000;
 
 /**
  * Synchronous config read with in-memory cache (5 s TTL).
- * Returns `{}` on any error.
+ * Returns cached data if available, otherwise returns `{}`.
+ *
+ * The cache is populated by `loadConfig()` and `saveConfig()`. If neither
+ * has been called yet, this returns `{}` (same as "file doesn't exist").
+ * This is safe because:
+ *   - LLM calls use env vars as the primary config source
+ *   - The config file is optional — `{}` is the documented default
+ *   - The app's startup sequence calls `loadConfig()` before any LLM call
  */
 export function loadConfigSync(): AppConfig {
   const now = Date.now();
   if (_configCache && now - _configCache.ts < CACHE_TTL_MS) {
     return _configCache.data;
   }
-  try {
-    const raw = fsSync.readFileSync(getConfigPath(), "utf-8");
-    const data = JSON.parse(raw) as AppConfig;
-    _configCache = { data, ts: now };
-    return data;
-  } catch (err) {
-    if (!isEnoent(err)) {
-      logger.warn("config", "load config (sync) failed:", err);
-    }
-    _configCache = { data: {}, ts: now };
-    return {};
-  }
+  // Cache cold — return empty config. The cache will be populated
+  // by the next async loadConfig() call.
+  _configCache = { data: {}, ts: now };
+  return {};
 }
 
 /** Expose cache reset for testing. */

@@ -497,19 +497,39 @@ describe("fetchUrlContent", () => {
 // ---------------------------------------------------------------------------
 
 import { downloadImages } from "../fetch";
+import { _resetStorage } from "../storage";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
 
 describe("downloadImages", () => {
   let tmpDir: string;
+  let origDataDir: string | undefined;
+  let origRawDir: string | undefined;
 
   async function setup(): Promise<string> {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "fetch-test-"));
+    // Point storage and rawRelPath at the temp dir
+    origDataDir = process.env.DATA_DIR;
+    origRawDir = process.env.RAW_DIR;
+    process.env.DATA_DIR = tmpDir;
+    process.env.RAW_DIR = tmpDir;
+    _resetStorage();
     return tmpDir;
   }
 
   afterEach(async () => {
+    if (origDataDir === undefined) {
+      delete process.env.DATA_DIR;
+    } else {
+      process.env.DATA_DIR = origDataDir;
+    }
+    if (origRawDir === undefined) {
+      delete process.env.RAW_DIR;
+    } else {
+      process.env.RAW_DIR = origRawDir;
+    }
+    _resetStorage();
     if (tmpDir) {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }

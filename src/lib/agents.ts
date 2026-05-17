@@ -9,7 +9,7 @@
 // frontmatter.
 // ---------------------------------------------------------------------------
 
-import fs from "fs/promises";
+import { getStorage } from "./storage";
 import { getDataDir } from "./config";
 import { isEnoent } from "./errors";
 import { serializeFrontmatter } from "./frontmatter";
@@ -36,14 +36,15 @@ export function getAgentsDir(): string {
   return `${getDataDir()}/${AGENTS_DIR_NAME}`;
 }
 
-/** Creates the `agents/` directory if it doesn't exist. */
+/** Creates the `agents/` directory if it doesn't exist.
+ *  Storage provider creates parent directories on write — this is now a no-op. */
 export async function ensureAgentsDir(): Promise<void> {
-  await fs.mkdir(getAgentsDir(), { recursive: true });
+  /* Storage provider creates parent directories on write — no-op. */
 }
 
-/** Path to the JSON file for a given agent. */
-function agentFilePath(id: string): string {
-  return `${getAgentsDir()}/${id}.json`;
+/** Storage-relative path for an agent JSON file. */
+function agentRelPath(filename: string): string {
+  return `${AGENTS_DIR_NAME}/${filename}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,9 +80,11 @@ function validateProfile(profile: AgentProfile): void {
  * Returns an empty array if the agents directory doesn't exist yet.
  */
 export async function listAgents(): Promise<AgentProfile[]> {
+  const storage = getStorage();
   let files: string[];
   try {
-    files = await fs.readdir(getAgentsDir());
+    const entries = await storage.listFiles(AGENTS_DIR_NAME);
+    files = entries.map((e) => e.name);
   } catch (err) {
     if (isEnoent(err)) return [];
     throw err;
@@ -91,7 +94,7 @@ export async function listAgents(): Promise<AgentProfile[]> {
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
     try {
-      const raw = await fs.readFile(`${getAgentsDir()}/${file}`, "utf-8");
+      const raw = await storage.readFile(agentRelPath(file));
       profiles.push(JSON.parse(raw) as AgentProfile);
     } catch {
       // Skip malformed files silently — don't let one bad file break the list.
@@ -110,7 +113,7 @@ export async function listAgents(): Promise<AgentProfile[]> {
 export async function getAgent(id: string): Promise<AgentProfile | null> {
   validateAgentId(id);
   try {
-    const raw = await fs.readFile(agentFilePath(id), "utf-8");
+    const raw = await getStorage().readFile(agentRelPath(`${id}.json`));
     return JSON.parse(raw) as AgentProfile;
   } catch (err) {
     if (isEnoent(err)) return null;
@@ -133,11 +136,9 @@ export async function registerAgent(profile: AgentProfile): Promise<void> {
     socialPages: profile.socialPages ?? [],
   };
 
-  await ensureAgentsDir();
-  await fs.writeFile(
-    agentFilePath(normalized.id),
+  await getStorage().writeFile(
+    agentRelPath(`${normalized.id}.json`),
     JSON.stringify(normalized, null, 2),
-    "utf-8",
   );
 }
 
@@ -148,7 +149,7 @@ export async function registerAgent(profile: AgentProfile): Promise<void> {
 export async function deleteAgent(id: string): Promise<boolean> {
   validateAgentId(id);
   try {
-    await fs.unlink(agentFilePath(id));
+    await getStorage().deleteFile(agentRelPath(`${id}.json`));
     return true;
   } catch (err) {
     if (isEnoent(err)) return false;

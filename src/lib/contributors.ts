@@ -10,10 +10,10 @@
 // Caching can come later.
 // ---------------------------------------------------------------------------
 
-import fs from "fs/promises";
+import { getStorage } from "./storage";
 import { listWikiPages } from "./wiki";
 import { listRevisions } from "./revisions";
-import { getDiscussDir } from "./talk";
+import { getDiscussRelPrefix } from "./talk";
 import { isEnoent } from "./errors";
 import type { ContributorProfile, TalkThread } from "./types";
 
@@ -23,10 +23,12 @@ import type { ContributorProfile, TalkThread } from "./types";
 
 /** Read and parse all discuss JSON files. Returns an array of TalkThread[]. */
 async function loadAllThreads(): Promise<TalkThread[]> {
-  const dir = getDiscussDir();
+  const prefix = getDiscussRelPrefix();
+  const storage = getStorage();
   let files: string[];
   try {
-    files = await fs.readdir(dir);
+    const entries = await storage.listFiles(prefix);
+    files = entries.map((e) => e.name);
   } catch (err) {
     if (isEnoent(err)) return [];
     throw err;
@@ -36,7 +38,7 @@ async function loadAllThreads(): Promise<TalkThread[]> {
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
     try {
-      const raw = await fs.readFile(`${dir}/${file}`, "utf-8");
+      const raw = await storage.readFile(`${prefix}/${file}`);
       const threads = JSON.parse(raw) as TalkThread[];
       if (Array.isArray(threads)) {
         all.push(...threads);
