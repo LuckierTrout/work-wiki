@@ -995,3 +995,8 @@ Commits: - yoyo: migrate agents.ts from fs to getStorage() abstraction (closes #
 Implemented issue #80: Storage migration: contributors.ts (fs → getStorage)
 Branch: yoyo/issue-80 | PR: https://github.com/yologdev/yopedia/pull/86
 Commits: - yoyo: migrate contributors.ts from fs to getStorage() abstraction (closes #80)
+
+## 2026-05-17 17:21 (build)
+Implemented issue #74: Add opennextjs-cloudflare adapter for Cloudflare Pages deployment
+Branch: yoyo/issue-74 | PR: https://github.com/yologdev/yopedia/pull/87
+Commits: - yoyo: add @opennextjs/cloudflare adapter for Cloudflare Pages deployment (closes #74)
