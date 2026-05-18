@@ -182,7 +182,9 @@ can run in parallel on different issues.
 - Performs dependency bookkeeping: scans open `blocked` issues for
   `Blocked-By: #N` metadata, and if every dependency is closed, comments,
   removes `blocked`, and adds the issue's `Unblock-To` label
-- Never auto-unblocks `Blocker-Type: human` or `Blocker-Type: architecture`
+- Performs human-action bookkeeping: if `Blocker-Type: human`, checks the
+  referenced `human-action` issue and unblocks only after that issue is closed
+- Never auto-unblocks `Blocker-Type: architecture`
 - Adding the `ready` label triggers build agents
 
 **4. Architect Agent** (daily 8am UTC + `needs-architecture` /
@@ -191,6 +193,8 @@ can run in parallel on different issues.
   and architectural risk
 - When blocking work, distinguishes `dependency`, `human`, and `architecture`
   blockers using the metadata format below
+- When blocking on human work, files exactly one `human-action` issue and links
+  it from the blocked issue
 - Does not own dependency cleanup after prerequisites land; Office Hour owns
   that bookkeeping
 
@@ -212,8 +216,8 @@ can run in parallel on different issues.
 ### Blocker Bookkeeping
 
 Use machine-readable blocker metadata whenever an issue is marked `blocked`.
-This lets Office Hour clear stale dependency blockers without adding a new
-agent.
+This lets Office Hour clear stale dependency and human-action blockers without
+adding a new agent.
 
 For dependency blockers:
 
@@ -230,17 +234,54 @@ Rules:
   listed dependencies are closed
 - `Unblock-To` is the label to add when dependencies resolve, usually `ready`
   or `needs-architecture`
-- Office Hour must leave human/product/architecture blockers untouched:
+- Office Hour must leave architecture blockers untouched:
 
 ```md
-Blocked-By: owner decision on deployment path
-Blocker-Type: human
+Blocked-By: unresolved deployment architecture
+Blocker-Type: architecture
 Unblock-To: needs-architecture
 ```
 
-Architect and PM should include this metadata in the final paragraph of any
-comment that marks an issue blocked. Office Hour should comment when it
-unblocks an issue, naming the resolved dependencies.
+For human blockers, create a separate issue with the `human-action` label.
+Humans signal completion by closing that issue; they should not need to comment
+"done".
+
+Human-action issue body:
+
+```md
+## Human Action
+
+Needed-By: #75
+
+## Why
+
+CI/CD should not be automated until one manual deploy succeeds.
+
+## Task
+
+- [ ] Pull latest main
+- [ ] Run the manual deploy
+- [ ] Verify the deployed URL works
+
+## Completion Signal
+
+Close this issue when done.
+
+Unblocks: #75
+Completion-Signal: close this issue
+```
+
+Blocked agent issue metadata:
+
+```md
+Blocked-By: #123
+Blocker-Type: human
+Unblock-To: ready
+```
+
+Architect, PM, and Office Hour should include this metadata in the final
+paragraph of any comment that marks an issue blocked. Office Hour should comment
+when it unblocks an issue, naming the closed dependency or human-action issue.
 
 ### Issue Lifecycle
 
@@ -259,7 +300,7 @@ Filed (PM / Research / Human) → [triage]
 |-----------|--------|
 | **Status** | `triage`, `ready`, `in-progress`, `blocked` |
 | **Priority** | `p0-critical`, `p1-high`, `p2-medium`, `p3-low` |
-| **Source** | `agent-input`, `agent-self`, `agent-research`, `agent-help-wanted` |
+| **Source** | `agent-input`, `agent-self`, `agent-research`, `agent-help-wanted`, `human-action` |
 | **Type** | `bug`, `feature`, `refactor`, `docs` |
 
 ### Shared Infrastructure
