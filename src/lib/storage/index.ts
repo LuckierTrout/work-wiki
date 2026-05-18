@@ -16,6 +16,7 @@
 
 import type { StorageProvider } from "./types";
 import type { CloudflareEnv } from "./cloudflare-types";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { FilesystemStorageProvider } from "./filesystem";
 import { R2StorageProvider } from "./r2";
 import { getDataDir } from "../paths";
@@ -63,6 +64,23 @@ function detectProvider(): ProviderType {
 let _instance: StorageProvider | null = null;
 let _providerType: ProviderType | null = null;
 
+function getOpenNextCloudflareEnv(): CloudflareEnv | null {
+  try {
+    const { env } = getCloudflareContext();
+    if (
+      env &&
+      typeof env === "object" &&
+      "YOPEDIA_BUCKET" in env &&
+      "YOPEDIA_CONFIG" in env
+    ) {
+      return env as unknown as CloudflareEnv;
+    }
+  } catch {
+    // Outside an OpenNext Cloudflare request context.
+  }
+  return null;
+}
+
 /**
  * Initialize the Cloudflare R2 storage provider with Workers bindings.
  *
@@ -109,11 +127,16 @@ export function getStorage(): StorageProvider {
       return provider;
     }
 
-    case "cloudflare-r2":
+    case "cloudflare-r2": {
+      const env = getOpenNextCloudflareEnv();
+      if (env) {
+        return initCloudflareStorage(env);
+      }
       throw new Error(
         "Cloudflare R2 storage detected but not initialized. " +
         "Call initCloudflareStorage(env) before getStorage()."
       );
+    }
 
     default: {
       const _exhaustive: never = desired;

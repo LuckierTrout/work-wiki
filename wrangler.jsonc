@@ -26,7 +26,7 @@
   "r2_buckets": [
     {
       "binding": "YOPEDIA_BUCKET",
-      "bucket_name": "yopedia-storage"
+      "bucket_name": "yopedia-raw"
     }
   ],
 
@@ -34,7 +34,7 @@
   "kv_namespaces": [
     {
       "binding": "YOPEDIA_CONFIG",
-      "id": "<KV_NAMESPACE_ID>"
+      "id": "31e48c3fc033443788f1d3fe130e6266"
     }
   ],
 
