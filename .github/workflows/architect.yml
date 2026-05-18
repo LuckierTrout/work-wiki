@@ -3,6 +3,8 @@ name: yoyo Architect
 on:
   issues:
     types: [labeled]
+  issue_comment:
+    types: [created]
   schedule:
     - cron: '0 8 * * *'  # Daily 8am UTC (after PM at 6, office-hour at 7)
   workflow_dispatch:
@@ -25,9 +27,20 @@ jobs:
     timeout-minutes: 30
 
     if: >
-      github.event_name != 'issues' ||
-      github.event.label.name == 'needs-architecture' ||
-      github.event.label.name == 'agent-help-wanted'
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'issues' &&
+        (
+          github.event.label.name == 'needs-architecture' ||
+          github.event.label.name == 'agent-help-wanted'
+        )
+      ) ||
+      (
+        github.event_name == 'issue_comment' &&
+        !github.event.issue.pull_request &&
+        contains(github.event.comment.body, 'Ask-Architect:')
+      )
 
     steps:
       - name: Generate bot token
@@ -51,6 +64,6 @@ jobs:
         uses: yologdev/yoyo-action@v1
         with:
           agent: architect
-          args: ${{ github.event.inputs.issue || github.event.issue.number || '' }}
+          args: ${{ github.event_name == 'issue_comment' && format('decision-discussion issue #{0}', github.event.issue.number) || github.event.inputs.issue || github.event.issue.number || '' }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gh_token: ${{ steps.bot-token.outputs.token }}

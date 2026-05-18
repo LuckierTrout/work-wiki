@@ -24,3 +24,7 @@ enabled = true
 
 [agents.architect]
 enabled = true
+
+[collaboration]
+decision_discussions = true
+max_rounds = 3

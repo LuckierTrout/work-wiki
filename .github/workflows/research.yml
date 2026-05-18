@@ -3,6 +3,8 @@ name: yoyo Research
 on:
   schedule:
     - cron: '0 9 * * 0'
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       focus:
@@ -21,6 +23,15 @@ jobs:
   research:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    if: >
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'issue_comment' &&
+        !github.event.issue.pull_request &&
+        contains(github.event.comment.body, 'Ask-Research:')
+      )
 
     steps:
       - name: Generate bot token
@@ -45,6 +56,6 @@ jobs:
         uses: yologdev/yoyo-action@v1
         with:
           agent: research
-          args: ${{ github.event.inputs.focus || '' }}
+          args: ${{ github.event_name == 'issue_comment' && format('decision-discussion issue #{0}', github.event.issue.number) || github.event.inputs.focus || '' }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gh_token: ${{ steps.bot-token.outputs.token }}

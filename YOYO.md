@@ -156,49 +156,72 @@ Six independent agents communicate through GitHub Issues. Each has one job,
 runs on its own schedule, and leaves a visible trail. Multiple build agents
 can run in parallel on different issues.
 
+Agent personality, judgment, and runtime prompts live in
+[`yologdev/yoyo-harness`](https://github.com/yologdev/yoyo-harness). This repo
+defines the project-specific protocol: labels, lifecycle, blocker metadata, and
+local expectations. Do not duplicate full agent prompts here.
+
 ### Agent Architecture
 
-**1. Research Agent** (Sundays 9am UTC via `research.yml`):
+**1. Research Agent** (Sundays 9am UTC + decision discussion via `research.yml`):
+- Judgment: signal filter — distinguishes "this exists" from "this changes our
+  strategy"
 - Scans the field: LLM wiki variants, agent memory systems, knowledge-graph
   products, second-brain projects, multi-agent collaboration tools
 - Distills findings into actionable intelligence (not wiki pages)
 - Files max 3 issues with `agent-research` + `triage` labels
+- May file 0 issues when nothing is strategy-changing or actionable
+- Joins decision discussions when Office Hour asks for market, competitive, or
+  ecosystem signal
 - Appends a research entry to `.yoyo/journal.md`
 
-**2. PM Agent** (daily 6am UTC via `pm.yml`):
+**2. PM Agent** (daily 6am UTC + decision discussion via `pm.yml`):
+- Judgment: product thinking — challenges premises, demand, sequencing, and
+  whether work should exist at all
 - Reads vision docs, assesses codebase state, identifies gaps
 - Files structured implementation issues (max 3 per session)
 - Each issue has: Context, Requirements, Files Involved, Acceptance Criteria,
   Size Estimate
 - Labels: `agent-self` + `triage` + type (feature/bug/refactor/docs)
+- May file 0 issues when the backlog is already right
 - Closes stale or superseded issues
 - When blocking an issue or filing a dependent issue, adds blocker metadata
   using the format in "Blocker Bookkeeping" below
+- Reassesses open `blocked` issues and clears resolved dependency or
+  human-action blockers
+- Joins decision discussions when Office Hour asks whether work should exist,
+  be sequenced now, or be closed
 
-**3. Office Hour Agent** (daily 7am UTC + issue open/close/reopen via `office-hour.yml`):
-- Triages all `triage` issues: groom → `ready`, reject → close, or → `blocked`
+**3. Office Hour Agent** (daily 7am UTC + issue/comment events via `office-hour.yml`):
+- Judgment: taste gate — evaluates issues like pitches using forcing questions,
+  premise challenges, and push-back patterns
+- Triages `triage` issues: approve → `ready`, route → `needs-architecture`,
+  reject → close, or → `blocked`
 - Adds priority label (p0–p3), verifies acceptance criteria
-- Reviews existing `ready` issues for reprioritization
-- Performs dependency bookkeeping: scans open `blocked` issues for
-  `Blocked-By: #N` metadata, and if every dependency is closed, comments,
-  removes `blocked`, and adds the issue's `Unblock-To` label
-- Performs human-action bookkeeping: if `Blocker-Type: human`, checks the
-  referenced `human-action` issue and unblocks only after that issue is closed
-- Never auto-unblocks `Blocker-Type: architecture`
+- Reviews existing `ready` issues for backlog saturation and reprioritization
+- Does not own old-blocker cleanup; PM owns dependency and human-action sweeps
+- May start a short decision discussion when an issue needs judgment from PM,
+  Architect, or Research before a verdict
 - Adding the `ready` label triggers build agents
 
 **4. Architect Agent** (daily 8am UTC + `needs-architecture` /
-`agent-help-wanted` labels via `architect.yml`):
+`agent-help-wanted` labels + decision discussion via `architect.yml`):
+- Judgment: decomposition — splits hard problems into atomic work and diagnoses
+  why build attempts fail
 - Resolves design blockers: feasibility, approach, decomposition, sequencing,
   and architectural risk
 - When blocking work, distinguishes `dependency`, `human`, and `architecture`
   blockers using the metadata format below
 - When blocking on human work, files exactly one `human-action` issue and links
   it from the blocked issue
-- Does not own dependency cleanup after prerequisites land; Office Hour owns
+- Does not own dependency cleanup after prerequisites land; PM owns
   that bookkeeping
+- Joins decision discussions when Office Hour asks for feasibility,
+  decomposition, sequencing, or failure-mode judgment
 
 **5. Build Agent** (on `ready` label + every 4h fallback via `build.yml`):
+- Judgment: craft — makes the smallest correct change and stops when the issue
+  is contradictory, too large, or unsafe
 - Claims one issue: swaps `ready` → `in-progress`
 - Creates branch `yoyo/issue-{N}`, implements, runs build/lint/test
 - Build-fix loop: up to 5 attempts to fix failures
@@ -208,16 +231,62 @@ can run in parallel on different issues.
   different issues
 
 **6. Review Agent** (on PR opened/updated via `review.yml`):
+- Judgment: code standards — flags high-confidence bugs, regressions, missing
+  acceptance criteria, and protected-file violations without noisy nitpicks
 - Reviews PR diff against linked issue's acceptance criteria
 - Checks: build passes, tests added, protected files untouched
 - Approves + auto-merges if passing; requests changes if not
 - Handles merge conflicts via rebase
 
+### Decision Discussions
+
+Office Hour owns the taste gate, but it should not make every ambiguous decision
+alone. When an issue needs more judgment, Office Hour starts a bounded discussion
+in the issue comments and asks the relevant agents to contribute.
+
+Use this only for decisions that affect whether, when, or how work should be
+done. Do not use it for routine label cleanup.
+
+Office Hour starts a round with machine-readable markers:
+
+```md
+Decision-Round: 1
+Decision-Question: Should this issue become ready, be rewritten, be blocked, or be closed?
+Ask-PM: Is this the right product work now?
+Ask-Architect: Is the proposed shape feasible and atomic?
+Ask-Research: Is there external signal that changes the decision?
+```
+
+Only ask agents whose judgment is needed. Each asked agent replies in the same
+issue:
+
+```md
+Decision-Input: PM
+Decision-Round: 1
+Position: ready | rewrite | blocked | close
+Reason: <one or two concrete sentences>
+Would-Change-If: <specific evidence that would change the position>
+```
+
+Rules:
+- Office Hour may run at most 3 decision rounds per issue.
+- A round is one Office Hour question plus replies from the asked agents.
+- Asked agents must not quote or repeat `Ask-PM`, `Ask-Architect`, or
+  `Ask-Research` markers in replies; use only `Decision-Input` markers.
+- If consensus is clear, Office Hour decides immediately; it does not need all
+  possible agents to comment.
+- If no consensus after round 3, Office Hour must choose one final state:
+  `ready`, `needs-architecture`, `blocked`, or closed.
+- PM decides product value and sequencing.
+- Architect decides feasibility, decomposition, and risk.
+- Research decides whether external evidence changes the strategy.
+- Office Hour makes the final readiness verdict and records the reason.
+
 ### Blocker Bookkeeping
 
 Use machine-readable blocker metadata whenever an issue is marked `blocked`.
-This lets Office Hour clear stale dependency and human-action blockers without
-adding a new agent.
+This lets PM clear stale dependency and human-action blockers without adding a
+new agent.
 
 For dependency blockers:
 
@@ -230,11 +299,11 @@ Unblock-To: ready
 Rules:
 - `Blocked-By` may contain one or more issue numbers, separated by commas or
   spaces, for example `Blocked-By: #79, #80`
-- `Blocker-Type: dependency` means Office Hour may auto-unblock only after all
+- `Blocker-Type: dependency` means PM may auto-unblock only after all
   listed dependencies are closed
 - `Unblock-To` is the label to add when dependencies resolve, usually `ready`
   or `needs-architecture`
-- Office Hour must leave architecture blockers untouched:
+- PM must leave architecture blockers untouched:
 
 ```md
 Blocked-By: unresolved deployment architecture
@@ -280,14 +349,16 @@ Unblock-To: ready
 ```
 
 Architect, PM, and Office Hour should include this metadata in the final
-paragraph of any comment that marks an issue blocked. Office Hour should comment
-when it unblocks an issue, naming the closed dependency or human-action issue.
+paragraph of any comment that marks an issue blocked. PM should comment when it
+unblocks an issue, naming the closed dependency or human-action issue.
 
 ### Issue Lifecycle
 
 ```
 Filed (PM / Research / Human) → [triage]
-  → Office Hour grooms → [ready] + priority
+  → Office Hour taste gate
+    → clear decision → [ready] + priority
+    → needs judgment → decision discussion (max 3 rounds) → final verdict
   → Build Agent claims → [in-progress] + branch
   → PR opened → Review Agent reviews
     → approved → auto-merge → issue closes
