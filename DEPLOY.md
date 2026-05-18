@@ -13,8 +13,8 @@ Run the LLM Wiki as a Docker container with a single command.
 1. **Clone the repository**
 
    ```sh
-   git clone https://github.com/yologdev/karpathy-llm-wiki.git
-   cd karpathy-llm-wiki
+   git clone https://github.com/yologdev/yopedia.git
+   cd yopedia
    ```
 
 2. **Create a `.env` file** with your API key

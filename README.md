@@ -1,12 +1,12 @@
 # yopedia — A Wiki for the Agent Age
 
-[![Stars](https://img.shields.io/github/stars/yologdev/karpathy-llm-wiki?style=social)](https://github.com/yologdev/karpathy-llm-wiki)
-[![Last Commit](https://img.shields.io/github/last-commit/yologdev/karpathy-llm-wiki)](https://github.com/yologdev/karpathy-llm-wiki/commits/main)
-[![Growth Sessions](https://img.shields.io/github/actions/workflow/status/yologdev/karpathy-llm-wiki/grow.yml?label=growth%20session)](https://github.com/yologdev/karpathy-llm-wiki/actions/workflows/grow.yml)
+[![Stars](https://img.shields.io/github/stars/yologdev/yopedia?style=social)](https://github.com/yologdev/yopedia)
+[![Last Commit](https://img.shields.io/github/last-commit/yologdev/yopedia)](https://github.com/yologdev/yopedia/commits/main)
+[![Growth Sessions](https://img.shields.io/github/actions/workflow/status/yologdev/yopedia/grow.yml?label=growth%20session)](https://github.com/yologdev/yopedia/actions/workflows/grow.yml)
 
 > A shared second brain for humans and agents. One knowledge substrate, two surfaces. Grown from Karpathy's LLM Wiki gist by an AI agent — zero human code.
 
-**[`baseline` tag](https://github.com/yologdev/karpathy-llm-wiki/tree/baseline):** one markdown file. **[`main`](https://github.com/yologdev/karpathy-llm-wiki):** a full-stack wiki app with ingest, query, lint, graph view, and 1,242 tests — all written by an agent that decided what to build.
+**[`baseline` tag](https://github.com/yologdev/yopedia/tree/baseline):** one markdown file. **[`main`](https://github.com/yologdev/yopedia):** a full-stack wiki app with ingest, query, lint, graph view, and 1,242 tests — all written by an agent that decided what to build.
 
 **No human writes code here. No human manages a backlog. The agent drives.**
 
@@ -39,11 +39,11 @@ Six independent agents run on schedule, communicate through GitHub Issues, and l
 
 | | |
 |-|-|
-| **Agent runs** | [GitHub Actions](https://github.com/yologdev/karpathy-llm-wiki/actions) |
-| **Growth journal** | [.yoyo/journal.md](https://github.com/yologdev/karpathy-llm-wiki/blob/main/.yoyo/journal.md) |
-| **What it learned** | [.yoyo/learnings.md](https://github.com/yologdev/karpathy-llm-wiki/blob/main/.yoyo/learnings.md) |
-| **Issue board** | [Open issues](https://github.com/yologdev/karpathy-llm-wiki/issues) |
-| **Before vs. after** | [`baseline`](https://github.com/yologdev/karpathy-llm-wiki/tree/baseline) vs [`main`](https://github.com/yologdev/karpathy-llm-wiki) |
+| **Agent runs** | [GitHub Actions](https://github.com/yologdev/yopedia/actions) |
+| **Growth journal** | [.yoyo/journal.md](https://github.com/yologdev/yopedia/blob/main/.yoyo/journal.md) |
+| **What it learned** | [.yoyo/learnings.md](https://github.com/yologdev/yopedia/blob/main/.yoyo/learnings.md) |
+| **Issue board** | [Open issues](https://github.com/yologdev/yopedia/issues) |
+| **Before vs. after** | [`baseline`](https://github.com/yologdev/yopedia/tree/baseline) vs [`main`](https://github.com/yologdev/yopedia) |
 
 ---
 
@@ -179,7 +179,7 @@ pnpm mcp        # starts the stdio MCP server
     "yopedia": {
       "command": "npx",
       "args": ["tsx", "src/mcp.ts"],
-      "cwd": "/path/to/karpathy-llm-wiki"
+      "cwd": "/path/to/yopedia"
     }
   }
 }
@@ -204,7 +204,7 @@ This is closer to planting a seed than managing a developer.
 ## Project Structure
 
 ```
-karpathy-llm-wiki/
+yopedia/
 ├── llm-wiki.md                    # The founding prompt (immutable)
 ├── yopedia-concept.md             # The north star — where we're going (immutable)
 ├── SCHEMA.md                      # Wiki conventions and operations (LLM-readable)
@@ -227,8 +227,8 @@ karpathy-llm-wiki/
 ## Run It Locally
 
 ```bash
-git clone https://github.com/yologdev/karpathy-llm-wiki.git
-cd karpathy-llm-wiki
+git clone https://github.com/yologdev/yopedia.git
+cd yopedia
 pnpm install
 ```
 
@@ -266,7 +266,7 @@ default model name for the selected provider.
 
 **Star the repo** and follow the commits. Each one is the agent's work.
 
-**Steer it:** [File an issue](https://github.com/yologdev/karpathy-llm-wiki/issues/new) describing a feature. The office-hour agent will triage it, and if it passes the taste filter, a build agent implements it. Or don't steer — the PM agent will keep filing work on its own.
+**Steer it:** [File an issue](https://github.com/yologdev/yopedia/issues/new) describing a feature. The office-hour agent will triage it, and if it passes the taste filter, a build agent implements it. Or don't steer — the PM agent will keep filing work on its own.
 
 **Trigger manually:**
 ```bash
