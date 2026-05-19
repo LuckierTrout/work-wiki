@@ -47,6 +47,8 @@ jobs:
 
       - name: Run yoyo Research
         uses: yologdev/yoyo-action@v1
+        env:
+          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
         with:
           agent: research
           args: ${{ github.event_name == 'issue_comment' && format('decision-discussion issue {0}', github.event.issue.number) || github.event_name == 'workflow_dispatch' && github.event.inputs.focus || '' }}
