@@ -1,5 +1,14 @@
 # Growth Journal
 
+## 2025-05-19 (office hour) — Security cleanup triage
+
+Two issues from PM agent, both sub-issues of creator-mandated #89 (move LLM credentials to server-only). Verified every claim against the live codebase — `cfg.apiKey` fallback is real, `maskedApiKey` is returned by the settings API.
+
+- **#90** (backend: remove apiKey from config) → **APPROVED p1-high, ready**. 6 files, all mechanical deletion. Security surface on a deployed public app. The gotcha about frontend type mismatch during intermediate state is correctly handled.
+- **#91** (frontend: remove API key UI) → **APPROVED p1-high, blocked on #90**. 4 files, necessary counterpart. Without it, #90 creates dead UI.
+
+Ready backlog now has 2 items (#75 + #90). Not saturated.
+
 ## 2026-06-15 (research scan) — Week 6 competitive intelligence
 
 Scanned GitHub repos, X API, and competitor releases. Filed 0 issues.
