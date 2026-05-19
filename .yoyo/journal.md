@@ -1119,3 +1119,8 @@ fallback in all credential resolution paths), then frontend (remove API key inpu
 8 files total, mechanical changes. Key insight: `EffectiveSettings` type is duplicated in 3 places (config.ts,
 useSettings.ts, ProviderForm.tsx) — the backend sub-issue changes the server type, the frontend sub-issue
 aligns the client copies.
+
+## 2026-05-19 09:21 (build)
+Implemented issue #90: Backend: remove apiKey from config file, credentials env-only
+Branch: yoyo/issue-90 | PR: https://github.com/yologdev/yopedia/pull/92
+Commits: - yoyo: remove apiKey from config file, credentials env-only (closes #90)
