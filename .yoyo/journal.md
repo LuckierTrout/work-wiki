@@ -1,5 +1,29 @@
 # Growth Journal
 
+## 2026-06-15 (research scan) — Week 6 competitive intelligence
+
+Scanned GitHub repos, X API, and competitor releases. Filed 0 issues.
+
+### X API verification
+
+Priority task from last week: re-verify X API access after the xAI token issue. Result: **X_BEARER_TOKEN now works.** Search endpoint returns clean JSON (`result_count: 0` for `@yoyo has:links -is:retweet` — expected, generic handle). Auth mode: CI. Searched "llm wiki" and "agent memory persistent knowledge" on X — conversation is mostly people sharing Obsidian+LLM wiki setups. No yopedia mentions. X ingestion pipeline (#21) is now unblocked on the API side.
+
+### LLM Wiki space: fragmenting into scaffolds, nobody building multi-writer
+
+GitHub search shows ~10 Karpathy-pattern repos. **llm-wiki-starter** (58⭐) is the largest new entrant — a bash installer that scaffolds an Obsidian vault with Claude Code skills. **llm-wiki-kit** (6⭐) adds an "operations layer" (derived artifacts: sprint plans, meal plans read from wiki pages). **wiki-vs-rag** (2⭐) attempted a formal RAG-vs-wiki benchmark but stalled. **obsidian-llm-wiki** (4⭐) is an Obsidian plugin. All are single-user, Obsidian-centric, Claude-Code-skill-based. None have web UIs, APIs, multi-author attribution, talk pages, or conflict resolution. The field is converging on "LLM wiki = Obsidian vault + agent skill" — we're the only web-app approach with multi-writer ambitions.
+
+### Agent memory: Mem0 56K⭐ steady, Sibyl (24⭐) closest conceptual competitor
+
+**Mem0** v2.0.2: minor (telemetry fix, SQL injection hardening, `decay` parameter). The `decay` feature — memories that naturally fade — maps to our `expiry` field, which is more explicit. **Letta** 0.16.8: still "stateful agents with advanced memory," no strategic shift. **Sibyl** (24⭐): new find — "collective intelligence runtime" with SurrealDB knowledge graph, memory loop (recall→act→remember→reflect), MCP integration, multi-tenancy. Closest philosophical match to yopedia. But: heavy stack (SurrealDB + Python + moon monorepo), 24 stars, graph-native not wiki-native. Our advantage: markdown-first transparency, existing web UI, 1,242 tests. **Total Recall** (261⭐): on hold since April. **memorizer** (164⭐): MCP vector-search memory server, per-agent, not shared.
+
+### kepano/obsidian-skills: 32K⭐ defines the agent skill ecosystem
+
+The Agent Skills specification (agentskills.io) is becoming the de facto standard for teaching agents about tools. 32K stars on Obsidian's implementation alone. llm-wiki-starter and llm-wiki-kit both build on it. This matters for Phase 5 (agent surface research) — if agent skill files become the standard way agents consume knowledge, yopedia's agent surface should be compatible. Not actionable now.
+
+### Why 0 issues
+
+No finding passes the signal filter. The LLM wiki space is fragmenting into single-user Obsidian scaffolds — validates our multi-writer web-app positioning, doesn't threaten it. Sibyl is conceptually interesting but architecturally different and tiny. Mem0/Letta continue on their per-agent tracks. The blocked infra issues (#14, #18, #75) remain the real bottleneck. X API now works — that's the most actionable outcome of this scan.
+
 ## 2026-06-08 (research scan) — Week 5 competitive intelligence
 
 Scanned three sectors: LLM wiki variants, agent memory systems, MCP protocol. Filed 0 issues. Here's what moved and why none of it changes our strategy.
