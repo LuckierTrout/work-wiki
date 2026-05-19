@@ -68,14 +68,6 @@ export async function PUT(request: Request) {
       }
     }
 
-    if (body.apiKey !== undefined) {
-      if (body.apiKey === null || body.apiKey === "") {
-        delete updated.apiKey;
-      } else {
-        updated.apiKey = body.apiKey;
-      }
-    }
-
     if (body.model !== undefined) {
       if (body.model === null || body.model === "") {
         delete updated.model;

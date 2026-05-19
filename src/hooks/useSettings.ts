@@ -18,7 +18,7 @@ export interface EffectiveSettings {
   embeddingSupport: boolean;
   embeddingModel: string | null;
   embeddingModelSource: SettingSource;
-  maskedApiKey: string | null;
+  hasApiKey: boolean;
   apiKeySource: SettingSource;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
@@ -168,11 +168,6 @@ export function useSettings(): UseSettingsReturn {
       // Only send provider if user selected one
       if (provider) {
         body.provider = provider;
-      }
-
-      // Send API key only if user typed something new
-      if (apiKey) {
-        body.apiKey = apiKey;
       }
 
       // Model: send if filled, null to clear

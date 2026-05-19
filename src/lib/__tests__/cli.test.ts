@@ -226,7 +226,7 @@ describe("CLI command execution", () => {
       embeddingSupport: true,
       embeddingModel: null,
       embeddingModelSource: "default",
-      maskedApiKey: "sk-…abc",
+      hasApiKey: true,
       apiKeySource: "env",
       ollamaBaseUrl: null,
       ollamaBaseUrlSource: "default",

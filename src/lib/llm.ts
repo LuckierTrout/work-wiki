@@ -183,9 +183,9 @@ export function hasLLMKey(): boolean {
   const env = detectEnvProvider();
   if (env.provider) return true;
 
-  // Fallback: check config file (cached sync read)
+  // Ollama is keyless — only config-file provider path that works without env vars
   const cfg = loadConfigSync();
-  return !!(cfg.provider || cfg.apiKey);
+  return cfg.provider === "ollama";
 }
 
 // ---------------------------------------------------------------------------

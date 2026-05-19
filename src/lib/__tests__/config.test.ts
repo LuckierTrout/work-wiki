@@ -6,7 +6,6 @@ import {
   loadConfig,
   saveConfig,
   loadConfigSync,
-  maskApiKey,
   isValidProvider,
   getEffectiveProvider,
   getEffectiveSettings,
@@ -112,7 +111,6 @@ describe("saveConfig / loadConfig round-trip", () => {
   it("persists and reads back the full config", async () => {
     const config: AppConfig = {
       provider: "anthropic",
-      apiKey: "sk-ant-test-key-12345",
       model: "claude-sonnet-4-20250514",
       embeddingModel: "text-embedding-3-small",
     };
@@ -122,11 +120,10 @@ describe("saveConfig / loadConfig round-trip", () => {
   });
 
   it("overwrites existing config", async () => {
-    await saveConfig({ provider: "openai", apiKey: "sk-old" });
-    await saveConfig({ provider: "google", apiKey: "google-key" });
+    await saveConfig({ provider: "openai" });
+    await saveConfig({ provider: "google" });
     const loaded = await loadConfig();
     expect(loaded.provider).toBe("google");
-    expect(loaded.apiKey).toBe("google-key");
   });
 });
 
@@ -181,32 +178,6 @@ describe("loadConfigSync", () => {
 });
 
 // ---------------------------------------------------------------------------
-// maskApiKey
-// ---------------------------------------------------------------------------
-
-describe("maskApiKey", () => {
-  it("returns null for undefined", () => {
-    expect(maskApiKey(undefined)).toBeNull();
-  });
-
-  it("returns null for empty string", () => {
-    expect(maskApiKey("")).toBeNull();
-  });
-
-  it("returns **** for short keys", () => {
-    expect(maskApiKey("short")).toBe("****");
-  });
-
-  it("masks long keys showing first 3 and last 6 chars", () => {
-    const key = "sk-ant-api03-long-test-key-abc123";
-    const masked = maskApiKey(key);
-    expect(masked).toBe("sk-...abc123");
-    // Should not contain the full key
-    expect(masked).not.toBe(key);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // isValidProvider
 // ---------------------------------------------------------------------------
 
@@ -237,7 +208,7 @@ describe("getEffectiveProvider — merge priority", () => {
   });
 
   it("uses config file when env vars are absent", async () => {
-    await saveConfig({ provider: "openai", apiKey: "sk-config-key", model: "gpt-4o-mini" });
+    await saveConfig({ provider: "openai", model: "gpt-4o-mini" });
     // Prime the sync cache so loadConfigSync returns data
     await loadConfig();
 
@@ -248,7 +219,7 @@ describe("getEffectiveProvider — merge priority", () => {
   });
 
   it("env var provider wins over config file provider", async () => {
-    await saveConfig({ provider: "openai", apiKey: "sk-config-key" });
+    await saveConfig({ provider: "openai" });
     await loadConfig();
     process.env.ANTHROPIC_API_KEY = "sk-ant-env-key";
 
@@ -257,7 +228,7 @@ describe("getEffectiveProvider — merge priority", () => {
   });
 
   it("LLM_MODEL env var wins over config file model", async () => {
-    await saveConfig({ provider: "openai", apiKey: "sk-key", model: "gpt-4o-mini" });
+    await saveConfig({ provider: "openai", model: "gpt-4o-mini" });
     await loadConfig();
     process.env.LLM_MODEL = "gpt-4-turbo";
 
@@ -266,7 +237,7 @@ describe("getEffectiveProvider — merge priority", () => {
   });
 
   it("uses default model when neither env nor config specify one", async () => {
-    await saveConfig({ provider: "anthropic", apiKey: "sk-key" });
+    await saveConfig({ provider: "anthropic" });
     await loadConfig();
 
     const info = getEffectiveProvider();
@@ -279,15 +250,15 @@ describe("getEffectiveProvider — merge priority", () => {
 // ---------------------------------------------------------------------------
 
 describe("getEffectiveSettings", () => {
-  it("reports source as 'config' when set via config file", async () => {
-    await saveConfig({ provider: "openai", apiKey: "sk-test-key-1234567890" });
+  it("reports source as 'none' when apiKey only set via config file (no longer supported)", async () => {
+    await saveConfig({ provider: "openai" });
     await loadConfig();
 
     const settings = getEffectiveSettings();
     expect(settings.providerSource).toBe("config");
-    expect(settings.apiKeySource).toBe("config");
-    expect(settings.maskedApiKey).not.toBeNull();
-    expect(settings.maskedApiKey).not.toContain("sk-test-key-1234567890");
+    // API keys from config file are no longer supported — source should be 'none'
+    expect(settings.apiKeySource).toBe("none");
+    expect(settings.hasApiKey).toBe(false);
   });
 
   it("reports source as 'env' when set via env var", () => {
@@ -306,7 +277,7 @@ describe("getEffectiveSettings", () => {
   });
 
   it("reports model source as 'default' when using defaults", async () => {
-    await saveConfig({ provider: "anthropic", apiKey: "sk-key" });
+    await saveConfig({ provider: "anthropic" });
     await loadConfig();
 
     const settings = getEffectiveSettings();
@@ -326,18 +297,19 @@ describe("getResolvedCredentials", () => {
     expect(creds.apiKey).toBeNull();
   });
 
-  it("resolves credentials from config file", async () => {
-    await saveConfig({ provider: "openai", apiKey: "sk-file-key", model: "gpt-4o-mini" });
+  it("resolves credentials from config file (provider + model only, no apiKey)", async () => {
+    await saveConfig({ provider: "openai", model: "gpt-4o-mini" });
     await loadConfig();
 
     const creds = getResolvedCredentials();
     expect(creds.provider).toBe("openai");
-    expect(creds.apiKey).toBe("sk-file-key");
+    // API key no longer comes from config — must be set via env
+    expect(creds.apiKey).toBeNull();
     expect(creds.model).toBe("gpt-4o-mini");
   });
 
-  it("env api key wins over config file api key", async () => {
-    await saveConfig({ provider: "openai", apiKey: "sk-file-key" });
+  it("env api key is the only source for api keys", async () => {
+    await saveConfig({ provider: "openai" });
     await loadConfig();
     process.env.OPENAI_API_KEY = "sk-env-key";
 
