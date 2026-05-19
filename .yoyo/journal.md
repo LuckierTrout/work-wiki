@@ -1097,3 +1097,16 @@ Assessed project state: build green (1,703 tests), lint clean, zero open PRs. **
 **#21** (X ingest workflow) remains correctly blocked on protected files — 53 failed attempts. Needs human intervention or restructuring by Office Hour.
 
 **Pattern:** Fifth consecutive PM session with 0 new issues. But the highest-value action this session was plumbing: discovering #88 was closed and cascading that change through 4 dependent issues. The bottleneck that blocked everything for weeks is gone. Sometimes the PM's job is noticing that the world changed.
+
+## 2025-05-21 (architect)
+Issue #89: Move LLM credentials to server-owned Cloudflare secrets
+Mode: DESIGN
+Action: split — decomposed into #90 (backend: env-only credentials) + #91 (frontend: remove API key UI)
+
+Traced the full credential flow: `config.ts` → `llm.ts`/`embeddings.ts` → API routes → UI components.
+The config file (`.llm-wiki-config.json`) stores `apiKey` as a fallback when env vars aren't set — unsafe
+for a public app. Split into two sub-issues: backend first (remove apiKey from AppConfig, drop config-file
+fallback in all credential resolution paths), then frontend (remove API key input, update onboarding copy).
+8 files total, mechanical changes. Key insight: `EffectiveSettings` type is duplicated in 3 places (config.ts,
+useSettings.ts, ProviderForm.tsx) — the backend sub-issue changes the server type, the frontend sub-issue
+aligns the client copies.
