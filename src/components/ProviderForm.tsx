@@ -22,7 +22,7 @@ interface EffectiveSettings {
   embeddingSupport: boolean;
   embeddingModel: string | null;
   embeddingModelSource: SettingSource;
-  maskedApiKey: string | null;
+  hasApiKey: boolean;
   apiKeySource: SettingSource;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
@@ -119,7 +119,7 @@ export function ProviderForm({
           </label>
           {settings?.apiKeySource === "env" ? (
             <div className="mt-1.5 rounded-md border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/60 font-mono">
-              {settings.maskedApiKey ?? "****"}
+              {settings.hasApiKey ? "****" : "Not set"}
             </div>
           ) : (
             <>
@@ -128,18 +128,13 @@ export function ProviderForm({
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder={
-                  settings?.maskedApiKey
-                    ? `Current: ${settings.maskedApiKey}`
-                    : "Enter your API key"
-                }
-                className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20 font-mono"
+                placeholder="API keys must be set via environment variables"
+                disabled
+                className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20 font-mono opacity-60"
               />
-              {settings?.maskedApiKey && !apiKey && (
-                <p className="mt-1 text-xs text-foreground/40">
-                  Leave empty to keep the existing key.
-                </p>
-              )}
+              <p className="mt-1 text-xs text-foreground/40">
+                Set API keys via server environment variables (e.g. ANTHROPIC_API_KEY).
+              </p>
             </>
           )}
         </div>

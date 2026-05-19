@@ -86,8 +86,9 @@ export function getEmbeddingModelName(): string | null {
   // --- Config file fallback ---
   const cfgProvider = cfg.provider;
   if (cfgProvider && EMBEDDING_CAPABLE_PROVIDERS.has(cfgProvider)) {
-    // Ollama is keyless; others need an apiKey in config
-    if (cfgProvider === "ollama" || cfg.apiKey) {
+    // Ollama is keyless; non-ollama config providers need env var API keys
+    // which are handled by the env-var code path above.
+    if (cfgProvider === "ollama") {
       return resolveEmbeddingModelName(cfgProvider, cfg);
     }
   }
@@ -123,9 +124,11 @@ export function getEmbeddingModel(): EmbeddingModel | null {
   const cfgProvider = cfg.provider;
 
   if (cfgProvider && EMBEDDING_CAPABLE_PROVIDERS.has(cfgProvider)) {
-    if (cfgProvider === "ollama" || cfg.apiKey) {
+    // Ollama is keyless; non-ollama config providers need env var API keys
+    // which are handled by the env-var code path above.
+    if (cfgProvider === "ollama") {
       const modelName = resolveEmbeddingModelName(cfgProvider, cfg);
-      return _createEmbeddingModel(cfgProvider, cfg.apiKey ?? null, modelName);
+      return _createEmbeddingModel(cfgProvider, null, modelName);
     }
   }
 

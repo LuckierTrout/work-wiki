@@ -766,14 +766,14 @@ describe("getEmbeddingModel", () => {
 
 describe("config file fallback for embeddings", () => {
   describe("getEmbeddingModelName", () => {
-    it("returns OpenAI default when config has openai provider + apiKey", () => {
-      mockLoadConfigSync.mockReturnValue({ provider: "openai", apiKey: "sk-cfg-test" });
-      expect(getEmbeddingModelName()).toBe("text-embedding-3-small");
+    it("returns null when config has openai provider without env key (config apiKey no longer supported)", () => {
+      mockLoadConfigSync.mockReturnValue({ provider: "openai" });
+      expect(getEmbeddingModelName()).toBeNull();
     });
 
-    it("returns Google default when config has google provider + apiKey", () => {
-      mockLoadConfigSync.mockReturnValue({ provider: "google", apiKey: "google-cfg-test" });
-      expect(getEmbeddingModelName()).toBe("gemini-embedding-001");
+    it("returns null when config has google provider without env key", () => {
+      mockLoadConfigSync.mockReturnValue({ provider: "google" });
+      expect(getEmbeddingModelName()).toBeNull();
     });
 
     it("returns Ollama default when config has ollama provider (no key needed)", () => {
@@ -781,20 +781,18 @@ describe("config file fallback for embeddings", () => {
       expect(getEmbeddingModelName()).toBe("nomic-embed-text");
     });
 
-    it("returns config embeddingModel over provider default", () => {
+    it("returns config embeddingModel for ollama provider", () => {
       mockLoadConfigSync.mockReturnValue({
-        provider: "openai",
-        apiKey: "sk-cfg-test",
-        embeddingModel: "text-embedding-3-large",
+        provider: "ollama",
+        embeddingModel: "mxbai-embed-large",
       });
-      expect(getEmbeddingModelName()).toBe("text-embedding-3-large");
+      expect(getEmbeddingModelName()).toBe("mxbai-embed-large");
     });
 
-    it("EMBEDDING_MODEL env var overrides config embeddingModel", () => {
+    it("EMBEDDING_MODEL env var overrides config embeddingModel when env provider set", () => {
       process.env.EMBEDDING_MODEL = "custom-model";
+      process.env.OPENAI_API_KEY = "sk-env-test";
       mockLoadConfigSync.mockReturnValue({
-        provider: "openai",
-        apiKey: "sk-cfg-test",
         embeddingModel: "text-embedding-3-large",
       });
       expect(getEmbeddingModelName()).toBe("custom-model");
@@ -802,31 +800,31 @@ describe("config file fallback for embeddings", () => {
 
     it("env var provider takes priority over config provider", () => {
       process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-env-key";
-      mockLoadConfigSync.mockReturnValue({ provider: "openai", apiKey: "sk-cfg-test" });
+      mockLoadConfigSync.mockReturnValue({ provider: "openai" });
       // Should use Google (env) not OpenAI (config)
       expect(getEmbeddingModelName()).toBe("gemini-embedding-001");
     });
 
     it("returns null when config has anthropic provider", () => {
-      mockLoadConfigSync.mockReturnValue({ provider: "anthropic", apiKey: "sk-ant-test" });
+      mockLoadConfigSync.mockReturnValue({ provider: "anthropic" });
       expect(getEmbeddingModelName()).toBeNull();
     });
 
-    it("returns null when config has openai provider but no apiKey", () => {
+    it("returns null when config has openai provider but no env key", () => {
       mockLoadConfigSync.mockReturnValue({ provider: "openai" });
       expect(getEmbeddingModelName()).toBeNull();
     });
   });
 
   describe("hasEmbeddingSupport", () => {
-    it("returns true when config has openai provider + apiKey", () => {
-      mockLoadConfigSync.mockReturnValue({ provider: "openai", apiKey: "sk-cfg-test" });
-      expect(hasEmbeddingSupport()).toBe(true);
+    it("returns false when config has openai provider without env key (config apiKey no longer supported)", () => {
+      mockLoadConfigSync.mockReturnValue({ provider: "openai" });
+      expect(hasEmbeddingSupport()).toBe(false);
     });
 
-    it("returns true when config has google provider + apiKey", () => {
-      mockLoadConfigSync.mockReturnValue({ provider: "google", apiKey: "google-cfg-test" });
-      expect(hasEmbeddingSupport()).toBe(true);
+    it("returns false when config has google provider without env key", () => {
+      mockLoadConfigSync.mockReturnValue({ provider: "google" });
+      expect(hasEmbeddingSupport()).toBe(false);
     });
 
     it("returns true when config has ollama provider", () => {
@@ -835,7 +833,7 @@ describe("config file fallback for embeddings", () => {
     });
 
     it("returns false when config has anthropic provider", () => {
-      mockLoadConfigSync.mockReturnValue({ provider: "anthropic", apiKey: "sk-ant-test" });
+      mockLoadConfigSync.mockReturnValue({ provider: "anthropic" });
       expect(hasEmbeddingSupport()).toBe(false);
     });
 
@@ -846,16 +844,16 @@ describe("config file fallback for embeddings", () => {
   });
 
   describe("getEmbeddingModel", () => {
-    it("returns a model when config has openai provider + apiKey", () => {
-      mockLoadConfigSync.mockReturnValue({ provider: "openai", apiKey: "sk-cfg-test" });
+    it("returns null when config has openai provider without env key (config apiKey no longer supported)", () => {
+      mockLoadConfigSync.mockReturnValue({ provider: "openai" });
       const model = getEmbeddingModel();
-      expect(model).not.toBeNull();
+      expect(model).toBeNull();
     });
 
-    it("returns a model when config has google provider + apiKey", () => {
-      mockLoadConfigSync.mockReturnValue({ provider: "google", apiKey: "google-cfg-test" });
+    it("returns null when config has google provider without env key", () => {
+      mockLoadConfigSync.mockReturnValue({ provider: "google" });
       const model = getEmbeddingModel();
-      expect(model).not.toBeNull();
+      expect(model).toBeNull();
     });
 
     it("returns a model when config has ollama provider", () => {
@@ -865,30 +863,25 @@ describe("config file fallback for embeddings", () => {
     });
 
     it("returns null when config has anthropic provider", () => {
-      mockLoadConfigSync.mockReturnValue({ provider: "anthropic", apiKey: "sk-ant-test" });
+      mockLoadConfigSync.mockReturnValue({ provider: "anthropic" });
       expect(getEmbeddingModel()).toBeNull();
     });
 
-    it("returns null when config has openai but no apiKey", () => {
+    it("returns null when config has openai but no env key", () => {
       mockLoadConfigSync.mockReturnValue({ provider: "openai" });
       expect(getEmbeddingModel()).toBeNull();
     });
 
-    it("respects config embeddingModel for model name", () => {
-      mockLoadConfigSync.mockReturnValue({
-        provider: "openai",
-        apiKey: "sk-cfg-test",
-        embeddingModel: "text-embedding-3-large",
-      });
+    it("returns a model when env has openai key regardless of config", () => {
+      process.env.OPENAI_API_KEY = "sk-env-key";
+      mockLoadConfigSync.mockReturnValue({});
       const model = getEmbeddingModel();
       expect(model).not.toBeNull();
-      // The model object should exist — we can't easily inspect the model name
-      // without calling the API, but we verified getEmbeddingModelName above
     });
 
     it("env var OpenAI key takes priority over config", () => {
       process.env.OPENAI_API_KEY = "sk-env-key";
-      mockLoadConfigSync.mockReturnValue({ provider: "google", apiKey: "google-cfg-test" });
+      mockLoadConfigSync.mockReturnValue({ provider: "google" });
       // Should use OpenAI (env) not Google (config)
       const model = getEmbeddingModel();
       expect(model).not.toBeNull();
@@ -907,17 +900,16 @@ describe("config file fallback for embeddings", () => {
   });
 
   describe("config-file-only embedding (no env vars)", () => {
-    it("embedText returns embedding when only config has openai provider + apiKey", async () => {
-      mockLoadConfigSync.mockReturnValue({ provider: "openai", apiKey: "sk-cfg-only" });
-      mockEmbed.mockResolvedValue({ embedding: [0.1, 0.2, 0.3] });
+    it("embedText returns null when config has openai provider but no env key (config apiKey no longer supported)", async () => {
+      mockLoadConfigSync.mockReturnValue({ provider: "openai" });
 
       const result = await embedText("hello world");
-      expect(result).toEqual([0.1, 0.2, 0.3]);
-      expect(mockEmbed).toHaveBeenCalledTimes(1);
+      expect(result).toBeNull();
+      expect(mockEmbed).not.toHaveBeenCalled();
     });
 
     it("embedText returns null when config only has anthropic (no embedding support)", async () => {
-      mockLoadConfigSync.mockReturnValue({ provider: "anthropic", apiKey: "sk-ant-cfg" });
+      mockLoadConfigSync.mockReturnValue({ provider: "anthropic" });
 
       const result = await embedText("hello world");
       expect(result).toBeNull();

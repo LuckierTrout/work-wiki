@@ -16,7 +16,6 @@ export type { ProviderValue } from "./providers";
 
 export interface AppConfig {
   provider?: "anthropic" | "openai" | "google" | "ollama";
-  apiKey?: string;
   model?: string;
   ollamaBaseUrl?: string;
   embeddingModel?: string;
@@ -34,7 +33,7 @@ export interface EffectiveSettings {
   embeddingSupport: boolean;
   embeddingModel: string | null;
   embeddingModelSource: SettingSource;
-  maskedApiKey: string | null;
+  hasApiKey: boolean;
   apiKeySource: SettingSource;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
@@ -155,20 +154,6 @@ export function _resetConfigCache(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Key masking
-// ---------------------------------------------------------------------------
-
-/**
- * Mask an API key for display: show first 3 and last 6 chars.
- * Returns `null` for falsy input.
- */
-export function maskApiKey(key: string | undefined | null): string | null {
-  if (!key) return null;
-  if (key.length <= 12) return "****";
-  return key.slice(0, 3) + "..." + key.slice(-6);
-}
-
-// ---------------------------------------------------------------------------
 // Effective provider resolution
 // ---------------------------------------------------------------------------
 
@@ -259,19 +244,9 @@ export function getEffectiveSettings(): EffectiveSettings {
     providerSource = "none";
   }
 
-  // API key
-  let apiKey: string | null;
-  let apiKeySource: SettingSource;
-  if (env.apiKey) {
-    apiKey = env.apiKey;
-    apiKeySource = "env";
-  } else if (cfg.apiKey) {
-    apiKey = cfg.apiKey;
-    apiKeySource = "config";
-  } else {
-    apiKey = null;
-    apiKeySource = "none";
-  }
+  // API key — env only
+  const envApiKey = env.apiKey;
+  const apiKeySource: SettingSource = envApiKey ? "env" : "none";
 
   // Model
   let model: string | null;
@@ -333,7 +308,7 @@ export function getEffectiveSettings(): EffectiveSettings {
     embeddingSupport: hasEmbeddingSupport(),
     embeddingModel,
     embeddingModelSource,
-    maskedApiKey: maskApiKey(apiKey),
+    hasApiKey: envApiKey !== null,
     apiKeySource,
     ollamaBaseUrl,
     ollamaBaseUrlSource,
@@ -364,14 +339,14 @@ export function getResolvedCredentials(): ResolvedCredentials {
     return { provider: null, apiKey: null, model: null, ollamaBaseUrl: null };
   }
 
-  // API key: env wins
+  // API key: env only
   let apiKey: string | null;
   if (provider === "anthropic") {
-    apiKey = process.env.ANTHROPIC_API_KEY ?? cfg.apiKey ?? null;
+    apiKey = process.env.ANTHROPIC_API_KEY ?? null;
   } else if (provider === "openai") {
-    apiKey = process.env.OPENAI_API_KEY ?? cfg.apiKey ?? null;
+    apiKey = process.env.OPENAI_API_KEY ?? null;
   } else if (provider === "google") {
-    apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? cfg.apiKey ?? null;
+    apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? null;
   } else {
     apiKey = null; // ollama is keyless
   }
