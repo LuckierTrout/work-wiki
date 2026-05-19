@@ -1,5 +1,36 @@
 # Growth Journal
 
+## 2026-06-08 (research scan) — Week 5 competitive intelligence
+
+Scanned three sectors: LLM wiki variants, agent memory systems, MCP protocol. Filed 0 issues. Here's what moved and why none of it changes our strategy.
+
+### X API verification
+
+Priority task: verify X API access. Result: **X_BEARER_TOKEN contains an xAI (Grok) API key** (prefix `xai-m...`), not a Twitter API App-only Bearer token. HTTP 401 on every X API endpoint. The x-research skill is unavailable until the secret is replaced with a real Twitter Bearer token from developer.x.com. Not filing an issue — this is a human-action item for @yuanhao.
+
+### LLM Wiki space: nashsu/llm_wiki pulls ahead
+
+The Karpathy-gist ecosystem is 2.5 months old and already has ~25 projects with 500+ stars. **nashsu/llm_wiki** (8,067⭐, up from ~5,700 in May) shipped 5 releases in May including graph search — they're graduating from wiki to queryable knowledge graph. **Beever Atlas** (333⭐) shipped v0.2.0 with a memory graph overhaul (typed entities, co-mentions). **SwarmVault** (462⭐) pace slowed but added MCP hardening. All remain single-user/single-tenant. None have multi-author attribution, trust scores, or conflict resolution. Our niche holds.
+
+### Agent memory: MCP rejected trust and provenance at protocol level
+
+**Critical finding:** MCP explicitly rejected SEP-2668 (Behavioral Trust, closed May 6) and #2686 (Provenance Metadata, closed same day). Trust scoring and provenance are now confirmed as application-layer concerns, not protocol-level. This validates building them in yopedia rather than waiting for the spec. **Mem0** (56K⭐) shipped Agent Mode — agents register as identity-bearing participants with temporal reasoning. **Cognee** (17K⭐) shipped GraphSkills (agents learn graph query patterns). **Graphiti** (26K⭐) pace slowed. **Letta** (23K⭐) near-stalled (1 commit in May).
+
+### MCP protocol: aggressive slimming + new proposals
+
+6 SEPs merged in May. SEP-2577 deprecated Roots/Sampling/Logging — the protocol is getting smaller, not bigger. SEP-2663 (Tasks Extension) landed — async task handles are now available. New: SEP-2745 (Policy Hints, May 19) adds effect/idempotency/sensitivity annotations on tools. SEP-2742 (Auth Declaration) for remote server auth discovery. Server Cards (SEP-2127) still draft.
+
+### Why 0 issues
+
+The biggest strategic signal — MCP rejecting trust/provenance — validates our existing direction. nashsu/llm_wiki's graph search is interesting but doesn't threaten our multi-writer niche. The blocked issues (#14, #18, #21, #75) are the real bottleneck: we can't deploy to Cloudflare, can't run X ingestion, can't ship the product. Filing more feature work on top of blocked infrastructure would be noise.
+
+### Holding for future scans
+
+- **SEP-2745 Policy Hints** — add `effect`, `idempotency`, `sensitivity` to our MCP tool declarations when spec stabilizes
+- **nashsu/llm_wiki graph search** — monitor whether their approach influences user expectations for wiki-style products
+- **Mem0 Agent Mode** — their identity-registration pattern maps to our agent seed API; watch for adoption patterns
+- **X_BEARER_TOKEN fix** — needed before X ingestion loop (Phase 3) can be tested
+
 ## 2026-06-06 (architect)
 Issue #76: Storage migration batch 1: agents.ts, talk.ts, contributors.ts, lint-checks.ts
 Mode: RESCUE
