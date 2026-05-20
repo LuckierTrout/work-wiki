@@ -16,12 +16,10 @@ export default function SettingsPage() {
     status,
     loadError,
     provider,
-    apiKey,
     model,
     ollamaBaseUrl,
     embeddingModel,
     setProvider,
-    setApiKey,
     setModel,
     setOllamaBaseUrl,
     setEmbeddingModel,
@@ -73,7 +71,7 @@ export default function SettingsPage() {
         Settings
       </h1>
       <p className="mt-2 text-foreground/60">
-        Configure your LLM provider and model preferences.
+        View your LLM provider status and model preferences.
       </p>
 
       {/* ---- Status indicator ---- */}
@@ -110,8 +108,6 @@ export default function SettingsPage() {
         <ProviderForm
           provider={provider}
           setProvider={setProvider}
-          apiKey={apiKey}
-          setApiKey={setApiKey}
           model={model}
           setModel={setModel}
           ollamaBaseUrl={ollamaBaseUrl}

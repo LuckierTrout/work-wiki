@@ -57,9 +57,9 @@ export function OnboardingWizard({ pageCount }: OnboardingWizardProps) {
       completed: llmConfigured,
       description: llmConfigured
         ? `Connected to ${providerLabel(providerInfo!.provider!)}${providerInfo!.model ? ` (${providerInfo!.model})` : ""}`
-        : "Choose a provider and set your API key so the wiki can generate pages.",
+        : "The server needs an LLM provider configured via environment variables.",
       href: "/settings",
-      linkText: "Configure LLM →",
+      linkText: "View LLM Status →",
     },
     {
       number: 2,
