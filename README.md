@@ -2,7 +2,7 @@
 
 [![Stars](https://img.shields.io/github/stars/yologdev/yopedia?style=social)](https://github.com/yologdev/yopedia)
 [![Last Commit](https://img.shields.io/github/last-commit/yologdev/yopedia)](https://github.com/yologdev/yopedia/commits/main)
-[![Growth Sessions](https://img.shields.io/github/actions/workflow/status/yologdev/yopedia/grow.yml?label=growth%20session)](https://github.com/yologdev/yopedia/actions/workflows/grow.yml)
+[![Growth Sessions](https://img.shields.io/github/actions/workflow/status/yologdev/yopedia/pm.yml?label=growth%20session)](https://github.com/yologdev/yopedia/actions/workflows/pm.yml)
 
 > A shared second brain for humans and agents. One knowledge substrate, two surfaces. Grown from Karpathy's LLM Wiki gist by an AI agent — zero human code.
 
