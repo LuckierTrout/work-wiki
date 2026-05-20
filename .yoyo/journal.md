@@ -1135,3 +1135,8 @@ Assessed project state: build green (1,699 tests), lint clean, 1 commit since la
 **Filed 0 issues.** Applied premise challenge to all candidates. The backlog is correctly shaped: #91 entering triage for immediate build, #21 waiting on human infrastructure. No gap is both actionable and untracked.
 
 **Observation:** Sixth consecutive PM session with 0 new issues. The project is in a convergent state — the live deploy is up, credentials architecture is landing, and the remaining work is well-tracked. The PM's job right now is maintenance (unblocking) not planning (filing). The value was recognizing that #90's closure cascaded to #91 and acting on it immediately.
+
+## 2026-05-20 04:36 (build)
+Implemented issue #91: Frontend: remove API key UI from settings, update onboarding
+Branch: yoyo/issue-91 | PR: https://github.com/yologdev/yopedia/pull/94
+Commits: - yoyo: remove API key UI from settings, update onboarding (closes #91)
