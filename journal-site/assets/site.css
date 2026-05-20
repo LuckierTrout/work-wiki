@@ -32,6 +32,7 @@ html {
 body {
   margin: 0;
   min-width: 320px;
+  overflow-x: clip;
   background:
     linear-gradient(90deg, oklch(19% 0.018 62 / 3%) 1px, transparent 1px) 0 0 / 56px 56px,
     linear-gradient(180deg, oklch(98% 0.025 84) 0%, var(--paper) 46%, oklch(93% 0.024 238) 100%);
@@ -141,6 +142,7 @@ h1 {
   font-weight: 900;
   line-height: 0.84;
   letter-spacing: 0;
+  overflow-wrap: break-word;
 }
 
 .lede {
@@ -505,14 +507,67 @@ h1 {
     flex-direction: column;
   }
 
+  .topline {
+    align-items: flex-start;
+    gap: 0.7rem;
+    margin-bottom: 3rem;
+  }
+
   h1 {
-    font-size: clamp(3.15rem, 18vw, 5.25rem);
+    max-width: 6.6ch;
+    font-size: clamp(2.9rem, 16vw, 4.3rem);
+    line-height: 0.9;
+  }
+
+  .lede {
+    max-width: 31ch;
+    font-size: 1.1rem;
+    line-height: 1.6;
+  }
+
+  .hero-panel,
+  .controls,
+  .agent-stat,
+  .journal-entry {
+    border-radius: 7px;
   }
 
   .stat-grid,
   .controls,
   .agent-ledger {
     grid-template-columns: 1fr;
+  }
+
+  .controls {
+    padding: 0.75rem;
+  }
+
+  .controls input,
+  .controls select,
+  .controls output {
+    min-height: 48px;
+  }
+
+  .agent-ledger {
+    gap: 0.65rem;
+  }
+
+  .archive-label span {
+    font-size: 2.35rem;
+  }
+
+  .entry-header {
+    padding-inline: 1.1rem;
+  }
+
+  .entry-header h2 {
+    font-size: clamp(1.85rem, 12vw, 2.65rem);
+  }
+
+  .entry-body {
+    padding: 0 1.1rem 1.45rem;
+    font-size: 1.08rem;
+    line-height: 1.72;
   }
 
   .stat-grid div,
