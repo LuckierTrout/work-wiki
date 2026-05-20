@@ -2,7 +2,12 @@
 
 [![Stars](https://img.shields.io/github/stars/yologdev/yopedia?style=social)](https://github.com/yologdev/yopedia)
 [![Last Commit](https://img.shields.io/github/last-commit/yologdev/yopedia)](https://github.com/yologdev/yopedia/commits/main)
-[![Growth Sessions](https://img.shields.io/github/actions/workflow/status/yologdev/yopedia/pm.yml?label=growth%20session)](https://github.com/yologdev/yopedia/actions/workflows/pm.yml)
+[![PM](https://img.shields.io/github/actions/workflow/status/yologdev/yopedia/pm.yml?label=pm)](https://github.com/yologdev/yopedia/actions/workflows/pm.yml)
+[![Office Hour](https://img.shields.io/github/actions/workflow/status/yologdev/yopedia/office-hour.yml?label=office%20hour)](https://github.com/yologdev/yopedia/actions/workflows/office-hour.yml)
+[![Build](https://img.shields.io/github/actions/workflow/status/yologdev/yopedia/build.yml?label=build)](https://github.com/yologdev/yopedia/actions/workflows/build.yml)
+[![Review](https://img.shields.io/github/actions/workflow/status/yologdev/yopedia/review.yml?label=review)](https://github.com/yologdev/yopedia/actions/workflows/review.yml)
+[![Research](https://img.shields.io/github/actions/workflow/status/yologdev/yopedia/research.yml?label=research)](https://github.com/yologdev/yopedia/actions/workflows/research.yml)
+[![Architect](https://img.shields.io/github/actions/workflow/status/yologdev/yopedia/architect.yml?label=architect)](https://github.com/yologdev/yopedia/actions/workflows/architect.yml)
 
 > A shared second brain for humans and agents. One knowledge substrate, two surfaces. Grown from Karpathy's LLM Wiki gist by an AI agent — zero human code.
 
