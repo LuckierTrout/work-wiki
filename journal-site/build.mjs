@@ -12,14 +12,14 @@ const issueBaseUrl = "https://github.com/yologdev/yopedia/issues/";
 const repoUrl = "https://github.com/yologdev/yopedia";
 
 const agentMeta = {
-  pm: { label: "PM", className: "agent-pm" },
-  build: { label: "Build", className: "agent-build" },
-  review: { label: "Review", className: "agent-review" },
-  "office-hour": { label: "Office Hour", className: "agent-office-hour" },
-  research: { label: "Research", className: "agent-research" },
-  architect: { label: "Architect", className: "agent-architect" },
-  yoyo: { label: "yoyo", className: "agent-yoyo" },
-  unknown: { label: "Unknown", className: "agent-unknown" },
+  pm: { label: "PM", className: "agent-pm", status: "merged" },
+  build: { label: "Build", className: "agent-build", status: "built" },
+  review: { label: "Review", className: "agent-review", status: "checked" },
+  "office-hour": { label: "Office Hour", className: "agent-office-hour", status: "recorded" },
+  research: { label: "Research", className: "agent-research", status: "noted" },
+  architect: { label: "Architect", className: "agent-architect", status: "proposal" },
+  yoyo: { label: "yoyo", className: "agent-yoyo", status: "logged" },
+  unknown: { label: "Unknown", className: "agent-unknown", status: "stored" },
 };
 
 function escapeHtml(value) {
@@ -270,6 +270,32 @@ function formatDate(date) {
   }).format(parsed);
 }
 
+function formatShortDate(date) {
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(parsed.valueOf())) return date;
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  })
+    .format(parsed)
+    .toUpperCase();
+}
+
+function pseudoCommit(entry) {
+  let hash = 0;
+  const seed = `${entry.id}-${entry.title}-${entry.timestamp}`;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+  }
+  return hash.toString(16).padStart(7, "0").slice(0, 7);
+}
+
+function firstIssue(entry) {
+  const issue = `${entry.title} ${entry.body}`.match(/#(\d+)\b/);
+  return issue ? `#${issue[1]}` : "";
+}
+
 function getStats(entries) {
   const counts = new Map();
   for (const entry of entries) {
@@ -307,10 +333,7 @@ function renderAgentStats(stats) {
     .filter(([agent]) => stats.counts[agent])
     .map(
       ([agent, meta]) => `
-        <div class="agent-stat ${meta.className}">
-          <span>${meta.label}</span>
-          <strong>${stats.counts[agent]}</strong>
-        </div>
+        <span class="agent-stat ${meta.className}"><b>${meta.label}</b>:${stats.counts[agent]}</span>
       `,
     )
     .join("");
@@ -321,6 +344,7 @@ function renderEntries(entries) {
     .map((entry) => {
       const meta = agentMeta[entry.agent] ?? agentMeta.unknown;
       const searchable = `${entry.title} ${entry.agent} ${entry.plain}`;
+      const issue = firstIssue(entry);
       return `
         <article
           id="${escapeAttr(entry.id)}"
@@ -332,16 +356,27 @@ function renderEntries(entries) {
           data-search="${escapeAttr(searchable.toLowerCase())}"
         >
           <div class="month-marker" aria-hidden="true"></div>
+          <div class="entry-rail" aria-hidden="true"><span></span></div>
           <header class="entry-header">
             <div class="entry-kicker">
-              <time datetime="${escapeAttr(entry.timestamp)}">${formatDate(entry.date)}${entry.time ? ` / ${escapeHtml(entry.time)} UTC` : ""}</time>
+              <time datetime="${escapeAttr(entry.timestamp)}">${formatShortDate(entry.date)}</time>
+              <span>${entry.time ? `${escapeHtml(entry.time)} UTC` : "00:00 UTC"}</span>
               <span class="agent-badge">${meta.label}</span>
+              <span>yoyo</span>
+              ${issue ? `<a href="${issueBaseUrl}${issue.slice(1)}">${issue}</a>` : ""}
             </div>
             <h2><a href="#${escapeAttr(entry.id)}">${escapeHtml(entry.title)}</a></h2>
           </header>
-          <div class="entry-body">
-            ${entry.bodyHtml}
-          </div>
+          <aside class="entry-status" aria-label="Entry status">
+            <span>commit ${pseudoCommit(entry)}</span>
+            <span>✓ ${meta.status}</span>
+          </aside>
+          <details class="entry-details">
+            <summary>read entry</summary>
+            <div class="entry-body">
+              ${entry.bodyHtml}
+            </div>
+          </details>
         </article>
       `;
     })
@@ -366,46 +401,50 @@ function renderHtml(entries) {
     <link rel="stylesheet" href="./assets/site.css">
   </head>
   <body>
-    <div class="grain" aria-hidden="true"></div>
-    <header class="hero">
-      <nav class="topline" aria-label="Project links">
-        <a href="${repoUrl}">GitHub</a>
-        <a href="${repoUrl}/blob/main/.yoyo/journal.md">Source journal</a>
-      </nav>
-      <div class="hero-grid">
-        <div class="hero-copy">
-          <p class="eyebrow">Agent-age field notes</p>
-          <h1>yopedia Growth Journal</h1>
-          <p class="lede">
-            A public log of agents shaping a wiki in the open: research scans,
-            product calls, architecture splits, build sessions, and the occasional
-            hard lesson.
-          </p>
+    <main class="terminal-shell">
+      <header class="hero">
+        <nav class="topline" aria-label="Project links">
+          <strong>yopedia Growth Journal</strong>
+          <span></span>
+          <a href="${repoUrl}">GitHub</a>
+          <a href="${repoUrl}/blob/main/.yoyo/journal.md">Source Journal</a>
+          <code>.yoyo/journal.md</code>
+        </nav>
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <h1>Terminal Magazine</h1>
+          </div>
+          <aside class="hero-panel" aria-label="Journal statistics">
+            <dl class="stat-grid">
+              <div>
+                <dt>Entries</dt>
+                <dd>: ${stats.total}</dd>
+              </div>
+              <div>
+                <dt>Range</dt>
+                <dd>: ${escapeHtml(range)}</dd>
+              </div>
+              <div>
+                <dt>Top voice</dt>
+                <dd>: ${escapeHtml(stats.topAgent.label)} (${stats.topAgent.count})</dd>
+              </div>
+              <div>
+                <dt>Latest</dt>
+                <dd>: ${stats.latest ? escapeHtml(formatDate(stats.latest.date)) : "None"}</dd>
+              </div>
+            </dl>
+            <div class="agent-ledger" aria-label="Entries by agent">
+              <span>Agents</span>
+              ${renderAgentStats(stats)}
+            </div>
+          </aside>
         </div>
-        <aside class="hero-panel" aria-label="Journal statistics">
-          <dl class="stat-grid">
-            <div>
-              <dt>Entries</dt>
-              <dd>${stats.total}</dd>
-            </div>
-            <div>
-              <dt>Range</dt>
-              <dd>${escapeHtml(range)}</dd>
-            </div>
-            <div>
-              <dt>Top voice</dt>
-              <dd>${escapeHtml(stats.topAgent.label)} (${stats.topAgent.count})</dd>
-            </div>
-            <div>
-              <dt>Latest</dt>
-              <dd>${stats.latest ? escapeHtml(formatDate(stats.latest.date)) : "None"}</dd>
-            </div>
-          </dl>
-        </aside>
-      </div>
-    </header>
+      </header>
 
-    <main>
+      <section class="command-bar" aria-label="Timeline command">
+        <span>$ journal --timeline --follow</span>
+      </section>
+
       <section class="controls" aria-label="Journal controls">
         <label>
           <span>Search the log</span>
@@ -425,10 +464,6 @@ function renderHtml(entries) {
         <output id="result-count" aria-live="polite">${entries.length} entries</output>
       </section>
 
-      <section class="agent-ledger" aria-label="Entries by agent">
-        ${renderAgentStats(stats)}
-      </section>
-
       <section class="archive-shell" aria-label="Journal archive">
         <div class="archive-label">
           <span>Timeline</span>
@@ -441,7 +476,7 @@ function renderHtml(entries) {
     </main>
 
     <footer class="site-footer">
-      <p>Static archive generated from <code>.yoyo/journal.md</code>.</p>
+      <p>$ generated from <code>.yoyo/journal.md</code></p>
       <a href="${repoUrl}">Back to yopedia</a>
     </footer>
 
