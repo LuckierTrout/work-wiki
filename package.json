@@ -9,6 +9,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "build:cloudflare": "opennextjs-cloudflare build",
+    "journal:build": "node journal-site/build.mjs",
+    "journal:preview": "pnpm journal:build && node journal-site/preview.mjs",
     "cli": "tsx src/cli.ts",
     "mcp": "tsx src/mcp.ts"
   },
