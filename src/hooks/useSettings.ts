@@ -19,7 +19,6 @@ export interface EffectiveSettings {
   embeddingModel: string | null;
   embeddingModelSource: SettingSource;
   hasApiKey: boolean;
-  apiKeySource: SettingSource;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
 }
@@ -47,13 +46,11 @@ export interface UseSettingsReturn {
   loadError: string | null;
   // Form values
   provider: string;
-  apiKey: string;
   model: string;
   ollamaBaseUrl: string;
   embeddingModel: string;
   // Form setters
   setProvider: (v: string) => void;
-  setApiKey: (v: string) => void;
   setModel: (v: string) => void;
   setOllamaBaseUrl: (v: string) => void;
   setEmbeddingModel: (v: string) => void;
@@ -84,7 +81,6 @@ export function useSettings(): UseSettingsReturn {
 
   // Form state
   const [provider, setProvider] = useState("");
-  const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState("");
   const [embeddingModel, setEmbeddingModel] = useState("");
@@ -114,8 +110,6 @@ export function useSettings(): UseSettingsReturn {
       } else if (data.providerSource !== "env") {
         setProvider("");
       }
-      // API key: never pre-fill (security), keep empty
-      setApiKey("");
       if (data.modelSource === "config" && data.model) {
         setModel(data.model);
       } else {
@@ -289,13 +283,11 @@ export function useSettings(): UseSettingsReturn {
     loadError,
     // Form values
     provider,
-    apiKey,
     model,
     ollamaBaseUrl,
     embeddingModel,
     // Form setters
     setProvider,
-    setApiKey,
     setModel,
     setOllamaBaseUrl,
     setEmbeddingModel,

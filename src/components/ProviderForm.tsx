@@ -1,7 +1,7 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// ProviderForm — provider / API key / model / Ollama URL fields
+// ProviderForm — provider / model / Ollama URL fields
 // ---------------------------------------------------------------------------
 
 import { PROVIDER_INFO, DEFAULT_MODELS, providerLabel } from "@/lib/providers";
@@ -23,7 +23,6 @@ interface EffectiveSettings {
   embeddingModel: string | null;
   embeddingModelSource: SettingSource;
   hasApiKey: boolean;
-  apiKeySource: SettingSource;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
 }
@@ -31,8 +30,6 @@ interface EffectiveSettings {
 export interface ProviderFormProps {
   provider: string;
   setProvider: (v: string) => void;
-  apiKey: string;
-  setApiKey: (v: string) => void;
   model: string;
   setModel: (v: string) => void;
   ollamaBaseUrl: string;
@@ -57,8 +54,6 @@ const PROVIDER_OPTIONS = [
 export function ProviderForm({
   provider,
   setProvider,
-  apiKey,
-  setApiKey,
   model,
   setModel,
   ollamaBaseUrl,
@@ -70,7 +65,6 @@ export function ProviderForm({
   // if form has a selection, use that; otherwise fall back to effective settings
   const effectiveProvider =
     provider || (settings?.providerSource === "env" ? settings.provider : null);
-  const showApiKey = effectiveProvider !== "ollama";
   const showOllamaUrl = effectiveProvider === "ollama";
 
   return (
@@ -105,40 +99,14 @@ export function ProviderForm({
             ))}
           </select>
         )}
+        {settings && (
+          <p className="mt-2 text-xs text-foreground/40">
+            {settings.hasApiKey
+              ? "✓ API key configured on server"
+              : "⚠ No API key — set via server environment variables"}
+          </p>
+        )}
       </div>
-
-      {/* API Key */}
-      {showApiKey && (
-        <div>
-          <label
-            htmlFor="apiKey"
-            className="block text-sm font-medium text-foreground/80"
-          >
-            API Key
-            {settings && <SourceBadge source={settings.apiKeySource} />}
-          </label>
-          {settings?.apiKeySource === "env" ? (
-            <div className="mt-1.5 rounded-md border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/60 font-mono">
-              {settings.hasApiKey ? "****" : "Not set"}
-            </div>
-          ) : (
-            <>
-              <input
-                id="apiKey"
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="API keys must be set via environment variables"
-                disabled
-                className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20 font-mono opacity-60"
-              />
-              <p className="mt-1 text-xs text-foreground/40">
-                Set API keys via server environment variables (e.g. ANTHROPIC_API_KEY).
-              </p>
-            </>
-          )}
-        </div>
-      )}
 
       {/* Model */}
       <div>
