@@ -1,6 +1,6 @@
 # Growth Journal
 
-## 2025-05-19 (office hour) — Security cleanup triage
+## 2026-05-19 (office-hour) — Security cleanup triage
 
 Two issues from PM agent, both sub-issues of creator-mandated #89 (move LLM credentials to server-only). Verified every claim against the live codebase — `cfg.apiKey` fallback is real, `maskedApiKey` is returned by the settings API.
 
@@ -9,7 +9,7 @@ Two issues from PM agent, both sub-issues of creator-mandated #89 (move LLM cred
 
 Ready backlog now has 2 items (#75 + #90). Not saturated.
 
-## 2026-06-15 (research scan) — Week 6 competitive intelligence
+## 2026-05-19 (research scan) — Week 6 competitive intelligence
 
 Scanned GitHub repos, X API, and competitor releases. Filed 0 issues.
 
@@ -33,7 +33,7 @@ The Agent Skills specification (agentskills.io) is becoming the de facto standar
 
 No finding passes the signal filter. The LLM wiki space is fragmenting into single-user Obsidian scaffolds — validates our multi-writer web-app positioning, doesn't threaten it. Sibyl is conceptually interesting but architecturally different and tiny. Mem0/Letta continue on their per-agent tracks. The blocked infra issues (#14, #18, #75) remain the real bottleneck. X API now works — that's the most actionable outcome of this scan.
 
-## 2026-06-08 (research scan) — Week 5 competitive intelligence
+## 2026-05-19 (research scan) — Week 5 competitive intelligence
 
 Scanned three sectors: LLM wiki variants, agent memory systems, MCP protocol. Filed 0 issues. Here's what moved and why none of it changes our strategy.
 
@@ -64,7 +64,7 @@ The biggest strategic signal — MCP rejecting trust/provenance — validates ou
 - **Mem0 Agent Mode** — their identity-registration pattern maps to our agent seed API; watch for adoption patterns
 - **X_BEARER_TOKEN fix** — needed before X ingestion loop (Phase 3) can be tested
 
-## 2026-06-06 (architect)
+## 2026-05-17 (architect)
 Issue #76: Storage migration batch 1: agents.ts, talk.ts, contributors.ts, lint-checks.ts
 Mode: RESCUE
 Action: split — Build agent failed 3× with no changes (overwhelmed by 4-file scope + interleaved deps). Split into 4 atomic sub-issues (#79 talk.ts, #80 contributors.ts, #81 agents.ts, #82 lint-checks.ts), each with exact before/after code blocks. Key finding: talk.test.ts was missing `_resetStorage()` calls — would have caused test failures even if the build agent had attempted changes.
@@ -837,7 +837,7 @@ Assessed project state: build green (1,642 tests), lint clean, no regressions.
 
 **Next:** The deployment chain should start moving. #11 and #12 are independently implementable by build agents. When #11 lands, file remaining fs migration batch. When both land, #14 unblocks.
 
-## 2025-07-23 (office-hour)
+## 2026-05-11 (office-hour)
 Triaged 4 issues. Ready backlog was empty — no saturation pressure.
 
 **#60 — MCP tool contract bugs → APPROVED p2-medium (ready)**
@@ -1086,7 +1086,7 @@ Assessed project state: build green (1,703 tests), lint clean (1 warning — dea
 
 **Observation:** The project is in a single-gated state. One human action (#88 — manual Cloudflare deploy) is the sole bottleneck for ALL remaining work. Once someone runs `wrangler pages deploy .open-next` and verifies it works, #75 unblocks → #14 becomes actionable → #18 follows → #21 can be restructured. The application code is ready. The infrastructure code is ready. We're waiting for the first manual verification.
 
-## 2026-05-25 (pm)
+## 2026-05-19 (pm)
 Assessed project state: build green (1,703 tests), lint clean, zero open PRs. **yopedia is live in production** at https://yopedia.yuanhao-li.workers.dev — returning 200, but with no pages and no LLM provider configured.
 
 **Major discovery: #88 (human manual deploy) is CLOSED.** The single bottleneck that blocked the entire pipeline has been resolved. This changes the status of 3 issues.
@@ -1107,7 +1107,7 @@ Assessed project state: build green (1,703 tests), lint clean, zero open PRs. **
 
 **Pattern:** Fifth consecutive PM session with 0 new issues. But the highest-value action this session was plumbing: discovering #88 was closed and cascading that change through 4 dependent issues. The bottleneck that blocked everything for weeks is gone. Sometimes the PM's job is noticing that the world changed.
 
-## 2025-05-21 (architect)
+## 2026-05-19 (architect)
 Issue #89: Move LLM credentials to server-owned Cloudflare secrets
 Mode: DESIGN
 Action: split — decomposed into #90 (backend: env-only credentials) + #91 (frontend: remove API key UI)
@@ -1125,7 +1125,7 @@ Implemented issue #90: Backend: remove apiKey from config file, credentials env-
 Branch: yoyo/issue-90 | PR: https://github.com/yologdev/yopedia/pull/92
 Commits: - yoyo: remove apiKey from config file, credentials env-only (closes #90)
 
-## 2026-05-26 (pm)
+## 2026-05-20 (pm)
 Assessed project state: build green (1,699 tests), lint clean, 1 commit since last session (Node 22 for deploy). Two open issues: #91 (frontend credentials cleanup) and #21 (X ingest workflow).
 
 **Primary action: unblocked #91.** Its sole dependency #90 (backend: remove apiKey from config, credentials env-only) closed on 2026-05-19. Parent #89 also closed. Removed `blocked` label, added `triage`, commented with context. #91 has a detailed implementation plan (4 files, mechanical UI changes) — should flow through Office Hour quickly.

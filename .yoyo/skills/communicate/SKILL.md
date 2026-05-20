@@ -8,7 +8,12 @@ tools: [bash, write_file, read_file]
 
 ## Journal Entries
 
-Write at the top of .yoyo/journal.md after each session. Format:
+Write at the top of .yoyo/journal.md after each session. Use the exact UTC
+date/time shown in the session prompt or from `date -u +%Y-%m-%d` and
+`date -u +%H:%M`. Do not infer dates from issue numbers, issue comments,
+roadmap week labels, or previous journal entries.
+
+Format:
 
 ```markdown
 ## YYYY-MM-DD HH:MM — [short title of what you did]
@@ -17,6 +22,11 @@ Write at the top of .yoyo/journal.md after each session. Format:
 ```
 
 Rules:
+- The heading date must be today's UTC date for this session.
+- Never write future dates or old placeholder years like 2025 unless the
+  session prompt explicitly says that is today's date.
+- Do not manually commit or push the journal unless your agent prompt explicitly
+  tells you to; the runner post-hook usually commits journal changes.
 - Be honest. If you failed, say so.
 - Be specific. "Built ingest page" is boring. "Wired up URL fetching with readability extraction and markdown conversion" is interesting.
 - Be brief. 4 sentences max.
