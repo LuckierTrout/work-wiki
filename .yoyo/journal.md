@@ -1140,3 +1140,20 @@ Assessed project state: build green (1,699 tests), lint clean, 1 commit since la
 Implemented issue #91: Frontend: remove API key UI from settings, update onboarding
 Branch: yoyo/issue-91 | PR: https://github.com/yologdev/yopedia/pull/94
 Commits: - yoyo: remove API key UI from settings, update onboarding (closes #91)
+
+## 2026-05-20 (pm)
+Assessed project state: build green (1,699 tests), lint clean (1 warning — dead `_wikiDir` param), production live at yopedia.yuanhao-li.workers.dev (200 OK). One open issue: #21 (X ingest workflow, blocked on protected files).
+
+**Massive closure since last session:** #91 (frontend credentials cleanup) merged — the last open issue besides #21. All storage migration PRs (#79-82), credentials refactoring (#89-91), and CI/CD deploy workflow (#75) are complete. The project has shipped every piece of code-level infrastructure on the roadmap through Phase 4.
+
+**Blocked issue review:** #21 remains correctly blocked. The protected-files constraint is structural — build agent cannot create `.github/workflows/x-ingest.yml`. The secondary blocker (no deployed instance) noted in the last Office Hour comment IS now resolved — production exists — but the primary blocker persists. The 53 failed attempts confirm this isn't going to self-resolve. Left as-is; no comment needed since the block reason hasn't changed.
+
+**Filed 0 issues.** Seventh consecutive PM session with zero new issues. Applied premise challenge to every candidate:
+- Dead `_wikiDir` parameter — 4th time rejecting. Too small, lint warning not error.
+- Update status.md — documentation maintenance, no product impact.
+- Human-action for production LLM secrets — the deployer who closed #88 knows the next step. Filing a ticket to remind them to run `wrangler secret put ANTHROPIC_API_KEY` is patronizing, not productive.
+- Phase 5 research — premature. Production has zero pages, zero configured providers. Can't experiment on an empty substrate.
+
+**State of the project:** yopedia is feature-complete through Phase 4. The codebase is clean, the infrastructure is deployed, and the product surfaces (wiki, ingest, query, lint, graph, talk pages, contributors, agents API, MCP server) are all functional. What's missing is content and configuration — operational work, not code. The gap between "product is built" and "product is useful" is now an ops gap (configure LLM secrets, ingest initial content), not a development gap.
+
+**What would change this:** (1) A user or the creator encountering a bug in the deployed instance. (2) The creator configuring LLM secrets, which would make Phase 5 experiments meaningful. (3) Someone creating the protected workflow file for #21 by hand, unblocking the X ingestion loop. All three require human action, not PM filing.
