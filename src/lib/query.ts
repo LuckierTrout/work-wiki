@@ -265,13 +265,21 @@ export async function saveAnswerToWiki(
 
   // Wrap in YAML frontmatter so saved answers have the same metadata as
   // ingested pages (created/updated dates, source type, tags).
+  // Include confidence, expiry, and authors so the page passes
+  // checkUnmigratedPages() — see #106.
   const now = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const expiry = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
   const contentWithFm = serializeFrontmatter(
     {
       created: now,
       updated: now,
       source: "query",
       tags: ["query-answer"],
+      confidence: 0.5,
+      expiry,
+      authors: ["system"],
     },
     pageContent,
   );
