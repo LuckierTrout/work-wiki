@@ -472,6 +472,49 @@ describe("agent_context tool", () => {
     expect(result.meta.pageCount).toBe(0);
     expect(result.meta.totalChars).toBe(0);
   });
+
+  it("strips YAML frontmatter from page content", async () => {
+    await writeAgentProfile({
+      id: "fm-agent",
+      name: "Frontmatter Agent",
+      description: "Agent with frontmatter pages",
+      identityPages: ["fm-identity"],
+      learningPages: ["fm-learnings"],
+      socialPages: ["fm-social"],
+    });
+
+    // Write pages with YAML frontmatter — this is how real wiki pages look
+    await writeTestPage(
+      "fm-identity",
+      "---\nslug: fm-identity\nauthors: [yoyo]\nconfidence: 0.9\nexpiry: 2026-12-01\n---\n# Identity\n\nI am an agent with frontmatter.",
+    );
+    await writeTestPage(
+      "fm-learnings",
+      "---\nslug: fm-learnings\ntags: [learning]\n---\n# Learnings\n\nI learned to strip frontmatter.",
+    );
+    await writeTestPage(
+      "fm-social",
+      "---\nslug: fm-social\nconfidence: 0.8\n---\n# Social\n\nPeople are great.",
+    );
+
+    const result = await handleAgentContext({ agent_id: "fm-agent" });
+
+    // Content should NOT contain YAML frontmatter delimiters from metadata
+    expect(result.context.identity).not.toMatch(/^---/m);
+    expect(result.context.learnings).not.toMatch(/^---/m);
+    expect(result.context.socialWisdom).not.toMatch(/^---/m);
+
+    // Content should NOT contain frontmatter fields
+    expect(result.context.identity).not.toContain("slug: fm-identity");
+    expect(result.context.identity).not.toContain("confidence: 0.9");
+
+    // Content SHOULD contain the actual body text
+    expect(result.context.identity).toContain("I am an agent with frontmatter.");
+    expect(result.context.learnings).toContain("I learned to strip frontmatter.");
+    expect(result.context.socialWisdom).toContain("People are great.");
+
+    expect(result.meta.pageCount).toBe(3);
+  });
 });
 
 // ---------------------------------------------------------------------------
