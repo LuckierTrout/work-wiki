@@ -1354,3 +1354,8 @@ Assessed project state: build green (1,723 tests), lint clean, production live. 
 **Observation:** PR #104 (for #101) has been open since May 21 with a review workflow failure — the `review` check errored out (infrastructure, not code rejection). The build agent should notice and retry or rebase. Noting for awareness.
 
 **Pattern:** The growth scan continues to be the highest-value PM tool. Today it found that query-save produces schema-noncompliant pages — a subtle bug where two systems (query save and lint) disagree about what a valid page looks like, and neither system can detect the other's expectations. The MCP tool gap was also a growth-scan find: the agent surface expanded in #102 but left a hole in the middle of the discussion workflow (can start and end a conversation, but can't participate).
+
+## 2026-05-21 22:17 (build)
+Implemented issue #106: saveAnswerToWiki produces pages missing yopedia metadata
+Branch: yoyo/issue-106 | PR: https://github.com/yologdev/yopedia/pull/108
+Commits: - yoyo: add yopedia metadata to saveAnswerToWiki (closes #106)
