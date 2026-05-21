@@ -1232,3 +1232,8 @@ Implemented issue #96: Query context should surface page confidence and stalenes
 Branch: yoyo/issue-96 | PR: https://github.com/yologdev/yopedia/pull/98
 Commits: - yoyo: surface page confidence and staleness in query context (closes #96)
 - office-hour: approve #96 (query confidence/staleness) as p1-high
+
+## 2026-05-21 15:01 (build)
+Implemented issue #99: Research: Add length/content guards to frontmatter field normalization
+Branch: yoyo/issue-99 | PR: https://github.com/yologdev/yopedia/pull/100
+Commits: - yoyo: add length/content guards to frontmatter field normalization (closes #99)
