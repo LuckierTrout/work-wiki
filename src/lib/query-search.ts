@@ -5,7 +5,7 @@
  * LLM prompt building and answer generation.
  */
 
-import { readWikiPage } from "./wiki";
+import { readWikiPage, readWikiPageWithFrontmatter } from "./wiki";
 import { tokenize, buildCorpusStats, bm25Score } from "./bm25";
 import { searchByVector } from "./embeddings";
 import { callLLM, hasLLMKey } from "./llm";
@@ -253,6 +253,10 @@ export async function searchIndex(
  *
  * When `slugs` is provided, only those pages are loaded.
  * When omitted or empty, returns empty context.
+ *
+ * Each page header includes confidence and expiry metadata when available.
+ * Expired and low-confidence pages are annotated with visible markers so
+ * the LLM can weight its citations accordingly.
  */
 export async function buildContext(slugs?: string[]): Promise<{
   context: string;
@@ -262,16 +266,44 @@ export async function buildContext(slugs?: string[]): Promise<{
     return { context: "", slugs: [] };
   }
 
+  const LOW_CONFIDENCE_THRESHOLD = 0.5;
   const loadedSlugs: string[] = [];
   const parts: string[] = [];
 
   for (const slug of slugs) {
-    const page = await readWikiPage(slug);
+    const page = await readWikiPageWithFrontmatter(slug);
     if (page) {
       loadedSlugs.push(page.slug);
-      parts.push(
-        `=== Page: ${page.title} (slug: ${page.slug}) ===\n${page.content}`,
-      );
+
+      // Build header with confidence and expiry metadata
+      const headerParts = [`slug: ${page.slug}`];
+      const confidence = page.frontmatter.confidence;
+      if (typeof confidence === "number") {
+        headerParts.push(`confidence: ${confidence}`);
+      }
+      const expiry = page.frontmatter.expiry;
+      if (typeof expiry === "string" && expiry) {
+        headerParts.push(`expires: ${expiry}`);
+      }
+
+      let header = `=== Page: ${page.title} (${headerParts.join(", ")}) ===`;
+
+      // Add markers for expired and low-confidence pages
+      const markers: string[] = [];
+      if (typeof expiry === "string" && expiry) {
+        const expiryDate = new Date(expiry);
+        if (!isNaN(expiryDate.getTime()) && expiryDate < new Date()) {
+          markers.push("[EXPIRED — review before citing]");
+        }
+      }
+      if (typeof confidence === "number" && confidence < LOW_CONFIDENCE_THRESHOLD) {
+        markers.push("[LOW CONFIDENCE — treat as uncertain]");
+      }
+      if (markers.length > 0) {
+        header += "\n" + markers.join("\n");
+      }
+
+      parts.push(`${header}\n${page.body}`);
     }
   }
 

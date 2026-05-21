@@ -207,6 +207,108 @@ describe("buildContext — scoped pages", () => {
 });
 
 // ---------------------------------------------------------------------------
+// buildContext — confidence and expiry annotations
+// ---------------------------------------------------------------------------
+describe("buildContext — confidence and expiry annotations", () => {
+  it("includes confidence in the page header", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "high-conf",
+      "---\nconfidence: 0.95\n---\n\n# High Confidence\n\nTrusted content.",
+    );
+    const { context } = await buildContext(["high-conf"]);
+    expect(context).toContain("confidence: 0.95");
+    expect(context).toContain("=== Page: High Confidence");
+  });
+
+  it("includes expiry in the page header", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "with-expiry",
+      "---\nexpiry: 2030-06-15\n---\n\n# With Expiry\n\nFuture content.",
+    );
+    const { context } = await buildContext(["with-expiry"]);
+    expect(context).toContain("expires: 2030-06-15");
+  });
+
+  it("marks expired pages with [EXPIRED] marker", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "old-page",
+      "---\nexpiry: 2020-01-01\n---\n\n# Old Page\n\nStale content.",
+    );
+    const { context } = await buildContext(["old-page"]);
+    expect(context).toContain("[EXPIRED — review before citing]");
+  });
+
+  it("does not mark future-expiry pages as expired", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "fresh-page",
+      "---\nexpiry: 2099-12-31\n---\n\n# Fresh Page\n\nFresh content.",
+    );
+    const { context } = await buildContext(["fresh-page"]);
+    expect(context).not.toContain("[EXPIRED");
+  });
+
+  it("marks low-confidence pages with [LOW CONFIDENCE] marker", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "uncertain",
+      "---\nconfidence: 0.3\n---\n\n# Uncertain\n\nUncertain content.",
+    );
+    const { context } = await buildContext(["uncertain"]);
+    expect(context).toContain("[LOW CONFIDENCE — treat as uncertain]");
+  });
+
+  it("does not mark pages at or above 0.5 confidence as low", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "ok-conf",
+      "---\nconfidence: 0.5\n---\n\n# OK Confidence\n\nDecent content.",
+    );
+    const { context } = await buildContext(["ok-conf"]);
+    expect(context).not.toContain("[LOW CONFIDENCE");
+  });
+
+  it("marks pages that are both expired and low-confidence", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "bad-page",
+      "---\nconfidence: 0.2\nexpiry: 2020-06-01\n---\n\n# Bad Page\n\nBad content.",
+    );
+    const { context } = await buildContext(["bad-page"]);
+    expect(context).toContain("[EXPIRED — review before citing]");
+    expect(context).toContain("[LOW CONFIDENCE — treat as uncertain]");
+  });
+
+  it("uses frontmatter-stripped body (not raw content) in context", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "fm-page",
+      "---\nconfidence: 0.8\ntags: [ai]\n---\n\n# FM Page\n\nBody only.",
+    );
+    const { context } = await buildContext(["fm-page"]);
+    // Body should appear
+    expect(context).toContain("Body only.");
+    // Raw frontmatter delimiters should NOT appear
+    expect(context).not.toContain("tags: [ai]");
+  });
+
+  it("handles pages without confidence or expiry gracefully", async () => {
+    await ensureDirectories();
+    await writeWikiPage("plain", "# Plain\n\nNo frontmatter at all.");
+    const { context } = await buildContext(["plain"]);
+    expect(context).toContain("=== Page: Plain");
+    expect(context).toContain("slug: plain");
+    expect(context).not.toContain("confidence:");
+    expect(context).not.toContain("expires:");
+    expect(context).not.toContain("[EXPIRED");
+    expect(context).not.toContain("[LOW CONFIDENCE");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // searchIndex — respects pre-filtered entries from scope
 // ---------------------------------------------------------------------------
 describe("searchIndex — pre-filtered entries", () => {
