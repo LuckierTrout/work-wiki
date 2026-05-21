@@ -79,14 +79,95 @@ function coerceScalar(value: string): string | number | boolean {
 // strings (correct for arbitrary keys). But for *known schema fields* with
 // defined types, we need to coerce to the correct type so downstream code that
 // does `typeof confidence === "number"` gets the right answer.
+//
+// Length and content guards (layer 2 structural backstop):
+// LLMs can dump multi-KB reasoning text into frontmatter fields. These guards
+// truncate or drop oversized values after type coercion, logging warnings so
+// operators can detect the pattern. Inspired by Graphiti v0.29.1's
+// cap_string_attributes defense.
 
 /** ISO date pattern: YYYY-MM-DD */
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// --- Length guard constants ---------------------------------------------------
+/** @internal exported for testing */
+export const TITLE_MAX_CHARS = 300;
+export const ALIASES_MAX_ITEMS = 20;
+export const ALIASES_MAX_ITEM_CHARS = 200;
+export const AUTHORS_MAX_ITEMS = 50;
+export const AUTHORS_MAX_ITEM_CHARS = 100;
+export const CONTRIBUTORS_MAX_ITEMS = 50;
+export const CONTRIBUTORS_MAX_ITEM_CHARS = 100;
+export const SUPERSEDES_MAX_CHARS = 200;
+export const TAGS_MAX_ITEMS = 30;
+export const TAGS_MAX_ITEM_CHARS = 100;
+
+/** Truncate a string to `max` characters, logging a warning if truncated. */
+function guardString(field: string, value: string, max: number): string {
+  if (value.length > max) {
+    logger.warn(
+      "frontmatter",
+      `Truncating ${field}: ${value.length} chars exceeds max ${max}`,
+    );
+    return value.slice(0, max);
+  }
+  return value;
+}
+
+/**
+ * Guard an array field: drop items exceeding `maxItemChars`, truncate the
+ * array to `maxItems`, and optionally deduplicate.
+ */
+function guardArray(
+  field: string,
+  items: string[],
+  maxItems: number,
+  maxItemChars: number,
+  deduplicate = false,
+): string[] {
+  let result = items;
+
+  // Drop items that exceed the per-item length limit
+  result = result.filter((item) => {
+    if (item.length > maxItemChars) {
+      logger.warn(
+        "frontmatter",
+        `Dropping ${field} item (${item.length} chars exceeds max ${maxItemChars}): "${item.slice(0, 50)}…"`,
+      );
+      return false;
+    }
+    return true;
+  });
+
+  // Deduplicate if requested (case-sensitive)
+  if (deduplicate) {
+    const seen = new Set<string>();
+    result = result.filter((item) => {
+      if (seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    });
+  }
+
+  // Truncate to max number of items
+  if (result.length > maxItems) {
+    logger.warn(
+      "frontmatter",
+      `Truncating ${field} array: ${result.length} items exceeds max ${maxItems}`,
+    );
+    result = result.slice(0, maxItems);
+  }
+
+  return result;
+}
 
 /**
  * Normalize known schema fields to their expected types after parsing.
  * Mutates `data` in place. Fields that can't be coerced are deleted
  * (absent is safer than wrong-type for downstream consumers).
+ *
+ * Also applies length/content guards as a structural backstop against
+ * LLM-generated frontmatter with oversized or hallucinated field values.
  */
 export function normalizeTypedFields(data: Frontmatter): void {
   // --- confidence: number 0-1 ---
@@ -138,6 +219,16 @@ export function normalizeTypedFields(data: Frontmatter): void {
     }
   }
 
+  // --- title: string, max 300 chars ---
+  if ("title" in data && typeof data.title === "string") {
+    data.title = guardString("title", data.title, TITLE_MAX_CHARS);
+  }
+
+  // --- supersedes: string (slug), max 200 chars ---
+  if ("supersedes" in data && typeof data.supersedes === "string") {
+    data.supersedes = guardString("supersedes", data.supersedes, SUPERSEDES_MAX_CHARS);
+  }
+
   // --- array fields: authors, contributors, aliases → string[] ---
   for (const key of ["authors", "contributors", "aliases"] as const) {
     if (!(key in data)) continue;
@@ -153,6 +244,58 @@ export function normalizeTypedFields(data: Frontmatter): void {
       // unexpected type (number, boolean) — wrap string representation
       data[key] = [String(raw)];
     }
+  }
+
+  // --- tags: ensure array ---
+  if ("tags" in data) {
+    const raw = data.tags;
+    if (Array.isArray(raw)) {
+      // already an array
+    } else if (typeof raw === "string" && raw !== "") {
+      data.tags = [raw];
+    } else if (typeof raw === "string" && raw === "") {
+      data.tags = [];
+    } else {
+      data.tags = [String(raw)];
+    }
+  }
+
+  // --- Length guards on array fields ---
+  if ("aliases" in data && Array.isArray(data.aliases)) {
+    data.aliases = guardArray(
+      "aliases",
+      data.aliases as string[],
+      ALIASES_MAX_ITEMS,
+      ALIASES_MAX_ITEM_CHARS,
+      true, // deduplicate aliases
+    );
+  }
+
+  if ("authors" in data && Array.isArray(data.authors)) {
+    data.authors = guardArray(
+      "authors",
+      data.authors as string[],
+      AUTHORS_MAX_ITEMS,
+      AUTHORS_MAX_ITEM_CHARS,
+    );
+  }
+
+  if ("contributors" in data && Array.isArray(data.contributors)) {
+    data.contributors = guardArray(
+      "contributors",
+      data.contributors as string[],
+      CONTRIBUTORS_MAX_ITEMS,
+      CONTRIBUTORS_MAX_ITEM_CHARS,
+    );
+  }
+
+  if ("tags" in data && Array.isArray(data.tags)) {
+    data.tags = guardArray(
+      "tags",
+      data.tags as string[],
+      TAGS_MAX_ITEMS,
+      TAGS_MAX_ITEM_CHARS,
+    );
   }
 }
 
