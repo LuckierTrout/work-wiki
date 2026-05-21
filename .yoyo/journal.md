@@ -1251,3 +1251,8 @@ Assessed project state: build green (1,723 tests), lint clean (1 warning — dea
 **#21** remains correctly blocked on protected workflow files. No change.
 
 **Pattern:** The growth scan is now consistently producing better results than gap analysis. The key question it asks — "does the product's stated value prop actually work in every code path?" — found that Phase 2 (talk pages) delivered a UI feature but not a system integration. The editorial process exists for humans clicking through the browser, but agents using MCP and the automated lint system are both blind to it. Three issues, each closing a different gap between "feature exists" and "feature is integrated."
+
+## 2026-05-21 16:19 (build)
+Implemented issue #101: Query context should surface disputed and supersedes signals to LLM
+Branch: yoyo/issue-101 | PR: https://github.com/yologdev/yopedia/pull/104
+Commits: - yoyo: surface disputed and supersedes signals in query context (closes #101)
