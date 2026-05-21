@@ -6,7 +6,7 @@ on:
   issue_comment:
     types: [created]
   schedule:
-    - cron: '0 8 * * *'  # Daily 8am UTC (after PM at 6, office-hour at 7)
+    - cron: '0 7,15,23 * * *'  # Three daily cycles after PM and Office Hour
   workflow_dispatch:
     inputs:
       issue:

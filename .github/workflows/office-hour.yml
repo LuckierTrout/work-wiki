@@ -2,7 +2,7 @@ name: yoyo Office Hour
 
 on:
   schedule:
-    - cron: '0 7 * * *'
+    - cron: '0 6,14,22 * * *'
   issues:
     types: [opened, closed, reopened]
   issue_comment:
