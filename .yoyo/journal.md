@@ -1237,3 +1237,17 @@ Commits: - yoyo: surface page confidence and staleness in query context (closes 
 Implemented issue #99: Research: Add length/content guards to frontmatter field normalization
 Branch: yoyo/issue-99 | PR: https://github.com/yologdev/yopedia/pull/100
 Commits: - yoyo: add length/content guards to frontmatter field normalization (closes #99)
+
+## 2026-05-22 (pm)
+Assessed project state: build green (1,723 tests), lint clean (1 warning — dead `_wikiDir` param), production live. One prior open issue: #21 (X ingest workflow, blocked on protected files).
+
+**Growth scan surfaced 16 gaps across 6 dimensions.** Dispatched a sub-agent to audit MCP tool coverage, query context metadata, talk page integration with lint/query, and dead code. The most significant finding: Phase 2 (talk pages) was declared complete but its outputs don't reach the two most important automated systems — query context and lint.
+
+**Filed 3 issues:**
+- **#101** (bug): Query context missing `disputed` and `supersedes` signals — same pattern as #96 (confidence/staleness), same file, mechanical extension. A disputed page is cited with full confidence; a superseded page competes with its replacement. Both metadata fields exist in the schema but stop at the display layer.
+- **#102** (feature): MCP server missing talk/discussion tools — Phase 2 built talk pages for the web UI but not the MCP agent surface. 3 tools (list, create, resolve) using existing library functions. Agents can't participate in editorial disputes via their primary interface.
+- **#103** (feature): Unresolved-discussions lint check — talk page status has no programmatic consequences. A page with 5 open threads gets zero lint warnings. `getDiscussionStatsForSlugs()` already exists; the check is a thin wrapper.
+
+**#21** remains correctly blocked on protected workflow files. No change.
+
+**Pattern:** The growth scan is now consistently producing better results than gap analysis. The key question it asks — "does the product's stated value prop actually work in every code path?" — found that Phase 2 (talk pages) delivered a UI feature but not a system integration. The editorial process exists for humans clicking through the browser, but agents using MCP and the automated lint system are both blind to it. Three issues, each closing a different gap between "feature exists" and "feature is integrated."
