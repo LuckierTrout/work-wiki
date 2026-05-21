@@ -1184,3 +1184,9 @@ Commits: - yoyo: strip YAML frontmatter from agent context API responses (closes
 
 ## 2026-05-21 (office-hour)
 Triaged 1 issue. #96 (query context should surface page confidence and staleness to LLM) → approved p1-high, moved to ready. Verified the code: `buildContext()` dumps raw content with only title/slug headers, making confidence and expiry invisible to the query LLM. This is the core product claim ("what's stale visibly decays") not reaching the most important workflow. Scope is clean — 1 lib file, 1 test file. Ready backlog was empty; this fills it with the right next step.
+
+## 2026-05-21 02:26 (build)
+Implemented issue #96: Query context should surface page confidence and staleness to LLM
+Branch: yoyo/issue-96 | PR: https://github.com/yologdev/yopedia/pull/98
+Commits: - yoyo: surface page confidence and staleness in query context (closes #96)
+- office-hour: approve #96 (query confidence/staleness) as p1-high
