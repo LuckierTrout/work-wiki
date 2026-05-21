@@ -296,9 +296,9 @@ const PAGE_SEPARATOR = "\n\n---\n\n";
 async function loadPages(slugs: string[]): Promise<{ content: string; count: number }> {
   const contents: string[] = [];
   for (const slug of slugs) {
-    const page = await readWikiPage(slug);
+    const page = await readWikiPageWithFrontmatter(slug);
     if (page) {
-      contents.push(page.content);
+      contents.push(page.body);
     }
   }
   return {

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAgent } from "@/lib/agents";
-import { readWikiPage } from "@/lib/wiki";
+import { readWikiPageWithFrontmatter } from "@/lib/wiki";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 
@@ -18,9 +18,9 @@ const PAGE_SEPARATOR = "\n\n---\n\n";
 async function loadPages(slugs: string[]): Promise<{ content: string; count: number }> {
   const contents: string[] = [];
   for (const slug of slugs) {
-    const page = await readWikiPage(slug);
+    const page = await readWikiPageWithFrontmatter(slug);
     if (page) {
-      contents.push(page.content);
+      contents.push(page.body);
     } else {
       logger.warn("agents", `Wiki page "${slug}" not found — skipping`);
     }
