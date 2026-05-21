@@ -15,6 +15,9 @@
  *   seed_agent     — Register an agent and create its wiki pages
  *   lint_wiki      — Run quality checks on the wiki
  *   fix_lint_issue — Auto-fix a lint issue found by lint_wiki
+ *   list_discussions   — List discussion threads for a wiki page
+ *   create_discussion  — Start a new discussion thread
+ *   resolve_discussion — Resolve a discussion thread
  *
  * Usage:
  *   pnpm mcp          # starts the stdio server
@@ -45,6 +48,8 @@ import type { DeletePageResult } from "./lib/lifecycle";
 import type { ContentSearchResult } from "./lib/search";
 import { lint, ALL_CHECK_TYPES } from "./lib/lint";
 import { fixLintIssue, type FixResult } from "./lib/lint-fix";
+import { listThreads, createThread, resolveThread } from "./lib/talk";
+import type { TalkThread } from "./lib/types";
 
 // ---------------------------------------------------------------------------
 // Tool handler logic — exported for direct testing without transport
@@ -425,6 +430,82 @@ export async function handleFixLintIssue(args: {
   message?: string | undefined;
 }): Promise<FixResult> {
   return fixLintIssue(args.type, args.slug, args.target, args.message);
+}
+
+// ---------------------------------------------------------------------------
+// Discussion (talk page) handlers
+// ---------------------------------------------------------------------------
+
+export async function handleListDiscussions(args: {
+  pageSlug: string;
+}): Promise<{
+  pageSlug: string;
+  threads: {
+    index: number;
+    title: string;
+    status: string;
+    author: string;
+    commentCount: number;
+    created: string;
+    updated: string;
+  }[];
+}> {
+  const threads = await listThreads(args.pageSlug);
+  return {
+    pageSlug: args.pageSlug,
+    threads: threads.map((t, i) => ({
+      index: i,
+      title: t.title,
+      status: t.status,
+      author: t.comments[0]?.author ?? "unknown",
+      commentCount: t.comments.length,
+      created: t.created,
+      updated: t.updated,
+    })),
+  };
+}
+
+export async function handleCreateDiscussion(args: {
+  pageSlug: string;
+  title: string;
+  body: string;
+  author: string;
+}): Promise<TalkThread> {
+  if (!args.pageSlug) {
+    throw new Error("pageSlug is required");
+  }
+  if (!args.title) {
+    throw new Error("title is required");
+  }
+  if (!args.body) {
+    throw new Error("body is required");
+  }
+  if (!args.author) {
+    throw new Error("author is required");
+  }
+  return createThread(args.pageSlug, args.title, args.author, args.body);
+}
+
+export async function handleResolveDiscussion(args: {
+  pageSlug: string;
+  threadIndex: number;
+  resolution: "resolved" | "wontfix";
+}): Promise<TalkThread> {
+  if (!args.pageSlug) {
+    throw new Error("pageSlug is required");
+  }
+  if (args.threadIndex === undefined || args.threadIndex === null) {
+    throw new Error("threadIndex is required");
+  }
+  if (!args.resolution) {
+    throw new Error("resolution is required");
+  }
+  if (args.resolution !== "resolved" && args.resolution !== "wontfix") {
+    throw new Error(
+      `Invalid resolution: "${args.resolution}". Must be "resolved" or "wontfix"`,
+    );
+  }
+  return resolveThread(args.pageSlug, args.threadIndex, args.resolution);
 }
 
 // ---------------------------------------------------------------------------
@@ -855,6 +936,130 @@ export function createMcpServer(): McpServer {
   }, async (args) => {
     try {
       const result = await handleFixLintIssue(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // list_discussions — List discussion threads for a wiki page
+  server.registerTool("list_discussions", {
+    description:
+      "List all discussion threads for a wiki page, including status, author, and comment count",
+    inputSchema: {
+      pageSlug: z
+        .string()
+        .describe("Slug of the wiki page to list discussions for"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleListDiscussions(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // create_discussion — Start a new discussion thread on a wiki page
+  server.registerTool("create_discussion", {
+    description:
+      "Create a new discussion thread on a wiki page for editorial discussion",
+    inputSchema: {
+      pageSlug: z
+        .string()
+        .describe("Slug of the wiki page to discuss"),
+      title: z.string().describe("Title of the discussion thread"),
+      body: z
+        .string()
+        .describe("Body of the first comment (markdown supported)"),
+      author: z
+        .string()
+        .describe("Author handle (agent ID or user handle)"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleCreateDiscussion(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // resolve_discussion — Resolve a discussion thread
+  server.registerTool("resolve_discussion", {
+    description:
+      "Resolve a discussion thread on a wiki page (mark as resolved or wontfix)",
+    inputSchema: {
+      pageSlug: z
+        .string()
+        .describe("Slug of the wiki page the discussion belongs to"),
+      threadIndex: z
+        .number()
+        .describe("Zero-based index of the thread to resolve"),
+      resolution: z
+        .enum(["resolved", "wontfix"])
+        .describe('Resolution status: "resolved" or "wontfix"'),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleResolveDiscussion(args);
       return {
         content: [
           {
