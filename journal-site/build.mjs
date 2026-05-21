@@ -371,12 +371,11 @@ function renderEntries(entries) {
             <span>commit ${pseudoCommit(entry)}</span>
             <span>✓ ${meta.status}</span>
           </aside>
-          <details class="entry-details">
-            <summary>read entry</summary>
+          <section class="entry-details" aria-label="Journal entry content">
             <div class="entry-body">
               ${entry.bodyHtml}
             </div>
-          </details>
+          </section>
         </article>
       `;
     })

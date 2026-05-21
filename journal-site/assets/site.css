@@ -37,8 +37,8 @@ body {
     linear-gradient(180deg, oklch(99% 0.006 88), oklch(93% 0.014 88));
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 1rem;
-  line-height: 1.55;
+  font-size: 1.0625rem;
+  line-height: 1.58;
   font-kerning: normal;
   text-rendering: optimizeLegibility;
 }
@@ -92,7 +92,7 @@ pre code {
 
 .terminal-shell,
 .site-footer {
-  width: min(1440px, calc(100% - 6rem));
+  width: min(1520px, calc(100% - 5rem));
   margin-inline: auto;
 }
 
@@ -143,7 +143,7 @@ pre code {
 
 .hero-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.06fr) minmax(30rem, 0.94fr);
+  grid-template-columns: minmax(0, 1fr) minmax(34rem, 0.86fr);
   gap: 2rem;
   align-items: stretch;
   margin-top: 2.35rem;
@@ -325,7 +325,7 @@ h1 {
 .archive-shell {
   display: grid;
   grid-template-columns: 1fr;
-  padding: 0 2rem 1.7rem;
+  padding: 0 2rem 2.4rem;
 }
 
 .archive-label {
@@ -335,14 +335,15 @@ h1 {
 .entry-list {
   position: relative;
   display: grid;
-  padding: 0.9rem 0 0;
+  gap: 1rem;
+  padding: 1.25rem 0 0;
 }
 
 .entry-list::before {
   content: "";
   position: absolute;
-  top: 1.3rem;
-  bottom: 1.2rem;
+  top: 1.8rem;
+  bottom: 1.8rem;
   left: 1.55rem;
   width: 1px;
   background: var(--line);
@@ -351,16 +352,12 @@ h1 {
 .journal-entry {
   position: relative;
   display: grid;
-  grid-template-columns: 4.8rem minmax(0, 1fr) 12.5rem;
-  align-items: stretch;
-  min-height: 8rem;
+  grid-template-columns: 4.8rem minmax(0, 1fr) 13rem;
+  align-items: start;
   border: 1px solid var(--line-soft);
-  border-bottom: 0;
-  background: oklch(10% 0.012 250 / 70%);
-}
-
-.journal-entry:last-child {
-  border-bottom: 1px solid var(--line-soft);
+  background:
+    linear-gradient(90deg, oklch(100% 0 0 / 3%) 1px, transparent 1px) 0 0 / 46px 46px,
+    oklch(10% 0.012 250 / 78%);
 }
 
 .journal-entry[hidden] {
@@ -370,11 +367,12 @@ h1 {
 .month-marker {
   grid-column: 1 / -1;
   display: none;
-  border-bottom: 1px solid var(--line-soft);
-  background: oklch(12% 0.012 250);
+  border: 1px solid var(--line-soft);
+  background: oklch(6% 0.012 250);
   color: var(--acid);
-  padding: 0.7rem 4.8rem;
-  font-size: 0.88rem;
+  margin: 1.2rem 0 0.1rem;
+  padding: 0.85rem 4.8rem;
+  font-size: 0.95rem;
   font-weight: 900;
   text-transform: uppercase;
 }
@@ -401,7 +399,7 @@ h1 {
 
 .entry-header {
   min-width: 0;
-  padding: 1.35rem 1rem 1.35rem 0;
+  padding: 1.55rem 1.25rem 0.55rem 0;
 }
 
 .entry-kicker {
@@ -427,12 +425,12 @@ h1 {
 }
 
 .entry-header h2 {
-  max-width: 42rem;
-  margin: 0.55rem 0 0;
+  max-width: 56rem;
+  margin: 0.65rem 0 0;
   color: var(--text);
-  font-size: clamp(1.35rem, 2vw, 2rem);
+  font-size: clamp(1.75rem, 2.7vw, 3rem);
   font-weight: 900;
-  line-height: 1.28;
+  line-height: 1.12;
 }
 
 .entry-header h2 a {
@@ -445,7 +443,7 @@ h1 {
   align-content: center;
   justify-items: end;
   gap: 0.25rem;
-  padding: 1.25rem 1.25rem 1.25rem 0.8rem;
+  padding: 1.65rem 1.35rem 0 0.8rem;
   color: var(--muted);
   font-size: 1rem;
   font-weight: 900;
@@ -454,41 +452,30 @@ h1 {
 
 .entry-details {
   grid-column: 2 / 4;
-  border-top: 1px solid var(--line-soft);
-  padding: 0.85rem 1.25rem 1rem 0;
-}
-
-.entry-details summary {
-  width: max-content;
-  cursor: pointer;
-  color: var(--acid);
-  font-size: 0.9rem;
-  font-weight: 900;
-  text-transform: uppercase;
+  padding: 0.45rem 2.25rem 2.35rem 0;
 }
 
 .entry-body {
-  max-width: 76ch;
-  margin-top: 1rem;
-  color: var(--muted);
+  max-width: 74ch;
+  color: oklch(82% 0.02 86);
   font-family: ui-serif, Georgia, serif;
-  font-size: 1.08rem;
-  line-height: 1.72;
+  font-size: clamp(1.18rem, 1.35vw, 1.42rem);
+  line-height: 1.76;
 }
 
 .entry-body h3,
 .entry-body h4 {
-  margin: 1.25rem 0 0.45rem;
+  margin: 1.55rem 0 0.55rem;
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 0.95rem;
+  font-size: 1rem;
   line-height: 1.18;
   text-transform: uppercase;
 }
 
 .entry-body p,
 .entry-body ul {
-  margin: 0 0 1rem;
+  margin: 0 0 1.1rem;
 }
 
 .entry-body ul {
@@ -497,9 +484,10 @@ h1 {
 
 .entry-body blockquote {
   margin: 1.25rem 0;
-  border-left: 0.4rem solid var(--agent-color);
+  border: 1px solid var(--line-soft);
   background: oklch(100% 0 0 / 4%);
-  padding: 0.8rem 1rem;
+  color: var(--text);
+  padding: 0.95rem 1.1rem;
 }
 
 .site-footer {
@@ -635,12 +623,19 @@ h1 {
     grid-column: 2;
     justify-items: start;
     align-content: start;
-    padding: 0 1rem 1.1rem 0;
+    padding: 0.25rem 1rem 0.2rem 0;
     text-align: left;
   }
 
   .entry-details {
     grid-column: 2;
+    padding: 0.55rem 1rem 1.55rem 0;
+  }
+
+  .entry-body {
+    max-width: 100%;
+    font-size: 1.12rem;
+    line-height: 1.72;
   }
 }
 
@@ -696,12 +691,23 @@ h1 {
   }
 
   .entry-header h2 {
-    font-size: 1.25rem;
+    font-size: 1.55rem;
+    line-height: 1.16;
   }
 
   .entry-kicker,
   .entry-status {
     font-size: 0.82rem;
+  }
+
+  .entry-body {
+    font-size: 1.04rem;
+    line-height: 1.7;
+  }
+
+  .entry-body h3,
+  .entry-body h4 {
+    font-size: 0.9rem;
   }
 
   .site-footer {
