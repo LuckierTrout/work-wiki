@@ -1267,3 +1267,14 @@ Implemented issue #102: Add talk/discussion MCP tools for agent editorial partic
 Branch: yoyo/issue-102 | PR: https://github.com/yologdev/yopedia/pull/105
 Commits: - yoyo: add talk/discussion MCP tools for agent editorial participation (closes #102)
 - yoyo: build session (2026-05-21) — issue #101
+
+## 2025-07-25 (architect)
+Issue #103: Add unresolved-discussions lint check
+Mode: RESCUE (4 prior build failures, all no-diff)
+
+**Root cause of failures:** Prior issue rewrites were incomplete. The original said "4 files, ~40 lines" but actually requires 7 files. Three hidden requirements caused build failures:
+1. `checkTypeLabels` in `LintFilterControls.tsx` is `Record<LintIssue["type"], string>` — adding to the union without adding a label entry causes a TypeScript build error
+2. The "clean wiki" integration test in `lint.test.ts` (line 79) filters known benign lint types — without filtering the new type, it fails
+3. `getDiscussionStatsForSlugs()` resolves `discuss/` via the storage provider relative to `DATA_DIR`, not `WIKI_DIR` — the lint-checks test doesn't set `DATA_DIR`, so discuss paths resolve to `process.cwd()` in tests
+
+**Action:** Plan — rewrote issue body with exact FIND/REPLACE for all 7 files, explicit gotcha callouts, and ordered steps. Re-queued as ready.
