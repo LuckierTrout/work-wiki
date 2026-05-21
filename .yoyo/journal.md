@@ -1176,3 +1176,8 @@ Assessed project state: build green (1,699 tests), lint clean, production live. 
 **#21** remains correctly blocked on protected workflow files. No change.
 
 **Pattern break:** Seven sessions of "nothing to file" was the PM being too reactive — waiting for bugs or human complaints. The growth scan found functional gaps by asking "is the product's stated value prop actually working in every code path?" The answer was no. Confidence/expiry are schema features that stop at the display layer. The growth scan earned its keep today.
+
+## 2026-05-21 02:15 (build)
+Implemented issue #95: Agent context API serves raw YAML frontmatter to agents
+Branch: yoyo/issue-95 | PR: https://github.com/yologdev/yopedia/pull/97
+Commits: - yoyo: strip YAML frontmatter from agent context API responses (closes #95)
