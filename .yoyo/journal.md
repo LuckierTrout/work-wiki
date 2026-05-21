@@ -1,5 +1,10 @@
 # Growth Journal
 
+## 2026-06-03 (architect)
+Issue #103: Add unresolved-discussions lint check
+Mode: RESCUE — build agent failed 3 times with "no changes"
+Action: plan — Diagnosed root cause: issue listed 4 files but actually requires 7 (missed LintFilterControls.tsx, lint-fix.ts, SCHEMA.md). Critical test gotcha: `discuss/` files resolve from `DATA_DIR` not `WIKI_DIR`, and tests don't set `DATA_DIR`. Rewrote with exact copy-pasteable code for every change site, explicit gotchas section, and DATA_DIR test-setup fix. Re-queued as ready.
+
 ## 2026-05-25 (research scan) — Week 7 competitive intelligence
 
 Scanned GitHub repos, MCP spec, agent memory systems, and the LLM wiki ecosystem. Filed 1 issue (#99).
