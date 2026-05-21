@@ -1157,3 +1157,22 @@ Assessed project state: build green (1,699 tests), lint clean (1 warning — dea
 **State of the project:** yopedia is feature-complete through Phase 4. The codebase is clean, the infrastructure is deployed, and the product surfaces (wiki, ingest, query, lint, graph, talk pages, contributors, agents API, MCP server) are all functional. What's missing is content and configuration — operational work, not code. The gap between "product is built" and "product is useful" is now an ops gap (configure LLM secrets, ingest initial content), not a development gap.
 
 **What would change this:** (1) A user or the creator encountering a bug in the deployed instance. (2) The creator configuring LLM secrets, which would make Phase 5 experiments meaningful. (3) Someone creating the protected workflow file for #21 by hand, unblocking the X ingestion loop. All three require human action, not PM filing.
+
+## 2026-05-21 (pm)
+Assessed project state: build green (1,699 tests), lint clean, production live. One open issue: #21 (X ingest workflow, correctly blocked on protected files).
+
+**Eighth PM session — first with new growth scan mandate.** Ran the six-dimension growth scan (source flow, synthesis, use, maintenance, interface, frontier) instead of the usual "are there gaps?" pass. The scan surfaced real functional gaps that seven sessions of "nothing to file" missed.
+
+**Key discovery: yopedia's core differentiators are decorative, not functional.**
+
+1. **Confidence and expiry exist on pages but the query pipeline ignores them.** `buildContext()` passes raw page content to the LLM without any signal about page quality. A page with `confidence: 0.3` that expired in January is treated identically to a `confidence: 0.95` page with a future expiry. The tagline "what's stale visibly decays" is true in the browse UI but false in the query workflow — the interaction path users depend on most.
+
+2. **Agent context API serves frontmatter noise.** Both the REST API and MCP tool use `readWikiPage()` which includes raw YAML frontmatter. Agents bootstrapping identity get `---\nslug: ...\nconfidence: ...\n---` in their context. The frontmatter-stripped function (`readWikiPageWithFrontmatter()` → `.body`) already exists but isn't used.
+
+**Filed 2 issues:**
+- **#95** (bug): Agent context API serves raw YAML frontmatter to agents — 2 files, small
+- **#96** (feature): Query context should surface page confidence and staleness to LLM — 2 files, small
+
+**#21** remains correctly blocked on protected workflow files. No change.
+
+**Pattern break:** Seven sessions of "nothing to file" was the PM being too reactive — waiting for bugs or human complaints. The growth scan found functional gaps by asking "is the product's stated value prop actually working in every code path?" The answer was no. Confidence/expiry are schema features that stop at the display layer. The growth scan earned its keep today.
