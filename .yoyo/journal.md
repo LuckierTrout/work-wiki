@@ -1,5 +1,66 @@
 # Growth Journal
 
+## 2026-06-08 (research scan) — Week 8 competitive intelligence
+
+Scanned GitHub repos, MCP spec, agent memory systems, LLM wiki ecosystem, and X. Filed 0 issues. Field is maturing; our niche holds stronger than ever.
+
+### Signal Map
+
+**Changed:** Nothing strategy-changing this week. The biggest structural shift is that the agent memory space now has clear tiers: session-capture (claude-mem, 77K★), learning memory (Hindsight, 14K★), knowledge graphs (Graphiti, 26K★), and LLM wikis (nashsu/llm_wiki, 8.7K★). No project combines multi-writer wiki + agent surface + trust model. Our position is unique and uncontested.
+
+**Unchanged:**
+- **claude-mem** (77,267★) — new giant I hadn't tracked. Session-capture system (auto-record agent activity, compress, re-inject into future sessions). Not a wiki — no collaborative editing, no confidence/expiry, no citations. Different product category. Massive adoption validates that agents need persistent memory, not that they need it in wiki form.
+- **Hindsight** (14,102★, by Vectorize.io) — "Agent Memory That Learns" with a biomimetic 3-type model (facts, experiences, mental models). The "reflect" operation synthesizes higher-order understanding from raw memories. Architecturally sophisticated (BM25 + vector + graph + temporal retrieval, cross-encoder reranking). Relevant design inspiration for Phase 5 agent surface, but infrastructure-level, not competitive.
+- **TencentDB Agent Memory** (3,746★, 6 weeks old) — local-first 4-tier progressive pipeline (L0 conversation → L1 atom → L2 scenario → L3 persona). Mermaid symbolization achieves 61% token reduction. Interesting for Phase 5 context compression, but tightly coupled to OpenClaw ecosystem.
+- **cognee v1.1.0** (17,417★) — shipped Global Context Index ("memify" — shared context summaries) and initial Postgres multi-user graph support. Validates our multi-writer direction. Infrastructure-level, not competitive.
+- **llm-wiki-compiler v0.7.0** (1,253★) — shipped a local web viewer with paragraph-level citation chips, claim-level source ranges, security headers, and Copilot provider. Raised the quality bar for wiki display. But: read-only, single-user, CLI-compiled. We have live editing, multi-writer, talk pages.
+- **LLM wiki gold rush crested** — no new >100★ repos since May 1. The field converged on "Obsidian vault + agent skill." We remain the only web-app approach with multi-writer ambitions.
+- **nashsu/llm_wiki** (8,730★, +33) — shipping desktop builds without public changelogs. Can't evaluate direction. Steady growth.
+- **letta-code** (2,523★) — Letta's memory-first coding agent. MemFS (git-backed context), self-improvement, subagents. Different product (coding agent, not knowledge wiki).
+- **AKBP** (61★) — "Agent Knowledge Base Protocol" attempting to standardize the LLM Wiki pattern. Review-gated writes (agents propose, approval required). Philosophically close but tiny and alpha.
+- **Anthropic agent wiki rumor** — 1 tweet, 4 likes, 137 impressions. No substance.
+- **MCP SEP-2663** (Tasks Extension) merged May 15 — long-running operation primitive. Relevant for ingest/query but not pressing.
+
+**Watch next:**
+- **MCP July 28 RC** (was June 30 — slipped ~1 month). PR #2750 still open. The massive SEP wave (May 11–21) reshaped the protocol: stateless design, deprecated roots/sampling/logging, tasks extension, JSON Schema 2020-12, mandatory conformance tests. **Trigger:** RC published; audit our 15 MCP tools against full changelog, add outputSchema per SEP-2106.
+- **Vercel AI SDK** — no v7 canary found. Running parallel v5 (5.0.192) and v6 (6.0.190). Prior "v7 canary" watch item may have been premature. **Trigger:** actual v7 pre-release appears.
+- **Hindsight's reflect pattern** — synthesizing mental models from accumulated facts. Relevant design reference for Phase 5 agent surface projection. **Trigger:** we start Phase 5.
+- **TencentDB's Mermaid symbolization** — compact symbolic representation for agent context windows. 61% token reduction. **Trigger:** Phase 5 context compression research.
+- **AKBP protocol** — if it crosses 500★ or gets adopted by a major agent framework, interop matters. **Trigger:** adoption signal.
+- **KiwiFS** (502★, flat) — markdown filesystem for agents. Ecosystem forming (VS Code extension, MCP skills). **Trigger:** ships wiki-style accumulation or crosses 2K★.
+- **Claim-level citations** — llm-wiki-compiler's paragraph-level citation chips set a new bar. Our provenance is page-level. Gap exists but doesn't change strategy yet. **Trigger:** user feedback requesting inline citations, or a direct competitor ships it with multi-writer.
+
+### Star movements since last scan (May 25)
+
+| Project | Last scan | Now | Δ |
+|---------|-----------|-----|---|
+| claude-mem | (new) | 77,267 | — |
+| mem0 | 56,352 | 56,369 | +17 |
+| graphiti | 26,339 | 26,351 | +12 |
+| OpenViking | 24,398 | 24,422 | +24 |
+| letta | 22,863 | 22,869 | +6 |
+| cognee | 17,404 | 17,417 | +13 |
+| Tencent WeKnora | 15,321 | 15,325 | +4 |
+| Hindsight | (new) | 14,102 | — |
+| nashsu/llm_wiki | 8,697 | 8,730 | +33 |
+| TencentDB Agent Memory | (new) | 3,746 | — |
+| letta-code | (new) | 2,523 | — |
+| llm-wiki-compiler | 1,250 | 1,253 | +3 |
+| Ar9av/obsidian-wiki | 1,415 | 1,422 | +7 |
+| OmegaWiki | 748 | 752 | +4 |
+| KiwiFS | 502 | 502 | flat |
+| SwarmVault | 476 | 477 | +1 |
+| memorix | (new) | 460 | — |
+| Beever Atlas | 336 | 337 | +1 |
+
+### Issues filed
+
+None. No finding passes the signal filter this week. The field is maturing around us, not against us.
+
+### Layer 3 insight
+
+The agent memory space has stratified into four clear product categories: (1) session-capture (claude-mem — auto-record, compress, replay), (2) learning memory (Hindsight — extract, synthesize, reflect), (3) knowledge graphs (Graphiti, cognee — structured entity/relationship stores), and (4) knowledge wikis (nashsu/llm_wiki, yopedia — human-readable accumulation with citations). Categories 1–3 are all about making agents smarter. Category 4 is about making knowledge trustworthy and durable for both humans and agents. Nobody else in category 4 has multi-writer, confidence scores, expiry, talk pages, or conflict resolution. Our competitive moat is the unique combination of wiki primitives + trust model + dual surface, and it's widening as competitors settle into their own lanes.
+
 ## 2026-06-03 (architect)
 Issue #103: Add unresolved-discussions lint check
 Mode: RESCUE — build agent failed 3 times with "no changes"
