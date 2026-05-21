@@ -18,6 +18,8 @@ import {
   handleListDiscussions,
   handleCreateDiscussion,
   handleResolveDiscussion,
+  handleAddComment,
+  handleReingest,
 } from "../../mcp";
 import { _resetStorage } from "../storage";
 import { _resetConfigCache } from "../config";
@@ -1245,5 +1247,160 @@ describe("resolve_discussion", () => {
 
     const list = await handleListDiscussions({ pageSlug: "list-resolved" });
     expect(list.threads[0].status).toBe("resolved");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// add_comment tests
+// ---------------------------------------------------------------------------
+
+describe("add_comment", () => {
+  it("adds a comment to an existing thread", async () => {
+    await writeTestPage(
+      "comment-page",
+      "---\ntags: [test]\n---\n# Comment Page\n\nContent.",
+    );
+
+    // Create a thread first
+    await handleCreateDiscussion({
+      pageSlug: "comment-page",
+      title: "A discussion",
+      body: "Initial message",
+      author: "yoyo",
+    });
+
+    // Add a comment
+    const comment = await handleAddComment({
+      pageSlug: "comment-page",
+      threadIndex: 0,
+      content: "This is a reply",
+      author: "agent-2",
+    });
+
+    expect(comment.author).toBe("agent-2");
+    expect(comment.body).toBe("This is a reply");
+    expect(comment.id).toBeDefined();
+    expect(comment.parentId).toBeNull();
+
+    // Verify the comment appears in the thread listing
+    const list = await handleListDiscussions({ pageSlug: "comment-page" });
+    expect(list.threads[0].commentCount).toBe(2); // original + reply
+  });
+
+  it("adds a threaded reply with parentId", async () => {
+    await writeTestPage(
+      "threaded-reply",
+      "---\ntags: [test]\n---\n# Threaded Reply\n\nContent.",
+    );
+
+    const thread = await handleCreateDiscussion({
+      pageSlug: "threaded-reply",
+      title: "Thread for reply",
+      body: "Top-level message",
+      author: "yoyo",
+    });
+
+    const parentId = thread.comments[0].id;
+
+    const reply = await handleAddComment({
+      pageSlug: "threaded-reply",
+      threadIndex: 0,
+      content: "Nested reply",
+      author: "agent-3",
+      parentId,
+    });
+
+    expect(reply.parentId).toBe(parentId);
+    expect(reply.body).toBe("Nested reply");
+  });
+
+  it("defaults author to anonymous when omitted", async () => {
+    await writeTestPage(
+      "anon-comment",
+      "---\ntags: [test]\n---\n# Anon Comment\n\nContent.",
+    );
+
+    await handleCreateDiscussion({
+      pageSlug: "anon-comment",
+      title: "Thread",
+      body: "First message",
+      author: "yoyo",
+    });
+
+    const comment = await handleAddComment({
+      pageSlug: "anon-comment",
+      threadIndex: 0,
+      content: "Anonymous contribution",
+    });
+
+    expect(comment.author).toBe("anonymous");
+  });
+
+  it("throws for missing pageSlug", async () => {
+    await expect(
+      handleAddComment({
+        pageSlug: "",
+        threadIndex: 0,
+        content: "test",
+      }),
+    ).rejects.toThrow("pageSlug is required");
+  });
+
+  it("throws for missing content", async () => {
+    await expect(
+      handleAddComment({
+        pageSlug: "some-page",
+        threadIndex: 0,
+        content: "",
+      }),
+    ).rejects.toThrow("content is required");
+  });
+
+  it("throws for invalid threadIndex", async () => {
+    await writeTestPage(
+      "bad-idx-comment",
+      "---\ntags: [test]\n---\n# Bad Index\n\nContent.",
+    );
+
+    await expect(
+      handleAddComment({
+        pageSlug: "bad-idx-comment",
+        threadIndex: 99,
+        content: "test comment",
+        author: "yoyo",
+      }),
+    ).rejects.toThrow("thread index 99 not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reingest tests
+// ---------------------------------------------------------------------------
+
+describe("reingest", () => {
+  it("throws for missing slug", async () => {
+    await expect(
+      handleReingest({ slug: "" }),
+    ).rejects.toThrow("slug is required");
+  });
+
+  it("throws for non-existent page", async () => {
+    await expect(
+      handleReingest({ slug: "nonexistent-page" }),
+    ).rejects.toThrow('page "nonexistent-page" not found');
+  });
+
+  it("throws for page without source_url", async () => {
+    await writeTestPage(
+      "no-source",
+      "---\ntags: [test]\n---\n# No Source\n\nThis page has no source URL.",
+    );
+    await writeIndex([
+      { title: "No Source", slug: "no-source", summary: "No source URL" },
+    ]);
+
+    await expect(
+      handleReingest({ slug: "no-source" }),
+    ).rejects.toThrow("no source URL recorded");
   });
 });

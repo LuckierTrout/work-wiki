@@ -17,7 +17,9 @@
  *   fix_lint_issue — Auto-fix a lint issue found by lint_wiki
  *   list_discussions   — List discussion threads for a wiki page
  *   create_discussion  — Start a new discussion thread
+ *   add_comment        — Add a comment to a discussion thread
  *   resolve_discussion — Resolve a discussion thread
+ *   reingest           — Re-ingest a wiki page from its original source URL
  *
  * Usage:
  *   pnpm mcp          # starts the stdio server
@@ -38,7 +40,7 @@ import {
   deleteWikiPage,
   type Frontmatter,
 } from "./lib/wiki";
-import { extractSummary, ingestUrl } from "./lib/ingest";
+import { extractSummary, ingestUrl, reingest } from "./lib/ingest";
 import { query, type QueryFormat } from "./lib/query";
 import { isUrl } from "./lib/fetch";
 import { getAgent, seedAgent } from "./lib/agents";
@@ -48,8 +50,8 @@ import type { DeletePageResult } from "./lib/lifecycle";
 import type { ContentSearchResult } from "./lib/search";
 import { lint, ALL_CHECK_TYPES } from "./lib/lint";
 import { fixLintIssue, type FixResult } from "./lib/lint-fix";
-import { listThreads, createThread, resolveThread } from "./lib/talk";
-import type { TalkThread } from "./lib/types";
+import { listThreads, createThread, resolveThread, addComment } from "./lib/talk";
+import type { TalkThread, TalkComment } from "./lib/types";
 
 // ---------------------------------------------------------------------------
 // Tool handler logic — exported for direct testing without transport
@@ -506,6 +508,39 @@ export async function handleResolveDiscussion(args: {
     );
   }
   return resolveThread(args.pageSlug, args.threadIndex, args.resolution);
+}
+
+export async function handleAddComment(args: {
+  pageSlug: string;
+  threadIndex: number;
+  content: string;
+  author?: string | undefined;
+  parentId?: string | undefined;
+}): Promise<TalkComment> {
+  if (!args.pageSlug) {
+    throw new Error("pageSlug is required");
+  }
+  if (args.threadIndex === undefined || args.threadIndex === null) {
+    throw new Error("threadIndex is required");
+  }
+  if (!args.content) {
+    throw new Error("content is required");
+  }
+  const author = args.author ?? "anonymous";
+  return addComment(args.pageSlug, args.threadIndex, author, args.content, args.parentId);
+}
+
+// ---------------------------------------------------------------------------
+// Re-ingest handler
+// ---------------------------------------------------------------------------
+
+export async function handleReingest(args: {
+  slug: string;
+}): Promise<IngestResult> {
+  if (!args.slug) {
+    throw new Error("slug is required");
+  }
+  return reingest(args.slug);
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,6 +1095,94 @@ export function createMcpServer(): McpServer {
   }, async (args) => {
     try {
       const result = await handleResolveDiscussion(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // add_comment — Add a comment to a discussion thread
+  server.registerTool("add_comment", {
+    description:
+      "Add a comment to an existing discussion thread on a wiki page",
+    inputSchema: {
+      pageSlug: z
+        .string()
+        .describe("Slug of the wiki page the discussion belongs to"),
+      threadIndex: z
+        .number()
+        .describe("Zero-based index of the thread to comment on"),
+      content: z
+        .string()
+        .describe("Comment body (markdown supported)"),
+      author: z
+        .string()
+        .optional()
+        .describe('Author handle (agent ID or user handle, defaults to "anonymous")'),
+      parentId: z
+        .string()
+        .optional()
+        .describe("ID of parent comment for threaded replies (omit for top-level)"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleAddComment(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // reingest — Re-ingest a wiki page from its original source URL
+  server.registerTool("reingest", {
+    description:
+      "Re-ingest a wiki page from its original source URL to refresh stale content",
+    inputSchema: {
+      slug: z
+        .string()
+        .describe("Slug of the wiki page to re-ingest"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleReingest(args);
       return {
         content: [
           {
