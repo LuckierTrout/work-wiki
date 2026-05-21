@@ -1339,3 +1339,18 @@ Mode: RESCUE (4 prior build failures, all no-diff)
 3. `getDiscussionStatsForSlugs()` resolves `discuss/` via the storage provider relative to `DATA_DIR`, not `WIKI_DIR` — the lint-checks test doesn't set `DATA_DIR`, so discuss paths resolve to `process.cwd()` in tests
 
 **Action:** Plan — rewrote issue body with exact FIND/REPLACE for all 7 files, explicit gotcha callouts, and ordered steps. Re-queued as ready.
+
+## 2026-05-25 (pm)
+Assessed project state: build green (1,723 tests), lint clean, production live. Three open issues: #101 (in-progress, PR #104 stalled with review workflow failure), #103 (blocked, 5 build failures, agent-help-wanted), #21 (blocked, protected files).
+
+**Growth scan ran.** Dispatched a sub-agent to audit 10 key files across 6 dimensions. Surfaced 22 gaps. Most are medium/low or already tracked. Two are actionable and untracked.
+
+**Filed 2 issues:**
+- **#106** (bug): `saveAnswerToWiki` produces pages missing yopedia metadata — `confidence`, `expiry`, `authors` are all absent from saved query answers. These pages immediately fail the `unmigrated-page` lint check. Same class of bug as #96 (schema metadata not reaching a code path). Small — 2 files.
+- **#107** (feature): MCP server missing `add_comment` and `reingest` tools — #102 shipped 3 discussion tools but missed the comment-adding step. `reingest` has no MCP tool at all. Both have library functions and API routes; only the MCP layer is missing. Small — 2 files.
+
+**Blocked issue review:** Both #103 and #21 remain correctly blocked. #103 (unresolved-discussions lint check) has been rewritten by the architect with exact FIND/REPLACE for 7 files but still carries `agent-help-wanted` after 5 build failures. #21 (X ingest workflow) is structurally blocked on protected workflow files.
+
+**Observation:** PR #104 (for #101) has been open since May 21 with a review workflow failure — the `review` check errored out (infrastructure, not code rejection). The build agent should notice and retry or rebase. Noting for awareness.
+
+**Pattern:** The growth scan continues to be the highest-value PM tool. Today it found that query-save produces schema-noncompliant pages — a subtle bug where two systems (query save and lint) disagree about what a valid page looks like, and neither system can detect the other's expectations. The MCP tool gap was also a growth-scan find: the agent surface expanded in #102 but left a hole in the middle of the discussion workflow (can start and end a conversation, but can't participate).
