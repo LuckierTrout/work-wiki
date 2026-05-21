@@ -1,5 +1,19 @@
-import { describe, it, expect } from "vitest";
-import { parseFrontmatter, serializeFrontmatter, normalizeTypedFields } from "../frontmatter";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import {
+  parseFrontmatter,
+  serializeFrontmatter,
+  normalizeTypedFields,
+  TITLE_MAX_CHARS,
+  ALIASES_MAX_ITEMS,
+  ALIASES_MAX_ITEM_CHARS,
+  AUTHORS_MAX_ITEMS,
+  AUTHORS_MAX_ITEM_CHARS,
+  CONTRIBUTORS_MAX_ITEMS,
+  CONTRIBUTORS_MAX_ITEM_CHARS,
+  SUPERSEDES_MAX_CHARS,
+  TAGS_MAX_ITEMS,
+  TAGS_MAX_ITEM_CHARS,
+} from "../frontmatter";
 
 // ---------------------------------------------------------------------------
 // parseFrontmatter
@@ -792,6 +806,121 @@ describe("normalizeTypedFields", () => {
       expect(second.data.contributors).toEqual(["alice", "bob"]);
       expect(second.data.aliases).toEqual(["alt1"]);
       expect(second.body).toBe(first.body);
+    });
+  });
+
+  // --- length / content guards (structural backstop) ---
+  describe("length and content guards", () => {
+    // Suppress logger.warn output in tests
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    afterEach(() => warnSpy.mockClear());
+
+    it("truncates title exceeding max length", () => {
+      const longTitle = "A".repeat(TITLE_MAX_CHARS + 100);
+      const data = { title: longTitle };
+      normalizeTypedFields(data);
+      expect(data.title).toHaveLength(TITLE_MAX_CHARS);
+      expect(data.title).toBe("A".repeat(TITLE_MAX_CHARS));
+    });
+
+    it("passes through title within max length", () => {
+      const okTitle = "My Normal Title";
+      const data = { title: okTitle };
+      normalizeTypedFields(data);
+      expect(data.title).toBe("My Normal Title");
+    });
+
+    it("truncates supersedes exceeding max length", () => {
+      const longSlug = "x".repeat(SUPERSEDES_MAX_CHARS + 50);
+      const data = { supersedes: longSlug };
+      normalizeTypedFields(data);
+      expect(data.supersedes).toHaveLength(SUPERSEDES_MAX_CHARS);
+    });
+
+    it("passes through supersedes within max length", () => {
+      const okSlug = "old-page-slug";
+      const data = { supersedes: okSlug };
+      normalizeTypedFields(data);
+      expect(data.supersedes).toBe("old-page-slug");
+    });
+
+    it("drops oversized alias items and deduplicates", () => {
+      const longAlias = "B".repeat(ALIASES_MAX_ITEM_CHARS + 10);
+      const data = {
+        aliases: ["alpha", longAlias, "beta", "alpha"] as string[],
+      };
+      normalizeTypedFields(data);
+      // longAlias dropped (too long), second "alpha" dropped (duplicate)
+      expect(data.aliases).toEqual(["alpha", "beta"]);
+    });
+
+    it("caps aliases array to max items", () => {
+      const items = Array.from({ length: ALIASES_MAX_ITEMS + 5 }, (_, i) => `alias-${i}`);
+      const data = { aliases: items };
+      normalizeTypedFields(data);
+      expect(data.aliases).toHaveLength(ALIASES_MAX_ITEMS);
+    });
+
+    it("drops oversized author items", () => {
+      const longAuthor = "C".repeat(AUTHORS_MAX_ITEM_CHARS + 20);
+      const data = { authors: ["yoyo", longAuthor, "alice"] as string[] };
+      normalizeTypedFields(data);
+      expect(data.authors).toEqual(["yoyo", "alice"]);
+    });
+
+    it("caps authors array to max items", () => {
+      const items = Array.from({ length: AUTHORS_MAX_ITEMS + 10 }, (_, i) => `author-${i}`);
+      const data = { authors: items };
+      normalizeTypedFields(data);
+      expect(data.authors).toHaveLength(AUTHORS_MAX_ITEMS);
+    });
+
+    it("drops oversized contributor items", () => {
+      const longContrib = "D".repeat(CONTRIBUTORS_MAX_ITEM_CHARS + 5);
+      const data = { contributors: ["bob", longContrib] as string[] };
+      normalizeTypedFields(data);
+      expect(data.contributors).toEqual(["bob"]);
+    });
+
+    it("caps contributors array to max items", () => {
+      const items = Array.from({ length: CONTRIBUTORS_MAX_ITEMS + 3 }, (_, i) => `contrib-${i}`);
+      const data = { contributors: items };
+      normalizeTypedFields(data);
+      expect(data.contributors).toHaveLength(CONTRIBUTORS_MAX_ITEMS);
+    });
+
+    it("drops oversized tag items", () => {
+      const longTag = "E".repeat(TAGS_MAX_ITEM_CHARS + 15);
+      const data = { tags: ["rust", longTag, "wiki"] as string[] };
+      normalizeTypedFields(data);
+      expect(data.tags).toEqual(["rust", "wiki"]);
+    });
+
+    it("caps tags array to max items", () => {
+      const items = Array.from({ length: TAGS_MAX_ITEMS + 7 }, (_, i) => `tag-${i}`);
+      const data = { tags: items };
+      normalizeTypedFields(data);
+      expect(data.tags).toHaveLength(TAGS_MAX_ITEMS);
+    });
+
+    it("passes through normal-sized arrays unchanged", () => {
+      const data = {
+        aliases: ["alt1", "alt2"],
+        authors: ["yoyo"],
+        contributors: ["alice", "bob"],
+        tags: ["rust", "wiki"],
+      };
+      normalizeTypedFields(data);
+      expect(data.aliases).toEqual(["alt1", "alt2"]);
+      expect(data.authors).toEqual(["yoyo"]);
+      expect(data.contributors).toEqual(["alice", "bob"]);
+      expect(data.tags).toEqual(["rust", "wiki"]);
+    });
+
+    it("wraps bare string tags into array and applies guards", () => {
+      const data = { tags: "single-tag" as unknown as string[] };
+      normalizeTypedFields(data);
+      expect(data.tags).toEqual(["single-tag"]);
     });
   });
 });
