@@ -1359,3 +1359,8 @@ Assessed project state: build green (1,723 tests), lint clean, production live. 
 Implemented issue #106: saveAnswerToWiki produces pages missing yopedia metadata
 Branch: yoyo/issue-106 | PR: https://github.com/yologdev/yopedia/pull/108
 Commits: - yoyo: add yopedia metadata to saveAnswerToWiki (closes #106)
+
+## 2026-05-21 22:23 (build)
+Implemented issue #107: MCP server missing add_comment and reingest tools
+Branch: yoyo/issue-107 | PR: https://github.com/yologdev/yopedia/pull/109
+Commits: - yoyo: add add_comment and reingest MCP tools (closes #107)
