@@ -1,5 +1,47 @@
 # Growth Journal
 
+## 2026-05-25 (research scan) — Week 7 competitive intelligence
+
+Scanned GitHub repos, MCP spec, agent memory systems, and the LLM wiki ecosystem. Filed 1 issue (#99).
+
+### Signal Map
+
+**Changed:** Graphiti v0.29.1 shipped attribute-hallucination guards after a customer reported 9KB of LLM meta-reasoning landing in entity fields. Our `normalizeTypedFields()` has type coercion but no length/content backstops — same vulnerability class. Filed #99 to add structural guards. Evidence-backed, small, concrete.
+
+**Unchanged:**
+- **LLM wiki ecosystem exploding** — 10+ repos >600⭐ since March. nashsu/llm_wiki (8,697⭐, v0.4.12), llm-wiki-compiler (1,250⭐), Ar9av/obsidian-wiki (1,415⭐), OmegaWiki (748⭐). All single-user, Obsidian-centric. None have multi-writer, trust, or conflict resolution. Our niche holds.
+- **Tencent WeKnora** (15,321⭐) — enterprise LLM knowledge platform with wiki mode (agents auto-generate interlinked Markdown). Impressive scale (40k docs, RBAC, 20+ providers) but not multi-writer — agents generate, humans consume. Different product.
+- **Arkon** (789⭐) — enterprise knowledge hub with MRP compilation pipeline (Map→Reduce→Plan-review→Refine→Verify→Commit) and draft/approval workflow via MCP. Sophisticated but closed license (PolyForm Internal Use), enterprise-only, Python+Postgres.
+- **KiwiFS** (502⭐) — markdown filesystem for agents. Git-backed, per-line `blame` attribution, `X-Provenance` headers, contradiction finder, trust-ranked search, 62 MCP tools. Closest architectural match to yopedia's multi-writer ambitions. But filesystem-first (files get versioned) vs. our wiki-first (pages accumulate and reconcile). Small, Go, different stack.
+- **MCP SEP-2577** (deprecate Roots/Sampling/Logging) merged May 15 — no impact, we don't use them.
+- **MCP SEP-2596** (Feature Lifecycle Policy) + **SEP-2484** (Conformance Tests required) — governance maturation, not actionable.
+- **Mem0** (56,352⭐) shipped CLI v0.2.7 with AGENTRUSH game commands — a leaderboard-driven engagement play, irrelevant to us.
+- **Letta** (22,863⭐) — pushed May 14, pace remains slow. Not a threat.
+
+**Watch next:**
+- **MCP SEP-2106** (JSON Schema 2020-12 for inputSchema + new `outputSchema`) — merged May 18, in June 30 RC. When spec goes final, add `outputSchema` to our 12 MCP tools for typed client interop. **Trigger:** spec hits Final status.
+- **MCP 2026-06-30 Release Candidate** — PR #2750 scopes 22 SEPs. Stateless transport rework is the headline. **Trigger:** RC published; audit our MCP server against the full changelog.
+- **KiwiFS growth trajectory** — at 502⭐, created April 22. If it crosses 2K⭐ or adds wiki-style accumulation (not just filesystem versioning), it becomes a direct competitor. **Trigger:** KiwiFS ships page synthesis or structured claims.
+- **Vercel AI SDK v7** — canary raises Node.js minimum to 22. `ToolLoopAgent` and `Experimental_Sandbox` are new primitives. **Trigger:** v7 goes stable.
+- **OpenViking** (24,398⭐, ByteDance) — L0/L1/L2 tiered context loading pattern. Relevant for Phase 5 agent surface. **Trigger:** we start Phase 5.
+
+### Star movements since last scan (May 19)
+
+| Project | Last scan | Now | Δ |
+|---------|-----------|-----|---|
+| nashsu/llm_wiki | 8,067 | 8,697 | +630 |
+| Mem0 | 56,352 | 56,352 | flat |
+| Graphiti | 26,339 | 26,339 | +0 (just released v0.29.1) |
+| Cognee | 17,404 | 17,404 | flat |
+| Letta | 22,863 | 22,863 | flat |
+| SwarmVault | 476 | 476 | flat |
+| Beever Atlas | 336 | 336 | flat |
+| obsidian-skills | 32,331 | 32,331 | flat |
+
+### Issues filed
+
+- **#99** — Add length/content guards to frontmatter field normalization. Motivated by Graphiti's real-world hallucination bug. Small, concrete, defensive.
+
 ## 2026-05-19 (office-hour) — Security cleanup triage
 
 Two issues from PM agent, both sub-issues of creator-mandated #89 (move LLM credentials to server-only). Verified every claim against the live codebase — `cfg.apiKey` fallback is real, `maskedApiKey` is returned by the settings API.
