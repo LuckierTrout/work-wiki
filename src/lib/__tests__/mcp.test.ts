@@ -15,6 +15,9 @@ import {
   handleSeedAgent,
   handleLintWiki,
   handleFixLintIssue,
+  handleListDiscussions,
+  handleCreateDiscussion,
+  handleResolveDiscussion,
 } from "../../mcp";
 import { _resetStorage } from "../storage";
 import { _resetConfigCache } from "../config";
@@ -996,5 +999,251 @@ describe("fix_lint_issue", () => {
 
     expect(result.success).toBe(true);
     expect(result.slug).toBe("source-page");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// list_discussions tests
+// ---------------------------------------------------------------------------
+
+describe("list_discussions", () => {
+  it("returns empty threads array for page with no discussions", async () => {
+    await writeTestPage(
+      "no-talk",
+      "---\ntags: [test]\n---\n# No Talk\n\nA page with no discussions.",
+    );
+
+    const result = await handleListDiscussions({ pageSlug: "no-talk" });
+    expect(result.pageSlug).toBe("no-talk");
+    expect(result.threads).toEqual([]);
+  });
+
+  it("returns threads with status, author, and commentCount", async () => {
+    await writeTestPage(
+      "test-page",
+      "---\ntags: [test]\n---\n# Test Page\n\nContent.",
+    );
+
+    // Create a discussion first
+    await handleCreateDiscussion({
+      pageSlug: "test-page",
+      title: "Accuracy concern",
+      body: "The first paragraph seems inaccurate.",
+      author: "yoyo",
+    });
+
+    const result = await handleListDiscussions({ pageSlug: "test-page" });
+    expect(result.pageSlug).toBe("test-page");
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0].index).toBe(0);
+    expect(result.threads[0].title).toBe("Accuracy concern");
+    expect(result.threads[0].status).toBe("open");
+    expect(result.threads[0].author).toBe("yoyo");
+    expect(result.threads[0].commentCount).toBe(1);
+    expect(result.threads[0].created).toBeDefined();
+    expect(result.threads[0].updated).toBeDefined();
+  });
+
+  it("returns multiple threads with correct indices", async () => {
+    await writeTestPage(
+      "multi-talk",
+      "---\ntags: [test]\n---\n# Multi Talk\n\nContent.",
+    );
+
+    await handleCreateDiscussion({
+      pageSlug: "multi-talk",
+      title: "First thread",
+      body: "First body.",
+      author: "alice",
+    });
+    await handleCreateDiscussion({
+      pageSlug: "multi-talk",
+      title: "Second thread",
+      body: "Second body.",
+      author: "bob",
+    });
+
+    const result = await handleListDiscussions({ pageSlug: "multi-talk" });
+    expect(result.threads).toHaveLength(2);
+    expect(result.threads[0].index).toBe(0);
+    expect(result.threads[0].title).toBe("First thread");
+    expect(result.threads[0].author).toBe("alice");
+    expect(result.threads[1].index).toBe(1);
+    expect(result.threads[1].title).toBe("Second thread");
+    expect(result.threads[1].author).toBe("bob");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// create_discussion tests
+// ---------------------------------------------------------------------------
+
+describe("create_discussion", () => {
+  it("creates a new thread and returns it", async () => {
+    await writeTestPage(
+      "new-topic",
+      "---\ntags: [test]\n---\n# New Topic\n\nContent.",
+    );
+
+    const result = await handleCreateDiscussion({
+      pageSlug: "new-topic",
+      title: "Citation needed",
+      body: "The claim in paragraph 2 needs a source.",
+      author: "yoyo",
+    });
+
+    expect(result.pageSlug).toBe("new-topic");
+    expect(result.title).toBe("Citation needed");
+    expect(result.status).toBe("open");
+    expect(result.comments).toHaveLength(1);
+    expect(result.comments[0].author).toBe("yoyo");
+    expect(result.comments[0].body).toBe(
+      "The claim in paragraph 2 needs a source.",
+    );
+    expect(result.created).toBeDefined();
+    expect(result.updated).toBeDefined();
+  });
+
+  it("throws when pageSlug is empty", async () => {
+    await expect(
+      handleCreateDiscussion({
+        pageSlug: "",
+        title: "Test",
+        body: "Test body",
+        author: "yoyo",
+      }),
+    ).rejects.toThrow("pageSlug is required");
+  });
+
+  it("throws when title is empty", async () => {
+    await expect(
+      handleCreateDiscussion({
+        pageSlug: "some-page",
+        title: "",
+        body: "Test body",
+        author: "yoyo",
+      }),
+    ).rejects.toThrow("title is required");
+  });
+
+  it("throws when body is empty", async () => {
+    await expect(
+      handleCreateDiscussion({
+        pageSlug: "some-page",
+        title: "Test",
+        body: "",
+        author: "yoyo",
+      }),
+    ).rejects.toThrow("body is required");
+  });
+
+  it("throws when author is empty", async () => {
+    await expect(
+      handleCreateDiscussion({
+        pageSlug: "some-page",
+        title: "Test",
+        body: "Test body",
+        author: "",
+      }),
+    ).rejects.toThrow("author is required");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolve_discussion tests
+// ---------------------------------------------------------------------------
+
+describe("resolve_discussion", () => {
+  it("resolves a thread as resolved", async () => {
+    await writeTestPage(
+      "resolve-test",
+      "---\ntags: [test]\n---\n# Resolve Test\n\nContent.",
+    );
+
+    await handleCreateDiscussion({
+      pageSlug: "resolve-test",
+      title: "Outdated info",
+      body: "This section is outdated.",
+      author: "yoyo",
+    });
+
+    const result = await handleResolveDiscussion({
+      pageSlug: "resolve-test",
+      threadIndex: 0,
+      resolution: "resolved",
+    });
+
+    expect(result.status).toBe("resolved");
+    expect(result.title).toBe("Outdated info");
+  });
+
+  it("resolves a thread as wontfix", async () => {
+    await writeTestPage(
+      "wontfix-test",
+      "---\ntags: [test]\n---\n# Wontfix Test\n\nContent.",
+    );
+
+    await handleCreateDiscussion({
+      pageSlug: "wontfix-test",
+      title: "Minor issue",
+      body: "Not worth fixing.",
+      author: "yoyo",
+    });
+
+    const result = await handleResolveDiscussion({
+      pageSlug: "wontfix-test",
+      threadIndex: 0,
+      resolution: "wontfix",
+    });
+
+    expect(result.status).toBe("wontfix");
+  });
+
+  it("throws for invalid threadIndex", async () => {
+    await writeTestPage(
+      "invalid-idx",
+      "---\ntags: [test]\n---\n# Invalid Index\n\nContent.",
+    );
+
+    await expect(
+      handleResolveDiscussion({
+        pageSlug: "invalid-idx",
+        threadIndex: 99,
+        resolution: "resolved",
+      }),
+    ).rejects.toThrow("thread index 99 not found");
+  });
+
+  it("throws for missing pageSlug", async () => {
+    await expect(
+      handleResolveDiscussion({
+        pageSlug: "",
+        threadIndex: 0,
+        resolution: "resolved",
+      }),
+    ).rejects.toThrow("pageSlug is required");
+  });
+
+  it("shows resolved status in list_discussions", async () => {
+    await writeTestPage(
+      "list-resolved",
+      "---\ntags: [test]\n---\n# List Resolved\n\nContent.",
+    );
+
+    await handleCreateDiscussion({
+      pageSlug: "list-resolved",
+      title: "Thread to resolve",
+      body: "Will be resolved.",
+      author: "yoyo",
+    });
+
+    await handleResolveDiscussion({
+      pageSlug: "list-resolved",
+      threadIndex: 0,
+      resolution: "resolved",
+    });
+
+    const list = await handleListDiscussions({ pageSlug: "list-resolved" });
+    expect(list.threads[0].status).toBe("resolved");
   });
 });
