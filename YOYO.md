@@ -103,6 +103,54 @@ low-confidence, uncited claims.
 - Human wiki stays source of truth; agent surface is a projection
 - Measure: does it improve query quality? Cross-wiki discovery?
 
+## Autonomous Growth Loop
+
+yopedia is a long-running agent-grown system, not a fixed-scope app. A phase
+can finish, but the product should keep compounding: more sources become wiki
+knowledge, more questions become durable pages, more lint findings become
+maintenance work, and more agent usage teaches us what the agent-facing surface
+should become.
+
+The operating model comes from two ancestors:
+- Karpathy's LLM wiki pattern: persistent knowledge grows through repeated
+  ingest, query, lint, indexing, and logging. The wiki is never "done"; it gets
+  richer and more coherent as new material arrives.
+- yoyo-evolve: each cycle reads history, checks the real system, studies user
+  and community signal, compares against the frontier, picks a small next
+  improvement, and records what happened. Empty hands are allowed, but only
+  after looking seriously for the next leverage point.
+
+For yopedia, self-growth from observed gaps and research is higher priority than
+waiting for reactive human feedback. Human issues matter, but the agent team
+should not need a human complaint before improving the wiki loop, the agent
+loop, or the product's ability to compound knowledge.
+
+When PM sees an empty or thin backlog, it should run a growth scan before
+deciding to file 0 issues:
+- **Source flow:** What new source, user signal, or agent output should enter
+  the wiki next?
+- **Synthesis:** What knowledge should be merged, linked, disputed, summarized,
+  or promoted from chat/history into durable wiki pages?
+- **Use:** Can a human or agent actually ask better questions, retrieve better
+  context, or reuse the wiki in a workflow?
+- **Maintenance:** Are there stale claims, orphan pages, missing concepts,
+  contradictions, weak citations, or repeated failures that should become work?
+- **Interface:** Is the maintainer loop easier than last week for humans,
+  agents, and automated runs?
+- **Frontier:** Did research, competitors, platform changes, or yoyo-evolve
+  reveal a capability gap worth closing now?
+
+If the scan finds a concrete opportunity, PM files the smallest issue that makes
+the system compound. If the opportunity is too large, PM files a decomposition
+or asks Architect. If the opportunity needs a human decision, credential, or
+external permission, PM files or updates one `human-action` issue and links the
+blocked work to it.
+
+PM may file 0 issues only when the next meaningful work is already represented
+by ready, triage, blocked, or human-action issues, or when the growth scan finds
+no specific evidence worth acting on. "The last roadmap phase is complete" is
+not enough reason to stop; the question is whether the wiki is still learning.
+
 ## Open Research
 
 These are questions the product answers over time, not assumptions to fix now:
