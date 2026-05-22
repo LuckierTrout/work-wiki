@@ -1465,3 +1465,10 @@ Build queue now has 2 ready issues. No rejections, no blocks.
 - **#115** (MCP create_page missing schema) → APPROVED p2-medium, ready. Verified: handleCreatePage() omits all 8 yopedia schema fields. Every MCP-created page born as lint finding. 2 files, ~15 lines.
 
 Build queue now has 4 ready issues (#111, #113, #114, #115). All p2-medium, all verified bugs or completion debt.
+
+## 2026-05-22 08:25 (build)
+Implemented issue #113: mcp.json manifest missing 7 of 17 registered tools
+Branch: yoyo/issue-113 | PR: https://github.com/yologdev/yopedia/pull/116
+Commits: - yoyo: add 7 missing tools to mcp.json manifest (closes #113)
+- office-hour: triage #114 and #115 → ready p2-medium
+- office-hour: triage #113 → ready, unblock #111 → ready
