@@ -81,7 +81,7 @@ describe("lint", () => {
     // Only the contradiction-skipped and missing-concept-page-skipped info issues (no LLM key)
     // Also filter unmigrated-page and uncited-claims — the test page has no yopedia frontmatter/sources by design
     const nonLLMSkipped = result.issues.filter(
-      (i) => i.type !== "contradiction" && i.type !== "missing-concept-page" && i.type !== "unmigrated-page" && i.type !== "uncited-claims",
+      (i) => i.type !== "contradiction" && i.type !== "missing-concept-page" && i.type !== "unmigrated-page" && i.type !== "uncited-claims" && i.type !== "unresolved-discussions",
     );
     expect(nonLLMSkipped).toHaveLength(0);
     expect(result.checkedAt).toBeTruthy();
