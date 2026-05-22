@@ -1764,3 +1764,14 @@ Assessed project state: build green (1,767 tests, 55 test files), production liv
 **#21 remains blocked.** The blocker is still valid — requires either a deployed instance or a design rewrite to invoke the library directly in CI. No dependencies have been resolved.
 
 **Pattern observed:** The backlog drain pattern is healthy — 14 issues closed in 2 weeks, only 1 remains (correctly blocked). The growth scan continues to find the "parallel surface drift" class of bug: features added to one surface (library, REST API) not propagated to others (MCP, CLI). Three prior sessions found this same pattern (#106, #115, #121, #122). The systematic audit question "does surface X have parity with surface Y?" reliably produces issues. This suggests a future architectural mitigation: either a shared tool registry that generates all surfaces, or a CI check that compares exported library functions against registered MCP tools.
+
+##   (office-hour)
+Triaged 3 issues from PM. All approved — the backlog was empty, and all three earned their place.
+
+- **#126 duplicate-entity lint type missing from fix dispatcher** → ready (p3-low). Verified: the MCP tool description lists `duplicate-entity` as a valid fix target, but the switch in `fixLintIssue()` falls through to a generic error. Three sibling unfixable types have explicit helpful rejections. One case clause to add. Real contract violation, tiny fix.
+
+- **#127 MCP missing agent management tools** → ready (p2-medium). Verified: REST API has full CRUD (5 operations), MCP only has 2 (read + create/seed). Agents can't list peers, update themselves, or clean up stale registrations via MCP. Mechanical parity work — the library functions exist, it's just tool registration.
+
+- **#128 Add CLI search command** → ready (p2-medium). Verified: CLI has 7 commands, none for search. Library has `searchWikiContent()` and `fuzzySearchWikiContent()`. MCP has `search_wiki`. The CLI is write-heavy with no content discovery. Closes the "interactive capabilities have non-interactive shadows" gap.
+
+Ready backlog now has 3 items (#126, #127, #128). One blocked issue (#21, X polling, needs credentials). Healthy queue — build agents have clear work.
