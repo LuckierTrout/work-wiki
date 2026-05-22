@@ -1,5 +1,64 @@
 # Growth Journal
 
+## 2026-06-22 (research scan) — Week 10 competitive intelligence
+
+Scanned GitHub repos, MCP spec, agent memory systems, and LLM wiki ecosystem. Filed 0 issues. The LLM Wiki pattern has gone viral — 123+ repos since May 1 — but all single-user. Our multi-writer niche is still ours alone.
+
+### Signal Map
+
+**Changed:** Nothing strategy-changing this scan. The biggest structural development is the Karpathy LLM Wiki pattern going mainstream — claude-obsidian (5,330★ in 6 weeks), llm-wiki-agent (2,712★), PandaWiki (9,645★), nashsu/llm_wiki (8,821★), plus 123+ small repos since May 1 all implementing variants. This validates the category but nobody is building multi-writer. Our position is not just unique — it's becoming more defensible as competitors pile into the single-user lane and make that the default assumption.
+
+**Unchanged:**
+- **claude-obsidian** (5,330★, created Apr 7) — The breakout hit. Claude Code plugin turning Obsidian into an autonomous wiki-building agent. 11 skills, auto-lint, hot cache, confidence scoring, contradiction flagging, optional DragonScale Memory extension. Impressive single-user product. But: no multi-writer, no trust model, no talk pages, no attribution, no web UI. It's a Claude Code skill, not a standalone product. Different architecture (Obsidian vault vs. web app), different use case (personal PKM vs. shared knowledge). Not competitive.
+- **PandaWiki** (9,645★, chaitin) — Chinese-language AI knowledge base system. v3.85.0 shipped May 19. AI creation, AI Q&A, AI search over structured document repos. Docker-deployed, multi-tenant. But: enterprise doc hosting, not wiki accumulation. No wikilinks, no confidence/expiry, no talk pages, no agent surface. Different product category (hosted knowledge base vs. accumulating wiki).
+- **llm-wiki-agent** (2,712★, SamurAIGPT) — Multi-agent CLI skill. No releases, just clone-and-use. Added multi-format ingest (20+ file types via markitdown). Still single-user, Obsidian-centric.
+- **nashsu/llm_wiki** (8,821★, +91 since last scan) — Desktop app, steady growth. Still shipping without public changelogs. Can't evaluate direction.
+- **llm-wiki-compiler** (1,256★, +3) — Stalled. No significant movement.
+- **Ar9av/obsidian-wiki** (1,436★, +14) — Steady but unremarkable.
+- **Graphiti** (26,362★, +11) — Shipped v0.29.1 (optimizations) and v0.29.0 (major architecture overhaul). Active and healthy. Infrastructure-level, not competitive.
+- **cognee** (17,440★, +23) — Active, memory control plane. Not competitive.
+- **KiwiFS** (502★, flat) — Still at 502★ since last scan. Pushed May 22 but no growth. Below watch threshold.
+- **AKBP** (63★, +2) — Essentially stalled. Not gaining adoption.
+- **MCP spec** — Active schema fixes (May 21), SEP-2577 (deprecate Roots/Sampling/Logging) already noted. No RC date change visible. Still targeting July 28.
+- **Vercel AI SDK** — Shipping multiple patches daily on both v5 and v6 tracks. No v7 canary yet. v6.0.190 latest.
+
+**Watch next:**
+- **claude-obsidian growth trajectory** — 5,330★ in 6 weeks is exceptional velocity. If it adds multi-writer or web UI, it moves from "different product" to "direct competitor." **Trigger:** ships collaborative editing, or crosses 10K★ (ecosystem gravity pulls contributors toward shared features).
+- **MCP July 28 RC** — Spec still active (schema fixes May 21). **Trigger:** RC published; audit our 15 MCP tools.
+- **LLM Wiki convergence pattern** — 123+ repos all implementing the same single-user pattern. The next evolution is multi-user. If any popular fork adds multi-writer primitives, our first-mover advantage in that niche matters. **Trigger:** any >1K★ LLM wiki project adds multi-writer, talk pages, or trust scoring.
+- **Hindsight's reflect pattern** — Still relevant for Phase 5. **Trigger:** we start Phase 5.
+- **PandaWiki feature direction** — At 9,645★ it's the most popular "AI + wiki" project. If they add wikilinks + accumulation (instead of just doc hosting), they become relevant. **Trigger:** PandaWiki ships wiki-style page synthesis or confidence scoring.
+
+### Star movements since last scan (Jun 8)
+
+| Project | Last scan | Now | Δ |
+|---------|-----------|-----|---|
+| claude-obsidian | (new) | 5,330 | — |
+| PandaWiki | (new) | 9,645 | — |
+| nashsu/llm_wiki | 8,730 | 8,821 | +91 |
+| claude-mem | 77,267 | (not found) | — |
+| mem0 | 56,369 | 56,400 | +31 |
+| graphiti | 26,351 | 26,362 | +11 |
+| cognee | 17,417 | 17,440 | +23 |
+| WeKnora | 15,325 | 15,352 | +27 |
+| Hindsight | 14,102 | (not found) | — |
+| letta | 22,869 | 22,877 | +8 |
+| llm-wiki-agent | (new) | 2,712 | — |
+| llm-wiki-skill | (new) | 1,604 | — |
+| Ar9av/obsidian-wiki | 1,422 | 1,436 | +14 |
+| llm-wiki-compiler | 1,253 | 1,256 | +3 |
+| deepwiki-rs | (new) | 990 | — |
+| KiwiFS | 502 | 502 | flat |
+| AKBP | 61 | 63 | +2 |
+
+### Issues filed
+
+None. No finding passes the signal filter this scan. The field is growing around the Karpathy LLM Wiki pattern but all growth is in the single-user lane. Our multi-writer + trust model + dual surface position is uncontested and becoming more defensible as the single-user approach becomes the crowded default.
+
+### Layer 3 insight
+
+The LLM Wiki pattern has crossed from "interesting idea" to "commodity implementation." There are now 123+ repos, multiple >5K★ projects, and the pattern is understood well enough that new implementations take days, not months. This is the classic commoditization signal: when anyone can build the basic version, the differentiation moves to the layer above — multi-writer coordination, trust, conflict resolution, agent identity. That's exactly where yopedia lives. The risk is not that someone builds a better single-user wiki — it's that single-user becomes so good that the demand for multi-user never materializes. The counter-evidence: every serious knowledge system (Wikipedia, Google Docs, Notion) eventually became multi-writer because knowledge outlives any single contributor. The question isn't whether multi-writer matters, it's when.
+
 ## 2026-06-08 (research scan) — Week 8 competitive intelligence
 
 Scanned GitHub repos, MCP spec, agent memory systems, LLM wiki ecosystem, and X. Filed 0 issues. Field is maturing; our niche holds stronger than ever.
