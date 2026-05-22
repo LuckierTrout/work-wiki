@@ -23,6 +23,7 @@ import {
 } from "../../mcp";
 import { _resetStorage } from "../storage";
 import { _resetConfigCache } from "../config";
+import { parseFrontmatter } from "../frontmatter";
 
 let tmpDir: string;
 let originalWikiDir: string | undefined;
@@ -278,6 +279,35 @@ describe("MCP write tools", () => {
       expect(fileContent).toContain("title: Test");
       expect(fileContent).toContain("# Test");
       expect(fileContent).toContain("Body text here.");
+    });
+
+    it("includes all yopedia schema fields in frontmatter", async () => {
+      await handleCreatePage({
+        slug: "schema-check",
+        content: "# Schema Test\n\nBody.",
+      });
+
+      const filePath = path.join(tmpDir, "wiki", "schema-check.md");
+      const fileContent = await fs.readFile(filePath, "utf-8");
+      const { data: frontmatter } = parseFrontmatter(fileContent);
+
+      expect(frontmatter.confidence).toBe(0.5);
+      expect(frontmatter.expiry).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(frontmatter.authors).toEqual(["agent"]);
+      expect(frontmatter.valid_from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(frontmatter.disputed).toBe(false);
+      expect(frontmatter.contributors).toEqual([]);
+      expect(frontmatter.aliases).toEqual([]);
+      expect(frontmatter.tags).toEqual([]);
+
+      // expiry should be ~90 days from today
+      const today = new Date();
+      const expiry = new Date(frontmatter.expiry as string);
+      const diffDays = Math.round(
+        (expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24),
+      );
+      expect(diffDays).toBeGreaterThanOrEqual(89);
+      expect(diffDays).toBeLessThanOrEqual(91);
     });
 
     it("rejects duplicate slug", async () => {

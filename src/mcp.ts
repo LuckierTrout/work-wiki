@@ -169,11 +169,22 @@ export async function handleCreatePage(args: {
   const title = extractTitle(args.content, args.slug);
   const summary = extractSummary(args.content);
   const today = new Date().toISOString().slice(0, 10);
+  const expiry = new Date();
+  expiry.setDate(expiry.getDate() + 90);
+  const expiryDate = expiry.toISOString().slice(0, 10);
 
   const frontmatter: Frontmatter = {
     title,
     created: today,
     updated: today,
+    confidence: 0.5,
+    expiry: expiryDate,
+    authors: ["agent"],
+    valid_from: today,
+    disputed: false,
+    contributors: [],
+    aliases: [],
+    tags: [],
   };
 
   const fullContent = serializeFrontmatter(frontmatter, args.content);
