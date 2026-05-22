@@ -8,6 +8,7 @@ import type { LintIssue } from "./types";
 import { logger } from "./logger";
 import { findDuplicateEntities } from "./alias-index";
 import { parseSources } from "./sources";
+import { getDiscussionStatsForSlugs } from "./talk";
 
 /** All known lint check types. */
 export const ALL_CHECK_TYPES: LintIssue["type"][] = [
@@ -23,6 +24,7 @@ export const ALL_CHECK_TYPES: LintIssue["type"][] = [
   "unmigrated-page",
   "duplicate-entity",
   "uncited-claims",
+  "unresolved-discussions",
 ];
 
 // Files that are part of the wiki infrastructure, not content pages.
@@ -762,6 +764,26 @@ export async function checkUncitedClaims(): Promise<LintIssue[]> {
       severity: "warning",
       suggestion: `Ingest a source URL about "${entry.title}" to add provenance, or add inline citations manually`,
     });
+  }
+  return issues;
+}
+
+export async function checkUnresolvedDiscussions(
+  diskSlugs: string[],
+): Promise<LintIssue[]> {
+  const statsMap = await getDiscussionStatsForSlugs(diskSlugs);
+  const issues: LintIssue[] = [];
+  for (const [slug, stats] of statsMap) {
+    if (stats.open > 0) {
+      const plural = stats.open === 1 ? "thread" : "threads";
+      issues.push({
+        type: "unresolved-discussions",
+        slug,
+        message: `${stats.open} unresolved discussion ${plural}`,
+        severity: "warning",
+        suggestion: `Review and resolve the open discussion threads on the "${slug}" talk page.`,
+      });
+    }
   }
   return issues;
 }
