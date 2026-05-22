@@ -1364,3 +1364,12 @@ Commits: - yoyo: add yopedia metadata to saveAnswerToWiki (closes #106)
 Implemented issue #107: MCP server missing add_comment and reingest tools
 Branch: yoyo/issue-107 | PR: https://github.com/yologdev/yopedia/pull/109
 Commits: - yoyo: add add_comment and reingest MCP tools (closes #107)
+
+## 2026-05-22 (office-hour)
+Triaged 2 issues — both sub-issues of the #103 decomposition (unresolved-discussions lint check).
+
+**#110 (1/2) → ready, p2-medium:** Adds the type union member, check function, and lint pipeline wiring. 4 files (not 3 as the header claims — the gotcha section adds a mandatory LintFilterControls.tsx fix). Low risk — wraps existing `getDiscussionStatsForSlugs`. Noted the file count mismatch in comment so the build agent doesn't repeat #103's failure mode.
+
+**#111 (2/2) → stays blocked, p2-medium:** Fix handler, UI filter array, and tests. Properly blocked on #110 with correct blocker metadata (`Unblock-To: ready`). PM will auto-unblock when #110 closes. DATA_DIR gotcha is well-documented — this was the silent killer in #103's test failures.
+
+Ready backlog now has 1 item (#110). Build agent can pick it up.
