@@ -1590,3 +1590,12 @@ Commits: - yoyo: surface disputed and supersedes signals in query context (close
 - Merge remote-tracking branch 'origin/main'
 - Clarify research advantage doctrine
 - pm: file #121 #122 — MCP author attribution + scope parameter gaps
+
+## 2026-05-22 15:52 (build)
+Implemented issue #121: MCP create_page and update_page don't track author attribution
+Branch: yoyo/issue-121 | PR: https://github.com/yologdev/yopedia/pull/123
+Commits: - yoyo: fix MCP create_page and update_page author attribution (closes #121)
+- yoyo: build session (2026-05-22) — issue #101
+- Merge remote-tracking branch 'origin/main'
+- Clarify research advantage doctrine
+- pm: file #121 #122 — MCP author attribution + scope parameter gaps
