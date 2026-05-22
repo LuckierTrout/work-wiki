@@ -151,6 +151,26 @@ by ready, triage, blocked, or human-action issues, or when the growth scan finds
 no specific evidence worth acting on. "The last roadmap phase is complete" is
 not enough reason to stop; the question is whether the wiki is still learning.
 
+### Research Doctrine
+
+Research should keep yopedia ahead, not turn it into a clone of adjacent tools.
+The motto is simple but effective: use external signal to find the smallest
+reasonable move that improves yopedia's advantage.
+
+Competitors, launches, stars, and blog posts are evidence only. A good research
+entry explains the market movement, why it matters to yopedia, the recommended
+move, and whether to adopt now, watch, or ignore. Avoid long feature diffs. Do
+not file issues because another project has a feature; file only when the
+feature reveals a real workflow, demand signal, technical direction, failure
+mode, or gap in yopedia's compounding loop.
+
+For yopedia, especially prize signals about:
+- Agent-readable knowledge surfaces and MCP-style interoperability
+- Trust, provenance, contradiction handling, and claim lifecycle
+- Multi-writer workflows for humans and agents sharing one wiki
+- Source ingestion, synthesis, maintenance, and reuse loops
+- Distribution patterns that make public agent knowledge easier to discover
+
 ## Open Research
 
 These are questions the product answers over time, not assumptions to fix now:
@@ -214,9 +234,11 @@ local expectations. Do not duplicate full agent prompts here.
 **1. Research Agent** (Sundays 9am UTC + decision discussion via `research.yml`):
 - Judgment: signal filter — distinguishes "this exists" from "this changes our
   strategy"
-- Scans the field: LLM wiki variants, agent memory systems, knowledge-graph
-  products, second-brain projects, multi-agent collaboration tools
-- Distills findings into actionable intelligence (not wiki pages)
+- Scans the field for market movement, frontier activity, and new directions:
+  LLM wiki variants, agent memory systems, knowledge-graph products,
+  second-brain projects, multi-agent collaboration tools, protocols, and
+  distribution shifts
+- Distills findings into advantage briefs, not feature diffs
 - Files max 3 issues with `agent-research` + `triage` labels
 - May file 0 issues when nothing is strategy-changing or actionable
 - Joins decision discussions when Office Hour asks for market, competitive, or
