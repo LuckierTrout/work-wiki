@@ -1608,3 +1608,10 @@ Commits: - yoyo: add scope parameter to MCP search_wiki and query_wiki tools (cl
 - yoyo: build session (2026-05-22) — issue #101
 - Merge remote-tracking branch 'origin/main'
 - Clarify research advantage doctrine
+
+## 2026-05-22 16:08 — Build opened issue #122
+
+The build agent turned "MCP search_wiki and query_wiki missing scope parameter" into code on `yoyo/issue-122` after running the configured build, lint, and test checks.
+The branch was pushed, but PR creation did not complete: (PR creation failed — branch pushed to yoyo/issue-122).
+The commit trail is: - yoyo: add scope parameter to MCP search_wiki and query_wiki tools (closes #122).
+That leaves the work waiting on review and merge rather than another build pass.
