@@ -1,5 +1,70 @@
 # Growth Journal
 
+## 2026-07-06 (research scan) — Week 12 competitive intelligence
+
+Scanned GitHub repos, MCP spec, agent memory systems, and LLM wiki ecosystem. Filed 1 issue. The MCP 2026-06-30 RC is imminent — all 22 SEPs merged, blog post published — and WUPHF emerged as the first serious structured-knowledge wiki with confidence scoring, temporal validity, and contradiction detection. Our multi-writer trust model remains unique but the competitive floor has risen.
+
+### Signal Map
+
+**Changed:**
+
+- **MCP 2026-06-30 RC is locked and imminent.** All 22 SEPs merged. Blog post (PR #2750) merged May 22. The headline change is **stateless transport** — every request becomes self-contained, no mandatory `initialize` handshake. Also: `outputSchema` support (SEP-2106), Extensions framework (SEP-2133), Tasks extension (SEP-2663), deprecation of Roots/Sampling/Logging (SEP-2577, 12-month window). Our 17 MCP tools need an audit against the new spec. The stateless transport change is architectural — it affects how our stdio server handles requests. Filing issue.
+- **WUPHF** (1,073★, nex-crm/wuphf) — A multi-agent "collaborative office" with a shared git-native LLM wiki. HN #1 product. Their wiki has: JSONL structured facts with triplets (subject/predicate/object), confidence scoring (0.0-1.0), temporal validity (valid_from/valid_until), supersedes chains, contradiction detection via lint, deterministic fact IDs, a staleness decay formula, and Wikipedia-style design. This is the first project that independently built many of the same primitives we have (confidence, expiry, supersedes, contradiction detection). However: **single-writer queue** (no multi-writer trust), **single-team** (no cross-team collaboration), and the wiki is subordinate to their agent orchestration product. They validate our architectural choices more than they threaten our position.
+
+**Unchanged:**
+- **claude-obsidian** (5,344★, flat since last scan) — No multi-writer, no web UI. Stalled at v1.6.0 (Apr 24). Different product category (Obsidian plugin, not standalone wiki).
+- **claudian** (11,618★, YishenTu/claudian) — New find but zero wiki features. It's a UI shell for Claude Code inside Obsidian. Not competitive.
+- **PandaWiki** (9,644★, flat) — No movement. Still enterprise doc hosting, not wiki accumulation.
+- **nashsu/llm_wiki** (8,867★, +46 since Jun 22) — Steady growth, desktop app. No public changelogs.
+- **MemOS** (9,325★, MemTensor/MemOS) — "Self-evolving memory OS." Infrastructure layer (memory plumbing), not a wiki. Multi-modal, multi-cube knowledge base, academic backing. Different product category — competes with Mem0/Zep, not with us.
+- **onyx-dot-app/agent-wiki** (9★) — Multi-writer wiki concept with FastAPI + Next.js + Postgres. Three write pathways (MCP agents, external API, humans). Has ACL (page/folder/group grants) and NL-triggers (plain-English rules evaluated by LLM per commit). But: 9 stars, very early, single-replica constraint, no trust scoring, no confidence/expiry. Closest to our vision architecturally but tiny and unproven.
+- **Graphiti** (26,373★, +11) — Healthy, infrastructure-level. Not competitive.
+- **cognee** (17,448★, +8) — Active. Memory control plane. Not competitive.
+- **mem0** (56,437★, +37) — Steady. Universal memory layer. Not competitive.
+- **Hindsight** (14,186★, +84) — Growing well. Agent memory that learns. Phase 5 reference.
+- **letta** (22,887★, +10) — Slow pace. Not a threat.
+- **engram** (3,700★) — Persistent memory for coding agents. Go binary, SQLite + FTS5, 19 MCP tools. Flat memory store (not wiki). Has conflict surfacing tools (`mem_judge`, `mem_compare`). Different product.
+- **KiwiFS** (468★, -34 from last reported 502) — Shrinking. Below watch threshold.
+- **llm-wiki-compiler** (1,257★, +1) — Stalled.
+- **Ar9av/obsidian-wiki** (1,444★, +8) — Steady but unremarkable.
+- **llm-wiki-agent** (2,713★, +1) — Stalled.
+
+**Watch next:**
+- **MCP 2026-06-30 Final release** — RC is frozen, final in ~5 weeks. **Trigger:** final release published; mandatory audit of our 17 tools for stateless transport, outputSchema, and deprecation compliance.
+- **WUPHF growth trajectory** — 1,073★ from HN launch. Their structured fact model (JSONL triplets + confidence + temporal validity + staleness decay) is the most sophisticated in the LLM wiki space. If they add multi-writer trust or cross-team collaboration, they become a direct competitor. **Trigger:** WUPHF ships multi-writer or crosses 3K★.
+- **onyx-dot-app/agent-wiki** — Architecturally closest to our vision (multi-writer, ACL, NL-triggers). At 9★ it's a concept, not a product. **Trigger:** crosses 500★ or ships trust scoring.
+- **Hindsight's reflect pattern** — Still relevant for Phase 5. **Trigger:** we start Phase 5.
+
+### Star movements since last scan (Jun 22)
+
+| Project | Last scan | Now | Δ |
+|---------|-----------|-----|---|
+| mem0 | 56,400 | 56,437 | +37 |
+| graphiti | 26,362 | 26,373 | +11 |
+| letta | 22,877 | 22,887 | +10 |
+| cognee | 17,440 | 17,448 | +8 |
+| WeKnora | 15,352 | (not checked) | — |
+| Hindsight | 14,102 | 14,186 | +84 |
+| claudian | (new) | 11,618 | — |
+| PandaWiki | 9,645 | 9,644 | -1 |
+| MemOS | (new) | 9,325 | — |
+| nashsu/llm_wiki | 8,821 | 8,867 | +46 |
+| claude-obsidian | 5,330 | 5,344 | +14 |
+| engram | (new) | 3,700 | — |
+| llm-wiki-agent | 2,712 | 2,713 | +1 |
+| Ar9av/obsidian-wiki | 1,436 | 1,444 | +8 |
+| llm-wiki-compiler | 1,256 | 1,257 | +1 |
+| WUPHF | (new) | 1,073 | — |
+| KiwiFS | 502 | 468 | -34 |
+
+### Issues filed
+
+- **1 issue:** MCP 2026-06-30 RC audit — update 17 MCP tools for stateless transport compliance, add outputSchema, and plan for Roots/Sampling/Logging deprecation.
+
+### Layer 3 insight
+
+WUPHF independently arrived at almost the same knowledge model we're building: confidence scoring, temporal validity, supersedes chains, contradiction detection, lint system, wiki-style accumulation. They built it as a side effect of multi-agent coordination — agents needed a shared truth layer. We built it from the wiki-first direction — humans and agents need trustworthy, durable knowledge. The convergence validates the primitives. But the divergence is instructive: WUPHF's single-writer queue means they never had to solve trust between independent writers. Their confidence score measures extraction certainty (how sure the LLM was when parsing a source), not epistemic confidence (how well-supported a claim is across multiple sources). Our confidence + expiry + talk pages + contributor trust scores address a harder problem: what happens when multiple independent writers disagree? That's the problem Wikipedia solved for humans. Nobody has solved it for agents yet. That's still our gap to close.
+
 ## 2026-06-22 (research scan) — Week 10 competitive intelligence
 
 Scanned GitHub repos, MCP spec, agent memory systems, and LLM wiki ecosystem. Filed 0 issues. The LLM Wiki pattern has gone viral — 123+ repos since May 1 — but all single-user. Our multi-writer niche is still ours alone.
