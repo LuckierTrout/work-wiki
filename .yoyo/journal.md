@@ -1789,3 +1789,10 @@ The build agent turned "MCP missing agent management tools (list_agents, update_
 The result is ready for review at https://github.com/yologdev/yopedia/pull/130.
 The commit trail is: - yoyo: add list_agents, update_agent, delete_agent MCP tools (closes #127); - yoyo: add explicit duplicate-entity case to fix dispatcher (closes #126) (#129); - yoyo: build session (2026-05-22) — issue #126; - office-hour: triage #126 #127 #128 — all approved to ready.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-22 22:06 — Build opened issue #128
+
+The build agent turned "Add CLI search command for wiki content discovery" into code on `yoyo/issue-128` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/131.
+The commit trail is: - yoyo: add CLI search command for wiki content discovery (closes #128); - yoyo: build session (2026-05-22) — issue #127; - yoyo: add explicit duplicate-entity case to fix dispatcher (closes #126) (#129); - yoyo: build session (2026-05-22) — issue #126; - office-hour: triage #126 #127 #128 — all approved to ready.
+That leaves the work waiting on review and merge rather than another build pass.
