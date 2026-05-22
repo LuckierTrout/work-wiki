@@ -1454,3 +1454,10 @@ Assessed project state: build green (1,723+ tests), production live. Three open 
 **Stalled PR observation:** PR #104 (for #101, disputed/supersedes query context) has been open since May 21 with a review workflow failure. No code changes needed — the review check errored on infrastructure, not code quality. Build agent should notice and retry on its next fallback cycle.
 
 **Pattern:** The growth scan continues to find bugs in the "every write path must produce compliant pages" category. Three separate sessions have now found the same class of bug: a code path that writes wiki pages without the full schema metadata (#96 → query context, #106 → saveAnswerToWiki, #115 → MCP create_page). The lifecycle pipeline exists and works; the issue is that new write paths don't always use it. The deepest fix would be making `writeWikiPageWithSideEffects` the only way to write pages — but that's an architectural change, not a session-sized task.
+## 2025-06-05 (office-hour)
+Triaged 2 issues. Ready backlog was empty (1 in-progress: #101).
+
+- **#113** (mcp.json missing 7 tools) → APPROVED p2-medium, ready. Verified: manifest has 10 tools, server registers 17. Correctness bug — 41% of MCP tool surface invisible to agent discovery. 1 file, mechanical.
+- **#111** (wire unresolved-discussions into fix/UI/tests) → APPROVED p2-medium, ready. Dependency #110 now closed. Completion debt for a half-shipped feature — fix handler, UI filter, and tests all missing. 4 files, well-scoped.
+
+Build queue now has 2 ready issues. No rejections, no blocks.
