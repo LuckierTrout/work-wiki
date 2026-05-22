@@ -1461,3 +1461,7 @@ Triaged 2 issues. Ready backlog was empty (1 in-progress: #101).
 - **#111** (wire unresolved-discussions into fix/UI/tests) → APPROVED p2-medium, ready. Dependency #110 now closed. Completion debt for a half-shipped feature — fix handler, UI filter, and tests all missing. 4 files, well-scoped.
 
 Build queue now has 2 ready issues. No rejections, no blocks.
+- **#114** (lifecycle bypass in lint-fix) → APPROVED p2-medium, ready. Verified: 2 of 7 fix functions call writeWikiPage() directly, bypassing embeddings/index/log/revisions. Same bug class as #96 and #106. 2 files, mechanical.
+- **#115** (MCP create_page missing schema) → APPROVED p2-medium, ready. Verified: handleCreatePage() omits all 8 yopedia schema fields. Every MCP-created page born as lint finding. 2 files, ~15 lines.
+
+Build queue now has 4 ready issues (#111, #113, #114, #115). All p2-medium, all verified bugs or completion debt.
