@@ -1472,3 +1472,12 @@ Branch: yoyo/issue-113 | PR: https://github.com/yologdev/yopedia/pull/116
 Commits: - yoyo: add 7 missing tools to mcp.json manifest (closes #113)
 - office-hour: triage #114 and #115 → ready p2-medium
 - office-hour: triage #113 → ready, unblock #111 → ready
+
+## 2026-05-22 08:25 (build)
+Implemented issue #111: Wire unresolved-discussions into fix handler, UI filter, and tests (2/2)
+Branch: yoyo/issue-111 | PR: https://github.com/yologdev/yopedia/pull/117
+Commits: - yoyo: wire unresolved-discussions into fix handler, UI filter, and tests (closes #111)
+- yoyo: add 7 missing tools to mcp.json manifest (closes #113) (#116)
+- yoyo: build session (2026-05-22) — issue #113
+- office-hour: triage #114 and #115 → ready p2-medium
+- office-hour: triage #113 → ready, unblock #111 → ready
