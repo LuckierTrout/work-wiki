@@ -43,7 +43,7 @@ vi.mock("../frontmatter", () => ({
   ),
 }));
 
-import { readWikiPage, readWikiPageWithFrontmatter, writeWikiPage, listWikiPages, updateIndex, appendToLog } from "../wiki";
+import { readWikiPage, readWikiPageWithFrontmatter, listWikiPages, updateIndex, appendToLog } from "../wiki";
 import {
   writeWikiPageWithSideEffects,
   deleteWikiPage,
@@ -66,7 +66,6 @@ import {
 
 const mockedReadWikiPage = vi.mocked(readWikiPage);
 const mockedReadWikiPageWithFrontmatter = vi.mocked(readWikiPageWithFrontmatter);
-const mockedWriteWikiPage = vi.mocked(writeWikiPage);
 const mockedListWikiPages = vi.mocked(listWikiPages);
 const mockedUpdateIndex = vi.mocked(updateIndex);
 const mockedAppendToLog = vi.mocked(appendToLog);
@@ -624,13 +623,16 @@ describe("fixStalePage", () => {
     expect(result.success).toBe(true);
     expect(result.slug).toBe("stale");
     expect(result.message).toMatch(/^Expiry extended to \d{4}-\d{2}-\d{2}, verified as of \d{4}-\d{2}-\d{2}$/);
-    expect(mockedWriteWikiPage).toHaveBeenCalledOnce();
+    expect(mockedWriteWikiPageWithSideEffects).toHaveBeenCalledOnce();
 
     // Verify the written content includes both new expiry and valid_from
-    const writtenContent = mockedWriteWikiPage.mock.calls[0][1];
-    expect(writtenContent).toContain("expiry:");
-    expect(writtenContent).toContain("valid_from:");
-    expect(writtenContent).toContain("# Stale Page");
+    const call = mockedWriteWikiPageWithSideEffects.mock.calls[0][0];
+    expect(call.slug).toBe("stale");
+    expect(call.content).toContain("expiry:");
+    expect(call.content).toContain("valid_from:");
+    expect(call.content).toContain("# Stale Page");
+    expect(call.logOp).toBe("edit");
+    expect(call.author).toBe("lint-fix");
   });
 });
 
@@ -677,13 +679,15 @@ describe("fixUnmigratedPage", () => {
     expect(result.message).toContain("contributors");
     expect(result.message).toContain("disputed");
     expect(result.message).toContain("valid_from");
-    expect(mockedWriteWikiPage).toHaveBeenCalledOnce();
+    expect(mockedWriteWikiPageWithSideEffects).toHaveBeenCalledOnce();
 
-    // Verify the frontmatter passed to serializeFrontmatter
-    const writeCall = mockedWriteWikiPage.mock.calls[0];
-    expect(writeCall[0]).toBe("bare-page");
+    // Verify the frontmatter passed through the lifecycle pipeline
+    const call = mockedWriteWikiPageWithSideEffects.mock.calls[0][0];
+    expect(call.slug).toBe("bare-page");
+    expect(call.logOp).toBe("edit");
+    expect(call.author).toBe("lint-fix");
     // The serialized output will contain the defaults
-    const written = writeCall[1];
+    const written = call.content;
     expect(written).toContain("confidence");
     expect(written).toContain("0.5");
     expect(written).toContain("authors");
@@ -715,7 +719,7 @@ describe("fixUnmigratedPage", () => {
     // Should NOT mention fields that already existed
     expect(result.message).not.toContain("confidence");
     expect(result.message).not.toContain("authors");
-    expect(mockedWriteWikiPage).toHaveBeenCalledOnce();
+    expect(mockedWriteWikiPageWithSideEffects).toHaveBeenCalledOnce();
   });
 
   it("reports no changes when all fields already present", async () => {
@@ -862,9 +866,7 @@ describe("fixLintIssue", () => {
     expect(result.success).toBe(true);
     expect(result.slug).toBe("old-topic");
     expect(result.message).toMatch(/^Expiry extended to \d{4}-\d{2}-\d{2}, verified as of \d{4}-\d{2}-\d{2}$/);
-    expect(mockedWriteWikiPage).toHaveBeenCalledOnce();
-
-    // Verify the expiry is approximately 90 days from now
+    expect(mockedWriteWikiPageWithSideEffects).toHaveBeenCalledOnce();
     const dateMatch = result.message.match(/Expiry extended to (\d{4}-\d{2}-\d{2}), verified as of (\d{4}-\d{2}-\d{2})$/);
     expect(dateMatch).not.toBeNull();
     const newExpiry = new Date(dateMatch![1]);
@@ -913,6 +915,6 @@ describe("fixLintIssue", () => {
     expect(result.success).toBe(true);
     expect(result.slug).toBe("old-page");
     expect(result.message).toContain("yopedia defaults");
-    expect(mockedWriteWikiPage).toHaveBeenCalledOnce();
+    expect(mockedWriteWikiPageWithSideEffects).toHaveBeenCalledOnce();
   });
 });

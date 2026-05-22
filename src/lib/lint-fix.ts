@@ -1,4 +1,4 @@
-import { readWikiPage, readWikiPageWithFrontmatter, writeWikiPage, listWikiPages, updateIndex, appendToLog } from "./wiki";
+import { readWikiPage, readWikiPageWithFrontmatter, listWikiPages, updateIndex, appendToLog } from "./wiki";
 import { writeWikiPageWithSideEffects, deleteWikiPage } from "./lifecycle";
 import { callLLM, hasLLMKey } from "./llm";
 import { slugify } from "./slugify";
@@ -450,7 +450,21 @@ export async function fixStalePage(slug: string): Promise<FixResult> {
   page.frontmatter.expiry = expiryStr;
   page.frontmatter.valid_from = validFromStr;
 
-  await writeWikiPage(slug, serializeFrontmatter(page.frontmatter, page.body));
+  const updatedContent = serializeFrontmatter(page.frontmatter, page.body);
+  const summaryMatch = page.body.match(/^#\s+.+\n+(.+)/m);
+  const summary = summaryMatch ? summaryMatch[1].slice(0, 120) : slug;
+
+  await writeWikiPageWithSideEffects({
+    slug,
+    title: page.title,
+    content: updatedContent,
+    summary,
+    logOp: "edit",
+    logDetails: () =>
+      `auto-fix: extended expiry to ${expiryStr}, verified as of ${validFromStr}`,
+    crossRefSource: null,
+    author: "lint-fix",
+  });
 
   return {
     success: true,
@@ -530,7 +544,22 @@ export async function fixUnmigratedPage(slug: string): Promise<FixResult> {
     added.push("valid_from");
   }
 
-  await writeWikiPage(slug, serializeFrontmatter(fm, page.body));
+  await writeWikiPageWithSideEffects({
+    slug,
+    title: page.title,
+    content: serializeFrontmatter(fm, page.body),
+    summary: (() => {
+      const m = page.body.match(/^#\s+.+\n+(.+)/m);
+      return m ? m[1].slice(0, 120) : slug;
+    })(),
+    logOp: "edit",
+    logDetails: () =>
+      added.length > 0
+        ? `auto-fix: added yopedia defaults: ${added.join(", ")}`
+        : `auto-fix: unmigrated page already has all yopedia fields`,
+    crossRefSource: null,
+    author: "lint-fix",
+  });
 
   return {
     success: true,
