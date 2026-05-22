@@ -157,6 +157,7 @@ function extractTitle(content: string, fallback: string): string {
 export async function handleCreatePage(args: {
   slug: string;
   content: string;
+  author?: string;
 }): Promise<{ slug: string; title: string; created: true }> {
   validateSlug(args.slug);
 
@@ -179,7 +180,7 @@ export async function handleCreatePage(args: {
     updated: today,
     confidence: 0.5,
     expiry: expiryDate,
-    authors: ["agent"],
+    authors: [args.author ?? "agent"],
     valid_from: today,
     disputed: false,
     contributors: [],
@@ -195,6 +196,7 @@ export async function handleCreatePage(args: {
     content: fullContent,
     summary,
     logOp: "ingest",
+    author: args.author,
     crossRefSource: null, // skip cross-ref for MCP writes
   });
 
@@ -223,6 +225,16 @@ export async function handleUpdatePage(args: {
   };
   if (!merged.created) {
     merged.created = today;
+  }
+
+  // Track contributors: append the editor if they're not already listed.
+  if (args.author) {
+    const existingContributors = Array.isArray(merged.contributors)
+      ? (merged.contributors as string[])
+      : [];
+    if (!existingContributors.includes(args.author)) {
+      merged.contributors = [...existingContributors, args.author];
+    }
   }
 
   const fullContent = serializeFrontmatter(merged, args.content);
@@ -660,6 +672,7 @@ export function createMcpServer(): McpServer {
     inputSchema: {
       slug: z.string().describe("URL-safe page slug (e.g. 'neural-networks')"),
       content: z.string().describe("Markdown body for the new page (include a # Heading for the title)"),
+      author: z.string().optional().describe("Author handle for attribution (defaults to 'agent')"),
     },
     annotations: {
       readOnlyHint: false,
