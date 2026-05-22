@@ -1,5 +1,109 @@
 # Growth Journal
 
+## 2026-07-20 (research scan) — Week 14 market radar
+
+Scanned GitHub repos, HN, MCP ecosystem, Vercel AI SDK, and agent memory/wiki landscape. Filed 0 issues. The multi-writer agent wiki niche remains completely unoccupied — 14 weeks of scanning, zero competitors. Two new signals worth watching: Mozilla's Cq Exchange (knowledge commons for coding agents) and Vercel AI SDK v7 canary adding first-class MCP keywords.
+
+### Advantage Brief
+
+**Market movement:** The agent knowledge/memory space is maturing from "each agent remembers its own sessions" toward "shared, auditable knowledge commons." Mozilla launched Cq Exchange (hosted knowledge commons for coding agents, 2 HN pts, no public repo yet). TencentDB-Agent-Memory entered with a 4-tier progressive local memory pipeline (3,837★ in 6 weeks — BigTech's first move in this category). Forge proved small models + guardrails reach 99% on agent tasks (672 HN pts, 1,642★). Karpathy joined Anthropic for pre-training (1,422 HN pts). Vercel AI SDK v7 canary now keywords "mcp" and "agentic" — first-class MCP support is coming.
+
+**Evidence:**
+- `gh search repos "multi-writer wiki agent"` → 0 results
+- `gh search repos "collaborative agent wiki"` → 0 results
+- `gh search repos "structured claims wiki"` → 0 results
+- `gh search repos "fact triples knowledge" --created=">2026-01-01"` → 0 results
+- Mozilla blog.mozilla.ai/cq-exchange-agents-without-borders/ (2026-05-22, 2 HN pts)
+- TencentDB-Agent-Memory: 3,837★, created 2026-04-07, TypeScript, zero external API deps
+- Vercel AI SDK v7: 150 canary releases, package.json keywords now include "mcp", "agentic"
+- WUPHF: 1,075★, daily commits, wiki subsystem maturing (index regen, scratch stubs) but still single-writer
+- Hindsight: moved to vectorize-io/hindsight, 14,194★, pushed today
+- engram: dead (0★, zero forks, no activity)
+
+**Yopedia relevance:** The market is validating shared agent knowledge as a category. Mozilla's framing ("agents without borders") is precisely the problem yopedia solves. But nobody has shipped a multi-writer solution with trust scoring, confidence, talk pages, and attribution. The competitive floor has risen (WUPHF's wiki subsystem, TencentDB's memory pipeline) but not in our specific lane. Vercel AI SDK v7's native MCP support could eventually simplify our 17-tool MCP server — worth watching but not actionable until v7 stable ships.
+
+**Recommended move:** None this sprint. Continue current work (Phase 4 completion, Phase 5 research). The landscape confirms our direction without requiring a pivot.
+
+**Decision:** Watch all. Adopt nothing now.
+
+**Triggers:**
+- **Mozilla Cq Exchange → adopt:** If they open-source the repo and it gains >500★, evaluate whether to interop or differentiate. If they add multi-writer, they become a direct competitor.
+- **Vercel AI SDK v7 stable → adopt:** When v7 ships stable with native MCP integration, audit whether it can replace our custom MCP server code.
+- **WUPHF multi-writer → alert:** If WUPHF adds multi-writer trust or cross-team wiki collaboration, they become the first direct competitor. Trigger: WUPHF ships multi-writer or crosses 3K★.
+- **TencentDB-Agent-Memory → ignore unless:** They add a wiki/knowledge-commons layer on top of their memory pipeline. Currently infrastructure, not competitive.
+
+### Signal Map
+
+**Changed:**
+- **TencentDB-Agent-Memory** (3,837★, NEW) — Tencent's first entry. 4-tier progressive local memory pipeline, zero external APIs, TypeScript. Already spawning forks (Go reimplementation, Claude Code port, Hermes multi-machine). Infrastructure-level (agent memory plumbing), not a wiki. Different product category. Watch for wiki layer.
+- **Mozilla Cq Exchange** (NEW, 2 HN pts, no public repo) — "Hosted knowledge commons for AI coding agents." Conceptually closest to yopedia's vision of shared agent knowledge. But: hosted/proprietary, no public code, 2 HN points. Too early to evaluate the product.
+- **Karpathy → Anthropic** (1,422 HN pts, confirmed) — Joined pre-training team. The LLM wiki originator is now at our primary LLM provider. Doesn't change product strategy.
+- **Vercel AI SDK v7 canary** (150 canary releases) — Keywords now include "mcp" and "agentic." First-class MCP support is coming. v6 stable at 6.0.190, v5 still maintained at 5.0.192. Zod 4 now supported.
+- **engram** — Dead. 0 stars, zero forks, stalled since April. Dropping from watch list.
+
+**Unchanged:**
+- **WUPHF** (1,075★, +0 since Jul 6) — Still shipping daily. Wiki subsystem maturing (index regen, scratch stubs). Still single-writer, still subordinate to CRM product. No multi-writer.
+- **Hindsight** (14,194★, +8) — Moved to vectorize-io org. Still pushed daily. 814 forks. Category leader in agent memory. Phase 5 reference.
+- **mem0** (56,442★, +5) — Steady. CLI + marketplace updates. Universal memory layer. Not competitive.
+- **Graphiti** (26,375★, +2) — v0.29.1 shipped. Architecture overhaul. Infrastructure-level. Not competitive.
+- **letta** (22,890★, +3) — v0.16.8. Pickle→JSON security fix. Slow cadence. Not competitive.
+- **cognee** (17,450★, +2) — Hit v1.1.0 milestone. Active. Not competitive.
+- **PandaWiki** (9,644★, flat) — DingTalk bot fix. Chinese-market AI KB. Not competitive.
+- **MemOS** (9,326★, +1) — v2.0.16. Mem agent updates. Infrastructure. Not competitive.
+- **nashsu/llm_wiki** (8,872★, +5) — Desktop app. Rapid releases. No multi-writer.
+- **claude-obsidian** (5,350★, +6) — Stalled since Apr 24. Different product (Obsidian plugin).
+- **llm-wiki-agent** (2,713★, flat) — Stalled. Multi-format ingest.
+- **onyx-dot-app/agent-wiki** (9★, flat) — Still tiny. Multi-writer concept but no traction.
+- **MCP spec** — RC published May 21 for 2026-07-28 final. Already audited (#120 closed). Stateless transport, MRTR, deprecations confirmed.
+
+**New in watch list:**
+- **OmegaWiki** (764★) — Karpathy wiki + Claude Code research platform. Healthy niche. Single-writer.
+- **SwarmVault** (478★) — Local-first LLM wiki + knowledge graph. Positions as "Obsidian for agents." Single-writer.
+- **AgentRecall-MCP** (257★) — Session memory with Think-Execute-Reflect loops. MCP tool. Niche.
+
+**Watch next:**
+- **Mozilla Cq Exchange** — Closest concept to yopedia's shared knowledge vision. **Trigger:** open-source repo published or >500★.
+- **Vercel AI SDK v7 stable** — Native MCP support coming. **Trigger:** v7.0.0 stable release.
+- **WUPHF multi-writer** — **Trigger:** ships multi-writer or crosses 3K★.
+- **MCP 2026-07-28 final** — **Trigger:** final spec published; verify our audit is complete.
+- **Hindsight reflect pattern** — **Trigger:** we start Phase 5.
+
+### Star movements since last scan (Jul 6)
+
+| Project | Last scan | Now | Δ |
+|---------|-----------|-----|---|
+| mem0 | 56,437 | 56,442 | +5 |
+| graphiti | 26,373 | 26,375 | +2 |
+| letta | 22,887 | 22,890 | +3 |
+| cognee | 17,448 | 17,450 | +2 |
+| Hindsight | 14,186 | 14,194 | +8 |
+| claudian | 11,618 | (not checked) | — |
+| PandaWiki | 9,644 | 9,644 | 0 |
+| MemOS | 9,325 | 9,326 | +1 |
+| nashsu/llm_wiki | 8,867 | 8,872 | +5 |
+| claude-obsidian | 5,344 | 5,350 | +6 |
+| TencentDB-Agent-Memory | (new) | 3,837 | — |
+| llm-wiki-agent | 2,713 | 2,713 | 0 |
+| Forge | (new) | 1,642 | — |
+| Ar9av/obsidian-wiki | 1,444 | 1,447 | +3 |
+| llm-wiki-compiler | 1,257 | 1,258 | +1 |
+| WUPHF | 1,073 | 1,075 | +2 |
+| OmegaWiki | (new) | 764 | — |
+| SwarmVault | (new) | 478 | — |
+| AgentRecall-MCP | (new) | 257 | — |
+| onyx-dot-app/agent-wiki | 9 | 9 | 0 |
+| engram | 3,700 | 0 | DEAD |
+
+### Layer 3 insight
+
+The market is converging on agent knowledge as a category, but bifurcating into two lanes: **memory infrastructure** (Mem0, Graphiti, TencentDB, Hindsight — "give agents memory as a service") and **knowledge wikis** (WUPHF, OmegaWiki, SwarmVault, nashsu/llm_wiki — "agents build and maintain structured knowledge"). The infrastructure lane is crowded and well-funded. The wiki lane is growing fast but every implementation is single-writer. Mozilla's Cq Exchange hints at a third lane — **shared knowledge commons** — which is precisely where yopedia sits. But Mozilla framed it as hosted infrastructure ("agents without borders"), not as a self-hosted wiki with trust and governance.
+
+The persistent zero-result searches for multi-writer agent wikis after 14 weeks tell us something important: this isn't a gap that the market is slowly closing. It's a gap that most builders don't see as a problem yet. They're building for the single-agent use case because that's where the current demand is (Claude Code + personal Obsidian vault). The multi-writer problem becomes visible only when organizations run multiple agents that need to agree on what's true. That demand signal hasn't arrived at scale yet — but the infrastructure lane (memory-as-a-service) is building the plumbing that will eventually create it. When teams run 5-10 agents sharing a memory layer, they'll discover they need trust, attribution, and conflict resolution on top. That's when our niche becomes the market.
+
+### Issues filed
+
+0 issues. Nothing passes all three so-what tests (changes strategy + actionable this sprint + new information). The landscape confirms our direction without requiring a pivot.
+
 ## 2026-07-06 (research scan) — Week 12 competitive intelligence
 
 Scanned GitHub repos, MCP spec, agent memory systems, and LLM wiki ecosystem. Filed 1 issue. The MCP 2026-06-30 RC is imminent — all 22 SEPs merged, blog post published — and WUPHF emerged as the first serious structured-knowledge wiki with confidence scoring, temporal validity, and contradiction detection. Our multi-writer trust model remains unique but the competitive floor has risen.
