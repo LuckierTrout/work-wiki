@@ -24,6 +24,7 @@ import {
 import { _resetStorage } from "../storage";
 import { _resetConfigCache } from "../config";
 import { parseFrontmatter } from "../frontmatter";
+import { registerAgent } from "../agents";
 
 let tmpDir: string;
 let originalWikiDir: string | undefined;
@@ -129,6 +130,42 @@ describe("search_wiki", () => {
 
     const results = await handleSearchWiki({ query: "common topic", limit: 2 });
     expect(results.length).toBeLessThanOrEqual(2);
+  });
+
+  it("scopes results to agent pages when scope is provided", async () => {
+    // Create pages — one belongs to agent, one does not
+    await writeTestPage("agent-identity", "# Agent Identity\n\nAgent knowledge about testing.");
+    await writeTestPage("global-page", "# Global Page\n\nGlobal knowledge about testing.");
+
+    // Register an agent that owns only agent-identity
+    await registerAgent({
+      id: "test-bot",
+      name: "Test Bot",
+      description: "A test agent",
+      identityPages: ["agent-identity"],
+      learningPages: [],
+      socialPages: [],
+      registered: new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+    });
+
+    // Scoped search should only return agent-identity
+    const scoped = await handleSearchWiki({ query: "knowledge testing", scope: "agent:test-bot" });
+    expect(scoped.every((r) => r.slug === "agent-identity")).toBe(true);
+
+    // Unscoped search should return both
+    const unscoped = await handleSearchWiki({ query: "knowledge testing" });
+    const slugs = unscoped.map((r) => r.slug);
+    expect(slugs).toContain("agent-identity");
+    expect(slugs).toContain("global-page");
+  });
+
+  it("returns all results when scope is omitted (backward compatible)", async () => {
+    await writeTestPage("page-x", "# Page X\n\nUnique searchable content alpha.");
+
+    const results = await handleSearchWiki({ query: "unique searchable content alpha" });
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results[0].slug).toBe("page-x");
   });
 });
 
@@ -836,6 +873,46 @@ describe("query_wiki", () => {
     const result = await handleQueryWiki({ question: "What is AI?" });
     // Should work without error — prose is the default
     expect(result).toHaveProperty("answer");
+  });
+
+  it("accepts scope parameter without error", async () => {
+    // Even with an invalid agent scope, should return a result (not crash)
+    const result = await handleQueryWiki({
+      question: "What is AI?",
+      scope: "agent:nonexistent-agent",
+    });
+    expect(result).toHaveProperty("answer");
+    expect(result).toHaveProperty("sources");
+    // Invalid scope returns a descriptive message
+    expect(result.answer).toContain("nonexistent-agent");
+  });
+
+  it("returns scoped message for agent with no pages", async () => {
+    // Register an agent with no pages
+    await registerAgent({
+      id: "empty-bot",
+      name: "Empty Bot",
+      description: "An agent with no pages",
+      identityPages: [],
+      learningPages: [],
+      socialPages: [],
+      registered: new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+    });
+
+    const result = await handleQueryWiki({
+      question: "anything",
+      scope: "agent:empty-bot",
+    });
+    // Should indicate no pages found for this scope
+    expect(result.answer).toContain("No pages found");
+    expect(result.sources).toEqual([]);
+  });
+
+  it("works without scope (backward compatible)", async () => {
+    const result = await handleQueryWiki({ question: "What is AI?" });
+    expect(result).toHaveProperty("answer");
+    expect(result).toHaveProperty("sources");
   });
 });
 

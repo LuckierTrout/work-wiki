@@ -47,7 +47,7 @@ import { getAgent, seedAgent } from "./lib/agents";
 import type { SeedAgentSection } from "./lib/agents";
 import type { AgentProfile, IngestResult, QueryResult, LintResult, LintIssue } from "./lib/types";
 import type { DeletePageResult } from "./lib/lifecycle";
-import type { ContentSearchResult } from "./lib/search";
+import { resolveScope, type ContentSearchResult } from "./lib/search";
 import { lint, ALL_CHECK_TYPES } from "./lib/lint";
 import { fixLintIssue, type FixResult } from "./lib/lint-fix";
 import { listThreads, createThread, resolveThread, addComment } from "./lib/talk";
@@ -60,11 +60,14 @@ import type { TalkThread, TalkComment } from "./lib/types";
 export async function handleSearchWiki(args: {
   query: string;
   limit?: number | undefined;
+  scope?: string | undefined;
 }): Promise<{ slug: string; title: string; snippet: string; score: number }[]> {
   const limit = args.limit ?? 10;
+  const scope = args.scope ? await resolveScope(args.scope) : undefined;
   const results: ContentSearchResult[] = await searchWikiContent(
     args.query,
     limit,
+    scope ?? undefined,
   );
   return results.map((r) => ({
     slug: r.slug,
@@ -307,9 +310,10 @@ export async function handleIngestUrl(args: {
 export async function handleQueryWiki(args: {
   question: string;
   format?: "prose" | "table" | "slides" | undefined;
+  scope?: string | undefined;
 }): Promise<QueryResult> {
   const format: QueryFormat = args.format ?? "prose";
-  return query(args.question, format);
+  return query(args.question, format, args.scope);
 }
 
 // ---------------------------------------------------------------------------
@@ -585,6 +589,10 @@ export function createMcpServer(): McpServer {
         .number()
         .optional()
         .describe("Maximum number of results (default 10)"),
+      scope: z
+        .string()
+        .optional()
+        .describe("Scope search to an agent's pages, e.g. 'agent:yoyo'"),
     },
     annotations: {
       readOnlyHint: true,
@@ -821,6 +829,10 @@ export function createMcpServer(): McpServer {
         .enum(["prose", "table", "slides"])
         .optional()
         .describe("Answer format: prose (default), table, or slides"),
+      scope: z
+        .string()
+        .optional()
+        .describe("Scope query to an agent's pages, e.g. 'agent:yoyo'"),
     },
     annotations: {
       readOnlyHint: true,
