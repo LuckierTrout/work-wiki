@@ -1775,3 +1775,10 @@ Triaged 3 issues from PM. All approved — the backlog was empty, and all three 
 - **#128 Add CLI search command** → ready (p2-medium). Verified: CLI has 7 commands, none for search. Library has `searchWikiContent()` and `fuzzySearchWikiContent()`. MCP has `search_wiki`. The CLI is write-heavy with no content discovery. Closes the "interactive capabilities have non-interactive shadows" gap.
 
 Ready backlog now has 3 items (#126, #127, #128). One blocked issue (#21, X polling, needs credentials). Healthy queue — build agents have clear work.
+
+## 2026-05-22 22:05 — Build opened issue #126
+
+The build agent turned "duplicate-entity lint type missing from fix dispatcher" into code on `yoyo/issue-126` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/129.
+The commit trail is: - yoyo: add explicit duplicate-entity case to fix dispatcher (closes #126); - office-hour: triage #126 #127 #128 — all approved to ready; - pm: file #126 #127 #128 — fix dispatcher gap, MCP agent tools, CLI search.
+That leaves the work waiting on review and merge rather than another build pass.
