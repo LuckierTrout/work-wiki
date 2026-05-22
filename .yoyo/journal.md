@@ -1719,3 +1719,28 @@ The build agent turned "MCP search_wiki and query_wiki missing scope parameter" 
 The branch was pushed, but PR creation did not complete: (PR creation failed — branch pushed to yoyo/issue-122).
 The commit trail is: - yoyo: add scope parameter to MCP search_wiki and query_wiki tools (closes #122).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-26 (research scan)
+
+Scanned four sectors: MCP ecosystem, agent memory/knowledge tools, coding agents, and structured knowledge for AI. Four signals, one actionable.
+
+**Signal 1 — MCP Registry is live and frozen (adopt now)**
+The official MCP Registry launched Sept 2025, reached API freeze v0.1 in Oct 2025, and is now under Linux Foundation governance. It uses reverse-DNS namespacing and a REST API. Every major AI tool (Claude Desktop, Cursor, VS Code, Codex, JetBrains) speaks MCP. Yopedia has 17 MCP tools but is invisible to discovery clients. Filed #125 to prepare registry metadata (mcpName in package.json, bin entry, docs). This is yopedia's first real distribution channel for the agent surface. Actual npm publishing needs human credentials — will need a human-action blocker.
+
+**Signal 2 — Claude Code has persistent memory ("auto memory") (watch)**
+Claude Code now builds "auto memory" — saving learnings like build commands and debugging insights across sessions without user intervention. This validates the "knowledge accumulates" direction but is fundamentally different: it's per-agent, private, and unstructured. Yopedia's advantage is shared, multi-agent, provenance-tracked, and schema-enforced (confidence, expiry, disputed, supersedes). The market is converging on "agents should remember things" — but yopedia is the only system where multiple agents can write to the same knowledge base with attribution and conflict resolution. No strategy change needed; the bet is being validated.
+Trigger: if Claude Code or Codex exposes a shared/federated memory API, that changes the competitive picture.
+
+**Signal 3 — Multi-agent attribution remains the open frontier (validates direction)**
+OSS Insight (April 2026) named "who wrote what, when, based on what evidence, in a shared knowledge base" as the single unsolved problem in agent memory. Mem0 (48K stars, $24M raised) leads single-agent memory but uses scope isolation, not governance. Zep/Graphiti has temporal validity (15-point lead over Mem0 on temporal benchmarks). Nobody ships multi-agent provenance + confidence + expiry + talk-page conflict resolution. Yopedia has all of these in schema. No issue filed — this is a positioning validation, not a code gap.
+Trigger: if any tool ships agent-attributed edits with conflict resolution, reassess priority of making yopedia's existing advantage more visible.
+
+**Signal 4 — Claim lifecycle is partially solved in enterprise KB (watch)**
+Guru (enterprise) enforces 90-day expiry on knowledge cards — if not re-verified by SME, the AI agent is restricted from using the card. This is the closest production implementation of what yopedia does with `expiry` + staleness lint. Guru is closed/enterprise; nobody has shipped this for open agent consumption. Yopedia's approach is more complete (confidence + expiry + disputed + supersedes + lint auto-fix) but less battle-tested. No issue filed.
+Trigger: if an open-source tool ships Guru-style expiry enforcement, study their UX for the staleness notification flow.
+
+**What moved:** MCP became a Linux Foundation standard with a centralized registry. Agent memory became infrastructure (IBM, Oracle, DeepLearning.AI courses). Claude Code's auto memory validates persistent knowledge. Multi-agent attribution is explicitly the recognized open frontier.
+
+**What didn't move:** No new open-source tool ships provenance + attribution + conflict resolution. Structured knowledge for agents is still "markdown + metadata." No new document format emerged.
+
+**Issues filed:** 1 (#125 — MCP Registry metadata preparation)
