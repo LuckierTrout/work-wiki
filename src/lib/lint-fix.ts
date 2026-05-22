@@ -586,6 +586,10 @@ export async function fixLintIssue(
       throw new FixValidationError(
         "Uncited-claims pages cannot be auto-fixed. Ingest a source URL for this topic or add inline citations manually.",
       );
+    case "unresolved-discussions":
+      throw new FixValidationError(
+        "Unresolved discussions cannot be auto-fixed. Review and resolve the open threads on the talk page.",
+      );
     default:
       throw new FixValidationError(
         "Auto-fix not supported for this issue type",

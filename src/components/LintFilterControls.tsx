@@ -14,6 +14,7 @@ export const ALL_CHECK_TYPES: LintIssue["type"][] = [
   "low-confidence",
   "unmigrated-page",
   "duplicate-entity",
+  "unresolved-discussions",
 ];
 
 const checkTypeLabels: Record<LintIssue["type"], string> = {

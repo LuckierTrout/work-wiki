@@ -15,6 +15,7 @@ import {
   checkLowConfidence,
   checkUnmigratedPages,
   checkUncitedClaims,
+  checkUnresolvedDiscussions,
   LOW_CONFIDENCE_THRESHOLD,
   STALE_VERIFICATION_DAYS,
   buildSummary,
@@ -31,13 +32,16 @@ import { _resetStorage } from "../storage";
 let tmpDir: string;
 let originalWikiDir: string | undefined;
 let originalRawDir: string | undefined;
+let originalDataDir: string | undefined;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lint-checks-test-"));
   originalWikiDir = process.env.WIKI_DIR;
   originalRawDir = process.env.RAW_DIR;
+  originalDataDir = process.env.DATA_DIR;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
+  process.env.DATA_DIR = tmpDir;
   await ensureDirectories();
   _resetStorage();
 });
@@ -52,6 +56,11 @@ afterEach(async () => {
     delete process.env.RAW_DIR;
   } else {
     process.env.RAW_DIR = originalRawDir;
+  }
+  if (originalDataDir === undefined) {
+    delete process.env.DATA_DIR;
+  } else {
+    process.env.DATA_DIR = originalDataDir;
   }
   _resetStorage();
   await fs.rm(tmpDir, { recursive: true, force: true });
@@ -831,5 +840,52 @@ describe("checkUncitedClaims", () => {
 
     const issues = await checkUncitedClaims();
     expect(issues).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkUnresolvedDiscussions
+// ---------------------------------------------------------------------------
+describe("checkUnresolvedDiscussions", () => {
+  it("returns no issues when no discuss files exist", async () => {
+    await writeWikiPage("clean-page", "# Clean\n\nNo discussions here.");
+    const slugs = ["clean-page"];
+    const issues = await checkUnresolvedDiscussions(slugs);
+    expect(issues).toHaveLength(0);
+  });
+
+  it("flags a page with open discussion threads", async () => {
+    await writeWikiPage("debated", "# Debated\n\nSome content.");
+    // Create a discuss file with one open and one resolved thread
+    const discussDir = path.join(tmpDir, "discuss");
+    await fs.mkdir(discussDir, { recursive: true });
+    const threads = [
+      { title: "Thread 1", status: "open", author: "alice", createdAt: new Date().toISOString(), comments: [] },
+      { title: "Thread 2", status: "resolved", author: "bob", createdAt: new Date().toISOString(), comments: [] },
+    ];
+    await fs.writeFile(path.join(discussDir, "debated.json"), JSON.stringify(threads));
+    _resetStorage();
+
+    const issues = await checkUnresolvedDiscussions(["debated"]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].type).toBe("unresolved-discussions");
+    expect(issues[0].slug).toBe("debated");
+    expect(issues[0].severity).toBe("warning");
+  });
+
+  it("uses plural when multiple threads are open", async () => {
+    await writeWikiPage("hot-topic", "# Hot Topic\n\nControversial.");
+    const discussDir = path.join(tmpDir, "discuss");
+    await fs.mkdir(discussDir, { recursive: true });
+    const threads = [
+      { title: "T1", status: "open", author: "a", createdAt: new Date().toISOString(), comments: [] },
+      { title: "T2", status: "open", author: "b", createdAt: new Date().toISOString(), comments: [] },
+    ];
+    await fs.writeFile(path.join(discussDir, "hot-topic.json"), JSON.stringify(threads));
+    _resetStorage();
+
+    const issues = await checkUnresolvedDiscussions(["hot-topic"]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain("2 unresolved discussion threads");
   });
 });
