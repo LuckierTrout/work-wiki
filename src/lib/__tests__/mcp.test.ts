@@ -1434,3 +1434,117 @@ describe("reingest", () => {
     ).rejects.toThrow("no source URL recorded");
   });
 });
+
+// ---------------------------------------------------------------------------
+// create_page author attribution tests
+// ---------------------------------------------------------------------------
+
+describe("handleCreatePage author attribution", () => {
+  it("sets authors to provided author", async () => {
+    await writeIndex([]);
+    const result = await handleCreatePage({
+      slug: "test-page",
+      content: "# Test Page\n\nSome content.",
+      author: "yoyo",
+    });
+    expect(result.created).toBe(true);
+
+    const raw = await fs.readFile(
+      path.join(tmpDir, "wiki", "test-page.md"),
+      "utf-8",
+    );
+    const parsed = parseFrontmatter(raw);
+    expect(parsed.data.authors).toEqual(["yoyo"]);
+  });
+
+  it("defaults authors to agent when no author provided", async () => {
+    await writeIndex([]);
+    const result = await handleCreatePage({
+      slug: "default-author",
+      content: "# Default\n\nContent.",
+    });
+    expect(result.created).toBe(true);
+
+    const raw = await fs.readFile(
+      path.join(tmpDir, "wiki", "default-author.md"),
+      "utf-8",
+    );
+    const parsed = parseFrontmatter(raw);
+    expect(parsed.data.authors).toEqual(["agent"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// update_page contributor attribution tests
+// ---------------------------------------------------------------------------
+
+describe("handleUpdatePage contributor attribution", () => {
+  it("appends author to contributors in frontmatter", async () => {
+    await writeTestPage(
+      "existing-page",
+      "---\ntitle: Existing\nauthors: [original-author]\ncontributors: []\n---\n# Existing\n\nOriginal content.",
+    );
+    await writeIndex([
+      { title: "Existing", slug: "existing-page", summary: "Original" },
+    ]);
+
+    await handleUpdatePage({
+      slug: "existing-page",
+      content: "# Existing\n\nUpdated content.",
+      author: "yoyo",
+    });
+
+    const raw = await fs.readFile(
+      path.join(tmpDir, "wiki", "existing-page.md"),
+      "utf-8",
+    );
+    const parsed = parseFrontmatter(raw);
+    expect(parsed.data.contributors).toContain("yoyo");
+  });
+
+  it("does not duplicate existing contributor", async () => {
+    await writeTestPage(
+      "dup-page",
+      "---\ntitle: Dup\nauthors: [someone]\ncontributors: [yoyo]\n---\n# Dup\n\nContent.",
+    );
+    await writeIndex([
+      { title: "Dup", slug: "dup-page", summary: "Content" },
+    ]);
+
+    await handleUpdatePage({
+      slug: "dup-page",
+      content: "# Dup\n\nNew content.",
+      author: "yoyo",
+    });
+
+    const raw = await fs.readFile(
+      path.join(tmpDir, "wiki", "dup-page.md"),
+      "utf-8",
+    );
+    const parsed = parseFrontmatter(raw);
+    const contributors = parsed.data.contributors as string[];
+    expect(contributors.filter((c) => c === "yoyo")).toHaveLength(1);
+  });
+
+  it("does not modify contributors when no author provided", async () => {
+    await writeTestPage(
+      "no-author-page",
+      "---\ntitle: NoAuthor\nauthors: [someone]\ncontributors: [existing]\n---\n# NoAuthor\n\nContent.",
+    );
+    await writeIndex([
+      { title: "NoAuthor", slug: "no-author-page", summary: "Content" },
+    ]);
+
+    await handleUpdatePage({
+      slug: "no-author-page",
+      content: "# NoAuthor\n\nUpdated.",
+    });
+
+    const raw = await fs.readFile(
+      path.join(tmpDir, "wiki", "no-author-page.md"),
+      "utf-8",
+    );
+    const parsed = parseFrontmatter(raw);
+    expect(parsed.data.contributors).toEqual(["existing"]);
+  });
+});
