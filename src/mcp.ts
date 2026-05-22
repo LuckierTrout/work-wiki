@@ -13,6 +13,9 @@
  *   query_wiki     — Ask the wiki a question with LLM synthesis
  *   agent_context  — Get an agent's full context by agent ID
  *   seed_agent     — Register an agent and create its wiki pages
+ *   list_agents    — List all registered agents
+ *   update_agent   — Update an existing agent profile
+ *   delete_agent   — Delete an agent profile
  *   lint_wiki      — Run quality checks on the wiki
  *   fix_lint_issue — Auto-fix a lint issue found by lint_wiki
  *   list_discussions   — List discussion threads for a wiki page
@@ -43,8 +46,8 @@ import {
 import { extractSummary, ingestUrl, reingest } from "./lib/ingest";
 import { query, type QueryFormat } from "./lib/query";
 import { isUrl } from "./lib/fetch";
-import { getAgent, seedAgent } from "./lib/agents";
-import type { SeedAgentSection } from "./lib/agents";
+import { getAgent, listAgents, updateAgent, deleteAgent, seedAgent } from "./lib/agents";
+import type { SeedAgentSection, UpdateAgentOptions } from "./lib/agents";
 import type { AgentProfile, IngestResult, QueryResult, LintResult, LintIssue } from "./lib/types";
 import type { DeletePageResult } from "./lib/lifecycle";
 import { resolveScope, type ContentSearchResult } from "./lib/search";
@@ -416,6 +419,60 @@ export async function handleSeedAgent(args: {
     description: args.description,
     sections,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Agent management handlers (list, update, delete)
+// ---------------------------------------------------------------------------
+
+export async function handleListAgents(): Promise<{
+  agents: { id: string; name: string; description: string; registered: string; lastUpdated: string }[];
+}> {
+  const agents = await listAgents();
+  return {
+    agents: agents.map((a) => ({
+      id: a.id,
+      name: a.name,
+      description: a.description,
+      registered: a.registered,
+      lastUpdated: a.lastUpdated,
+    })),
+  };
+}
+
+export async function handleUpdateAgent(args: {
+  agent_id: string;
+  name?: string | undefined;
+  description?: string | undefined;
+  addPages?: {
+    slug: string;
+    title: string;
+    type: "identity" | "learnings" | "social";
+    content: string;
+  }[] | undefined;
+  removePages?: string[] | undefined;
+}): Promise<AgentProfile> {
+  const options: UpdateAgentOptions = {};
+  if (args.name !== undefined) options.name = args.name;
+  if (args.description !== undefined) options.description = args.description;
+  if (args.addPages !== undefined) options.addPages = args.addPages;
+  if (args.removePages !== undefined) options.removePages = args.removePages;
+
+  const result = await updateAgent(args.agent_id, options);
+  if (!result) {
+    throw new Error(`Agent not found: ${args.agent_id}`);
+  }
+  return result;
+}
+
+export async function handleDeleteAgent(args: {
+  agent_id: string;
+}): Promise<{ deleted: boolean; agent_id: string }> {
+  const deleted = await deleteAgent(args.agent_id);
+  if (!deleted) {
+    throw new Error(`Agent not found: ${args.agent_id}`);
+  }
+  return { deleted: true, agent_id: args.agent_id };
 }
 
 // ---------------------------------------------------------------------------
@@ -919,6 +976,118 @@ export function createMcpServer(): McpServer {
   }, async (args) => {
     try {
       const result = await handleSeedAgent(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // list_agents — List all registered agents
+  server.registerTool("list_agents", {
+    description:
+      "List all registered agents with their IDs, names, and descriptions",
+    inputSchema: {},
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
+    try {
+      const result = await handleListAgents();
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // update_agent — Update an existing agent profile
+  server.registerTool("update_agent", {
+    description:
+      "Update an existing agent profile — modify name, description, add or remove pages",
+    inputSchema: {
+      agent_id: z.string().describe("Agent ID (e.g. 'yoyo')"),
+      name: z.string().optional().describe("New display name"),
+      description: z.string().optional().describe("New description"),
+      addPages: z.array(z.object({
+        slug: z.string().describe("Wiki page slug for this section"),
+        title: z.string().describe("Page title"),
+        type: z.enum(["identity", "learnings", "social"]).describe("Section type"),
+        content: z.string().describe("Markdown content for this section"),
+      })).optional().describe("Pages to create and add to the agent profile"),
+      removePages: z.array(z.string()).optional().describe("Page slugs to remove from the agent profile (does not delete wiki pages)"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleUpdateAgent(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // delete_agent — Delete an agent profile
+  server.registerTool("delete_agent", {
+    description:
+      "Delete an agent profile by ID. Does not delete the agent's wiki pages.",
+    inputSchema: {
+      agent_id: z.string().describe("Agent ID to delete (e.g. 'yoyo')"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleDeleteAgent(args);
       return {
         content: [
           {

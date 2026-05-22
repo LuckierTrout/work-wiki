@@ -13,6 +13,9 @@ import {
   handleQueryWiki,
   handleAgentContext,
   handleSeedAgent,
+  handleListAgents,
+  handleUpdateAgent,
+  handleDeleteAgent,
   handleLintWiki,
   handleFixLintIssue,
   handleListDiscussions,
@@ -1623,5 +1626,165 @@ describe("handleUpdatePage contributor attribution", () => {
     );
     const parsed = parseFrontmatter(raw);
     expect(parsed.data.contributors).toEqual(["existing"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// list_agents tests
+// ---------------------------------------------------------------------------
+
+describe("list_agents", () => {
+  it("returns empty array when no agents registered", async () => {
+    const result = await handleListAgents();
+    expect(result.agents).toEqual([]);
+  });
+
+  it("returns registered agents with id, name, description", async () => {
+    await registerAgent({
+      id: "agent-a",
+      name: "Agent A",
+      description: "First agent",
+      identityPages: [],
+      learningPages: [],
+      socialPages: [],
+      registered: "2025-01-01T00:00:00.000Z",
+      lastUpdated: "2025-01-01T00:00:00.000Z",
+    });
+    await registerAgent({
+      id: "agent-b",
+      name: "Agent B",
+      description: "Second agent",
+      identityPages: ["b-identity"],
+      learningPages: [],
+      socialPages: [],
+      registered: "2025-02-01T00:00:00.000Z",
+      lastUpdated: "2025-02-01T00:00:00.000Z",
+    });
+
+    const result = await handleListAgents();
+    expect(result.agents).toHaveLength(2);
+
+    const ids = result.agents.map((a) => a.id).sort();
+    expect(ids).toEqual(["agent-a", "agent-b"]);
+
+    const agentA = result.agents.find((a) => a.id === "agent-a");
+    expect(agentA).toBeDefined();
+    expect(agentA!.name).toBe("Agent A");
+    expect(agentA!.description).toBe("First agent");
+    expect(agentA!.registered).toBe("2025-01-01T00:00:00.000Z");
+    expect(agentA!.lastUpdated).toBe("2025-01-01T00:00:00.000Z");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// update_agent tests
+// ---------------------------------------------------------------------------
+
+describe("update_agent", () => {
+  it("updates agent name and description", async () => {
+    await registerAgent({
+      id: "updatable",
+      name: "Original Name",
+      description: "Original description",
+      identityPages: [],
+      learningPages: [],
+      socialPages: [],
+      registered: "2025-01-01T00:00:00.000Z",
+      lastUpdated: "2025-01-01T00:00:00.000Z",
+    });
+
+    const result = await handleUpdateAgent({
+      agent_id: "updatable",
+      name: "Updated Name",
+      description: "Updated description",
+    });
+
+    expect(result.id).toBe("updatable");
+    expect(result.name).toBe("Updated Name");
+    expect(result.description).toBe("Updated description");
+  });
+
+  it("throws when agent does not exist", async () => {
+    await expect(
+      handleUpdateAgent({
+        agent_id: "nonexistent",
+        name: "New Name",
+      }),
+    ).rejects.toThrow("Agent not found: nonexistent");
+  });
+
+  it("accepts partial updates (name only)", async () => {
+    await registerAgent({
+      id: "partial-update",
+      name: "Old Name",
+      description: "Keep this",
+      identityPages: [],
+      learningPages: [],
+      socialPages: [],
+      registered: "2025-01-01T00:00:00.000Z",
+      lastUpdated: "2025-01-01T00:00:00.000Z",
+    });
+
+    const result = await handleUpdateAgent({
+      agent_id: "partial-update",
+      name: "New Name",
+    });
+
+    expect(result.name).toBe("New Name");
+    expect(result.description).toBe("Keep this");
+  });
+
+  it("removes pages from agent profile", async () => {
+    await registerAgent({
+      id: "page-remover",
+      name: "Page Remover",
+      description: "Test agent",
+      identityPages: ["page-a", "page-b"],
+      learningPages: ["page-c"],
+      socialPages: [],
+      registered: "2025-01-01T00:00:00.000Z",
+      lastUpdated: "2025-01-01T00:00:00.000Z",
+    });
+
+    const result = await handleUpdateAgent({
+      agent_id: "page-remover",
+      removePages: ["page-b", "page-c"],
+    });
+
+    expect(result.identityPages).toEqual(["page-a"]);
+    expect(result.learningPages).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// delete_agent tests
+// ---------------------------------------------------------------------------
+
+describe("delete_agent", () => {
+  it("deletes an existing agent", async () => {
+    await registerAgent({
+      id: "to-delete",
+      name: "Delete Me",
+      description: "Will be deleted",
+      identityPages: [],
+      learningPages: [],
+      socialPages: [],
+      registered: "2025-01-01T00:00:00.000Z",
+      lastUpdated: "2025-01-01T00:00:00.000Z",
+    });
+
+    const result = await handleDeleteAgent({ agent_id: "to-delete" });
+    expect(result.deleted).toBe(true);
+    expect(result.agent_id).toBe("to-delete");
+
+    // Verify agent is actually gone
+    const listing = await handleListAgents();
+    expect(listing.agents.find((a) => a.id === "to-delete")).toBeUndefined();
+  });
+
+  it("throws when agent does not exist", async () => {
+    await expect(
+      handleDeleteAgent({ agent_id: "nonexistent" }),
+    ).rejects.toThrow("Agent not found: nonexistent");
   });
 });
