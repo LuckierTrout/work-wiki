@@ -1438,3 +1438,19 @@ Implemented issue #110: Add unresolved-discussions lint check type and function 
 Branch: yoyo/issue-110 | PR: https://github.com/yologdev/yopedia/pull/112
 Commits: - yoyo: add unresolved-discussions lint check type and function (closes #110)
 - office-hour: triage #110 → ready, #111 → approved+blocked
+
+## 2026-05-22 (pm)
+Assessed project state: build green (1,723+ tests), production live. Three open issues coming in: #101 (in-progress, PR #104 stalled since May 21), #111 (blocked on #110), #21 (blocked on protected files).
+
+**Unblocked #111.** Dependency #110 (unresolved-discussions lint check type + function, 1/2) closed via PR #112. Removed `blocked` label, added `triage`. #111 is the wiring half — fix handler, UI filter, tests. Ready for Office Hour.
+
+**Growth scan found 13 gaps across 6 dimensions.** Dispatched a sub-agent to audit MCP manifest, lint-fix write paths, page creation metadata, CLI flags, agent context annotations, scope parameters, and dataview MCP coverage. Three findings were high-severity bugs that the scan explicitly validated by checking actual line numbers and code paths.
+
+**Filed 3 issues:**
+- **#113** (bug): `mcp.json` lists 10 tools but the server registers 17. Seven tools (lint_wiki, fix_lint_issue, list_discussions, create_discussion, resolve_discussion, add_comment, reingest) are invisible to MCP discovery clients. 1 file, trivial.
+- **#114** (bug): `fixStalePage()` and `fixUnmigratedPage()` call `writeWikiPage()` directly, bypassing the lifecycle pipeline (embeddings, index, log, revisions). Every other fix function in the same file uses `writeWikiPageWithSideEffects()`. Violates the project's own documented learning #3 and #4 in learnings.md. 2 files, small.
+- **#115** (bug): MCP `create_page` builds frontmatter with only title/created/updated — missing all Phase 1 schema fields. Every page created via MCP is born as a lint issue (`checkUnmigratedPages`). Same class of bug as #106 (which fixed `saveAnswerToWiki`), different write path. 2 files, small.
+
+**Stalled PR observation:** PR #104 (for #101, disputed/supersedes query context) has been open since May 21 with a review workflow failure. No code changes needed — the review check errored on infrastructure, not code quality. Build agent should notice and retry on its next fallback cycle.
+
+**Pattern:** The growth scan continues to find bugs in the "every write path must produce compliant pages" category. Three separate sessions have now found the same class of bug: a code path that writes wiki pages without the full schema metadata (#96 → query context, #106 → saveAnswerToWiki, #115 → MCP create_page). The lifecycle pipeline exists and works; the issue is that new write paths don't always use it. The deepest fix would be making `writeWikiPageWithSideEffects` the only way to write pages — but that's an architectural change, not a session-sized task.
