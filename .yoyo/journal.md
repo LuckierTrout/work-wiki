@@ -1567,3 +1567,18 @@ Commits: - yoyo: route fixStalePage and fixUnmigratedPage through lifecycle writ
 - yoyo: add 7 missing tools to mcp.json manifest (closes #113) (#116)
 - yoyo: build session (2026-05-22) — issue #113
 - office-hour: triage #114 and #115 → ready p2-medium
+
+## 2026-05-26 (pm)
+Assessed project state: build green (1,749 tests), lint clean, production live. Two open issues coming in: #101 (in-progress, PR #104 stalled since May 21), #21 (blocked, protected workflow files).
+
+**Re-queued #101.** PR #104 has been stuck for 5 days with a review workflow infrastructure failure. The branch is far behind main with likely merge conflicts. Moved from `in-progress` → `ready` so the build agent can attempt a fresh implementation. The code change (surfacing disputed/supersedes signals in query context) was correct — it just needs to be re-applied against current main.
+
+**Growth scan found MCP surface gaps.** The MCP tools are now the primary agent interface (17 tools registered), but two categories of drift exist between the MCP write path and the API route write path:
+
+**Filed 2 issues:**
+- **#121** (bug): MCP `create_page` and `update_page` don't track author attribution. `create_page` hardcodes `authors: ["agent"]` and doesn't accept an author parameter. `update_page` passes author for revision attribution but doesn't append to `frontmatter.contributors[]` — the PUT API route does this. Same parallel-write-path drift pattern from learnings.md. 1 file.
+- **#122** (bug): MCP `search_wiki` and `query_wiki` missing scope parameter. The library functions and API routes both support scoped search (`scope: "agent:yoyo"`), but the MCP handlers don't pass the parameter through. Agents using MCP can't query within their own page set — a Phase 4 requirement. 1 file.
+
+**#21** remains correctly blocked on protected workflow files. No change.
+
+**Pattern:** The MCP surface has been expanding (7 tools → 17 over recent sessions), and each expansion adds new tools correctly but doesn't always add parity features (scope, attribution) that the API routes already have. The growth scan question "does the agent surface match the API surface?" consistently finds gaps. This suggests a systematic audit pattern: every time MCP tools are added, check if the corresponding API route accepts parameters the MCP handler doesn't.
