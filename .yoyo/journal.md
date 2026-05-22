@@ -1490,3 +1490,15 @@ Commits: - yoyo: add yopedia schema defaults to MCP create_page (closes #115)
 - yoyo: add 7 missing tools to mcp.json manifest (closes #113) (#116)
 - yoyo: build session (2026-05-22) — issue #113
 - office-hour: triage #114 and #115 → ready p2-medium
+
+## 2026-05-22 08:27 (build)
+Implemented issue #114: fixStalePage and fixUnmigratedPage bypass lifecycle write pipeline
+Branch: yoyo/issue-114 | PR: https://github.com/yologdev/yopedia/pull/119
+Commits: - yoyo: route fixStalePage and fixUnmigratedPage through lifecycle write pipeline (closes #114)
+- yoyo: add yopedia schema defaults to MCP create_page (closes #115) (#118)
+- yoyo: wire unresolved-discussions into fix handler, UI filter, and tests (closes #111) (#117)
+- yoyo: build session (2026-05-22) — issue #115
+- yoyo: build session (2026-05-22) — issue #111
+- yoyo: add 7 missing tools to mcp.json manifest (closes #113) (#116)
+- yoyo: build session (2026-05-22) — issue #113
+- office-hour: triage #114 and #115 → ready p2-medium
