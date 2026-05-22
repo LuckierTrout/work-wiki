@@ -16,6 +16,7 @@ import {
   checkUnmigratedPages,
   checkDuplicateEntities,
   checkUncitedClaims,
+  checkUnresolvedDiscussions,
   buildSummary,
   parseLLMJsonArray,
   extractCrossRefSlugs,
@@ -47,6 +48,7 @@ export {
   checkUnmigratedPages,
   checkDuplicateEntities,
   checkUncitedClaims,
+  checkUnresolvedDiscussions,
   ALL_CHECK_TYPES,
 };
 
@@ -82,7 +84,7 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
     const indexSlugs = new Set(indexPages.map((p) => p.slug));
 
     // Run lightweight checks in parallel
-    const [orphans, stale, empty, crossRefs, brokenLinks, stalePages, lowConfidence, unmigratedPages, duplicateEntities, uncitedClaims] = await Promise.all([
+    const [orphans, stale, empty, crossRefs, brokenLinks, stalePages, lowConfidence, unmigratedPages, duplicateEntities, uncitedClaims, unresolvedDiscussions] = await Promise.all([
       enabledChecks.has("orphan-page")
         ? checkOrphanPages(diskSlugs, indexSlugs)
         : [],
@@ -113,6 +115,9 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
       enabledChecks.has("uncited-claims")
         ? checkUncitedClaims()
         : [],
+      enabledChecks.has("unresolved-discussions")
+        ? checkUnresolvedDiscussions(diskSlugs)
+        : [],
     ]);
 
     // Contradiction + missing-concept detection both require LLM calls but are
@@ -126,7 +131,7 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
         : [],
     ]);
 
-    let issues = [...orphans, ...stale, ...empty, ...crossRefs, ...brokenLinks, ...stalePages, ...lowConfidence, ...unmigratedPages, ...duplicateEntities, ...uncitedClaims, ...contradictions, ...missingConcepts];
+    let issues = [...orphans, ...stale, ...empty, ...crossRefs, ...brokenLinks, ...stalePages, ...lowConfidence, ...unmigratedPages, ...duplicateEntities, ...uncitedClaims, ...unresolvedDiscussions, ...contradictions, ...missingConcepts];
 
     // Filter by minimum severity
     if (minSeverityRank > 0) {

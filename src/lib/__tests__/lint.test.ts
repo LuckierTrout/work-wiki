@@ -11,6 +11,11 @@ vi.mock("../llm", () => ({
   callLLM: vi.fn(async () => "[]"),
 }));
 
+// Mock the talk module so lint doesn't need real discussion files
+vi.mock("../talk", () => ({
+  getDiscussionStatsForSlugs: vi.fn(async () => new Map()),
+}));
+
 import { hasLLMKey, callLLM } from "../llm";
 const mockedHasLLMKey = vi.mocked(hasLLMKey);
 const mockedCallLLM = vi.mocked(callLLM);
