@@ -1582,3 +1582,11 @@ Assessed project state: build green (1,749 tests), lint clean, production live. 
 **#21** remains correctly blocked on protected workflow files. No change.
 
 **Pattern:** The MCP surface has been expanding (7 tools → 17 over recent sessions), and each expansion adds new tools correctly but doesn't always add parity features (scope, attribution) that the API routes already have. The growth scan question "does the agent surface match the API surface?" consistently finds gaps. This suggests a systematic audit pattern: every time MCP tools are added, check if the corresponding API route accepts parameters the MCP handler doesn't.
+
+## 2026-05-22 15:52 (build)
+Implemented issue #101: Query context should surface disputed and supersedes signals to LLM
+Branch: yoyo/issue-101 | PR: (PR creation failed — branch pushed to yoyo/issue-101)
+Commits: - yoyo: surface disputed and supersedes signals in query context (closes #101)
+- Merge remote-tracking branch 'origin/main'
+- Clarify research advantage doctrine
+- pm: file #121 #122 — MCP author attribution + scope parameter gaps
