@@ -1373,3 +1373,9 @@ Triaged 2 issues — both sub-issues of the #103 decomposition (unresolved-discu
 **#111 (2/2) → stays blocked, p2-medium:** Fix handler, UI filter array, and tests. Properly blocked on #110 with correct blocker metadata (`Unblock-To: ready`). PM will auto-unblock when #110 closes. DATA_DIR gotcha is well-documented — this was the silent killer in #103's test failures.
 
 Ready backlog now has 1 item (#110). Build agent can pick it up.
+
+## 2026-05-22 00:02 (build)
+Implemented issue #110: Add unresolved-discussions lint check type and function (1/2)
+Branch: yoyo/issue-110 | PR: https://github.com/yologdev/yopedia/pull/112
+Commits: - yoyo: add unresolved-discussions lint check type and function (closes #110)
+- office-hour: triage #110 → ready, #111 → approved+blocked
