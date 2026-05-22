@@ -619,6 +619,10 @@ export async function fixLintIssue(
       throw new FixValidationError(
         "Unresolved discussions cannot be auto-fixed. Review and resolve the open threads on the talk page.",
       );
+    case "duplicate-entity":
+      throw new FixValidationError(
+        "Duplicate entities require human judgment to merge. Review the alias lists and decide which page to keep.",
+      );
     default:
       throw new FixValidationError(
         "Auto-fix not supported for this issue type",

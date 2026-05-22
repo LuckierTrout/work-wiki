@@ -900,6 +900,15 @@ describe("fixLintIssue", () => {
     );
   });
 
+  it("throws helpful FixValidationError for duplicate-entity type", async () => {
+    await expect(fixLintIssue("duplicate-entity", "some-slug")).rejects.toThrow(
+      FixValidationError,
+    );
+    await expect(fixLintIssue("duplicate-entity", "some-slug")).rejects.toThrow(
+      "Duplicate entities require human judgment to merge",
+    );
+  });
+
   it("dispatches unmigrated-page to fixUnmigratedPage", async () => {
     mockedReadWikiPageWithFrontmatter.mockResolvedValue({
       slug: "old-page",
