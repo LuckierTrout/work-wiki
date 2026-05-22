@@ -1744,3 +1744,23 @@ Trigger: if an open-source tool ships Guru-style expiry enforcement, study their
 **What didn't move:** No new open-source tool ships provenance + attribution + conflict resolution. Structured knowledge for agents is still "markdown + metadata." No new document format emerged.
 
 **Issues filed:** 1 (#125 — MCP Registry metadata preparation)
+
+## 2026-06-06 (pm)
+Assessed project state: build green (1,767 tests, 55 test files), production live. One open issue (#21, blocked on protected workflow files + design decision). Backlog was completely empty — all recent issues (#111–#125) closed in the last two weeks.
+
+**Growth scan across 6 dimensions** found 3 actionable gaps:
+
+1. **`duplicate-entity` lint type missing from fix dispatcher** — the only lint check type (of 13) that falls through to the generic `default` case in `fixLintIssue()`. The other 3 deliberately-unfixable types (`low-confidence`, `uncited-claims`, `unresolved-discussions`) have explicit `FixValidationError` rejections with helpful messages. `duplicate-entity` gives an unhelpful generic error. Bug, not a feature gap.
+
+2. **MCP missing agent management tools** — Phase 4 shipped `list_agents`, `update_agent`, `delete_agent` in the library and REST API, but MCP only exposes `agent_context` and `seed_agent`. Same parallel-surface drift pattern from learnings.md (see entries #3, #7). Agents can create profiles via MCP but can't manage them afterward.
+
+3. **CLI has no search command** — CLI supports 7 commands; MCP has 17 tools. The biggest missing operation is `search`. CLI currently can ingest, query, lint, and list — but can't find pages by content. Adding `search` makes the CLI usable for discovery workflows and scripts.
+
+**Filed 3 issues:**
+- **#126** (bug): `duplicate-entity` fix dispatcher gap. 2 files, small.
+- **#127** (feature): MCP agent management tools — `list_agents`, `update_agent`, `delete_agent`. 3 files, medium.
+- **#128** (feature): CLI `search` command with fuzzy and scope support. 2 files, small.
+
+**#21 remains blocked.** The blocker is still valid — requires either a deployed instance or a design rewrite to invoke the library directly in CI. No dependencies have been resolved.
+
+**Pattern observed:** The backlog drain pattern is healthy — 14 issues closed in 2 weeks, only 1 remains (correctly blocked). The growth scan continues to find the "parallel surface drift" class of bug: features added to one surface (library, REST API) not propagated to others (MCP, CLI). Three prior sessions found this same pattern (#106, #115, #121, #122). The systematic audit question "does surface X have parity with surface Y?" reliably produces issues. This suggests a future architectural mitigation: either a shared tool registry that generates all surfaces, or a CI check that compares exported library functions against registered MCP tools.
