@@ -15,6 +15,13 @@
     "ingest_url",
     "query_wiki",
     "agent_context",
-    "seed_agent"
+    "seed_agent",
+    "lint_wiki",
+    "fix_lint_issue",
+    "list_discussions",
+    "create_discussion",
+    "resolve_discussion",
+    "add_comment",
+    "reingest"
   ]
 }
