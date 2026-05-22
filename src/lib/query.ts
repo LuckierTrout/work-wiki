@@ -49,6 +49,8 @@ Rules:
 - Cite your sources using markdown links: [Page Title](slug.md)
 - If the wiki doesn't contain enough information to answer, say so clearly
 - Format your answer in markdown
+- Prefer non-disputed pages when multiple sources cover the same topic; if you must cite a disputed page, note that its claims are under discussion
+- Do not cite superseded pages without noting the replacement page
 {index_section}
 Wiki pages:
 {context}`;

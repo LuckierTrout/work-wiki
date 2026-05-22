@@ -305,6 +305,108 @@ describe("buildContext — confidence and expiry annotations", () => {
     expect(context).not.toContain("expires:");
     expect(context).not.toContain("[EXPIRED");
     expect(context).not.toContain("[LOW CONFIDENCE");
+    expect(context).not.toContain("[DISPUTED");
+    expect(context).not.toContain("[SUPERSEDED BY:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildContext — disputed and supersedes annotations
+// ---------------------------------------------------------------------------
+describe("buildContext — disputed and supersedes annotations", () => {
+  it("marks disputed pages with [DISPUTED] marker", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "contested",
+      "---\ndisputed: true\n---\n\n# Contested\n\nDisputed content.",
+    );
+    const { context } = await buildContext(["contested"]);
+    expect(context).toContain("[DISPUTED — claims under discussion]");
+  });
+
+  it("does not mark non-disputed pages with [DISPUTED] marker", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "agreed",
+      "---\ndisputed: false\n---\n\n# Agreed\n\nAgreed content.",
+    );
+    const { context } = await buildContext(["agreed"]);
+    expect(context).not.toContain("[DISPUTED");
+  });
+
+  it("does not mark pages without disputed field", async () => {
+    await ensureDirectories();
+    await writeWikiPage("no-disputed", "# No Disputed\n\nPlain content.");
+    const { context } = await buildContext(["no-disputed"]);
+    expect(context).not.toContain("[DISPUTED");
+  });
+
+  it("marks superseded page when a loaded page has supersedes pointing to it", async () => {
+    await ensureDirectories();
+    await writeWikiPage("old-version", "# Old Version\n\nOutdated content.");
+    await writeWikiPage(
+      "new-version",
+      "---\nsupersedes: old-version\n---\n\n# New Version\n\nUpdated content.",
+    );
+    const { context } = await buildContext(["old-version", "new-version"]);
+    expect(context).toContain("[SUPERSEDED BY: new-version]");
+    // The superseding page should NOT have the superseded marker
+    expect(context).not.toContain("[SUPERSEDED BY: old-version]");
+  });
+
+  it("includes supersedes in header metadata of the superseding page", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "replacement",
+      "---\nsupersedes: original\n---\n\n# Replacement\n\nNew content.",
+    );
+    const { context } = await buildContext(["replacement"]);
+    expect(context).toContain("supersedes: original");
+  });
+
+  it("does not add superseded marker when superseding page is not loaded", async () => {
+    await ensureDirectories();
+    await writeWikiPage("old-only", "# Old Only\n\nContent.");
+    // The page that supersedes old-only exists but is not in the loaded slugs
+    await writeWikiPage(
+      "new-only",
+      "---\nsupersedes: old-only\n---\n\n# New Only\n\nNew content.",
+    );
+    const { context } = await buildContext(["old-only"]);
+    // Without new-only loaded, we can't know old-only is superseded
+    expect(context).not.toContain("[SUPERSEDED BY:");
+  });
+
+  it("combines disputed and superseded markers on the same page", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "troubled",
+      "---\ndisputed: true\n---\n\n# Troubled\n\nControversial and outdated.",
+    );
+    await writeWikiPage(
+      "better",
+      "---\nsupersedes: troubled\n---\n\n# Better\n\nImproved content.",
+    );
+    const { context } = await buildContext(["troubled", "better"]);
+    expect(context).toContain("[DISPUTED — claims under discussion]");
+    expect(context).toContain("[SUPERSEDED BY: better]");
+  });
+
+  it("combines all four markers (expired, low confidence, disputed, superseded)", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "worst-page",
+      "---\nconfidence: 0.1\nexpiry: 2020-01-01\ndisputed: true\n---\n\n# Worst Page\n\nBad content.",
+    );
+    await writeWikiPage(
+      "better-page",
+      "---\nsupersedes: worst-page\n---\n\n# Better Page\n\nGood content.",
+    );
+    const { context } = await buildContext(["worst-page", "better-page"]);
+    expect(context).toContain("[EXPIRED — review before citing]");
+    expect(context).toContain("[LOW CONFIDENCE — treat as uncertain]");
+    expect(context).toContain("[DISPUTED — claims under discussion]");
+    expect(context).toContain("[SUPERSEDED BY: better-page]");
   });
 });
 

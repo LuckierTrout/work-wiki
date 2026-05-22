@@ -255,8 +255,8 @@ export async function searchIndex(
  * When omitted or empty, returns empty context.
  *
  * Each page header includes confidence and expiry metadata when available.
- * Expired and low-confidence pages are annotated with visible markers so
- * the LLM can weight its citations accordingly.
+ * Expired, low-confidence, disputed, and superseded pages are annotated
+ * with visible markers so the LLM can weight its citations accordingly.
  */
 export async function buildContext(slugs?: string[]): Promise<{
   context: string;
@@ -267,44 +267,75 @@ export async function buildContext(slugs?: string[]): Promise<{
   }
 
   const LOW_CONFIDENCE_THRESHOLD = 0.5;
-  const loadedSlugs: string[] = [];
-  const parts: string[] = [];
+
+  // First pass: load all pages and build a supersedes reverse-lookup map.
+  // If page B has `supersedes: page-a`, then page-a is superseded by page-b.
+  const loadedPages: {
+    slug: string;
+    title: string;
+    body: string;
+    frontmatter: Record<string, string | string[] | number | boolean>;
+  }[] = [];
+  const supersededBy = new Map<string, string>();
 
   for (const slug of slugs) {
     const page = await readWikiPageWithFrontmatter(slug);
     if (page) {
-      loadedSlugs.push(page.slug);
-
-      // Build header with confidence and expiry metadata
-      const headerParts = [`slug: ${page.slug}`];
-      const confidence = page.frontmatter.confidence;
-      if (typeof confidence === "number") {
-        headerParts.push(`confidence: ${confidence}`);
+      loadedPages.push(page);
+      const supersedes = page.frontmatter.supersedes;
+      if (typeof supersedes === "string" && supersedes) {
+        supersededBy.set(supersedes, page.slug);
       }
-      const expiry = page.frontmatter.expiry;
-      if (typeof expiry === "string" && expiry) {
-        headerParts.push(`expires: ${expiry}`);
-      }
-
-      let header = `=== Page: ${page.title} (${headerParts.join(", ")}) ===`;
-
-      // Add markers for expired and low-confidence pages
-      const markers: string[] = [];
-      if (typeof expiry === "string" && expiry) {
-        const expiryDate = new Date(expiry);
-        if (!isNaN(expiryDate.getTime()) && expiryDate < new Date()) {
-          markers.push("[EXPIRED — review before citing]");
-        }
-      }
-      if (typeof confidence === "number" && confidence < LOW_CONFIDENCE_THRESHOLD) {
-        markers.push("[LOW CONFIDENCE — treat as uncertain]");
-      }
-      if (markers.length > 0) {
-        header += "\n" + markers.join("\n");
-      }
-
-      parts.push(`${header}\n${page.body}`);
     }
+  }
+
+  // Second pass: build context string with markers.
+  const loadedSlugs: string[] = [];
+  const parts: string[] = [];
+
+  for (const page of loadedPages) {
+    loadedSlugs.push(page.slug);
+
+    // Build header with confidence, expiry, and supersedes metadata
+    const headerParts = [`slug: ${page.slug}`];
+    const confidence = page.frontmatter.confidence;
+    if (typeof confidence === "number") {
+      headerParts.push(`confidence: ${confidence}`);
+    }
+    const expiry = page.frontmatter.expiry;
+    if (typeof expiry === "string" && expiry) {
+      headerParts.push(`expires: ${expiry}`);
+    }
+    const supersedes = page.frontmatter.supersedes;
+    if (typeof supersedes === "string" && supersedes) {
+      headerParts.push(`supersedes: ${supersedes}`);
+    }
+
+    let header = `=== Page: ${page.title} (${headerParts.join(", ")}) ===`;
+
+    // Add markers for expired, low-confidence, disputed, and superseded pages
+    const markers: string[] = [];
+    if (typeof expiry === "string" && expiry) {
+      const expiryDate = new Date(expiry);
+      if (!isNaN(expiryDate.getTime()) && expiryDate < new Date()) {
+        markers.push("[EXPIRED — review before citing]");
+      }
+    }
+    if (typeof confidence === "number" && confidence < LOW_CONFIDENCE_THRESHOLD) {
+      markers.push("[LOW CONFIDENCE — treat as uncertain]");
+    }
+    if (page.frontmatter.disputed === true) {
+      markers.push("[DISPUTED — claims under discussion]");
+    }
+    const replacementSlug = supersededBy.get(page.slug);
+    if (replacementSlug) {
+      markers.push(`[SUPERSEDED BY: ${replacementSlug}]`);
+    }
+    if (markers.length > 0) {
+      header += "\n" + markers.join("\n");
+    }
+
+    parts.push(`${header}\n${page.body}`);
   }
 
   return { context: parts.join("\n\n"), slugs: loadedSlugs };
