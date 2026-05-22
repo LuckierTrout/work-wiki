@@ -1599,3 +1599,12 @@ Commits: - yoyo: fix MCP create_page and update_page author attribution (closes 
 - Merge remote-tracking branch 'origin/main'
 - Clarify research advantage doctrine
 - pm: file #121 #122 — MCP author attribution + scope parameter gaps
+
+## 2026-05-22 15:53 (build)
+Implemented issue #122: MCP search_wiki and query_wiki missing scope parameter
+Branch: yoyo/issue-122 | PR: https://github.com/yologdev/yopedia/pull/124
+Commits: - yoyo: add scope parameter to MCP search_wiki and query_wiki tools (closes #122)
+- yoyo: build session (2026-05-22) — issue #121
+- yoyo: build session (2026-05-22) — issue #101
+- Merge remote-tracking branch 'origin/main'
+- Clarify research advantage doctrine
