@@ -36,6 +36,53 @@ describe("CLI argument parsing", () => {
     });
   });
 
+  describe("search command", () => {
+    it("parses search with query", () => {
+      const result = parseArgs(["search", "attention"]);
+      expect(result).toEqual({ command: "search", query: "attention", fuzzy: false, limit: 10 });
+    });
+
+    it("joins multiple words into a single query", () => {
+      const result = parseArgs(["search", "attention", "mechanism"]);
+      expect(result).toEqual({ command: "search", query: "attention mechanism", fuzzy: false, limit: 10 });
+    });
+
+    it("parses --fuzzy flag", () => {
+      const result = parseArgs(["search", "atention", "--fuzzy"]);
+      expect(result).toEqual({ command: "search", query: "atention", fuzzy: true, limit: 10 });
+    });
+
+    it("parses --scope flag", () => {
+      const result = parseArgs(["search", "identity", "--scope", "agent:yoyo"]);
+      expect(result).toEqual({ command: "search", query: "identity", fuzzy: false, scope: "agent:yoyo", limit: 10 });
+    });
+
+    it("parses --limit flag", () => {
+      const result = parseArgs(["search", "wiki", "--limit", "5"]);
+      expect(result).toEqual({ command: "search", query: "wiki", fuzzy: false, limit: 5 });
+    });
+
+    it("parses all flags together", () => {
+      const result = parseArgs(["search", "test", "--fuzzy", "--scope", "agent:yoyo", "--limit", "3"]);
+      expect(result).toEqual({ command: "search", query: "test", fuzzy: true, scope: "agent:yoyo", limit: 3 });
+    });
+
+    it("defaults limit to 10 for invalid --limit value", () => {
+      const result = parseArgs(["search", "test", "--limit", "abc"]);
+      expect(result).toEqual({ command: "search", query: "test", fuzzy: false, limit: 10 });
+    });
+
+    it("returns error when search has no query", () => {
+      const result = parseArgs(["search"]);
+      expect(result.command).toBe("error");
+    });
+
+    it("returns error when search has only flags", () => {
+      const result = parseArgs(["search", "--fuzzy"]);
+      expect(result.command).toBe("error");
+    });
+  });
+
   describe("lint command", () => {
     it("parses lint without flags", () => {
       const result = parseArgs(["lint"]);
@@ -113,6 +160,14 @@ describe("CLI argument parsing", () => {
         expect(result.message).toContain("Usage");
       }
     });
+
+    it("returns error for missing search argument", () => {
+      const result = parseArgs(["search"]);
+      expect(result.command).toBe("error");
+      if (result.command === "error") {
+        expect(result.message).toContain("Usage");
+      }
+    });
   });
 });
 
@@ -147,6 +202,12 @@ vi.mock("../ingest", () => ({
 
 vi.mock("../lint-fix", () => ({
   fixLintIssue: vi.fn(),
+}));
+
+vi.mock("../search", () => ({
+  searchWikiContent: vi.fn(),
+  fuzzySearchWikiContent: vi.fn(),
+  resolveScope: vi.fn(),
 }));
 
 describe("CLI command execution", () => {
@@ -381,5 +442,71 @@ describe("CLI command execution", () => {
 
     stdinMock.mockRestore();
     process.stdin.on = originalOn;
+  });
+
+  it("runSearch() prints tab-separated results", async () => {
+    const { searchWikiContent } = await import("../search");
+    vi.mocked(searchWikiContent).mockResolvedValueOnce([
+      { slug: "attention", title: "Attention", summary: "About attention", snippet: "…the attention mechanism…", score: 2 },
+      { slug: "transformers", title: "Transformers", summary: "About transformers", snippet: "…transformer architecture…", score: 1 },
+    ]);
+
+    const { runSearch } = await import("../../cli");
+    await runSearch("attention", false, 10);
+
+    expect(searchWikiContent).toHaveBeenCalledWith("attention", 10, undefined);
+    expect(logSpy).toHaveBeenCalledWith("attention\t2\t…the attention mechanism…");
+    expect(logSpy).toHaveBeenCalledWith("transformers\t1\t…transformer architecture…");
+  });
+
+  it("runSearch() uses fuzzySearchWikiContent when fuzzy is true", async () => {
+    const { fuzzySearchWikiContent } = await import("../search");
+    vi.mocked(fuzzySearchWikiContent).mockResolvedValueOnce([
+      { slug: "attention", title: "Attention", summary: "About attention", snippet: "…the attention mechanism…", score: 2 },
+    ]);
+
+    const { runSearch } = await import("../../cli");
+    await runSearch("atention", true, 10);
+
+    expect(fuzzySearchWikiContent).toHaveBeenCalledWith("atention", 10, undefined);
+    expect(logSpy).toHaveBeenCalledWith("attention\t2\t…the attention mechanism…");
+  });
+
+  it("runSearch() passes resolved scope", async () => {
+    const { searchWikiContent, resolveScope } = await import("../search");
+    const mockScope = { agentId: "yoyo", slugs: ["identity", "learnings"] };
+    vi.mocked(resolveScope).mockResolvedValueOnce(mockScope);
+    vi.mocked(searchWikiContent).mockResolvedValueOnce([
+      { slug: "identity", title: "Identity", summary: "Agent identity", snippet: "…identity page…", score: 1 },
+    ]);
+
+    const { runSearch } = await import("../../cli");
+    await runSearch("identity", false, 5, "agent:yoyo");
+
+    expect(resolveScope).toHaveBeenCalledWith("agent:yoyo");
+    expect(searchWikiContent).toHaveBeenCalledWith("identity", 5, mockScope);
+  });
+
+  it("runSearch() prints message to stderr when no results", async () => {
+    const { searchWikiContent } = await import("../search");
+    vi.mocked(searchWikiContent).mockResolvedValueOnce([]);
+
+    const { runSearch } = await import("../../cli");
+    await runSearch("nonexistent", false, 10);
+
+    expect(errorSpy).toHaveBeenCalledWith("No results found.");
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  it("runSearch() replaces tabs in snippets to preserve column format", async () => {
+    const { searchWikiContent } = await import("../search");
+    vi.mocked(searchWikiContent).mockResolvedValueOnce([
+      { slug: "test", title: "Test", summary: "Test", snippet: "has\ttab\there", score: 1 },
+    ]);
+
+    const { runSearch } = await import("../../cli");
+    await runSearch("test", false, 10);
+
+    expect(logSpy).toHaveBeenCalledWith("test\t1\thas tab here");
   });
 });

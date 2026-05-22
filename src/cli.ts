@@ -6,6 +6,7 @@
  *   pnpm cli ingest <url>         Ingest a URL into the wiki
  *   pnpm cli ingest --text        Ingest text from stdin
  *   pnpm cli query <question>     Query the wiki
+ *   pnpm cli search <query>       Search wiki pages by content
  *   pnpm cli lint                 Run wiki lint checks
  *   pnpm cli lint --fix           Run lint and auto-fix issues
  *   pnpm cli list                 List all wiki pages
@@ -22,6 +23,7 @@ export type ParsedCommand =
   | { command: "ingest-url"; url: string }
   | { command: "ingest-text" }
   | { command: "query"; question: string }
+  | { command: "search"; query: string; fuzzy: boolean; scope?: string; limit: number }
   | { command: "lint"; fix: boolean }
   | { command: "list"; raw: boolean }
   | { command: "status" }
@@ -53,6 +55,24 @@ export function parseArgs(argv: string[]): ParsedCommand {
       }
       return { command: "query", question };
     }
+    case "search": {
+      const fuzzy = rest.includes("--fuzzy");
+      const scopeIdx = rest.indexOf("--scope");
+      const scope = scopeIdx !== -1 ? rest[scopeIdx + 1] : undefined;
+      const limitIdx = rest.indexOf("--limit");
+      const limitRaw = limitIdx !== -1 ? rest[limitIdx + 1] : undefined;
+      const limit = limitRaw ? parseInt(limitRaw, 10) : 10;
+      // Collect non-flag tokens as the query, skipping values of --scope and --limit
+      const skipIndices = new Set<number>();
+      if (scopeIdx !== -1) { skipIndices.add(scopeIdx); skipIndices.add(scopeIdx + 1); }
+      if (limitIdx !== -1) { skipIndices.add(limitIdx); skipIndices.add(limitIdx + 1); }
+      const queryWords = rest.filter((a, i) => !a.startsWith("-") && !skipIndices.has(i));
+      const searchQuery = queryWords.join(" ");
+      if (!searchQuery) {
+        return { command: "error", message: "Usage: pnpm cli search <query> [--fuzzy] [--scope agent:<id>] [--limit N]" };
+      }
+      return { command: "search", query: searchQuery, fuzzy, scope, limit: isNaN(limit) ? 10 : limit };
+    }
     case "lint": {
       const fix = rest.includes("--fix");
       return { command: "lint", fix };
@@ -81,6 +101,7 @@ Commands:
   ingest <url>         Ingest a URL into the wiki
   ingest --text        Ingest text from stdin (pipe or type, then Ctrl-D)
   query <question>     Query the wiki
+  search <query>       Search wiki pages by content
   lint                 Run wiki lint checks
   lint --fix           Run lint and auto-fix issues
   list                 List all wiki pages (slug + title)
@@ -88,10 +109,18 @@ Commands:
   status               Show wiki health summary
   help                 Show this help
 
+Search flags:
+  --fuzzy              Enable typo-tolerant fuzzy matching
+  --scope agent:<id>   Restrict results to an agent's pages
+  --limit N            Max results (default: 10)
+
 Examples:
   pnpm cli ingest https://example.com/article
   echo "Some text" | pnpm cli ingest --text
   pnpm cli query "What is attention in transformers?"
+  pnpm cli search "attention mechanism"
+  pnpm cli search "atention" --fuzzy
+  pnpm cli search "identity" --scope agent:yoyo --limit 5
   pnpm cli lint
   pnpm cli lint --fix
   pnpm cli list
@@ -154,6 +183,29 @@ export async function runQuery(question: string): Promise<void> {
   // Sources to stderr (informational)
   if (result.sources.length > 0) {
     console.error(`\nCited pages: ${result.sources.join(", ")}`);
+  }
+}
+
+export async function runSearch(
+  searchQuery: string,
+  fuzzy: boolean,
+  limit: number,
+  scopeParam?: string,
+): Promise<void> {
+  const { searchWikiContent, fuzzySearchWikiContent, resolveScope } = await import("./lib/search");
+  const scope = scopeParam ? await resolveScope(scopeParam) : undefined;
+  const results = fuzzy
+    ? await fuzzySearchWikiContent(searchQuery, limit, scope ?? undefined)
+    : await searchWikiContent(searchQuery, limit, scope ?? undefined);
+
+  if (results.length === 0) {
+    console.error("No results found.");
+    return;
+  }
+
+  for (const r of results) {
+    const snippet = r.snippet.replace(/\t/g, " ");
+    console.log(`${r.slug}\t${r.score}\t${snippet}`);
   }
 }
 
@@ -262,6 +314,9 @@ async function main(): Promise<void> {
       return;
     case "query":
       await runQuery(parsed.question);
+      return;
+    case "search":
+      await runSearch(parsed.query, parsed.fuzzy, parsed.limit, parsed.scope);
       return;
     case "lint":
       await runLint(parsed.fix);
