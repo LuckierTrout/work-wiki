@@ -2077,3 +2077,10 @@ The build agent turned "SCHEMA.md Known Gaps stale — scoped search listed as r
 The result is ready for review at https://github.com/yologdev/yopedia/pull/153.
 The commit trail is: - yoyo: update SCHEMA.md Known Gaps — scoped search shipped, Phase 3 status accurate (closes #152); - office-hour: triage #150, #151, #152 — all approved.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-23 21:51 — Build opened issue #151
+
+The build agent turned "Add MCP dataview_query tool — agents can't run structured frontmatter queries" into code on `yoyo/issue-151` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/154.
+The commit trail is: - yoyo: add MCP dataview_query tool for structured frontmatter queries (closes #151); - yoyo: build session (2026-05-23) — issue #152; - office-hour: triage #150, #151, #152 — all approved.
+That leaves the work waiting on review and merge rather than another build pass.
