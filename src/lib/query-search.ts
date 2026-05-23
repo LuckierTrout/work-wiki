@@ -296,7 +296,7 @@ export async function buildContext(slugs?: string[]): Promise<{
   for (const page of loadedPages) {
     loadedSlugs.push(page.slug);
 
-    // Build header with confidence, expiry, and supersedes metadata
+    // Build header with confidence, expiry, supersedes, verified, and sources metadata
     const headerParts = [`slug: ${page.slug}`];
     const confidence = page.frontmatter.confidence;
     if (typeof confidence === "number") {
@@ -310,10 +310,24 @@ export async function buildContext(slugs?: string[]): Promise<{
     if (typeof supersedes === "string" && supersedes) {
       headerParts.push(`supersedes: ${supersedes}`);
     }
+    const validFrom = page.frontmatter.valid_from;
+    if (typeof validFrom === "string" && validFrom) {
+      headerParts.push(`verified: ${validFrom}`);
+    }
+    const sourceCountRaw = page.frontmatter.source_count;
+    const sourceCount =
+      typeof sourceCountRaw === "number"
+        ? sourceCountRaw
+        : typeof sourceCountRaw === "string"
+          ? parseInt(sourceCountRaw, 10)
+          : NaN;
+    if (!isNaN(sourceCount) && sourceCount > 0) {
+      headerParts.push(`sources: ${sourceCount}`);
+    }
 
     let header = `=== Page: ${page.title} (${headerParts.join(", ")}) ===`;
 
-    // Add markers for expired, low-confidence, disputed, and superseded pages
+    // Add markers for expired, low-confidence, disputed, superseded, and unsourced pages
     const markers: string[] = [];
     if (typeof expiry === "string" && expiry) {
       const expiryDate = new Date(expiry);
@@ -330,6 +344,14 @@ export async function buildContext(slugs?: string[]): Promise<{
     const replacementSlug = supersededBy.get(page.slug);
     if (replacementSlug) {
       markers.push(`[SUPERSEDED BY: ${replacementSlug}]`);
+    }
+    // Flag pages with no source provenance
+    const hasSourceCount = !isNaN(sourceCount) && sourceCount > 0;
+    const hasSourcesField =
+      typeof page.frontmatter.sources === "string" &&
+      page.frontmatter.sources.length > 0;
+    if (!hasSourceCount && !hasSourcesField) {
+      markers.push("[NO SOURCES — provenance unknown]");
     }
     if (markers.length > 0) {
       header += "\n" + markers.join("\n");
