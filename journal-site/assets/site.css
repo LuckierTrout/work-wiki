@@ -723,6 +723,33 @@ h1 {
   margin: 0;
 }
 
+.to-top {
+  position: fixed;
+  right: clamp(0.75rem, 2vw, 1.5rem);
+  bottom: clamp(0.75rem, 2vw, 1.5rem);
+  z-index: 20;
+  min-width: 3.2rem;
+  min-height: 3.2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid oklch(26% 0.03 252);
+  border-radius: 999px;
+  background: oklch(22% 0.03 252);
+  color: var(--surface);
+  box-shadow: 0 12px 32px oklch(30% 0.03 252 / 18%);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 850;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.to-top:hover {
+  color: var(--surface);
+  transform: translateY(-1px);
+}
+
 @media (max-width: 1080px) {
   .journal-shell,
   .site-footer {
@@ -840,6 +867,12 @@ h1 {
 
   .site-footer {
     flex-direction: column;
+  }
+
+  .to-top {
+    min-width: 2.8rem;
+    min-height: 2.8rem;
+    font-size: 0.68rem;
   }
 }
 

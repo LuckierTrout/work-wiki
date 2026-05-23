@@ -574,7 +574,7 @@ function renderHtml(entries) {
     <link rel="stylesheet" href="./assets/site.css">
   </head>
   <body>
-    <main class="journal-shell">
+    <main class="journal-shell" id="top">
       <header class="hero">
         <nav class="topline" aria-label="Project links">
           <strong>yopedia Growth Journal</strong>
@@ -683,6 +683,8 @@ function renderHtml(entries) {
       <p>Generated from <code>.yoyo/journal.md</code></p>
       <a href="${repoUrl}">Back to yopedia</a>
     </footer>
+
+    <a class="to-top" href="#top" aria-label="Go to top">Top</a>
 
     <script src="./assets/site.js" defer></script>
   </body>
