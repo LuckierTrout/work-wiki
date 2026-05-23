@@ -26,6 +26,7 @@ export const ALL_CHECK_TYPES: LintIssue["type"][] = [
   "uncited-claims",
   "unresolved-discussions",
   "disputed-page",
+  "supersedes-dangling",
 ];
 
 // Files that are part of the wiki infrastructure, not content pages.
@@ -817,5 +818,37 @@ export async function checkDisputedPages(): Promise<LintIssue[]> {
       suggestion,
     });
   }
+  return issues;
+}
+
+/**
+ * Check for dangling supersedes references — pages whose `supersedes` field
+ * points to a slug that doesn't exist on disk.
+ */
+export async function checkSupersededDangling(
+  diskSlugs: string[],
+): Promise<LintIssue[]> {
+  const issues: LintIssue[] = [];
+  const diskSlugSet = new Set(diskSlugs);
+
+  for (const slug of diskSlugs) {
+    const page = await readWikiPageWithFrontmatter(slug);
+    if (!page) continue;
+
+    const supersedes = page.frontmatter.supersedes;
+    if (typeof supersedes !== "string" || supersedes === "") continue;
+
+    if (!diskSlugSet.has(supersedes)) {
+      issues.push({
+        type: "supersedes-dangling",
+        slug,
+        target: supersedes,
+        message: `Page "${slug}" declares supersedes: "${supersedes}" but that page does not exist`,
+        severity: "warning",
+        suggestion: `Create the page "${supersedes}" so the supersession chain is valid, or remove the supersedes field from "${slug}" if the old page was already deleted.`,
+      });
+    }
+  }
+
   return issues;
 }

@@ -18,6 +18,7 @@ import {
   checkUncitedClaims,
   checkUnresolvedDiscussions,
   checkDisputedPages,
+  checkSupersededDangling,
   buildSummary,
   parseLLMJsonArray,
   extractCrossRefSlugs,
@@ -51,6 +52,7 @@ export {
   checkUncitedClaims,
   checkUnresolvedDiscussions,
   checkDisputedPages,
+  checkSupersededDangling,
   ALL_CHECK_TYPES,
 };
 
@@ -86,7 +88,7 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
     const indexSlugs = new Set(indexPages.map((p) => p.slug));
 
     // Run lightweight checks in parallel
-    const [orphans, stale, empty, crossRefs, brokenLinks, stalePages, lowConfidence, unmigratedPages, duplicateEntities, uncitedClaims, unresolvedDiscussions, disputedPages] = await Promise.all([
+    const [orphans, stale, empty, crossRefs, brokenLinks, stalePages, lowConfidence, unmigratedPages, duplicateEntities, uncitedClaims, unresolvedDiscussions, disputedPages, supersedesDangling] = await Promise.all([
       enabledChecks.has("orphan-page")
         ? checkOrphanPages(diskSlugs, indexSlugs)
         : [],
@@ -123,6 +125,9 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
       enabledChecks.has("disputed-page")
         ? checkDisputedPages()
         : [],
+      enabledChecks.has("supersedes-dangling")
+        ? checkSupersededDangling(diskSlugs)
+        : [],
     ]);
 
     // Contradiction + missing-concept detection both require LLM calls but are
@@ -136,7 +141,7 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
         : [],
     ]);
 
-    let issues = [...orphans, ...stale, ...empty, ...crossRefs, ...brokenLinks, ...stalePages, ...lowConfidence, ...unmigratedPages, ...duplicateEntities, ...uncitedClaims, ...unresolvedDiscussions, ...disputedPages, ...contradictions, ...missingConcepts];
+    let issues = [...orphans, ...stale, ...empty, ...crossRefs, ...brokenLinks, ...stalePages, ...lowConfidence, ...unmigratedPages, ...duplicateEntities, ...uncitedClaims, ...unresolvedDiscussions, ...disputedPages, ...supersedesDangling, ...contradictions, ...missingConcepts];
 
     // Filter by minimum severity
     if (minSeverityRank > 0) {
