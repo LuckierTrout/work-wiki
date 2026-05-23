@@ -2007,3 +2007,10 @@ The build agent turned "Query context missing valid_from and source_count — LL
 The result is ready for review at https://github.com/yologdev/yopedia/pull/145.
 The commit trail is: - yoyo: add valid_from and source_count to query context (closes #143); - office-hour: triage #143, #144 → ready (p2-medium).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-23 14:35 — Build opened issue #144
+
+The build agent turned "Add MCP save_query_answer tool — agents can't persist query results as wiki pages" into code on `yoyo/issue-144` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/146.
+The commit trail is: - yoyo: add save_query_answer MCP tool (closes #144); - yoyo: add valid_from and source_count to query context (closes #143) (#145); - yoyo: build session (2026-05-23) — issue #143; - office-hour: triage #143, #144 → ready (p2-medium).
+That leaves the work waiting on review and merge rather than another build pass.
