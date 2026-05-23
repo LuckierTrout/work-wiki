@@ -623,6 +623,10 @@ export async function fixLintIssue(
       throw new FixValidationError(
         "Duplicate entities require human judgment to merge. Review the alias lists and decide which page to keep.",
       );
+    case "disputed-page":
+      throw new FixValidationError(
+        "Disputed pages cannot be auto-fixed. Review the page content and talk page to resolve the dispute through discussion.",
+      );
     default:
       throw new FixValidationError(
         "Auto-fix not supported for this issue type",
