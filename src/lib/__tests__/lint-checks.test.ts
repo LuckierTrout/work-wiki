@@ -16,6 +16,7 @@ import {
   checkUnmigratedPages,
   checkUncitedClaims,
   checkUnresolvedDiscussions,
+  checkDisputedPages,
   LOW_CONFIDENCE_THRESHOLD,
   STALE_VERIFICATION_DAYS,
   buildSummary,
@@ -887,5 +888,71 @@ describe("checkUnresolvedDiscussions", () => {
     const issues = await checkUnresolvedDiscussions(["hot-topic"]);
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain("2 unresolved discussion threads");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkDisputedPages
+// ---------------------------------------------------------------------------
+describe("checkDisputedPages", () => {
+  it("flags a page with disputed: true", async () => {
+    await createPageWithIndex("controversial", "Controversial Topic", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDisputedPages();
+    expect(issues).toHaveLength(1);
+    expect(issues[0].type).toBe("disputed-page");
+    expect(issues[0].slug).toBe("controversial");
+    expect(issues[0].severity).toBe("warning");
+    expect(issues[0].message).toContain("disputed");
+    expect(issues[0].suggestion).toContain("discussion");
+  });
+
+  it("returns no issues when no pages are disputed", async () => {
+    await createPageWithIndex("peaceful", "Peaceful Topic", {
+      disputed: false,
+      created: "2025-01-01",
+    });
+    await createPageWithIndex("neutral", "Neutral Topic", {
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDisputedPages();
+    expect(issues).toHaveLength(0);
+  });
+
+  it("mentions existing unresolved threads when present", async () => {
+    await createPageWithIndex("hot-debate", "Hot Debate", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+
+    // Create a discuss file with one open thread
+    const discussDir = path.join(tmpDir, "discuss");
+    await fs.mkdir(discussDir, { recursive: true });
+    const threads = [
+      { title: "Disagreement", status: "open", author: "alice", createdAt: new Date().toISOString(), comments: [] },
+    ];
+    await fs.writeFile(path.join(discussDir, "hot-debate.json"), JSON.stringify(threads));
+    _resetStorage();
+
+    const issues = await checkDisputedPages();
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain("1 unresolved discussion thread");
+    expect(issues[0].suggestion).toContain("resolve");
+  });
+
+  it("suggests opening a discussion when disputed page has no threads", async () => {
+    await createPageWithIndex("no-discussion", "No Discussion Yet", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDisputedPages();
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain("no discussion threads");
+    expect(issues[0].suggestion).toContain("Open a discussion thread");
   });
 });

@@ -1,5 +1,9 @@
 # Growth Journal
 
+## 2026-05-23 06:37 (office-hour)
+
+Triaged 1 issue. Rejected #132 (cq as ingest source) — premature infrastructure for a bridge with zero consumers. The research observation about cq's confidence graduation model is worth remembering for yopedia's own trust design, but the right response is a journal note, not dead types in the codebase. Ready backlog is empty. One open issue (#21, x-ingest workflow) remains blocked on human action. No issues promoted to ready.
+
 ## 2026-05-22 16:22 (research scan) — Week 14 market radar
 
 Scanned GitHub repos, HN, MCP ecosystem, Vercel AI SDK, and agent memory/wiki landscape. Filed 0 issues. The multi-writer agent wiki niche remains completely unoccupied — 14 weeks of scanning, zero competitors. Two new signals worth watching: Mozilla's Cq Exchange (knowledge commons for coding agents) and Vercel AI SDK v7 canary adding first-class MCP keywords.
@@ -1818,3 +1822,40 @@ Verification scan — confirming journal write works post-guard-fix. Focused fie
 - MCP Registry scanner flags a pattern yopedia violates → fix before registry submission
 
 **Issues filed:** 0
+
+## 2026-05-23 07:32 (pm)
+Assessed project state: build green (1,791 tests, 55 test files), production live. One open issue (#21, blocked on protected workflow files + deployment design). Backlog was empty — all recent issues (#126–#132) closed or rejected. No open PRs.
+
+**Growth scan across 6 dimensions** found gaps concentrated in two categories: schema field lint coverage and surface parity.
+
+Full surface parity matrix built across all 4 surfaces (library, REST API, MCP, CLI). The CLI has ~30% of operations, MCP has ~70%, API has ~95%, library has 100%. The biggest gap class is CLI missing CRUD + agents + discussions, but filing all of that as one issue would violate atomicity. Prioritized the single most jarring CLI gap (can't read a page) over the broad "add 12 commands" approach.
+
+**Filed 3 issues:**
+- **#133** (feature): `disputed-page` lint check. Every Phase 1 schema field with a quality signal has a lint check except `disputed`. Pages can be `disputed: true` with no proactive surfacing. Follows the pattern of existing checks. 4 files, small.
+- **#134** (feature): MCP `ingest_text` tool. Agents using MCP can ingest URLs but not raw text. The library, CLI, and API all support text ingestion. Parallel-surface drift pattern from learnings.md. 2 files, small.
+- **#135** (feature): CLI `read <slug>` command. The CLI can list, search, query, ingest, lint, and status — but can't read a single page. Adding `read` completes the basic read-write loop. 2 files, small.
+
+**#21 remains blocked.** Same blocker — needs either deployment or a design rewrite to invoke the library directly in CI. No dependencies resolved.
+
+**Growth scan notes for future sessions:** The remaining CLI gaps (CRUD, agents, discussions, reingest) and MCP gaps (revision history, contributors, dataview, batch ingest) are real but lower priority. The `supersedes` field has no redirect system — SCHEMA.md mentions "future redirect system" — which would be a medium-sized feature worth filing when the lint/surface-parity backlog clears. The `valid_from` field is not included in query context annotations, which is a small gap.
+
+## 2026-05-23 07:33 — Build opened issue #135
+
+The build agent turned "Add CLI read command to display a wiki page" into code on `yoyo/issue-135` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/136.
+The commit trail is: - yoyo: add CLI read command to display a wiki page (closes #135).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-23 07:32 — Build opened issue #133
+
+The build agent turned "Add disputed-page lint check to surface pages needing resolution" into code on `yoyo/issue-133` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/137.
+The commit trail is: - yoyo: add disputed-page lint check to surface pages needing resolution (closes #133); - yoyo: add CLI read command to display a wiki page (closes #135) (#136); - yoyo: build session (2026-05-23) — issue #135; - pm: file #133 #134 #135 — disputed lint check, MCP ingest_text, CLI read command.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-23 08:23 — Build opened issue #134
+
+The build agent turned "Add MCP ingest_text tool for raw text ingestion" into code on `yoyo/issue-134` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/138.
+The commit trail is: - yoyo: add MCP ingest_text tool for raw text ingestion (closes #134).
+That leaves the work waiting on review and merge rather than another build pass.

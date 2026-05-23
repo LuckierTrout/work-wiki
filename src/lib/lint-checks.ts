@@ -8,7 +8,7 @@ import type { LintIssue } from "./types";
 import { logger } from "./logger";
 import { findDuplicateEntities } from "./alias-index";
 import { parseSources } from "./sources";
-import { getDiscussionStatsForSlugs } from "./talk";
+import { getDiscussionStatsForSlugs, getDiscussionStats } from "./talk";
 
 /** All known lint check types. */
 export const ALL_CHECK_TYPES: LintIssue["type"][] = [
@@ -25,6 +25,7 @@ export const ALL_CHECK_TYPES: LintIssue["type"][] = [
   "duplicate-entity",
   "uncited-claims",
   "unresolved-discussions",
+  "disputed-page",
 ];
 
 // Files that are part of the wiki infrastructure, not content pages.
@@ -784,6 +785,37 @@ export async function checkUnresolvedDiscussions(
         suggestion: `Review and resolve the open discussion threads on the "${slug}" talk page.`,
       });
     }
+  }
+  return issues;
+}
+
+export async function checkDisputedPages(): Promise<LintIssue[]> {
+  const pages = await listWikiPages();
+  const issues: LintIssue[] = [];
+  for (const entry of pages) {
+    const page = await readWikiPageWithFrontmatter(entry.slug);
+    if (!page) continue;
+    if (page.frontmatter.disputed !== true) continue;
+
+    // Check whether the page already has unresolved discussion threads
+    const stats = await getDiscussionStats(entry.slug);
+    const hasOpenThreads = stats.open > 0;
+
+    const message = hasOpenThreads
+      ? `Page is marked as disputed and has ${stats.open} unresolved discussion ${stats.open === 1 ? "thread" : "threads"}`
+      : `Page is marked as disputed but has no discussion threads`;
+
+    const suggestion = hasOpenThreads
+      ? `Review and resolve the ${stats.open} open discussion ${stats.open === 1 ? "thread" : "threads"} on the "${entry.slug}" talk page to clear the dispute`
+      : `Open a discussion thread to resolve the dispute on "${entry.slug}"`;
+
+    issues.push({
+      type: "disputed-page",
+      slug: entry.slug,
+      message,
+      severity: "warning",
+      suggestion,
+    });
   }
   return issues;
 }

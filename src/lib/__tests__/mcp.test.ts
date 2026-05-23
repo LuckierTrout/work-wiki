@@ -10,6 +10,7 @@ import {
   handleUpdatePage,
   handleDeletePage,
   handleIngestUrl,
+  handleIngestText,
   handleQueryWiki,
   handleAgentContext,
   handleSeedAgent,
@@ -789,6 +790,73 @@ describe("ingest_url", () => {
     await expect(
       handleIngestUrl({ url: "" }),
     ).rejects.toThrow("Invalid URL");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ingest_text tests
+// ---------------------------------------------------------------------------
+
+describe("ingest_text", () => {
+  it("rejects empty content", async () => {
+    await expect(
+      handleIngestText({ content: "" }),
+    ).rejects.toThrow("content is required and must be non-empty");
+  });
+
+  it("rejects whitespace-only content", async () => {
+    await expect(
+      handleIngestText({ content: "   \n\t  " }),
+    ).rejects.toThrow("content is required and must be non-empty");
+  });
+
+  it("ingests valid text content and creates a wiki page", async () => {
+    // Temporarily unset LLM keys so ingest uses the fallback (no-LLM) path
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    _resetConfigCache();
+    try {
+      const result = await handleIngestText({
+        content: "Quantum computing uses qubits to perform calculations exponentially faster than classical computers for certain problems.",
+        title: "Quantum Computing",
+        tags: ["science", "computing"],
+      });
+
+      expect(result.slug).toBeTruthy();
+      expect(result.title).toBeTruthy();
+      expect(result.summary).toBeTruthy();
+      expect(result.sourceUrl).toBe("");
+
+      // Verify the page was actually created
+      const page = await handleReadPage({ slug: result.slug });
+      expect(page.content).toBeTruthy();
+    } finally {
+      if (savedKey !== undefined) {
+        process.env.ANTHROPIC_API_KEY = savedKey;
+      }
+      _resetConfigCache();
+    }
+  });
+
+  it("auto-generates title from content when title is omitted", async () => {
+    // Temporarily unset LLM keys so ingest uses the fallback (no-LLM) path
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    _resetConfigCache();
+    try {
+      const result = await handleIngestText({
+        content: "Machine learning is a subset of artificial intelligence that enables systems to learn from data.",
+      });
+
+      expect(result.slug).toBeTruthy();
+      expect(result.title).toBeTruthy();
+      expect(result.sourceUrl).toBe("");
+    } finally {
+      if (savedKey !== undefined) {
+        process.env.ANTHROPIC_API_KEY = savedKey;
+      }
+      _resetConfigCache();
+    }
   });
 });
 

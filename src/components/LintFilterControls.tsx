@@ -31,6 +31,7 @@ const checkTypeLabels: Record<LintIssue["type"], string> = {
   "duplicate-entity": "Duplicate entities",
   "uncited-claims": "Uncited claims",
   "unresolved-discussions": "Unresolved discussions",
+  "disputed-page": "Disputed pages",
 };
 
 const severityFilterLabels: Record<SeverityFilter, string> = {
