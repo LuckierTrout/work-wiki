@@ -32,6 +32,7 @@ const checkTypeLabels: Record<LintIssue["type"], string> = {
   "uncited-claims": "Uncited claims",
   "unresolved-discussions": "Unresolved discussions",
   "disputed-page": "Disputed pages",
+  "supersedes-dangling": "Dangling supersedes",
 };
 
 const severityFilterLabels: Record<SeverityFilter, string> = {

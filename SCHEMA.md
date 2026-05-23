@@ -587,6 +587,10 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
   the page has open discussion threads to resolve the dispute or needs
   one opened. No auto-fix — requires reviewing the page content and
   talk page to resolve the dispute through discussion.
+- **`supersedes-dangling`** (warning) — page declares a `supersedes` field
+  pointing to a slug that doesn't exist on disk. The supersession chain is
+  broken. No auto-fix — create the target page or remove the `supersedes`
+  field.
 
 ## Provider configuration
 
@@ -618,7 +622,7 @@ sessions should pick from this list:
   via RRF. Batch rebuild of the full vector index is available via the Settings
   page (`/api/settings/rebuild-embeddings`).
   Anthropic-only users see no regression (pure BM25 fallback).
-- Lint auto-fix handles nine of fourteen checks (`orphan-page`, `stale-index`,
+- Lint auto-fix handles nine of fifteen checks (`orphan-page`, `stale-index`,
   `empty-page`, `broken-link`, `missing-crossref`, `contradiction`,
   `missing-concept-page`, `stale-page`, `unmigrated-page`) via
   `POST /api/lint/fix`.
@@ -629,12 +633,13 @@ sessions should pick from this list:
   refreshes `valid_from` to today.
   The `unmigrated-page` fix adds sensible yopedia defaults (confidence 0.5,
   expiry 90 days out, authors `["system"]`).
-  The five exceptions without auto-fix are: `low-confidence` (requires
+  The six exceptions without auto-fix are: `low-confidence` (requires
   ingesting additional sources), `duplicate-entity` (requires human judgment
   to merge), `uncited-claims` (requires adding citations or ingesting
   sources), `unresolved-discussions` (requires reviewing and resolving
-  open threads on the talk page), and `disputed-page` (requires resolving
-  the dispute through discussion).
+  open threads on the talk page), `disputed-page` (requires resolving
+  the dispute through discussion), and `supersedes-dangling` (requires
+  creating the target page or removing the supersedes field).
 - Long documents are chunked at ingest time (12K chars per chunk ≈ 3K
   tokens) so they fit within provider context windows. Token counting is
   character-based (not tokenizer-exact), which is conservative but not
@@ -672,7 +677,7 @@ Next up: Phase 5 (agent surface research).
 
 **Trigger/notification system:** A research evaluation of trigger patterns for
 wiki change events is documented in [`DESIGN-triggers.md`](DESIGN-triggers.md).
-The recommendation is "watch" — yopedia's 14 lint check types already detect
+The recommendation is "watch" — yopedia's 15 lint check types already detect
 the most valuable change conditions deterministically; a structured trigger
 schema is proposed for when demand or the MCP Triggers & Events WG spec
 materializes. The preparatory step (exposing wiki pages as MCP resources with

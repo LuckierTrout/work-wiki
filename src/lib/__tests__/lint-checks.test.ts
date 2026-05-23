@@ -17,6 +17,7 @@ import {
   checkUncitedClaims,
   checkUnresolvedDiscussions,
   checkDisputedPages,
+  checkSupersededDangling,
   LOW_CONFIDENCE_THRESHOLD,
   STALE_VERIFICATION_DAYS,
   buildSummary,
@@ -954,5 +955,52 @@ describe("checkDisputedPages", () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain("no discussion threads");
     expect(issues[0].suggestion).toContain("Open a discussion thread");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkSupersededDangling
+// ---------------------------------------------------------------------------
+describe("checkSupersededDangling", () => {
+  it("flags a page whose supersedes target does not exist on disk", async () => {
+    const content = serializeFrontmatter(
+      { supersedes: "nonexistent-slug", created: "2024-01-01" },
+      "# Current Page\n\nThis page supersedes a nonexistent page with enough content.",
+    );
+    await writeWikiPage("current-page", content);
+
+    const issues = await checkSupersededDangling(["current-page"]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].type).toBe("supersedes-dangling");
+    expect(issues[0].slug).toBe("current-page");
+    expect(issues[0].target).toBe("nonexistent-slug");
+    expect(issues[0].severity).toBe("warning");
+    expect(issues[0].suggestion).toBeDefined();
+    expect(issues[0].suggestion).toContain("nonexistent-slug");
+  });
+
+  it("does NOT flag a page whose supersedes target exists on disk", async () => {
+    await writeWikiPage(
+      "old-page",
+      "# Old Page\n\nThis is the old page with enough content for validation.",
+    );
+    const content = serializeFrontmatter(
+      { supersedes: "old-page", created: "2024-01-01" },
+      "# New Page\n\nThis page supersedes old-page with enough content for validation.",
+    );
+    await writeWikiPage("new-page", content);
+
+    const issues = await checkSupersededDangling(["new-page", "old-page"]);
+    expect(issues).toEqual([]);
+  });
+
+  it("does NOT flag pages without a supersedes field", async () => {
+    await writeWikiPage(
+      "normal-page",
+      "# Normal Page\n\nThis page has no supersedes field, just plain content for testing.",
+    );
+
+    const issues = await checkSupersededDangling(["normal-page"]);
+    expect(issues).toEqual([]);
   });
 });
