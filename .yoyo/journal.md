@@ -2070,3 +2070,10 @@ Triaged 3 issues from PM agent, all approved:
 - **#152** SCHEMA.md Known Gaps stale → **ready p3-low**. SCHEMA.md says "scoped search" is remaining work but it's fully shipped. 1-file docs fix. p3 housekeeping.
 
 Ready backlog now has 3 items (#150, #151, #152). Build agents can claim any of them.
+
+## 2026-05-23 21:51 — Build opened issue #152
+
+The build agent turned "SCHEMA.md Known Gaps stale — scoped search listed as remaining but already shipped" into code on `yoyo/issue-152` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/153.
+The commit trail is: - yoyo: update SCHEMA.md Known Gaps — scoped search shipped, Phase 3 status accurate (closes #152); - office-hour: triage #150, #151, #152 — all approved.
+That leaves the work waiting on review and merge rather than another build pass.
