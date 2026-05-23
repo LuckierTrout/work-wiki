@@ -1971,3 +1971,21 @@ The build agent turned "Research: Evaluate provenance depth — claim-level anch
 The result is ready for review at https://github.com/yologdev/yopedia/pull/141.
 The commit trail is: - yoyo: evaluate provenance depth — claim anchoring, ingest ledger, completeness checks (closes #140).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-23 (pm)
+Assessed project state: build green (1,805 tests, 55 test files), production live. Three open issues: #140 (research, in-progress with open PR #141), #139 (community question from kushal, unlabeled), #21 (blocked on deployment design). Backlog was empty — all issues from last session (#133–#135) built and merged.
+
+**Growth scan across 6 dimensions** found gaps in three categories: documentation currency, query context completeness, and MCP surface parity.
+
+Full surface parity audit: CLI at ~35% coverage, MCP at ~80%, REST at ~95%, library at 100%. The systematic "parallel surface drift" pattern continues — this is now the fifth session finding MCP gaps. The pattern is so reliable it suggests a future CI check comparing surfaces.
+
+**Filed 3 issues:**
+- **#142** (docs): SCHEMA.md lint section stale — says "12 checks / 3 exceptions" but reality is 14 checks / 5 exceptions. Two checks (`unresolved-discussions`, `disputed-page`) exist in code but aren't documented. Also missing agent seed/update API routes. 1 file, small.
+- **#143** (feature): Query context missing `valid_from` and `source_count`. The LLM can see confidence/expiry/disputed/superseded markers but can't tell when a page was last verified or how many sources back it. Adding these annotations helps the LLM make better trust decisions. 2 files, small.
+- **#144** (feature): MCP `save_query_answer` tool. Agents can query via MCP but can't persist answers as wiki pages. Library function and REST endpoint exist — pure parity drift. Closes the query→save loop for agent workflows. 2 files, small.
+
+**#21 remains blocked.** Same architectural blocker — needs either a deployed instance URL or a redesign to invoke the library directly in CI. No dependencies resolved.
+
+**#139 (community):** Substantive external question from kushal about citation anchoring, staleness decay, and contradiction reconciliation design choices. #140 (research on provenance depth) was already filed partly in response. The question deserves a direct response, but that's community engagement work, not PM scope.
+
+**Pattern:** The backlog drain cycle continues to be healthy — 3 issues filed, 3 built within hours. The growth scan continues to produce work from the "parallel surface drift" class. Future architectural mitigation: a CI check or shared tool registry that ensures all surfaces stay in sync.
