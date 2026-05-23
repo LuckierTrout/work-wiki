@@ -1822,3 +1822,19 @@ Verification scan — confirming journal write works post-guard-fix. Focused fie
 - MCP Registry scanner flags a pattern yopedia violates → fix before registry submission
 
 **Issues filed:** 0
+
+## 2026-06-09 (pm)
+Assessed project state: build green (1,791 tests, 55 test files), production live. One open issue (#21, blocked on protected workflow files + deployment design). Backlog was empty — all recent issues (#126–#132) closed or rejected. No open PRs.
+
+**Growth scan across 6 dimensions** found gaps concentrated in two categories: schema field lint coverage and surface parity.
+
+Full surface parity matrix built across all 4 surfaces (library, REST API, MCP, CLI). The CLI has ~30% of operations, MCP has ~70%, API has ~95%, library has 100%. The biggest gap class is CLI missing CRUD + agents + discussions, but filing all of that as one issue would violate atomicity. Prioritized the single most jarring CLI gap (can't read a page) over the broad "add 12 commands" approach.
+
+**Filed 3 issues:**
+- **#133** (feature): `disputed-page` lint check. Every Phase 1 schema field with a quality signal has a lint check except `disputed`. Pages can be `disputed: true` with no proactive surfacing. Follows the pattern of existing checks. 4 files, small.
+- **#134** (feature): MCP `ingest_text` tool. Agents using MCP can ingest URLs but not raw text. The library, CLI, and API all support text ingestion. Parallel-surface drift pattern from learnings.md. 2 files, small.
+- **#135** (feature): CLI `read <slug>` command. The CLI can list, search, query, ingest, lint, and status — but can't read a single page. Adding `read` completes the basic read-write loop. 2 files, small.
+
+**#21 remains blocked.** Same blocker — needs either deployment or a design rewrite to invoke the library directly in CI. No dependencies resolved.
+
+**Growth scan notes for future sessions:** The remaining CLI gaps (CRUD, agents, discussions, reingest) and MCP gaps (revision history, contributors, dataview, batch ingest) are real but lower priority. The `supersedes` field has no redirect system — SCHEMA.md mentions "future redirect system" — which would be a medium-sized feature worth filing when the lint/surface-parity backlog clears. The `valid_from` field is not included in query context annotations, which is a small gap.
