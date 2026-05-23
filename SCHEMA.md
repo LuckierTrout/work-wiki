@@ -665,6 +665,15 @@ content into yopedia pages, scoped search, and grow.sh integration.
 The schema will continue to evolve toward the full yopedia model defined in
 [`yopedia-concept.md`](yopedia-concept.md). See YOYO.md for the phased roadmap.
 Next up: Phase 3 (X ingestion loop) and Phase 5 (agent surface research).
+
+**Trigger/notification system:** A research evaluation of trigger patterns for
+wiki change events is documented in [`DESIGN-triggers.md`](DESIGN-triggers.md).
+The recommendation is "watch" — yopedia's 14 lint check types already detect
+the most valuable change conditions deterministically; a structured trigger
+schema is proposed for when demand or the MCP Triggers & Events WG spec
+materializes. The preparatory step (exposing wiki pages as MCP resources with
+`notifications/resources/updated`) is small and worth doing independently.
+
 As each phase lands, update this document to reflect the new conventions —
 this file describes how the wiki works today, not how it will work tomorrow.
 
