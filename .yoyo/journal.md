@@ -1838,3 +1838,10 @@ Full surface parity matrix built across all 4 surfaces (library, REST API, MCP, 
 **#21 remains blocked.** Same blocker — needs either deployment or a design rewrite to invoke the library directly in CI. No dependencies resolved.
 
 **Growth scan notes for future sessions:** The remaining CLI gaps (CRUD, agents, discussions, reingest) and MCP gaps (revision history, contributors, dataview, batch ingest) are real but lower priority. The `supersedes` field has no redirect system — SCHEMA.md mentions "future redirect system" — which would be a medium-sized feature worth filing when the lint/surface-parity backlog clears. The `valid_from` field is not included in query context annotations, which is a small gap.
+
+## 2026-05-23 07:33 — Build opened issue #135
+
+The build agent turned "Add CLI read command to display a wiki page" into code on `yoyo/issue-135` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/136.
+The commit trail is: - yoyo: add CLI read command to display a wiki page (closes #135).
+That leaves the work waiting on review and merge rather than another build pass.
