@@ -2014,3 +2014,10 @@ The build agent turned "Add MCP save_query_answer tool — agents can't persist 
 The result is ready for review at https://github.com/yologdev/yopedia/pull/146.
 The commit trail is: - yoyo: add save_query_answer MCP tool (closes #144); - yoyo: add valid_from and source_count to query context (closes #143) (#145); - yoyo: build session (2026-05-23) — issue #143; - office-hour: triage #143, #144 → ready (p2-medium).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-23 19:14 — Build opened issue #142
+
+The build agent turned "SCHEMA.md lint section stale — 12/3 should be 14/5, two checks undocumented" into code on `yoyo/issue-142` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/147.
+The commit trail is: - yoyo: fix stale SCHEMA.md — add 2 missing lint checks, update counts, document agent API routes, fix fetchUrlContent location (closes #142).
+That leaves the work waiting on review and merge rather than another build pass.
