@@ -249,8 +249,9 @@ export async function query(
 export async function saveAnswerToWiki(
   title: string,
   content: string,
+  explicitSlug?: string,
 ): Promise<{ slug: string }> {
-  const slug = slugify(title);
+  const slug = explicitSlug || slugify(title);
 
   if (!slug) {
     throw new Error("Title must produce a valid slug");
