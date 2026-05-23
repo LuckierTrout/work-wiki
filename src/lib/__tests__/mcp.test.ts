@@ -25,6 +25,7 @@ import {
   handleResolveDiscussion,
   handleAddComment,
   handleReingest,
+  handleDataviewQuery,
 } from "../../mcp";
 import { _resetStorage } from "../storage";
 import { _resetConfigCache } from "../config";
@@ -1941,5 +1942,177 @@ describe("delete_agent", () => {
     await expect(
       handleDeleteAgent({ agent_id: "nonexistent" }),
     ).rejects.toThrow("Agent not found: nonexistent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dataview_query tests
+// ---------------------------------------------------------------------------
+
+describe("dataview_query", () => {
+  beforeEach(async () => {
+    // Create test pages with various frontmatter fields
+    await writeTestPage(
+      "alpha",
+      `---
+title: Alpha Page
+confidence: 0.9
+tags: [machine-learning, ai]
+created: "2025-01-15"
+authors: [yoyo]
+---
+# Alpha Page
+
+Content about alpha.`,
+    );
+    await writeTestPage(
+      "beta",
+      `---
+title: Beta Page
+confidence: 0.3
+tags: [databases]
+created: "2025-02-20"
+authors: [human]
+---
+# Beta Page
+
+Content about beta.`,
+    );
+    await writeTestPage(
+      "gamma",
+      `---
+title: Gamma Page
+confidence: 0.7
+tags: [machine-learning]
+created: "2025-03-10"
+authors: [yoyo]
+disputed: true
+---
+# Gamma Page
+
+Content about gamma.`,
+    );
+    await writeIndex([
+      { title: "Alpha Page", slug: "alpha", summary: "About alpha" },
+      { title: "Beta Page", slug: "beta", summary: "About beta" },
+      { title: "Gamma Page", slug: "gamma", summary: "About gamma" },
+    ]);
+  });
+
+  it("returns all pages when no filters are given", async () => {
+    const result = await handleDataviewQuery({});
+    expect(result.total).toBe(3);
+    expect(result.results).toHaveLength(3);
+  });
+
+  it("filters by a single field (confidence < 0.5)", async () => {
+    const result = await handleDataviewQuery({
+      filters: [{ field: "confidence", op: "lt", value: "0.5" }],
+    });
+    expect(result.total).toBe(1);
+    expect(result.results[0].slug).toBe("beta");
+  });
+
+  it("filters with multiple conditions (AND semantics)", async () => {
+    const result = await handleDataviewQuery({
+      filters: [
+        { field: "tags", op: "contains", value: "machine-learning" },
+        { field: "confidence", op: "gte", value: "0.8" },
+      ],
+    });
+    expect(result.total).toBe(1);
+    expect(result.results[0].slug).toBe("alpha");
+  });
+
+  it("supports the contains operator on tags", async () => {
+    const result = await handleDataviewQuery({
+      filters: [{ field: "tags", op: "contains", value: "machine-learning" }],
+    });
+    expect(result.total).toBe(2);
+    const slugs = result.results.map((r) => r.slug).sort();
+    expect(slugs).toEqual(["alpha", "gamma"]);
+  });
+
+  it("supports the exists operator", async () => {
+    const result = await handleDataviewQuery({
+      filters: [{ field: "disputed", op: "exists" }],
+    });
+    expect(result.total).toBe(1);
+    expect(result.results[0].slug).toBe("gamma");
+  });
+
+  it("sorts results by a frontmatter field ascending", async () => {
+    const result = await handleDataviewQuery({
+      sortBy: "confidence",
+      sortOrder: "asc",
+    });
+    expect(result.results.map((r) => r.slug)).toEqual([
+      "beta",
+      "gamma",
+      "alpha",
+    ]);
+  });
+
+  it("sorts results by a frontmatter field descending", async () => {
+    const result = await handleDataviewQuery({
+      sortBy: "created",
+      sortOrder: "desc",
+    });
+    expect(result.results.map((r) => r.slug)).toEqual([
+      "gamma",
+      "beta",
+      "alpha",
+    ]);
+  });
+
+  it("respects the limit parameter", async () => {
+    const result = await handleDataviewQuery({
+      sortBy: "confidence",
+      sortOrder: "desc",
+      limit: 2,
+    });
+    expect(result.total).toBe(2);
+    expect(result.results).toHaveLength(2);
+    expect(result.results[0].slug).toBe("alpha");
+    expect(result.results[1].slug).toBe("gamma");
+  });
+
+  it("throws on invalid filter operator", async () => {
+    await expect(
+      handleDataviewQuery({
+        filters: [{ field: "confidence", op: "invalid_op", value: "0.5" }],
+      }),
+    ).rejects.toThrow('unknown filter op: "invalid_op"');
+  });
+
+  it("throws on missing value for non-exists operator", async () => {
+    await expect(
+      handleDataviewQuery({
+        filters: [{ field: "confidence", op: "gt" }],
+      }),
+    ).rejects.toThrow('requires a value');
+  });
+
+  it("throws on invalid limit", async () => {
+    await expect(
+      handleDataviewQuery({ limit: -1 }),
+    ).rejects.toThrow("limit must be a positive integer");
+  });
+
+  it("throws on limit exceeding maximum", async () => {
+    await expect(
+      handleDataviewQuery({ limit: 999 }),
+    ).rejects.toThrow("limit exceeds maximum of 200");
+  });
+
+  it("combines filters, sort, and limit", async () => {
+    const result = await handleDataviewQuery({
+      filters: [{ field: "authors", op: "contains", value: "yoyo" }],
+      sortBy: "confidence",
+      sortOrder: "desc",
+      limit: 1,
+    });
+    expect(result.total).toBe(1);
+    expect(result.results[0].slug).toBe("alpha");
   });
 });

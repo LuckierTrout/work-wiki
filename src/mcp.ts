@@ -56,6 +56,7 @@ import { resolveScope, type ContentSearchResult } from "./lib/search";
 import { lint, ALL_CHECK_TYPES } from "./lib/lint";
 import { fixLintIssue, type FixResult } from "./lib/lint-fix";
 import { listThreads, createThread, resolveThread, addComment } from "./lib/talk";
+import { queryByFrontmatter, validateQuery, type DataviewFilter, type DataviewQuery, type DataviewResult } from "./lib/dataview";
 import type { TalkThread, TalkComment } from "./lib/types";
 
 // ---------------------------------------------------------------------------
@@ -693,6 +694,26 @@ export async function handleReingest(args: {
     throw new Error("slug is required");
   }
   return reingest(args.slug);
+}
+
+export async function handleDataviewQuery(args: {
+  filters?: Array<{ field: string; op: string; value?: string }>;
+  sortBy?: string;
+  sortOrder?: string;
+  limit?: number;
+}): Promise<{ results: DataviewResult[]; total: number }> {
+  const query: DataviewQuery = {
+    filters: args.filters as DataviewFilter[] | undefined,
+    sortBy: args.sortBy,
+    sortOrder: args.sortOrder as "asc" | "desc" | undefined,
+    limit: args.limit,
+  };
+
+  // validateQuery throws descriptive errors on bad input
+  validateQuery(query);
+
+  const results = await queryByFrontmatter(query);
+  return { results, total: results.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -1547,6 +1568,63 @@ export function createMcpServer(): McpServer {
   }, async (args) => {
     try {
       const result = await handleReingest(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // dataview_query — Query wiki pages by frontmatter fields
+  server.registerTool("dataview_query", {
+    description:
+      "Query yopedia wiki pages by frontmatter fields with structured filters, sort, and limit. " +
+      "Supports operators: eq, neq, gt, lt, gte, lte, contains, exists.",
+    inputSchema: {
+      filters: z
+        .array(
+          z.object({
+            field: z.string().describe("Frontmatter field name (e.g. 'confidence', 'tags', 'created')"),
+            op: z.enum(["eq", "neq", "gt", "lt", "gte", "lte", "contains", "exists"]).describe("Comparison operator"),
+            value: z.string().optional().describe("Comparison value (not needed for 'exists' op)"),
+          }),
+        )
+        .optional()
+        .describe("Array of filter predicates (AND semantics — all must match)"),
+      sortBy: z
+        .string()
+        .optional()
+        .describe("Frontmatter field to sort results by"),
+      sortOrder: z
+        .enum(["asc", "desc"])
+        .optional()
+        .describe("Sort direction (default: asc)"),
+      limit: z
+        .number()
+        .optional()
+        .describe("Maximum number of results (default 50, max 200)"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleDataviewQuery(args);
       return {
         content: [
           {
