@@ -12,14 +12,54 @@ const issueBaseUrl = "https://github.com/yologdev/yopedia/issues/";
 const repoUrl = "https://github.com/yologdev/yopedia";
 
 const agentMeta = {
-  pm: { label: "PM", className: "agent-pm", status: "merged" },
-  build: { label: "Build", className: "agent-build", status: "built" },
-  review: { label: "Review", className: "agent-review", status: "checked" },
-  "office-hour": { label: "Office Hour", className: "agent-office-hour", status: "recorded" },
-  research: { label: "Research", className: "agent-research", status: "noted" },
-  architect: { label: "Architect", className: "agent-architect", status: "proposal" },
-  yoyo: { label: "yoyo", className: "agent-yoyo", status: "logged" },
-  unknown: { label: "Unknown", className: "agent-unknown", status: "stored" },
+  pm: {
+    label: "PM",
+    className: "agent-pm",
+    status: "prioritized",
+    description: "Finds product gaps and turns them into work.",
+  },
+  build: {
+    label: "Build",
+    className: "agent-build",
+    status: "shipped",
+    description: "Implements ready issues and opens pull requests.",
+  },
+  review: {
+    label: "Review",
+    className: "agent-review",
+    status: "reviewed",
+    description: "Checks diffs against acceptance criteria.",
+  },
+  "office-hour": {
+    label: "Office Hour",
+    className: "agent-office-hour",
+    status: "triaged",
+    description: "Sorts issues and routes complex work.",
+  },
+  research: {
+    label: "Research",
+    className: "agent-research",
+    status: "scanned",
+    description: "Reads the field and files strategic signals.",
+  },
+  architect: {
+    label: "Architect",
+    className: "agent-architect",
+    status: "planned",
+    description: "Breaks hard changes into buildable plans.",
+  },
+  yoyo: {
+    label: "yoyo",
+    className: "agent-yoyo",
+    status: "logged",
+    description: "Maintains the journal and connects the trail.",
+  },
+  unknown: {
+    label: "Unknown",
+    className: "agent-unknown",
+    status: "stored",
+    description: "Stored without a known agent role.",
+  },
 };
 
 function escapeHtml(value) {
@@ -354,6 +394,10 @@ function firstIssue(entry) {
   return issue ? `#${issue[1]}` : "";
 }
 
+function wordCount(value) {
+  return stripMarkdown(value).split(/\s+/).filter(Boolean).length;
+}
+
 function getStats(entries) {
   const counts = new Map();
   for (const entry of entries) {
@@ -379,6 +423,22 @@ function getStats(entries) {
   };
 }
 
+function getMonthGroups(entries) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const key = entry.month || "unknown";
+    const current = groups.get(key) ?? {
+      month: key,
+      label: entry.monthLabel || "Undated",
+      count: 0,
+    };
+    current.count += 1;
+    groups.set(key, current);
+  }
+
+  return [...groups.values()].sort((a, b) => b.month.localeCompare(a.month));
+}
+
 function renderAgentOptions(entries) {
   const present = [...new Set(entries.map((entry) => entry.agent))].sort((a, b) =>
     agentMeta[a].label.localeCompare(agentMeta[b].label),
@@ -400,6 +460,52 @@ function renderAgentStats(stats) {
     .join("");
 }
 
+function renderAgentLegend(stats) {
+  return Object.entries(agentMeta)
+    .filter(([agent]) => stats.counts[agent])
+    .map(
+      ([agent, meta]) => `
+        <li class="agent-key ${meta.className}">
+          <span class="agent-dot" aria-hidden="true"></span>
+          <span>
+            <strong>${meta.label}</strong>
+            <small>${stats.counts[agent]} entries. ${meta.description}</small>
+          </span>
+        </li>
+      `,
+    )
+    .join("");
+}
+
+function renderMonthNav(entries) {
+  return getMonthGroups(entries)
+    .map(
+      (month) => `
+        <a href="#month-${escapeAttr(month.month)}" data-month-link="${escapeAttr(month.month)}">
+          <span>${escapeHtml(month.label)}</span>
+          <strong>${month.count}</strong>
+        </a>
+      `,
+    )
+    .join("");
+}
+
+function renderRecentEntries(entries) {
+  return entries
+    .slice(0, 3)
+    .map((entry) => {
+      const meta = agentMeta[entry.agent] ?? agentMeta.unknown;
+      return `
+        <a class="recent-item ${meta.className}" href="#${escapeAttr(entry.id)}">
+          <span>${escapeHtml(meta.label)}</span>
+          <strong>${escapeHtml(entry.title)}</strong>
+          <time datetime="${escapeAttr(entry.timestamp)}">${formatDate(entry.date)}</time>
+        </a>
+      `;
+    })
+    .join("");
+}
+
 function renderEntries(entries) {
   return entries
     .map((entry) => {
@@ -415,6 +521,7 @@ function renderEntries(entries) {
           data-month="${escapeAttr(entry.month)}"
           data-month-label="${escapeAttr(entry.monthLabel)}"
           data-search="${escapeAttr(searchable.toLowerCase())}"
+          data-expanded="false"
         >
           <div class="month-marker" aria-hidden="true"></div>
           <div class="entry-rail" aria-hidden="true"><span></span></div>
@@ -427,15 +534,20 @@ function renderEntries(entries) {
               ${issue ? `<a href="${issueBaseUrl}${issue.slice(1)}">${issue}</a>` : ""}
             </div>
             <h2><a href="#${escapeAttr(entry.id)}">${escapeHtml(entry.title)}</a></h2>
+            <p class="entry-summary">${escapeHtml(entry.summary)}${entry.plain.length > 180 ? "..." : ""}</p>
           </header>
           <aside class="entry-status" aria-label="Entry status">
             <span>commit ${pseudoCommit(entry)}</span>
-            <span>✓ ${meta.status}</span>
+            <span>${meta.status}</span>
+            <span>${wordCount(entry.body)} words</span>
           </aside>
           <section class="entry-details" aria-label="Journal entry content">
             <div class="entry-body">
               ${entry.bodyHtml}
             </div>
+            <button class="entry-toggle" type="button" aria-expanded="false">
+              Read full entry
+            </button>
           </section>
         </article>
       `;
@@ -449,6 +561,7 @@ function renderHtml(entries) {
     stats.firstDate && stats.lastDate
       ? `${formatDate(stats.firstDate)} - ${formatDate(stats.lastDate)}`
       : "No dated entries";
+  const latestLabel = stats.latest ? formatDate(stats.latest.date) : "None";
 
   return `<!doctype html>
 <html lang="en">
@@ -461,7 +574,7 @@ function renderHtml(entries) {
     <link rel="stylesheet" href="./assets/site.css">
   </head>
   <body>
-    <main class="terminal-shell">
+    <main class="journal-shell">
       <header class="hero">
         <nav class="topline" aria-label="Project links">
           <strong>yopedia Growth Journal</strong>
@@ -472,37 +585,48 @@ function renderHtml(entries) {
         </nav>
         <div class="hero-grid">
           <div class="hero-copy">
-            <h1>Terminal Magazine</h1>
+            <p class="eyebrow">Public lab log</p>
+            <h1>Watch a wiki grow itself.</h1>
+            <p class="hero-deck">
+              yopedia is a shared second brain for humans and agents. This journal is the visible trail: every scan, triage, build, review, and decision that moves the product forward.
+            </p>
+            <div class="hero-actions">
+              <a href="#archive">Browse the archive</a>
+              <a href="${repoUrl}/actions">Inspect agent runs</a>
+            </div>
           </div>
           <aside class="hero-panel" aria-label="Journal statistics">
             <dl class="stat-grid">
               <div>
                 <dt>Entries</dt>
-                <dd>: ${stats.total}</dd>
+                <dd>${stats.total}</dd>
               </div>
               <div>
                 <dt>Range</dt>
-                <dd>: ${escapeHtml(range)}</dd>
+                <dd>${escapeHtml(range)}</dd>
               </div>
               <div>
                 <dt>Top voice</dt>
-                <dd>: ${escapeHtml(stats.topAgent.label)} (${stats.topAgent.count})</dd>
+                <dd>${escapeHtml(stats.topAgent.label)} (${stats.topAgent.count})</dd>
               </div>
               <div>
                 <dt>Latest</dt>
-                <dd>: ${stats.latest ? escapeHtml(formatDate(stats.latest.date)) : "None"}</dd>
+                <dd>${escapeHtml(latestLabel)}</dd>
               </div>
             </dl>
-            <div class="agent-ledger" aria-label="Entries by agent">
-              <span>Agents</span>
-              ${renderAgentStats(stats)}
-            </div>
           </aside>
         </div>
       </header>
 
-      <section class="command-bar" aria-label="Timeline command">
-        <span>$ journal --timeline --follow</span>
+      <section class="lab-strip" aria-label="Current journal signal">
+        <div>
+          <span>Latest signal</span>
+          <strong>${stats.latest ? escapeHtml(stats.latest.title) : "No entries yet"}</strong>
+        </div>
+        <div class="agent-ledger" aria-label="Entries by agent">
+          <span>Agent mix</span>
+          ${renderAgentStats(stats)}
+        </div>
       </section>
 
       <section class="controls" aria-label="Journal controls">
@@ -524,11 +648,31 @@ function renderHtml(entries) {
         <output id="result-count" aria-live="polite">${entries.length} entries</output>
       </section>
 
-      <section class="archive-shell" aria-label="Journal archive">
-        <div class="archive-label">
-          <span>Timeline</span>
-          <strong>Generated from .yoyo/journal.md</strong>
+      <section class="lab-overview" aria-label="Journal overview">
+        <div class="recent-panel">
+          <span class="section-label">Recent activity</span>
+          ${renderRecentEntries(entries)}
         </div>
+        <div class="agent-panel">
+          <span class="section-label">Agent roles</span>
+          <ul>
+            ${renderAgentLegend(stats)}
+          </ul>
+        </div>
+      </section>
+
+      <section class="archive-shell" id="archive" aria-label="Journal archive">
+        <div class="archive-top">
+          <div>
+            <span class="section-label">Timeline</span>
+            <h2>Generated from the source journal</h2>
+            <p>Search the public trail, jump by month, and expand entries when the evidence needs a full read.</p>
+          </div>
+          <nav class="month-nav" aria-label="Jump by month">
+            ${renderMonthNav(entries)}
+          </nav>
+        </div>
+        <p id="empty-state" class="empty-state" hidden>No entries match the current filters.</p>
         <div id="entry-list" class="entry-list">
           ${renderEntries(entries)}
         </div>
@@ -536,7 +680,7 @@ function renderHtml(entries) {
     </main>
 
     <footer class="site-footer">
-      <p>$ generated from <code>.yoyo/journal.md</code></p>
+      <p>Generated from <code>.yoyo/journal.md</code></p>
       <a href="${repoUrl}">Back to yopedia</a>
     </footer>
 
