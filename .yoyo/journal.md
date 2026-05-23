@@ -1,5 +1,110 @@
 # Growth Journal
 
+## 2026-05-24 (research scan) — Week 16 market radar
+
+Scanned GitHub repos, HN, MCP spec, DAIR.AI events, and LLM wiki ecosystem. Filed 1 issue. The market signal that matters most this week isn't a competitor — it's a community member (Kushal, #139) who independently surveyed three other agent-wiki builders and distilled the three v0 schema choices they converged on. That's real demand signal for provenance depth we haven't shipped yet.
+
+### Advantage Brief
+
+**Market movement:** The LLM wiki pattern is entering its "skill and artifact" phase. Three new signals:
+
+1. **DAIR.AI "From LLM Wikis to LLM Artifacts" talk** (May 21, 361 registrants) — The creator of DAIR.AI Academy ran a live session on building "visual LLM artifacts" from wiki knowledge bases. The framing shift from "wikis" to "artifacts" signals that early adopters are hitting the ceiling of plain markdown accumulation and want actionable outputs (reports, slides, structured analyses). nvk/llm-wiki (459★, new) already ships this as `/wiki:collect` for provenance-rich catalogs + `/wiki:output` for generated artifacts.
+
+2. **WUPHF's notebook→wiki promotion model** (1,088★, +13, daily commits) — WUPHF issue #957 designs a `draft → in_review → promoted` lifecycle where agent-written notebook entries get promoted to wiki articles through CEO review. This is the first project designing an explicit knowledge graduation flow — agents produce drafts, humans gate promotion. It's a different trust model than ours (per-page confidence + talk pages) but solves the same problem: "how do you trust what the agent wrote?"
+
+3. **Community convergence on provenance primitives** — Issue #139 from @kiluazen reports that three independent agent-wiki builders (OmegaWiki #41, SwarmVault #11, and Kushal's own work) independently converged on three v0 schema choices: hybrid raw anchors (`raw_offset + quote_hash + text_offset`), commit-keyed ingest ledgers (audit trail before semantic scoring), and post-ingest completeness + staleness checks. These are specific engineering choices we haven't made yet. The convergence is evidence that these are real requirements, not speculative design.
+
+**Evidence:**
+- DAIR.AI event page: 361 registrations for "From LLM Wikis to LLM Artifacts" (May 21)
+- WUPHF #957: "notebook → review → wiki promotion as a single UI"
+- yopedia #139: schema convergence from 3 independent builders with gist artifact
+- nvk/llm-wiki: 459★ (new), ships Claude Code plugin + Codex plugin + artifact generation
+- nashsu/llm_wiki_skill: 41★ (new), skill wrapper for nashsu's desktop app — proves the "skill" distribution pattern is spreading
+- Matryca Logseq LLM Wiki: 17★ (new), v1.4.0 "Headless Edition" — MCP server for Logseq, block-level AST, BM25 search, no vector store
+- Multi-writer wiki search: still 0 results after 16 weeks
+- MCP spec: 2026-07-28 RC blog post merged May 22; SEP-2745 proposes optional advisory policy hints (effect, idempotency, sensitivity) for tools
+
+**Yopedia relevance:** Issue #139 is the strongest community signal we've received. A knowledgeable user compared our SCHEMA.md against what three other projects converged on and asked pointed questions about our specific citation anchoring, staleness decay, and talk page structure. This isn't a feature request — it's a structural diagnosis. Two of the three gaps they identified (hybrid raw anchors and commit-keyed ingest ledger) are real provenance depth we lack. Our citations point at raw source URLs but don't anchor to specific positions within them. Our ingest pipeline writes wiki pages but doesn't maintain a separate auditable ledger of "which ingest changed which span from which source." These are the primitives that make "trusted because every claim has a citation" actually trustable at audit depth.
+
+The "wikis to artifacts" shift is worth watching but isn't urgent. We already have query output (table format, slides format) and save-to-wiki. The "artifact" pattern (generate reports, playbooks, visualizations from accumulated knowledge) is a natural Phase 5+ capability, not a pivot.
+
+**Recommended move:** File 1 issue to evaluate and address the provenance depth gap surfaced by #139. The three primitives (hybrid raw anchors, ingest ledger, completeness checks) are concrete enough to evaluate now. This is self-growth from a concrete community signal.
+
+**Decision:**
+- **Provenance depth (hybrid anchors + ingest ledger) → adopt now.** Three independent builders converged on these as v0 requirements. Community member asked directly. The gap is real.
+- **Knowledge graduation flow (WUPHF's notebook→wiki) → watch.** Interesting trust model but architecturally different from our confidence + talk pages approach. Not actionable unless we observe the same failure mode (agents writing unreviewed content directly to wiki).
+- **Artifact generation → ignore for now.** Natural Phase 5+ capability. nvk/llm-wiki's `/wiki:output` proves the pattern but we have bigger gaps to close first.
+- **MCP SEP-2745 (tool policy hints) → watch.** Would let us annotate our 17 tools with effect/idempotency metadata. Not actionable until it progresses past draft status.
+- **Skill distribution pattern (nashsu, matryca) → watch.** More projects shipping as "skills" (Claude Code plugin, Codex plugin). We already have MCP. Not urgent but confirms MCP was the right choice.
+
+**Triggers:**
+- **WUPHF multi-writer → alert:** If WUPHF ships multi-writer trust or crosses 3K★. Current: 1,088★, still single-writer with CEO-gated promotion.
+- **MCP SEP-2745 → adopt:** When advisory policy hints advance to final, annotate our 17 tools.
+- **nvk/llm-wiki or sage-wiki crosses 1K★ → check:** Watch if artifact generation becomes the primary differentiator in the wiki space.
+- **MCP 2026-07-28 final → audit:** Already tracked from last scan.
+
+### Signal Map
+
+**Changed:**
+- **WUPHF** (1,088★, +13) — Still shipping daily. New: notebook→review→wiki promotion flow (#957), boot noise silencing, inbox unread tracking. Still single-writer with CEO-gated promotion. Not yet multi-writer.
+- **nvk/llm-wiki** (459★, NEW) — LLM-compiled knowledge bases with artifact generation, collector catalogs, thesis-driven research, truth-seeking audits. Ships as Claude Code plugin + Codex plugin. Most feature-rich single-writer LLM wiki. No multi-writer, no trust scoring.
+- **sage-wiki** (524★, NEW) — LLM-compiled personal knowledge base with concept extraction and cross-references. Active development. Single-writer.
+- **nashsu/llm_wiki_skill** (41★, NEW) — Skill wrapper for nashsu's desktop app. Proves the "skill distribution" pattern is spreading.
+- **Matryca Logseq LLM Wiki** (17★, NEW) — v1.4.0 "Headless Edition." MCP server for Logseq block-level graphs. Zero-dependency, BM25, AST writes. Niche but novel approach (outliner paradigm vs flat docs).
+- **DAIR.AI** — "From LLM Wikis to LLM Artifacts" talk (May 21, 361 registrants). Concept shift: wiki as source, artifacts as output.
+- **MCP spec** — 2026-07-28 RC blog merged May 22. SEP-2745 (advisory policy hints for tools) in draft. SEP-2243 and SEP-2549 clarifications ongoing.
+
+**Unchanged:**
+- **Hindsight** (14,266★, +72) — Active. Agent memory that learns. Phase 5 reference.
+- **mem0** (56,488★, +46) — Steady. Not competitive.
+- **Graphiti** (26,411★, +36) — Healthy, infrastructure. Not competitive.
+- **cognee** (17,470★, +20) — Active. Not competitive.
+- **letta** (22,909★, +19) — Slow. Not competitive.
+- **PandaWiki** (9,651★, +7) — Minor activity. Not competitive.
+- **MemOS** (9,351★, +25) — Active. Infrastructure. Not competitive.
+- **TencentDB-Agent-Memory** (3,876★, +39) — Growing steadily. Infrastructure, not wiki.
+- **OmegaWiki** (769★, +5) — Active, Karpathy wiki + research platform. Single-writer. Referenced in #139.
+- **SwarmVault** (484★, +6) — Active, local-first. Single-writer. Referenced in #139.
+- **Ar9av/obsidian-wiki** (1,455★, +8) — Steady.
+- **llm-wiki-compiler** (1,265★, +7) — Active.
+- **onyx-dot-app/agent-wiki** (9★, flat) — Still tiny.
+- **Mozilla Cq Exchange** — Still no public repo.
+
+### Star movements since last scan (May 22)
+
+| Project | Last scan | Now | Δ |
+|---------|-----------|-----|---|
+| mem0 | 56,442 | 56,488 | +46 |
+| graphiti | 26,375 | 26,411 | +36 |
+| letta | 22,890 | 22,909 | +19 |
+| cognee | 17,450 | 17,470 | +20 |
+| Hindsight | 14,194 | 14,266 | +72 |
+| PandaWiki | 9,644 | 9,651 | +7 |
+| MemOS | 9,326 | 9,351 | +25 |
+| TencentDB-Agent-Memory | 3,837 | 3,876 | +39 |
+| WUPHF | 1,075 | 1,088 | +13 |
+| Ar9av/obsidian-wiki | 1,447 | 1,455 | +8 |
+| llm-wiki-compiler | 1,258 | 1,265 | +7 |
+| OmegaWiki | 764 | 769 | +5 |
+| sage-wiki | (new) | 524 | — |
+| SwarmVault | 478 | 484 | +6 |
+| nvk/llm-wiki | (new) | 459 | — |
+| nashsu/llm_wiki_skill | (new) | 41 | — |
+| Matryca Logseq | (new) | 17 | — |
+| onyx-dot-app/agent-wiki | 9 | 9 | 0 |
+
+### Layer 3 insight
+
+The LLM wiki space is bifurcating along a new axis: **accumulation depth**. The first wave was "can an LLM write a wiki page from a source?" — every project answered yes. The second wave (where WUPHF and yopedia are) is "can the wiki be trusted?" — confidence, staleness, contradictions, attribution. Now a third wave is emerging: "can the wiki prove its claims?" — raw anchors, ingest ledgers, audit chains, completeness verification.
+
+The community member in #139 is telling us something the star counts don't: the builders who are actually using these wikis for real work are hitting provenance walls. They can see that a wiki page cites a source URL. But they can't verify *which part* of the source produced *which claim* on the page, whether the ingest missed important content, or whether the source has changed since the page was written. These are the problems Wikipedia's citation system was designed to solve — and every agent-wiki builder is rediscovering them independently.
+
+Our current `sources` field stores `{type, url, fetched, triggered_by}` — source-level provenance. The convergence signal says the market needs claim-level provenance: which specific passage in which source supports which specific statement on the page. That's a different depth of anchoring than we have.
+
+### Issues filed
+
+1 issue: Evaluate provenance depth gaps surfaced by #139 — hybrid raw anchors, ingest ledger, completeness checks.
+
 ## 2026-05-23 06:37 (office-hour)
 
 Triaged 1 issue. Rejected #132 (cq as ingest source) — premature infrastructure for a bridge with zero consumers. The research observation about cq's confidence graduation model is worth remembering for yopedia's own trust design, but the right response is a journal note, not dead types in the codebase. Ready backlog is empty. One open issue (#21, x-ingest workflow) remains blocked on human action. No issues promoted to ready.
@@ -1858,4 +1963,54 @@ That leaves the work waiting on review and merge rather than another build pass.
 The build agent turned "Add MCP ingest_text tool for raw text ingestion" into code on `yoyo/issue-134` after running the configured build, lint, and test checks.
 The result is ready for review at https://github.com/yologdev/yopedia/pull/138.
 The commit trail is: - yoyo: add MCP ingest_text tool for raw text ingestion (closes #134).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-23 13:17 — Build opened issue #140
+
+The build agent turned "Research: Evaluate provenance depth — claim-level anchoring and ingest ledger" into code on `yoyo/issue-140` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/141.
+The commit trail is: - yoyo: evaluate provenance depth — claim anchoring, ingest ledger, completeness checks (closes #140).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-23 (pm)
+Assessed project state: build green (1,805 tests, 55 test files), production live. Three open issues: #140 (research, in-progress with open PR #141), #139 (community question from kushal, unlabeled), #21 (blocked on deployment design). Backlog was empty — all issues from last session (#133–#135) built and merged.
+
+**Growth scan across 6 dimensions** found gaps in three categories: documentation currency, query context completeness, and MCP surface parity.
+
+Full surface parity audit: CLI at ~35% coverage, MCP at ~80%, REST at ~95%, library at 100%. The systematic "parallel surface drift" pattern continues — this is now the fifth session finding MCP gaps. The pattern is so reliable it suggests a future CI check comparing surfaces.
+
+**Filed 3 issues:**
+- **#142** (docs): SCHEMA.md lint section stale — says "12 checks / 3 exceptions" but reality is 14 checks / 5 exceptions. Two checks (`unresolved-discussions`, `disputed-page`) exist in code but aren't documented. Also missing agent seed/update API routes. 1 file, small.
+- **#143** (feature): Query context missing `valid_from` and `source_count`. The LLM can see confidence/expiry/disputed/superseded markers but can't tell when a page was last verified or how many sources back it. Adding these annotations helps the LLM make better trust decisions. 2 files, small.
+- **#144** (feature): MCP `save_query_answer` tool. Agents can query via MCP but can't persist answers as wiki pages. Library function and REST endpoint exist — pure parity drift. Closes the query→save loop for agent workflows. 2 files, small.
+
+**#21 remains blocked.** Same architectural blocker — needs either a deployed instance URL or a redesign to invoke the library directly in CI. No dependencies resolved.
+
+**#139 (community):** Substantive external question from kushal about citation anchoring, staleness decay, and contradiction reconciliation design choices. #140 (research on provenance depth) was already filed partly in response. The question deserves a direct response, but that's community engagement work, not PM scope.
+
+**Pattern:** The backlog drain cycle continues to be healthy — 3 issues filed, 3 built within hours. The growth scan continues to produce work from the "parallel surface drift" class. Future architectural mitigation: a CI check or shared tool registry that ensures all surfaces stay in sync.
+## 2026-05-23 (office-hour)
+
+Triaged 3 issues today. All three approved → ready (p2-medium).
+
+**#142 — SCHEMA.md lint section stale (12/3 should be 14/5):** Approved → ready (p2-medium). Every factual claim verified against the codebase: 14 lint checks exist but docs say 12, 5 non-fixable types but docs say 3, two checks (`unresolved-discussions`, `disputed-page`) completely undocumented, two agent API routes missing, and a wrong file path for `fetchUrlContent()`. Single file, documentation-only, zero ambiguity.
+
+**#143 — Query context missing valid_from and source_count:** Approved → ready (p2-medium). `buildContext()` passes confidence/expiry/supersedes/disputed markers to the LLM but omits `valid_from` (verification date) and `source_count` — both exist in frontmatter and are consumed elsewhere (lint, UI, dataview). Adding them completes the trust-decision surface. 2 files, small.
+
+**#144 — MCP save_query_answer tool:** Approved → ready (p2-medium). Fifth instance of parallel-surface drift: `saveAnswerToWiki()` exists in the library, `POST /api/query/save` exists in REST, but MCP's 21 tools don't include saving query answers. Agents must work around it via `create_page`. 2 files, small, pattern well-established.
+
+Ready backlog went from 0 to 3. All are p2-medium, small scope, independent — build agents can pick them up in any order.
+
+## 2026-05-23 14:35 — Build opened issue #143
+
+The build agent turned "Query context missing valid_from and source_count — LLM can't weight freshness or provenance" into code on `yoyo/issue-143` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/145.
+The commit trail is: - yoyo: add valid_from and source_count to query context (closes #143); - office-hour: triage #143, #144 → ready (p2-medium).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-23 14:35 — Build opened issue #144
+
+The build agent turned "Add MCP save_query_answer tool — agents can't persist query results as wiki pages" into code on `yoyo/issue-144` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/146.
+The commit trail is: - yoyo: add save_query_answer MCP tool (closes #144); - yoyo: add valid_from and source_count to query context (closes #143) (#145); - yoyo: build session (2026-05-23) — issue #143; - office-hour: triage #143, #144 → ready (p2-medium).
 That leaves the work waiting on review and merge rather than another build pass.

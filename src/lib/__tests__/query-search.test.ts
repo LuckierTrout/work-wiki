@@ -408,6 +408,87 @@ describe("buildContext — disputed and supersedes annotations", () => {
     expect(context).toContain("[DISPUTED — claims under discussion]");
     expect(context).toContain("[SUPERSEDED BY: better-page]");
   });
+
+  it("includes verified date when valid_from is set", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "verified-page",
+      "---\nvalid_from: 2025-03-15\nsource_count: 2\n---\n\n# Verified Page\n\nContent.",
+    );
+    const { context } = await buildContext(["verified-page"]);
+    expect(context).toContain("verified: 2025-03-15");
+  });
+
+  it("includes source count when source_count > 0", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "sourced-page",
+      "---\nsource_count: 3\n---\n\n# Sourced Page\n\nContent.",
+    );
+    const { context } = await buildContext(["sourced-page"]);
+    expect(context).toContain("sources: 3");
+  });
+
+  it("does not include sources header when source_count is 0", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "zero-sources",
+      "---\nsource_count: 0\n---\n\n# Zero Sources\n\nContent.",
+    );
+    const { context } = await buildContext(["zero-sources"]);
+    expect(context).not.toMatch(/sources: 0/);
+  });
+
+  it("adds NO SOURCES marker when source_count is 0 and no sources field", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "unsourced",
+      "---\nsource_count: 0\n---\n\n# Unsourced\n\nContent.",
+    );
+    const { context } = await buildContext(["unsourced"]);
+    expect(context).toContain("[NO SOURCES — provenance unknown]");
+  });
+
+  it("adds NO SOURCES marker when source_count is missing and no sources field", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "no-meta",
+      "---\n---\n\n# No Meta\n\nContent.",
+    );
+    const { context } = await buildContext(["no-meta"]);
+    expect(context).toContain("[NO SOURCES — provenance unknown]");
+  });
+
+  it("does not add NO SOURCES marker when sources JSON field is present", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "has-sources-json",
+      '---\nsources: "[{\\"type\\":\\"url\\",\\"url\\":\\"https://example.com\\"}]"\n---\n\n# Has Sources\n\nContent.',
+    );
+    const { context } = await buildContext(["has-sources-json"]);
+    expect(context).not.toContain("[NO SOURCES — provenance unknown]");
+  });
+
+  it("does not add NO SOURCES marker when source_count > 0", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "has-count",
+      "---\nsource_count: 2\n---\n\n# Has Count\n\nContent.",
+    );
+    const { context } = await buildContext(["has-count"]);
+    expect(context).not.toContain("[NO SOURCES — provenance unknown]");
+  });
+
+  it("handles source_count as string (legacy format)", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "legacy-count",
+      "---\nsource_count: 5\n---\n\n# Legacy Count\n\nContent.",
+    );
+    const { context } = await buildContext(["legacy-count"]);
+    expect(context).toContain("sources: 5");
+    expect(context).not.toContain("[NO SOURCES — provenance unknown]");
+  });
 });
 
 // ---------------------------------------------------------------------------

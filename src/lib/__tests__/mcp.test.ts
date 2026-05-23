@@ -12,6 +12,7 @@ import {
   handleIngestUrl,
   handleIngestText,
   handleQueryWiki,
+  handleSaveQueryAnswer,
   handleAgentContext,
   handleSeedAgent,
   handleListAgents,
@@ -984,6 +985,92 @@ describe("query_wiki", () => {
     const result = await handleQueryWiki({ question: "What is AI?" });
     expect(result).toHaveProperty("answer");
     expect(result).toHaveProperty("sources");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// save_query_answer tests
+// ---------------------------------------------------------------------------
+
+describe("save_query_answer", () => {
+  it("saves an answer as a wiki page and returns slug", async () => {
+    await writeIndex([]);
+
+    const result = await handleSaveQueryAnswer({
+      question: "What is machine learning?",
+      answer: "Machine learning is a subset of AI that learns from data.",
+    });
+
+    expect(result.slug).toBe("what-is-machine-learning");
+    expect(result.success).toBe(true);
+
+    // Verify the page was actually written
+    const page = await handleReadPage({ slug: "what-is-machine-learning" });
+    expect(page.content).toContain("Machine learning is a subset of AI");
+  });
+
+  it("uses explicit slug when provided", async () => {
+    await writeIndex([]);
+
+    const result = await handleSaveQueryAnswer({
+      question: "What is deep learning?",
+      answer: "Deep learning uses neural networks with many layers.",
+      slug: "deep-learning-overview",
+    });
+
+    expect(result.slug).toBe("deep-learning-overview");
+    expect(result.success).toBe(true);
+
+    // Verify the page exists at the explicit slug
+    const page = await handleReadPage({ slug: "deep-learning-overview" });
+    expect(page.content).toContain("Deep learning uses neural networks");
+  });
+
+  it("sets proper frontmatter on saved page", async () => {
+    await writeIndex([]);
+
+    await handleSaveQueryAnswer({
+      question: "What is NLP?",
+      answer: "Natural language processing deals with text and language.",
+    });
+
+    const page = await handleReadPage({ slug: "what-is-nlp" });
+    expect(page.frontmatter).toBeDefined();
+    expect(page.frontmatter.source).toBe("query");
+    expect(page.frontmatter.tags).toContain("query-answer");
+    expect(page.frontmatter.confidence).toBe(0.5);
+    expect(page.frontmatter.authors).toContain("system");
+  });
+
+  it("throws when question is empty", async () => {
+    await expect(
+      handleSaveQueryAnswer({
+        question: "",
+        answer: "Some answer.",
+      }),
+    ).rejects.toThrow("question is required");
+  });
+
+  it("throws when answer is empty", async () => {
+    await expect(
+      handleSaveQueryAnswer({
+        question: "A question?",
+        answer: "",
+      }),
+    ).rejects.toThrow("answer is required");
+  });
+
+  it("accepts optional sources parameter without error", async () => {
+    await writeIndex([]);
+
+    const result = await handleSaveQueryAnswer({
+      question: "How does reinforcement learning work?",
+      answer: "RL uses rewards to train agents.",
+      sources: ["machine-learning", "ai-fundamentals"],
+    });
+
+    expect(result.slug).toBeTruthy();
+    expect(result.success).toBe(true);
   });
 });
 
