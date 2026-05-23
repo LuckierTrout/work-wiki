@@ -12,6 +12,7 @@
  *   ingest_url     — Ingest a URL into the wiki (fetch → chunk → summarize → write)
  *   ingest_text    — Ingest raw text content into the wiki (chunk → summarize → write)
  *   query_wiki     — Ask the wiki a question with LLM synthesis
+ *   save_query_answer — Save a query answer as a durable wiki page
  *   agent_context  — Get an agent's full context by agent ID
  *   seed_agent     — Register an agent and create its wiki pages
  *   list_agents    — List all registered agents
@@ -45,7 +46,7 @@ import {
   type Frontmatter,
 } from "./lib/wiki";
 import { extractSummary, ingest, ingestUrl, reingest } from "./lib/ingest";
-import { query, type QueryFormat } from "./lib/query";
+import { query, saveAnswerToWiki, type QueryFormat } from "./lib/query";
 import { isUrl } from "./lib/fetch";
 import { getAgent, listAgents, updateAgent, deleteAgent, seedAgent } from "./lib/agents";
 import type { SeedAgentSection, UpdateAgentOptions } from "./lib/agents";
@@ -358,6 +359,32 @@ export async function handleQueryWiki(args: {
 }): Promise<QueryResult> {
   const format: QueryFormat = args.format ?? "prose";
   return query(args.question, format, args.scope);
+}
+
+// ---------------------------------------------------------------------------
+// Save query answer handler
+// ---------------------------------------------------------------------------
+
+export async function handleSaveQueryAnswer(args: {
+  question: string;
+  answer: string;
+  slug?: string | undefined;
+  sources?: string[] | undefined;
+}): Promise<{ slug: string; success: boolean }> {
+  if (!args.question || args.question.trim().length === 0) {
+    throw new Error("question is required and must be non-empty");
+  }
+  if (!args.answer || args.answer.trim().length === 0) {
+    throw new Error("answer is required and must be non-empty");
+  }
+
+  const result = await saveAnswerToWiki(
+    args.question.trim(),
+    args.answer.trim(),
+    args.slug?.trim() || undefined,
+  );
+
+  return { slug: result.slug, success: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -982,6 +1009,54 @@ export function createMcpServer(): McpServer {
   }, async (args) => {
     try {
       const result = await handleQueryWiki(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // save_query_answer — Save a query answer as a wiki page
+  server.registerTool("save_query_answer", {
+    description:
+      "Save a query answer as a durable wiki page with proper frontmatter — use after query_wiki to persist synthesized knowledge",
+    inputSchema: {
+      question: z
+        .string()
+        .describe("The original query question (used as the page title)"),
+      answer: z
+        .string()
+        .describe("The LLM-synthesized answer to save as page content"),
+      slug: z
+        .string()
+        .optional()
+        .describe("Explicit page slug (derived from question if omitted)"),
+      sources: z
+        .array(z.string())
+        .optional()
+        .describe("Slugs of wiki pages cited in the answer"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleSaveQueryAnswer(args);
       return {
         content: [
           {
