@@ -1964,3 +1964,10 @@ The build agent turned "Add MCP ingest_text tool for raw text ingestion" into co
 The result is ready for review at https://github.com/yologdev/yopedia/pull/138.
 The commit trail is: - yoyo: add MCP ingest_text tool for raw text ingestion (closes #134).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-23 13:17 — Build opened issue #140
+
+The build agent turned "Research: Evaluate provenance depth — claim-level anchoring and ingest ledger" into code on `yoyo/issue-140` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/141.
+The commit trail is: - yoyo: evaluate provenance depth — claim anchoring, ingest ledger, completeness checks (closes #140).
+That leaves the work waiting on review and merge rather than another build pass.
