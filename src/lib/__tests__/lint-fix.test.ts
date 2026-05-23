@@ -909,6 +909,15 @@ describe("fixLintIssue", () => {
     );
   });
 
+  it("throws helpful FixValidationError for disputed-page type", async () => {
+    await expect(fixLintIssue("disputed-page", "some-slug")).rejects.toThrow(
+      FixValidationError,
+    );
+    await expect(fixLintIssue("disputed-page", "some-slug")).rejects.toThrow(
+      "Disputed pages cannot be auto-fixed",
+    );
+  });
+
   it("dispatches unmigrated-page to fixUnmigratedPage", async () => {
     mockedReadWikiPageWithFrontmatter.mockResolvedValue({
       slug: "old-page",
