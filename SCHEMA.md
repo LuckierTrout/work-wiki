@@ -259,8 +259,13 @@ side effects.
 
 - `GET /api/agents` — list all registered agents
 - `POST /api/agents` — register a new agent (body: `AgentProfile` fields)
+- `POST /api/agents/seed` — seed an agent by creating wiki pages for each
+  content section and registering the agent profile; idempotent (body:
+  `{ id, name, description, sections: [{ slug, title, type, content }] }`)
 - `GET /api/agents/:id` — get a single agent profile
 - `DELETE /api/agents/:id` — remove an agent (does not delete wiki pages)
+- `PUT /api/agents/:id` — update an agent profile and optionally add or
+  remove wiki pages (body: `{ name?, description?, addPages?, removePages? }`)
 - `GET /api/agents/:id/context` — get the agent's full context (identity +
   learnings + social wisdom concatenated from wiki pages), designed for
   bootstrapping an agent's system prompt from yopedia
@@ -461,7 +466,7 @@ ordered sequence of steps, a set of file outputs, and a log entry shape.
 - **Trigger:** a URL or pasted text plus a title.
 - **Steps:**
   1. If input is a URL, fetch and clean it (Readability + linkedom; see
-     `fetchUrlContent()` in `src/lib/ingest.ts`).
+     `fetchUrlContent()` in `src/lib/fetch.ts`).
   2. For URL ingests, download images referenced in the markdown content to
      `raw/assets/<slug>/` via `downloadImages()` in `src/lib/fetch.ts`. Image
      URLs are rewritten to local relative paths. At most 20 images per source;
@@ -574,6 +579,14 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
   frontmatter fields (`confidence`, `expiry`, `authors`), indicating it
   predates the schema migration. Auto-fix: add sensible defaults
   (confidence 0.5, expiry 90 days out, authors `["system"]`, etc.).
+- **`unresolved-discussions`** (warning) — page has open (unresolved)
+  discussion threads on its talk page. No auto-fix — requires reviewing
+  and resolving the open threads on the talk page.
+- **`disputed-page`** (warning) — page has `disputed: true` in its
+  frontmatter, indicating unresolved contradictions. Reports whether
+  the page has open discussion threads to resolve the dispute or needs
+  one opened. No auto-fix — requires reviewing the page content and
+  talk page to resolve the dispute through discussion.
 
 ## Provider configuration
 
@@ -605,7 +618,7 @@ sessions should pick from this list:
   via RRF. Batch rebuild of the full vector index is available via the Settings
   page (`/api/settings/rebuild-embeddings`).
   Anthropic-only users see no regression (pure BM25 fallback).
-- Lint auto-fix handles nine of twelve checks (`orphan-page`, `stale-index`,
+- Lint auto-fix handles nine of fourteen checks (`orphan-page`, `stale-index`,
   `empty-page`, `broken-link`, `missing-crossref`, `contradiction`,
   `missing-concept-page`, `stale-page`, `unmigrated-page`) via
   `POST /api/lint/fix`.
@@ -616,10 +629,12 @@ sessions should pick from this list:
   refreshes `valid_from` to today.
   The `unmigrated-page` fix adds sensible yopedia defaults (confidence 0.5,
   expiry 90 days out, authors `["system"]`).
-  The three exceptions without auto-fix are: `low-confidence` (requires
+  The five exceptions without auto-fix are: `low-confidence` (requires
   ingesting additional sources), `duplicate-entity` (requires human judgment
-  to merge), and `uncited-claims` (requires adding citations or ingesting
-  sources).
+  to merge), `uncited-claims` (requires adding citations or ingesting
+  sources), `unresolved-discussions` (requires reviewing and resolving
+  open threads on the talk page), and `disputed-page` (requires resolving
+  the dispute through discussion).
 - Long documents are chunked at ingest time (12K chars per chunk ≈ 3K
   tokens) so they fit within provider context windows. Token counting is
   character-based (not tokenizer-exact), which is conservative but not
