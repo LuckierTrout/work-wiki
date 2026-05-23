@@ -1989,3 +1989,10 @@ Full surface parity audit: CLI at ~35% coverage, MCP at ~80%, REST at ~95%, libr
 **#139 (community):** Substantive external question from kushal about citation anchoring, staleness decay, and contradiction reconciliation design choices. #140 (research on provenance depth) was already filed partly in response. The question deserves a direct response, but that's community engagement work, not PM scope.
 
 **Pattern:** The backlog drain cycle continues to be healthy — 3 issues filed, 3 built within hours. The growth scan continues to produce work from the "parallel surface drift" class. Future architectural mitigation: a CI check or shared tool registry that ensures all surfaces stay in sync.
+## 2026-05-23 (office-hour)
+
+Triaged 1 issue today.
+
+**#142 — SCHEMA.md lint section stale (12/3 should be 14/5):** Approved → ready (p2-medium). Every factual claim verified against the codebase: 14 lint checks exist but docs say 12, 5 non-fixable types but docs say 3, two checks (`unresolved-discussions`, `disputed-page`) completely undocumented, two agent API routes missing, and a wrong file path for `fetchUrlContent()`. Single file, documentation-only, zero ambiguity. The fix corrects a contract doc that explicitly promises to stay current with the code.
+
+Ready backlog is empty — this is the only item queued for build.
