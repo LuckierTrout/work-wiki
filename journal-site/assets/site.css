@@ -1,23 +1,27 @@
 :root {
-  --ink: oklch(8% 0.012 250);
-  --panel: oklch(11% 0.012 250);
-  --panel-2: oklch(14% 0.012 250);
-  --paper: oklch(96% 0.018 88);
-  --text: oklch(92% 0.02 86);
-  --muted: oklch(67% 0.018 86);
-  --line: oklch(55% 0.012 250 / 38%);
-  --line-soft: oklch(55% 0.012 250 / 20%);
-  --acid: oklch(82% 0.19 121);
-  --blue: oklch(64% 0.14 246);
-  --green: oklch(70% 0.14 145);
-  --gold: oklch(75% 0.16 78);
-  --orange: oklch(70% 0.16 48);
-  --red: oklch(63% 0.18 28);
-  --violet: oklch(72% 0.14 305);
-  --cyan: oklch(75% 0.12 205);
+  --page: oklch(97% 0.012 88);
+  --surface: oklch(99% 0.006 88);
+  --surface-2: oklch(94% 0.012 88);
+  --ink: oklch(18% 0.018 250);
+  --panel: oklch(99% 0.006 88);
+  --panel-2: oklch(95% 0.012 88);
+  --paper: oklch(99% 0.006 88);
+  --text: oklch(22% 0.018 250);
+  --muted: oklch(46% 0.018 250);
+  --line: oklch(72% 0.015 88 / 82%);
+  --line-soft: oklch(84% 0.012 88 / 78%);
+  --acid: oklch(49% 0.13 150);
+  --blue: oklch(52% 0.13 248);
+  --green: oklch(48% 0.13 150);
+  --gold: oklch(57% 0.12 78);
+  --orange: oklch(58% 0.15 48);
+  --red: oklch(54% 0.16 28);
+  --violet: oklch(52% 0.13 305);
+  --cyan: oklch(50% 0.11 205);
   --font-mono: "SFMono-Regular", "Cascadia Mono", "Liberation Mono", Menlo, Consolas, monospace;
   --font-display: "SFMono-Regular", "Cascadia Mono", "Liberation Mono", Menlo, Consolas, monospace;
-  --radius: 14px;
+  --font-body: ui-serif, Georgia, "Times New Roman", serif;
+  --radius: 8px;
 }
 
 * {
@@ -33,8 +37,8 @@ body {
   min-width: 320px;
   overflow-x: hidden;
   background:
-    radial-gradient(circle at 18% 16%, oklch(92% 0.018 88), transparent 22rem),
-    linear-gradient(180deg, oklch(99% 0.006 88), oklch(93% 0.014 88));
+    linear-gradient(90deg, oklch(89% 0.01 88 / 45%) 1px, transparent 1px) 0 0 / 42px 42px,
+    linear-gradient(180deg, var(--surface), var(--page));
   color: var(--text);
   font-family: var(--font-mono);
   font-size: 1.0625rem;
@@ -56,7 +60,7 @@ a:hover {
 code {
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: oklch(100% 0 0 / 4%);
+  background: var(--surface-2);
   color: var(--text);
   padding: 0.08rem 0.35rem;
   font-family: var(--font-mono);
@@ -67,8 +71,8 @@ pre {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: oklch(6% 0.012 250);
-  color: var(--acid);
+  background: oklch(96% 0.01 88);
+  color: var(--ink);
   padding: 1rem;
 }
 
@@ -83,10 +87,10 @@ pre code {
   position: fixed;
   inset: 0;
   z-index: 10;
-  opacity: 0.08;
+  opacity: 0.18;
   background-image:
-    radial-gradient(circle at 20% 30%, oklch(100% 0 0 / 24%) 0 1px, transparent 1px),
-    radial-gradient(circle at 72% 66%, oklch(100% 0 0 / 16%) 0 1px, transparent 1px);
+    radial-gradient(circle at 20% 30%, oklch(65% 0.018 88 / 18%) 0 1px, transparent 1px),
+    radial-gradient(circle at 72% 66%, oklch(48% 0.018 250 / 10%) 0 1px, transparent 1px);
   background-size: 37px 31px, 49px 43px;
 }
 
@@ -98,14 +102,14 @@ pre code {
 
 .terminal-shell {
   margin-top: 3rem;
-  border: 1px solid oklch(5% 0.012 250 / 72%);
+  border: 1px solid var(--line);
   border-radius: var(--radius);
   background:
-    linear-gradient(90deg, oklch(100% 0 0 / 5%) 1px, transparent 1px) 0 0 / 46px 46px,
-    linear-gradient(180deg, var(--panel), var(--ink));
+    linear-gradient(90deg, oklch(88% 0.012 88 / 45%) 1px, transparent 1px) 0 0 / 46px 46px,
+    var(--surface);
   box-shadow:
-    0 42px 90px oklch(5% 0.012 250 / 32%),
-    inset 0 0 0 1px oklch(100% 0 0 / 5%);
+    0 36px 80px oklch(38% 0.025 250 / 12%),
+    inset 0 0 0 1px oklch(100% 0 0 / 74%);
   overflow: clip;
 }
 
@@ -250,7 +254,7 @@ h1 {
 
 .command-bar {
   border-block: 1px solid var(--line-soft);
-  background: oklch(100% 0 0 / 3%);
+  background: oklch(94% 0.012 88 / 70%);
   padding: 1.05rem 2rem;
   color: var(--text);
   font-size: clamp(1.25rem, 2vw, 1.85rem);
@@ -268,7 +272,7 @@ h1 {
   gap: 0.75rem;
   align-items: end;
   border-bottom: 1px solid var(--line-soft);
-  background: oklch(7% 0.012 250 / 70%);
+  background: oklch(96% 0.01 88 / 88%);
   padding: 0.9rem 2rem 1rem;
 }
 
@@ -287,8 +291,8 @@ h1 {
   min-height: 2.7rem;
   width: 100%;
   border: 1px solid var(--line);
-  border-radius: 0;
-  background: oklch(100% 0 0 / 4%);
+  border-radius: 6px;
+  background: var(--surface);
   color: var(--text);
   font: inherit;
   font-size: 0.92rem;
@@ -300,7 +304,7 @@ h1 {
 }
 
 .controls input::placeholder {
-  color: oklch(74% 0.015 86 / 66%);
+  color: oklch(54% 0.015 250 / 66%);
 }
 
 .controls input:focus,
@@ -314,8 +318,9 @@ h1 {
   display: grid;
   align-items: center;
   border: 1px solid var(--line);
-  background: oklch(100% 0 0 / 7%);
-  color: var(--acid);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--ink);
   padding: 0.56rem 0.7rem;
   font-size: 0.95rem;
   font-weight: 900;
@@ -346,7 +351,7 @@ h1 {
   bottom: 1.8rem;
   left: 1.55rem;
   width: 1px;
-  background: var(--line);
+  background: oklch(74% 0.018 88 / 74%);
 }
 
 .journal-entry {
@@ -355,9 +360,11 @@ h1 {
   grid-template-columns: 4.8rem minmax(0, 1fr) 13rem;
   align-items: start;
   border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
   background:
-    linear-gradient(90deg, oklch(100% 0 0 / 3%) 1px, transparent 1px) 0 0 / 46px 46px,
-    oklch(10% 0.012 250 / 78%);
+    linear-gradient(90deg, oklch(89% 0.012 88 / 45%) 1px, transparent 1px) 0 0 / 46px 46px,
+    var(--surface);
+  box-shadow: 0 12px 32px oklch(38% 0.02 250 / 8%);
 }
 
 .journal-entry[hidden] {
@@ -367,9 +374,11 @@ h1 {
 .month-marker {
   grid-column: 1 / -1;
   display: none;
-  border: 1px solid var(--line-soft);
-  background: oklch(6% 0.012 250);
-  color: var(--acid);
+  border: 1px solid var(--line);
+  border-left: 0.35rem solid var(--acid);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--ink);
   margin: 1.2rem 0 0.1rem;
   padding: 0.85rem 4.8rem;
   font-size: 0.95rem;
@@ -393,8 +402,8 @@ h1 {
   width: 1rem;
   height: 1rem;
   border: 2px solid var(--agent-color);
-  background: var(--panel);
-  box-shadow: 0 0 0 4px var(--panel);
+  background: var(--surface);
+  box-shadow: 0 0 0 4px var(--surface);
 }
 
 .entry-header {
@@ -457,15 +466,15 @@ h1 {
 
 .entry-body {
   max-width: 74ch;
-  color: oklch(82% 0.02 86);
-  font-family: ui-serif, Georgia, serif;
-  font-size: clamp(1.18rem, 1.35vw, 1.42rem);
-  line-height: 1.76;
+  color: oklch(25% 0.018 250);
+  font-family: var(--font-body);
+  font-size: 1.24rem;
+  line-height: 1.72;
 }
 
 .entry-body h3,
 .entry-body h4 {
-  margin: 1.55rem 0 0.55rem;
+  margin: 1.8rem 0 0.7rem;
   color: var(--text);
   font-family: var(--font-mono);
   font-size: 1rem;
@@ -485,9 +494,49 @@ h1 {
 .entry-body blockquote {
   margin: 1.25rem 0;
   border: 1px solid var(--line-soft);
-  background: oklch(100% 0 0 / 4%);
+  border-left: 0.35rem solid var(--agent-color);
+  background: oklch(96% 0.012 88);
   color: var(--text);
   padding: 0.95rem 1.1rem;
+}
+
+.table-wrap {
+  max-width: min(100%, 62rem);
+  margin: 1.15rem 0 1.45rem;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.entry-body table {
+  width: 100%;
+  min-width: 36rem;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.entry-body th,
+.entry-body td {
+  padding: 0.7rem 0.78rem;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.entry-body th {
+  background: var(--surface-2);
+  color: var(--muted);
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.entry-body tr:last-child td {
+  border-bottom: 0;
 }
 
 .site-footer {
@@ -515,7 +564,7 @@ h1 {
 
   .terminal-shell {
     margin-top: 1rem;
-    border-radius: 24px;
+    border-radius: var(--radius);
   }
 
   .hero {
@@ -652,7 +701,7 @@ h1 {
   }
 
   .terminal-shell {
-    border-radius: 18px;
+    border-radius: var(--radius);
   }
 
   h1 {

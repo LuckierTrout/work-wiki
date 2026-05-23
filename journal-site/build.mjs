@@ -142,6 +142,39 @@ function renderInline(markdown) {
   return html;
 }
 
+function isTableRow(line) {
+  return /^\s*\|.*\|\s*$/.test(line);
+}
+
+function splitTableRow(line) {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function isTableSeparator(line) {
+  if (!isTableRow(line)) return false;
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function renderTable(headerCells, rows) {
+  const header = headerCells
+    .map((cell) => `<th scope="col">${renderInline(cell)}</th>`)
+    .join("");
+  const body = rows
+    .map((row) => {
+      const cells = headerCells.map((_header, index) => row[index] ?? "");
+      return `<tr>${cells.map((cell) => `<td>${renderInline(cell)}</td>`).join("")}</tr>`;
+    })
+    .join("");
+
+  return `<div class="table-wrap"><table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
 function renderMarkdown(markdown) {
   const lines = markdown.trim().split(/\r?\n/);
   const chunks = [];
@@ -168,7 +201,8 @@ function renderMarkdown(markdown) {
     code = [];
   };
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     if (line.trim().startsWith("```")) {
       if (inCode) {
         flushCode();
@@ -183,6 +217,22 @@ function renderMarkdown(markdown) {
 
     if (inCode) {
       code.push(line);
+      continue;
+    }
+
+    const nextLine = lines[index + 1] ?? "";
+    if (isTableRow(line) && isTableSeparator(nextLine)) {
+      flushParagraph();
+      flushList();
+      const header = splitTableRow(line);
+      const rows = [];
+      index += 2;
+      while (index < lines.length && isTableRow(lines[index])) {
+        rows.push(splitTableRow(lines[index]));
+        index += 1;
+      }
+      index -= 1;
+      chunks.push(renderTable(header, rows));
       continue;
     }
 
