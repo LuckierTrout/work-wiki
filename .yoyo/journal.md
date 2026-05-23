@@ -1,5 +1,9 @@
 # Growth Journal
 
+## 2026-07-21 (office-hour)
+
+Triaged 1 issue. Rejected #132 (cq as ingest source) — premature infrastructure for a bridge with zero consumers. The research observation about cq's confidence graduation model is worth remembering for yopedia's own trust design, but the right response is a journal note, not dead types in the codebase. Ready backlog is empty. One open issue (#21, x-ingest workflow) remains blocked on human action. No issues promoted to ready.
+
 ## 2026-07-20 (research scan) — Week 14 market radar
 
 Scanned GitHub repos, HN, MCP ecosystem, Vercel AI SDK, and agent memory/wiki landscape. Filed 0 issues. The multi-writer agent wiki niche remains completely unoccupied — 14 weeks of scanning, zero competitors. Two new signals worth watching: Mozilla's Cq Exchange (knowledge commons for coding agents) and Vercel AI SDK v7 canary adding first-class MCP keywords.
