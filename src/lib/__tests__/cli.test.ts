@@ -114,6 +114,21 @@ describe("CLI argument parsing", () => {
     });
   });
 
+  describe("read command", () => {
+    it("parses read with slug", () => {
+      const result = parseArgs(["read", "attention-mechanisms"]);
+      expect(result).toEqual({ command: "read", slug: "attention-mechanisms" });
+    });
+
+    it("returns error when read has no slug", () => {
+      const result = parseArgs(["read"]);
+      expect(result.command).toBe("error");
+      if (result.command === "error") {
+        expect(result.message).toContain("Usage");
+      }
+    });
+  });
+
   describe("help command", () => {
     it("parses help", () => {
       const result = parseArgs(["help"]);
@@ -177,6 +192,7 @@ describe("CLI argument parsing", () => {
 
 vi.mock("../wiki", () => ({
   listWikiPages: vi.fn(),
+  readWikiPageWithFrontmatter: vi.fn(),
 }));
 
 vi.mock("../raw", () => ({
@@ -508,5 +524,73 @@ describe("CLI command execution", () => {
     await runSearch("test", false, 10);
 
     expect(logSpy).toHaveBeenCalledWith("test\t1\thas tab here");
+  });
+
+  it("runRead() prints metadata header and body for existing page", async () => {
+    const { readWikiPageWithFrontmatter } = await import("../wiki");
+    vi.mocked(readWikiPageWithFrontmatter).mockResolvedValueOnce({
+      slug: "attention",
+      title: "Attention Mechanisms",
+      content: "---\ntitle: Attention Mechanisms\nconfidence: 0.85\ntags: [ml, nlp]\nauthors: [yoyo]\nexpiry: 2025-12-01\n---\n\n# Attention Mechanisms\n\nAttention is a key concept.",
+      path: "/wiki/attention.md",
+      frontmatter: {
+        title: "Attention Mechanisms",
+        confidence: 0.85,
+        tags: ["ml", "nlp"],
+        authors: ["yoyo"],
+        expiry: "2025-12-01",
+      },
+      body: "# Attention Mechanisms\n\nAttention is a key concept.",
+    });
+
+    const { runRead } = await import("../../cli");
+    await runRead("attention");
+
+    expect(readWikiPageWithFrontmatter).toHaveBeenCalledWith("attention");
+    // Check metadata header lines
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Title:      Attention Mechanisms"));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Confidence: 0.85"));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Tags:       ml, nlp"));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Authors:    yoyo"));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Expiry:     2025-12-01"));
+    // Check separator and body
+    expect(logSpy).toHaveBeenCalledWith("---");
+    expect(logSpy).toHaveBeenCalledWith("# Attention Mechanisms\n\nAttention is a key concept.");
+  });
+
+  it("runRead() exits with error for nonexistent page", async () => {
+    const { readWikiPageWithFrontmatter } = await import("../wiki");
+    vi.mocked(readWikiPageWithFrontmatter).mockResolvedValueOnce(null);
+
+    const { runRead } = await import("../../cli");
+    await expect(runRead("nonexistent-slug")).rejects.toThrow("process.exit");
+
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('page "nonexistent-slug" not found'));
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("pnpm cli list"));
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("runRead() omits optional metadata fields when not present", async () => {
+    const { readWikiPageWithFrontmatter } = await import("../wiki");
+    vi.mocked(readWikiPageWithFrontmatter).mockResolvedValueOnce({
+      slug: "simple",
+      title: "Simple Page",
+      content: "---\ntitle: Simple Page\n---\n\n# Simple Page\n\nJust content.",
+      path: "/wiki/simple.md",
+      frontmatter: { title: "Simple Page" },
+      body: "# Simple Page\n\nJust content.",
+    });
+
+    const { runRead } = await import("../../cli");
+    await runRead("simple");
+
+    // The metadata header should have title and slug but not confidence/tags/authors/expiry
+    const headerCall = logSpy.mock.calls[0][0] as string;
+    expect(headerCall).toContain("Title:      Simple Page");
+    expect(headerCall).toContain("Slug:       simple");
+    expect(headerCall).not.toContain("Confidence:");
+    expect(headerCall).not.toContain("Tags:");
+    expect(headerCall).not.toContain("Authors:");
+    expect(headerCall).not.toContain("Expiry:");
   });
 });

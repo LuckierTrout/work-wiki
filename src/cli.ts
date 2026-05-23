@@ -7,6 +7,7 @@
  *   pnpm cli ingest --text        Ingest text from stdin
  *   pnpm cli query <question>     Query the wiki
  *   pnpm cli search <query>       Search wiki pages by content
+ *   pnpm cli read <slug>          Read a wiki page by slug
  *   pnpm cli lint                 Run wiki lint checks
  *   pnpm cli lint --fix           Run lint and auto-fix issues
  *   pnpm cli list                 List all wiki pages
@@ -24,6 +25,7 @@ export type ParsedCommand =
   | { command: "ingest-text" }
   | { command: "query"; question: string }
   | { command: "search"; query: string; fuzzy: boolean; scope?: string; limit: number }
+  | { command: "read"; slug: string }
   | { command: "lint"; fix: boolean }
   | { command: "list"; raw: boolean }
   | { command: "status" }
@@ -73,6 +75,13 @@ export function parseArgs(argv: string[]): ParsedCommand {
       }
       return { command: "search", query: searchQuery, fuzzy, scope, limit: isNaN(limit) ? 10 : limit };
     }
+    case "read": {
+      const slug = rest.find((a) => !a.startsWith("-"));
+      if (!slug) {
+        return { command: "error", message: "Usage: pnpm cli read <slug>" };
+      }
+      return { command: "read", slug };
+    }
     case "lint": {
       const fix = rest.includes("--fix");
       return { command: "lint", fix };
@@ -102,6 +111,7 @@ Commands:
   ingest --text        Ingest text from stdin (pipe or type, then Ctrl-D)
   query <question>     Query the wiki
   search <query>       Search wiki pages by content
+  read <slug>          Read a wiki page by slug
   lint                 Run wiki lint checks
   lint --fix           Run lint and auto-fix issues
   list                 List all wiki pages (slug + title)
@@ -121,6 +131,7 @@ Examples:
   pnpm cli search "attention mechanism"
   pnpm cli search "atention" --fuzzy
   pnpm cli search "identity" --scope agent:yoyo --limit 5
+  pnpm cli read attention-mechanisms
   pnpm cli lint
   pnpm cli lint --fix
   pnpm cli list
@@ -207,6 +218,37 @@ export async function runSearch(
     const snippet = r.snippet.replace(/\t/g, " ");
     console.log(`${r.slug}\t${r.score}\t${snippet}`);
   }
+}
+
+export async function runRead(slug: string): Promise<void> {
+  const { readWikiPageWithFrontmatter } = await import("./lib/wiki");
+  const page = await readWikiPageWithFrontmatter(slug);
+  if (!page) {
+    console.error(`Error: page "${slug}" not found.\nRun "pnpm cli list" to see available pages.`);
+    process.exit(1);
+    return; // unreachable but satisfies linting
+  }
+
+  // Print metadata header
+  const fm = page.frontmatter;
+  const lines: string[] = [];
+  lines.push(`Title:      ${page.title}`);
+  lines.push(`Slug:       ${page.slug}`);
+  if (typeof fm.confidence === "number") {
+    lines.push(`Confidence: ${fm.confidence}`);
+  }
+  if (typeof fm.expiry === "string" && fm.expiry.length > 0) {
+    lines.push(`Expiry:     ${fm.expiry}`);
+  }
+  if (Array.isArray(fm.tags) && fm.tags.length > 0) {
+    lines.push(`Tags:       ${fm.tags.join(", ")}`);
+  }
+  if (Array.isArray(fm.authors) && fm.authors.length > 0) {
+    lines.push(`Authors:    ${fm.authors.join(", ")}`);
+  }
+  console.log(lines.join("\n"));
+  console.log("---");
+  console.log(page.body.trim());
 }
 
 export async function runLint(fix: boolean): Promise<void> {
@@ -317,6 +359,9 @@ async function main(): Promise<void> {
       return;
     case "search":
       await runSearch(parsed.query, parsed.fuzzy, parsed.limit, parsed.scope);
+      return;
+    case "read":
+      await runRead(parsed.slug);
       return;
     case "lint":
       await runLint(parsed.fix);
