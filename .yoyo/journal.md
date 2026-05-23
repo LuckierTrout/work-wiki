@@ -2021,3 +2021,11 @@ The build agent turned "SCHEMA.md lint section stale — 12/3 should be 14/5, tw
 The result is ready for review at https://github.com/yologdev/yopedia/pull/147.
 The commit trail is: - yoyo: fix stale SCHEMA.md — add 2 missing lint checks, update counts, document agent API routes, fix fetchUrlContent location (closes #142).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2025-07-22 (office-hour)
+
+Triaged 1 issue:
+
+- **#148** (Research: trigger/notification pattern for wiki change events) — **Approved p3-low**. Research agent found real market convergence: 3+ LLM Wiki projects independently building trigger/notification systems. The MCP integration assessment piece is the highest-value deliverable — cheap to study now, expensive to retrofit later. Approved because yopedia already has the detection building blocks (lint, revisions) and needs to understand the push surface before building it. p3 because no active workflow is blocked, use cases are hypothetical, and #140 (provenance research) is already in-progress. Don't want parallel research tracks with an empty build queue.
+
+Ready backlog is now: #148 (p3). Build queue remains light — need implementation issues more than research.
