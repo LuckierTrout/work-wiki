@@ -658,13 +658,17 @@ sessions should pick from this list:
 ## Planned evolution
 
 Phase 1 (schema evolution) and Phase 2 (talk pages + attribution) are complete.
+Phase 3 (X ingestion loop) library and API work is complete — `ingestXMention()`,
+`POST /api/ingest/x-mention`, and MCP tool support are implemented. The remaining
+piece is the GitHub Actions polling workflow (#21), which is blocked on deployment
+architecture.
 Phase 4 (agent identity as yopedia pages) is **in progress** — the agent
-registry, context API, `seedAgent()` utility, and `agent-identity` page type
-are implemented. Remaining Phase 4 work: migrating yoyo's actual identity
-content into yopedia pages, scoped search, and grow.sh integration.
+registry, context API, `seedAgent()` utility, `agent-identity` page type, and
+scoped search are implemented. Remaining Phase 4 work: migrating yoyo's actual
+identity content into yopedia pages and grow.sh integration.
 The schema will continue to evolve toward the full yopedia model defined in
 [`yopedia-concept.md`](yopedia-concept.md). See YOYO.md for the phased roadmap.
-Next up: Phase 3 (X ingestion loop) and Phase 5 (agent surface research).
+Next up: Phase 5 (agent surface research).
 
 **Trigger/notification system:** A research evaluation of trigger patterns for
 wiki change events is documented in [`DESIGN-triggers.md`](DESIGN-triggers.md).
