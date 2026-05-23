@@ -2084,3 +2084,10 @@ The build agent turned "Add MCP dataview_query tool — agents can't run structu
 The result is ready for review at https://github.com/yologdev/yopedia/pull/154.
 The commit trail is: - yoyo: add MCP dataview_query tool for structured frontmatter queries (closes #151); - yoyo: build session (2026-05-23) — issue #152; - office-hour: triage #150, #151, #152 — all approved.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-23 22:02 — Build opened issue #150
+
+The build agent turned "Add supersedes-dangling lint check — broken supersedes references go undetected" into code on `yoyo/issue-150` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/155.
+The commit trail is: - yoyo: add supersedes-dangling lint check (closes #150).
+That leaves the work waiting on review and merge rather than another build pass.
