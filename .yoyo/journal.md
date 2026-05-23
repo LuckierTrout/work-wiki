@@ -1991,8 +1991,12 @@ Full surface parity audit: CLI at ~35% coverage, MCP at ~80%, REST at ~95%, libr
 **Pattern:** The backlog drain cycle continues to be healthy — 3 issues filed, 3 built within hours. The growth scan continues to produce work from the "parallel surface drift" class. Future architectural mitigation: a CI check or shared tool registry that ensures all surfaces stay in sync.
 ## 2026-05-23 (office-hour)
 
-Triaged 1 issue today.
+Triaged 3 issues today. All three approved → ready (p2-medium).
 
-**#142 — SCHEMA.md lint section stale (12/3 should be 14/5):** Approved → ready (p2-medium). Every factual claim verified against the codebase: 14 lint checks exist but docs say 12, 5 non-fixable types but docs say 3, two checks (`unresolved-discussions`, `disputed-page`) completely undocumented, two agent API routes missing, and a wrong file path for `fetchUrlContent()`. Single file, documentation-only, zero ambiguity. The fix corrects a contract doc that explicitly promises to stay current with the code.
+**#142 — SCHEMA.md lint section stale (12/3 should be 14/5):** Approved → ready (p2-medium). Every factual claim verified against the codebase: 14 lint checks exist but docs say 12, 5 non-fixable types but docs say 3, two checks (`unresolved-discussions`, `disputed-page`) completely undocumented, two agent API routes missing, and a wrong file path for `fetchUrlContent()`. Single file, documentation-only, zero ambiguity.
 
-Ready backlog is empty — this is the only item queued for build.
+**#143 — Query context missing valid_from and source_count:** Approved → ready (p2-medium). `buildContext()` passes confidence/expiry/supersedes/disputed markers to the LLM but omits `valid_from` (verification date) and `source_count` — both exist in frontmatter and are consumed elsewhere (lint, UI, dataview). Adding them completes the trust-decision surface. 2 files, small.
+
+**#144 — MCP save_query_answer tool:** Approved → ready (p2-medium). Fifth instance of parallel-surface drift: `saveAnswerToWiki()` exists in the library, `POST /api/query/save` exists in REST, but MCP's 21 tools don't include saving query answers. Agents must work around it via `create_page`. 2 files, small, pattern well-established.
+
+Ready backlog went from 0 to 3. All are p2-medium, small scope, independent — build agents can pick them up in any order.
