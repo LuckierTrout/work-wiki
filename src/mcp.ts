@@ -10,6 +10,7 @@
  *   update_page    — Update an existing wiki page
  *   delete_page    — Delete a wiki page by slug
  *   ingest_url     — Ingest a URL into the wiki (fetch → chunk → summarize → write)
+ *   ingest_text    — Ingest raw text content into the wiki (chunk → summarize → write)
  *   query_wiki     — Ask the wiki a question with LLM synthesis
  *   agent_context  — Get an agent's full context by agent ID
  *   seed_agent     — Register an agent and create its wiki pages
@@ -43,7 +44,7 @@ import {
   deleteWikiPage,
   type Frontmatter,
 } from "./lib/wiki";
-import { extractSummary, ingestUrl, reingest } from "./lib/ingest";
+import { extractSummary, ingest, ingestUrl, reingest } from "./lib/ingest";
 import { query, type QueryFormat } from "./lib/query";
 import { isUrl } from "./lib/fetch";
 import { getAgent, listAgents, updateAgent, deleteAgent, seedAgent } from "./lib/agents";
@@ -303,6 +304,46 @@ export async function handleIngestUrl(args: {
     title,
     summary,
     sourceUrl: args.url,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Ingest text handler
+// ---------------------------------------------------------------------------
+
+export async function handleIngestText(args: {
+  content: string;
+  title?: string | undefined;
+  tags?: string[] | undefined;
+}): Promise<{
+  slug: string;
+  title: string;
+  summary: string;
+  sourceUrl: string;
+}> {
+  if (!args.content || args.content.trim().length === 0) {
+    throw new Error("content is required and must be non-empty");
+  }
+
+  const title = args.title ?? (extractSummary(args.content).slice(0, 80) || "Untitled");
+
+  const result: IngestResult = await ingest(title, args.content, {
+    ...(args.tags && args.tags.length > 0 ? { tags: args.tags } : {}),
+    sourceType: "text",
+  });
+
+  // Read the written page to extract title and summary for the response
+  const page = await readWikiPageWithFrontmatter(result.primarySlug);
+  const pageTitle = page?.title ?? result.primarySlug;
+  const summary = page
+    ? extractSummary(page.body)
+    : `Ingested from text input`;
+
+  return {
+    slug: result.primarySlug,
+    title: pageTitle,
+    summary,
+    sourceUrl: "",
   };
 }
 
@@ -855,6 +896,49 @@ export function createMcpServer(): McpServer {
   }, async (args) => {
     try {
       const result = await handleIngestUrl(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // ingest_text — Ingest raw text content into the wiki
+  server.registerTool("ingest_text", {
+    description:
+      "Ingest raw text content into the wiki — chunks the content, summarizes with an LLM, and creates/updates a wiki page with cross-references. Use this to contribute knowledge from documents, conversations, memory, or synthesized content without needing a URL.",
+    inputSchema: {
+      content: z.string().describe("The text content to ingest into the wiki"),
+      title: z
+        .string()
+        .optional()
+        .describe("Optional title for the wiki page (auto-generated from content if omitted)"),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe("Optional tags to apply to the created page"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleIngestText(args);
       return {
         content: [
           {
