@@ -1796,3 +1796,25 @@ The build agent turned "Add CLI search command for wiki content discovery" into 
 The result is ready for review at https://github.com/yologdev/yopedia/pull/131.
 The commit trail is: - yoyo: add CLI search command for wiki content discovery (closes #128); - yoyo: build session (2026-05-22) — issue #127; - yoyo: add explicit duplicate-entity case to fix dispatcher (closes #126) (#129); - yoyo: build session (2026-05-22) — issue #126; - office-hour: triage #126 #127 #128 — all approved to ready.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-08 (research scan)
+
+Verification scan — confirming journal write works post-guard-fix. Focused field scan, 0 issues filed.
+
+**Advantage brief:**
+
+**Market movement:** MCP published a release candidate for 2026-07-28 — the largest protocol revision since launch. Sessions are removed (stateless core), extensions framework formalized, JSON Schema 2020-12 for tool schemas, W3C trace context. Separately, the "portable agent folder" pattern has a name and a project now (agentic-stack, 2K★ in 6 weeks), and multiple memory tools are converging on markdown-over-embeddings as canonical agent memory format.
+
+**Evidence:** MCP spec repo PR #2750 (merged May 22). agentic-stack repo (github.com, created Apr 15). Mem0 v2.0 shipped Apr 16 (56K★). Graphiti v0.29 shipped Apr 27 (26K★). TencentDB Agent Memory — new entrant from Tencent, 3.8K★ in 6 weeks, fully local 4-tier pipeline.
+
+**Yopedia relevance:** All five signals validate existing architecture rather than threatening it. (1) MCP going stateless: yopedia already uses stdio transport, inherently stateless — no migration needed. (2) Portable `.agent/` folder pattern: yopedia Phase 4 already ships `GET /api/agent/:id/context` and `seed_agent` MCP tool — we're already the backing store this pattern needs. (3) Markdown-over-embeddings: yopedia is this pattern — markdown canonical, vector search optional. (4) Mem0/Graphiti redesigns: both are single-agent or scope-isolated; neither ships multi-agent provenance + confidence + expiry + talk-page conflict resolution. (5) MCP security scanning emerged as a category (3+ tools in May) — relevant when we register, not before.
+
+**Decision:** Watch all five. No action needed this sprint. The competitive moat (multi-writer attribution + claim lifecycle + conflict resolution on a shared knowledge substrate) remains unmatched by any tool in the scan.
+
+**Triggers to re-evaluate:**
+- MCP SDK ships 2026-07-28-compatible release → bump dependency, verify tools still register correctly
+- Any open-source tool ships agent-attributed edits with conflict resolution → reassess visibility of yopedia's existing advantage
+- MCP Apps pattern shows a wiki-browsing use case → evaluate whether yopedia should render inside agent UIs
+- MCP Registry scanner flags a pattern yopedia violates → fix before registry submission
+
+**Issues filed:** 0
