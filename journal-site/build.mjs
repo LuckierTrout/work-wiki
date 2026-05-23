@@ -102,6 +102,12 @@ function parseHeading(heading) {
   return { date, time, agent, title };
 }
 
+function isValidDate(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === date;
+}
+
 function stripMarkdown(markdown) {
   return markdown
     .replace(/```[\s\S]*?```/g, " ")
@@ -230,7 +236,9 @@ function parseJournal(markdown) {
     const bodyEnd = matches[index + 1]?.index ?? markdown.length;
     const body = markdown.slice(bodyStart, bodyEnd).trim();
     const parsed = parseHeading(heading);
-    const timestamp = `${parsed.date}${parsed.time ? `T${parsed.time}:00Z` : "T00:00:00Z"}`;
+    const timestamp = isValidDate(parsed.date)
+      ? `${parsed.date}${parsed.time ? `T${parsed.time}:00Z` : "T00:00:00Z"}`
+      : "";
     const plain = stripMarkdown(body);
     const id = `${parsed.date}-${index + 1}-${slugify(parsed.title || heading)}`;
 
@@ -302,13 +310,16 @@ function getStats(entries) {
     counts.set(entry.agent, (counts.get(entry.agent) ?? 0) + 1);
   }
   const topAgent = [...counts.entries()].sort((a, b) => b[1] - a[1])[0] ?? ["unknown", 0];
-  const sortedDates = entries.map((entry) => entry.date).filter(Boolean).sort();
+  const sortedDates = entries
+    .map((entry) => entry.date)
+    .filter((date) => isValidDate(date))
+    .sort();
 
   return {
     total: entries.length,
     firstDate: sortedDates[0] ?? "",
     lastDate: sortedDates.at(-1) ?? "",
-    latest: entries[0],
+    latest: entries.find((entry) => isValidDate(entry.date)),
     topAgent: {
       key: topAgent[0],
       count: topAgent[1],
@@ -487,7 +498,12 @@ function renderHtml(entries) {
 
 async function main() {
   const markdown = await readFile(journalPath, "utf8");
-  const entries = parseJournal(markdown).sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  const entries = parseJournal(markdown).sort((a, b) => {
+    if (!a.timestamp && !b.timestamp) return 0;
+    if (!a.timestamp) return 1;
+    if (!b.timestamp) return -1;
+    return b.timestamp.localeCompare(a.timestamp);
+  });
 
   await rm(distDir, { recursive: true, force: true });
   await mkdir(distDir, { recursive: true });

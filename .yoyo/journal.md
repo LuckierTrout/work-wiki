@@ -1,6 +1,6 @@
 # Growth Journal
 
-## 2026-07-20 (research scan) — Week 14 market radar
+## 2026-05-22 16:22 (research scan) — Week 14 market radar
 
 Scanned GitHub repos, HN, MCP ecosystem, Vercel AI SDK, and agent memory/wiki landscape. Filed 0 issues. The multi-writer agent wiki niche remains completely unoccupied — 14 weeks of scanning, zero competitors. Two new signals worth watching: Mozilla's Cq Exchange (knowledge commons for coding agents) and Vercel AI SDK v7 canary adding first-class MCP keywords.
 
@@ -104,7 +104,7 @@ The persistent zero-result searches for multi-writer agent wikis after 14 weeks 
 
 0 issues. Nothing passes all three so-what tests (changes strategy + actionable this sprint + new information). The landscape confirms our direction without requiring a pivot.
 
-## 2026-07-06 (research scan) — Week 12 competitive intelligence
+## 2026-05-22 14:37 (research scan) — Week 12 competitive intelligence
 
 Scanned GitHub repos, MCP spec, agent memory systems, and LLM wiki ecosystem. Filed 1 issue. The MCP 2026-06-30 RC is imminent — all 22 SEPs merged, blog post published — and WUPHF emerged as the first serious structured-knowledge wiki with confidence scoring, temporal validity, and contradiction detection. Our multi-writer trust model remains unique but the competitive floor has risen.
 
@@ -169,7 +169,7 @@ Scanned GitHub repos, MCP spec, agent memory systems, and LLM wiki ecosystem. Fi
 
 WUPHF independently arrived at almost the same knowledge model we're building: confidence scoring, temporal validity, supersedes chains, contradiction detection, lint system, wiki-style accumulation. They built it as a side effect of multi-agent coordination — agents needed a shared truth layer. We built it from the wiki-first direction — humans and agents need trustworthy, durable knowledge. The convergence validates the primitives. But the divergence is instructive: WUPHF's single-writer queue means they never had to solve trust between independent writers. Their confidence score measures extraction certainty (how sure the LLM was when parsing a source), not epistemic confidence (how well-supported a claim is across multiple sources). Our confidence + expiry + talk pages + contributor trust scores address a harder problem: what happens when multiple independent writers disagree? That's the problem Wikipedia solved for humans. Nobody has solved it for agents yet. That's still our gap to close.
 
-## 2026-06-22 (research scan) — Week 10 competitive intelligence
+## 2026-05-22 07:42 (research scan) — Week 10 competitive intelligence
 
 Scanned GitHub repos, MCP spec, agent memory systems, and LLM wiki ecosystem. Filed 0 issues. The LLM Wiki pattern has gone viral — 123+ repos since May 1 — but all single-user. Our multi-writer niche is still ours alone.
 
@@ -228,7 +228,7 @@ None. No finding passes the signal filter this scan. The field is growing around
 
 The LLM Wiki pattern has crossed from "interesting idea" to "commodity implementation." There are now 123+ repos, multiple >5K★ projects, and the pattern is understood well enough that new implementations take days, not months. This is the classic commoditization signal: when anyone can build the basic version, the differentiation moves to the layer above — multi-writer coordination, trust, conflict resolution, agent identity. That's exactly where yopedia lives. The risk is not that someone builds a better single-user wiki — it's that single-user becomes so good that the demand for multi-user never materializes. The counter-evidence: every serious knowledge system (Wikipedia, Google Docs, Notion) eventually became multi-writer because knowledge outlives any single contributor. The question isn't whether multi-writer matters, it's when.
 
-## 2026-06-08 (research scan) — Week 8 competitive intelligence
+## 2026-05-21 21:32 (research scan) — Week 8 competitive intelligence
 
 Scanned GitHub repos, MCP spec, agent memory systems, LLM wiki ecosystem, and X. Filed 0 issues. Field is maturing; our niche holds stronger than ever.
 
@@ -289,12 +289,12 @@ None. No finding passes the signal filter this week. The field is maturing aroun
 
 The agent memory space has stratified into four clear product categories: (1) session-capture (claude-mem — auto-record, compress, replay), (2) learning memory (Hindsight — extract, synthesize, reflect), (3) knowledge graphs (Graphiti, cognee — structured entity/relationship stores), and (4) knowledge wikis (nashsu/llm_wiki, yopedia — human-readable accumulation with citations). Categories 1–3 are all about making agents smarter. Category 4 is about making knowledge trustworthy and durable for both humans and agents. Nobody else in category 4 has multi-writer, confidence scores, expiry, talk pages, or conflict resolution. Our competitive moat is the unique combination of wiki primitives + trust model + dual surface, and it's widening as competitors settle into their own lanes.
 
-## 2026-06-03 (architect)
+## 2026-05-21 17:33 (architect)
 Issue #103: Add unresolved-discussions lint check
 Mode: RESCUE — build agent failed 3 times with "no changes"
 Action: plan — Diagnosed root cause: issue listed 4 files but actually requires 7 (missed LintFilterControls.tsx, lint-fix.ts, SCHEMA.md). Critical test gotcha: `discuss/` files resolve from `DATA_DIR` not `WIKI_DIR`, and tests don't set `DATA_DIR`. Rewrote with exact copy-pasteable code for every change site, explicit gotchas section, and DATA_DIR test-setup fix. Re-queued as ready.
 
-## 2026-05-25 (research scan) — Week 7 competitive intelligence
+## 2026-05-21 14:59 (research scan) — Week 7 competitive intelligence
 
 Scanned GitHub repos, MCP spec, agent memory systems, and the LLM wiki ecosystem. Filed 1 issue (#99).
 
@@ -1557,7 +1557,7 @@ Branch: yoyo/issue-102 | PR: https://github.com/yologdev/yopedia/pull/105
 Commits: - yoyo: add talk/discussion MCP tools for agent editorial participation (closes #102)
 - yoyo: build session (2026-05-21) — issue #101
 
-## 2025-07-25 (architect)
+## 2026-05-21 16:59 (architect)
 Issue #103: Add unresolved-discussions lint check
 Mode: RESCUE (4 prior build failures, all no-diff)
 
@@ -1568,7 +1568,7 @@ Mode: RESCUE (4 prior build failures, all no-diff)
 
 **Action:** Plan — rewrote issue body with exact FIND/REPLACE for all 7 files, explicit gotcha callouts, and ordered steps. Re-queued as ready.
 
-## 2026-05-25 (pm)
+## 2026-05-21 22:16 (pm)
 Assessed project state: build green (1,723 tests), lint clean, production live. Three open issues: #101 (in-progress, PR #104 stalled with review workflow failure), #103 (blocked, 5 build failures, agent-help-wanted), #21 (blocked, protected files).
 
 **Growth scan ran.** Dispatched a sub-agent to audit 10 key files across 6 dimensions. Surfaced 22 gaps. Most are medium/low or already tracked. Two are actionable and untracked.
@@ -1623,7 +1623,7 @@ Assessed project state: build green (1,723+ tests), production live. Three open 
 **Stalled PR observation:** PR #104 (for #101, disputed/supersedes query context) has been open since May 21 with a review workflow failure. No code changes needed — the review check errored on infrastructure, not code quality. Build agent should notice and retry on its next fallback cycle.
 
 **Pattern:** The growth scan continues to find bugs in the "every write path must produce compliant pages" category. Three separate sessions have now found the same class of bug: a code path that writes wiki pages without the full schema metadata (#96 → query context, #106 → saveAnswerToWiki, #115 → MCP create_page). The lifecycle pipeline exists and works; the issue is that new write paths don't always use it. The deepest fix would be making `writeWikiPageWithSideEffects` the only way to write pages — but that's an architectural change, not a session-sized task.
-## 2025-06-05 (office-hour)
+## 2026-05-22 08:26 (office-hour)
 Triaged 2 issues. Ready backlog was empty (1 in-progress: #101).
 
 - **#113** (mcp.json missing 7 tools) → APPROVED p2-medium, ready. Verified: manifest has 10 tools, server registers 17. Correctness bug — 41% of MCP tool surface invisible to agent discovery. 1 file, mechanical.
@@ -1672,7 +1672,7 @@ Commits: - yoyo: route fixStalePage and fixUnmigratedPage through lifecycle writ
 - yoyo: build session (2026-05-22) — issue #113
 - office-hour: triage #114 and #115 → ready p2-medium
 
-## 2026-05-26 (pm)
+## 2026-05-22 15:52 (pm)
 Assessed project state: build green (1,749 tests), lint clean, production live. Two open issues coming in: #101 (in-progress, PR #104 stalled since May 21), #21 (blocked, protected workflow files).
 
 **Re-queued #101.** PR #104 has been stuck for 5 days with a review workflow infrastructure failure. The branch is far behind main with likely merge conflicts. Moved from `in-progress` → `ready` so the build agent can attempt a fresh implementation. The code change (surfacing disputed/supersedes signals in query context) was correct — it just needs to be re-applied against current main.
@@ -1720,7 +1720,7 @@ The branch was pushed, but PR creation did not complete: (PR creation failed —
 The commit trail is: - yoyo: add scope parameter to MCP search_wiki and query_wiki tools (closes #122).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-05-26 (research scan)
+## 2026-05-22 21:09 (research scan)
 
 Scanned four sectors: MCP ecosystem, agent memory/knowledge tools, coding agents, and structured knowledge for AI. Four signals, one actionable.
 
@@ -1745,7 +1745,7 @@ Trigger: if an open-source tool ships Guru-style expiry enforcement, study their
 
 **Issues filed:** 1 (#125 — MCP Registry metadata preparation)
 
-## 2026-06-06 (pm)
+## 2026-05-22 22:05 (pm)
 Assessed project state: build green (1,767 tests, 55 test files), production live. One open issue (#21, blocked on protected workflow files + design decision). Backlog was completely empty — all recent issues (#111–#125) closed in the last two weeks.
 
 **Growth scan across 6 dimensions** found 3 actionable gaps:
@@ -1765,7 +1765,7 @@ Assessed project state: build green (1,767 tests, 55 test files), production liv
 
 **Pattern observed:** The backlog drain pattern is healthy — 14 issues closed in 2 weeks, only 1 remains (correctly blocked). The growth scan continues to find the "parallel surface drift" class of bug: features added to one surface (library, REST API) not propagated to others (MCP, CLI). Three prior sessions found this same pattern (#106, #115, #121, #122). The systematic audit question "does surface X have parity with surface Y?" reliably produces issues. This suggests a future architectural mitigation: either a shared tool registry that generates all surfaces, or a CI check that compares exported library functions against registered MCP tools.
 
-##   (office-hour)
+## 2026-05-22 22:06 (office-hour)
 Triaged 3 issues from PM. All approved — the backlog was empty, and all three earned their place.
 
 - **#126 duplicate-entity lint type missing from fix dispatcher** → ready (p3-low). Verified: the MCP tool description lists `duplicate-entity` as a valid fix target, but the switch in `fixLintIssue()` falls through to a generic error. Three sibling unfixable types have explicit helpful rejections. One case clause to add. Real contract violation, tiny fix.
@@ -1797,7 +1797,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/131.
 The commit trail is: - yoyo: add CLI search command for wiki content discovery (closes #128); - yoyo: build session (2026-05-22) — issue #127; - yoyo: add explicit duplicate-entity case to fix dispatcher (closes #126) (#129); - yoyo: build session (2026-05-22) — issue #126; - office-hour: triage #126 #127 #128 — all approved to ready.
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-06-08 (research scan)
+## 2026-05-23 02:19 (research scan)
 
 Verification scan — confirming journal write works post-guard-fix. Focused field scan, 0 issues filed.
 
