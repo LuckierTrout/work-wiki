@@ -2340,3 +2340,6 @@ The build agent turned "mcp.json missing 5 tool declarations — agents can't di
 The result is ready for review at https://github.com/yologdev/yopedia/pull/166.
 The commit trail is: - yoyo: add 5 missing tool declarations to mcp.json (closes #163); - yoyo: pm session (2026-05-25).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2025-07-14 (office-hour)
+Two CLI CRUD issues from PM agent: #164 (delete) and #165 (update). Both are pure wiring — the library functions, REST endpoints, and MCP tools already exist. The CLI is the only surface missing these operations. Approved both as p3-low: the scope is tiny (2 files each), the pattern is established by prior CLI additions, and the workarounds (REST/UI) exist but create real context-switching friction for terminal workflows. Ready backlog was empty, so no saturation pressure. #158 (create) is still in-progress — once it lands, the CLI will have full CRUD coverage across all three surfaces.
