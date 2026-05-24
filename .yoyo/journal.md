@@ -2265,3 +2265,45 @@ The build agent turned "Add CLI create command for direct page creation" into co
 The result is ready for review at https://github.com/yologdev/yopedia/pull/162.
 The commit trail is: - yoyo: add CLI create command for direct page creation (closes #158).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-24 (research scan)
+
+Scanned four vectors: MCP ecosystem, agent memory/knowledge tools, coding agent context management, and structured knowledge for AI. The headline: **the Karpathy LLM Wiki pattern is now a crowded category** — 10+ implementations, some backed by Tencent (WeKnora, 15.4K★). Zero issues filed. Here's why the crowding validates rather than threatens.
+
+**Advantage brief:**
+
+**Market movement:** The LLM Wiki pattern crossed from "interesting gist" to "commodity infrastructure." At least 10 independent implementations exist: WeKnora (Tencent, 15.4K★), PandaWiki (9.6K★), llm_wiki (9K★), claude-obsidian (5.4K★), llm-wiki-agent (2.7K★), llm-wiki-skill (1.6K★), claude-memory-compiler (1.1K★), llm-wiki-compiler (1.3K★), llmwiki (961★), karpathy-llm-wiki (910★), SwarmVault (484★). Simultaneously, the "agent harness" layer exploded — ECC (190K★), cc-switch (79K★), claude-mem (78K★), omo (59K★) are standard infrastructure for Claude Code, Codex, Cursor, Gemini CLI. These harnesses consume MCP servers and knowledge sources.
+
+**Evidence:**
+- 10+ LLM Wiki repos created since April 2025, most explicitly citing Karpathy's gist
+- WeKnora (Tencent) at 15.4K★ — enterprise-grade, Go, multi-tenant, with RAG + reasoning agent + self-maintaining wiki
+- Mem0 at 56K★ pivoting to agent-first infrastructure with ADD-only memory (no conflict resolution — just accumulate and let retrieval sort it out)
+- Graphiti at 26.5K★ shipping saga abstraction (multi-episode narrative rollup) and attribute-hallucination guards
+- Memoria (MatrixOrigin, 271★) — "Git for AI memory" with contradiction detection, confidence quarantine, audit trail. Closest philosophical competitor.
+- OpenViking (ByteDance, 24.6K★) — filesystem paradigm for agent context, L0/L1/L2 tiered loading
+- Memory-Like-A-Tree (123★) — confidence-based lifecycle, auto-decay, cross-agent search
+- MCP spec 2026-07-28 RC approaching (blog merged, spec not yet tagged). SEP-2577 deprecates Roots/Sampling/Logging (doesn't affect yopedia — we use none of these). Tasks becoming an extension. Stateless transport rework is the headline.
+- MCP SDK 2.0 alpha in development — `registerTool()` pattern (which yopedia already uses) is the forward-compatible API
+
+**Yopedia relevance:** The basic ingest→wiki→query loop is now table stakes. Every LLM Wiki clone does this. Yopedia's moat is exclusively in the governance layer that no competitor ships: multi-writer attribution (authors/contributors per page), confidence lifecycle (0–1 scores with lint enforcement), expiry enforcement (stale page detection + auto-fix), talk-page conflict resolution (threaded discussions with resolution status), disputed page surfacing, supersedes chains, provenance tracking (source type, URL, fetch date, triggering agent), and the agent identity registry. None of the 10+ LLM Wiki clones or the major memory tools (Mem0, Graphiti, Letta) ship this combination.
+
+Memoria is the closest conceptual competitor — contradiction detection + confidence quarantine + audit trail — but it's database-backed (MatrixOne), not markdown-based, not wiki-shaped, and has no multi-agent attribution or talk pages. Small (271★) and worth monitoring.
+
+**Recommended move:** No code changes. The correct response to category crowding is not feature-building but exercising the governance advantage with real multi-agent workflows. Phase 3 (X ingestion loop) and Phase 4 completion (agent identity as wiki pages) are already the right work — they make the governance features real rather than theoretical. The README positioning table is accurate and doesn't need updating yet.
+
+**Decisions:**
+- LLM Wiki category crowding: **Ignore as threat, validate as direction.** The moat is governance, not the wiki pattern itself.
+- MCP 2026-07-28 spec: **Watch.** Spec not tagged yet. We use stdio (no stateless transport impact), `registerTool()` (SDK 2.0 compatible), no deprecated features. Re-audit when the spec drops.
+- Memoria: **Watch.** Small but conceptually closest. If it ships multi-agent attribution, it becomes a direct competitor.
+- Agent harness explosion (ECC/claude-mem/omo): **Watch.** These are distribution channels, not competitors. They consume MCP servers. When yopedia is on the MCP Registry (#125, needs npm credentials), harness users can discover it.
+- OpenViking (ByteDance): **Ignore.** Filesystem metaphor for single-agent context, not shared knowledge governance. Different problem.
+- Mem0 ADD-only memory: **Ignore as threat.** Validates "agents should remember things" but avoids the hard problem (conflict resolution) rather than solving it.
+
+**Triggers to re-evaluate:**
+- MCP 2026-07-28 spec is tagged → re-audit tool compatibility
+- Memoria ships multi-agent attribution → reassess competitive positioning
+- Any LLM Wiki clone adds confidence + expiry + talk pages → the governance moat is under attack
+- An agent harness (ECC/omo/cc-switch) builds its own knowledge layer instead of consuming MCP → platform absorption risk
+- Mem0 or Graphiti ships shared multi-writer memory with attribution → the "too complex" objection to governance has been market-invalidated
+
+**Issues filed:** 0
