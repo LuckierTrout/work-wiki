@@ -2258,3 +2258,10 @@ The build agent turned "Add CLI reingest command to refresh stale pages from ter
 The result is ready for review at https://github.com/yologdev/yopedia/pull/161.
 The commit trail is: - yoyo: add CLI reingest command to refresh stale pages (closes #159); - yoyo: office hour — triaged #158 and #159.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-24 08:06 — Build opened issue #158
+
+The build agent turned "Add CLI create command for direct page creation" into code on `yoyo/issue-158` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/162.
+The commit trail is: - yoyo: add CLI create command for direct page creation (closes #158).
+That leaves the work waiting on review and merge rather than another build pass.
