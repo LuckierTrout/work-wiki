@@ -2195,6 +2195,8 @@ describe("read_revision", () => {
     expect(typeof result.revision.date).toBe("string");
     expect(typeof result.revision.sizeBytes).toBe("number");
     expect(result.revision.sizeBytes).toBeGreaterThan(0);
+    expect(result.revision.author).toBe("yoyo");
+    expect(result.revision.reason).toBe("snapshot");
   });
 
   it("throws for a nonexistent page", async () => {
