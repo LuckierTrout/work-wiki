@@ -6,6 +6,7 @@ import {
   saveRevision,
   listRevisions,
   readRevision,
+  readRevisionMeta,
   deleteRevisions,
   getRevisionsDir,
 } from "../revisions";
@@ -312,5 +313,68 @@ describe("reason attribution", () => {
     const files = await fs.readdir(dir);
     const metaFiles = files.filter((f) => f.endsWith(".meta.json"));
     expect(metaFiles).toHaveLength(0);
+  });
+});
+
+describe("readRevisionMeta", () => {
+  it("returns author and reason when sidecar exists", async () => {
+    await ensureDirectories();
+    await saveRevision("meta-test", "# Page\n\nContent.", "alice", "initial draft");
+
+    const revisions = await listRevisions("meta-test");
+    expect(revisions).toHaveLength(1);
+    const ts = revisions[0].timestamp;
+
+    const meta = await readRevisionMeta("meta-test", ts);
+    expect(meta).not.toBeNull();
+    expect(meta!.author).toBe("alice");
+    expect(meta!.reason).toBe("initial draft");
+  });
+
+  it("returns only author when reason is not present", async () => {
+    await ensureDirectories();
+    await saveRevision("meta-author-only", "# Page\n\nContent.", "bob");
+
+    const revisions = await listRevisions("meta-author-only");
+    const ts = revisions[0].timestamp;
+
+    const meta = await readRevisionMeta("meta-author-only", ts);
+    expect(meta).not.toBeNull();
+    expect(meta!.author).toBe("bob");
+    expect(meta!.reason).toBeUndefined();
+  });
+
+  it("returns only reason when author is not present", async () => {
+    await ensureDirectories();
+    await saveRevision("meta-reason-only", "# Page\n\nContent.", undefined, "cleanup");
+
+    const revisions = await listRevisions("meta-reason-only");
+    const ts = revisions[0].timestamp;
+
+    const meta = await readRevisionMeta("meta-reason-only", ts);
+    expect(meta).not.toBeNull();
+    expect(meta!.author).toBeUndefined();
+    expect(meta!.reason).toBe("cleanup");
+  });
+
+  it("returns null when no sidecar exists", async () => {
+    await ensureDirectories();
+    await saveRevision("meta-none", "# Page\n\nContent.");
+
+    const revisions = await listRevisions("meta-none");
+    const ts = revisions[0].timestamp;
+
+    const meta = await readRevisionMeta("meta-none", ts);
+    expect(meta).toBeNull();
+  });
+
+  it("returns null for nonexistent revision timestamp", async () => {
+    await ensureDirectories();
+    const meta = await readRevisionMeta("meta-none", 9999999999999);
+    expect(meta).toBeNull();
+  });
+
+  it("throws for invalid slug", async () => {
+    await expect(readRevisionMeta("BAD SLUG!", 123)).rejects.toThrow(/invalid slug/i);
   });
 });

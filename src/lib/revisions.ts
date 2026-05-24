@@ -193,6 +193,38 @@ export async function readRevision(
   }
 }
 
+/** Metadata from a revision's `.meta.json` sidecar file. */
+export interface RevisionMeta {
+  author?: string;
+  reason?: string;
+}
+
+/**
+ * Read the metadata sidecar for a specific revision.
+ *
+ * Returns the parsed `{ author?, reason? }` when the sidecar exists,
+ * or `null` when there is no sidecar (legacy revisions without attribution).
+ */
+export async function readRevisionMeta(
+  slug: string,
+  timestamp: number,
+): Promise<RevisionMeta | null> {
+  validateSlug(slug);
+  try {
+    const raw = await getStorage().readFile(revisionsRelPath(slug, `${timestamp}.meta.json`));
+    const meta = JSON.parse(raw) as Record<string, unknown>;
+    const result: RevisionMeta = {};
+    if (typeof meta.author === "string") result.author = meta.author;
+    if (typeof meta.reason === "string") result.reason = meta.reason;
+    return result;
+  } catch (err) {
+    if (!isEnoent(err)) {
+      logger.warn("revisions", `unexpected error reading revision meta "${slug}@${timestamp}":`, err);
+    }
+    return null;
+  }
+}
+
 /**
  * Delete all revisions for a page.
  *

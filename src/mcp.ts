@@ -60,7 +60,7 @@ import { lint, ALL_CHECK_TYPES } from "./lib/lint";
 import { fixLintIssue, type FixResult } from "./lib/lint-fix";
 import { listThreads, createThread, resolveThread, addComment } from "./lib/talk";
 import { queryByFrontmatter, validateQuery, type DataviewFilter, type DataviewQuery, type DataviewResult } from "./lib/dataview";
-import { listRevisions, readRevision, type Revision } from "./lib/revisions";
+import { listRevisions, readRevision, readRevisionMeta, type Revision } from "./lib/revisions";
 import type { TalkThread, TalkComment } from "./lib/types";
 
 // ---------------------------------------------------------------------------
@@ -762,6 +762,9 @@ export async function handleReadRevision(args: {
     throw new Error(`revision not found: ${args.timestamp}`);
   }
 
+  // Read optional author/reason sidecar.
+  const meta = await readRevisionMeta(args.slug, args.timestamp);
+
   return {
     slug: args.slug,
     timestamp: args.timestamp,
@@ -771,6 +774,8 @@ export async function handleReadRevision(args: {
       date: new Date(args.timestamp).toISOString(),
       slug: args.slug,
       sizeBytes: Buffer.byteLength(content, "utf-8"),
+      ...(meta?.author !== undefined && { author: meta.author }),
+      ...(meta?.reason !== undefined && { reason: meta.reason }),
     },
   };
 }
