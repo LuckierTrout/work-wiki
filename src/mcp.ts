@@ -25,6 +25,9 @@
  *   add_comment        — Add a comment to a discussion thread
  *   resolve_discussion — Resolve a discussion thread
  *   reingest           — Re-ingest a wiki page from its original source URL
+ *   dataview_query     — Query wiki pages by frontmatter fields
+ *   list_revisions     — List revision history for a wiki page
+ *   read_revision      — Read a specific revision's content
  *
  * Usage:
  *   pnpm mcp          # starts the stdio server
@@ -57,6 +60,7 @@ import { lint, ALL_CHECK_TYPES } from "./lib/lint";
 import { fixLintIssue, type FixResult } from "./lib/lint-fix";
 import { listThreads, createThread, resolveThread, addComment } from "./lib/talk";
 import { queryByFrontmatter, validateQuery, type DataviewFilter, type DataviewQuery, type DataviewResult } from "./lib/dataview";
+import { listRevisions, readRevision, type Revision } from "./lib/revisions";
 import type { TalkThread, TalkComment } from "./lib/types";
 
 // ---------------------------------------------------------------------------
@@ -714,6 +718,61 @@ export async function handleDataviewQuery(args: {
 
   const results = await queryByFrontmatter(query);
   return { results, total: results.length };
+}
+
+export async function handleListRevisions(args: {
+  slug: string;
+}): Promise<{ slug: string; revisions: Revision[] }> {
+  if (!args.slug) {
+    throw new Error("slug is required");
+  }
+  validateSlug(args.slug);
+
+  // Verify the page exists before listing revisions.
+  const page = await readWikiPage(args.slug);
+  if (!page) {
+    throw new Error(`page not found: ${args.slug}`);
+  }
+
+  const revisions = await listRevisions(args.slug);
+  return { slug: args.slug, revisions };
+}
+
+export async function handleReadRevision(args: {
+  slug: string;
+  timestamp: number;
+}): Promise<{ slug: string; timestamp: number; content: string; revision: Revision }> {
+  if (!args.slug) {
+    throw new Error("slug is required");
+  }
+  validateSlug(args.slug);
+
+  if (typeof args.timestamp !== "number" || !Number.isFinite(args.timestamp) || args.timestamp <= 0) {
+    throw new Error("timestamp must be a positive number");
+  }
+
+  // Verify the page exists.
+  const page = await readWikiPage(args.slug);
+  if (!page) {
+    throw new Error(`page not found: ${args.slug}`);
+  }
+
+  const content = await readRevision(args.slug, args.timestamp);
+  if (content === null) {
+    throw new Error(`revision not found: ${args.timestamp}`);
+  }
+
+  return {
+    slug: args.slug,
+    timestamp: args.timestamp,
+    content,
+    revision: {
+      timestamp: args.timestamp,
+      date: new Date(args.timestamp).toISOString(),
+      slug: args.slug,
+      sizeBytes: Buffer.byteLength(content, "utf-8"),
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1625,6 +1684,85 @@ export function createMcpServer(): McpServer {
   }, async (args) => {
     try {
       const result = await handleDataviewQuery(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // list_revisions — List revision history for a page
+  server.registerTool("list_revisions", {
+    description:
+      "List revision history for a yopedia wiki page. Returns metadata for each revision " +
+      "(timestamp, date, author, reason, sizeBytes) sorted newest first.",
+    inputSchema: {
+      slug: z
+        .string()
+        .describe("Slug of the wiki page to list revisions for"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleListRevisions(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // read_revision — Read a specific revision's content
+  server.registerTool("read_revision", {
+    description:
+      "Read the full content of a specific revision of a yopedia wiki page. " +
+      "Use list_revisions first to discover available timestamps.",
+    inputSchema: {
+      slug: z
+        .string()
+        .describe("Slug of the wiki page"),
+      timestamp: z
+        .number()
+        .describe("Unix timestamp in milliseconds identifying the revision"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleReadRevision(args);
       return {
         content: [
           {

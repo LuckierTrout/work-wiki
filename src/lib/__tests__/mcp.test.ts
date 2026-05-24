@@ -26,6 +26,8 @@ import {
   handleAddComment,
   handleReingest,
   handleDataviewQuery,
+  handleListRevisions,
+  handleReadRevision,
 } from "../../mcp";
 import { _resetStorage } from "../storage";
 import { _resetConfigCache } from "../config";
@@ -2114,5 +2116,119 @@ Content about gamma.`,
     });
     expect(result.total).toBe(1);
     expect(result.results[0].slug).toBe("alpha");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// list_revisions
+// ---------------------------------------------------------------------------
+
+describe("list_revisions", () => {
+  it("returns empty revisions array for a page with no edits", async () => {
+    await writeTestPage("test-page", "---\ntitle: Test\n---\n# Test\nHello");
+    const result = await handleListRevisions({ slug: "test-page" });
+    expect(result.slug).toBe("test-page");
+    expect(result.revisions).toEqual([]);
+  });
+
+  it("returns revisions after a page is updated", async () => {
+    // Create the page
+    await writeTestPage("test-page", "---\ntitle: Test\n---\n# Test\nVersion 1");
+
+    // Save a revision (simulates what happens before an update)
+    const { saveRevision } = await import("../../lib/revisions");
+    await saveRevision("test-page", "---\ntitle: Test\n---\n# Test\nVersion 1", "yoyo", "initial save");
+
+    const result = await handleListRevisions({ slug: "test-page" });
+    expect(result.slug).toBe("test-page");
+    expect(result.revisions).toHaveLength(1);
+    expect(result.revisions[0].slug).toBe("test-page");
+    expect(result.revisions[0].author).toBe("yoyo");
+    expect(result.revisions[0].reason).toBe("initial save");
+    expect(typeof result.revisions[0].timestamp).toBe("number");
+    expect(typeof result.revisions[0].date).toBe("string");
+    expect(typeof result.revisions[0].sizeBytes).toBe("number");
+  });
+
+  it("throws for a nonexistent page", async () => {
+    await expect(
+      handleListRevisions({ slug: "no-such-page" }),
+    ).rejects.toThrow("page not found: no-such-page");
+  });
+
+  it("throws for an invalid slug", async () => {
+    await expect(
+      handleListRevisions({ slug: "INVALID SLUG!" }),
+    ).rejects.toThrow(/invalid slug/i);
+  });
+
+  it("throws when slug is empty", async () => {
+    await expect(
+      handleListRevisions({ slug: "" }),
+    ).rejects.toThrow("slug is required");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// read_revision
+// ---------------------------------------------------------------------------
+
+describe("read_revision", () => {
+  it("returns the content of a specific revision", async () => {
+    const content = "---\ntitle: Test\n---\n# Test\nVersion 1";
+    await writeTestPage("test-page", content);
+
+    const { saveRevision } = await import("../../lib/revisions");
+    await saveRevision("test-page", content, "yoyo", "snapshot");
+
+    // Get the timestamp from list
+    const list = await handleListRevisions({ slug: "test-page" });
+    expect(list.revisions).toHaveLength(1);
+    const ts = list.revisions[0].timestamp;
+
+    const result = await handleReadRevision({ slug: "test-page", timestamp: ts });
+    expect(result.slug).toBe("test-page");
+    expect(result.timestamp).toBe(ts);
+    expect(result.content).toBe(content);
+    expect(result.revision.timestamp).toBe(ts);
+    expect(result.revision.slug).toBe("test-page");
+    expect(typeof result.revision.date).toBe("string");
+    expect(typeof result.revision.sizeBytes).toBe("number");
+    expect(result.revision.sizeBytes).toBeGreaterThan(0);
+  });
+
+  it("throws for a nonexistent page", async () => {
+    await expect(
+      handleReadRevision({ slug: "no-such-page", timestamp: 1234567890 }),
+    ).rejects.toThrow("page not found: no-such-page");
+  });
+
+  it("throws for a nonexistent revision timestamp", async () => {
+    await writeTestPage("test-page", "---\ntitle: Test\n---\n# Test\nHello");
+    await expect(
+      handleReadRevision({ slug: "test-page", timestamp: 9999999999999 }),
+    ).rejects.toThrow("revision not found: 9999999999999");
+  });
+
+  it("throws for an invalid slug", async () => {
+    await expect(
+      handleReadRevision({ slug: "BAD SLUG!", timestamp: 123 }),
+    ).rejects.toThrow(/invalid slug/i);
+  });
+
+  it("throws when slug is empty", async () => {
+    await expect(
+      handleReadRevision({ slug: "", timestamp: 123 }),
+    ).rejects.toThrow("slug is required");
+  });
+
+  it("throws for invalid timestamp values", async () => {
+    await expect(
+      handleReadRevision({ slug: "test-page", timestamp: -1 }),
+    ).rejects.toThrow("timestamp must be a positive number");
+
+    await expect(
+      handleReadRevision({ slug: "test-page", timestamp: 0 }),
+    ).rejects.toThrow("timestamp must be a positive number");
   });
 });
