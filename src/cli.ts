@@ -23,6 +23,7 @@
 export type ParsedCommand =
   | { command: "ingest-url"; url: string }
   | { command: "ingest-text" }
+  | { command: "reingest"; slug: string }
   | { command: "query"; question: string }
   | { command: "search"; query: string; fuzzy: boolean; scope?: string; limit: number }
   | { command: "read"; slug: string }
@@ -49,6 +50,13 @@ export function parseArgs(argv: string[]): ParsedCommand {
         return { command: "error", message: "Usage: pnpm cli ingest <url>  or  pnpm cli ingest --text" };
       }
       return { command: "ingest-url", url };
+    }
+    case "reingest": {
+      const slug = rest.find((a) => !a.startsWith("-"));
+      if (!slug) {
+        return { command: "error", message: "Usage: pnpm cli reingest <slug>" };
+      }
+      return { command: "reingest", slug };
     }
     case "query": {
       const question = rest.filter((a) => !a.startsWith("-")).join(" ");
@@ -109,6 +117,7 @@ Usage: pnpm cli <command> [args]
 Commands:
   ingest <url>         Ingest a URL into the wiki
   ingest --text        Ingest text from stdin (pipe or type, then Ctrl-D)
+  reingest <slug>      Re-fetch and update a page from its original source URL
   query <question>     Query the wiki
   search <query>       Search wiki pages by content
   read <slug>          Read a wiki page by slug
@@ -127,6 +136,7 @@ Search flags:
 Examples:
   pnpm cli ingest https://example.com/article
   echo "Some text" | pnpm cli ingest --text
+  pnpm cli reingest attention-mechanisms
   pnpm cli query "What is attention in transformers?"
   pnpm cli search "attention mechanism"
   pnpm cli search "atention" --fuzzy
@@ -183,6 +193,25 @@ export async function runIngestText(): Promise<void> {
     for (const slug of result.relatedUpdated) {
       console.log(slug);
     }
+  }
+}
+
+export async function runReingest(slug: string): Promise<void> {
+  const { reingest } = await import("./lib/ingest");
+  const { readWikiPageWithFrontmatter } = await import("./lib/wiki");
+
+  const result = await reingest(slug);
+
+  // Read the updated page to get current title and expiry
+  const page = await readWikiPageWithFrontmatter(result.primarySlug);
+  const title = page?.title ?? result.primarySlug;
+  const expiry = page?.frontmatter.expiry;
+  const sourceUrl = result.sourceUrl ?? "(unknown)";
+
+  console.log(`Reingest complete: ${title}`);
+  console.log(`  Source: ${sourceUrl}`);
+  if (expiry) {
+    console.log(`  Expiry: ${expiry}`);
   }
 }
 
@@ -353,6 +382,9 @@ async function main(): Promise<void> {
       return;
     case "ingest-text":
       await runIngestText();
+      return;
+    case "reingest":
+      await runReingest(parsed.slug);
       return;
     case "query":
       await runQuery(parsed.question);
