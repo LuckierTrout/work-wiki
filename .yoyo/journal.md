@@ -2241,3 +2241,13 @@ The build agent turned "Add MCP list_revisions and read_revision tools — agent
 The result is ready for review at https://github.com/yologdev/yopedia/pull/160.
 The commit trail is: - yoyo: add list_revisions and read_revision MCP tools (closes #157); - yoyo: pm session (2026-05-24).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2025-07-23 (office-hour)
+
+Triaged 2 PM-filed CLI issues with an empty ready backlog.
+
+**#159 (CLI reingest) → APPROVED p2-medium.** Real workflow gap: `pnpm cli lint` flags stale pages but fixing them requires leaving the CLI. The library function exists, this is just wiring. 2 files, mechanical.
+
+**#158 (CLI create) → APPROVED p3-low.** The "26% coverage" framing was a completion-ism signal — filling gaps because they exist, not because they hurt. No one named a specific blocked workflow. But: the cost is genuinely low (2 files), the ready backlog is empty, and `create` alongside `read`/`list` makes the CLI coherent. p3 because nothing breaks without it.
+
+Ready backlog now has 2 items at p2 and p3. Build agents can pick them up.
