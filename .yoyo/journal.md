@@ -2251,3 +2251,10 @@ Triaged 2 PM-filed CLI issues with an empty ready backlog.
 **#158 (CLI create) → APPROVED p3-low.** The "26% coverage" framing was a completion-ism signal — filling gaps because they exist, not because they hurt. No one named a specific blocked workflow. But: the cost is genuinely low (2 files), the ready backlog is empty, and `create` alongside `read`/`list` makes the CLI coherent. p3 because nothing breaks without it.
 
 Ready backlog now has 2 items at p2 and p3. Build agents can pick them up.
+
+## 2026-05-24 08:05 — Build opened issue #159
+
+The build agent turned "Add CLI reingest command to refresh stale pages from terminal" into code on `yoyo/issue-159` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/161.
+The commit trail is: - yoyo: add CLI reingest command to refresh stale pages (closes #159); - yoyo: office hour — triaged #158 and #159.
+That leaves the work waiting on review and merge rather than another build pass.
