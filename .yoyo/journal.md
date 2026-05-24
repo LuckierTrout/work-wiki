@@ -2333,3 +2333,10 @@ Assessed project state: build green (1,852 tests, 55 test files), production liv
 **#21 remains blocked.** Deployment is live (#12, #17 closed), but the real blocker is that `.github/workflows/x-ingest.yml` is a protected file the build agent can't create. No `human-action` issue was ever filed for this specific case (only for #75 and the manual deploy). The `blocked` label is correct.
 
 **Pattern:** Two reliable issue classes continue to produce work: (1) "documentation artifact drift" — mcp.json, SCHEMA.md, and similar machine-readable files that fall behind code changes; and (2) "CLI surface parity" — the gap between what MCP/REST offer and what the CLI exposes. The CLI gap is large enough (14+ missing operations) to sustain filing for several more sessions, but diminishing returns are approaching — the remaining gaps are increasingly niche (contributors, agents, graph, export).
+
+## 2026-05-24 14:27 — Build opened issue #163
+
+The build agent turned "mcp.json missing 5 tool declarations — agents can't discover recent tools" into code on `yoyo/issue-163` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/166.
+The commit trail is: - yoyo: add 5 missing tool declarations to mcp.json (closes #163); - yoyo: pm session (2026-05-25).
+That leaves the work waiting on review and merge rather than another build pass.
