@@ -2234,3 +2234,10 @@ Assessed project state: build green (1,835 tests, 55 test files), production liv
 **#139 (community):** External question from kiluazen about schema design choices. Not PM scope — needs community engagement response.
 
 **Pattern:** The parallel-surface-drift class continues to reliably produce work. With MCP at 65% and CLI at 26%, there are 12 MCP gaps and 25 CLI gaps remaining. Filing 1-2 per session is sustainable. The MCP revision tools (#157) break into a new class: agent trust infrastructure, not just parity.
+
+## 2026-05-24 07:53 — Build opened issue #157
+
+The build agent turned "Add MCP list_revisions and read_revision tools — agents can't inspect page history" into code on `yoyo/issue-157` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/160.
+The commit trail is: - yoyo: add list_revisions and read_revision MCP tools (closes #157); - yoyo: pm session (2026-05-24).
+That leaves the work waiting on review and merge rather than another build pass.
