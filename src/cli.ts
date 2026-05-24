@@ -12,6 +12,7 @@
  *   pnpm cli lint --fix           Run lint and auto-fix issues
  *   pnpm cli list                 List all wiki pages
  *   pnpm cli list --raw           List raw sources
+ *   pnpm cli delete <slug>        Delete a wiki page and clean up side effects
  *   pnpm cli status               Show wiki health summary
  *   pnpm cli help                 Show this help
  */
@@ -29,6 +30,7 @@ export type ParsedCommand =
   | { command: "read"; slug: string }
   | { command: "lint"; fix: boolean }
   | { command: "list"; raw: boolean }
+  | { command: "delete"; slug: string }
   | { command: "status" }
   | { command: "help" }
   | { command: "error"; message: string };
@@ -90,6 +92,13 @@ export function parseArgs(argv: string[]): ParsedCommand {
       }
       return { command: "read", slug };
     }
+    case "delete": {
+      const slug = rest.find((a) => !a.startsWith("-"));
+      if (!slug) {
+        return { command: "error", message: "Usage: pnpm cli delete <slug>" };
+      }
+      return { command: "delete", slug };
+    }
     case "lint": {
       const fix = rest.includes("--fix");
       return { command: "lint", fix };
@@ -121,6 +130,7 @@ Commands:
   query <question>     Query the wiki
   search <query>       Search wiki pages by content
   read <slug>          Read a wiki page by slug
+  delete <slug>        Delete a wiki page and clean up side effects
   lint                 Run wiki lint checks
   lint --fix           Run lint and auto-fix issues
   list                 List all wiki pages (slug + title)
@@ -142,6 +152,7 @@ Examples:
   pnpm cli search "atention" --fuzzy
   pnpm cli search "identity" --scope agent:yoyo --limit 5
   pnpm cli read attention-mechanisms
+  pnpm cli delete attention-mechanisms
   pnpm cli lint
   pnpm cli lint --fix
   pnpm cli list
@@ -280,6 +291,20 @@ export async function runRead(slug: string): Promise<void> {
   console.log(page.body.trim());
 }
 
+export async function runDelete(slug: string): Promise<void> {
+  const { deleteWikiPage } = await import("./lib/lifecycle");
+
+  const result = await deleteWikiPage(slug);
+
+  console.log(`Deleted: ${result.slug}`);
+  if (result.removedFromIndex) {
+    console.log("  Removed from index");
+  }
+  if (result.strippedBacklinksFrom.length > 0) {
+    console.log(`  Stripped backlinks from: ${result.strippedBacklinksFrom.join(", ")}`);
+  }
+}
+
 export async function runLint(fix: boolean): Promise<void> {
   const { lint } = await import("./lib/lint");
   const result = await lint();
@@ -394,6 +419,9 @@ async function main(): Promise<void> {
       return;
     case "read":
       await runRead(parsed.slug);
+      return;
+    case "delete":
+      await runDelete(parsed.slug);
       return;
     case "lint":
       await runLint(parsed.fix);

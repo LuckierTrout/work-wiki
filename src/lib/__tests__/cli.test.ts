@@ -144,6 +144,21 @@ describe("CLI argument parsing", () => {
     });
   });
 
+  describe("delete command", () => {
+    it("parses delete with slug", () => {
+      const result = parseArgs(["delete", "attention-mechanisms"]);
+      expect(result).toEqual({ command: "delete", slug: "attention-mechanisms" });
+    });
+
+    it("returns error when delete has no slug", () => {
+      const result = parseArgs(["delete"]);
+      expect(result.command).toBe("error");
+      if (result.command === "error") {
+        expect(result.message).toContain("Usage");
+      }
+    });
+  });
+
   describe("help command", () => {
     it("parses help", () => {
       const result = parseArgs(["help"]);
@@ -240,6 +255,10 @@ vi.mock("../search", () => ({
   searchWikiContent: vi.fn(),
   fuzzySearchWikiContent: vi.fn(),
   resolveScope: vi.fn(),
+}));
+
+vi.mock("../lifecycle", () => ({
+  deleteWikiPage: vi.fn(),
 }));
 
 describe("CLI command execution", () => {
@@ -690,6 +709,51 @@ describe("CLI command execution", () => {
     const { runReingest } = await import("../../cli");
     await expect(runReingest("no-source")).rejects.toThrow(
       "Cannot re-ingest: no source URL recorded",
+    );
+  });
+
+  it("runDelete() prints deletion result with backlinks", async () => {
+    const { deleteWikiPage } = await import("../lifecycle");
+    vi.mocked(deleteWikiPage).mockResolvedValueOnce({
+      slug: "old-page",
+      removedFromIndex: true,
+      strippedBacklinksFrom: ["page-a", "page-b"],
+    });
+
+    const { runDelete } = await import("../../cli");
+    await runDelete("old-page");
+
+    expect(logSpy).toHaveBeenCalledWith("Deleted: old-page");
+    expect(logSpy).toHaveBeenCalledWith("  Removed from index");
+    expect(logSpy).toHaveBeenCalledWith("  Stripped backlinks from: page-a, page-b");
+  });
+
+  it("runDelete() prints minimal output when no backlinks stripped", async () => {
+    const { deleteWikiPage } = await import("../lifecycle");
+    vi.mocked(deleteWikiPage).mockResolvedValueOnce({
+      slug: "simple-page",
+      removedFromIndex: true,
+      strippedBacklinksFrom: [],
+    });
+
+    const { runDelete } = await import("../../cli");
+    await runDelete("simple-page");
+
+    expect(logSpy).toHaveBeenCalledWith("Deleted: simple-page");
+    expect(logSpy).toHaveBeenCalledWith("  Removed from index");
+    const allOutput = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(allOutput).not.toContain("Stripped backlinks");
+  });
+
+  it("runDelete() propagates error for nonexistent page", async () => {
+    const { deleteWikiPage } = await import("../lifecycle");
+    vi.mocked(deleteWikiPage).mockRejectedValueOnce(
+      new Error("page not found: nonexistent"),
+    );
+
+    const { runDelete } = await import("../../cli");
+    await expect(runDelete("nonexistent")).rejects.toThrow(
+      "page not found: nonexistent",
     );
   });
 });
