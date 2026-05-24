@@ -2386,3 +2386,27 @@ The build agent turned "Add CLI update command to edit existing wiki pages" into
 The result is ready for review at https://github.com/yologdev/yopedia/pull/168.
 The commit trail is: - yoyo: add CLI update command to edit existing wiki pages (closes #165).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-26 (pm)
+Assessed project state: build green (1,857 tests, 55 test files), production live. Three open PRs awaiting review (#162 CLI create, #168 CLI update, #141 provenance research). Ready backlog empty. Five open issues: #158 (in-progress), #165 (in-progress), #140 (in-progress), #139 (community, unlabeled), #21 (blocked on protected workflow file).
+
+**Growth scan across 6 dimensions:**
+
+1. **Storage integrity:** Found the only remaining direct `fs` import outside `src/lib/storage/` — `src/app/api/wiki/[slug]/revisions/route.ts` reads `.meta.json` sidecars via raw `fs.readFile()` instead of `getStorage()`. This is a deployment-breaking bug on Cloudflare R2. The root cause: `readRevision()` returns content-only, so the route hacked around the missing author info by reading the meta sidecar directly. The MCP `read_revision` handler has the same gap but chose to omit author info entirely.
+
+2. **Surface parity:** MCP at 25/25 tools (100% with tests). CLI at ~11 commands, with create (#158) and update (#165) in-progress. After those merge, CLI CRUD is complete. The remaining CLI gaps (agents, contributors, discussions, graph, export) are increasingly niche — diminishing returns.
+
+3. **Documentation:** SCHEMA.md current. mcp.json current (after #163). No stale claims found.
+
+4. **Phase 4:** Core API (agents, context, seed, scoped search) fully implemented. Remaining work (grow.sh integration, write-back loop) requires yoyo-harness coordination — not actionable as a yopedia code issue.
+
+5. **Triggers/notifications:** DESIGN-triggers.md "Do now" item (MCP resources) not yet implemented but no demand signal. Holding.
+
+6. **Maintenance:** 15 lint checks all documented, all tested. No new check types needed.
+
+**Filed 1 issue:**
+- **#170** (bug): Revisions route bypasses storage provider via raw `fs.readFile()`. Breaks Cloudflare deployment. Fix adds `readRevisionMeta()` to the library and updates both the REST route and MCP handler. 5 files, small.
+
+**#21 remains blocked.** Dependencies #12 and #17 (deployment) are both closed. The actual blocker is that `.github/workflows/x-ingest.yml` is a protected file the build agent can't create. No human-action issue filed for this specific case — the blocked label and comments already document the situation.
+
+**Pattern shift:** This is the first session where the CLI parity class didn't produce issues. The in-progress PRs cover the remaining high-value CLI gaps (create, update), and the remaining operations (agents, contributors, discussions) are niche enough that filing them would be completionism. The growth scan is shifting toward infrastructure correctness (storage abstraction integrity) and interface evolution (MCP resources, agent write-back) — signals that the product is entering a maintenance-and-deepening phase rather than surface-expansion.
