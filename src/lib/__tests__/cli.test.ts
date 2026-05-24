@@ -129,6 +129,21 @@ describe("CLI argument parsing", () => {
     });
   });
 
+  describe("reingest command", () => {
+    it("parses reingest with slug", () => {
+      const result = parseArgs(["reingest", "attention-mechanisms"]);
+      expect(result).toEqual({ command: "reingest", slug: "attention-mechanisms" });
+    });
+
+    it("returns error when reingest has no slug", () => {
+      const result = parseArgs(["reingest"]);
+      expect(result.command).toBe("error");
+      if (result.command === "error") {
+        expect(result.message).toContain("Usage");
+      }
+    });
+  });
+
   describe("help command", () => {
     it("parses help", () => {
       const result = parseArgs(["help"]);
@@ -214,6 +229,7 @@ vi.mock("../lint", () => ({
 vi.mock("../ingest", () => ({
   ingestUrl: vi.fn(),
   ingest: vi.fn(),
+  reingest: vi.fn(),
 }));
 
 vi.mock("../lint-fix", () => ({
@@ -592,5 +608,88 @@ describe("CLI command execution", () => {
     expect(headerCall).not.toContain("Tags:");
     expect(headerCall).not.toContain("Authors:");
     expect(headerCall).not.toContain("Expiry:");
+  });
+
+  it("runReingest() prints title, source, and expiry on success", async () => {
+    const { reingest } = await import("../ingest");
+    const { readWikiPageWithFrontmatter } = await import("../wiki");
+    vi.mocked(reingest).mockResolvedValueOnce({
+      rawPath: "raw/attention-mechanisms.md",
+      primarySlug: "attention-mechanisms",
+      relatedUpdated: [],
+      wikiPages: ["attention-mechanisms"],
+      indexUpdated: true,
+      sourceUrl: "https://example.com/attention",
+    });
+    vi.mocked(readWikiPageWithFrontmatter).mockResolvedValueOnce({
+      slug: "attention-mechanisms",
+      title: "Attention Mechanisms",
+      content: "---\ntitle: Attention Mechanisms\nexpiry: 2026-06-01\n---\n\n# Attention Mechanisms",
+      path: "/wiki/attention-mechanisms.md",
+      frontmatter: { title: "Attention Mechanisms", expiry: "2026-06-01" },
+      body: "# Attention Mechanisms",
+    });
+
+    const { runReingest } = await import("../../cli");
+    await runReingest("attention-mechanisms");
+
+    expect(reingest).toHaveBeenCalledWith("attention-mechanisms");
+    expect(logSpy).toHaveBeenCalledWith("Reingest complete: Attention Mechanisms");
+    expect(logSpy).toHaveBeenCalledWith("  Source: https://example.com/attention");
+    expect(logSpy).toHaveBeenCalledWith("  Expiry: 2026-06-01");
+  });
+
+  it("runReingest() omits expiry line when not present", async () => {
+    const { reingest } = await import("../ingest");
+    const { readWikiPageWithFrontmatter } = await import("../wiki");
+    vi.mocked(reingest).mockResolvedValueOnce({
+      rawPath: "raw/simple-page.md",
+      primarySlug: "simple-page",
+      relatedUpdated: [],
+      wikiPages: ["simple-page"],
+      indexUpdated: true,
+      sourceUrl: "https://example.com/simple",
+    });
+    vi.mocked(readWikiPageWithFrontmatter).mockResolvedValueOnce({
+      slug: "simple-page",
+      title: "Simple Page",
+      content: "---\ntitle: Simple Page\n---\n\n# Simple Page",
+      path: "/wiki/simple-page.md",
+      frontmatter: { title: "Simple Page" },
+      body: "# Simple Page",
+    });
+
+    const { runReingest } = await import("../../cli");
+    await runReingest("simple-page");
+
+    expect(logSpy).toHaveBeenCalledWith("Reingest complete: Simple Page");
+    expect(logSpy).toHaveBeenCalledWith("  Source: https://example.com/simple");
+    // Should NOT print expiry line
+    const allOutput = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(allOutput).not.toContain("Expiry:");
+  });
+
+  it("runReingest() propagates error for nonexistent page", async () => {
+    const { reingest } = await import("../ingest");
+    vi.mocked(reingest).mockRejectedValueOnce(
+      new Error('Cannot re-ingest: page "nonexistent" not found'),
+    );
+
+    const { runReingest } = await import("../../cli");
+    await expect(runReingest("nonexistent")).rejects.toThrow(
+      'Cannot re-ingest: page "nonexistent" not found',
+    );
+  });
+
+  it("runReingest() propagates error for page without source URL", async () => {
+    const { reingest } = await import("../ingest");
+    vi.mocked(reingest).mockRejectedValueOnce(
+      new Error("Cannot re-ingest: no source URL recorded"),
+    );
+
+    const { runReingest } = await import("../../cli");
+    await expect(runReingest("no-source")).rejects.toThrow(
+      "Cannot re-ingest: no source URL recorded",
+    );
   });
 });
