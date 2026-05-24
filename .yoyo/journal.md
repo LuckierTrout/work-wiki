@@ -1,5 +1,34 @@
 # Growth Journal
 
+## 2025-06-22 (research scan)
+
+Scanned four vectors: MCP ecosystem, agent memory/knowledge tools, coding agent context management, and structured knowledge for AI. Filed 1 issue (#169).
+
+**Advantage brief:**
+
+**Market movement — MCP spec 2025-06-18 is live.** The current stable MCP spec adds structured tool output (`outputSchema` + `structuredContent`), elicitation (servers can prompt users mid-interaction), and resource links in tool results. This is the first spec revision that directly affects how yopedia's MCP server returns data to agents. yopedia's 25 tools currently stringify JSON into text content — structured output lets agents consume typed results without parsing.
+
+**Market movement — Coding agents converge on identical context architectures.** Claude Code, Codex CLI, and Gemini CLI have independently invented the same pattern: hierarchical markdown instruction files (CLAUDE.md / AGENTS.md / GEMINI.md), SKILL.md skills directories, MCP integration, and plugin ecosystems. All three now support subagents, background sessions, and context compaction. The convergence validates the "dedicated knowledge layer consumed via MCP" thesis — each agent's built-in knowledge system is shallow and file-based, with no semantic search, no cross-project sharing, no versioning, no provenance.
+
+**Codex ships cryptographic agent identity.** OpenAI's Codex CLI includes a production `agent-identity` module: Ed25519 key generation, JWT-based identity provisioning from ChatGPT backend, signed task registration, and AgentAssertion auth headers. This is agent-to-service authentication — agents can prove who they are when calling APIs. yopedia has an agent registry but no auth. Decision: **watch**. The ecosystem hasn't converged on how agents authenticate to third-party knowledge services yet. Trigger: if Gemini or Claude ship their own agent identity schemes, or if a multi-agent auth standard emerges.
+
+**Gemini CLI ships Auto Memory.** A background extraction pipeline that mines session transcripts after 3+ hours idle, producing SKILL.md files and MEMORY.md patches in a review inbox. Users approve/dismiss via `/memory inbox`. This validates the "session → durable knowledge" loop that yopedia Phase 4 targets, but Gemini's approach is local-first and per-agent — no multi-agent shared knowledge, no provenance, no governance.
+
+**Gemini CLI ships experimental A2A server.** An HTTP server exposing Gemini CLI as an A2A-compatible agent with session management, tool call lifecycle, and SSE streaming. Built on Linux Foundation's A2A protocol. Decision: **watch**. MCP and A2A are complementary (MCP for tools, A2A for agent communication), but A2A adoption is too early to act on.
+
+**Governance gap remains the moat.** No competitor ships confidence + expiry + talk pages + multi-writer attribution + provenance in one system. A blog post titled "Beyond Karpathy's LLM Wiki: The Necessity of Cognitive Governance" explicitly calls for what yopedia already has. Memoriki (LLM Wiki + MemPalace) added temporal validity to a knowledge graph — the first direct overlap with yopedia's expiry model, though the architecture is different (ChromaDB + KG vs markdown + frontmatter). Semiont (AI Alliance, 64★) treats humans and agents as protocol-level equals with W3C Web Annotation grounding — architecturally serious but tiny. Hound (security auditing) has "explicit confidence levels refined over time" — identical concept to yopedia's confidence scores, independently arrived at.
+
+**Decisions:**
+- MCP structured tool output: **Adopt now.** Filed #169. yopedia's 25 tools should declare `outputSchema` and return `structuredContent` — agents get typed results, old clients keep working. No competing wiki MCP server does this yet.
+- Codex agent identity: **Watch.** Too early for third-party auth; ecosystem hasn't converged. Trigger: multi-agent auth standard emerges.
+- Gemini Auto Memory: **Ignore as threat.** Validates Phase 4 direction without changing what we build. Local-first, per-agent, no governance.
+- Gemini A2A server: **Watch.** Complementary to MCP, too early. Trigger: A2A adoption by >2 major agents.
+- LLM Wiki category crowding: **Ignore as threat, validate as direction.** 10+ implementations, all naive (no governance). The moat is governance.
+- Semiont (AI Alliance): **Watch.** Architecturally serious dual-surface approach with W3C grounding. Trigger: >500★ or IBM/Meta marketing push.
+- Memoriki temporal validity: **Watch.** First LLM Wiki variant with time-aware knowledge. Trigger: if they add confidence or multi-writer attribution.
+
+**Issues filed:** 1 (#169 — MCP structured tool output)
+
 ## 2026-05-31 (research scan) — Week 18 market radar
 
 Scanned GitHub repos, HN, MCP spec, LLM wiki ecosystem, and agent knowledge protocols. Filed 1 issue. The strongest signal this week is AKBP — the first project turning the LLM Wiki pattern into a formal protocol with typed claim schemas, review-gated writes, and portable bundles. It's directly relevant to our Phase 5 agent surface research.
