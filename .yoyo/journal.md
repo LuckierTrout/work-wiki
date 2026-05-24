@@ -1,5 +1,120 @@
 # Growth Journal
 
+## 2026-05-31 (research scan) — Week 18 market radar
+
+Scanned GitHub repos, HN, MCP spec, LLM wiki ecosystem, and agent knowledge protocols. Filed 1 issue. The strongest signal this week is AKBP — the first project turning the LLM Wiki pattern into a formal protocol with typed claim schemas, review-gated writes, and portable bundles. It's directly relevant to our Phase 5 agent surface research.
+
+### Advantage Brief
+
+**Market movement:** Three developments worth noting:
+
+1. **AKBP (Agent Knowledge Base Protocol)** (69★, [rohitg00/akbp](https://github.com/rohitg00/akbp), created Apr 29) — The creator of the "LLM Wiki v2" gist has formalized it into a protocol with typed JSON schemas for claims, sources, pages, and graph records. Claims are first-class objects with `{type, status, confidence, evidence, entities, supersedes, scope, last_confirmed_at}`. Review-gated writes (dry_run → preview → approve → apply). JSONL tool server for agent integrations. Adapter templates for coding-agent runtimes. Conformance tests. This is the most concrete published answer to "what is the right form of a knowledge artifact for an agent?" — our Phase 5 research question.
+
+2. **WUPHF ships notebook-first enforcement + ObsidianWatcher** (1,093★, +5) — Two significant PRs: #986 enforces that agent knowledge starts in notebooks and reaches the wiki only through `notebook_promote` review (direct wiki writes require explicit human authorization with a delegation token). #989 wires an ObsidianWatcher daemon into the broker lifecycle — edits made in Obsidian against `<wiki-root>/team/` flow back through `Repo.Commit` under the user's per-human git identity. This is the most sophisticated knowledge trust flow in the space: agents propose → notebooks hold → human review gates → wiki accepts → Obsidian round-trips. They also added structured callout extractors (`> [!fact]` as a filing primitive) and are working toward per-vault git identity for multi-tenant setups.
+
+3. **nashsu/llm_wiki crosses 9K★** (9,011★, +139) — The Karpathy wiki desktop app is now the clear star leader in the LLM wiki niche. v0.4.12 released May 19. Active daily development. Still single-writer, no trust model, no multi-agent support.
+
+**Evidence:**
+- AKBP: 69★, created 2026-04-29, Python, JSON schemas, conformance tests, JSONL tool server
+- AKBP claim schema: `schemas/claim.schema.json` with 7 claim types, 7 lifecycle states, confidence 0-1, evidence links, scope levels
+- WUPHF #986: "Keep agent knowledge notebook-first" — merged, enforces notebook→review→wiki promotion
+- WUPHF #989: "Wire ObsidianWatcher into broker lifecycle" — open, bidirectional Obsidian sync with per-human git identity
+- nashsu/llm_wiki: 9,011★ (+139 since last scan), v0.4.12, daily releases
+- `gh search repos "multi-writer wiki agent"` → 0 results (18th consecutive week)
+- `gh search repos "collaborative agent wiki"` → 0 results
+- MCP spec: SEP-2777 (Attested Tool-Server Admission) and SEP-2778 (constraints/security annotations) opened May 23. Documentation updates ongoing. 2026-07-28 RC on track.
+- Hindsight: 14,343★ (+77), v0.6.2, active. Provenance improvements (omit reflect provenance by default).
+
+**Yopedia relevance:** AKBP is the most important signal for Phase 5. Its claim schema gives us a concrete reference for what "structured claims" could look like — typed, lifecycled, scoped, evidence-linked, with independent confidence scoring per claim rather than per page. The key design question for yopedia: does claim-level granularity (AKBP's approach) improve agent query quality over our page-level structure with inline citations? If yes, claims should become first-class objects in our schema. If no, page-level is the right abstraction and we should document why.
+
+WUPHF's notebook-first enforcement validates that the "trust problem" — how do you trust what the agent wrote? — requires explicit gating, not just after-the-fact review. Our talk pages + confidence model is a post-hoc approach. WUPHF's notebook→promote flow is a pre-hoc approach. Worth studying but architecturally different enough that we shouldn't copy it directly.
+
+**Recommended move:** File 1 issue to evaluate AKBP's claim schema as a reference for Phase 5 agent surface design. The question is whether claim-level granularity improves our product, not whether to adopt AKBP wholesale.
+
+**Decision:**
+- **AKBP claim schema → study now.** Most concrete published answer to our Phase 5 research question. Evaluate their claim-level vs our page-level granularity. Filed #156.
+- **WUPHF notebook-first → watch.** Validates trust gating as a design pattern but architecturally different from our approach. Not actionable unless we observe agents writing unreviewed content that causes real quality problems.
+- **nashsu/llm_wiki 9K★ → ignore.** Star leader but single-writer desktop app. Different product category. No threat to our multi-writer + agent-surface lane.
+- **MCP SEP-2777 (ATSA) → watch.** Attested tool-server admission is interesting for trust but too early (draft status, May 23).
+- **MCP SEP-2778 (constraints) → watch.** Security constraint annotations for schemas. Not actionable until progressed.
+
+**Triggers:**
+- **AKBP crosses 500★ → evaluate interop.** If the protocol gains adoption, consider whether yopedia should produce AKBP-compatible export bundles.
+- **WUPHF multi-writer → alert.** Still single-writer with CEO-gated promotion. Trigger: ships multi-writer or crosses 3K★.
+- **MCP 2026-07-28 final → audit.** Verify our MCP server complies with the final spec.
+- **Any project ships claim-level search → benchmark.** If someone demonstrates measurably better agent retrieval with claim-level vs page-level, that's the evidence to adopt.
+
+### Signal Map
+
+**Changed:**
+- **nashsu/llm_wiki** (9,011★, +139) — Star leader in LLM wiki niche. v0.4.12. Desktop app. Single-writer.
+- **WUPHF** (1,093★, +5) — Notebook-first enforcement (#986), ObsidianWatcher daemon (#989), structured callout extractors. Most sophisticated trust flow in the space. Still single-writer.
+- **Hindsight** (14,343★, +77) — v0.6.2. Provenance improvements. Active daily.
+- **OmegaWiki** (779★, +10) — QR code, LaTeX rendering, alias merging. Active.
+- **AKBP** (69★, NEW) — First formal protocol for LLM Wiki pattern. Typed claim schemas, review-gated writes, portable bundles, conformance tests. Phase 5 reference.
+
+**Unchanged:**
+- **mem0** (56,551★, +63) — Steady growth. Universal memory layer. Not competitive.
+- **graphiti** (26,445★, +34) — Active. Infrastructure. Not competitive.
+- **letta** (22,919★, +10) — Slow cadence. Not competitive.
+- **cognee** (17,480★, +10) — Active. Not competitive.
+- **PandaWiki** (9,655★, +4) — Minor activity. Chinese-market AI KB.
+- **TencentDB-Agent-Memory** (3,924★, +48) — Growing steadily. Infrastructure, not wiki.
+- **Ar9av/obsidian-wiki** (1,466★, +11) — Steady.
+- **llm-wiki-compiler** (1,273★, +8) — Active.
+- **sage-wiki** (524★, flat) — Stalled.
+- **SwarmVault** (483★, -1) — Slightly declining. Local-first wiki.
+- **nvk/llm-wiki** (459★, flat) — Artifact generation. Single-writer.
+- **nashsu/llm_wiki_skill** (41★, flat) — Skill wrapper.
+- **onyx-dot-app/agent-wiki** (9★, flat) — Still tiny.
+- **Mozilla Cq Exchange** — cq-python SDK (0★), no main repo. Stalled.
+- **MCP spec** — 2026-07-28 RC on track. SEP-2777 (ATSA) and SEP-2778 (constraints) opened.
+
+**New in watch list:**
+- **AKBP** (69★) — First LLM Wiki protocol. Claim-level schemas. Phase 5 reference.
+- **CyberMe-LLM-Wiki** (9★) — "Faithful llm-wiki implementation with Wikipedia-style web browsing." Too small to matter but novel browsing approach.
+
+### Star movements since last scan (May 24)
+
+| Project | Last scan | Now | Δ |
+|---------|-----------|-----|---|
+| mem0 | 56,488 | 56,551 | +63 |
+| graphiti | 26,411 | 26,445 | +34 |
+| letta | 22,909 | 22,919 | +10 |
+| cognee | 17,470 | 17,480 | +10 |
+| Hindsight | 14,266 | 14,343 | +77 |
+| PandaWiki | 9,651 | 9,655 | +4 |
+| nashsu/llm_wiki | 8,872 | 9,011 | +139 |
+| TencentDB-Agent-Memory | 3,876 | 3,924 | +48 |
+| Ar9av/obsidian-wiki | 1,455 | 1,466 | +11 |
+| llm-wiki-compiler | 1,265 | 1,273 | +8 |
+| WUPHF | 1,088 | 1,093 | +5 |
+| OmegaWiki | 769 | 779 | +10 |
+| sage-wiki | 524 | 524 | 0 |
+| SwarmVault | 484 | 483 | -1 |
+| nvk/llm-wiki | 459 | 459 | 0 |
+| AKBP | (new) | 69 | — |
+| nashsu/llm_wiki_skill | 41 | 41 | 0 |
+| onyx-dot-app/agent-wiki | 9 | 9 | 0 |
+
+### Layer 3 insight
+
+The LLM wiki space is differentiating along a trust-enforcement axis. There are now three distinct models for "how do you trust what the agent wrote?":
+
+1. **No trust model** (nashsu, sage-wiki, OmegaWiki, most projects) — The agent writes directly. No confidence, no review, no gates. This is where ~90% of projects sit.
+
+2. **Post-hoc trust** (yopedia) — The agent writes with confidence scores, expiry dates, and citations. Talk pages enable dispute resolution after the fact. Lint checks surface quality problems. Trust is auditable but not pre-gated.
+
+3. **Pre-hoc trust** (WUPHF, AKBP) — Agent writes are gated before they reach the canonical wiki. WUPHF enforces notebook→review→promote. AKBP requires dry_run preview + explicit approval. Trust is enforced at write time.
+
+The interesting question: which model produces better wikis over time? The post-hoc model (ours) optimizes for throughput — agents write freely, problems are caught later. The pre-hoc model optimizes for precision — nothing lands without review, but throughput is limited by the review bottleneck. For a multi-writer wiki where many agents contribute, the post-hoc model may be necessary because the review bottleneck doesn't scale. For a single-writer wiki, pre-hoc review is feasible.
+
+This is an architectural difference, not a feature gap. Our multi-writer design assumption naturally favors post-hoc trust with strong audit trails (confidence, citations, talk pages, lint). WUPHF and AKBP's pre-hoc model works because they're single-writer. The competitive question is whether a pre-hoc multi-writer model is possible — and if someone builds it, that would be a genuine threat.
+
+### Issues filed
+
+1 issue: #156 — Study AKBP claim schema as Phase 5 agent-surface reference.
+
 ## 2026-05-24 (research scan) — Week 16 market radar
 
 Scanned GitHub repos, HN, MCP spec, DAIR.AI events, and LLM wiki ecosystem. Filed 1 issue. The market signal that matters most this week isn't a competitor — it's a community member (Kushal, #139) who independently surveyed three other agent-wiki builders and distilled the three v0 schema choices they converged on. That's real demand signal for provenance depth we haven't shipped yet.
