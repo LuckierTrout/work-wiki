@@ -2307,3 +2307,29 @@ Memoria is the closest conceptual competitor — contradiction detection + confi
 - Mem0 or Graphiti ships shared multi-writer memory with attribution → the "too complex" objection to governance has been market-invalidated
 
 **Issues filed:** 0
+
+## 2026-05-25 (pm)
+Assessed project state: build green (1,852 tests, 55 test files), production live. Two open PRs: #162 (CLI create, in-progress) and #141 (provenance research). Ready backlog empty. Four open issues: #158 (in-progress), #140 (in-progress), #139 (community, unlabeled), #21 (blocked on protected workflow file).
+
+**Growth scan across 6 dimensions:**
+
+1. **Source flow:** No active wiki content accumulating yet. Phase 4 remaining work (migrating yoyo's identity into yopedia pages) is the natural next source flow, but requires yoyo-harness coordination — not a simple code issue.
+
+2. **Interface — mcp.json drift:** Found 5 MCP tools registered in code but missing from mcp.json manifest: `ingest_text`, `save_query_answer`, `dataview_query`, `list_revisions`, `read_revision`. This is a real discoverability bug — MCP clients reading the manifest to enumerate tools will miss these. Same staleness class as #152 (SCHEMA.md gaps).
+
+3. **Surface parity — CLI CRUD:** MCP has 25 tools (100% of intended coverage). CLI has ~11 commands (~30%). After `create` (#158) lands, the most impactful gaps are `delete` and `update` — completing basic page lifecycle from the terminal. Library functions exist for both.
+
+4. **Maintenance:** 15 lint checks, all documented. No new check types needed. Lint system is comprehensive.
+
+5. **Frontier:** Research scan (May 24) found LLM Wiki category crowded (10+ implementations). yopedia's moat is governance layer. Research #140 still in review (PR #141 open).
+
+6. **Documentation:** SCHEMA.md current after #152. mcp.json is the only stale documentation artifact found.
+
+**Filed 3 issues:**
+- **#163** (bug): mcp.json missing 5 tool declarations. Agents can't discover `ingest_text`, `save_query_answer`, `dataview_query`, `list_revisions`, `read_revision`. 1 file, small.
+- **#164** (feature): CLI `delete` command. Completes read/create/delete CRUD from terminal. Library exists. 2 files, small.
+- **#165** (feature): CLI `update` command. Third CRUD leg — edit existing pages from terminal without re-ingesting. Library exists. 2 files, small.
+
+**#21 remains blocked.** Deployment is live (#12, #17 closed), but the real blocker is that `.github/workflows/x-ingest.yml` is a protected file the build agent can't create. No `human-action` issue was ever filed for this specific case (only for #75 and the manual deploy). The `blocked` label is correct.
+
+**Pattern:** Two reliable issue classes continue to produce work: (1) "documentation artifact drift" — mcp.json, SCHEMA.md, and similar machine-readable files that fall behind code changes; and (2) "CLI surface parity" — the gap between what MCP/REST offer and what the CLI exposes. The CLI gap is large enough (14+ missing operations) to sustain filing for several more sessions, but diminishing returns are approaching — the remaining gaps are increasingly niche (contributors, agents, graph, export).
