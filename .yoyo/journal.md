@@ -2206,3 +2206,31 @@ The build agent turned "Add supersedes-dangling lint check — broken supersedes
 The result is ready for review at https://github.com/yologdev/yopedia/pull/155.
 The commit trail is: - yoyo: add supersedes-dangling lint check (closes #150).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-25 (pm)
+Assessed project state: build green (1,835 tests, 55 test files), production live. Three open issues: #140 (research, in-progress with open PR #141), #139 (community question, unlabeled), #21 (blocked on protected workflow file). Backlog empty — all issues from last session (#142–#144, #148, #150–#152) built and merged.
+
+**Growth scan across 6 dimensions:**
+
+1. **Surface parity:** Comprehensive audit found MCP at 22/34 operations (65%), CLI at 9/34 (26%), REST at 34/34 (100%). MCP's highest-value gap: revision history access (agents can't inspect page changes). CLI's highest-value gap: page CRUD (can't create pages from terminal).
+
+2. **Maintenance:** 15 lint checks all documented in SCHEMA.md. Lint system comprehensive. No new check types needed right now.
+
+3. **Documentation:** SCHEMA.md current after #142 and #152 landed. No stale claims found this scan.
+
+4. **Interface:** The lint-to-fix terminal workflow has a gap: `pnpm cli lint` shows stale pages but `reingest` command doesn't exist to fix them from the CLI.
+
+5. **Use/agent workflows:** Agents using MCP can do full CRUD, query, lint, discussions, and dataview — but can't verify claims by inspecting revision history. This is the most impactful agent trust gap.
+
+6. **Frontier:** Research on provenance depth (#140) still in review (PR #141 open). No new frontier signals to act on.
+
+**Filed 3 issues:**
+- **#157** (feature): MCP `list_revisions` and `read_revision` tools. Seventh parallel-surface-drift fix. Agents can't inspect page history for trust verification. Library and REST exist. 2 files, small.
+- **#158** (feature): CLI `create` command. Most fundamental missing CLI operation — can't create pages from terminal scripts. Library exists (`writeWikiPageWithSideEffects`). 2 files, small.
+- **#159** (feature): CLI `reingest` command. Closes the lint-to-fix terminal workflow gap — lint shows stale pages but CLI can't refresh them. Library and MCP both exist. 2 files, small.
+
+**#21 remains blocked.** Dependencies #19 and #20 are closed, but the actual blocker is that `.github/workflows/x-ingest.yml` is a protected file the build agent can't create. Human action still required.
+
+**#139 (community):** External question from kiluazen about schema design choices. Not PM scope — needs community engagement response.
+
+**Pattern:** The parallel-surface-drift class continues to reliably produce work. With MCP at 65% and CLI at 26%, there are 12 MCP gaps and 25 CLI gaps remaining. Filing 1-2 per session is sustainable. The MCP revision tools (#157) break into a new class: agent trust infrastructure, not just parity.
