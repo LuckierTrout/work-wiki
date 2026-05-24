@@ -13,7 +13,9 @@
     "update_page",
     "delete_page",
     "ingest_url",
+    "ingest_text",
     "query_wiki",
+    "save_query_answer",
     "agent_context",
     "seed_agent",
     "list_agents",
@@ -25,6 +27,9 @@
     "create_discussion",
     "resolve_discussion",
     "add_comment",
-    "reingest"
+    "reingest",
+    "dataview_query",
+    "list_revisions",
+    "read_revision"
   ]
 }
