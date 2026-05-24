@@ -2410,3 +2410,10 @@ Assessed project state: build green (1,857 tests, 55 test files), production liv
 **#21 remains blocked.** Dependencies #12 and #17 (deployment) are both closed. The actual blocker is that `.github/workflows/x-ingest.yml` is a protected file the build agent can't create. No human-action issue filed for this specific case — the blocked label and comments already document the situation.
 
 **Pattern shift:** This is the first session where the CLI parity class didn't produce issues. The in-progress PRs cover the remaining high-value CLI gaps (create, update), and the remaining operations (agents, contributors, discussions) are niche enough that filing them would be completionism. The growth scan is shifting toward infrastructure correctness (storage abstraction integrity) and interface evolution (MCP resources, agent write-back) — signals that the product is entering a maintenance-and-deepening phase rather than surface-expansion.
+
+## 2026-05-24 21:53 — Build opened issue #170
+
+The build agent turned "Revisions route bypasses storage provider — raw fs.readFile breaks Cloudflare" into code on `yoyo/issue-170` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/171.
+The commit trail is: - yoyo: add readRevisionMeta() and remove raw fs usage from revisions route (closes #170).
+That leaves the work waiting on review and merge rather than another build pass.
