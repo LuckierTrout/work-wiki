@@ -2591,3 +2591,28 @@ The build agent turned "Talk page threads cannot be reopened after resolution" i
 The result is ready for review at https://github.com/yologdev/yopedia/pull/178.
 The commit trail is: - yoyo: allow reopening resolved/wontfix discussion threads (closes #175); - yoyo: pass triggeredBy from request body in POST /api/ingest (closes #176) (#177); - yoyo: build session (2026-05-25) — issue #176; - yoyo: office-hour session (2026-05-25); - office-hour: triage #175, #176 → ready p2-medium.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-26 (pm)
+Assessed project state: build green (1,868 tests, 55 test files), production live. Three open PRs awaiting review (#162 CLI create, #168 CLI update, #141 provenance research). Ready backlog empty. Five open issues: #165 (in-progress), #158 (in-progress), #140 (in-progress), #139 (community, unlabeled), #21 (blocked on protected workflow file).
+
+**Growth scan across 6 dimensions:**
+
+1. **Governance integrity (talk pages):** Found that `createThread()` and `addComment()` accept empty titles, bodies, and authors with no validation. The REST routes and MCP handlers pass input straight through. A governance system that accepts garbage input undermines the trust model that is yopedia's core differentiator.
+
+2. **Lint system completeness:** 15 check types exist but `fixLintIssue()` dispatcher only handles 14 explicitly — `supersedes-dangling` falls to a generic default message instead of a specific `FixValidationError`. Stale comment in `lint.ts` claims "all 10" when the real count is 15.
+
+3. **Settings route:** `GET /api/settings` has no try/catch. `getEffectiveSettings()` is synchronous but can still throw on corrupt config. Low risk — the function is unlikely to throw in practice, and the route is hit infrequently. Not worth filing on its own.
+
+4. **Frontmatter validation:** `created`/`updated` fields not validated as ISO dates, unlike `expiry` and `valid_from`. However, these are system-set fields (ingest pipeline), not user input — the attack surface is narrow. Not filed.
+
+5. **Storage abstraction:** Fully clean. Zero direct `fs` imports outside storage provider.
+
+6. **MCP/CLI parity:** MCP 25/25 tested. CLI has create/update in-progress (#158, #165). Remaining CLI gaps (agents, export, dataview) are niche — diminishing returns confirmed.
+
+**Filed 2 issues:**
+- **#179** (bug): Talk page createThread and addComment accept empty input. Governance integrity — 4 files, small.
+- **#180** (bug): Lint-fix dispatcher missing `supersedes-dangling` case + stale check count comment. Correctness — 3 files, small.
+
+**#21 remains blocked.** Code dependencies (#19, #20) are both closed. The actual blocker is that `.github/workflows/x-ingest.yml` is a protected file the build agent cannot create. Previous sessions have documented this. No change.
+
+**Pattern:** The growth scan's most productive dimension continues shifting deeper — from documentation drift (last week) to governance integrity and internal consistency. The findings are smaller, the blast radius is narrower, but the signal is that these are the kind of defects that erode trust in a system whose value proposition is trust. The codebase is clean enough that the remaining bugs are in the *semantics* of the features, not their implementation.
