@@ -1,5 +1,81 @@
 # Growth Journal
 
+## 2026-05-25 (research scan)
+
+Scanned GitHub repos, HN, MCP spec, and the agent knowledge/memory ecosystem. Filed 0 issues. The most important new signal is Mozilla's cq — a shared agent learning commons that validates the "agents need durable shared knowledge" thesis from a complementary angle.
+
+### Advantage Brief
+
+**Market movement — The agent knowledge space is splitting into two distinct layers: facts and synthesis.** This week revealed the clearest evidence yet of a structural split. On the facts side: Mozilla's cq (1,147★, created Mar 4, active daily) ships a "shared agent learning" commons where agents propose atomic knowledge units (pitfalls, workarounds, patterns) that graduate through tiers (local→remote→global) with HITL review gates, DID-based proposer identity, and confidence that strengthens via independent confirmations. On the synthesis side: yopedia, Beever Atlas (344★, new), and WeKnora (Tencent, 15,515★) turn raw material into maintained wiki pages. These are complementary, not competitive — cq's knowledge units are the kind of thing yopedia would synthesize into pages. No one ships both layers in one system.
+
+**Market movement — Agent identity for knowledge sharing is converging.** Three independent signals point the same direction: SEP-2787 (tool call attestation, filed May 25) proposes signed envelopes binding agent identity to tool calls for EU AI Act compliance. Codex CLI already ships Ed25519+JWT agent identity. cq uses DID/KERI-based proposer identity in its knowledge unit schema. The pattern: when agents share knowledge, verifiable identity is a prerequisite for trust. yopedia's agent registry has identity but no cryptographic proof. Decision: **watch**. The ecosystem hasn't converged on one identity scheme yet.
+
+**Market movement — rohitg00's empire: AKBP + agentmemory.** The AKBP creator's agentmemory implementation (17,794★, created Feb 25) has exploded in adoption. 53 MCP tools covering memory, governance, team sharing, sketches, lessons, sentinels, and mesh sync. Confidence scores on memories. Audit trails. Team share/feed. This is the richest agent memory surface shipped. It validates that agents want typed, governed, confidence-scored knowledge — exactly what yopedia's schema provides. But agentmemory is session-scoped memory (what happened in my coding sessions), not synthesized knowledge (what is true about a topic).
+
+**Evidence:**
+- cq: 1,147★, 55 forks, 31 open issues. Claude plugin marketplace + Go CLI + Python SDK. Hosted service at cq.exchange. DID identity. 3-tier architecture.
+- SEP-2787: draft, opened May 25. Signed tool call attestation envelopes. EU AI Act Article 12 target.
+- agentmemory: 17,794★, 1,456 forks. 53 MCP tools. npm package. Created Feb 25.
+- Beever Atlas: 344★, created Apr 21. Slack/Discord/Teams → auto-wiki. Google ADK-based. MCP server.
+- WeKnora: 15,515★ (Tencent). Enterprise RAG + Wiki Mode + RBAC. v0.6.0.
+- nashsu/llm_wiki: 9,259★ (+248 since last scan). Desktop app. Star leader in pure LLM wiki niche.
+- Hindsight: 14,556★ (+213). Active daily.
+- Multi-writer agent wiki search: still 0 results (19th consecutive week).
+
+**Decisions:**
+- **cq (Mozilla) → watch closely.** Validates shared-knowledge-between-agents thesis. Complementary to yopedia (facts vs synthesis). cq could become a SOURCE type for yopedia in the future — agents deposit pitfalls via cq, yopedia synthesizes them into durable pages. Trigger: cq ships wiki synthesis, or yopedia Phase 5 needs a fact ingestion protocol.
+- **SEP-2787 + agent identity convergence → watch.** Too early (draft, no SDK). Trigger: MCP TypeScript SDK ships attestation support, or two major agents converge on one identity scheme.
+- **agentmemory 53 MCP tools → ignore as competitive threat.** Session memory, not wiki. But the tool surface (governance, team, lessons, sentinels) is instructive for what agents want from a knowledge layer. No action needed.
+- **Beever Atlas → watch.** Chat→wiki automation. First auto-wiki from team conversations. Trigger: ships multi-agent write surface or agent-readable API.
+- **WeKnora (Tencent) → ignore.** Enterprise RAG + Wiki Mode. Different market (document management, not agent knowledge).
+- **nashsu/llm_wiki 9.3K★ → ignore.** Desktop app. Single-writer. No governance.
+
+**Triggers:**
+- **cq ships wiki pages or synthesis → evaluate interop.** If cq adds a wiki layer, it becomes a direct competitor. If not, it's a potential feeder.
+- **MCP SDK ships attestation → evaluate for yopedia agent auth.** Verifiable agent identity for writes.
+- **Any project ships facts→synthesis pipeline → benchmark.** The first system that ingests atomic facts and synthesizes them into governed wiki pages is doing what yopedia should do.
+- **Beever Atlas crosses 1K★ → deeper evaluation.** Growing fast for a one-month-old project.
+
+### Layer 3 insight
+
+The agent knowledge ecosystem is differentiating along the **fact-synthesis axis**, not the trust axis I identified last scan. The trust axis (no trust / post-hoc / pre-hoc) is still real, but the more fundamental question is: **what is the right unit of shared knowledge?**
+
+- **Facts** (cq, agentmemory lessons): atomic, typed, confidence-scored, machine-readable. Good for agents querying before acting. Bad for humans browsing a knowledge base. Don't accumulate into coherent narratives.
+- **Pages** (yopedia, nashsu, Beever Atlas): synthesized, interlinked, human-readable. Good for understanding topics. Bad for agent retrieval of specific facts. Stale faster because synthesis is expensive.
+- **Neither alone is sufficient.** The most valuable system would accept facts as input and produce pages as output — with the facts remaining queryable beneath the synthesis.
+
+This is yopedia's Phase 5 research question in sharper form: the agent surface isn't just "same pages with a different parser." It's the fact layer underneath the wiki layer. cq's knowledge units and AKBP's claim schema are both attempts at this fact layer. yopedia's advantage is that it already has the synthesis layer (wiki pages with governance). The missing piece is a structured fact substrate that feeds the synthesis.
+
+### Star movements since last scan (May 24)
+
+| Project | Last scan | Now | Δ |
+|---------|-----------|-----|---|
+| Codex CLI | — | 85,571 | — |
+| mem0 | 56,551 | 56,691 | +140 |
+| graphiti | 26,445 | 26,530 | +85 |
+| letta | 22,919 | 22,951 | +32 |
+| agentmemory | (new) | 17,794 | — |
+| WeKnora | (new) | 15,515 | — |
+| MemoriLabs/Memori | (new) | 14,911 | — |
+| Hindsight | 14,343 | 14,556 | +213 |
+| nashsu/llm_wiki | 9,011 | 9,259 | +248 |
+| MemOS | (new) | 9,377 | — |
+| TencentDB-Agent-Memory | 3,924 | 4,140 | +216 |
+| sdyckjq-lab/llm-wiki-skill | (new) | 1,662 | — |
+| Ar9av/obsidian-wiki | 1,466 | 1,503 | +37 |
+| llm-wiki-compiler | 1,273 | 1,295 | +22 |
+| mozilla-ai/cq | (new) | 1,147 | — |
+| OmegaWiki | 779 | 794 | +15 |
+| nduckmink/arkon | (new) | 885 | — |
+| swarmvault | 483 | 487 | +4 |
+| Beever-AI/atlas | (new) | 344 | — |
+| AKBP | 69 | 70 | +1 |
+| Semiont | 64 | 64 | 0 |
+
+### Issues filed
+
+0 issues. All signals are watch or ignore. The most strategic signal (cq) is complementary, not competitive, and the actionable move (fact substrate for Phase 5) is already represented by existing research direction.
+
 ## 2026-05-25 (office-hour)
 
 One triage issue: #172 (Research: Adopt MCP Tasks Extension SEP-2663). Rejected.
