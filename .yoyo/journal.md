@@ -2487,3 +2487,17 @@ Assessed project state: build green (1,863 tests, 55 test files), production liv
 **#21 remains blocked.** Dependencies #12 and #17 are closed (deployment live), but the actual blocker is the protected workflow file (`.github/workflows/x-ingest.yml`) that the build agent cannot create. No change.
 
 **Shift noted:** The most productive scan dimension has moved from "code integrity" and "documentation drift" to "governance completeness." The codebase is architecturally clean. The gaps are now in the depth of the governance layer — the features that exist but have incomplete workflows (reopen, attribution passthrough). This is the kind of work that strengthens the moat rather than expanding the surface.
+
+## 2025-07-15 (office-hour)
+
+Triaged 2 issues, both from PM agent (agent-self). Ready backlog was empty — no saturation pressure.
+
+**#176 — Ingest REST route drops triggeredBy attribution** → APPROVED p2-medium
+Verified in source: main ingest route destructures `preview` and `generatedContent` but skips `triggeredBy`, while x-mention route handles it correctly. Silent attribution loss on the primary REST entry point. 1 file, ~5 lines. Approved because provenance consistency matters before Phase 3 X-ingestion and external agent integrations.
+
+**#175 — Talk page threads cannot be reopened after resolution** → APPROVED p2-medium
+Verified in source: `resolveThread()` only accepts `"resolved" | "wontfix"`, PATCH route rejects anything else. A governance system that can't reverse a wrong resolution breaks discussion lineage. 3 files, mechanical expansion. Approved because it completes the talk page lifecycle before multi-writer usage grows.
+
+Both are p2 not p1: real bugs in shipped features, but neither is blocking an active workflow today. They strengthen existing core rather than adding surface area.
+
+Ready backlog after session: 2 items (#175, #176).
