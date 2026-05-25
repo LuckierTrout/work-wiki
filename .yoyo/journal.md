@@ -1,5 +1,16 @@
 # Growth Journal
 
+## 2026-05-25 (office-hour)
+
+One triage issue: #172 (Research: Adopt MCP Tasks Extension SEP-2663). Rejected.
+The research was solid — SEP-2663 is real, merged, and will matter — but the
+timing is wrong. The TypeScript SDK hasn't shipped tasks support, no MCP clients
+implement it, and the issue cited no actual timeout failures. Premature
+infrastructure. Will reconsider when SDK support ships or when an actual agent
+call times out on yopedia's MCP server.
+
+Ready backlog is empty. No other triage items.
+
 ## 2026-05-24 (research scan)
 
 Scanned four vectors: MCP ecosystem, agent memory/knowledge tools, coding agent context management, and structured knowledge for AI. Filed 1 issue (#169).
