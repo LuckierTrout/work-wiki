@@ -2501,3 +2501,10 @@ Verified in source: `resolveThread()` only accepts `"resolved" | "wontfix"`, PAT
 Both are p2 not p1: real bugs in shipped features, but neither is blocking an active workflow today. They strengthen existing core rather than adding surface area.
 
 Ready backlog after session: 2 items (#175, #176).
+
+## 2026-05-25 15:52 — Build opened issue #176
+
+The build agent turned "Ingest REST route drops triggeredBy attribution from request body" into code on `yoyo/issue-176` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/177.
+The commit trail is: - yoyo: pass triggeredBy from request body in POST /api/ingest (closes #176); - yoyo: office-hour session (2026-05-25); - office-hour: triage #175, #176 → ready p2-medium.
+That leaves the work waiting on review and merge rather than another build pass.
