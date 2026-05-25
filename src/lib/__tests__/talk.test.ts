@@ -72,6 +72,42 @@ describe("talk page data layer", () => {
       expect(threads).toHaveLength(1);
       expect(threads[0].title).toBe("Thread");
     });
+
+    it("rejects empty title", async () => {
+      await expect(
+        createThread("val-page", "", "alice", "body"),
+      ).rejects.toThrow("title must be a non-empty string");
+    });
+
+    it("rejects whitespace-only title", async () => {
+      await expect(
+        createThread("val-page", "   ", "alice", "body"),
+      ).rejects.toThrow("title must be a non-empty string");
+    });
+
+    it("rejects empty body", async () => {
+      await expect(
+        createThread("val-page", "Title", "alice", ""),
+      ).rejects.toThrow("body must be a non-empty string");
+    });
+
+    it("rejects whitespace-only body", async () => {
+      await expect(
+        createThread("val-page", "Title", "alice", "  \t\n  "),
+      ).rejects.toThrow("body must be a non-empty string");
+    });
+
+    it("rejects empty author", async () => {
+      await expect(
+        createThread("val-page", "Title", "", "body"),
+      ).rejects.toThrow("author must be a non-empty string");
+    });
+
+    it("rejects whitespace-only author", async () => {
+      await expect(
+        createThread("val-page", "Title", "   ", "body"),
+      ).rejects.toThrow("author must be a non-empty string");
+    });
   });
 
   describe("addComment", () => {
@@ -129,6 +165,34 @@ describe("talk page data layer", () => {
       await expect(
         addComment("no-threads", 0, "alice", "oops"),
       ).rejects.toThrow(/thread index 0 not found/);
+    });
+
+    it("rejects empty body", async () => {
+      await createThread("val-comment", "Topic", "alice", "First");
+      await expect(
+        addComment("val-comment", 0, "bob", ""),
+      ).rejects.toThrow("body must be a non-empty string");
+    });
+
+    it("rejects whitespace-only body", async () => {
+      await createThread("val-comment-ws", "Topic", "alice", "First");
+      await expect(
+        addComment("val-comment-ws", 0, "bob", "   "),
+      ).rejects.toThrow("body must be a non-empty string");
+    });
+
+    it("rejects empty author", async () => {
+      await createThread("val-comment-auth", "Topic", "alice", "First");
+      await expect(
+        addComment("val-comment-auth", 0, "", "Some comment"),
+      ).rejects.toThrow("author must be a non-empty string");
+    });
+
+    it("rejects whitespace-only author", async () => {
+      await createThread("val-comment-auth-ws", "Topic", "alice", "First");
+      await expect(
+        addComment("val-comment-auth-ws", 0, "  \t  ", "Some comment"),
+      ).rejects.toThrow("author must be a non-empty string");
     });
   });
 
