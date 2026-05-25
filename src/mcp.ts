@@ -633,16 +633,16 @@ export async function handleCreateDiscussion(args: {
   if (!args.pageSlug) {
     throw new Error("pageSlug is required");
   }
-  if (!args.title) {
-    throw new Error("title is required");
+  if (!args.title || !args.title.trim()) {
+    throw new Error("title must be a non-empty string");
   }
-  if (!args.body) {
-    throw new Error("body is required");
+  if (!args.body || !args.body.trim()) {
+    throw new Error("body must be a non-empty string");
   }
-  if (!args.author) {
-    throw new Error("author is required");
+  if (!args.author || !args.author.trim()) {
+    throw new Error("author must be a non-empty string");
   }
-  return createThread(args.pageSlug, args.title, args.author, args.body);
+  return createThread(args.pageSlug, args.title.trim(), args.author.trim(), args.body.trim());
 }
 
 export async function handleResolveDiscussion(args: {
@@ -680,11 +680,11 @@ export async function handleAddComment(args: {
   if (args.threadIndex === undefined || args.threadIndex === null) {
     throw new Error("threadIndex is required");
   }
-  if (!args.content) {
-    throw new Error("content is required");
+  if (!args.content || !args.content.trim()) {
+    throw new Error("body must be a non-empty string");
   }
-  const author = args.author ?? "anonymous";
-  return addComment(args.pageSlug, args.threadIndex, author, args.content, args.parentId);
+  const author = args.author && args.author.trim() ? args.author.trim() : "anonymous";
+  return addComment(args.pageSlug, args.threadIndex, author, args.content.trim(), args.parentId);
 }
 
 // ---------------------------------------------------------------------------

@@ -101,6 +101,7 @@ export async function getThread(
 /**
  * Create a new thread with the first comment.
  * Returns the newly created TalkThread.
+ * Throws if title, author, or body are empty or whitespace-only.
  */
 export async function createThread(
   pageSlug: string,
@@ -108,6 +109,15 @@ export async function createThread(
   author: string,
   body: string,
 ): Promise<TalkThread> {
+  if (!title || !title.trim()) {
+    throw new Error("title must be a non-empty string");
+  }
+  if (!author || !author.trim()) {
+    throw new Error("author must be a non-empty string");
+  }
+  if (!body || !body.trim()) {
+    throw new Error("body must be a non-empty string");
+  }
   return withFileLock(`discuss:${pageSlug}`, async () => {
     const threads = await readDiscussFile(pageSlug);
     const now = new Date().toISOString();
@@ -139,6 +149,7 @@ export async function createThread(
 /**
  * Add a comment to an existing thread.
  * Returns the newly created TalkComment.
+ * Throws if author or body are empty or whitespace-only.
  * Throws if thread index is out of bounds.
  */
 export async function addComment(
@@ -148,6 +159,12 @@ export async function addComment(
   body: string,
   parentId?: string,
 ): Promise<TalkComment> {
+  if (!author || !author.trim()) {
+    throw new Error("author must be a non-empty string");
+  }
+  if (!body || !body.trim()) {
+    throw new Error("body must be a non-empty string");
+  }
   return withFileLock(`discuss:${pageSlug}`, async () => {
     const threads = await readDiscussFile(pageSlug);
     const thread = threads[threadIndex];

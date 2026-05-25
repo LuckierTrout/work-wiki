@@ -1393,7 +1393,7 @@ describe("create_discussion", () => {
         body: "Test body",
         author: "yoyo",
       }),
-    ).rejects.toThrow("title is required");
+    ).rejects.toThrow("title must be a non-empty string");
   });
 
   it("throws when body is empty", async () => {
@@ -1404,7 +1404,7 @@ describe("create_discussion", () => {
         body: "",
         author: "yoyo",
       }),
-    ).rejects.toThrow("body is required");
+    ).rejects.toThrow("body must be a non-empty string");
   });
 
   it("throws when author is empty", async () => {
@@ -1415,7 +1415,7 @@ describe("create_discussion", () => {
         body: "Test body",
         author: "",
       }),
-    ).rejects.toThrow("author is required");
+    ).rejects.toThrow("author must be a non-empty string");
   });
 });
 
@@ -1680,7 +1680,7 @@ describe("add_comment", () => {
         threadIndex: 0,
         content: "",
       }),
-    ).rejects.toThrow("content is required");
+    ).rejects.toThrow("body must be a non-empty string");
   });
 
   it("throws for invalid threadIndex", async () => {
