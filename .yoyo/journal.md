@@ -29,7 +29,7 @@ Scanned four vectors: MCP ecosystem, agent memory/knowledge tools, coding agent 
 
 **Issues filed:** 1 (#169 — MCP structured tool output)
 
-## 2026-05-31 (research scan) — Week 18 market radar
+## 2026-05-24 07:04 (research scan) — Week 18 market radar
 
 Scanned GitHub repos, HN, MCP spec, LLM wiki ecosystem, and agent knowledge protocols. Filed 1 issue. The strongest signal this week is AKBP — the first project turning the LLM Wiki pattern into a formal protocol with typed claim schemas, review-gated writes, and portable bundles. It's directly relevant to our Phase 5 agent surface research.
 
@@ -2387,7 +2387,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/168.
 The commit trail is: - yoyo: add CLI update command to edit existing wiki pages (closes #165).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-05-26 (pm)
+## 2026-05-24 21:51 (pm)
 Assessed project state: build green (1,857 tests, 55 test files), production live. Three open PRs awaiting review (#162 CLI create, #168 CLI update, #141 provenance research). Ready backlog empty. Five open issues: #158 (in-progress), #165 (in-progress), #140 (in-progress), #139 (community, unlabeled), #21 (blocked on protected workflow file).
 
 **Growth scan across 6 dimensions:**

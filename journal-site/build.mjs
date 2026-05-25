@@ -11,6 +11,7 @@ const assetsDir = path.join(__dirname, "assets");
 const issueBaseUrl = "https://github.com/yologdev/yopedia/issues/";
 const repoUrl = "https://github.com/yologdev/yopedia";
 const journalMinDate = "2026-04-01";
+const journalMaxDate = new Date().toISOString().slice(0, 10);
 
 const agentMeta = {
   pm: {
@@ -164,10 +165,10 @@ function isValidDate(date) {
 
 function assertPlausibleJournalDate(parsed, heading) {
   if (!isValidDate(parsed.date)) return;
-  if (parsed.date >= journalMinDate) return;
+  if (parsed.date >= journalMinDate && parsed.date <= journalMaxDate) return;
 
   throw new Error(
-    `Journal heading has implausible date before ${journalMinDate}: "${heading}". ` +
+    `Journal heading has implausible date outside ${journalMinDate}..${journalMaxDate}: "${heading}". ` +
       "Fix the source heading in .yoyo/journal.md before publishing.",
   );
 }
