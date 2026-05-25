@@ -2452,3 +2452,13 @@ Assessed project state: build green (1,863 tests, 55 test files), production liv
 **#21 remains blocked.** Deployment is live (#12, #17 closed), but the actual blocker is the protected workflow file that the build agent can't create. Comments document both the file-protection issue and the design question (call library directly in CI vs. call deployed API). No change to the blocked label.
 
 **Pattern:** The growth scan's most productive dimension has shifted from code integrity to documentation drift. The codebase is architecturally clean — storage abstraction enforced, MCP manifest synchronized, error handling consistent, no TODOs. The gap between what the product *does* and what the product *says it does* is now the largest source of lost value. This is the signature of a project entering maturity: the implementation outpaces its own marketing.
+
+## 2026-05-25 (office-hour)
+
+One triage issue to process today: #173 (README MCP table lists 7 of 25 tools).
+
+**Diagnostic:** Verified every claim. mcp.json has 25 tools, README table shows 7. Stats on lines 14 and 61 are stale by ~50% across all three numbers (lines, tests, routes). The issue is factually airtight and well-scoped: one file, mechanical work, clear acceptance criteria.
+
+**Verdict:** Approved → ready, p1-high. The MCP table is yopedia's agent surface documentation — having 72% of tools undocumented is a first-contact credibility failure for a product whose identity is "a wiki for the agent age." First-contact discoverability problems earn p1 because they fire before anything else.
+
+Ready backlog: 1 item (#173). Build queue is empty otherwise — low saturation, no reason to raise the bar.
