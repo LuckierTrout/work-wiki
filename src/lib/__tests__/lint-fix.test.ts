@@ -918,6 +918,15 @@ describe("fixLintIssue", () => {
     );
   });
 
+  it("throws helpful FixValidationError for supersedes-dangling type", async () => {
+    await expect(fixLintIssue("supersedes-dangling", "some-slug")).rejects.toThrow(
+      FixValidationError,
+    );
+    await expect(fixLintIssue("supersedes-dangling", "some-slug")).rejects.toThrow(
+      "Supersedes-dangling pages require manual review",
+    );
+  });
+
   it("dispatches unmigrated-page to fixUnmigratedPage", async () => {
     mockedReadWikiPageWithFrontmatter.mockResolvedValue({
       slug: "old-page",
