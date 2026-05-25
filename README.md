@@ -11,7 +11,7 @@
 
 > A shared second brain for humans and agents. One knowledge substrate, two surfaces. Grown from Karpathy's LLM Wiki gist by an AI agent — zero human code.
 
-**[`baseline` tag](https://github.com/yologdev/yopedia/tree/baseline):** one markdown file. **[`main`](https://github.com/yologdev/yopedia):** a full-stack wiki app with ingest, query, lint, graph view, and 1,242 tests — all written by an agent that decided what to build.
+**[`baseline` tag](https://github.com/yologdev/yopedia/tree/baseline):** one markdown file. **[`main`](https://github.com/yologdev/yopedia):** a full-stack wiki app with ingest, query, lint, graph view, and 1,863 tests — all written by an agent that decided what to build.
 
 **No human writes code here. No human manages a backlog. The agent drives.**
 
@@ -58,7 +58,7 @@ Can you describe a product in a single prompt and have an AI agent build it — 
 
 We took Karpathy's [LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) (a web app that builds a persistent, interlinked wiki from your raw sources — the anti-RAG), dropped it into a repo, pointed an agent at it, and said go.
 
-55 sessions later: 33,600 lines, 1,242 tests, 21 API routes. Full-stack Next.js app with ingest, query, lint, graph view, dark mode, CLI, Docker. Every commit is the agent's work.
+55 sessions later: 51,700+ lines, 1,863 tests, 31 API routes. Full-stack Next.js app with ingest, query, lint, graph view, dark mode, CLI, Docker. Every commit is the agent's work.
 
 Now the experiment evolves. The product yoyo built is becoming **yopedia** — a wiki for the agent age.
 
@@ -164,17 +164,67 @@ yopedia exposes a [Model Context Protocol](https://modelcontextprotocol.io/) ser
 pnpm mcp        # starts the stdio MCP server
 ```
 
-**Available tools:**
+**Available tools (25):**
+
+*Wiki CRUD*
 
 | Tool | Description | Read/Write |
 |------|-------------|------------|
-| `search_wiki` | Search wiki pages by query | Read |
-| `read_page` | Read a specific wiki page by slug | Read |
-| `list_pages` | List all wiki pages | Read |
-| `create_page` | Create a new wiki page | Write |
+| `search_wiki` | Search wiki pages by query string | Read |
+| `read_page` | Read a single wiki page by slug | Read |
+| `list_pages` | List all wiki pages with optional sort and limit | Read |
+| `create_page` | Create a new wiki page with slug and markdown content | Write |
 | `update_page` | Update an existing wiki page | Write |
-| `agent_context` | Get an agent's full context | Read |
-| `seed_agent` | Register an agent with wiki pages | Write |
+| `delete_page` | Delete a wiki page by slug | Write |
+
+*Ingest*
+
+| Tool | Description | Read/Write |
+|------|-------------|------------|
+| `ingest_url` | Fetch a URL, chunk, summarize with LLM, create/update wiki page | Write |
+| `ingest_text` | Ingest raw text (documents, conversations, memory) into a wiki page | Write |
+| `reingest` | Re-ingest a page from its original source URL to refresh stale content | Write |
+
+*Query*
+
+| Tool | Description | Read/Write |
+|------|-------------|------------|
+| `query_wiki` | Ask the wiki a question — synthesizes an answer with citations via LLM | Read |
+| `save_query_answer` | Save a query answer as a durable wiki page with frontmatter | Write |
+| `dataview_query` | Query pages by frontmatter fields with structured filters, sort, and limit | Read |
+
+*Lint*
+
+| Tool | Description | Read/Write |
+|------|-------------|------------|
+| `lint_wiki` | Run quality checks on the wiki (staleness, orphans, broken links, etc.) | Read |
+| `fix_lint_issue` | Auto-fix a lint issue found by `lint_wiki` | Write |
+
+*Discussions*
+
+| Tool | Description | Read/Write |
+|------|-------------|------------|
+| `list_discussions` | List discussion threads for a wiki page | Read |
+| `create_discussion` | Create a new discussion thread on a wiki page | Write |
+| `resolve_discussion` | Resolve a discussion thread (mark resolved or wontfix) | Write |
+| `add_comment` | Add a comment to an existing discussion thread | Write |
+
+*Agents*
+
+| Tool | Description | Read/Write |
+|------|-------------|------------|
+| `agent_context` | Get an agent's full context (identity, learnings, social wisdom) | Read |
+| `seed_agent` | Register an agent and create its wiki pages (idempotent) | Write |
+| `list_agents` | List all registered agents | Read |
+| `update_agent` | Update an agent profile (name, description, pages) | Write |
+| `delete_agent` | Delete an agent profile by ID | Write |
+
+*Revisions*
+
+| Tool | Description | Read/Write |
+|------|-------------|------------|
+| `list_revisions` | List revision history for a wiki page | Read |
+| `read_revision` | Read the full content of a specific revision | Read |
 
 **Configure in Claude Desktop / Cursor:**
 
