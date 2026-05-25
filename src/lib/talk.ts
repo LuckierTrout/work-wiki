@@ -174,14 +174,14 @@ export async function addComment(
 }
 
 /**
- * Change a thread's status to "resolved" or "wontfix".
+ * Change a thread's status to "resolved", "wontfix", or "open" (reopen).
  * Returns the updated TalkThread.
  * Throws if thread index is out of bounds.
  */
 export async function resolveThread(
   pageSlug: string,
   threadIndex: number,
-  status: "resolved" | "wontfix",
+  status: "open" | "resolved" | "wontfix",
 ): Promise<TalkThread> {
   return withFileLock(`discuss:${pageSlug}`, async () => {
     const threads = await readDiscussFile(pageSlug);

@@ -183,7 +183,7 @@ export function DiscussionPanel({ slug }: DiscussionPanelProps) {
     }
   }
 
-  async function handleResolve(idx: number, newStatus: "resolved" | "wontfix") {
+  async function handleResolve(idx: number, newStatus: "open" | "resolved" | "wontfix") {
     setError(null);
     try {
       const res = await fetch(`/api/wiki/${encodeURIComponent(slug)}/discuss/${idx}`, {

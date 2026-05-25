@@ -157,6 +157,43 @@ describe("talk page data layer", () => {
         resolveThread("resolve-err", 99, "resolved"),
       ).rejects.toThrow(/thread index 99 not found/);
     });
+
+    it("reopens a resolved thread by setting status to open", async () => {
+      await createThread("reopen-page", "Bug", "alice", "Something is wrong");
+      await resolveThread("reopen-page", 0, "resolved");
+
+      const reopened = await resolveThread("reopen-page", 0, "open");
+      expect(reopened.status).toBe("open");
+
+      // Persisted
+      const thread = await getThread("reopen-page", 0);
+      expect(thread!.status).toBe("open");
+    });
+
+    it("reopens a wontfix thread by setting status to open", async () => {
+      await createThread("reopen-wontfix", "Feature", "alice", "Add X");
+      await resolveThread("reopen-wontfix", 0, "wontfix");
+
+      const reopened = await resolveThread("reopen-wontfix", 0, "open");
+      expect(reopened.status).toBe("open");
+
+      const thread = await getThread("reopen-wontfix", 0);
+      expect(thread!.status).toBe("open");
+    });
+
+    it("reopened thread counts as open in getDiscussionStats", async () => {
+      await createThread("reopen-stats", "Bug", "alice", "body");
+      await resolveThread("reopen-stats", 0, "resolved");
+
+      // After resolving, 0 open
+      let stats = await getDiscussionStats("reopen-stats");
+      expect(stats.open).toBe(0);
+
+      // Reopen
+      await resolveThread("reopen-stats", 0, "open");
+      stats = await getDiscussionStats("reopen-stats");
+      expect(stats.open).toBe(1);
+    });
   });
 
   describe("listThreads", () => {

@@ -1516,6 +1516,65 @@ describe("resolve_discussion", () => {
     const list = await handleListDiscussions({ pageSlug: "list-resolved" });
     expect(list.threads[0].status).toBe("resolved");
   });
+
+  it("reopens a resolved thread via open status", async () => {
+    await writeTestPage(
+      "reopen-test",
+      "---\ntags: [test]\n---\n# Reopen Test\n\nContent.",
+    );
+
+    await handleCreateDiscussion({
+      pageSlug: "reopen-test",
+      title: "Premature resolution",
+      body: "Resolved too early.",
+      author: "yoyo",
+    });
+
+    await handleResolveDiscussion({
+      pageSlug: "reopen-test",
+      threadIndex: 0,
+      resolution: "resolved",
+    });
+
+    const result = await handleResolveDiscussion({
+      pageSlug: "reopen-test",
+      threadIndex: 0,
+      resolution: "open",
+    });
+
+    expect(result.status).toBe("open");
+
+    const list = await handleListDiscussions({ pageSlug: "reopen-test" });
+    expect(list.threads[0].status).toBe("open");
+  });
+
+  it("reopens a wontfix thread via open status", async () => {
+    await writeTestPage(
+      "reopen-wontfix-test",
+      "---\ntags: [test]\n---\n# Reopen Wontfix\n\nContent.",
+    );
+
+    await handleCreateDiscussion({
+      pageSlug: "reopen-wontfix-test",
+      title: "Dismissed too soon",
+      body: "This was dismissed but needs revisiting.",
+      author: "yoyo",
+    });
+
+    await handleResolveDiscussion({
+      pageSlug: "reopen-wontfix-test",
+      threadIndex: 0,
+      resolution: "wontfix",
+    });
+
+    const result = await handleResolveDiscussion({
+      pageSlug: "reopen-wontfix-test",
+      threadIndex: 0,
+      resolution: "open",
+    });
+
+    expect(result.status).toBe("open");
+  });
 });
 
 // ---------------------------------------------------------------------------

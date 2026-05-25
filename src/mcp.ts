@@ -648,7 +648,7 @@ export async function handleCreateDiscussion(args: {
 export async function handleResolveDiscussion(args: {
   pageSlug: string;
   threadIndex: number;
-  resolution: "resolved" | "wontfix";
+  resolution: "open" | "resolved" | "wontfix";
 }): Promise<TalkThread> {
   if (!args.pageSlug) {
     throw new Error("pageSlug is required");
@@ -659,9 +659,9 @@ export async function handleResolveDiscussion(args: {
   if (!args.resolution) {
     throw new Error("resolution is required");
   }
-  if (args.resolution !== "resolved" && args.resolution !== "wontfix") {
+  if (args.resolution !== "open" && args.resolution !== "resolved" && args.resolution !== "wontfix") {
     throw new Error(
-      `Invalid resolution: "${args.resolution}". Must be "resolved" or "wontfix"`,
+      `Invalid resolution: "${args.resolution}". Must be "open", "resolved", or "wontfix"`,
     );
   }
   return resolveThread(args.pageSlug, args.threadIndex, args.resolution);
@@ -1534,8 +1534,8 @@ export function createMcpServer(): McpServer {
         .number()
         .describe("Zero-based index of the thread to resolve"),
       resolution: z
-        .enum(["resolved", "wontfix"])
-        .describe('Resolution status: "resolved" or "wontfix"'),
+        .enum(["open", "resolved", "wontfix"])
+        .describe('Resolution status: "open" (reopen), "resolved", or "wontfix"'),
     },
     annotations: {
       readOnlyHint: false,
