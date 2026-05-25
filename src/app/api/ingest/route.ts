@@ -9,7 +9,15 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
-    const { url, title, content, preview, generatedContent } = body;
+    const { url, title, content, preview, generatedContent, triggeredBy } = body;
+
+    // Validate triggeredBy if provided
+    if (triggeredBy !== undefined && typeof triggeredBy !== "string") {
+      return NextResponse.json(
+        { error: "triggeredBy must be a string if provided" },
+        { status: 400 },
+      );
+    }
 
     // Build ingest options from the request body
     const options: IngestOptions = {};
@@ -18,6 +26,9 @@ export async function POST(request: NextRequest) {
     }
     if (typeof generatedContent === "string" && generatedContent.length > 0) {
       options.generatedContent = generatedContent;
+    }
+    if (typeof triggeredBy === "string" && triggeredBy.length > 0) {
+      options.triggeredBy = triggeredBy;
     }
 
     // URL path takes precedence
