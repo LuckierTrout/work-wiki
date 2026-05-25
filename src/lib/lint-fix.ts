@@ -627,6 +627,10 @@ export async function fixLintIssue(
       throw new FixValidationError(
         "Disputed pages cannot be auto-fixed. Review the page content and talk page to resolve the dispute through discussion.",
       );
+    case "supersedes-dangling":
+      throw new FixValidationError(
+        "Supersedes-dangling pages require manual review. Update the supersedes field to point to a valid page or remove it.",
+      );
     default:
       throw new FixValidationError(
         "Auto-fix not supported for this issue type",

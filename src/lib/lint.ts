@@ -60,7 +60,7 @@ export {
  * Run all lint checks against the wiki and return the results.
  *
  * @param options - Optional configuration for selective checks and severity filtering.
- *   - `checks`: array of check types to run (defaults to all 10)
+ *   - `checks`: array of check types to run (defaults to all 15)
  *   - `minSeverity`: minimum severity to include in results (defaults to "info")
  */
 export async function lint(options?: LintOptions): Promise<LintResult> {
