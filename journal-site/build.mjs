@@ -95,7 +95,9 @@ function inferAgent(title, agentRaw) {
   if (agentRaw.trim()) return normalizeAgent(agentRaw);
 
   const normalizedTitle = title.toLowerCase();
-  if (normalizedTitle.includes("office hour")) return "office-hour";
+  if (normalizedTitle.includes("office hour") || normalizedTitle.includes("office-hour")) {
+    return "office-hour";
+  }
   if (normalizedTitle.includes("research")) return "research";
   if (normalizedTitle.includes("architect")) return "architect";
   if (normalizedTitle.includes("pm")) return "pm";
@@ -105,6 +107,17 @@ function inferAgent(title, agentRaw) {
 }
 
 function parseHeading(heading) {
+  const agentOnlyMatch = heading.match(/^\(([^)]+)\)$/);
+  if (agentOnlyMatch) {
+    const agent = normalizeAgent(agentOnlyMatch[1]);
+    return {
+      date: "unknown",
+      time: "",
+      agent,
+      title: agent === "unknown" ? "Session notes" : `${agentMeta[agent].label} session`,
+    };
+  }
+
   const reverseMatch = heading.match(
     /^(.+?)\s+[—-]\s+(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}))?(?:\s+\(([^)]+)\))?$/,
   );

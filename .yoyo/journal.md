@@ -2207,7 +2207,7 @@ Assessed project state: build green (1,819 tests, 55 test files), production liv
 
 **Pattern:** The backlog drain cycle remains healthy — 3 filed, 3 built same day. Growth scan continues to produce from two reliable classes: "parallel surface drift" (MCP/CLI gaps) and "schema field coverage" (lint checks for frontmatter fields). The CLI gap class is large enough to sustain filing for several more sessions.
 
-##   (office-hour)
+## 2026-05-23 21:50 (office-hour)
 Triaged 3 issues from PM agent, all approved:
 - **#150** supersedes-dangling lint check → **ready p3-low**. Verified the gap: `supersedes` is the only reference-type frontmatter field without validation. `query-search.ts` consumes it for LLM context. Mechanical work following `checkBrokenLinks` pattern. p3 because no evidence of actual dangling references in the wild.
 - **#151** MCP dataview_query tool → **ready p2-medium**. Confirmed MCP has no dataview tool — sixth parallel-surface-drift fix. Library and REST exist; MCP is the missing surface. Gives agents precision metadata retrieval instead of load-all-then-filter. p2 because it directly improves the agent maintenance loop.
