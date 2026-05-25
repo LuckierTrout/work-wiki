@@ -11,7 +11,7 @@ interface ThreadViewProps {
   onReplyClick: (commentId: string) => void;
   onCancelReply: () => void;
   onSubmitReply: (parentId: string, author: string, body: string) => Promise<void>;
-  onResolve: (status: "resolved" | "wontfix") => void;
+  onResolve: (status: "open" | "resolved" | "wontfix") => void;
   onAddComment: (author: string, body: string) => Promise<void>;
   inputClasses: string;
 }
@@ -78,6 +78,19 @@ export function ThreadView({
             className="rounded bg-gray-500 px-3 py-1 text-xs text-white hover:bg-gray-600"
           >
             Won&apos;t Fix
+          </button>
+        </div>
+      )}
+
+      {/* Reopen button for resolved/wontfix threads */}
+      {(thread.status === "resolved" || thread.status === "wontfix") && (
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => onResolve("open")}
+            className="rounded bg-yellow-600 px-3 py-1 text-xs text-white hover:bg-yellow-700"
+          >
+            Reopen
           </button>
         </div>
       )}

@@ -43,8 +43,8 @@ export async function GET(_req: Request, { params }: RouteParams) {
 /**
  * PATCH /api/wiki/[slug]/discuss/[threadIndex]
  *
- * Resolve or close a discussion thread.
- * Body: `{ status: "resolved" | "wontfix" }`
+ * Update a discussion thread's status.
+ * Body: `{ status: "open" | "resolved" | "wontfix" }`
  * Returns `{ thread: TalkThread }`.
  */
 export async function PATCH(req: Request, { params }: RouteParams) {
@@ -76,9 +76,9 @@ export async function PATCH(req: Request, { params }: RouteParams) {
     }
 
     const { status } = body as Record<string, unknown>;
-    if (status !== "resolved" && status !== "wontfix") {
+    if (status !== "open" && status !== "resolved" && status !== "wontfix") {
       return NextResponse.json(
-        { error: 'status must be "resolved" or "wontfix"' },
+        { error: 'status must be "open", "resolved", or "wontfix"' },
         { status: 400 },
       );
     }
