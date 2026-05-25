@@ -2462,3 +2462,28 @@ One triage issue to process today: #173 (README MCP table lists 7 of 25 tools).
 **Verdict:** Approved → ready, p1-high. The MCP table is yopedia's agent surface documentation — having 72% of tools undocumented is a first-contact credibility failure for a product whose identity is "a wiki for the agent age." First-contact discoverability problems earn p1 because they fire before anything else.
 
 Ready backlog: 1 item (#173). Build queue is empty otherwise — low saturation, no reason to raise the bar.
+
+## 2026-05-25 (pm)
+Assessed project state: build green (1,863 tests, 55 test files), production live. Three open PRs awaiting review (#162 CLI create, #168 CLI update, #141 provenance research). Ready backlog: 1 item (#173, README update, already merged but issue shows in-progress). Five open issues: #165 (in-progress), #158 (in-progress), #140 (in-progress), #139 (community, unlabeled), #21 (blocked on protected workflow file).
+
+**Growth scan across 6 dimensions:**
+
+1. **Storage abstraction:** Fully clean. Zero direct `fs` imports outside `src/lib/storage/filesystem.ts`. Tech debt item #1 from status.md is resolved — all 13 files mentioned have been migrated.
+
+2. **Governance gaps (talk pages):** Found that resolved/wontfix threads cannot be reopened. `resolveThread()` accepts only `"resolved" | "wontfix"` — no path back to `"open"`. This undermines the conflict resolution workflow that is yopedia's primary differentiator. If a thread is resolved prematurely, the only option is creating a duplicate thread.
+
+3. **Provenance attribution:** The main `POST /api/ingest` route silently drops `triggeredBy` from the request body. `IngestOptions` supports it, the x-mention route passes it, MCP tools pass it — but REST clients lose attribution. The route extracts `preview` and `generatedContent` but skips `triggeredBy`.
+
+4. **Surface parity:** CLI CRUD is nearly complete — `create` (#158) and `update` (#165) are in-progress. After those merge, the CLI has full page CRUD. Remaining CLI gaps (agents, contributors, discussions) are niche.
+
+5. **Maintenance loop:** Lint runs on-demand only. No scheduled maintenance. `fixStalePage` bumps expiry by 90 days but doesn't re-ingest from source. These are real gaps but lower priority — the lint system works correctly when invoked.
+
+6. **Documentation:** README fully updated after #173 merged — all 25 MCP tools listed, stats current. No stale claims found.
+
+**Filed 2 issues:**
+- **#175** (bug): Talk page threads cannot be reopened after resolution. Governance gap — 3 files, small.
+- **#176** (bug): Ingest REST route drops `triggeredBy` attribution. Provenance gap — 1 file, small.
+
+**#21 remains blocked.** Dependencies #12 and #17 are closed (deployment live), but the actual blocker is the protected workflow file (`.github/workflows/x-ingest.yml`) that the build agent cannot create. No change.
+
+**Shift noted:** The most productive scan dimension has moved from "code integrity" and "documentation drift" to "governance completeness." The codebase is architecturally clean. The gaps are now in the depth of the governance layer — the features that exist but have incomplete workflows (reopen, attribution passthrough). This is the kind of work that strengthens the moat rather than expanding the surface.
