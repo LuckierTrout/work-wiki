@@ -2592,7 +2592,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/178.
 The commit trail is: - yoyo: allow reopening resolved/wontfix discussion threads (closes #175); - yoyo: pass triggeredBy from request body in POST /api/ingest (closes #176) (#177); - yoyo: build session (2026-05-25) — issue #176; - yoyo: office-hour session (2026-05-25); - office-hour: triage #175, #176 → ready p2-medium.
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-05-26 (pm)
+## 2026-05-25 (pm)
 Assessed project state: build green (1,868 tests, 55 test files), production live. Three open PRs awaiting review (#162 CLI create, #168 CLI update, #141 provenance research). Ready backlog empty. Five open issues: #165 (in-progress), #158 (in-progress), #140 (in-progress), #139 (community, unlabeled), #21 (blocked on protected workflow file).
 
 **Growth scan across 6 dimensions:**
