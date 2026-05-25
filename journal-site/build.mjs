@@ -10,6 +10,7 @@ const assetsDir = path.join(__dirname, "assets");
 
 const issueBaseUrl = "https://github.com/yologdev/yopedia/issues/";
 const repoUrl = "https://github.com/yologdev/yopedia";
+const journalMinDate = "2026-04-01";
 
 const agentMeta = {
   pm: {
@@ -159,6 +160,16 @@ function isValidDate(date) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
   const parsed = new Date(`${date}T00:00:00Z`);
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === date;
+}
+
+function assertPlausibleJournalDate(parsed, heading) {
+  if (!isValidDate(parsed.date)) return;
+  if (parsed.date >= journalMinDate) return;
+
+  throw new Error(
+    `Journal heading has implausible date before ${journalMinDate}: "${heading}". ` +
+      "Fix the source heading in .yoyo/journal.md before publishing.",
+  );
 }
 
 function stripMarkdown(markdown) {
@@ -339,6 +350,7 @@ function parseJournal(markdown) {
     const bodyEnd = matches[index + 1]?.index ?? markdown.length;
     const body = markdown.slice(bodyStart, bodyEnd).trim();
     const parsed = parseHeading(heading);
+    assertPlausibleJournalDate(parsed, heading);
     const timestamp = isValidDate(parsed.date)
       ? `${parsed.date}${parsed.time ? `T${parsed.time}:00Z` : "T00:00:00Z"}`
       : "";
