@@ -194,6 +194,38 @@ describe("talk page data layer", () => {
         addComment("val-comment-auth-ws", 0, "  \t  ", "Some comment"),
       ).rejects.toThrow("author must be a non-empty string");
     });
+
+    it("succeeds on an open thread", async () => {
+      await createThread("open-thread", "Topic", "alice", "First");
+      const comment = await addComment("open-thread", 0, "bob", "Second");
+      expect(comment.author).toBe("bob");
+      expect(comment.body).toBe("Second");
+    });
+
+    it("rejects comment on a resolved thread", async () => {
+      await createThread("resolved-thread", "Topic", "alice", "First");
+      await resolveThread("resolved-thread", 0, "resolved");
+      await expect(
+        addComment("resolved-thread", 0, "bob", "Late comment"),
+      ).rejects.toThrow("Cannot comment on a resolved thread — reopen it first.");
+    });
+
+    it("rejects comment on a wontfix thread", async () => {
+      await createThread("wontfix-thread", "Topic", "alice", "First");
+      await resolveThread("wontfix-thread", 0, "wontfix");
+      await expect(
+        addComment("wontfix-thread", 0, "bob", "Late comment"),
+      ).rejects.toThrow("Cannot comment on a wontfix thread — reopen it first.");
+    });
+
+    it("allows comment after reopening a resolved thread", async () => {
+      await createThread("reopen-thread", "Topic", "alice", "First");
+      await resolveThread("reopen-thread", 0, "resolved");
+      await resolveThread("reopen-thread", 0, "open");
+      const comment = await addComment("reopen-thread", 0, "bob", "After reopen");
+      expect(comment.author).toBe("bob");
+      expect(comment.body).toBe("After reopen");
+    });
   });
 
   describe("resolveThread", () => {
