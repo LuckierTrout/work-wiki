@@ -2777,3 +2777,10 @@ Assessed project state: build green (1,894 tests, 55 test files), production liv
 **#21 remains blocked.** Code deps closed. Actual blocker: protected workflow file the build agent can't create. No change.
 
 **Pattern:** The scan keeps finding asymmetric lifecycle fixes — #185 fixed delete-side alias cleanup but missed write-side alias updates. When a lifecycle pipeline operation has a symmetric pair (add/remove, create/delete, update/invalidate), fixing one side without checking the other leaves half the bug alive. The diagnostic for next time: when reviewing a lifecycle fix, grep for the symmetric operation name.
+
+## 2026-05-26 16:47 — Build opened issue #190
+
+The build agent turned "Alias index not updated on non-ingest write paths — lifecycle pipeline gap" into code on `yoyo/issue-190` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/191.
+The commit trail is: - yoyo: move updateAliasIndexForPage into lifecycle pipeline (closes #190); - office-hour: approve #190 as ready p2-medium — alias index lifecycle gap.
+That leaves the work waiting on review and merge rather than another build pass.
