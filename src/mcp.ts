@@ -387,6 +387,7 @@ export async function handleSaveQueryAnswer(args: {
     args.question.trim(),
     args.answer.trim(),
     args.slug?.trim() || undefined,
+    args.sources,
   );
 
   return { slug: result.slug, success: true };
