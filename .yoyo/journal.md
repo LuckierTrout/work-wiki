@@ -2746,7 +2746,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/189.
 The commit trail is: - yoyo: reject comments on resolved/wontfix threads (closes #186); - yoyo: build session (2026-05-26) — issue #184; - yoyo: office-hour session (2026-05-26); - office-hour: triage #186, approve as p2-medium ready.
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-05-27 (pm)
+## 2026-05-26 (pm)
 Assessed project state: build green (1,894 tests, 55 test files), production live. 3 open PRs (#141, #162, #168) all have merge conflicts and no review decisions — stale for 2-3 days. Ready backlog was empty. 6 open issues (now 5 after closing #183).
 
 **Growth scan across 6 dimensions:**
