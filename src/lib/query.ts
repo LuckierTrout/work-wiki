@@ -8,6 +8,7 @@ import { slugify } from "./slugify";
 import { extractSummary } from "./ingest";
 import { loadPageConventions } from "./schema";
 import { serializeFrontmatter } from "./frontmatter";
+import { serializeSources, buildSourceEntry } from "./sources";
 import {
   buildCorpusStats,
   bm25Score,
@@ -244,12 +245,17 @@ export async function query(
  * {@link writeWikiPageWithSideEffects} so this path can never drift from
  * `ingest()` again (see `.yoyo/learnings.md` — "Parallel write-paths drift").
  *
+ * The optional `sources` parameter accepts an array of wiki page slugs cited
+ * in the answer. These are stored as `wiki-ref` provenance entries in the
+ * page's frontmatter, fulfilling yopedia's provenance contract.
+ *
  * Returns the slug of the newly created wiki page.
  */
 export async function saveAnswerToWiki(
   title: string,
   content: string,
   explicitSlug?: string,
+  sources?: string[],
 ): Promise<{ slug: string }> {
   const slug = explicitSlug || slugify(title);
 
@@ -274,16 +280,28 @@ export async function saveAnswerToWiki(
   const expiry = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 10);
+
+  // Build frontmatter metadata, optionally including structured provenance
+  // entries for wiki page sources cited in the answer.
+  const frontmatterData: Record<string, string | string[] | number | boolean> = {
+    created: now,
+    updated: now,
+    source: "query",
+    tags: ["query-answer"],
+    confidence: 0.5,
+    expiry,
+    authors: ["system"],
+  };
+
+  if (sources && sources.length > 0) {
+    const sourceEntries = sources.map((slug) =>
+      buildSourceEntry(slug, "wiki-ref", "system"),
+    );
+    frontmatterData.sources = serializeSources(sourceEntries);
+  }
+
   const contentWithFm = serializeFrontmatter(
-    {
-      created: now,
-      updated: now,
-      source: "query",
-      tags: ["query-answer"],
-      confidence: 0.5,
-      expiry,
-      authors: ["system"],
-    },
+    frontmatterData,
     pageContent,
   );
 

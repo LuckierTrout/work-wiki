@@ -894,6 +894,62 @@ describe("saveAnswerToWiki", () => {
     );
     expect(reactLinks || nextLinks).toBe(true);
   });
+
+  it("includes sources as wiki-ref provenance entries in frontmatter when provided", async () => {
+    await ensureDirectories();
+
+    await saveAnswerToWiki(
+      "Multi-Source Answer",
+      "This answer cites page-a and page-b.",
+      undefined,
+      ["page-a", "page-b"],
+    );
+
+    const parsed = await readWikiPageWithFrontmatter("multi-source-answer");
+    expect(parsed).not.toBeNull();
+
+    // The frontmatter should contain a sources field with the wiki-ref entries
+    const { parseSources } = await import("../sources");
+    const sources = parseSources(parsed!.frontmatter.sources as string);
+    expect(sources).toHaveLength(2);
+    expect(sources[0].type).toBe("wiki-ref");
+    expect(sources[0].url).toBe("page-a");
+    expect(sources[0].triggered_by).toBe("system");
+    expect(sources[1].type).toBe("wiki-ref");
+    expect(sources[1].url).toBe("page-b");
+  });
+
+  it("omits sources from frontmatter when not provided", async () => {
+    await ensureDirectories();
+
+    await saveAnswerToWiki(
+      "No Sources Answer",
+      "This answer has no explicit sources.",
+    );
+
+    const parsed = await readWikiPageWithFrontmatter("no-sources-answer");
+    expect(parsed).not.toBeNull();
+
+    // sources field should not be present in frontmatter
+    expect(parsed!.frontmatter.sources).toBeUndefined();
+  });
+
+  it("omits sources from frontmatter when empty array is provided", async () => {
+    await ensureDirectories();
+
+    await saveAnswerToWiki(
+      "Empty Sources Answer",
+      "This answer has an empty sources array.",
+      undefined,
+      [],
+    );
+
+    const parsed = await readWikiPageWithFrontmatter("empty-sources-answer");
+    expect(parsed).not.toBeNull();
+
+    // Empty array should be treated the same as omitted
+    expect(parsed!.frontmatter.sources).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

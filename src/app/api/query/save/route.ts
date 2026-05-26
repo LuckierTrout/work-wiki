@@ -7,7 +7,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
-    const { title, content } = body;
+    const { title, content, sources } = body;
 
     if (!title || typeof title !== "string" || title.trim().length === 0) {
       return NextResponse.json(
@@ -27,7 +27,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await saveAnswerToWiki(title.trim(), content.trim());
+    // Validate sources if provided — must be an array of strings
+    let validatedSources: string[] | undefined;
+    if (sources !== undefined) {
+      if (
+        Array.isArray(sources) &&
+        sources.every((s: unknown) => typeof s === "string")
+      ) {
+        validatedSources = sources as string[];
+      } else {
+        return NextResponse.json(
+          { error: "sources must be an array of strings (wiki page slugs)" },
+          { status: 400 },
+        );
+      }
+    }
+
+    const result = await saveAnswerToWiki(
+      title.trim(),
+      content.trim(),
+      undefined,
+      validatedSources,
+    );
 
     return NextResponse.json({ slug: result.slug, success: true });
   } catch (error) {
