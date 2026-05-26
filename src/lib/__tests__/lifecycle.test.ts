@@ -16,6 +16,8 @@ import {
 } from "../wiki";
 import { updateIndex } from "../wiki";
 import { listRevisions, saveRevision } from "../revisions";
+import { resolveAlias, buildAliasIndex, resetAliasIndex } from "../alias-index";
+import { serializeFrontmatter } from "../frontmatter";
 
 // ---------------------------------------------------------------------------
 // Temp directory setup — mirrors wiki.test.ts approach
@@ -46,6 +48,7 @@ afterEach(async () => {
     process.env.RAW_DIR = originalRawDir;
   }
   await fs.rm(tmpDir, { recursive: true, force: true });
+  resetAliasIndex();
 });
 
 // ---------------------------------------------------------------------------
@@ -590,5 +593,79 @@ describe("stripBacklinksTo (via deleteWikiPage)", () => {
     const py = await readWikiPage("page-y");
     expect(px!.content).not.toContain("target.md");
     expect(py!.content).not.toContain("target.md");
+  });
+});
+
+// ===========================================================================
+// Alias index integration — lifecycle write updates alias index
+// ===========================================================================
+
+describe("lifecycle write triggers alias index update", () => {
+  it("page with aliases is resolvable via resolveAlias after write", async () => {
+    // Build the alias index first (so the cached index exists)
+    await buildAliasIndex();
+
+    // Write a page with aliases via the lifecycle pipeline
+    const content = serializeFrontmatter(
+      {
+        created: "2026-01-01",
+        updated: "2026-01-01",
+        aliases: ["ReactJS", "React.js"],
+      },
+      "# React\n\nA JavaScript library for building user interfaces.\n",
+    );
+
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: "react",
+        title: "React",
+        content,
+        summary: "A JavaScript library for building user interfaces",
+      }),
+    );
+
+    // The alias index should be updated without a full rebuild
+    const result1 = await resolveAlias("ReactJS");
+    expect(result1).toBe("react");
+
+    const result2 = await resolveAlias("React.js");
+    expect(result2).toBe("react");
+
+    const result3 = await resolveAlias("React");
+    expect(result3).toBe("react");
+  });
+
+  it("page without aliases still registers title in alias index", async () => {
+    await buildAliasIndex();
+
+    const content = "# Vue\n\nA progressive JavaScript framework.\n";
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: "vue",
+        title: "Vue",
+        content,
+        summary: "A progressive JavaScript framework",
+      }),
+    );
+
+    const result = await resolveAlias("Vue");
+    expect(result).toBe("vue");
+  });
+
+  it("page without frontmatter still registers title in alias index", async () => {
+    await buildAliasIndex();
+
+    // No frontmatter at all — should still register title
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: "svelte",
+        title: "Svelte",
+        content: "# Svelte\n\nCybernetically enhanced web apps.\n",
+        summary: "Cybernetically enhanced web apps",
+      }),
+    );
+
+    const result = await resolveAlias("Svelte");
+    expect(result).toBe("svelte");
   });
 });

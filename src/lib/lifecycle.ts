@@ -17,7 +17,8 @@ import { getStorage } from "./storage";
 import { withFileLock } from "./lock";
 import { escapeRegex } from "./links";
 import { getErrorMessage } from "./errors";
-import { removeAliasForPage } from "./alias-index";
+import { removeAliasForPage, updateAliasIndexForPage } from "./alias-index";
+import { parseFrontmatter } from "./frontmatter";
 import type { LogOperation } from "./wiki";
 import { logger } from "./logger";
 
@@ -234,6 +235,27 @@ async function runPageLifecycleOp(
     // 2e. Invalidate alias index entries for the deleted page so that
     //     resolveAlias(deletedTitle) no longer ghost-resolves to this slug.
     removeAliasForPage(slug);
+  } else {
+    // 2e. Update alias index for written page so resolveAlias() finds it
+    //     immediately — no server restart needed. Parse the frontmatter to
+    //     extract aliases[], mirroring how removeAliasForPage() is called
+    //     on the delete path.
+    try {
+      const parsed = parseFrontmatter(op.content);
+      const aliases = Array.isArray(parsed.data.aliases)
+        ? (parsed.data.aliases as string[]).filter(
+            (a) => typeof a === "string" && a.trim() !== "",
+          )
+        : [];
+      updateAliasIndexForPage(slug, op.title, aliases);
+    } catch {
+      // Frontmatter parse failure should not fail the write — the page is
+      // already on disk. The alias index will catch up on next full rebuild.
+      logger.warn(
+        "wiki",
+        `alias index update skipped for "${slug}": could not parse frontmatter`,
+      );
+    }
   }
 
   // 3. Mutate the index. The read → mutate → write cycle is performed under

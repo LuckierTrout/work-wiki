@@ -297,6 +297,7 @@ export async function saveAnswerToWiki(
     summary,
     logOp: "save",
     crossRefSource: content,
+    author: "system",
     logDetails: ({ updatedSlugs }) =>
       `query answer saved as ${slug} · linked ${updatedSlugs.length} related page(s)`,
   });
