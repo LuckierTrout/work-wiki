@@ -2721,3 +2721,10 @@ Assessed project state: build green (1,879 tests, 55 test files), production liv
 **#21 remains blocked.** Code deps (#19, #20) closed. Actual blocker: protected workflow file the build agent can't create. No change.
 
 **Pattern:** The scan keeps finding bugs deeper in the lifecycle — not in the primary paths (ingest, query, write) but in the secondary operations (delete, re-seed, governance state transitions). These are the operations users discover after they've been using the system long enough to clean up and iterate, which is exactly when trust matters most.
+
+## 2026-05-26 08:34 — Build opened issue #185
+
+The build agent turned "Page delete does not invalidate alias index — stale alias causes ghost re-creation" into code on `yoyo/issue-185` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/187.
+The commit trail is: - yoyo: add removeAliasForPage and call it on delete to prevent stale alias resolution (closes #185).
+That leaves the work waiting on review and merge rather than another build pass.
