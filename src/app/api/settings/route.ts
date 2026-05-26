@@ -3,6 +3,7 @@ import {
   saveConfig,
   getEffectiveSettings,
   isValidProvider,
+  isReadOnly,
   _resetConfigCache,
   type AppConfig,
 } from "@/lib/config";
@@ -23,6 +24,14 @@ export async function GET() {
 // ---------------------------------------------------------------------------
 
 export async function PUT(request: Request) {
+  // Block writes in read-only mode (cloud deployments)
+  if (isReadOnly()) {
+    return Response.json(
+      { error: "Settings are read-only in this deployment. Configure via environment variables instead." },
+      { status: 403 },
+    );
+  }
+
   try {
     const body = (await request.json()) as Partial<AppConfig>;
 

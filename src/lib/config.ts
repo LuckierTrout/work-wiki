@@ -37,6 +37,38 @@ export interface EffectiveSettings {
   apiKeySource: SettingSource;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
+  readOnly: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Read-only mode detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns `true` when the instance should reject settings writes.
+ *
+ * True when:
+ *   1. `YOPEDIA_READONLY=1` environment variable is set, **or**
+ *   2. `STORAGE_PROVIDER=cloudflare-r2` env var is set, **or**
+ *   3. Cloudflare Workers runtime is detected (globalThis.caches.default)
+ *
+ * This protects public cloud deployments from unauthenticated config changes.
+ */
+export function isReadOnly(): boolean {
+  if (process.env.YOPEDIA_READONLY === "1") return true;
+  if (process.env.STORAGE_PROVIDER === "cloudflare-r2") return true;
+
+  // Cloudflare Workers runtime detection (mirrors storage/index.ts logic)
+  if (
+    typeof globalThis !== "undefined" &&
+    typeof (globalThis as Record<string, unknown>).caches === "object" &&
+    (globalThis as Record<string, unknown>).caches !== null &&
+    typeof ((globalThis as Record<string, unknown>).caches as Record<string, unknown>).default === "object"
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +344,7 @@ export function getEffectiveSettings(): EffectiveSettings {
     apiKeySource,
     ollamaBaseUrl,
     ollamaBaseUrlSource,
+    readOnly: isReadOnly(),
   };
 }
 

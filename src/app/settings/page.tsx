@@ -15,6 +15,7 @@ export default function SettingsPage() {
     settings,
     status,
     loadError,
+    readOnly,
     provider,
     model,
     ollamaBaseUrl,
@@ -103,7 +104,16 @@ export default function SettingsPage() {
         )}
       </div>
 
+      {/* ---- Read-only banner ---- */}
+      {readOnly && (
+        <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-50 p-4 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-400">
+          <strong>Read-only mode</strong> — Settings cannot be changed in this
+          cloud deployment. Configure via environment variables instead.
+        </div>
+      )}
+
       {/* ---- Form ---- */}
+      <fieldset disabled={readOnly} className="disabled:opacity-60">
       <form onSubmit={handleSave} className="mt-8 space-y-6">
         <ProviderForm
           provider={provider}
@@ -132,7 +142,7 @@ export default function SettingsPage() {
         <div className="flex flex-wrap items-center gap-3 pt-2">
           <button
             type="submit"
-            disabled={saving}
+            disabled={saving || readOnly}
             className="rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             {saving ? "Saving…" : "Save Settings"}
@@ -173,6 +183,7 @@ export default function SettingsPage() {
           </div>
         )}
       </form>
+      </fieldset>
     </main>
   );
 }

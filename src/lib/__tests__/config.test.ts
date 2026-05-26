@@ -7,6 +7,7 @@ import {
   saveConfig,
   loadConfigSync,
   isValidProvider,
+  isReadOnly,
   getEffectiveProvider,
   getEffectiveSettings,
   getResolvedCredentials,
@@ -38,6 +39,8 @@ const ENV_KEYS = [
   "OLLAMA_MODEL",
   "LLM_MODEL",
   "EMBEDDING_MODEL",
+  "YOPEDIA_READONLY",
+  "STORAGE_PROVIDER",
 ];
 
 beforeEach(async () => {
@@ -402,5 +405,56 @@ describe("getOllamaBaseUrl", () => {
     await loadConfig();
     process.env.OLLAMA_BASE_URL = "http://env-host:11434";
     expect(getOllamaBaseUrl()).toBe("http://env-host:11434");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isReadOnly
+// ---------------------------------------------------------------------------
+
+describe("isReadOnly", () => {
+  it("returns false by default", () => {
+    delete process.env.YOPEDIA_READONLY;
+    delete process.env.STORAGE_PROVIDER;
+    expect(isReadOnly()).toBe(false);
+  });
+
+  it("returns true when YOPEDIA_READONLY=1", () => {
+    process.env.YOPEDIA_READONLY = "1";
+    expect(isReadOnly()).toBe(true);
+  });
+
+  it("returns false when YOPEDIA_READONLY is set to something other than 1", () => {
+    process.env.YOPEDIA_READONLY = "0";
+    expect(isReadOnly()).toBe(false);
+  });
+
+  it("returns true when STORAGE_PROVIDER=cloudflare-r2", () => {
+    process.env.STORAGE_PROVIDER = "cloudflare-r2";
+    expect(isReadOnly()).toBe(true);
+  });
+
+  it("returns false when STORAGE_PROVIDER=fs", () => {
+    process.env.STORAGE_PROVIDER = "fs";
+    expect(isReadOnly()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getEffectiveSettings — readOnly flag
+// ---------------------------------------------------------------------------
+
+describe("getEffectiveSettings readOnly", () => {
+  it("includes readOnly: false by default", () => {
+    delete process.env.YOPEDIA_READONLY;
+    delete process.env.STORAGE_PROVIDER;
+    const s = getEffectiveSettings();
+    expect(s.readOnly).toBe(false);
+  });
+
+  it("includes readOnly: true when YOPEDIA_READONLY=1", () => {
+    process.env.YOPEDIA_READONLY = "1";
+    const s = getEffectiveSettings();
+    expect(s.readOnly).toBe(true);
   });
 });
