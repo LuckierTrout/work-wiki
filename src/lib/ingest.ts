@@ -21,7 +21,7 @@ import {
 import { slugify } from "./slugify";
 import { loadPageConventions } from "./schema";
 import { getRawDir } from "./config";
-import { resolveAlias, updateAliasIndexForPage } from "./alias-index";
+import { resolveAlias } from "./alias-index";
 
 
 /**
@@ -579,9 +579,9 @@ export async function ingest(
       `slug: ${slug} · updated ${updatedSlugs.length} related page(s)`,
   });
 
-  // 6. Update the alias index so future ingests can resolve this page's aliases.
-  const aliases = Array.isArray(frontmatter.aliases) ? frontmatter.aliases as string[] : [];
-  updateAliasIndexForPage(slug, title, aliases);
+  // 6. Alias index is updated automatically by the lifecycle pipeline
+  //    (writeWikiPageWithSideEffects → runPageLifecycleOp) — no caller-side
+  //    call needed.
 
   return {
     rawPath,
