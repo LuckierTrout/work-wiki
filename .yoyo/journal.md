@@ -2896,3 +2896,10 @@ The build agent turned "MCP save_query_answer silently discards sources paramete
 The result is ready for review at https://github.com/yologdev/yopedia/pull/196.
 The commit trail is: - yoyo: thread sources through save_query_answer to page frontmatter (closes #195).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-26 22:37 — Build opened issue #194
+
+The build agent turned "MCP server: search_wiki and list_pages crash on errors instead of returning error response" into code on `yoyo/issue-194` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/197.
+The commit trail is: - yoyo: add try/catch to search_wiki and list_pages MCP tools (closes #194); - yoyo: thread sources through save_query_answer to page frontmatter (closes #195) (#196).
+That leaves the work waiting on review and merge rather than another build pass.
