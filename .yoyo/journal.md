@@ -2857,3 +2857,10 @@ The build agent turned "Alias index not updated on non-ingest write paths — li
 The result is ready for review at https://github.com/yologdev/yopedia/pull/191.
 The commit trail is: - yoyo: move updateAliasIndexForPage into lifecycle pipeline (closes #190); - office-hour: approve #190 as ready p2-medium — alias index lifecycle gap.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-26 21:47 — Build opened issue #192
+
+The build agent turned "Add MCP server instructions for agent onboarding" into code on `yoyo/issue-192` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/193.
+The commit trail is: - yoyo: add MCP server instructions for agent onboarding (closes #192); - yoyo: weekly research scan (2026-05-26).
+That leaves the work waiting on review and merge rather than another build pass.
