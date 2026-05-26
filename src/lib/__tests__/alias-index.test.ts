@@ -8,6 +8,7 @@ import {
   resolveAlias,
   resetAliasIndex,
   updateAliasIndexForPage,
+  removeAliasForPage,
   findDuplicateEntities,
 } from "../alias-index";
 import { writeWikiPage, ensureDirectories, updateIndex } from "../wiki";
@@ -171,6 +172,64 @@ describe("updateAliasIndexForPage", () => {
     // Should not throw
     resetAliasIndex();
     updateAliasIndexForPage("test", "Test", ["TestAlias"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// removeAliasForPage
+// ---------------------------------------------------------------------------
+describe("removeAliasForPage", () => {
+  it("removes title and aliases from cached index", async () => {
+    await createPage("react", "React", ["React.js", "ReactJS"]);
+    // Build the index so it's cached
+    await buildAliasIndex();
+
+    // Verify aliases resolve before removal
+    expect(await resolveAlias("React")).toBe("react");
+    expect(await resolveAlias("React.js")).toBe("react");
+    expect(await resolveAlias("ReactJS")).toBe("react");
+
+    // Remove the page's aliases
+    removeAliasForPage("react");
+
+    // All aliases should now return null
+    expect(await resolveAlias("React")).toBeNull();
+    expect(await resolveAlias("React.js")).toBeNull();
+    expect(await resolveAlias("ReactJS")).toBeNull();
+  });
+
+  it("does not affect entries for other pages", async () => {
+    await createPage("react", "React", ["React.js"]);
+    await createPage("vue", "Vue", ["Vue.js"]);
+    await buildAliasIndex();
+
+    // Remove only react
+    removeAliasForPage("react");
+
+    // Vue should still resolve
+    expect(await resolveAlias("Vue")).toBe("vue");
+    expect(await resolveAlias("Vue.js")).toBe("vue");
+    // React should not
+    expect(await resolveAlias("React")).toBeNull();
+  });
+
+  it("does nothing if no cached index exists", () => {
+    // Should not throw
+    resetAliasIndex();
+    removeAliasForPage("nonexistent");
+  });
+
+  it("removes slugified alias entries from bySlug", async () => {
+    await createPage("react", "React", ["React JS"]);
+    await buildAliasIndex();
+
+    // "React JS" slugifies to "react-js"
+    expect(await resolveAlias("React JS")).toBe("react");
+
+    removeAliasForPage("react");
+
+    // Slugified alias should also be gone
+    expect(await resolveAlias("React JS")).toBeNull();
   });
 });
 

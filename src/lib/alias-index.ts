@@ -186,6 +186,40 @@ export function updateAliasIndexForPage(
 }
 
 // ---------------------------------------------------------------------------
+// Removal (for delete)
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove all alias index entries pointing to the given slug.
+ *
+ * Called during page deletion to prevent stale aliases from resolving to
+ * a page that no longer exists. Without this, `resolveAlias(deletedTitle)`
+ * would still return the deleted slug until the server restarts and the
+ * index is rebuilt from disk.
+ *
+ * No-op if the cached index hasn't been built yet (nothing to clean up).
+ */
+export function removeAliasForPage(slug: string): void {
+  if (!cachedIndex) return; // No cached index to update
+
+  const index = cachedIndex;
+
+  // Remove all byAlias entries pointing to this slug
+  for (const [key, value] of index.byAlias) {
+    if (value === slug) {
+      index.byAlias.delete(key);
+    }
+  }
+
+  // Remove all bySlug entries pointing to this slug
+  for (const [key, value] of index.bySlug) {
+    if (value === slug) {
+      index.bySlug.delete(key);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Duplicate detection (for lint)
 // ---------------------------------------------------------------------------
 

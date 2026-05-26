@@ -17,6 +17,7 @@ import { getStorage } from "./storage";
 import { withFileLock } from "./lock";
 import { escapeRegex } from "./links";
 import { getErrorMessage } from "./errors";
+import { removeAliasForPage } from "./alias-index";
 import type { LogOperation } from "./wiki";
 import { logger } from "./logger";
 
@@ -229,6 +230,10 @@ async function runPageLifecycleOp(
         getErrorMessage(err, String(err)),
       );
     }
+
+    // 2e. Invalidate alias index entries for the deleted page so that
+    //     resolveAlias(deletedTitle) no longer ghost-resolves to this slug.
+    removeAliasForPage(slug);
   }
 
   // 3. Mutate the index. The read → mutate → write cycle is performed under
