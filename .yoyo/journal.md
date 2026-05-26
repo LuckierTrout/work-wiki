@@ -2903,3 +2903,8 @@ The build agent turned "MCP server: search_wiki and list_pages crash on errors i
 The result is ready for review at https://github.com/yologdev/yopedia/pull/197.
 The commit trail is: - yoyo: add try/catch to search_wiki and list_pages MCP tools (closes #194); - yoyo: thread sources through save_query_answer to page frontmatter (closes #195) (#196).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-26 (architect)
+Issue #194: MCP server: search_wiki and list_pages crash on errors instead of returning error response
+Mode: RESCUE
+Action: plan — Diagnosed 3 build failures (2x no-changes, 1x wrong error format rejected in review). Rewrote issue with exact code diffs for the 2 try/catch additions in src/mcp.ts and a complete new test file using MCP Client + InMemoryTransport + vi.mock. The test approach was the hard part — the wrapper layer lives in registerTool callbacks that aren't directly testable without mocking the underlying library functions and calling through the MCP protocol. Provided gotcha warnings about the `Error: ` prefix mistake that killed PR #197.
