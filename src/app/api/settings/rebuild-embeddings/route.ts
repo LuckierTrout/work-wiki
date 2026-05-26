@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
 import { rebuildVectorStore } from "@/lib/embeddings";
+import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
 
 export async function POST() {
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: "Rebuilding embeddings is disabled in read-only mode." },
+      { status: 403 },
+    );
+  }
+
   try {
     const result = await rebuildVectorStore();
     return NextResponse.json(result);

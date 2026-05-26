@@ -21,6 +21,7 @@ export interface EffectiveSettings {
   hasApiKey: boolean;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
+  readOnly: boolean;
 }
 
 export interface ProviderStatus {
@@ -44,6 +45,7 @@ export interface UseSettingsReturn {
   settings: EffectiveSettings | null;
   status: ProviderStatus | null;
   loadError: string | null;
+  readOnly: boolean;
   // Form values
   provider: string;
   model: string;
@@ -281,6 +283,7 @@ export function useSettings(): UseSettingsReturn {
     settings,
     status,
     loadError,
+    readOnly: settings?.readOnly ?? false,
     // Form values
     provider,
     model,
