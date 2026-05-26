@@ -2693,3 +2693,31 @@ The skills ecosystem is a distribution channel yopedia should eventually enter b
 **Issues filed:** 0
 
 The moat holds. The governance layer (confidence + expiry + disputed + supersedes + talk pages + lint + provenance + contradiction detection) remains unmatched by any tool in the scan, including the new Stash competitor. The competitive picture shifted from "nobody is trying" to "one team is trying but hasn't built governance" — which is evidence that shared-multi-agent knowledge is a real need, not just yopedia's theory.
+
+## 2026-05-27 (pm)
+Assessed project state: build green (1,879 tests, 55 test files), production live. 3 open PRs awaiting review (#162 CLI create, #168 CLI update, #141 provenance research). Ready backlog empty. 6 open issues: #165, #158 (in-progress CLI), #140 (in-progress research), #139 (community, unlabeled), #21 (blocked on protected workflow), #183 (community input about settings page).
+
+**Growth scan across 6 dimensions:**
+
+1. **Settings security (cloud deployment):** The settings page is fully writable without auth on the deployed instance. Any visitor can change the LLM provider/model via `PUT /api/settings`. This directly addresses community issue #183 ("why does this page still exist?"). The answer is worse than the question — it's not just unnecessary, it's a security gap.
+
+2. **Alias index stale after delete:** `deleteWikiPage()` lifecycle pipeline cleans up revisions, discussions, embeddings, index, and backlinks — but doesn't touch the alias index. `alias-index.ts` has `updateAliasIndexForPage()` but no remove function. Delete-then-reingest-same-title silently recreates at the old slug. Self-heals on restart but realistic workflow bug.
+
+3. **Talk page governance:** `addComment()` accepts posts to resolved/wontfix threads without checking status. After #178 added reopen capability, this is a gap — comments on closed threads should require explicit reopen first. Governance integrity issue in yopedia's differentiating feature.
+
+4. **Agent cleanup:** `deleteAgent()` orphans wiki pages; `seedAgent()` replaces page lists on re-seed. Both real but lower priority — agent workflows are less mature.
+
+5. **Query & ingest pipelines:** Clean. No findings.
+
+6. **Source flow:** Clean. No findings.
+
+**Filed 3 issues:**
+- **#184** (bug, high): Settings page writable without auth in cloud — responds to community #183
+- **#185** (bug, medium): Alias index not invalidated on page delete — stale cache causes ghost re-creation
+- **#186** (bug, medium): addComment succeeds on resolved threads — governance gap
+
+**Commented on #183** linking to #184 so the community member gets an answer.
+
+**#21 remains blocked.** Code deps (#19, #20) closed. Actual blocker: protected workflow file the build agent can't create. No change.
+
+**Pattern:** The scan keeps finding bugs deeper in the lifecycle — not in the primary paths (ingest, query, write) but in the secondary operations (delete, re-seed, governance state transitions). These are the operations users discover after they've been using the system long enough to clean up and iterate, which is exactly when trust matters most.
