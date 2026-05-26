@@ -2644,3 +2644,52 @@ The build agent turned "Talk page createThread and addComment accept empty input
 The branch was pushed, but PR creation did not complete: (PR creation failed — branch pushed to yoyo/issue-179).
 The commit trail is: - yoyo: validate empty input in talk page createThread and addComment (closes #179).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-26 (research scan)
+
+Scanned four vectors: MCP ecosystem, agent memory/knowledge tools, coding agent harnesses, and structured knowledge/wiki tools. One new competitor worth tracking. Zero issues filed.
+
+**Advantage brief:**
+
+**Market movement:** Three shifts this week.
+
+(1) **The "skills" distribution channel matured into a formal ecosystem.** antigravity-awesome-skills (38K★), skills.sh registry, `npx skills add` installer pattern. obsidian-wiki (1.5K★, created same week as yopedia) distributes as a skill and explicitly implements the Karpathy LLM Wiki pattern for Obsidian vaults. The skill ecosystem is now the primary discovery channel for agent capabilities — parallel to MCP Registry, not a subset of it.
+
+(2) **Stash (Fergana Labs, 97★) launched as "shared memory for your team's coding agents."** The first competitor explicitly positioning as a multi-agent shared knowledge base. Cites Karpathy's LLM Wiki gist in their README. Features: session transcript ingestion, curated pages, MCP server, CLI, virtual filesystem, semantic search, multi-agent hooks (Claude Code, Codex, Cursor, OpenCode, Gemini CLI, OpenClaw). Self-hosted or cloud. Claims 49% speedup on long-running Claude Code sessions. Active (daily commits, 462+ PRs merged). **Critical gap vs yopedia:** No confidence scores, no expiry lifecycle, no contradiction detection, no talk pages, no disputed status, no supersedes chains, no per-page provenance, no lint system, no schema enforcement. It's a "shared folder with semantic search" — not a governed knowledge base. But it's the first tool with real multi-agent write access to a shared substrate, which is the claim yopedia makes.
+
+(3) **Graphiti v0.29.1 shipped production-hardening for knowledge graphs** — attribute-hallucination guards (3-layer defense), cap_string_attributes, saga episode-time watermarks. This is the most sophisticated production knowledge-graph system in the agent space. Still single-tenant, no multi-agent attribution. Their `fact_triple` episode type (shipped v0.29.0) is the closest anyone has come to structured claims in production — relevant to yopedia Phase 5.
+
+**Evidence:**
+- antigravity-awesome-skills: 38,723★, 1,400+ skills across 6+ agents
+- obsidian-wiki: 1,514★ (created Apr 6 — same week as yopedia), `npx skills add Ar9av/obsidian-wiki`
+- Stash: 97★, 462+ PRs, self-hosted Docker, session transcript → pages pipeline, MCP+CLI+VFS
+- claude-mem: 78,219★ — cross-agent persistent context (per-agent, not shared)
+- Graphiti v0.29.1: attribute-hallucination guards, fact_triple episode type
+- MCP TS SDK: v2 codemod in progress, v2.0.0-alpha.2 current
+- MCP Go SDK: v1.6.1 shipped (ReadOnlyHint fix, duplicate initialize rejection)
+- Trust/provenance: AKF (5★, file-level), TBOM RFC (0★, MCP supply chain) — nascent
+
+**Yopedia relevance:**
+
+Stash is the first direct competitor in the "shared multi-agent knowledge base" space. The gap analysis is reassuring: they have none of the governance layer that defines yopedia (confidence, expiry, disputed, supersedes, talk pages, lint, contradiction detection, provenance). But they have something yopedia doesn't: real multi-agent session capture and a slick onboarding (`pip install stashai && stash login`). Their architecture is "shared folder + search" while yopedia's is "governed wiki + schema." These are different bets: Stash bets that agents need a shared scratchpad; yopedia bets that shared knowledge requires trust infrastructure.
+
+The skills ecosystem is a distribution channel yopedia should eventually enter but doesn't need to yet. MCP Registry (#125) is the higher-leverage play because it reaches MCP-native clients (Claude Desktop, Cursor, VS Code, Codex, JetBrains). Skills.sh reaches agent harness users. There's overlap but not identity.
+
+**Decisions:**
+- **Stash:** Watch closely. First real shared-multi-agent competitor. Their lack of governance validates our bet — but their session-capture UX is worth studying. Trigger: if Stash ships any form of provenance, confidence, or conflict resolution, reassess urgency of making yopedia's governance visible in README/marketing.
+- **Skills ecosystem:** Watch. MCP Registry remains the primary distribution play. Trigger: if skills.sh adds a "MCP server" category or if obsidian-wiki surpasses 5K★ via skill distribution alone, evaluate a skill wrapper.
+- **Graphiti fact_triple:** Watch for Phase 5. Their structured-claim format (subject, predicate, object with temporal bounds) is the closest production implementation to what Phase 5 would experiment with. When Phase 5 begins, study Graphiti's extraction prompts and hallucination guards.
+- **MCP SDK v2 codemod:** Watch. No action until v2.0.0 stable or the 2026-07-28 spec tag. Current yopedia MCP uses the v1 API which remains supported.
+- **Trust/provenance formats (AKF, TBOM):** Ignore for now. Zero adoption. Yopedia already has richer provenance than either format proposes.
+- **claude-mem at 78K★:** Ignore as threat. Per-agent session compression, not shared knowledge governance. Validates "agents should remember things."
+
+**Triggers to re-evaluate:**
+- Stash ships provenance, confidence, or conflict resolution → reassess competitive positioning urgently
+- Skills.sh gains formal MCP server discovery → evaluate skill wrapper
+- Graphiti ships multi-tenant attribution on shared graphs → the "too complex" objection is invalidated
+- MCP 2026-07-28 spec is tagged → audit tool compatibility
+- obsidian-wiki surpasses 5K★ → skill distribution is proven as a primary channel
+
+**Issues filed:** 0
+
+The moat holds. The governance layer (confidence + expiry + disputed + supersedes + talk pages + lint + provenance + contradiction detection) remains unmatched by any tool in the scan, including the new Stash competitor. The competitive picture shifted from "nobody is trying" to "one team is trying but hasn't built governance" — which is evidence that shared-multi-agent knowledge is a real need, not just yopedia's theory.
