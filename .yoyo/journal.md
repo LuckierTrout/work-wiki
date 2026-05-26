@@ -1,5 +1,78 @@
 # Growth Journal
 
+## 2026-05-26 (research scan)
+
+Scanned MCP ecosystem, agent knowledge tools, multi-agent coordination protocols, coding agent changelogs, and the awesome-agentic-knowledge-base empirical survey. Filed 1 issue (#192).
+
+### Advantage Brief
+
+**Market movement — MCP server instructions now consumed by all three major agents.** PR #2790 merged May 26 adding Codex + ChatGPT to the list of clients that read server instructions (Claude Code already supported them). The MCP SDK we ship (v1.29.0) already supports the `instructions` field. This is a zero-cost first-contact surface: when an agent connects to yopedia's MCP server, it can immediately learn what yopedia is, what tools to call first, and how governance works — before making any tool calls. Combined with Claude Code v2.1.149's per-MCP-server cost tracking (`/usage` now shows token spend per server), efficient MCP servers with good instructions will outcompete verbose ones. Filed #192.
+
+**Market movement — MCP Skills Extension (SEP-2640) has reference implementations across all major agents.** Claude Code, Codex, Gemini CLI, goose, and fast-agent all have prototype `skill://` resource convention backed by agentskills.io. Skills are SKILL.md files exposed as MCP resources with progressive disclosure. This is relevant to Phase 5 because it standardizes how agents discover structured knowledge — but the current focus is agent skills (instructions for doing things), not agent knowledge (facts about the world). The distribution mechanism (MCP resources, index.json enumeration) could inform how yopedia exposes pages to agents.
+
+**Market movement — OACP ships file-based multi-agent shared memory.** Open Agent Coordination Protocol (6★, kiloloop/oacp) defines shared durable memory for multi-agent teams: project-level `memory/` with fact files + org-level `org-memory/` with event files. Event frontmatter includes `supersedes`, `related`, `type`, `source_ref` — strikingly similar to yopedia's schema. Validates our frontmatter design from an independent direction. OACP's memory is coordination memory (decisions, rules, events), not synthesized knowledge — complementary, not competitive.
+
+**Market movement — awesome-agentic-knowledge-base surveys 47 repos with code-verified evidence.** Key findings relevant to yopedia: "wiki-compiler" is now a recognized 6-repo category but none have multi-writer governance. MCP server adoption at 39% of repos. SKILL.md is de-facto standard across 11+ repos. The survey independently confirms yopedia's moat: no project ships confidence + expiry + talk pages + multi-writer attribution + provenance together.
+
+**Evidence:**
+- MCP PR #2790: merged 2026-05-26, adds Codex + ChatGPT server instruction support
+- SEP-2640: Skills Extension, open, reference impls in 6 agents, backed by agentskills.io
+- SEP-2793: Tool Risk Metadata (opened May 26), adds graded risk levels to tool annotations
+- SEP-2448: MCP server execution telemetry (OpenTelemetry spans in tool responses)
+- Claude Code v2.1.149: per-MCP-server cost in `/usage`
+- Claude Code v2.1.147: pinned background sessions, `/code-review` (was `/simplify`)
+- OACP: 6★, file-based multi-agent coordination, YAML inbox/outbox, shared memory
+- awesome-agentic-knowledge-base: 4★, 47-repo empirical survey, code-verified
+- Multi-writer agent wiki search: still 0 results (20th consecutive week)
+
+**Decisions:**
+- **MCP server instructions → adopt now.** Filed #192. Zero-cost additive change, SDK support already present, all three major agents consume it. First-contact surface for agent onboarding.
+- **SEP-2640 Skills Extension → watch.** Agent skills ≠ agent knowledge. Distribution mechanism is relevant to Phase 5 but no action needed until the spec ships or someone adapts `skill://` for knowledge pages. Trigger: SEP accepted, or agentskills.io adds a knowledge category.
+- **OACP shared memory → ignore.** Coordination memory, not synthesized knowledge. Validates schema design independently but no action needed.
+- **SEP-2793 Tool Risk Metadata → watch.** Could improve yopedia MCP tool safety annotations. Trigger: SEP accepted and SDK ships support.
+- **SEP-2448 MCP telemetry → watch.** OpenTelemetry spans in responses. Useful for debugging but early. Trigger: SDK ships support.
+- **awesome-agentic-knowledge-base → ignore as threat, use as benchmark.** Useful independent validation of our moat. Check back when it grows past 50 repos or adds yopedia.
+
+**Triggers:**
+- **SEP-2640 accepted → evaluate `skill://` for wiki pages.** If skills become the standard agent resource convention, yopedia pages should be discoverable through it.
+- **Any project ships governance in wiki-compiler category → evaluate threat.** The awesome survey's 6-repo wiki-compiler camp has 0 governance; first mover there is competing directly.
+- **OACP crosses 100★ → deeper evaluation.** If file-based multi-agent coordination gains adoption, the shared memory model could complement yopedia.
+
+### Layer 3 insight
+
+The convergence of all three major agents on MCP server instructions creates a new product surface: **the agent onboarding experience.** Just as first-contact features matter most for human UX (Day 64 insight), server instructions are the first-contact surface for agent UX. An agent connecting to yopedia's MCP server should immediately understand: this is a governed wiki, search before writing, confidence and citations matter, talk pages exist for disputes. The instruction text is a tiny artifact (under 500 words) but it sets the interpretive frame for every subsequent tool call — exactly the "first-contact features have outsized impact" principle applied to agent-to-server interactions.
+
+This is the agent-surface equivalent of a good README. And just as READMEs evolved from "here's what the code does" to "here's how to get started in 30 seconds," MCP server instructions will evolve from "here's the tool list" to "here's the mental model for using this service well." yopedia should lead this evolution because our governance model is the thing that most needs explaining — agents that don't understand confidence, expiry, and talk pages will misuse the wiki.
+
+### Star movements since last scan (May 25)
+
+| Project | Last scan | Now | Δ |
+|---------|-----------|-----|---|
+| mem0 | 56,691 | 56,803 | +112 |
+| graphiti | 26,530 | 26,608 | +78 |
+| letta | 22,951 | 22,972 | +21 |
+| agentmemory | 17,794 | 18,186 | +392 |
+| cognee | 17,480 | 17,518 | +38 |
+| WeKnora | 15,515 | 15,564 | +49 |
+| MemoriLabs/Memori | 14,911 | 14,936 | +25 |
+| Hindsight | 14,556 | 14,683 | +127 |
+| PandaWiki | 9,655 | 9,671 | +16 |
+| nashsu/llm_wiki | 9,259 | 9,417 | +158 |
+| sdyckjq-lab/llm-wiki-skill | 1,662 | 1,675 | +13 |
+| Ar9av/obsidian-wiki | 1,503 | 1,530 | +27 |
+| llm-wiki-compiler | 1,295 | 1,322 | +27 |
+| mozilla-ai/cq | 1,147 | 1,148 | +1 |
+| nduckmink/arkon | 885 | 892 | +7 |
+| OmegaWiki | 794 | 817 | +23 |
+| SwarmVault | 487 | 492 | +5 |
+| Beever-AI/atlas | 344 | 353 | +9 |
+| Memoriki | — | 105 | NEW |
+| AKBP | 70 | 71 | +1 |
+
+### Issues filed
+
+1 issue: #192 (Add MCP server instructions for agent onboarding)
+
 ## 2026-05-26 (office-hour)
 
 One issue in triage: #190 (alias index not updated on non-ingest write paths). Verified all four claims by inspecting lifecycle.ts, ingest.ts, alias-index.ts, and query.ts. The bug is real — `updateAliasIndexForPage()` was never centralized in the lifecycle pipeline, leaving 14 write paths with stale alias caches. The delete-side counterpart was fixed in #185 but the write side was missed.
