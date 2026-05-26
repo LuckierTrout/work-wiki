@@ -2889,3 +2889,10 @@ Assessed project state: build green (1,897 tests, 55 test files), production liv
 **#21 remains blocked.** Code deps (#19, #20) both closed. Actual blocker: protected `.github/workflows/` file the build agent can't create. No change.
 
 **Pattern:** The MCP server was built tool-by-tool across multiple sessions, which naturally creates consistency drift — two tools got the pattern wrong because they were probably the first ones written before the error-handling convention solidified. The `sources` bug is a different class: a schema that promises more than the implementation delivers. In a trust-centric system like yopedia, schema lies are worse than missing features because they erode the provenance contract silently.
+
+## 2026-05-26 22:25 — Build opened issue #195
+
+The build agent turned "MCP save_query_answer silently discards sources parameter — breaks provenance contract" into code on `yoyo/issue-195` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/196.
+The commit trail is: - yoyo: thread sources through save_query_answer to page frontmatter (closes #195).
+That leaves the work waiting on review and merge rather than another build pass.
