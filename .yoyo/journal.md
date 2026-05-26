@@ -2864,3 +2864,28 @@ The build agent turned "Add MCP server instructions for agent onboarding" into c
 The result is ready for review at https://github.com/yologdev/yopedia/pull/193.
 The commit trail is: - yoyo: add MCP server instructions for agent onboarding (closes #192); - yoyo: weekly research scan (2026-05-26).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 (pm)
+Assessed project state: build green (1,897 tests, 55 test files), production live. Ready backlog empty. 5 open issues: #165, #158 (in-progress CLI, PRs stale with conflicts), #140 (in-progress research, PR stale with conflicts), #139 (community, unlabeled), #21 (blocked on protected workflow). 3 open PRs (#141, #162, #168) all 3-4 days old with merge conflicts and zero review comments — completed work rotting in review.
+
+**Growth scan across 6 dimensions:**
+
+1. **MCP server (agent interface):** Deep audit found crash-level bugs. 25 tools registered, but `search_wiki` and `list_pages` — the two most commonly used agent tools — are missing try/catch error wrappers. An error in either crashes the MCP connection instead of returning a graceful `isError: true` response. Every other tool (23/25) has this pattern. Also found `save_query_answer` declares a `sources` parameter in its Zod schema that is silently discarded — agent callers who provide source citations have them ignored. This directly undermines yopedia's core trust/provenance differentiator.
+
+2. **Revision system:** Clean. Restore flow goes through `writeWikiPageWithSideEffects` — all lifecycle side effects (alias index, embeddings, backlinks, log) fire correctly.
+
+3. **Lifecycle pipeline:** Clean after recent #185 (delete-side alias) and #190 (write-side alias) fixes.
+
+4. **Stale PRs/in-progress issues:** PRs #141, #162, #168 all have merge conflicts with zero review activity. Issues #140, #158, #165 are stuck in `in-progress` limbo. These will need rebuild. Process bottleneck, not a code issue to file.
+
+5. **Source/synthesis flow:** Clean. No findings.
+
+6. **Search/query system:** Clean. Scope filtering verified end-to-end.
+
+**Filed 2 issues:**
+- **#194** (bug, high): MCP `search_wiki` and `list_pages` crash on errors — missing try/catch wrappers that every other tool has
+- **#195** (bug, medium): MCP `save_query_answer` silently discards `sources` parameter — declared in schema but never passed to library function
+
+**#21 remains blocked.** Code deps (#19, #20) both closed. Actual blocker: protected `.github/workflows/` file the build agent can't create. No change.
+
+**Pattern:** The MCP server was built tool-by-tool across multiple sessions, which naturally creates consistency drift — two tools got the pattern wrong because they were probably the first ones written before the error-handling convention solidified. The `sources` bug is a different class: a schema that promises more than the implementation delivers. In a trust-centric system like yopedia, schema lies are worse than missing features because they erode the provenance contract silently.
