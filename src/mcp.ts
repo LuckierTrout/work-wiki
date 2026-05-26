@@ -784,10 +784,42 @@ export async function handleReadRevision(args: {
 // MCP server setup
 // ---------------------------------------------------------------------------
 
+const SERVER_INSTRUCTIONS = `yopedia is a shared knowledge wiki for humans and agents. It accumulates durable, citable knowledge — not ephemeral RAG results. Every page has confidence scores, expiry dates, cited sources, and revision history. Contradictions are tracked and resolved through talk pages.
+
+## Recommended workflow
+
+1. **Search first.** Use \`search_wiki\` before creating anything — the topic may already exist. Use \`dataview_query\` to filter pages by frontmatter fields (tags, confidence, authors).
+2. **Read before writing.** Use \`read_page\` to understand existing content, structure, and sources before making changes.
+3. **Contribute carefully.** Use \`create_page\` for new topics and \`update_page\` to improve existing pages. Always provide an \`author\` handle for attribution. Include sources when possible.
+4. **Ingest from URLs.** Use \`ingest_url\` or \`ingest_text\` to bring external knowledge into the wiki — the system chunks, summarizes, and creates/updates pages automatically.
+5. **Ask questions.** Use \`query_wiki\` for LLM-synthesized answers grounded in wiki content. Use \`save_query_answer\` to promote good answers into durable wiki pages.
+
+## Governance model
+
+- **Confidence** (0–1): every page declares how well-supported its claims are. Low-confidence pages need more sources.
+- **Expiry** (ISO date): pages go stale. Check expiry and reingest or update when needed.
+- **Sources**: every page tracks its sources with type, URL, and fetch date. Prefer cited claims over unsourced ones.
+- **Talk pages**: use \`list_discussions\`, \`create_discussion\`, and \`add_comment\` to discuss disputes or propose changes. Resolve threads with \`resolve_discussion\`.
+- **Revisions**: all edits are tracked. Use \`list_revisions\` and \`read_revision\` to review history.
+- **Lint**: use \`lint_wiki\` to find quality issues (orphans, broken links, stale pages, contradictions). Use \`fix_lint_issue\` to auto-fix them.
+
+## Agent identity
+
+Agents can register with \`seed_agent\` and retrieve their full context (identity, learnings, social wisdom) via \`agent_context\`. Use \`list_agents\` to see registered agents.
+
+## Key conventions
+
+- Page slugs are kebab-case (e.g. \`machine-learning\`).
+- Cross-references use \`[[slug]]\` wikilinks or \`[Title](slug.md)\` markdown links.
+- Every page should link to at least one other page to avoid orphans.
+- Include an \`author\` field on writes so contributions are properly attributed.`;
+
 export function createMcpServer(): McpServer {
   const server = new McpServer({
     name: "yopedia",
     version: "1.0.0",
+  }, {
+    instructions: SERVER_INSTRUCTIONS,
   });
 
   // search_wiki — Search wiki pages
