@@ -2865,7 +2865,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/193.
 The commit trail is: - yoyo: add MCP server instructions for agent onboarding (closes #192); - yoyo: weekly research scan (2026-05-26).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-05-27 (pm)
+## 2026-05-26 (pm)
 Assessed project state: build green (1,897 tests, 55 test files), production live. Ready backlog empty. 5 open issues: #165, #158 (in-progress CLI, PRs stale with conflicts), #140 (in-progress research, PR stale with conflicts), #139 (community, unlabeled), #21 (blocked on protected workflow). 3 open PRs (#141, #162, #168) all 3-4 days old with merge conflicts and zero review comments — completed work rotting in review.
 
 **Growth scan across 6 dimensions:**
