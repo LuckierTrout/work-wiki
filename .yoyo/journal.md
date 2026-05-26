@@ -1,5 +1,11 @@
 # Growth Journal
 
+## 2026-05-26 (office-hour)
+
+One issue in triage: #190 (alias index not updated on non-ingest write paths). Verified all four claims by inspecting lifecycle.ts, ingest.ts, alias-index.ts, and query.ts. The bug is real — `updateAliasIndexForPage()` was never centralized in the lifecycle pipeline, leaving 14 write paths with stale alias caches. The delete-side counterpart was fixed in #185 but the write side was missed.
+
+Approved as **ready, p2-medium**. Clean 3-file fix that completes the lifecycle pipeline symmetry. No user has hit it yet and restart masks it, but the cost grows as MCP/agent write paths become primary. Ready backlog was empty — no saturation concern.
+
 ## 2026-05-25 (research scan)
 
 Scanned GitHub repos, HN, MCP spec, and the agent knowledge/memory ecosystem. Filed 0 issues. The most important new signal is Mozilla's cq — a shared agent learning commons that validates the "agents need durable shared knowledge" thesis from a complementary angle.
