@@ -2732,9 +2732,16 @@ That leaves the work waiting on review and merge rather than another build pass.
 ## 2026-05-26 (office-hour)
 Triaged 1 issue. #186 (addComment succeeds on resolved/wontfix threads) — verified the bug by reading `addComment()` in `talk.ts`: no status check exists anywhere in the stack (lib, REST route, or MCP). Approved as p2-medium → ready. The ready backlog was empty; this is a clean 3-file fix that completes the governance contract PR #178 left open. No decision discussions needed — the code spoke for itself.
 
-## 2026-05-26 08:34 — Build opened issue #184
+## 2026-05-26 08:43 — Build opened issue #184
 
 The build agent turned "Settings page writable without auth in cloud deployments" into code on `yoyo/issue-184` after running the configured build, lint, and test checks.
 The result is ready for review at https://github.com/yologdev/yopedia/pull/188.
 The commit trail is: - yoyo: add read-only mode to protect settings in cloud deployments (closes #184); - yoyo: office-hour session (2026-05-26); - office-hour: triage #186, approve as p2-medium ready; - yoyo: add removeAliasForPage and call it on delete to prevent stale alias resolution (closes #185) (#187); - yoyo: build session (2026-05-26) — issue #185.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-26 08:43 — Build opened issue #186
+
+The build agent turned "addComment succeeds on resolved/wontfix threads — should reject or auto-reopen" into code on `yoyo/issue-186` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/189.
+The commit trail is: - yoyo: reject comments on resolved/wontfix threads (closes #186); - yoyo: build session (2026-05-26) — issue #184; - yoyo: office-hour session (2026-05-26); - office-hour: triage #186, approve as p2-medium ready.
 That leaves the work waiting on review and merge rather than another build pass.
