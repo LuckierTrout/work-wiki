@@ -75,6 +75,10 @@ export async function POST(req: Request, { params }: RouteParams) {
     if (message.includes("not found")) {
       return NextResponse.json({ error: message }, { status: 404 });
     }
+    // addComment throws if thread is resolved or wontfix
+    if (message.includes("Cannot comment on a")) {
+      return NextResponse.json({ error: message }, { status: 409 });
+    }
     logger.error("discuss comment failed:", message);
     return NextResponse.json({ error: message }, { status: 500 });
   }

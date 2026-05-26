@@ -174,6 +174,12 @@ export async function addComment(
       );
     }
 
+    if (thread.status === "resolved" || thread.status === "wontfix") {
+      throw new Error(
+        `Cannot comment on a ${thread.status} thread — reopen it first.`,
+      );
+    }
+
     const now = new Date().toISOString();
     const comment: TalkComment = {
       id: uniqueTimestamp(),
