@@ -2729,5 +2729,5 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/187.
 The commit trail is: - yoyo: add removeAliasForPage and call it on delete to prevent stale alias resolution (closes #185).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2025-07-26 (office-hour)
+## 2026-05-26 (office-hour)
 Triaged 1 issue. #186 (addComment succeeds on resolved/wontfix threads) — verified the bug by reading `addComment()` in `talk.ts`: no status check exists anywhere in the stack (lib, REST route, or MCP). Approved as p2-medium → ready. The ready backlog was empty; this is a clean 3-file fix that completes the governance contract PR #178 left open. No decision discussions needed — the code spoke for itself.
