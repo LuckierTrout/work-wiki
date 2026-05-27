@@ -2995,7 +2995,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/197.
 The commit trail is: - yoyo: wrap search_wiki and list_pages MCP callbacks in try/catch (closes #194).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2025-07-19 (office-hour)
+## 2026-05-27 (office-hour)
 
 One triage issue today: #198 (research — add `destructiveHint` and `idempotentHint` annotations to MCP tools).
 
