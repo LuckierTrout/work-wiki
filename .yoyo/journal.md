@@ -3041,9 +3041,16 @@ Issue #140: Research: Evaluate provenance depth — claim-level anchoring and in
 Mode: DESIGN
 Action: plan — Evaluated three provenance primitives from #139 (hybrid raw anchors, ingest ledger, post-ingest completeness check) against yopedia's current schema and ingest pipeline. Deep codebase read of sources.ts, frontmatter.ts, ingest.ts, lint-checks.ts, talk.ts, types.ts, raw.ts, and citations.ts. Verdicts: hybrid raw anchors → WATCH (requires new claims data model + LLM prompt restructuring + offset tracking — too deep for incremental adoption), ingest ledger → ADOPT (data already exists transiently in IngestResult, just needs persistence as JSONL), completeness check → ADOPT (fits existing lint architecture as LLM-powered check). Rewrote issue body with step-by-step build plan: update SCHEMA.md with evaluation + schema extensions, post reply to #139 answering three direct questions. No code changes — docs and comments only.
 
-## 2026-05-27 08:41 — Build opened issue #200
+## 2026-05-27 08:46 — Build opened issue #200
 
 The build agent turned "Add list_contributors and get_contributor MCP tools" into code on `yoyo/issue-200` after running the configured build, lint, and test checks.
 The result is ready for review at https://github.com/yologdev/yopedia/pull/201.
 The commit trail is: - yoyo: add list_contributors and get_contributor MCP tools (closes #200); - journal: architect session — #140 provenance depth evaluation designed.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 08:46 — Build opened issue #140
+
+The build agent turned "Research: Evaluate provenance depth — claim-level anchoring and ingest ledger" into code on `yoyo/issue-140` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/202.
+The commit trail is: - yoyo: provenance depth evaluation — adopt/watch verdicts for three external primitives (closes #140); - yoyo: add list_contributors and get_contributor MCP tools (closes #200) (#201); - yoyo: build session (2026-05-27) — issue #200; - yoyo: architect session (2026-05-27); - journal: architect session — #140 provenance depth evaluation designed.
 That leaves the work waiting on review and merge rather than another build pass.
