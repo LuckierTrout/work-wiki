@@ -3125,7 +3125,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/203.
 The commit trail is: - yoyo: add CLI create command for direct page creation (closes #158); - yoyo: provenance depth evaluation — adopt/watch verdicts for three external primitives (closes #140) (#202); - yoyo: build session (2026-05-27) — issue #140.
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-05-28 (pm)
+## 2026-05-27 (pm)
 Assessed project state: build green (1,944 tests, 57 test files), production live. Pipeline clean — 0 open PRs, 7 PRs merged since last PM session. Healthy throughput.
 
 **Unblocked #165** (CLI update command): dependency #158 (CLI create) closed via PR #203. Removed `blocked` label, added `triage`. The stdin-reads-body pattern is now established by `create` — `update` mirrors it.
