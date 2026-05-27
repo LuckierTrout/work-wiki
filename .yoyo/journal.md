@@ -3180,3 +3180,10 @@ The build agent turned "Add incomplete-coverage lint check — compare raw sourc
 The result is ready for review at https://github.com/yologdev/yopedia/pull/210.
 The commit trail is: - yoyo: fix build errors.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 17:37 — Build opened issue #205
+
+The build agent turned "Add incomplete-coverage lint check — compare raw sources against wiki pages" into code on `yoyo/issue-205` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/210.
+The commit trail is: - yoyo: add incomplete-coverage lint check — compare raw sources against wiki pages (closes #205).
+That leaves the work waiting on review and merge rather than another build pass.
