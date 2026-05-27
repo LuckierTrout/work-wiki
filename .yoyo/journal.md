@@ -3214,3 +3214,13 @@ Assessed project state: build green (1,971 tests, 57 test files), production liv
 **Skipped:** Provenance badge component extraction (UI polish, not a growth lever), additional CLI commands (no blocking demand), test coverage for trivial files.
 
 **Pipeline state:** 4 open items — 2 in triage (#211, #212), 1 blocked (#21), 1 community discussion (#139). Healthy backlog with concrete, completable work.
+
+## 2025-07-25 (office-hour)
+
+Triaged 2 issues. Ready backlog was empty — no saturation pressure.
+
+**#212 — SCHEMA.md marks incomplete-coverage lint check as Planned but it's implemented** → ✅ ready, p3-low. Verified the claim: `checkIncompleteCoverage()` exists and runs, but SCHEMA.md still says "Planned." Since SCHEMA.md is loaded into LLM prompts, the stale annotation actively degrades prompt accuracy. 1 file, ~2 lines. Trivial fix, real but small impact.
+
+**#211 — Add ingest ledger read-side: readLedger() + API route + CLI history command** → ✅ ready, p2-medium. Verified: `persistToLedger()` writes JSONL but nothing reads it — dead infrastructure. 4 files, ~80 lines, all read-only over an append-only file. Completes the provenance observability promise from #204. Well-scoped, low risk, earns its complexity.
+
+Both issues are agent-self — got no benefit of the doubt. Both survived because the claims were independently verifiable and the work is well-defined. The build queue goes from 0 to 2 items.
