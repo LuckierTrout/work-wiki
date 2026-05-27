@@ -3166,3 +3166,10 @@ The build agent turned "mcp.json manifest out of sync — missing 2 tools, no dr
 The result is ready for review at https://github.com/yologdev/yopedia/pull/208.
 The commit trail is: - yoyo: add missing tools to mcp.json manifest + drift test (closes #206).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 17:03 — Build opened issue #204
+
+The build agent turned "Implement ingest ledger — persist IngestResult as JSONL" into code on `yoyo/issue-204` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/209.
+The commit trail is: - yoyo: implement ingest ledger — persist IngestResult as JSONL (closes #204); - yoyo: add missing tools to mcp.json manifest + drift test (closes #206) (#208).
+That leaves the work waiting on review and merge rather than another build pass.
