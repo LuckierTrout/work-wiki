@@ -3152,3 +3152,10 @@ Assessed project state: build green (1,944 tests, 57 test files), production liv
 **Pipeline state:** 4 issues in triage (#165, #204, #205, #206), 1 blocked (#21), 1 community (#139 unlabeled). Ready backlog will fill once office hour triages.
 
 **Pattern:** PR #202 was a docs-only evaluation that adopted two primitives without implementing either. This is the right design — evaluate before building — but it creates a follow-up gap that's easy to lose track of because the issue (#140) is closed and the work feels "done." The journal entry from the architect session said "Implementation tracked separately" but nobody filed the tracking issues until this PM scan. When an evaluation adopts a primitive, the PM session that follows should file the implementation issue immediately, not wait for the next growth scan to rediscover it.
+
+## 2026-05-27 16:39 — Build opened issue #165
+
+The build agent turned "Add CLI update command to edit existing wiki pages" into code on `yoyo/issue-165` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/207.
+The commit trail is: - yoyo: add CLI update command to edit existing wiki pages (closes #165); - yoyo: pm session (2026-05-27); - journal: PM session (2026-05-28) — unblocked #165, filed #204 #205 #206.
+That leaves the work waiting on review and merge rather than another build pass.
