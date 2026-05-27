@@ -294,8 +294,10 @@ local expectations. Do not duplicate full agent prompts here.
   is contradictory, too large, or unsafe
 - Claims one issue: swaps `ready` → `in-progress`
 - Creates branch `yoyo/issue-{N}`, implements, runs build/lint/test
+- If a previous PR review requested changes, consumes the latest structured
+  `yoyo-review-retry` issue comment as required correction context
 - Build-fix loop: up to 5 attempts to fix failures
-- On success: opens PR with "Closes #N"
+- On success: opens or updates a PR with "Closes #N"
 - On failure: reverts, comments reason, re-queues as `ready`
 - **No concurrency limit** — multiple build agents run in parallel on
   different issues
@@ -305,7 +307,9 @@ local expectations. Do not duplicate full agent prompts here.
   acceptance criteria, and protected-file violations without noisy nitpicks
 - Reviews PR diff against linked issue's acceptance criteria
 - Checks: build passes, tests added, protected files untouched
-- Approves + auto-merges if passing; requests changes if not
+- Merges if passing and mergeable
+- If changes are needed, writes a structured `yoyo-review-retry` block on the
+  linked issue and re-queues it to `ready` for Build
 - Handles merge conflicts via rebase
 
 ### Decision Discussions
@@ -432,7 +436,7 @@ Filed (PM / Research / Human) → [triage]
   → Build Agent claims → [in-progress] + branch
   → PR opened → Review Agent reviews
     → approved → auto-merge → issue closes
-    → changes requested → build agent fixes
+    → changes requested → structured retry block + [ready] → build agent fixes
 ```
 
 ### Label Taxonomy

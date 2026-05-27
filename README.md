@@ -81,10 +81,10 @@ Six specialized agents form a self-healing pipeline. No single agent does everyt
     |            |    |  bad → close         |    | acceptance |
     | Files max  |    |                      |    | criteria   |
     | 3 issues   |    | Adds priority        |    |            |
-    └─────┬──────┘    └───┬─────────┬────────┘    | Approves + |
-          |               |         |              | auto-merge |
-          v               |         |              | or request |
-     ┌─────────┐          |         |              | changes    |
+    └─────┬──────┘    └───┬─────────┬────────┘    | Merges if  |
+          |               |         |              | passing;   |
+          v               |         |              | requests   |
+     ┌─────────┐          |         |              | retry      |
      |   PM    |          |         |              └──────┬─────┘
      | Daily   |          |         |                     |
      | 6am     |          v         v                     |
