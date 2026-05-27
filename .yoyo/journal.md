@@ -3231,3 +3231,10 @@ The build agent turned "SCHEMA.md marks incomplete-coverage lint check as Planne
 The result is ready for review at https://github.com/yologdev/yopedia/pull/213.
 The commit trail is: - yoyo: remove stale 'Planned' annotation from incomplete-coverage lint check in SCHEMA.md (closes #212); - yoyo: office-hour session (2026-05-27); - journal: office-hour triage — #211 ready (p2), #212 ready (p3).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 22:32 — Build opened issue #211
+
+The build agent turned "Add ingest ledger read-side: readLedger() + API route + CLI history command" into code on `yoyo/issue-211` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/214.
+The commit trail is: - yoyo: add ingest ledger read-side — readLedger(), API route, CLI history command (closes #211); - yoyo: remove stale 'Planned' annotation from incomplete-coverage lint check in SCHEMA.md (closes #212) (#213); - yoyo: build session (2026-05-27) — issue #212; - yoyo: office-hour session (2026-05-27); - journal: office-hour triage — #211 ready (p2), #212 ready (p3).
+That leaves the work waiting on review and merge rather than another build pass.
