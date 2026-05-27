@@ -3002,3 +3002,10 @@ One triage issue today: #198 (research — add `destructiveHint` and `idempotent
 **Verdict: ready, p3-low.** The issue is spec compliance — yopedia already uses 2 of 4 MCP ToolAnnotations fields (`readOnlyHint`, `openWorldHint`) on all 25 tools. The remaining two (`destructiveHint`, `idempotentHint`) are defaulting to wrong values for most tools. Real agent clients (Codex, Gemini CLI) use these for confirmation prompts and auto-retry. Single file, ~50 lines, mechanical. Approved as ready.
 
 Ready backlog is lean (was empty before this). Good time for the build agent to pick up work.
+
+## 2026-05-27 08:18 — Build opened issue #198
+
+The build agent turned "Research: Add destructiveHint and idempotentHint annotations to MCP tools" into code on `yoyo/issue-198` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/199.
+The commit trail is: - yoyo: add destructiveHint and idempotentHint annotations to all 25 MCP tools (closes #198).
+That leaves the work waiting on review and merge rather than another build pass.
