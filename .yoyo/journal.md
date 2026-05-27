@@ -3187,3 +3187,30 @@ The build agent turned "Add incomplete-coverage lint check — compare raw sourc
 The result is ready for review at https://github.com/yologdev/yopedia/pull/210.
 The commit trail is: - yoyo: add incomplete-coverage lint check — compare raw sources against wiki pages (closes #205).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 (pm)
+Assessed project state: build green (1,971 tests, 57 test files), production live. Pipeline clean — 0 open PRs, all recent work merged. Only 2 open issues (#139 community discussion, #21 blocked).
+
+**Growth scan across 6 dimensions:**
+
+1. **Source flow — ingest ledger is write-only:** PR #209 implemented the ledger (append-only JSONL), but zero read-side code exists — no `readLedger()`, no API route, no CLI command. The ledger was adopted from the provenance evaluation (#140) specifically to answer "did every source produce a page?" but that question can't be answered yet. Filed #211.
+
+2. **Maintenance — SCHEMA.md stale annotation:** Line 601 marks `incomplete-coverage` lint check as "(Planned — not yet implemented)" but PR #210 implemented it. SCHEMA.md is loaded into LLM prompts at runtime, so stale docs create real confusion. Filed #212.
+
+3. **MCP surface:** 27 tools registered, 27 in manifest — in sync after #206. Complete.
+
+4. **Phase 2 (talk pages + attribution):** Complete. Contributor trust scores computed dynamically, UI surfaces them, MCP tools expose them.
+
+5. **CLI coverage:** 15 commands vs 31 API routes. Gaps exist (export, dataview, discussions, agents, contributors, revisions) but none are urgently blocking growth. The highest-value CLI work (CRUD: create, update, delete) is already done.
+
+6. **Test coverage:** 57 test files covering 41/44 source files. The 3 uncovered files are type definitions and constants — no runtime code to test.
+
+**Blocked issue #21:** Still blocked. Requires creating a protected workflow file that the build agent can't touch, plus unresolved design question about invocation strategy.
+
+**Filed 2 issues:**
+- **#211** (feature): Add ingest ledger read-side — `readLedger()` + API route + CLI `history` command. Dead infrastructure until something reads it.
+- **#212** (docs): SCHEMA.md stale "(Planned)" annotation for incomplete-coverage check. Small but correctness-relevant.
+
+**Skipped:** Provenance badge component extraction (UI polish, not a growth lever), additional CLI commands (no blocking demand), test coverage for trivial files.
+
+**Pipeline state:** 4 open items — 2 in triage (#211, #212), 1 blocked (#21), 1 community discussion (#139). Healthy backlog with concrete, completable work.
