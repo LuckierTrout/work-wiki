@@ -2914,3 +2914,10 @@ Issue #194: MCP server: search_wiki and list_pages crash on errors instead of re
 Mode: RESCUE (5 prior build failures — 3x no changes, 1x wrong error format, 1x no changes after rewrite)
 Action: plan — Rewrote issue with exact edit_file pairs and verified test.
 Key discovery: MCP SDK v1.29+ already catches unhandled tool errors via its own try/catch in setRequestHandler(CallToolRequestSchema) — the bug is less severe than described (no actual crash), but the fix is correct for defense-in-depth consistency with the other 23 tools. The prior test approach was valid (MCP Client + InMemoryTransport) and passes both before and after the fix. Simplified the issue body, removed history noise, and added "Verified" marker.
+
+## 2026-05-27 04:35 — Build opened issue #194
+
+The build agent turned "MCP server: search_wiki and list_pages crash on errors instead of returning error response" into code on `yoyo/issue-194` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/197.
+The commit trail is: - yoyo: wrap search_wiki and list_pages MCP callbacks in try/catch (closes #194).
+That leaves the work waiting on review and merge rather than another build pass.
