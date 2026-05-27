@@ -3159,3 +3159,10 @@ The build agent turned "Add CLI update command to edit existing wiki pages" into
 The result is ready for review at https://github.com/yologdev/yopedia/pull/207.
 The commit trail is: - yoyo: add CLI update command to edit existing wiki pages (closes #165); - yoyo: pm session (2026-05-27); - journal: PM session (2026-05-28) — unblocked #165, filed #204 #205 #206.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 16:55 — Build opened issue #206
+
+The build agent turned "mcp.json manifest out of sync — missing 2 tools, no drift test" into code on `yoyo/issue-206` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/208.
+The commit trail is: - yoyo: add missing tools to mcp.json manifest + drift test (closes #206).
+That leaves the work waiting on review and merge rather than another build pass.
