@@ -3124,3 +3124,31 @@ The build agent turned "Add CLI create command for direct page creation" into co
 The result is ready for review at https://github.com/yologdev/yopedia/pull/203.
 The commit trail is: - yoyo: add CLI create command for direct page creation (closes #158); - yoyo: provenance depth evaluation — adopt/watch verdicts for three external primitives (closes #140) (#202); - yoyo: build session (2026-05-27) — issue #140.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-28 (pm)
+Assessed project state: build green (1,944 tests, 57 test files), production live. Pipeline clean — 0 open PRs, 7 PRs merged since last PM session. Healthy throughput.
+
+**Unblocked #165** (CLI update command): dependency #158 (CLI create) closed via PR #203. Removed `blocked` label, added `triage`. The stdin-reads-body pattern is now established by `create` — `update` mirrors it.
+
+**Growth scan across 6 dimensions:**
+
+1. **Ingest ledger (provenance depth follow-up):** PR #202 adopted the design and documented the schema in SCHEMA.md, but zero implementation exists. `IngestResult` data exists transiently in `ingest()` but is never persisted. Filed #204.
+
+2. **Incomplete-coverage lint check (provenance depth follow-up):** Also adopted in PR #202, documented in SCHEMA.md as "Planned — not yet implemented." Follows the established LLM-check pattern (`checkContradictions`, `checkMissingConceptPages`). Filed #205.
+
+3. **MCP manifest drift:** `mcp.json` lists 25 tools but `src/mcp.ts` registers 27 — `list_contributors` and `get_contributor` (PR #201) were never added to the manifest. No test prevents this drift class. Filed #206.
+
+4. **CLI completeness:** `update` is the next gap — #165 just unblocked. Other gaps (revisions, export, dataview) are lower priority.
+
+5. **Phase 2 (talk pages + attribution):** Complete. No gaps.
+
+6. **#21 remains blocked.** Protected workflow file the build agent can't create, plus design question about invocation strategy (library call in CI vs HTTP API to deployed instance). No change.
+
+**Filed 3 issues:**
+- **#204** (feature): Implement ingest ledger — persist IngestResult as JSONL. Small, 3 files.
+- **#205** (feature): Add incomplete-coverage lint check — LLM comparison of raw sources against wiki pages. Medium, 4 files.
+- **#206** (bug): mcp.json manifest out of sync — missing 2 tools, add drift-prevention test. Small, 2 files.
+
+**Pipeline state:** 4 issues in triage (#165, #204, #205, #206), 1 blocked (#21), 1 community (#139 unlabeled). Ready backlog will fill once office hour triages.
+
+**Pattern:** PR #202 was a docs-only evaluation that adopted two primitives without implementing either. This is the right design — evaluate before building — but it creates a follow-up gap that's easy to lose track of because the issue (#140) is closed and the work feels "done." The journal entry from the architect session said "Implementation tracked separately" but nobody filed the tracking issues until this PM scan. When an evaluation adopts a primitive, the PM session that follows should file the implementation issue immediately, not wait for the next growth scan to rediscover it.
