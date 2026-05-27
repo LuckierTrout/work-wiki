@@ -1,5 +1,78 @@
 # Growth Journal
 
+## 2026-05-27 (research scan)
+
+Scanned MCP ecosystem evolution, coding agent releases (Claude Code, Codex, Gemini CLI), Karpathy LLM Wiki clone explosion, agent memory incumbents, and emergent "agent wiki" category competitors. Filed 1 issue (#198).
+
+### Advantage Brief
+
+**Market movement 1 — Karpathy LLM Wiki clone explosion: 15+ repos in 7 days.**
+Evidence: GitHub search shows at least 15 new LLM-wiki repos created May 20–27 (ddsyasas/llm-wiki 15★, pawel-cell/llm-wiki-agent 12★, wiki-forge, llm-wiki-obsidian-agent, plus ~10 more). A Karpathy post/video appears to have triggered a Cambrian explosion of personal wiki builders. All are local-first, single-user, Markdown-on-disk, no governance, no provenance, no multi-writer.
+Relevance: Validates the pattern name and creates massive search demand for "LLM wiki." yopedia is a full tier above — none of these clones have confidence, talk pages, attribution, or MCP. The explosion creates a positioning opportunity: yopedia is "the LLM wiki that grew up."
+Decision: **Watch, exploit for positioning.** Not a code change — a narrative opportunity. The wave proves demand; our job is to be findable when people outgrow the personal version.
+Trigger: Any clone ships governance or multi-writer → evaluate as direct competitor.
+
+**Market movement 2 — Onyx/Danswer ships agent-wiki (9★, 3 weeks old, backed by 29.8k★ company).**
+Evidence: onyx-dot-app/agent-wiki created May 6, pushed May 27 (today). "A self-updating wiki for human/agent collaboration." Three update pathways (MCP push, API, human edits). LLM-powered triggers for natural-language event subscriptions. Docker + Kubernetes. Python. Backed by Onyx (formerly Danswer), a well-funded AI platform company with enterprise customers.
+Relevance: This is the closest philosophical match to yopedia — "workspace for humans and agents to collaborate." But: no provenance, no confidence, no talk pages, no knowledge graph, no public encyclopedia model. Currently positioned as internal team workspace, not public knowledge. At 9★ it's embryonic. The trigger system (natural-language subscriptions on file changes) is a genuinely novel UX pattern worth studying.
+Decision: **Watch closely.** Most dangerous long-term competitor due to funding and engineering resources.
+Trigger: Crosses 100★, ships provenance/confidence, or pivots to public knowledge → re-evaluate urgency.
+
+**Market movement 3 — Codex + Gemini CLI ship parallel MCP execution for readOnlyHint tools.**
+Evidence: Codex rust-v0.134.0 (May 26) — PR #23750: "Allow parallel MCP tool calls when annotated readOnly." Gemini CLI v0.43.0 (May 22) — same pattern. Both agents now call read-only MCP tools concurrently rather than sequentially.
+Relevance: yopedia's MCP server already annotates all 25 tools with `readOnlyHint` and `openWorldHint` — so our read-only tools (search, read, list, query, lint, dataview, revisions) already benefit from parallel execution in Codex and Gemini. However, we're missing `destructiveHint` and `idempotentHint` annotations that are in the spec and used by clients for confirmation prompts and retry logic.
+Decision: **Adopt now (small).** Filed #198 — add `destructiveHint` and `idempotentHint` to all 25 tools. ~50 lines in one file.
+
+**Market movement 4 — Claude Code v2.1.152: skills `disallowed-tools`, `reloadSkills`, `MessageDisplay` hook.**
+Evidence: Released May 27. Skills can now remove tools from the model while active. `SessionStart` hooks return `reloadSkills: true`. New `MessageDisplay` hook transforms assistant output before display. Auto mode no longer requires opt-in.
+Relevance: The skills extensibility surface is deepening. A Claude Code skill for yopedia could use `disallowed-tools` to create read-only vs read-write modes, and `MessageDisplay` to render wiki citations inline. But this is Claude Code's extensibility story, not yopedia's product surface.
+Decision: **Watch.** Interesting for distribution but not actionable as a yopedia code change.
+Trigger: Claude Code ships a "knowledge source" skill template → yopedia should be one of the first to implement it.
+
+**Market movement 5 — SEP-1913 (Trust and Sensitivity Annotations) freshly updated.**
+Evidence: Draft SEP on modelcontextprotocol/specification, updated May 27. Proposes `sensitiveHint`, `privateHint`, `openWorldHint`, `maliciousActivityHint` on requests/responses, plus attribution/provenance tracking at the transport layer. Sensitivity escalates across tool call chains; attribution accumulates.
+Relevance: yopedia's data model (confidence, sources, disputed, authors, contributors) is already ahead of this draft SEP. When it finalizes, yopedia can express trust metadata as transport-level annotations that clients reason about natively — pages with low confidence could carry `sensitiveHint: "low"`, disputed pages could surface flags to the client.
+Decision: **Watch.** yopedia's internal trust model is more expressive than what the SEP proposes. Adopt the transport mapping when the SEP reaches candidate status.
+Trigger: SEP-1913 reaches candidate status or any major client ships an implementation.
+
+**Market movement 6 — Agent memory incumbents: Mem0 active, Letta slowing, Zep near-abandoned.**
+Evidence: Mem0 at 56,848★ shipped v2.0.3 May 26 (CLI fixes, pgvector, Claude Opus co-authored commits). Letta at 22,982★ last release May 14, no commits since May 26. Zep at 4,612★ last release Nov 2024 — 7 months stalled.
+Relevance: The "agent memory" category is consolidating around Mem0 as the surviving incumbent, but Mem0 is conversation/embedding memory, not structured knowledge. None are evolving toward wiki, governance, or public knowledge. yopedia doesn't compete with these — it operates in the "accumulated knowledge" lane, not the "conversation memory" lane.
+Decision: **Ignore as competitors.** Track Mem0 only for API design patterns.
+
+**Market movement 7 — SwarmVault at 497★ in 7 weeks, v3.15.0.**
+Evidence: swarmclawai/swarmvault — TypeScript, 30+ input formats, knowledge graph with typed edges, MCP server, approval queues, desktop app, 5.3k monthly npm downloads. Most feature-rich personal LLM wiki in the space.
+Relevance: Adjacent, not competing. SwarmVault is "Obsidian + knowledge graph + LLM" for personal use. yopedia is "Wikipedia for humans + agents." Their context packs (token-budgeted knowledge handoffs for agents) are a noteworthy UX pattern. Their approval queue (candidates → approved) is similar to yopedia's talk page flow but simpler.
+Decision: **Watch for UX patterns, ignore as threat.** The personal-vs-public distinction is architectural, not feature-level.
+Trigger: SwarmVault ships multi-user collaboration → re-evaluate.
+
+### Star movements since last scan (May 26)
+
+| Project | Last scan | Now | Δ |
+|---------|-----------|-----|---|
+| mem0 | 56,803 | 56,848 | +45 |
+| letta | — | 22,982 | — |
+| swarmvault | — | 497 | new track |
+| mcp-memory-service | — | 1,889 | new track |
+| onyx agent-wiki | — | 9 | new track |
+| OACP | — | 10 | — |
+
+### Layer 3 insight
+
+The "agent wiki" is crystallizing as a category. The Karpathy wave created the demand name ("LLM wiki"), and now at least 20+ projects use that phrase. But the category has two tiers that will diverge permanently:
+
+- **Tier 1: Personal knowledge managers** (SwarmVault, the 15+ Karpathy clones, Obsidian+MCP plugins). Local-first, single-user, no governance. These will commoditize quickly because the problem is well-scoped and the code is simple — ingest, chunk, embed, query, render.
+
+- **Tier 2: Collaborative knowledge systems** (yopedia, Onyx agent-wiki). Multi-writer, governed, auditable. These are structurally harder because they require trust models, conflict resolution, attribution, and multi-agent coordination on top of the Tier 1 features.
+
+yopedia is the only project operating in Tier 2 with shipped governance primitives (confidence, talk pages, provenance, contributor profiles). The moat isn't feature count — SwarmVault has more input formats. The moat is the governance layer that makes multi-writer knowledge trustworthy.
+
+The strategic risk is that Tier 1 tools capture enough mindshare that "agent wiki" comes to mean "personal knowledge base" and the governed/collaborative version never gets its own category name. The counter-move is narrative: yopedia should claim the Tier 2 positioning before it gets flattened into the Tier 1 bucket.
+
+### Issues filed
+
+1 issue: #198 (Add destructiveHint and idempotentHint MCP annotations to all tools)
+
 ## 2026-05-26 (research scan)
 
 Scanned MCP ecosystem, agent knowledge tools, multi-agent coordination protocols, coding agent changelogs, and the awesome-agentic-knowledge-base empirical survey. Filed 1 issue (#192).
