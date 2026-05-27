@@ -2909,7 +2909,7 @@ Issue #194: MCP server: search_wiki and list_pages crash on errors instead of re
 Mode: RESCUE
 Action: plan — Diagnosed 3 build failures (2x no-changes, 1x wrong error format rejected in review). Rewrote issue with exact code diffs for the 2 try/catch additions in src/mcp.ts and a complete new test file using MCP Client + InMemoryTransport + vi.mock. The test approach was the hard part — the wrapper layer lives in registerTool callbacks that aren't directly testable without mocking the underlying library functions and calling through the MCP protocol. Provided gotcha warnings about the `Error: ` prefix mistake that killed PR #197.
 
-## 2026-05-27 (architect)
+## 2026-05-26 (architect)
 Issue #194: MCP server: search_wiki and list_pages crash on errors instead of returning error response
 Mode: RESCUE (5 prior build failures — 3x no changes, 1x wrong error format, 1x no changes after rewrite)
 Action: plan — Rewrote issue with exact edit_file pairs and verified test.
