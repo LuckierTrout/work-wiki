@@ -2,6 +2,69 @@
 
 ## 2026-05-27 (research scan)
 
+Scanned MCP spec draft activity (SEP-2787 attestation, SEP-2596 lifecycle merge, SDK v2 codemod), Onyx agent-wiki eval pivot, LLM wiki skill distribution pattern, agent memory incumbents, and new entrants. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — SEP-2787: Tool call attestation ships reference implementation and conformance tests.**
+Evidence: Opened May 25 on modelcontextprotocol/specification, already has 15 comments with conformance test vectors (HS256/ES256/RS256), three argument-commitment shapes, and a reference impl at v0.37.1. Targets EU AI Act Article 12 compliance. Separate from SEP-1913 (trust annotations) which is still debating taxonomy-vs-evidence separation.
+Relevance: yopedia already tracks provenance (who wrote what, from which source, with what confidence). When attestation lands in MCP clients, servers that can emit provenance metadata will interoperate naturally. yopedia's `authors[]`, `contributors[]`, `sources[]` frontmatter maps to the attestation envelope's identity and evidence fields. No code change needed yet — the mapping is architectural, not implementation.
+Decision: **Watch.** yopedia's internal model is already more expressive than what SEP-2787 proposes.
+Trigger: SEP-2787 reaches candidate status or any major client (Claude Code, Codex, Gemini CLI) ships signed-envelope verification → design the transport-level mapping from yopedia's frontmatter to attestation fields.
+
+**Market movement 2 — MCP spec 2026-07-28 RC: feature lifecycle policy and deprecation registry merged.**
+Evidence: PR #2791 merged May 27. SEP-2596 (12-month deprecation window), SEP-2577 (Roots/Sampling/Logging deprecated), and SEP-1865 (MCP Apps) incorporated into the draft spec. Schema now carries `@deprecated` JSDoc on 19 types.
+Relevance: yopedia's MCP server uses none of the deprecated features (Roots, Sampling, Logging). The feature lifecycle policy means the spec is now versioned with formal deprecation timelines. No action needed.
+Decision: **Ignore.** No impact on yopedia.
+
+**Market movement 3 — MCP TypeScript SDK v2 codemod merged; v2 still alpha.**
+Evidence: PR #1950 merged May 21. `@modelcontextprotocol/codemod` provides AST-level v1→v2 migration. v2 splits `@modelcontextprotocol/sdk` into `@modelcontextprotocol/client`, `/server`, `/core`, `/node`. The alpha hasn't had a new release since April 1.
+Relevance: yopedia imports from `@modelcontextprotocol/sdk` (v1.29.0) in 3 source files. Migration will be mechanical via the codemod when v2 stabilizes. Not urgent.
+Decision: **Watch.** Migration is near-zero effort when v2 goes stable.
+Trigger: v2 reaches beta or stable → run `mcp-codemod` and update imports.
+
+**Market movement 4 — Onyx agent-wiki pivots hard into eval infrastructure.**
+Evidence: 42 commits in 7 days (May 21–27), all focused on: LLM-as-judge scoring, Braintrust experiment tracking, production reconciler decision mining, granular label taxonomy, and a wiki-updating-agent eval harness. Still 9★ but the engineering investment is serious.
+Relevance: Onyx is solving "how do you know your wiki updates are good?" — a question yopedia hasn't addressed. They're building quality measurement infrastructure before scaling, which is the right sequencing. However, yopedia has no production traffic to measure yet, so building evals now would be premature. The signal is: when yopedia gets traffic, quality measurement should be the first infrastructure investment.
+Decision: **Watch closely.** The eval-first approach validates a future priority, not a current one.
+Trigger: yopedia gets live traffic → eval infrastructure becomes the next research priority.
+
+**Market movement 5 — LLM wiki distribution bifurcating: apps vs skills.**
+Evidence: New Claude Code skills (lanshu-wiki-skill, wiki-forge), agent setup bundles (compabob at 25★), and instruction-only repos (pawel-cell/llm-wiki-agent at 12★) now implement the Karpathy pattern as zero-install skills rather than standalone apps. The pattern is commoditizing as configuration, not software.
+Relevance: If "LLM wiki" becomes a Claude Code skill you install in 30 seconds, standalone wiki apps need a reason to exist beyond what a skill provides. yopedia's reasons are concrete: governance (confidence, expiry, disputed flags), multi-writer coordination (talk pages, contributor profiles, attribution), accumulation across sessions (not just single-agent context), and MCP-native access for any agent. Skills can't do multi-writer governance because they're single-agent by design.
+Decision: **Watch.** The skill distribution channel is how individuals discover the pattern; yopedia is what they graduate to when they need shared truth.
+Trigger: Any skill ships multi-writer conflict resolution or provenance → evaluate whether the skill model can support governance.
+
+### Star movements since last scan (May 27)
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 56,848 | 56,881 | +33 | Steady |
+| MemOS | — | 9,408 | new track | Enterprise agent memory, different lane |
+| engram | — | 3,795 | new track | Go MCP memory server, conversation memory |
+| codebase-memory-mcp | — | 2,747 | new track | Code intelligence graph, adjacent not competing |
+| mcp-memory-service | 1,889 | 1,891 | +2 | Slowing |
+| swarmvault | 497 | 499 | +2 | Stalled since May 20 |
+| onyx agent-wiki | 9 | 9 | 0 | Heavy eng activity despite zero star growth |
+| OACP | 10 | 11 | +1 | Stable |
+| agent-in-sync | — | 4 | new track | MCP-native shared KB, reviewer approval |
+
+### Layer 3 insight
+
+The distribution question is resolving faster than expected. The LLM wiki pattern is splitting into two distribution channels that will never reconverge:
+
+- **Skills channel:** Zero-install, single-agent, ephemeral. Agent installs a skill, gains wiki capabilities for one session. Knowledge lives in local markdown. No governance needed because there's only one writer. This is where most adoption will happen. It's a feature of the agent, not a product.
+
+- **Product channel:** Standalone service, multi-agent, persistent. Knowledge outlives any single session or agent. Governance required because multiple writers (human and agent) contribute to the same corpus. This is where quality matters. It's a product, not a feature.
+
+The channels serve different needs and the people in one rarely migrate to the other. The strategic implication: yopedia should not try to compete on the "get started in 30 seconds" axis (skills win there permanently). Instead, the advantage is durability — knowledge that survives across agents, sessions, teams, and time. The governance layer isn't overhead; it's the product.
+
+### Issues filed
+
+0 issues. No signal passes the "actionable this sprint" bar. The closest candidate was the MCP SDK v2 migration, but v2 is still alpha with no release since April 1 — premature.
+
+## 2026-05-27 (research scan)
+
 Scanned MCP ecosystem evolution, coding agent releases (Claude Code, Codex, Gemini CLI), Karpathy LLM Wiki clone explosion, agent memory incumbents, and emergent "agent wiki" category competitors. Filed 1 issue (#198).
 
 ### Advantage Brief
