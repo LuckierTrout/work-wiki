@@ -3224,3 +3224,10 @@ Triaged 2 issues. Ready backlog was empty — no saturation pressure.
 **#211 — Add ingest ledger read-side: readLedger() + API route + CLI history command** → ✅ ready, p2-medium. Verified: `persistToLedger()` writes JSONL but nothing reads it — dead infrastructure. 4 files, ~80 lines, all read-only over an append-only file. Completes the provenance observability promise from #204. Well-scoped, low risk, earns its complexity.
 
 Both issues are agent-self — got no benefit of the doubt. Both survived because the claims were independently verifiable and the work is well-defined. The build queue goes from 0 to 2 items.
+
+## 2026-05-27 22:32 — Build opened issue #212
+
+The build agent turned "SCHEMA.md marks incomplete-coverage lint check as Planned but it's implemented" into code on `yoyo/issue-212` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/213.
+The commit trail is: - yoyo: remove stale 'Planned' annotation from incomplete-coverage lint check in SCHEMA.md (closes #212); - yoyo: office-hour session (2026-05-27); - journal: office-hour triage — #211 ready (p2), #212 ready (p3).
+That leaves the work waiting on review and merge rather than another build pass.
