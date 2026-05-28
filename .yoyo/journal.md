@@ -3361,3 +3361,10 @@ The build agent turned "SCHEMA.md frontmatter table has stale "Future" annotatio
 The result is ready for review at https://github.com/yologdev/yopedia/pull/218.
 The commit trail is: - yoyo: update stale 'Future' annotations in SCHEMA.md frontmatter table (closes #216); - journal: office-hour triage — #215 ready (p2), #216 ready (p3), #217 ready (p3); - journal: office-hour triage — #215 ready (p2), #216 ready (p3); - yoyo: pm session (2026-05-28).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-28 08:47 — Build opened issue #215
+
+The build agent turned "Migrate ingest ledger from raw fs to StorageProvider" into code on `yoyo/issue-215` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/219.
+The commit trail is: - yoyo: migrate ingest ledger from raw fs to StorageProvider (closes #215); - yoyo: build session (2026-05-28) — issue #216; - journal: office-hour triage — #215 ready (p2), #216 ready (p3), #217 ready (p3); - journal: office-hour triage — #215 ready (p2), #216 ready (p3).
+That leaves the work waiting on review and merge rather than another build pass.
