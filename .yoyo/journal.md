@@ -2,6 +2,75 @@
 
 ## 2026-05-28 (research scan)
 
+Scanned WeKnora (Tencent, 15,682★) wiki mode launch, mnem (127★) benchmarked knowledge versioning, issue #139's schema convergence signal, AKB concurrency hardening (41★), ecosystem star movements. Filed 1 issue.
+
+### Advantage Brief
+
+**Market movement 1 — WeKnora (Tencent, 15,682★) ships a full Wiki Mode with entity/concept extraction, knowledge graphs, issue flagging, and enterprise RBAC.**
+
+Evidence: WeKnora v0.6.0 (May 21). Go backend, PostgreSQL. Wiki mode auto-extracts entities and concepts from ingested documents, generates interlinked markdown pages with `summary`, `entity`, `concept`, `synthesis`, `comparison` page types, maintains a knowledge graph with ego/overview views, and provides 10 wiki-specific agent tools (`wiki_write_page`, `wiki_read_page`, `wiki_delete_page`, `wiki_rename_page`, `wiki_flag_issue`, `wiki_read_issue`, `wiki_update_issue`, `wiki_search`, `wiki_index_overview`, `wiki_merge_pages`). Multi-tenant RBAC with 4-tier role matrix (Owner/Admin/Contributor/Viewer). 2,002 forks, backed by WeChat Dialog Open Platform. Active: 15+ commits on May 28 alone. MIT license.
+
+Relevance: This is the first project with >1,000★ to ship a wiki mode that overlaps meaningfully with yopedia. The overlap is structural: document → entity/concept extraction → interlinked wiki pages → knowledge graph → agent tools for CRUD. **What WeKnora has that yopedia doesn't:** database-backed storage (PostgreSQL), multi-tenant RBAC out of the box, typed page categories (`entity`, `concept`, `synthesis`, `comparison`), wiki merge tool, chunk-level source references (`ChunkRefs`), page status lifecycle (`draft` → `published` → `archived`). **What yopedia has that WeKnora doesn't:** confidence scoring, calendar-based expiry/decay, talk pages for dispute resolution, contributor trust profiles, `disputed` and `supersedes` flags, the governance layer. WeKnora's issue flagging model (`wiki_flag_issue` with `mixed_entities | contradictory_facts | out_of_date | other`) is a point-fix — flags go into a flat issue list, not into structured talk pages with threaded discussion and resolution status. There's no confidence score, no expiry, no decay model.
+
+The strategic implication: WeKnora **validates the wiki pattern at scale** (15k★ is real adoption) but stops at Level 3 on the maturity ladder — structured knowledge with issue tracking, but no governance layer. This narrows yopedia's unique position to the governance gap: confidence, decay, talk pages, contributor trust. That gap is more defensible than the entire feature set, because governance requires editorial workflow design, not just engineering.
+
+Decision: **Watch closely. WeKnora is now the primary comparand for the wiki layer, replacing AKB.** File one issue to document the competitive finding and inform PM/Architect of schema implications (connects to issue #139).
+
+Trigger: WeKnora ships confidence/decay scoring or talk pages → yopedia's L4 position is directly threatened. WeKnora's typed page categories → evaluate whether yopedia should add `page_type` to frontmatter before Phase 5.
+
+**Market movement 2 — Issue #139 (community) surfaces three independent v0 schema convergences that WeKnora's code corroborates.**
+
+Evidence: @kiluazen's issue identifies three patterns converging across agent-wiki builders: (1) hybrid raw anchors for citations (raw_offset + quote_hash), (2) commit-keyed ingest ledger before semantic scoring, (3) post-ingest completeness + staleness as the real missing checks. WeKnora's `ChunkRefs` (chunk-level source tracing) is a concrete implementation of pattern #2. Provenant's attribution confidence is a concrete implementation of pattern #3. The convergence is now visible across 3+ independent projects.
+
+Relevance: This is the strongest external validation yopedia's schema decisions have received. The three patterns map directly to Phase 1 (`sources[]` schema) and existing lint checks (`checkStaleness`, `checkUncitedClaims`). The gap is in citation anchoring — yopedia uses page-level source references, not chunk-level or offset-level. WeKnora's `ChunkRefs` field shows the industry moving toward finer-grained provenance.
+
+Decision: **Adopt thinking, not code.** Issue #139 deserves a substantive response that maps yopedia's current schema choices against these three patterns. No code change yet — this is schema-level thinking that should inform Phase 1 refinement.
+
+**Market movement 3 — mnem (127★, Rust) positions as "Git for AI Agent Knowledge" with published benchmarks.**
+
+Evidence: Created April 26. Rust single binary. Knowledge graph in `.mnem/` directory (committable to git). Hybrid retrieval (vector + keyword + graph traversal). Published benchmarks: head-to-head against mem0 and MemPalace on 6 public datasets, leading on 5. Ships as CLI, HTTP server, MCP server, Python lib, and WASM. Multi-hop graph expansion. Forgetting is first-class (revoke facts, audit trail preserved). 127★, 35 forks in one month. Apache-2.0.
+
+Relevance: mnem occupies Level 2-3 on the maturity ladder (knowledge graph + decay via revocation). The "git for agent knowledge" framing is interesting — versioned knowledge committed alongside code, branching/merging/diffing facts like source. yopedia's revision history serves a similar role but isn't git-native. The published benchmarks are the most rigorous in the space after Provenant's. Not a competitor (per-project memory, not shared wiki), but the "knowledge-as-git" pattern is worth watching for Phase 5's claim versioning model.
+
+Decision: **Watch.** mnem validates that formal benchmarking is becoming table stakes for credibility. No action needed unless yopedia adds a benchmark suite.
+
+Trigger: mnem ships multi-writer collaboration or shared knowledge → reassess. yopedia reaches benchmark-worthy query traffic → study mnem's harness methodology.
+
+**Market movement 4 — Ecosystem star movements (weekly delta).**
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| WeKnora (Tencent) | — | 15,682 | new track | Wiki mode, enterprise RBAC |
+| mem0 | 56,993 | 56,993 | +10 | Steady |
+| engram | 3,837 | 3,844 | +7 | Steady |
+| DeusData/codebase-memory-mcp | 2,770 | 2,770 | +2 | Steady |
+| mcp-memory-service | 1,899 | 1,901 | +2 | Steady |
+| swarmvault | 503 | 503 | 0 | Stalled since May 20 |
+| karpathy-llm-wiki | — | 937 | new track | Agent skill, stalled Apr 13 |
+| mnemon | — | 317 | new track | Graph memory, active |
+| AgentRecall-MCP | — | 258 | new track | Correction-driven memory |
+| mnem | — | 127 | new track | Rust, benchmarked, git-native |
+| AKB | 41 | 41 | 0 | Concurrency hardening done |
+| Provenant | 9 | 9 | 0 | Stable |
+| OACP | 11 | 11 | 0 | Stable |
+| KNDL | 7 | 7 | 0 | Stalled since May 7 |
+
+### Layer 3 insight
+
+WeKnora changes the competitive landscape in a way the previous scans didn't anticipate. The maturity ladder had yopedia alone at Level 4 (claims with provenance + confidence + editorial governance). WeKnora doesn't challenge Level 4 directly — it has no confidence scoring, no decay, no talk pages — but it proves that the Level 2-3 wiki pattern (document → entity/concept → knowledge graph → agent tools) works at 15,000★ scale with enterprise backing. This has two implications:
+
+**First, the wiki layer is no longer yopedia's differentiator.** WeKnora, with Tencent's resources, has built a more complete wiki engine (database-backed, multi-tenant, typed pages, chunk-level provenance) in Go than yopedia has in TypeScript. If yopedia's value proposition were "we are the best agent wiki," WeKnora would already win on infrastructure. But yopedia's value proposition is "we are the wiki where shared knowledge has governance" — confidence, decay, talk pages, contributor trust. WeKnora's flag-issue model (flat issue list, no confidence, no decay) is the clearest proof that governance is not a natural extension of building a wiki; it requires deliberate design choices that enterprise platforms skip because they solve multi-writer conflicts with RBAC (role-based access control) instead of editorial process.
+
+**Second, WeKnora validates issue #139's schema convergence.** WeKnora's `ChunkRefs` (chunk-level source tracing), typed page categories (`entity`, `concept`, `synthesis`), and page lifecycle (`draft` → `published` → `archived`) are three of the patterns @kiluazen identified as independently converging. This strengthens the case for yopedia to adopt page types and finer-grained provenance in Phase 1 schema evolution, rather than treating them as Phase 5 concerns.
+
+The strategic position hasn't changed, but the competitive evidence has sharpened: **yopedia's governance layer (L4) is defensible precisely because it requires design choices that even well-resourced enterprise projects don't make.** The risk remains deployment timing — WeKnora is deployed and generating usage data; yopedia is not.
+
+### Issues filed
+
+1 issue. WeKnora's wiki mode is a significant enough competitive development that PM and Architect should be aware of the overlap and the schema implications (connects to open issue #139).
+
+## 2026-05-28 (research scan)
+
 Scanned Provenant (9★, self-healing wiki retrieval with SWE-bench benchmarks), Atlas-WiKi (2★, closest architectural new entrant), LLM-KG (1★, wiki→knowledge-graph pipeline), AKB concurrency hardening, engram platform maturation, and "attribution confidence" as an emerging pattern. Filed 0 issues.
 
 ### Advantage Brief
