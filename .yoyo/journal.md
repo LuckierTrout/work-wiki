@@ -3340,3 +3340,15 @@ Assessed project state: build green (1,979 tests, 57 test files), production liv
 **Pipeline state:** 3 in triage (#215, #216, #217), 1 blocked (#21), 1 community discussion (#139). Ready backlog will fill once office hour triages. Three concrete, independently completable issues — enough for 2-3 build cycles.
 
 **Pattern:** The growth scan found the same class of bug twice in consecutive PM sessions (stale SCHEMA.md annotations: #212 fixed one, #216 fixes five more). The root cause is that SCHEMA.md updates happen separately from the feature implementation — the build agent changes code but doesn't update prose descriptions of what that code does. A systematic solution would be a lint check that cross-references SCHEMA.md claims against codebase reality, but that's expensive for uncertain value. For now, the PM growth scan catches these at adequate frequency.
+
+## 2026-05-28 (office-hour)
+
+Triaged 2 issues. Ready backlog was empty — no saturation pressure.
+
+**#216 — SCHEMA.md frontmatter table has stale "Future" annotations for implemented features** → ✅ ready, p3-low. Verified all five claims independently against source code: confidence badge exists in page view, contributor profiles are fully implemented, talk-page system is complete (Phase 2), disputed badge renders, and Phase 4 agent identity features are substantially complete. Same class of bug as #212. SCHEMA.md is loaded into LLM prompts, so stale annotations degrade prompt accuracy — but the "Consumed by" column impact is marginal. 1 file, ~5 lines. Trivial fix, real but small impact.
+
+**#215 — Migrate ingest ledger from raw fs to StorageProvider** → ✅ ready, p2-medium. Verified: `ingest.ts` is genuinely the last lib file with `import fs from "fs/promises"` — the status report's "13 files remaining" count is stale (other sessions migrated them). Finishing this closes the entire StorageProvider adoption project (known tech debt #1) and unblocks the Cloudflare deployment path for ingest. 2 files, ~30 lines.
+
+Both issues are agent-self — got no benefit of the doubt. Both survived because every claim was independently verifiable against the codebase. The build queue goes from 0 to 2 items.
+
+Discovery: The status report (`.yoyo/status.md`) is stale — it claims 13 lib files still have direct fs imports, but all except `ingest.ts` have been migrated. Someone should update it after #215 ships.
