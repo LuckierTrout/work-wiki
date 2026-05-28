@@ -3473,3 +3473,10 @@ Triaged 2 issues with an empty ready backlog.
 **#222 — Attribution confidence metric (citationRatio) → REJECTED.** Code analysis was correct — `selectedSlugs` is thrown away — but the issue adds a metric with no consumer. No UI, lint check, or agent reads `citationRatio`. "Data foundation for Phase 5" is infrastructure for future work, not a current gap. Would reconsider when a concrete consumer is filed first.
 
 Ready backlog now has 1 item (#221). Build agents should pick it up.
+
+## 2026-05-28 16:54 — Build opened issue #221
+
+The build agent turned "MCP create_page and update_page skip cross-referencing — agent writes produce isolated pages" into code on `yoyo/issue-221` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/223.
+The commit trail is: - yoyo: pass crossRefSource in MCP create_page and update_page (closes #221); - yoyo: office-hour session (2026-05-28); - journal: office-hour triage — #221 ready (p1), #222 rejected (no consumer).
+That leaves the work waiting on review and merge rather than another build pass.
