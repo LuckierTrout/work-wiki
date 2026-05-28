@@ -2,6 +2,68 @@
 
 ## 2026-05-28 (research scan)
 
+Scanned Provenant (9★, self-healing wiki retrieval with SWE-bench benchmarks), Atlas-WiKi (2★, closest architectural new entrant), LLM-KG (1★, wiki→knowledge-graph pipeline), AKB concurrency hardening, engram platform maturation, and "attribution confidence" as an emerging pattern. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — Provenant (9★) introduces "attribution confidence" as a retrieval quality signal with SWE-bench numbers.**
+Evidence: Created May 23. Python MCP server for codebase retrieval. Generates wiki pages from source files, runs BM25/HyDE search on the prose, measures `confidence = |cited| / |retrieved|` after synthesis, and rewrites uncited pages when confidence drops below 0.35. SWE-bench Verified results: +7.6pp Coverage@5 over raw BM25 (500 tasks, 12 repos), 60–65× token reduction. Published a detailed whitepaper. MIT license.
+Relevance: Provenant is *not* a yopedia competitor — it's per-repo codebase memory for coding agents, not shared wiki knowledge. But two ideas are directly relevant to yopedia: (1) **attribution confidence** — measuring whether retrieved wiki context was actually cited in the answer, as a zero-cost quality signal. yopedia's query system retrieves wiki pages and synthesizes answers but doesn't track which pages the LLM actually used. (2) **Self-healing retrieval** — automatically rewriting pages that are consistently retrieved but never cited. This is a concrete mechanism for yopedia's staleness problem: a page that's found but never useful is functionally stale, even if its `expiry` date hasn't passed.
+Decision: **Watch closely.** Attribution confidence is the most rigorous quality mechanism any wiki-adjacent project has published. When yopedia has query traffic, this pattern should be studied for adaptation — not as codebase retrieval, but as a wiki page quality signal.
+Trigger: yopedia gets live query traffic → evaluate adding `confidence = |cited| / |retrieved|` to query responses as a page-health signal.
+
+**Market movement 2 — Atlas-WiKi (2★) is a new TypeScript wiki engine with structured extraction, ACL, provenance, and multi-backend (SQLite/Supabase).**
+Evidence: Created May 24. npm package `atlas-wiki`. Source-backed evidence, schema-registered structured extraction with confidence thresholds, identity-based ACL (records filtered before context assembly), revision guards (CAS), RAG with optional vector search (Gemini embeddings), 31 schema contract families, MCP tools, CLI. Supports SQLite, Supabase, and in-memory backends. Node.js 24 required. MIT license. 2★, single author, 4 days old.
+Relevance: Atlas-WiKi is the closest architectural new entrant to yopedia. It shares several concepts: source-backed provenance, confidence thresholds, conflict detection, structured records, and MCP tools. Key differences: (1) Atlas is a *ledger* — structured records with schemas, not freeform wiki pages with wikilinks. (2) Atlas has ACL-first design; yopedia has contributor-trust-first design. (3) Atlas has no talk pages, no editorial workflow, no expiry/decay. (4) Atlas has multi-backend from day one (SQLite + Supabase); yopedia has filesystem + R2. The structured extraction pipeline (register schema → extract from text → validate → propose/commit) is a pattern worth studying for Phase 5 structured claims.
+Decision: **Watch.** At 2★ and 4 days old, Atlas may not survive. If it does, its structured extraction pipeline is the most relevant design reference for yopedia's Phase 5 claim-level model — more practical than KNDL's theoretical fact-shape because it's already implemented and tested.
+Trigger: Atlas-WiKi crosses 20★ or ships talk pages/editorial workflow → reassess as competitor. Atlas's schema-contract extraction pipeline → study when Phase 5 starts.
+
+**Market movement 3 — LLM-KG (1★) implements the wiki→knowledge-graph compilation pipeline.**
+Evidence: Created May 26. Python. Ingests documents → generates markdown wiki pages → compiles structured claims, evidence quotes, entities, and typed relations as JSONL. No graph database (Markdown + JSONL by design). Mock LLM provider for offline testing. Single author, 2 days old.
+Relevance: LLM-KG is the first project to implement the exact pipeline yopedia's Phase 5 envisions: wiki pages as human-readable layer, structured claims as machine-readable layer, both derived from the same sources. The design choice to start with JSONL instead of a graph database matches yopedia's philosophy of starting simple. The claim schema (`active`, `confidence`, `evidence`, typed relations) is a useful reference alongside KNDL's fact-shape.
+Decision: **Watch.** Too early to know if it'll survive, but the architecture validates Phase 5's direction. File alongside KNDL as a design reference.
+Trigger: Phase 5 begins → study LLM-KG's claim compilation pipeline alongside KNDL's fact-shape.
+
+**Market movement 4 — AKB (41★, +1) is hardening concurrency and production reliability.**
+Evidence: May 27-28 commits focus on concurrency invariant suites, migration idempotency guards, file outbox fixes, and delete_vault correctness. Version 0.3.1→0.3.3 in two days. The project is clearly being stress-tested against production-grade concurrency scenarios.
+Decision: **Watch.** AKB is maturing from prototype to production. The concurrency hardening suggests it's being used in multi-agent scenarios. No change to yopedia's strategy — different model (vault vs wiki).
+Trigger: Same as last week — AKB ships confidence/decay or talk pages → reassess.
+
+**Market movement 5 — Engram (3,837★, +14) expanding into platform territory: cloud sync, project management, Pi marketplace plugin.**
+Evidence: Cloud autosync, cloud dashboard, `gentle-engram` Pi marketplace package, cascade project delete, MCP write tool breaking change (project auto-detection from cwd). 443 total PRs. Engram is becoming a platform — cloud replication, marketplace distribution, project-level organization.
+Decision: **Ignore as competitor.** Engram continues to grow but remains session memory, not shared knowledge. The platform expansion validates that individual agent memory is maturing fast, which means the "graduation" to shared governed knowledge (yopedia's lane) becomes more likely as individual memory matures.
+
+### Star movements since last scan (May 28)
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 56,941 | 56,983 | +42 | Steady |
+| MemOS | 9,420 | 9,442 | +22 | Steady |
+| engram | 3,823 | 3,837 | +14 | Platform expansion |
+| codebase-memory-mcp | 2,762 | 2,768 | +6 | Steady |
+| mcp-memory-service | 1,891 | 1,899 | +8 | Slight uptick |
+| swarmvault | 501 | 503 | +2 | Stalled since May 20 |
+| AKB | 40 | 41 | +1 | Concurrency hardening |
+| KNDL | 7 | 8 | +1 | Stalled since May 7 |
+| Provenant | — | 9 | new track | Self-healing wiki retrieval |
+| Atlas-WiKi | — | 2 | new track | TypeScript wiki engine |
+| LLM-KG | — | 1 | new track | Wiki→KG pipeline |
+| OACP | 11 | 11 | 0 | Stable |
+
+### Layer 3 insight
+
+The most interesting signal this week isn't a project — it's a *mechanism*: attribution confidence. Provenant proved that `|cited| / |retrieved|` is a cheap, zero-extra-model-call quality signal that correlates with answer quality (Pearson r=0.415 on a small sample). This matters because yopedia has the same structural opportunity: when someone queries yopedia and the LLM synthesizes an answer from retrieved wiki pages, the pages it actually cites versus the pages it was given is a free health metric. Pages that are consistently retrieved but never cited are functionally stale — they rank well in search but add nothing to answers. This is a sharper staleness signal than calendar-based expiry.
+
+The second interesting pattern is convergence on the wiki→structured-claims pipeline. Three projects now independently implement variations of "turn documents into wiki pages, then compile wiki pages into structured claims": Provenant (source→wiki for retrieval), LLM-KG (wiki→claims+evidence+relations), and Atlas-WiKi (text→schema-validated structured objects). Each approaches it differently, but the architectural consensus is forming: **the wiki layer is the human-readable representation; structured claims are the machine-readable projection; both derive from the same sources.** This is exactly yopedia's Phase 5 thesis, now validated by multiple independent implementations.
+
+The strategic implication: yopedia's maturity ladder position (Level 4) remains unchallenged. Atlas-WiKi has the most overlapping feature set but is a ledger, not a wiki — no editorial workflow, no talk pages, no contributor trust model. The emerging "attribution confidence" pattern is the most actionable intelligence for yopedia's query loop, but only after deployment generates query traffic.
+
+### Issues filed
+
+0 issues. Provenant's attribution confidence is the strongest actionable signal but requires live query traffic to implement meaningfully — filing an issue now would be premature. Atlas-WiKi and LLM-KG are design references for future phases, not current work. All signals remain "watch."
+
+## 2026-05-28 (research scan)
+
 Scanned MCP spec 2026-07-28 release cycle, AKB (40★) and KNDL (7★) as closest competitors, engram breakout (3,823★), mem0 platform expansion, "agent-readable knowledge" as emerging named concept, and the ecosystem maturity ladder. Filed 0 issues.
 
 ### Advantage Brief
