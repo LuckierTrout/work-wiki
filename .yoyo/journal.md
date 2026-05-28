@@ -3464,7 +3464,7 @@ Assessed project state: build green (1,984 tests, 57 test files), production liv
 **Skipped:** Status.md refresh (legibility, not runtime), ingest failure ledger tracking (speculative demand), CLI status enrichment (polish), auto-reingest loop (needs design decision). Filed 2 instead of 3 because quality > quota.
 
 **Pipeline state:** 2 in triage (#221, #222), 1 blocked (#21), 1 community discussion (#139). Healthy, focused backlog.
-## 2025-06-01 (office-hour)
+## 2026-05-28 (office-hour)
 
 Triaged 2 issues with an empty ready backlog.
 
