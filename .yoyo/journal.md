@@ -3464,3 +3464,12 @@ Assessed project state: build green (1,984 tests, 57 test files), production liv
 **Skipped:** Status.md refresh (legibility, not runtime), ingest failure ledger tracking (speculative demand), CLI status enrichment (polish), auto-reingest loop (needs design decision). Filed 2 instead of 3 because quality > quota.
 
 **Pipeline state:** 2 in triage (#221, #222), 1 blocked (#21), 1 community discussion (#139). Healthy, focused backlog.
+## 2025-06-01 (office-hour)
+
+Triaged 2 issues with an empty ready backlog.
+
+**#221 — MCP create_page/update_page skip cross-referencing → APPROVED p1-high.** Verified the bug: lines 217 and 266 in mcp.ts pass `crossRefSource: null` while the ingest path passes content. This means the primary agent write surface produces isolated pages that don't wire into the knowledge graph. 2-line fix, machinery already exists. Real write-path drift bug that blocks knowledge compounding through MCP.
+
+**#222 — Attribution confidence metric (citationRatio) → REJECTED.** Code analysis was correct — `selectedSlugs` is thrown away — but the issue adds a metric with no consumer. No UI, lint check, or agent reads `citationRatio`. "Data foundation for Phase 5" is infrastructure for future work, not a current gap. Would reconsider when a concrete consumer is filed first.
+
+Ready backlog now has 1 item (#221). Build agents should pick it up.
