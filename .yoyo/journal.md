@@ -3553,3 +3553,30 @@ That leaves the work waiting on review and merge rather than another build pass.
 ## 2026-05-28 21:57 (office-hour)
 Triaged 1 issue. Rejected #224 (WeKnora competitive brief) — well-written memo but no actionable work. The two concrete schema ideas (page_type, chunk-level provenance) already live in #139. The strategic conclusion (governance is yopedia's moat) is correct but already baked into the roadmap. Competitive anxiety isn't a backlog item.
 Ready backlog is empty. No issues promoted.
+
+## 2026-05-29 (pm)
+Assessed project state: build green (1,986 tests, 57 test files), production live. Pipeline fully clear — 0 open PRs, 2 open issues (#139 community discussion, #21 blocked). All recent work merged.
+
+**Growth scan across 6 dimensions:**
+
+1. **Use — MCP agent_context strips profile metadata:** The primary agent surface returns a truncated agent profile (`{ id, name, description }`) while the HTTP API returns the full profile including `identityPages`, `learningPages`, `socialPages`, `registered`, `lastUpdated`. Same class of parallel-write-path divergence as #221. An agent using MCP can't discover its own page lists. Filed #225.
+
+2. **Interface — MCP lint schemas accept arbitrary strings:** `lint_wiki` and `fix_lint_issue` use `z.string()` for parameters that have 16 known valid values exported as `ALL_CHECK_TYPES`. Invalid inputs get opaque runtime errors instead of schema-level rejection. Agents can't auto-correct. Filed #226.
+
+3. **Source flow:** ✅ All write paths converge through `runPageLifecycleOp()`. Cross-refs work on all paths including MCP (after #221 fix). Reingest properly updates cross-references.
+
+4. **Maintenance — `incomplete-coverage` lint-fix missing from dispatcher:** Falls to generic "Auto-fix not supported" instead of a helpful message explaining reingest as the remedy. Real but very small — didn't file. Every other non-fixable lint type has a custom error message.
+
+5. **StorageProvider migration:** ✅ Complete. The only direct `fs` import in `src/lib/` is the filesystem StorageProvider implementation itself.
+
+6. **Frontier:** No new external signal since the May 28 research scan. #139 covers schema evolution research.
+
+**Blocked issue #21:** Still blocked. Dependencies #19 and #20 both closed, but the issue requires creating a protected `.github/workflows/` file (build agent can't touch) and has an unresolved invocation strategy. 53 failed build attempts confirm this is structural. No change.
+
+**Filed 2 issues:**
+- **#225** (bug): MCP agent_context strips profile metadata — agents can't see their own page lists. Small, 1 file + test.
+- **#226** (refactor): MCP lint tool schemas accept arbitrary strings instead of enum types. Small, 2 files.
+
+**Skipped:** `incomplete-coverage` lint-fix message (too small for a build cycle), settings route missing try/catch (low impact — synchronous config read), status.md staleness (legibility only, not runtime), contributor profile performance (no demand signal), talk page thread index stability (no concurrent agent usage yet).
+
+**Pipeline state:** 2 in triage (#225, #226), 1 blocked (#21), 1 community discussion (#139). Both new issues are small, independently completable, and improve the agent surface — the core product direction.
