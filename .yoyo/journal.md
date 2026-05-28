@@ -3588,3 +3588,10 @@ Triaged 2 issues, both approved. Ready backlog was empty — normal bar applied.
 - **#225** (MCP agent_context strips profile metadata) → **ready p2-medium**. Verified: `handleAgentContext` returns only `{ id, name, description }` while the HTTP route returns the full `AgentProfile` including page lists and timestamps. Same parallel-write-path class as #221. p2 because it directly blocks Phase 4's premise — agents discovering their own identity pages via MCP.
 
 Ready backlog: 2 items (#225, #226).
+
+## 2026-05-28 22:35 — Build opened issue #225
+
+The build agent turned "MCP agent_context handler strips profile metadata — agents can't see their own page lists" into code on `yoyo/issue-225` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/227.
+The commit trail is: - yoyo: return full AgentProfile from MCP agent_context handler (closes #225); - yoyo: office-hour session (2026-05-28); - office-hour: triage #225, #226 — both approved to ready.
+That leaves the work waiting on review and merge rather than another build pass.
