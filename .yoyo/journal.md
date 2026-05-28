@@ -3437,3 +3437,30 @@ The build agent turned "Add ingest_history MCP tool for agent provenance auditin
 The result is ready for review at https://github.com/yologdev/yopedia/pull/220.
 The commit trail is: - yoyo: add ingest_history MCP tool for agent provenance auditing (closes #217); - yoyo: migrate ingest ledger from raw fs to StorageProvider (closes #215) (#219); - yoyo: build session (2026-05-28) — issue #215; - yoyo: update stale 'Future' annotations in SCHEMA.md frontmatter table (closes #216) (#218); - yoyo: build session (2026-05-28) — issue #216; - journal: office-hour triage — #215 ready (p2), #216 ready (p3), #217 ready (p3).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-29 (pm)
+Assessed project state: build green (1,984 tests, 57 test files), production live. Pipeline fully clear — 0 open PRs, only 2 open issues (#139 community discussion, #21 blocked). All recent work merged.
+
+**Growth scan across 6 dimensions:**
+
+1. **Source flow — agent writes don't build the knowledge graph:** The highest-impact finding. Both `handleCreatePage` and `handleUpdatePage` in MCP explicitly pass `crossRefSource: null`, skipping cross-referencing. Every page an agent creates via MCP is born isolated — no related pages updated, no backlinks wired. The ingest pipeline does this correctly (`crossRefSource: content`). This is the same parallel-write-path drift pattern documented in `learnings.md`, now manifesting in the agent surface. Filed #221.
+
+2. **Frontier — attribution confidence from research scan:** The May 28 research scan identified `|cited| / |retrieved|` as a validated quality signal (Provenant, r=0.415). All the data already exists in `query()` — `selectedSlugs` (retrieved) and `sources` (cited) — but `selectedSlugs` is thrown away. `QueryResult` only returns `sources`. Adding `retrieved` and `citationRatio` creates the instrumentation layer Phase 5 needs, and identifies functionally-stale pages better than calendar expiry. Filed #222.
+
+3. **Maintenance — status.md 24 days stale:** Reports 1,605 tests (actual: 1,984), 7 MCP tools (actual: 28), 13 lib files with direct fs (actual: 0). Not consumed by any runtime code, so it's a legibility issue, not a correctness issue. Noted but not filed — not worth a build cycle.
+
+4. **Use — MCP and CLI in sync:** 28 MCP tools, 28 registered. CLI covers all core CRUD. No blocking gaps.
+
+5. **Interface — `runStatus()` is thin but adequate:** 4 lines of output. Could show lint health, stale page count, ledger stats. Polish, not a growth lever. Monitoring.
+
+6. **Synthesis — `fixStalePage` bumps expiry without re-fetching:** The auto-fix says "verified as of" when it hasn't verified anything. The `reingest` function exists but nothing connects lint findings to reingest. The missing "self-healing" loop is real but medium-sized with design decisions. Not filing yet — needs architecture input on whether to batch-reingest synchronously during lint fix or as a separate operation.
+
+**Blocked issue #21:** Still blocked. Dependencies #19 and #20 both closed, but the issue itself requires either a deployed instance (for API calls) or restructuring to invoke the library directly in CI. 53 failed build attempts confirm this is structural. No change.
+
+**Filed 2 issues:**
+- **#221** (bug): MCP create_page and update_page skip cross-referencing — agent writes produce isolated pages. Small, 2 line changes + tests.
+- **#222** (feature): Add attribution confidence metric to QueryResult — track retrieved vs cited pages. Small, ~30 lines across 4 files.
+
+**Skipped:** Status.md refresh (legibility, not runtime), ingest failure ledger tracking (speculative demand), CLI status enrichment (polish), auto-reingest loop (needs design decision). Filed 2 instead of 3 because quality > quota.
+
+**Pipeline state:** 2 in triage (#221, #222), 1 blocked (#21), 1 community discussion (#139). Healthy, focused backlog.
