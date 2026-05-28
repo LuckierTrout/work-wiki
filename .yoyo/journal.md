@@ -3549,3 +3549,7 @@ The build agent turned "MCP create_page and update_page skip cross-referencing �
 The result is ready for review at https://github.com/yologdev/yopedia/pull/223.
 The commit trail is: - yoyo: pass crossRefSource in MCP create_page and update_page (closes #221); - yoyo: office-hour session (2026-05-28); - journal: office-hour triage — #221 ready (p1), #222 rejected (no consumer).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## (office-hour)
+Triaged 1 issue. Rejected #224 (WeKnora competitive brief) — well-written memo but no actionable work. The two concrete schema ideas (page_type, chunk-level provenance) already live in #139. The strategic conclusion (governance is yopedia's moat) is correct but already baked into the roadmap. Competitive anxiety isn't a backlog item.
+Ready backlog is empty. No issues promoted.
