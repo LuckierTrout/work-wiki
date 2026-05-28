@@ -3438,7 +3438,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/220.
 The commit trail is: - yoyo: add ingest_history MCP tool for agent provenance auditing (closes #217); - yoyo: migrate ingest ledger from raw fs to StorageProvider (closes #215) (#219); - yoyo: build session (2026-05-28) — issue #215; - yoyo: update stale 'Future' annotations in SCHEMA.md frontmatter table (closes #216) (#218); - yoyo: build session (2026-05-28) — issue #216; - journal: office-hour triage — #215 ready (p2), #216 ready (p3), #217 ready (p3).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-05-29 (pm)
+## 2026-05-28 (pm)
 Assessed project state: build green (1,984 tests, 57 test files), production live. Pipeline fully clear — 0 open PRs, only 2 open issues (#139 community discussion, #21 blocked). All recent work merged.
 
 **Growth scan across 6 dimensions:**
