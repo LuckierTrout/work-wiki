@@ -1,5 +1,81 @@
 # Growth Journal
 
+## 2026-05-28 (research scan)
+
+Scanned MCP spec 2026-07-28 release cycle, AKB (40★) and KNDL (7★) as closest competitors, engram breakout (3,823★), mem0 platform expansion, "agent-readable knowledge" as emerging named concept, and the ecosystem maturity ladder. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — AKB (dnotitia/akb, 40★) is the closest architectural competitor.**
+Evidence: Python backend, PostgreSQL + pgvector, 25+ MCP tools, git bare repos for version history, multi-tenant RBAC, URI-based knowledge graph, hybrid search (dense + BM25 via RRF). Benchmarks 98.4% Recall@5 on LongMemEval-S. PolyForm Noncommercial license.
+Relevance: AKB is a knowledge *vault* — document CRUD with access control. It lacks confidence scoring, decay, talk pages, attribution, and editorial workflow. It has multi-tenancy yopedia doesn't, and formal benchmarks yopedia hasn't run. The PolyForm NC license blocks commercial competitors, which limits its community growth. The most direct threat to yopedia's positioning, but the gap is in governance, not infrastructure.
+Decision: **Watch.** AKB validates the multi-tenant knowledge-via-MCP architecture but its vault model is fundamentally different from yopedia's wiki model. No code change needed.
+Trigger: AKB ships confidence/decay or talk pages → reassess competitive positioning. AKB crosses 200★ → prioritize deployment to establish prior art.
+
+**Market movement 2 — KNDL (artdaw/KNDL, 7★) ships the fact-shape design yopedia needs for Phase 5.**
+Evidence: TypeScript monorepo with immutable JSON-LD facts, each carrying `confidence`, `decay` (e.g., "0.5/180d" = halves every 180 days), `source` URI, `validFrom`, `recordedAt`, `negated` flag, `classification` (PHI/PII gating), and `supersedes` chains. 23 MCP tools. Bitemporal queries ("what did we believe last week?"). Contradiction detection ranked by recency + confidence. 7★, one author, last push May 7 — appears stalled.
+Relevance: KNDL is the only project that has designed an explicit fact-level data model with decay, provenance chains, and contradiction detection — exactly the concepts yopedia's Phase 5 needs to answer "what is the right form of a knowledge artifact for an agent?" The fact-shape design is the most concrete reference implementation of claim-level knowledge management in the ecosystem. Not a competitor (per-agent memory, not shared wiki), but a design reference.
+Decision: **Watch closely.** When Phase 5 starts, KNDL's fact-shape spec should be the first design reference studied. The decay formula (`0.5/180d`) and bitemporal query model are directly applicable.
+Trigger: Phase 5 begins → study KNDL's data model and adapt for wiki-level (not fact-level) application.
+
+**Market movement 3 — Engram (3,823★, 465 forks) is the breakout agent memory tool.**
+Evidence: Go binary, SQLite + FTS5, MCP server, HTTP API, CLI, TUI. 19 MCP tools including conflict surfacing (`mem_judge`, `mem_compare`). Git sync for cross-machine memory. Cloud replication. Active development: 10+ commits May 27, adding cloud features, auth, clipboard copy. Integrates with Claude Code, OpenCode, Gemini CLI, Codex, VS Code, Cursor, Windsurf, Antigravity.
+Relevance: Engram validates that agents need persistent memory, but it's *session* memory — what an individual agent learned during one coding session. Not shared, not governed, no confidence or decay. yopedia occupies a different layer: shared authoritative knowledge that outlives any single agent's memory. The relationship is complementary, not competitive — an agent could use engram for session memory and yopedia for shared knowledge.
+Decision: **Ignore as competitor. Watch as validation.** Engram's adoption curve proves agents want persistent memory; yopedia's value proposition is what happens when that memory needs to be shared, cited, and governed.
+Trigger: Engram adds multi-writer collaboration or confidence scoring → reassess as competitor.
+
+**Market movement 4 — Ecosystem maturity ladder crystallizes. yopedia is alone at Level 4.**
+Evidence: Mapping the ecosystem by capability maturity reveals five levels:
+- Level 0: Flat file memory (CLAUDE.md) — where most agents are today
+- Level 1: Structured markdown knowledge bases — the emerging default (300+ repos)
+- Level 2: Knowledge graphs with MCP tools — active growth (codebase-memory-mcp 2,762★, SwarmVault 501★)
+- Level 3: Graphs with decay/staleness — ~5 projects experimenting (memex, Mnemo, KNDL)
+- Level 4: Claims with provenance + confidence + editorial governance — essentially empty
+- Level 5: Shared/federated agent knowledge — 1 project (understand-quickly, 29★), concept stage
+yopedia has meaningful code at Level 4 (confidence, expiry, attribution, talk pages, disputed flags) and design vision for Level 5. No other project with >10★ occupies Level 4.
+Relevance: This positioning is yopedia's structural advantage. The gap isn't "yopedia has features others don't" — it's "yopedia is solving a problem the ecosystem hasn't reached yet." The risk is premature: if agents don't graduate from Level 2→3→4, the governance layer is overhead nobody asked for. The opportunity is foundational: if they do graduate, yopedia is already there.
+Decision: **Protect.** The advantage is real but invisible until yopedia is deployed and agents demonstrate the value of governance. Deployment remains the highest-leverage action.
+Trigger: Any Level 2-3 project ships talk pages or contributor attribution → the migration has begun and yopedia's head start matters.
+
+**Market movement 5 — MCP spec 2026-07-28 release cycle started; Tool Annotations Interest Group chartered.**
+Evidence: PR #2805 tracking the next release. Tool Annotations IG formally chartered (PR #2615 merged May 27). SEP-2787 (attestation) and SEP-1913 (trust annotations) continue active development. SDK v2 still alpha, no release since April 1.
+Relevance: The IG charter means tool annotation semantics will be formally governed — a path to standardizing how tools describe behavior. yopedia already uses `readOnlyHint` and `destructiveHint` annotations. No action needed until the IG produces new annotations to adopt.
+Decision: **Watch.** No action until the IG produces a candidate recommendation.
+Trigger: IG publishes a new tool annotation category relevant to knowledge tools (e.g., `provenanceHint`, `confidenceHint`) → adopt early.
+
+**Market movement 6 — Mem0 expanding to every agent platform via plugins.**
+Evidence: May 27-28 commits add OpenCode plugin, Antigravity plugin, Claude Code parity. Deprecating Graph Memory. 56,941★.
+Relevance: Mem0 is building distribution (be in every agent), not depth (make knowledge more trustworthy). Cloud-hosted opaque memory with no governance. yopedia's value proposition is the opposite: transparent, governed, citable knowledge. Mem0's expansion validates agent memory as a market; it doesn't threaten yopedia's specific lane.
+Decision: **Ignore.** Different layer, different model, different value proposition.
+Trigger: Mem0 ships confidence scoring or public knowledge sharing → reconsider.
+
+### Star movements since last scan (May 27)
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 56,881 | 56,941 | +60 | Steady, platform expansion |
+| MemOS | 9,408 | 9,420 | +12 | Steady |
+| engram | 3,795 | 3,823 | +28 | Fast growth, breakout |
+| codebase-memory-mcp | 2,747 | 2,762 | +15 | Rebranded to DeusData org |
+| swarmvault | 499 | 501 | +2 | Stalled since May 20 |
+| onyx agent-wiki | 9 | 9 | 0 | Active eng, zero star growth |
+| AKB | — | 40 | new track | Closest architectural competitor |
+| KNDL | — | 7 | new track | Best fact-shape design reference |
+| OACP | 11 | 11 | 0 | Moved to kiloloop org |
+| understand-quickly | — | 29 | new track | Public knowledge registry concept |
+
+### Layer 3 insight
+
+The ecosystem maturity ladder reveals a structural truth about yopedia's position: **yopedia is building for a problem the market hasn't reached yet.** This is simultaneously the biggest strength (no competition at Level 4) and the biggest risk (the market may stay at Level 2-3 for a long time).
+
+The resolution is temporal: the agent memory ecosystem is climbing the ladder at visible speed. Six months ago Level 2 (knowledge graphs + MCP) barely existed; now 300+ repos occupy it. Level 3 (decay/staleness) went from zero to five active projects in three months. The climb from Level 3 to Level 4 requires a phase transition — from "my memory decays" to "our shared knowledge has governance" — that needs multi-writer deployment to prove. yopedia can't prove this while undeployed.
+
+The strategic implication hasn't changed but has sharpened: **deployment is the unlock.** Not because deployment brings users, but because deployment is the only way to demonstrate that governance matters — that agents writing to the same wiki need talk pages, confidence scores, and attribution. The maturity ladder evidence says the market will arrive at Level 4; the question is whether yopedia is running when it does.
+
+### Issues filed
+
+0 issues. AKB is the closest competitor but differs in kind (vault vs wiki). KNDL is the best design reference for Phase 5 but Phase 5 hasn't started. Engram validates the market without threatening yopedia's lane. All signals are "watch" — none pass the "actionable this sprint" bar.
+
 ## 2026-05-27 (research scan)
 
 Scanned MCP spec draft activity (SEP-2787 attestation, SEP-2596 lifecycle merge, SDK v2 codemod), Onyx agent-wiki eval pivot, LLM wiki skill distribution pattern, agent memory incumbents, and new entrants. Filed 0 issues.
