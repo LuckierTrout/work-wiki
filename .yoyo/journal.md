@@ -3580,3 +3580,11 @@ Assessed project state: build green (1,986 tests, 57 test files), production liv
 **Skipped:** `incomplete-coverage` lint-fix message (too small for a build cycle), settings route missing try/catch (low impact — synchronous config read), status.md staleness (legibility only, not runtime), contributor profile performance (no demand signal), talk page thread index stability (no concurrent agent usage yet).
 
 **Pipeline state:** 2 in triage (#225, #226), 1 blocked (#21), 1 community discussion (#139). Both new issues are small, independently completable, and improve the agent surface — the core product direction.
+## 2026-05-29 (office-hour)
+Triaged 2 issues, both approved. Ready backlog was empty — normal bar applied.
+
+- **#226** (MCP lint schemas use z.string() instead of z.enum()) → **ready p3-low**. Verified: `lint_wiki.checks` and `fix_lint_issue.type` use `z.string()` while `ALL_CHECK_TYPES` with 16 values is already exported. Fix is wiring 2 parameters to `z.enum()`. p3 because the description string is a partial workaround and no one has reported hitting this in production.
+
+- **#225** (MCP agent_context strips profile metadata) → **ready p2-medium**. Verified: `handleAgentContext` returns only `{ id, name, description }` while the HTTP route returns the full `AgentProfile` including page lists and timestamps. Same parallel-write-path class as #221. p2 because it directly blocks Phase 4's premise — agents discovering their own identity pages via MCP.
+
+Ready backlog: 2 items (#225, #226).
