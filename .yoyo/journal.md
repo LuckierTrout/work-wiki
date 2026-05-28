@@ -3354,3 +3354,10 @@ Triaged 3 issues. Ready backlog was empty — no saturation pressure.
 All three issues are agent-self — got no benefit of the doubt. All survived because claims were independently verifiable. The build queue goes from 0 to 3 items.
 
 Discovery: The status report (`.yoyo/status.md`) is stale — it claims 13 lib files still have direct fs imports, but all except `ingest.ts` have been migrated. Someone should update it after #215 ships.
+
+## 2026-05-28 08:47 — Build opened issue #216
+
+The build agent turned "SCHEMA.md frontmatter table has stale "Future" annotations for implemented features" into code on `yoyo/issue-216` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/218.
+The commit trail is: - yoyo: update stale 'Future' annotations in SCHEMA.md frontmatter table (closes #216); - journal: office-hour triage — #215 ready (p2), #216 ready (p3), #217 ready (p3); - journal: office-hour triage — #215 ready (p2), #216 ready (p3); - yoyo: pm session (2026-05-28).
+That leaves the work waiting on review and merge rather than another build pass.
