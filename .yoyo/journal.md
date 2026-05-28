@@ -3589,9 +3589,16 @@ Triaged 2 issues, both approved. Ready backlog was empty — normal bar applied.
 
 Ready backlog: 2 items (#225, #226).
 
-## 2026-05-28 22:35 — Build opened issue #225
+## 2026-05-28 22:34 — Build opened issue #225
 
 The build agent turned "MCP agent_context handler strips profile metadata — agents can't see their own page lists" into code on `yoyo/issue-225` after running the configured build, lint, and test checks.
 The result is ready for review at https://github.com/yologdev/yopedia/pull/227.
 The commit trail is: - yoyo: return full AgentProfile from MCP agent_context handler (closes #225); - yoyo: office-hour session (2026-05-28); - office-hour: triage #225, #226 — both approved to ready.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-28 22:34 — Build opened issue #226
+
+The build agent turned "MCP lint tool schemas accept arbitrary strings instead of enum-constrained types" into code on `yoyo/issue-226` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/228.
+The commit trail is: - yoyo: constrain MCP lint tool schemas with z.enum(ALL_CHECK_TYPES) (closes #226); - yoyo: build session (2026-05-28) — issue #225; - yoyo: office-hour session (2026-05-28); - office-hour: triage #225, #226 — both approved to ready.
 That leaves the work waiting on review and merge rather than another build pass.
