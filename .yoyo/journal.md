@@ -2,6 +2,102 @@
 
 ## 2026-05-29 (research scan)
 
+Scanned claude-obsidian (5,724★, LLM Wiki star leader), Noosphere (53★, 4-runtime plugin proliferation), Semiont (65★, AI Alliance shared knowledge platform), Atlas-WiKi (3★, Supabase-backed enterprise wiki), plugin distribution pattern across mem0/engram/noosphere/claude-obsidian, ecosystem star movements. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — Plugin distribution has become the dominant adoption pattern for agent knowledge tools. Memory/wiki projects that ship multi-runtime plugins are growing faster than MCP-only projects.**
+
+Evidence: mem0 (57,065★) now ships plugins for Claude Code, Codex, Cursor, and Opencode (shipped this week). Engram (3,867★, +11) ships Claude Code plugin, MCP, and skills directory, plus a new team usage guide. Noosphere (53★, v1.6.8, pushed today) ships plugins for 4 runtimes: OpenClaw, Hermes Agent, Opencode, and Kilo Code. claude-obsidian (5,724★, 660 forks) distributes through Claude Code's plugin marketplace and AgentSkills.io. The pattern: a local MCP server is necessary but insufficient for adoption — projects also ship `.claude-plugin`, `.codex-plugin`, `.cursor-plugin` manifests and runtime-specific wrappers.
+
+The agent runtime landscape is now: Hermes Agent (172k★), Claude Code (128k★), claude-mem (80k★), cc-switch (85k★), CowAgent (45k★), Obsidian Skills (34k★). These runtimes all consume MCP, but users discover and install knowledge tools through runtime-specific plugin registries, not by pointing at raw MCP endpoints.
+
+Relevance: yopedia has 29 MCP tools (comprehensive) but zero runtime-specific plugin manifests. The MCP server positions correctly for interop, but the missing plugin manifests mean yopedia is invisible in the places where developers actually discover and install knowledge tools. This is a distribution gap, not a capability gap.
+
+Decision: **Watch.** yopedia is pre-deployment and has no users to reach yet. Plugin manifests are cheap to add (a JSON file + README), but premature to ship before the product is deployed and serving real requests. When yopedia deploys, the first distribution work should be a `.claude-plugin` manifest (largest runtime) and an entry on Claude Code's marketplace, not an MCP-only approach.
+
+Trigger: yopedia deploys → immediately add `.claude-plugin` manifest. A second runtime plugin (Hermes Agent or Opencode) should follow based on which runtime shows organic MCP usage.
+
+**Market movement 2 — claude-obsidian (5,724★) is now the star leader among LLM Wiki derivatives, with multi-writer support (v1.7+), methodology modes (LYT/PARA/Zettelkasten), and a thinking framework. It ships as both a git-clone vault and a Claude Code marketplace plugin.**
+
+Evidence: Created April 7, 5,724★, 660 forks. Python + Bash. 15 Claude Code skills (wiki, ingest, query, lint, retrieve, fold, save, autoresearch, canvas, think, etc.). v1.7 "Compound Vault" added hybrid retrieval (contextual prefix + BM25 + cosine rerank per Anthropic's research), per-file advisory locking for multi-writer safety, and Obsidian CLI transport. v1.8 added methodology modes (LYT, PARA, Zettelkasten, Generic). v1.9 added a 10-principle thinking framework. v1.9.2 (May 28) added prompt cache hardening and SEO/GEO pass. DragonScale Memory extension adds log folds, semantic tiling lint, boundary-first autoresearch. Single-tenant security model (wiki-lock.sh with stale-lock reaper, PostToolUse auto-commit opt-out).
+
+What claude-obsidian has that yopedia doesn't: Obsidian-native (graph view, canvas, methodology modes), Claude Code marketplace distribution, 15 agent skills, thinking framework, DragonScale Memory extension, SEO/GEO optimization. What yopedia has that claude-obsidian doesn't: web UI (no Obsidian dependency), confidence scoring, calendar expiry/decay, talk pages for dispute resolution, contributor trust profiles, `disputed` and `supersedes` flags, the governance layer, multi-provider LLM support (not Claude-only), 29 MCP tools, agent identity/context API.
+
+The strategic implication: claude-obsidian is the distribution winner in the Karpathy LLM Wiki space but stops at Level 3 (structured knowledge + multi-writer locking). It has no governance layer (no confidence, no decay, no talk pages, no contributor trust). Its multi-writer support is "advisory locking to prevent corruption" — not "multiple writers with different trust levels collaborating on shared knowledge with dispute resolution." yopedia's L4 position (governance) remains uncontested by the star leader.
+
+Decision: **Watch.** claude-obsidian's distribution success validates the LLM Wiki pattern at scale. Its SEO/GEO pass is a first-principles approach to agent-era discovery (optimizing for AI Overview + Perplexity citation, not just Google). yopedia should note this when it does its own distribution work. No issue filed because this is positioning awareness, not an implementation gap.
+
+Trigger: claude-obsidian adds confidence scoring or talk pages → yopedia's L4 position is directly threatened.
+
+**Market movement 3 — Noosphere (53★, v1.6.8) is the first project to ship a full "status lifecycle" for wiki articles (draft → reviewed → published) alongside a multi-runtime plugin strategy targeting 4 non-Claude runtimes.**
+
+Evidence: Created April 11, TypeScript. v1.6.7 (May 28), v1.6.8 (today). 10+ commits in the last 24 hours. Plugins for OpenClaw, Hermes Agent, Opencode, Kilo Code. Features: article status lifecycle (draft → reviewed → published), provider-agnostic memory with recall orchestration, conflict handling, promotion/backfill, local memory scheduling, Redis cache add-on, Obsidian export/import, multi-user with API key auth, image support in articles.
+
+Relevance: Noosphere's "status lifecycle" (draft → reviewed → published) is architecturally similar to what yopedia's talk pages + `disputed` flag provide, but simpler — a three-state machine vs. threaded discussion with resolution. The interesting pattern is Noosphere's plugin-first distribution: it targets 4 non-Claude runtimes (OpenClaw, Hermes, Opencode, Kilo Code) while claude-obsidian targets only Claude Code. Noosphere is betting on runtime fragmentation; claude-obsidian is betting on Claude Code dominance. The answer is probably "both."
+
+Decision: **Watch.** Noosphere validates the status lifecycle pattern (draft → reviewed → published) as a real user need. yopedia's current schema doesn't have a page status field beyond `disputed`. If Phase 5 introduces structured claims, a status lifecycle for claims (not pages) may be worth considering. But this is a schema thought, not an implementation gap.
+
+Trigger: Noosphere crosses 200★ or gets adopted by a named agent framework as default memory → track as a competitive signal.
+
+**Market movement 4 — Semiont (65★, AI Alliance) positions as the "source-grounded semantic knowledge platform" with eight composable flows and domain-specific knowledge bases.**
+
+Evidence: Apache 2.0, backed by The AI Alliance (IBM, Meta, Intel, etc.). TypeScript + Rust. "Eight composable flows" (frame, yield, mark, match, bind, gather, browse, beckon). Ships as desktop app, container, SDK, CLI, and agent skills. Demo KBs span Project Gutenberg, TPC-H, arXiv, MediaWiki, household records. Active development (May 27 latest). Alpha — API not stable.
+
+Relevance: Semiont is the most "institutional" project in the space — backed by an industry consortium, multi-KB architecture, protocol-level abstractions. The "eight composable flows" pattern is the most ambitious attempt at a knowledge protocol I've seen. However, it's also the most complex — the learning curve is orders of magnitude higher than yopedia's "drop a URL, get a wiki page." At 65★ despite AI Alliance backing, the adoption signal is weak.
+
+Decision: **Ignore as competitor.** Semiont serves enterprise/research use cases with institutional backing; yopedia serves individual developers and agents with zero-config simplicity. The audiences don't overlap. **Watch as protocol research** — Semiont's "composable flows" abstraction may inform Phase 5's agent surface design if it gains traction.
+
+Trigger: Semiont ships a simplified single-user mode or gains 500★ → reassess whether the protocol abstraction is finding real adoption.
+
+**Ecosystem star movements (since May 29)**
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| Hermes Agent | — | 172,474 | new track | Major runtime, plugins ecosystem |
+| Claude Code | — | 127,680 | new track | Primary runtime, plugin marketplace |
+| claude-mem | — | 79,549 | new track | Persistent memory across sessions |
+| mem0 | 57,028 | 57,065 | +37 | Shipped opencode-plugin |
+| WeKnora (Tencent) | 15,723 | 15,755 | +32 | 10 commits May 29, MCP server |
+| claude-obsidian | — | 5,724 | new track | LLM Wiki star leader, marketplace plugin |
+| Engram | 3,856 | 3,867 | +11 | Team usage guide, cloud sync fixes |
+| DeusData/codebase-memory-mcp | 2,777 | 2,786 | +9 | Steady |
+| mcp-memory-service | 1,905 | 1,911 | +6 | Steady |
+| llm-wiki-skill | — | 1,717 | new track | Chinese LLM Wiki skill |
+| obsidian-wiki | — | 1,599 | new track | Python Obsidian wiki framework |
+| swarmvault | 503 | 502 | -1 | Stalled since May 20 |
+| mnemon | 317 | 317 | 0 | Steady |
+| Uranid/mnem | 126 | 126 | 0 | Stalled since May 25 |
+| Semiont (AI Alliance) | — | 65 | new track | Enterprise knowledge platform |
+| Noosphere | — | 53 | new track | 4-runtime plugin strategy, active |
+| llm-wiki-skills | — | 38 | new track | Obsidian/Logseq skill set |
+| Mnemo | 17 | 17 | 0 | Stalled |
+| O2B | 14 | 14 | 0 | Still active (pushed today) |
+
+### Layer 3 insight
+
+The most important structural observation this scan isn't about any single competitor — it's about **distribution surface area as the new competitive dimension**.
+
+Previous scans positioned yopedia along a maturity ladder (L1 chunks → L2 graph → L3 structured → L4 governance). That ladder measured *knowledge sophistication*. This scan reveals a second axis: *distribution surface area* — how many runtime entry points a knowledge tool has.
+
+The evidence:
+- mem0 (57k★): 5 runtime plugins → fastest growing memory project
+- claude-obsidian (5.7k★): Claude Code marketplace plugin → star leader in LLM Wiki space
+- Noosphere (53★): 4 runtime plugins → shipping faster than any project at its star count
+- yopedia: 29 MCP tools, 0 runtime plugins → invisible in all plugin registries
+
+MCP is the interop protocol, but plugin manifests (`.claude-plugin`, `.codex-plugin`, skills directories) are the *discovery mechanism*. Users don't search for MCP servers; they search for plugins inside their runtime. A project can have the best knowledge governance in the space and still be invisible if it doesn't appear where developers look.
+
+This doesn't change yopedia's product strategy (L4 governance is still the right bet), but it changes the deployment strategy. When yopedia deploys, the distribution work is not "expose an API" (already done via MCP) — it's "appear in the places where developers discover tools." The first three moves after deployment should be: (1) `.claude-plugin` manifest for Claude Code marketplace, (2) AgentSkills.io listing, (3) skill directory compatible with at least one non-Claude runtime (Hermes Agent or OpenClaw).
+
+This is a deployment-gated insight, not an implementation gap. No issue filed because all distribution work is blocked until deployment.
+
+### Issues filed
+
+0 issues. All findings are deployment-gated (plugin manifests), strategic (positioning awareness), or schema-level thinking (status lifecycle) that should inform future phases rather than trigger immediate code changes. The dominant finding — that distribution surface area is a new competitive dimension — updates the deployment playbook, not the current backlog.
+
+## 2026-05-29 (research scan)
+
 Scanned Open Second Brain (14★, v0.19, governance-at-personal-scale), WeKnora v0.8 agent wire contract, wiki-teams (1★, contribute-back review), engram 3,856★ (project delete, import), mnemon 317★ (import command), Kiro IDE (3,791★), ecosystem star movements. Filed 0 issues.
 
 ### Advantage Brief
