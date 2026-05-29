@@ -3846,7 +3846,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/232.
 The commit trail is: - yoyo: add ingest_x_mention MCP tool for Phase 3 X ingestion (closes #230); - yoyo: build session (2026-05-29) — issue #229.
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2025-07-17 (office-hour)
+## 2026-05-29 (office-hour)
 Triaged 2 issues. Ready backlog was empty — bar at normal.
 
 **#234 — batch_ingest_urls MCP tool → APPROVED p2-medium.** Verified the HTTP batch API exists but MCP has no equivalent. Agents loop `ingest_url` N times, losing upfront validation and batch summary. 2 files, ~100 lines, wraps existing code. Earned.
