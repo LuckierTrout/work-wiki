@@ -3735,3 +3735,10 @@ Assessed project state: build green (1,986 tests, 57 test files), production liv
 **Skipped:** read_raw MCP tool (medium value but no agent consumer yet), CLI subcommands for agents/dataview/revisions (useful but lower priority than agent surface), confidence-without-sources lint check (cross-validation, not urgent), incomplete-coverage lint-fix explicit case (too small), settings GET error handling (too small). Filed 2 instead of 3 because quality > quota.
 
 **Pipeline state:** 2 in triage (#229, #230), 1 blocked (#21), 1 community discussion (#139). Both new issues are small, independently completable, and address concrete factual errors in runtime-loaded documentation and agent surface completeness.
+
+## 2026-05-29 08:47 — Build opened issue #229
+
+The build agent turned "Documentation accuracy sweep: SCHEMA.md false claims + README stale metrics" into code on `yoyo/issue-229` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/231.
+The commit trail is: - yoyo: fix SCHEMA.md false claims and update README metrics (closes #229).
+That leaves the work waiting on review and merge rather than another build pass.
