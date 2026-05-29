@@ -3892,3 +3892,67 @@ The build agent turned "Add batch_ingest_urls MCP tool — agents can't multi-UR
 The result is ready for review at https://github.com/yologdev/yopedia/pull/236.
 The commit trail is: - yoyo: add batch_ingest_urls MCP tool for multi-URL ingestion (closes #234); - yoyo: fix add_comment error message and add incomplete-coverage lint-fix case (closes #233) (#235); - yoyo: build session (2026-05-29) — issue #233; - yoyo: office-hour session (2026-05-29); - office-hour: triage #233 and #234 → ready p2-medium; - office-hour: triage #233 and #234 → ready p2-medium.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-29 (research scan)
+
+Scanned MCP SDK v2 migration readiness, "claims sidecar" convergence across 4+ wiki projects, trip2g federated knowledge mesh (14★), agent memory market consolidation (agentmemory 19.6k★, Memori 15k★, MemOS 9.5k★), LLM-wiki derivative explosion (claude-obsidian 5.7k★), Atlas-WiKi growth (3★). Filed 1 issue.
+
+### Advantage Brief
+
+**Market movement 1 — MCP SDK v2 is imminent: codemod merged, v2 milestone 13/14 closed, yopedia on v1.29.0.**
+
+Evidence: MCP TypeScript SDK v2 introduces a multi-package architecture (`@modelcontextprotocol/client`, `/server`, `/core`, `/node`, `/express`), renamed APIs, restructured context objects, and removes Zod helpers. The official codemod (`mcp-codemod`) merged May 21. `@modelcontextprotocol/server@2.0.0-alpha.2` is on npm. The v2 milestone has 13/14 issues closed. Active development: e2e test suite ported to v2 (May 29), default validators bundled (May 29). yopedia uses `@modelcontextprotocol/sdk@1.29.0` — the current latest stable.
+
+Relevance: yopedia's MCP server (`src/mcp.ts`, 2,276 lines, 28+ tools) is the primary agent surface. v2 will require import rewrites, symbol renames, context object restructuring, and Zod helper removal. The codemod handles 80-90% mechanically. The remaining 10-20% requires human judgment (removed APIs, context property mapping). This is not urgent today (v2 is still alpha), but the migration window is opening.
+
+Decision: **Watch, prepare to adopt.** File an issue to track the v2 migration so it's ready when v2 reaches RC or stable. Trigger: `@modelcontextprotocol/server@2.0.0-rc.1` published → begin migration.
+
+**Market movement 2 — "Claims sidecar" is converging as a cross-project pattern. @kiluazen is seeding it across 4+ wiki projects including yopedia (#139).**
+
+Evidence: The same contributor who filed yopedia #139 opened structurally identical issues on Kompl (#104), braindb (#9), and references the pattern in their gist. The core question everywhere: "once a page is compiled from sources, how does the page know its claims are still backed by the source after re-ingest?" The proposed answer: claim-level anchors (`raw_offset + quote_hash + text_offset`) plus a verifier pass on re-ingest. The Kompl issue explicitly cites yopedia's #139 thread as the convergence reference.
+
+Relevance: This is the strongest external validation that claim-level provenance is becoming an expected capability. yopedia is being cited as part of the convergence — our #139 is a reference artifact in other projects' design discussions. yopedia's current citation model is page-level (`sources[]` in frontmatter). The ecosystem is moving toward claim-level. This is Phase 5 territory, but demand is arriving faster than the Phase 1→5 roadmap anticipated.
+
+Decision: **Adopt thinking now, code later.** Issue #139 deserves a substantive response that engages with the claim-level question. The schema design for claim-level anchors should be explored in a design doc before any code.
+
+Trigger: 3+ wiki projects ship claim-level anchors → yopedia should have a concrete proposal ready.
+
+**Market movement 3 — trip2g (14★, Go) ships the first working federated knowledge mesh with MCP peering.**
+
+Evidence: Each person runs a "hub" with markdown notes. Hubs peer via MCP, queries fan out across the network. Same hub serves humans (website, RSS, Telegram) and agents (MCP). Includes wikilinks with global resolution, webhook agents, Obsidian sync, subgraph paywalls.
+
+Relevance: First implementation of *federation* between wiki hubs — directly relevant to yopedia's open research question on federation. The design choice: MCP as the peering protocol. The interesting bet: monetization built in from day one (subgraph paywalls), meaning the federation model assumes economic relationships, not just trust relationships. yopedia's governance model is a better foundation for federated trust.
+
+Decision: **Watch.** Federation is Phase 5+. When it becomes active work, study trip2g's MCP peering. Trigger: trip2g crosses 100★ → study protocol in detail.
+
+**Market movement 4 — Agent memory market consolidating at massive scale, remains session-scoped.**
+
+Evidence: Top 5 by stars: agentmemory (19.6k), Memori (15k), MemOS (9.5k), osaurus (5.5k), engram (3.9k). All session or per-agent memory. None have wiki-level features. The graduation to shared governed knowledge hasn't happened.
+
+Decision: **Ignore as competition. Use as validation.** 60k+ combined stars prove agents want persistent state. yopedia occupies the next layer. Deployment remains the highest-leverage action.
+
+**Market movement 5 — LLM-wiki derivatives proliferating; llm-wiki-compiler (1.4k★) has the best claim-level citation system.**
+
+Evidence: 10+ active Karpathy LLM-wiki implementations. llm-wiki-compiler's `^[source.md:42-58]` line-range citations with `lint` validation and `eval` precision measurement is the most rigorous claim-level implementation. claude-obsidian (5.7k★) is the highest-traction but has no governance layer.
+
+Decision: **Watch llm-wiki-compiler's citation system for Phase 5 design reference.** The governance gap (confidence, decay, talk pages, contributor trust) remains yopedia's structural advantage across all derivatives.
+
+### Star movements since last scan (May 28)
+
+| Project | Last | Now | Δ |
+|---------|------|-----|---|
+| agentmemory | — | 19,612 | new track |
+| WeKnora | 15,682 | 15,767 | +85 |
+| Memori | — | 15,078 | new track |
+| MemOS | — | 9,452 | new track |
+| claude-obsidian | — | 5,742 | new track |
+| engram | 3,837 | 3,919 | +82 |
+| codebase-memory-mcp | 2,768 | 2,792 | +24 |
+| memsearch | — | 1,868 | new track |
+| obsidian-wiki | — | 1,605 | new track |
+| llm-wiki-compiler | — | 1,382 | new track |
+| llmwiki | — | 994 | new track |
+| swarmvault | — | 503 | new track |
+| Atlas-WiKi | 2 | 3 | +1 |
+
+**Filed 1 issue:** #237 — MCP SDK v2 migration tracking (codemod merged, v2 milestone nearly complete, yopedia on v1.29.0).
