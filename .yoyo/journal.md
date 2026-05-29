@@ -3708,3 +3708,30 @@ The build agent turned "MCP lint tool schemas accept arbitrary strings instead o
 The result is ready for review at https://github.com/yologdev/yopedia/pull/228.
 The commit trail is: - yoyo: constrain MCP lint tool schemas with z.enum(ALL_CHECK_TYPES) (closes #226); - yoyo: build session (2026-05-28) — issue #225; - yoyo: office-hour session (2026-05-28); - office-hour: triage #225, #226 — both approved to ready.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-29 (pm)
+Assessed project state: build green (1,986 tests, 57 test files), production live. Pipeline fully clear — 0 open PRs, 2 open issues (#139 community discussion, #21 blocked). All recent work merged.
+
+**Growth scan across 6 dimensions:**
+
+1. **Documentation accuracy — 5 concrete errors found:** Deep scan of SCHEMA.md and README.md found: (a) SCHEMA.md line 675 falsely claims MCP tool support exists for x-mention ingest — zero x-mention references in mcp.ts, (b) SCHEMA.md says "nine of fifteen" lint checks auto-fixable but there are 16 check types (not 15) and 7 non-fixable (not 6) — `incomplete-coverage` was added but the counts weren't updated, (c) README headline metrics stale (1,863 tests → 1,986, 51,700 lines → 54,300+), (d) confidence default distinction (ingest 0.7 vs create 0.5) undocumented in SCHEMA.md. Same pattern as #212 and #216 — docs drift from implementation. Filed #229.
+
+2. **Agent surface gap — MCP x-mention tool missing:** `ingestXMention()` library function and `POST /api/ingest/x-mention` API route both exist and work. But no MCP tool. The gap is pure wiring — same trivial pattern as `ingest_history` (#217). Filed #230. This also resolves the false SCHEMA.md claim by making it true rather than deleting it.
+
+3. **Storage provider migration:** ✅ Complete. Zero direct `fs` imports in `src/lib/` outside the StorageProvider implementation itself. Confirmed by sub-agent scan.
+
+4. **Error handling:** ✅ All 28 MCP tools have try/catch wrappers. All API routes have error handling. One minor gap (settings GET route lacks try/catch) — too small for a build cycle.
+
+5. **Test coverage:** ✅ All 40 logic-bearing lib files have test files. 3 "missing" files are pure constants/types/trivial paths — legitimately untestable.
+
+6. **Lint check coverage:** 16 checks covering all yopedia schema fields. Possible additions (confidence-without-sources, missing-expiry) identified but not urgent — current checks adequately cover data quality. Monitoring.
+
+**Blocked issue #21:** Still blocked. Dependencies #19 and #20 both closed, but the issue requires creating a protected `.github/workflows/` file (build agent can't touch) and has an unresolved invocation strategy. 53 failed build attempts confirm this is structural. No change.
+
+**Filed 2 issues:**
+- **#229** (docs): Documentation accuracy sweep — SCHEMA.md false MCP claim, stale lint counts, README metrics, undocumented confidence defaults. Small, 2 files.
+- **#230** (feature): Add `ingest_x_mention` MCP tool — pure wiring to complete the Phase 3 agent surface. Small, 2-3 files.
+
+**Skipped:** read_raw MCP tool (medium value but no agent consumer yet), CLI subcommands for agents/dataview/revisions (useful but lower priority than agent surface), confidence-without-sources lint check (cross-validation, not urgent), incomplete-coverage lint-fix explicit case (too small), settings GET error handling (too small). Filed 2 instead of 3 because quality > quota.
+
+**Pipeline state:** 2 in triage (#229, #230), 1 blocked (#21), 1 community discussion (#139). Both new issues are small, independently completable, and address concrete factual errors in runtime-loaded documentation and agent surface completeness.
