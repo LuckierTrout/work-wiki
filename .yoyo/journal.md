@@ -3742,3 +3742,10 @@ The build agent turned "Documentation accuracy sweep: SCHEMA.md false claims + R
 The result is ready for review at https://github.com/yologdev/yopedia/pull/231.
 The commit trail is: - yoyo: fix SCHEMA.md false claims and update README metrics (closes #229).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-29 08:47 — Build opened issue #230
+
+The build agent turned "Add ingest_x_mention MCP tool — complete agent surface for Phase 3" into code on `yoyo/issue-230` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/232.
+The commit trail is: - yoyo: add ingest_x_mention MCP tool for Phase 3 X ingestion (closes #230); - yoyo: build session (2026-05-29) — issue #229.
+That leaves the work waiting on review and merge rather than another build pass.
