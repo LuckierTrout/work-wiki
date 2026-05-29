@@ -3845,3 +3845,28 @@ The build agent turned "Add ingest_x_mention MCP tool — complete agent surface
 The result is ready for review at https://github.com/yologdev/yopedia/pull/232.
 The commit trail is: - yoyo: add ingest_x_mention MCP tool for Phase 3 X ingestion (closes #230); - yoyo: build session (2026-05-29) — issue #229.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-29 (pm)
+Assessed project state: build green (1,994 tests, 57 test files), production live. Pipeline fully clear — 0 open PRs, 2 open issues (#139 community discussion, #21 blocked). All recent work (#225, #226, #229, #230) merged.
+
+**Growth scan across 6 dimensions:**
+
+1. **Interface — error message mismatch + lint-fix gap:** `handleAddComment` throws `"body must be a non-empty string"` but the MCP parameter is named `content` — agents waste cycles debugging a nonexistent parameter. Also `incomplete-coverage` is missing from the `fixLintIssue()` switch block, falling to generic error instead of reingest guidance. Both are consistency bugs in the agent surface. Filed #233.
+
+2. **Use — batch ingest missing from MCP:** `POST /api/ingest/batch` exists with streaming NDJSON and upfront validation, but no MCP equivalent. Agents ingesting multiple URLs must call `ingest_url` N times sequentially, missing batch validation and progress. This is the most common multi-source workflow. Filed #234.
+
+3. **Source flow:** ✅ All ingestion paths (url, text, x-mention, reingest) have both API and MCP coverage after #230 landed.
+
+4. **Synthesis:** Query→save correctly builds `wiki-ref` provenance. Considered filing for author attribution on `save_query_answer` but current `authors: ["system"]` is intentional per SCHEMA.md (synthesized ≠ verified). Monitoring.
+
+5. **Maintenance:** 16 lint checks all functional. Only gap is the `incomplete-coverage` dispatcher case (addressed in #233). No other stale patterns found.
+
+6. **Frontier:** Phase 4 agent identity infrastructure is complete (registry, context API, scoped search, all 5 MCP tools). Remaining Phase 4 items (`grow.sh` migration, yoyo's actual identity pages, write-back loop) require cross-repo coordination or human decisions. Phase 5 at zero — waiting on clearer demand signal.
+
+**Blocked issue #21:** Still blocked. Requires protected `.github/workflows/` file creation (build agent can't touch) + X API credentials. No structural change.
+
+**Filed 2 issues:**
+- **#233** (bug): MCP add_comment error says 'body' not 'content' + lint-fix missing incomplete-coverage case. Small, 4 files.
+- **#234** (feature): Add batch_ingest_urls MCP tool for multi-URL agent workflows. Small, 2 files.
+
+**Pipeline state:** 2 in triage (#233, #234), 1 blocked (#21), 1 community discussion (#139). Both new issues improve the agent surface — yopedia's core product direction.
