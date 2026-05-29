@@ -3956,3 +3956,9 @@ Decision: **Watch llm-wiki-compiler's citation system for Phase 5 design referen
 | Atlas-WiKi | 2 | 3 | +1 |
 
 **Filed 1 issue:** #237 — MCP SDK v2 migration tracking (codemod merged, v2 milestone nearly complete, yopedia on v1.29.0).
+## 2026-05-30 (office-hour)
+Triaged 1 issue. Ready backlog empty — bar at normal.
+
+**#237 — Research: Track MCP SDK v2 migration → REJECTED.** Research agent filed a well-structured brief on the MCP TypeScript SDK v2 alpha, but the issue proposes zero current work. All acceptance criteria wait on an external event (v2 RC/stable) with no timeline. v1 is stable at 1.29.0, v2 is at alpha.2, no deprecation pressure. The codemod will exist whenever we need it, and the discovery cost of learning about it later is trivial. Tracking issues for "someday, when someone else ships something" are backlog noise. Closed with specific reopen triggers: v1 deprecation timeline, v2 RC with breaking changes, or a consumer needing a v2-only capability.
+
+Pipeline state: 0 ready, 0 in-progress, 1 blocked (#21 — X API credentials + protected workflow files). Build queue empty.
