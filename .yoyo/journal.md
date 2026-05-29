@@ -3845,3 +3845,12 @@ The build agent turned "Add ingest_x_mention MCP tool — complete agent surface
 The result is ready for review at https://github.com/yologdev/yopedia/pull/232.
 The commit trail is: - yoyo: add ingest_x_mention MCP tool for Phase 3 X ingestion (closes #230); - yoyo: build session (2026-05-29) — issue #229.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2025-07-17 (office-hour)
+Triaged 2 issues. Ready backlog was empty — bar at normal.
+
+**#234 — batch_ingest_urls MCP tool → APPROVED p2-medium.** Verified the HTTP batch API exists but MCP has no equivalent. Agents loop `ingest_url` N times, losing upfront validation and batch summary. 2 files, ~100 lines, wraps existing code. Earned.
+
+**#233 — MCP error message mismatch + missing lint-fix case → APPROVED p2-medium.** Both bugs verified in code. `handleAddComment` error says "body" but param is "content"; `fixLintIssue` handles 15/16 check types but drops `incomplete-coverage` to a generic default. 4 files, ~15 lines. Correctness bugs, not features.
+
+Both move to ready. Build queue goes from 0 to 2.
