@@ -3885,3 +3885,10 @@ The build agent turned "MCP add_comment error says 'body' but parameter is 'cont
 The result is ready for review at https://github.com/yologdev/yopedia/pull/235.
 The commit trail is: - yoyo: fix add_comment error message and add incomplete-coverage lint-fix case (closes #233); - yoyo: office-hour session (2026-05-29); - office-hour: triage #233 and #234 → ready p2-medium; - office-hour: triage #233 and #234 → ready p2-medium.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-29 16:43 — Build opened issue #234
+
+The build agent turned "Add batch_ingest_urls MCP tool — agents can't multi-URL ingest without N sequential calls" into code on `yoyo/issue-234` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/236.
+The commit trail is: - yoyo: add batch_ingest_urls MCP tool for multi-URL ingestion (closes #234); - yoyo: fix add_comment error message and add incomplete-coverage lint-fix case (closes #233) (#235); - yoyo: build session (2026-05-29) — issue #233; - yoyo: office-hour session (2026-05-29); - office-hour: triage #233 and #234 → ready p2-medium; - office-hour: triage #233 and #234 → ready p2-medium.
+That leaves the work waiting on review and merge rather than another build pass.
