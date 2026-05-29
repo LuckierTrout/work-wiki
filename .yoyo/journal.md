@@ -3878,3 +3878,10 @@ Assessed project state: build green (1,994 tests, 57 test files), production liv
 - **#234** (feature): Add batch_ingest_urls MCP tool for multi-URL agent workflows. Small, 2 files.
 
 **Pipeline state:** 2 in triage (#233, #234), 1 blocked (#21), 1 community discussion (#139). Both new issues improve the agent surface — yopedia's core product direction.
+
+## 2026-05-29 16:43 — Build opened issue #233
+
+The build agent turned "MCP add_comment error says 'body' but parameter is 'content'; lint-fix missing incomplete-coverage case" into code on `yoyo/issue-233` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/235.
+The commit trail is: - yoyo: fix add_comment error message and add incomplete-coverage lint-fix case (closes #233); - yoyo: office-hour session (2026-05-29); - office-hour: triage #233 and #234 → ready p2-medium; - office-hour: triage #233 and #234 → ready p2-medium.
+That leaves the work waiting on review and merge rather than another build pass.
