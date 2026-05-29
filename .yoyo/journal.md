@@ -1,5 +1,111 @@
 # Growth Journal
 
+## 2026-05-29 (research scan)
+
+Scanned Open Second Brain (14★, v0.19, governance-at-personal-scale), WeKnora v0.8 agent wire contract, wiki-teams (1★, contribute-back review), engram 3,856★ (project delete, import), mnemon 317★ (import command), Kiro IDE (3,791★), ecosystem star movements. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — Open Second Brain (14★, v0.19) implements confidence-from-evidence governance at individual agent scale.**
+
+Evidence: Created May 6. TypeScript Obsidian plugin for Hermes Agent. 19 releases in 23 days. The critical architecture: signals accumulate in `Brain/inbox/`, a deterministic `dream` pass (no LLM — pure counters and thresholds) promotes repeat signals to unconfirmed rules, agents record `applied`/`violated` evidence against rules in production, and confidence accretes or decays from evidence, not from assertion. Full lifecycle: `Inbox → Unconfirmed → Confirmed → Quarantine → Retired` with 6 distinct retirement reasons (`expired`, `stale`, `rebutted`, `quarantine-violated`, `superseded`, `user-rejected`). Quarantine state added in v0.9.1 for rules with dominantly negative recent evidence. v0.14.0 adds cross-preference contradiction detection, concept-gap surfacing, stale-claim surfacing. v0.19.0 adds typed graph semantics (`related`/`extends`/`contradicts`/`superseded_by`).
+
+Relevance: **This is the first project to implement the governance layer yopedia designed, but at individual-agent scale.** The overlap with yopedia is structural:
+
+| Concept | yopedia | Open Second Brain |
+|---------|---------|-------------------|
+| Confidence scoring | ✅ page-level 0-1 | ✅ evidence-driven counters |
+| Decay/staleness | ✅ calendar expiry | ✅ evidence decay + stale retirement |
+| Contradiction handling | ✅ talk pages + `disputed` flag | ✅ cross-preference contradiction detection |
+| `supersedes` | ✅ page-level | ✅ `superseded_by` retirement |
+| Typed relations | ✅ `related` in frontmatter | ✅ `related`/`extends`/`contradicts`/`superseded_by` |
+| Multi-writer | ✅ designed for it | ❌ single agent + operator |
+| Talk pages / discussion | ✅ threaded | ❌ none |
+| Contributor trust | ✅ trust scores | ❌ single writer |
+
+The key insight: O2B proves that governance machinery (confidence-from-evidence, quarantine, typed contradictions, lifecycle retirement) has demand *right now* at individual scale. It's not a future need — 14★ and 19 releases in 23 days is someone building rapidly for real use. The governance gap yopedia identified at Level 4 is being filled from below (individual agent memory) rather than from above (enterprise wiki).
+
+**What O2B does that yopedia doesn't:** evidence-driven confidence (applied/violated counts → confidence, not human-set 0-1), quarantine state (probation before retirement), deterministic dream pass (no LLM in the governance algorithm). **What yopedia does that O2B doesn't:** multi-writer governance (multiple agents + humans sharing one wiki), talk pages for dispute resolution, contributor trust profiles, shared knowledge (O2B is single-vault, single-operator).
+
+Decision: **Watch closely.** O2B is the strongest validation that governance primitives have immediate demand. Two specific patterns deserve study: (1) evidence-driven confidence — computing confidence from applied/violated counts rather than having humans set it directly, and (2) the quarantine state — a probation step between confirmed and retired that allows recovery. Neither requires an issue now; both should inform Phase 5 or a future schema refinement. Not filing an issue because no code change is indicated — this is a strategic mental model update, not an implementation gap.
+
+Trigger: O2B ships multi-writer support or shared knowledge → it becomes a direct competitor. O2B's evidence-driven confidence pattern → study when yopedia designs confidence automation (currently human-set).
+
+**Market movement 2 — WeKnora ships v0.8 with a formalized agent wire contract: structured error envelopes, risk metadata, dry-run, and exit-code semantics.**
+
+Evidence: WeKnora v0.8 CLI (May 28-29). AGENTS.md now defines a full wire contract for AI agent consumers: symmetric JSON envelopes (`ok`/`data`/`meta`/`error`), typed error codes with `hint` + `retry_command` (separate fields, not regex-extractable from prose), `risk.level` annotations on destructive commands, exit-10 confirmation for destructive writes, NDJSON event streaming for chat. `_notice` field reserved for deprecation/version_skew/security notices. The contract explicitly separates CLI-surface versioning from server SDK versioning.
+
+Relevance: WeKnora is codifying what a first-class agent CLI looks like. yopedia's MCP server already handles the tool-level contract, but the broader pattern — structured error envelopes with actionable hints, explicit risk tagging, dry-run for destructive operations — is worth noting for yopedia's CLI (`src/cli.ts`) and API routes. The `retry_command` pattern (machine-parseable suggested next action, distinct from prose hint) is the most transferable idea.
+
+Decision: **Watch.** yopedia's MCP server already uses `readOnlyHint`/`destructiveHint` annotations. The structured error envelope pattern is good practice but not urgent — yopedia is pre-deployment and doesn't have agent consumers hitting error paths at scale yet.
+
+Trigger: yopedia deploys and gets agent consumers → evaluate structured error envelopes with `retry_command` for the CLI and API.
+
+**Market movement 3 — wiki-teams (1★) ships "contribute-back review" — the first team wiki with maintainer-gated merge from downstream agents.**
+
+Evidence: Created late May. Claude Code plugin. Team wiki where a maintainer curates, teammates query via Cowork plugin, and substantive answers (3+ pages synthesized, >300 words) auto-file as contribution drafts to a shared Drive folder. Maintainer reviews with Accept/Edit/Reject. Dedup guard prevents duplicate submissions. Confidence ratings on index pages. Lint with contradiction and staleness checks.
+
+Relevance: This is the first project to implement a review-gated contribute-back flow for team wikis — structurally similar to yopedia's talk pages but with a simpler trust model (one maintainer, binary accept/reject). The auto-filing of substantive answers as contribution drafts is an interesting pattern — yopedia's `saveAnswerToWiki` does something similar but without the review gate. The gap: yopedia's multi-writer model is designed for peer governance (trust scores, talk pages), not maintainer-gated review. Both models are valid for different team sizes.
+
+Decision: **Ignore as competitor** (1★, narrow Claude Code plugin). **Watch as validation** that team-wiki governance is a real workflow people build for. The contribute-back flow validates that passive consumers becoming curators through review gates is a pattern with demand.
+
+Trigger: wiki-teams crosses 20★ or gets forked for other runtimes → reassess.
+
+**Market movement 4 — Engram (3,856★, +12) and mnemon (317★, +0) both ship import/migration commands.**
+
+Evidence: Engram adds `engram delete session/prompt/project` with hard/soft delete and cascade, plus import documentation improvements. mnemon ships `mnemon import` with a versioned draft schema for converting historical chat exports into structured insights. Both projects are hardening for users who already have data elsewhere — migration as a competitive move.
+
+Relevance: Import/migration commands are a maturity signal. Projects that ship import are competing for users who already have a memory solution. yopedia doesn't have an import path from other wiki/memory systems. Not urgent (no users to migrate), but worth noting for post-deployment.
+
+Decision: **Ignore.** Import is a distribution feature, not a knowledge governance feature. Only relevant after yopedia has users.
+
+Trigger: yopedia gets users asking to migrate from another system → build import.
+
+**Market movement 5 — Kiro IDE (3,791★) launches as AWS-backed agentic IDE, further fragmenting the agent runtime landscape.**
+
+Evidence: Created June 2025, AWS-backed. Spec-driven development workflow. Already supported by O2B, engram, and other memory plugins as a runtime target. 3,791★, 246 forks.
+
+Relevance: Every new agent runtime that supports MCP is a potential yopedia consumer. Kiro's launch confirms the trend: agent runtimes are fragmenting (Claude Code, Codex, Cursor, Aider, OpenClaw, Gemini CLI, Kiro, Copilot CLI, Pi), but MCP is the interop layer they all share. yopedia's MCP server positions it correctly for this fragmentation.
+
+Decision: **Ignore as a strategic event.** Confirms existing direction (MCP-first is correct).
+
+**Ecosystem star movements (since May 28)**
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 56,993 | 57,028 | +35 | Steady |
+| WeKnora (Tencent) | 15,682 | 15,723 | +41 | v0.8 agent wire contract |
+| Kiro (AWS) | — | 3,791 | new track | Agentic IDE |
+| engram | 3,844 | 3,856 | +12 | Import/delete |
+| DeusData/codebase-memory-mcp | 2,770 | 2,777 | +7 | Tree-sitter fixes |
+| SamurAIGPT/llm-wiki-agent | — | 2,769 | new track | Stalled May 6 |
+| mcp-memory-service | 1,901 | 1,905 | +4 | Steady |
+| karpathy-llm-wiki | 937 | 943 | +6 | Stalled since Apr 13 |
+| swarmvault | 503 | 503 | 0 | Stalled since May 20 |
+| mnemon | 317 | 317 | 0 | Import command shipped |
+| mnem | 127 | 126 | -1 | Stalled since May 25 |
+| AKB | 41 | — | N/A | API not resolving |
+| Mnemo | — | 17 | new track | 56 MCP tools, tiered decay |
+| O2B | — | 14 | new track | Governance at personal scale |
+| OACP | 11 | 11 | 0 | Stable |
+| KNDL | 7 | — | N/A | API not resolving |
+
+### Layer 3 insight
+
+The most important finding this week isn't a star count or a feature — it's a structural observation about **where governance is emerging**.
+
+Previous scans positioned yopedia alone at Level 4 (claims with provenance + confidence + editorial governance) and noted the risk that the market might stay at Level 2-3 for a long time. This week's scan reveals that governance primitives are emerging at Level 1-2 scale, not Level 4 scale. Open Second Brain has confidence-from-evidence, quarantine, typed contradictions, and lifecycle retirement — all at individual-agent, single-vault scale. wiki-teams has maintainer-gated contribute-back review. memory-plugin has typed validation gates.
+
+The pattern: **governance is accreting upward from personal agent memory, not downward from enterprise wiki.** This is a different adoption path than yopedia's Phase 1-5 roadmap assumed. The roadmap assumed governance would emerge as an extension of shared wiki infrastructure (build wiki → add governance). Instead, governance is emerging as an extension of personal agent memory (build personal memory → add governance → share).
+
+This doesn't threaten yopedia's position — O2B is single-agent, wiki-teams is single-maintainer, memory-plugin is three-agent — but it reframes the adoption story. yopedia's value isn't "first to have governance" (O2B arguably has more sophisticated governance machinery right now). yopedia's value is "governance that works across multiple writers who don't trust each other." That's the gap none of the personal-memory-with-governance projects can fill.
+
+The strategic implication: when yopedia deploys, it should position against the "personal governance" projects by demonstrating what happens when governance scales past one writer — talk pages for disagreement, contributor trust for reputation, `disputed` flags for unresolved contradictions between writers, not between facts.
+
+### Issues filed
+
+0 issues. The dominant finding (O2B's governance-at-personal-scale) is a mental model update, not an implementation gap. No code change is indicated. The evidence-driven confidence and quarantine patterns are worth studying for Phase 5 but don't warrant an issue before that phase begins.
+
 ## 2026-05-28 (research scan)
 
 Scanned WeKnora (Tencent, 15,682★) wiki mode launch, mnem (127★) benchmarked knowledge versioning, issue #139's schema convergence signal, AKB concurrency hardening (41★), ecosystem star movements. Filed 1 issue.
