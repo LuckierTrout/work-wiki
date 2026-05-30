@@ -272,7 +272,6 @@ function sanitizeImageFilename(rawUrl: string): string {
 export async function downloadImages(
   markdown: string,
   slug: string,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _rawDir: string,
 ): Promise<string> {
   // Collect all absolute-URL image references

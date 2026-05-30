@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -10,7 +10,9 @@ import {
   handleUpdatePage,
   handleDeletePage,
   handleIngestUrl,
+  handleBatchIngest,
   handleIngestText,
+  handleIngestXMention,
   handleQueryWiki,
   handleSaveQueryAnswer,
   handleAgentContext,
@@ -25,14 +27,36 @@ import {
   handleResolveDiscussion,
   handleAddComment,
   handleReingest,
+  handleIngestHistory,
   handleDataviewQuery,
   handleListRevisions,
   handleReadRevision,
+  createMcpServer,
 } from "../../mcp";
 import { _resetStorage } from "../storage";
 import { _resetConfigCache } from "../config";
 import { parseFrontmatter } from "../frontmatter";
 import { registerAgent } from "../agents";
+
+// ---------------------------------------------------------------------------
+// Mock fetchUrlContent and downloadImages so no test makes real HTTP calls.
+// All other exports from ../fetch (isUrl, validateUrlSafety, etc.) are kept.
+// ---------------------------------------------------------------------------
+vi.mock("../fetch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../fetch")>();
+  return {
+    ...actual,
+    fetchUrlContent: vi.fn(async (url: string) => ({
+      title: `Mocked page for ${url}`,
+      content: `Mocked content fetched from ${url}`,
+    })),
+    downloadImages: vi.fn(async (markdown: string) => markdown),
+  };
+});
+
+import { fetchUrlContent, downloadImages } from "../fetch";
+const mockedFetchUrlContent = vi.mocked(fetchUrlContent);
+const mockedDownloadImages = vi.mocked(downloadImages);
 
 let tmpDir: string;
 let originalWikiDir: string | undefined;
@@ -50,6 +74,12 @@ beforeEach(async () => {
   await fs.mkdir(path.join(tmpDir, "wiki"), { recursive: true });
   await fs.mkdir(path.join(tmpDir, "raw"), { recursive: true });
   _resetStorage();
+  // Reset fetch mocks to default deterministic behaviour
+  mockedFetchUrlContent.mockImplementation(async (url: string) => ({
+    title: `Mocked page for ${url}`,
+    content: `Mocked content fetched from ${url}`,
+  }));
+  mockedDownloadImages.mockImplementation(async (markdown: string) => markdown);
 });
 
 afterEach(async () => {
@@ -468,6 +498,78 @@ describe("MCP write tools", () => {
 });
 
 // ---------------------------------------------------------------------------
+// MCP cross-referencing tests
+// ---------------------------------------------------------------------------
+
+describe("MCP cross-referencing", () => {
+  it("create_page triggers cross-ref update on related pages", async () => {
+    // Create an existing page that the cross-ref pipeline can find
+    await handleCreatePage({
+      slug: "existing-topic",
+      content: "# Existing Topic\n\nSome content about an existing topic.",
+    });
+
+    // Mock findRelatedPages to return the existing page as related
+    const searchModule = await import("../search");
+    const spy = vi.spyOn(searchModule, "findRelatedPages").mockResolvedValueOnce(["existing-topic"]);
+
+    // Create a new page — cross-ref should wire up a backlink on existing-topic
+    await handleCreatePage({
+      slug: "new-topic",
+      content: "# New Topic\n\nContent that relates to existing topic.",
+    });
+
+    // findRelatedPages should have been called (cross-ref pipeline entered)
+    expect(spy).toHaveBeenCalled();
+
+    // The existing page should now contain a "See also" link to new-topic
+    const existingContent = await fs.readFile(
+      path.join(tmpDir, "wiki", "existing-topic.md"),
+      "utf-8",
+    );
+    expect(existingContent).toContain("See also:");
+    expect(existingContent).toContain("new-topic.md");
+
+    spy.mockRestore();
+  });
+
+  it("update_page triggers cross-ref update on related pages", async () => {
+    // Create two pages
+    await handleCreatePage({
+      slug: "related-page",
+      content: "# Related Page\n\nSome related content.",
+    });
+    await handleCreatePage({
+      slug: "page-to-update",
+      content: "# Page To Update\n\nOriginal body.",
+    });
+
+    // Mock findRelatedPages to return related-page as related
+    const searchModule = await import("../search");
+    const spy = vi.spyOn(searchModule, "findRelatedPages").mockResolvedValueOnce(["related-page"]);
+
+    // Update the page — cross-ref should wire up a backlink on related-page
+    await handleUpdatePage({
+      slug: "page-to-update",
+      content: "# Page To Update\n\nUpdated body referencing related topics.",
+    });
+
+    // findRelatedPages should have been called (cross-ref pipeline entered)
+    expect(spy).toHaveBeenCalled();
+
+    // The related page should now contain a "See also" link to page-to-update
+    const relatedContent = await fs.readFile(
+      path.join(tmpDir, "wiki", "related-page.md"),
+      "utf-8",
+    );
+    expect(relatedContent).toContain("See also:");
+    expect(relatedContent).toContain("page-to-update.md");
+
+    spy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // agent_context tool tests
 // ---------------------------------------------------------------------------
 
@@ -511,10 +613,15 @@ describe("agent_context tool", () => {
 
     const result = await handleAgentContext({ agent_id: "test-agent" });
 
-    // Verify agent info
+    // Verify full agent profile (matches HTTP API shape)
     expect(result.agent.id).toBe("test-agent");
     expect(result.agent.name).toBe("Test Agent");
     expect(result.agent.description).toBe("An agent for testing");
+    expect(result.agent.identityPages).toEqual(["identity-page"]);
+    expect(result.agent.learningPages).toEqual(["learnings-page"]);
+    expect(result.agent.socialPages).toEqual(["social-page"]);
+    expect(result.agent.registered).toBe("2026-05-03");
+    expect(result.agent.lastUpdated).toBe("2026-05-03");
 
     // Verify context sections contain page content
     expect(result.context.identity).toContain("I am a test agent.");
@@ -798,6 +905,77 @@ describe("ingest_url", () => {
 });
 
 // ---------------------------------------------------------------------------
+// batch_ingest_urls tests
+// ---------------------------------------------------------------------------
+
+describe("batch_ingest_urls", () => {
+  it("rejects malformed URLs upfront", async () => {
+    await expect(
+      handleBatchIngest({ urls: ["https://example.com", "not-a-url", "also-bad"] }),
+    ).rejects.toThrow("Malformed URLs at indices 1, 2");
+  });
+
+  it("rejects a single malformed URL in a batch", async () => {
+    await expect(
+      handleBatchIngest({ urls: ["ftp://bad.com"] }),
+    ).rejects.toThrow("Malformed URLs");
+  });
+
+  it("enforces MAX_BATCH_URLS limit", async () => {
+    // Create an array of 21 valid URLs (MAX_BATCH_URLS is 20)
+    const urls = Array.from({ length: 21 }, (_, i) => `https://example.com/page-${i}`);
+    await expect(
+      handleBatchIngest({ urls }),
+    ).rejects.toThrow("exceeds the maximum batch size of 20");
+  });
+
+  it("ingests valid URLs and returns per-URL results", async () => {
+    // Unset LLM keys so ingest uses the fallback (no-LLM) path
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    _resetConfigCache();
+    try {
+      // fetchUrlContent is mocked — no real HTTP calls are made.
+      // The mock returns deterministic { title, content } for each URL.
+      const result = await handleBatchIngest({
+        urls: ["https://example.com/page-a", "https://example.com/page-b"],
+      });
+
+      expect(result.total).toBe(2);
+      expect(result.succeeded + result.failed).toBe(2);
+      expect(result.results).toHaveLength(2);
+      // Each result should have a url field
+      expect(result.results[0].url).toBe("https://example.com/page-a");
+      expect(result.results[1].url).toBe("https://example.com/page-b");
+      // With the mock returning valid content, both should succeed
+      expect(result.succeeded).toBe(2);
+      for (const r of result.results) {
+        expect(r.slug).toBeTruthy();
+        expect(r.error).toBeUndefined();
+      }
+      // Verify the mock was called for each URL
+      expect(mockedFetchUrlContent).toHaveBeenCalledTimes(2);
+      expect(mockedFetchUrlContent).toHaveBeenCalledWith("https://example.com/page-a");
+      expect(mockedFetchUrlContent).toHaveBeenCalledWith("https://example.com/page-b");
+    } finally {
+      if (savedKey !== undefined) {
+        process.env.ANTHROPIC_API_KEY = savedKey;
+      }
+      _resetConfigCache();
+    }
+  });
+
+  it("returns empty results for empty URL array", async () => {
+    // An empty array is technically valid (0 URLs, nothing to do)
+    const result = await handleBatchIngest({ urls: [] });
+    expect(result.total).toBe(0);
+    expect(result.succeeded).toBe(0);
+    expect(result.failed).toBe(0);
+    expect(result.results).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ingest_text tests
 // ---------------------------------------------------------------------------
 
@@ -855,6 +1033,111 @@ describe("ingest_text", () => {
       expect(result.slug).toBeTruthy();
       expect(result.title).toBeTruthy();
       expect(result.sourceUrl).toBe("");
+    } finally {
+      if (savedKey !== undefined) {
+        process.env.ANTHROPIC_API_KEY = savedKey;
+      }
+      _resetConfigCache();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ingest_x_mention tests
+// ---------------------------------------------------------------------------
+
+describe("ingest_x_mention", () => {
+  it("rejects empty URL", async () => {
+    await expect(
+      handleIngestXMention({ url: "", triggered_by: "@yoyo" }),
+    ).rejects.toThrow("url is required and must be a non-empty string");
+  });
+
+  it("rejects non-X URLs", async () => {
+    await expect(
+      handleIngestXMention({ url: "https://example.com/post", triggered_by: "@yoyo" }),
+    ).rejects.toThrow("url must be an x.com or twitter.com URL");
+  });
+
+  it("rejects http non-X domain", async () => {
+    await expect(
+      handleIngestXMention({ url: "https://facebook.com/post/123", triggered_by: "@user" }),
+    ).rejects.toThrow("url must be an x.com or twitter.com URL");
+  });
+
+  it("rejects empty triggered_by", async () => {
+    await expect(
+      handleIngestXMention({ url: "https://x.com/user/status/123", triggered_by: "" }),
+    ).rejects.toThrow("triggered_by is required and must be a non-empty string");
+  });
+
+  it("rejects whitespace-only triggered_by", async () => {
+    await expect(
+      handleIngestXMention({ url: "https://x.com/user/status/123", triggered_by: "   " }),
+    ).rejects.toThrow("triggered_by is required and must be a non-empty string");
+  });
+
+  it("accepts valid x.com URL and returns result shape", async () => {
+    // Use no-LLM fallback path; fetchUrlContent is mocked (no real HTTP)
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    _resetConfigCache();
+    try {
+      const result = await handleIngestXMention({
+        url: "https://x.com/user/status/123",
+        triggered_by: "@yoyo",
+      });
+      expect(result.slug).toBeTruthy();
+      expect(result.title).toBeTruthy();
+      expect(typeof result.summary).toBe("string");
+      expect(result.sourceUrl).toBe("https://x.com/user/status/123");
+      expect(mockedFetchUrlContent).toHaveBeenCalledWith("https://x.com/user/status/123");
+    } finally {
+      if (savedKey !== undefined) {
+        process.env.ANTHROPIC_API_KEY = savedKey;
+      }
+      _resetConfigCache();
+    }
+  });
+
+  it("accepts valid twitter.com URL and returns result shape", async () => {
+    // fetchUrlContent is mocked — no real HTTP calls to twitter.com
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    _resetConfigCache();
+    try {
+      const result = await handleIngestXMention({
+        url: "https://twitter.com/user/status/456",
+        triggered_by: "@someone",
+      });
+      expect(result.slug).toBeTruthy();
+      expect(result.title).toBeTruthy();
+      expect(typeof result.summary).toBe("string");
+      expect(result.sourceUrl).toBe("https://twitter.com/user/status/456");
+      expect(mockedFetchUrlContent).toHaveBeenCalledWith("https://twitter.com/user/status/456");
+    } finally {
+      if (savedKey !== undefined) {
+        process.env.ANTHROPIC_API_KEY = savedKey;
+      }
+      _resetConfigCache();
+    }
+  });
+
+  it("accepts www.x.com URL and returns result shape", async () => {
+    // fetchUrlContent is mocked — no real HTTP calls to x.com
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    _resetConfigCache();
+    try {
+      const result = await handleIngestXMention({
+        url: "https://www.x.com/user/status/789",
+        triggered_by: "@agent",
+      });
+      expect(result.slug).toBeTruthy();
+      expect(result.title).toBeTruthy();
+      expect(typeof result.summary).toBe("string");
+      expect(result.sourceUrl).toBe("https://www.x.com/user/status/789");
+      expect(mockedFetchUrlContent).toHaveBeenCalledWith("https://www.x.com/user/status/789");
     } finally {
       if (savedKey !== undefined) {
         process.env.ANTHROPIC_API_KEY = savedKey;
@@ -1680,7 +1963,7 @@ describe("add_comment", () => {
         threadIndex: 0,
         content: "",
       }),
-    ).rejects.toThrow("body must be a non-empty string");
+    ).rejects.toThrow("content must be a non-empty string");
   });
 
   it("throws for invalid threadIndex", async () => {
@@ -1729,6 +2012,112 @@ describe("reingest", () => {
     await expect(
       handleReingest({ slug: "no-source" }),
     ).rejects.toThrow("no source URL recorded");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ingest_history
+// ---------------------------------------------------------------------------
+
+describe("ingest_history", () => {
+  it("returns empty array when no ledger file exists", async () => {
+    const result = await handleIngestHistory({});
+    expect(result).toEqual({ entries: [] });
+  });
+
+  it("returns empty array with explicit limit", async () => {
+    const result = await handleIngestHistory({ limit: 10 });
+    expect(result).toEqual({ entries: [] });
+  });
+
+  it("returns ledger entries when ledger exists", async () => {
+    // Write a ledger file with two entries
+    const dataDir = path.join(tmpDir, "data");
+    await fs.mkdir(dataDir, { recursive: true });
+    const ledgerPath = path.join(dataDir, "ingest-ledger.jsonl");
+    const entry1 = {
+      ingest_id: "test-1",
+      source_type: "url",
+      source_url: "https://example.com/a",
+      primary_slug: "example-a",
+      related_slugs: [],
+      started_at: "2025-01-01T00:00:00Z",
+      finished_at: "2025-01-01T00:01:00Z",
+      status: "ok",
+    };
+    const entry2 = {
+      ingest_id: "test-2",
+      source_type: "text",
+      source_url: "",
+      primary_slug: "pasted-text",
+      related_slugs: ["related-page"],
+      started_at: "2025-01-02T00:00:00Z",
+      finished_at: "2025-01-02T00:01:00Z",
+      status: "ok",
+    };
+    await fs.writeFile(
+      ledgerPath,
+      JSON.stringify(entry1) + "\n" + JSON.stringify(entry2) + "\n",
+    );
+
+    const result = await handleIngestHistory({});
+    expect(result.entries).toHaveLength(2);
+    // Most recent first
+    expect(result.entries[0].ingest_id).toBe("test-2");
+    expect(result.entries[1].ingest_id).toBe("test-1");
+  });
+
+  it("respects limit parameter", async () => {
+    const dataDir = path.join(tmpDir, "data");
+    await fs.mkdir(dataDir, { recursive: true });
+    const ledgerPath = path.join(dataDir, "ingest-ledger.jsonl");
+    const lines: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      lines.push(
+        JSON.stringify({
+          ingest_id: `test-${i}`,
+          source_type: "url",
+          source_url: `https://example.com/${i}`,
+          primary_slug: `page-${i}`,
+          related_slugs: [],
+          started_at: `2025-01-0${i + 1}T00:00:00Z`,
+          finished_at: `2025-01-0${i + 1}T00:01:00Z`,
+          status: "ok",
+        }),
+      );
+    }
+    await fs.writeFile(ledgerPath, lines.join("\n") + "\n");
+
+    const result = await handleIngestHistory({ limit: 2 });
+    expect(result.entries).toHaveLength(2);
+    // Most recent first — last entry should come first
+    expect(result.entries[0].ingest_id).toBe("test-4");
+    expect(result.entries[1].ingest_id).toBe("test-3");
+  });
+
+  it("defaults to limit 50 when not specified", async () => {
+    const dataDir = path.join(tmpDir, "data");
+    await fs.mkdir(dataDir, { recursive: true });
+    const ledgerPath = path.join(dataDir, "ingest-ledger.jsonl");
+    const lines: string[] = [];
+    for (let i = 0; i < 60; i++) {
+      lines.push(
+        JSON.stringify({
+          ingest_id: `test-${i}`,
+          source_type: "url",
+          source_url: `https://example.com/${i}`,
+          primary_slug: `page-${i}`,
+          related_slugs: [],
+          started_at: "2025-01-01T00:00:00Z",
+          finished_at: "2025-01-01T00:01:00Z",
+          status: "ok",
+        }),
+      );
+    }
+    await fs.writeFile(ledgerPath, lines.join("\n") + "\n");
+
+    const result = await handleIngestHistory({});
+    expect(result.entries).toHaveLength(50);
   });
 });
 
@@ -2291,5 +2680,54 @@ describe("read_revision", () => {
     await expect(
       handleReadRevision({ slug: "test-page", timestamp: 0 }),
     ).rejects.toThrow("timestamp must be a positive number");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mcp.json manifest ↔ server drift test
+// ---------------------------------------------------------------------------
+
+describe("mcp.json manifest sync", () => {
+  it("manifest tools match exactly the tools registered by createMcpServer()", async () => {
+    // Read the manifest
+    const manifestPath = path.resolve(__dirname, "../../../mcp.json");
+    const manifestRaw = await fs.readFile(manifestPath, "utf-8");
+    const manifest = JSON.parse(manifestRaw);
+    const manifestTools: string[] = manifest.tools;
+
+    // Get registered tools from the server
+    // _registeredTools is private in TypeScript but accessible at runtime
+    const server = createMcpServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const registeredTools = Object.keys((server as any)._registeredTools);
+
+    const manifestSet = new Set(manifestTools);
+    const serverSet = new Set(registeredTools);
+
+    // Tools in server but missing from manifest
+    const missingFromManifest = registeredTools.filter(
+      (t) => !manifestSet.has(t),
+    );
+    // Tools in manifest but not registered in server
+    const extraInManifest = manifestTools.filter((t) => !serverSet.has(t));
+
+    if (missingFromManifest.length > 0) {
+      throw new Error(
+        `Server registers tools not in mcp.json (manifest is missing): ${missingFromManifest.join(", ")}`,
+      );
+    }
+
+    if (extraInManifest.length > 0) {
+      throw new Error(
+        `mcp.json lists tools not registered by server (manifest has extras): ${extraInManifest.join(", ")}`,
+      );
+    }
+
+    // Also check for duplicates in the manifest
+    expect(manifestTools.length).toBe(
+      manifestSet.size,
+    );
+
+    expect(manifestTools.sort()).toEqual(registeredTools.sort());
   });
 });

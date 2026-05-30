@@ -22,7 +22,86 @@ import { slugify } from "./slugify";
 import { loadPageConventions } from "./schema";
 import { getRawDir } from "./config";
 import { resolveAlias } from "./alias-index";
+import { getStorage } from "./storage";
+import { logger } from "./logger";
 
+// ---------------------------------------------------------------------------
+// Ingest ledger — append-only JSONL record of each ingest operation
+// ---------------------------------------------------------------------------
+
+/** A single entry in the ingest ledger (data/ingest-ledger.jsonl). */
+export interface LedgerEntry {
+  ingest_id: string;
+  source_type: string;
+  source_url: string;
+  primary_slug: string;
+  related_slugs: string[];
+  started_at: string;
+  finished_at: string;
+  status: string;
+}
+
+/** Relative path to the ingest ledger within the StorageProvider root. */
+const LEDGER_REL_PATH = "data/ingest-ledger.jsonl";
+
+/**
+ * Returns the relative storage path to the ingest ledger JSONL file.
+ * Exported for testing.
+ */
+export function getLedgerPath(): string {
+  return LEDGER_REL_PATH;
+}
+
+/**
+ * Read the ingest ledger, returning entries most-recent-first.
+ *
+ * Gracefully returns an empty array if the file doesn't exist.
+ * Malformed JSONL lines are silently skipped.
+ *
+ * @param limit  Maximum number of entries to return (default: all)
+ */
+export async function readLedger(limit?: number): Promise<LedgerEntry[]> {
+  let raw: string;
+  try {
+    raw = await getStorage().readFile(LEDGER_REL_PATH);
+  } catch {
+    // File doesn't exist or is unreadable — return empty
+    return [];
+  }
+
+  const lines = raw.trim().split("\n").filter(Boolean);
+  const entries: LedgerEntry[] = [];
+  for (const line of lines) {
+    try {
+      entries.push(JSON.parse(line) as LedgerEntry);
+    } catch {
+      // Skip malformed lines
+    }
+  }
+
+  // Most recent first (ledger is append-only, so reverse)
+  entries.reverse();
+
+  if (limit !== undefined && limit > 0) {
+    return entries.slice(0, limit);
+  }
+  return entries;
+}
+
+/**
+ * Append a single ledger entry to data/ingest-ledger.jsonl.
+ *
+ * StorageProvider.appendFile creates parent directories as needed.
+ * Errors are caught and logged so a ledger I/O failure never breaks
+ * the ingest pipeline.
+ */
+export async function persistToLedger(entry: LedgerEntry): Promise<void> {
+  try {
+    await getStorage().appendFile(LEDGER_REL_PATH, JSON.stringify(entry) + "\n");
+  } catch (err) {
+    logger.error("ingest", "Failed to write ledger entry:", err);
+  }
+}
 
 /**
  * Ingest a URL into the wiki.
@@ -358,6 +437,7 @@ export async function ingest(
   content: string,
   options?: IngestOptions,
 ): Promise<IngestResult> {
+  const startedAt = new Date().toISOString();
   const rawSlug = slugify(title);
 
   if (rawSlug === "") {
@@ -583,7 +663,7 @@ export async function ingest(
   //    (writeWikiPageWithSideEffects → runPageLifecycleOp) — no caller-side
   //    call needed.
 
-  return {
+  const result: IngestResult = {
     rawPath,
     primarySlug: slug,
     relatedUpdated: updatedSlugs,
@@ -591,4 +671,18 @@ export async function ingest(
     indexUpdated: true,
     ...(options?.sourceUrl ? { sourceUrl: options.sourceUrl } : {}),
   };
+
+  // 7. Persist a ledger entry recording this ingest operation.
+  await persistToLedger({
+    ingest_id: `${startedAt}/${slug}`,
+    source_type: sourceType,
+    source_url: sourceUrl,
+    primary_slug: slug,
+    related_slugs: updatedSlugs,
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+    status: "completed",
+  });
+
+  return result;
 }

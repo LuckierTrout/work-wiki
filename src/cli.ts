@@ -8,11 +8,14 @@
  *   pnpm cli query <question>     Query the wiki
  *   pnpm cli search <query>       Search wiki pages by content
  *   pnpm cli read <slug>          Read a wiki page by slug
+ *   pnpm cli create <slug>        Create a new wiki page (body from stdin)
+ *   pnpm cli update <slug>        Update an existing wiki page (body from stdin)
  *   pnpm cli lint                 Run wiki lint checks
  *   pnpm cli lint --fix           Run lint and auto-fix issues
  *   pnpm cli list                 List all wiki pages
  *   pnpm cli list --raw           List raw sources
  *   pnpm cli delete <slug>        Delete a wiki page and clean up side effects
+ *   pnpm cli history              Show recent ingest history
  *   pnpm cli status               Show wiki health summary
  *   pnpm cli help                 Show this help
  */
@@ -28,9 +31,12 @@ export type ParsedCommand =
   | { command: "query"; question: string }
   | { command: "search"; query: string; fuzzy: boolean; scope?: string; limit: number }
   | { command: "read"; slug: string }
+  | { command: "create"; slug: string; title: string; tags?: string[] }
+  | { command: "update"; slug: string; title?: string; tags?: string[] }
   | { command: "lint"; fix: boolean }
   | { command: "list"; raw: boolean }
   | { command: "delete"; slug: string }
+  | { command: "history"; limit: number }
   | { command: "status" }
   | { command: "help" }
   | { command: "error"; message: string };
@@ -92,6 +98,35 @@ export function parseArgs(argv: string[]): ParsedCommand {
       }
       return { command: "read", slug };
     }
+    case "create": {
+      const slug = rest.find((a) => !a.startsWith("-"));
+      if (!slug) {
+        return { command: "error", message: 'Usage: pnpm cli create <slug> --title "Page Title"' };
+      }
+      const titleIdx = rest.indexOf("--title");
+      if (titleIdx === -1 || !rest[titleIdx + 1]) {
+        return { command: "error", message: 'Usage: pnpm cli create <slug> --title "Page Title"' };
+      }
+      const title = rest[titleIdx + 1];
+      const tagsIdx = rest.indexOf("--tags");
+      const tags = tagsIdx !== -1 && rest[tagsIdx + 1]
+        ? rest[tagsIdx + 1].split(",").map((t) => t.trim()).filter(Boolean)
+        : undefined;
+      return { command: "create", slug, title, tags };
+    }
+    case "update": {
+      const slug = rest.find((a) => !a.startsWith("-"));
+      if (!slug) {
+        return { command: "error", message: "Usage: pnpm cli update <slug> [--title \"New Title\"] [--tags tag1,tag2]" };
+      }
+      const titleIdx = rest.indexOf("--title");
+      const title = titleIdx !== -1 && rest[titleIdx + 1] ? rest[titleIdx + 1] : undefined;
+      const tagsIdx = rest.indexOf("--tags");
+      const tags = tagsIdx !== -1 && rest[tagsIdx + 1]
+        ? rest[tagsIdx + 1].split(",").map((t) => t.trim()).filter(Boolean)
+        : undefined;
+      return { command: "update", slug, title, tags };
+    }
     case "delete": {
       const slug = rest.find((a) => !a.startsWith("-"));
       if (!slug) {
@@ -106,6 +141,12 @@ export function parseArgs(argv: string[]): ParsedCommand {
     case "list": {
       const raw = rest.includes("--raw");
       return { command: "list", raw };
+    }
+    case "history": {
+      const limitIdx = rest.indexOf("--limit");
+      const limitRaw = limitIdx !== -1 ? rest[limitIdx + 1] : undefined;
+      const limit = limitRaw ? parseInt(limitRaw, 10) : 20;
+      return { command: "history", limit: isNaN(limit) ? 20 : limit };
     }
     case "status":
       return { command: "status" };
@@ -130,11 +171,14 @@ Commands:
   query <question>     Query the wiki
   search <query>       Search wiki pages by content
   read <slug>          Read a wiki page by slug
+  create <slug>        Create a new wiki page (reads body from stdin)
+  update <slug>        Update an existing wiki page (reads body from stdin)
   delete <slug>        Delete a wiki page and clean up side effects
   lint                 Run wiki lint checks
   lint --fix           Run lint and auto-fix issues
   list                 List all wiki pages (slug + title)
   list --raw           List raw sources instead of wiki pages
+  history              Show recent ingest history
   status               Show wiki health summary
   help                 Show this help
 
@@ -142,6 +186,17 @@ Search flags:
   --fuzzy              Enable typo-tolerant fuzzy matching
   --scope agent:<id>   Restrict results to an agent's pages
   --limit N            Max results (default: 10)
+
+Create flags:
+  --title <title>      Page title (required)
+  --tags tag1,tag2     Comma-separated tags (optional)
+
+Update flags:
+  --title <title>      New page title (optional — preserves existing if omitted)
+  --tags tag1,tag2     Comma-separated tags (optional — preserves existing if omitted)
+
+History flags:
+  --limit N            Max entries to show (default: 20)
 
 Examples:
   pnpm cli ingest https://example.com/article
@@ -153,10 +208,17 @@ Examples:
   pnpm cli search "identity" --scope agent:yoyo --limit 5
   pnpm cli read attention-mechanisms
   pnpm cli delete attention-mechanisms
+  echo "Page body content" | pnpm cli create my-page --title "My Page"
+  echo "Tagged page" | pnpm cli create my-page --title "My Page" --tags ai,ml
+  echo "new content" | pnpm cli update my-page
+  echo "new content" | pnpm cli update my-page --title "New Title"
+  echo "new content" | pnpm cli update my-page --title "New Title" --tags ai,ml
   pnpm cli lint
   pnpm cli lint --fix
   pnpm cli list
   pnpm cli list --raw
+  pnpm cli history
+  pnpm cli history --limit 10
   pnpm cli status
 `.trim();
 
@@ -291,6 +353,125 @@ export async function runRead(slug: string): Promise<void> {
   console.log(page.body.trim());
 }
 
+export async function runCreate(slug: string, title: string, tags?: string[]): Promise<void> {
+  const { validateSlug, readWikiPage } = await import("./lib/wiki");
+  const { writeWikiPageWithSideEffects } = await import("./lib/lifecycle");
+  const { serializeFrontmatter } = await import("./lib/frontmatter");
+  const { extractSummary } = await import("./lib/ingest");
+
+  // Validate slug format
+  validateSlug(slug);
+
+  // Check for existing page
+  const existing = await readWikiPage(slug);
+  if (existing) {
+    console.error(`Error: page "${slug}" already exists.`);
+    process.exit(1);
+    return; // unreachable but satisfies linting
+  }
+
+  // Read body from stdin
+  const body = await readStdin();
+  if (!body.trim()) {
+    console.error("Error: no content received on stdin");
+    process.exit(1);
+    return; // unreachable but satisfies linting
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const expiry = new Date();
+  expiry.setDate(expiry.getDate() + 90);
+  const expiryDate = expiry.toISOString().slice(0, 10);
+
+  const frontmatter = {
+    title,
+    created: today,
+    updated: today,
+    confidence: 0.5,
+    expiry: expiryDate,
+    authors: ["cli"],
+    valid_from: today,
+    disputed: false,
+    contributors: [],
+    aliases: [],
+    tags: tags ?? [],
+  };
+
+  const fullContent = serializeFrontmatter(frontmatter, body.trim());
+  const summary = extractSummary(body.trim());
+
+  const result = await writeWikiPageWithSideEffects({
+    slug,
+    title,
+    content: fullContent,
+    summary,
+    logOp: "ingest",
+    crossRefSource: body.trim(),
+  });
+
+  console.log(`Created: ${result.slug}`);
+  console.log(`  Title: ${title}`);
+  if (result.updatedSlugs.length > 0) {
+    console.log(`  Cross-referenced: ${result.updatedSlugs.join(", ")}`);
+  }
+}
+
+export async function runUpdate(slug: string, title?: string, tags?: string[]): Promise<void> {
+  const { validateSlug, readWikiPageWithFrontmatter } = await import("./lib/wiki");
+  const { writeWikiPageWithSideEffects } = await import("./lib/lifecycle");
+  const { serializeFrontmatter } = await import("./lib/frontmatter");
+  const { extractSummary } = await import("./lib/ingest");
+
+  // Validate slug format
+  validateSlug(slug);
+
+  // Check that the page exists
+  const existing = await readWikiPageWithFrontmatter(slug);
+  if (!existing) {
+    console.error(`Error: page "${slug}" not found.\nRun "pnpm cli list" to see available pages.`);
+    process.exit(1);
+    return; // unreachable but satisfies linting
+  }
+
+  // Read new body from stdin
+  const body = await readStdin();
+  if (!body.trim()) {
+    console.error("Error: no content received on stdin");
+    process.exit(1);
+    return; // unreachable but satisfies linting
+  }
+
+  // Merge metadata: use provided values or fall back to existing
+  const fm = existing.frontmatter;
+  const effectiveTitle = title ?? existing.title;
+  const today = new Date().toISOString().slice(0, 10);
+
+  const updatedFrontmatter = {
+    ...fm,
+    title: effectiveTitle,
+    updated: today,
+    tags: tags ?? (Array.isArray(fm.tags) ? fm.tags : []),
+  };
+
+  const fullContent = serializeFrontmatter(updatedFrontmatter, body.trim());
+  const summary = extractSummary(body.trim());
+
+  const result = await writeWikiPageWithSideEffects({
+    slug,
+    title: effectiveTitle,
+    content: fullContent,
+    summary,
+    logOp: "edit",
+    crossRefSource: body.trim(),
+  });
+
+  console.log(`Updated: ${result.slug}`);
+  console.log(`  Title: ${effectiveTitle}`);
+  if (result.updatedSlugs.length > 0) {
+    console.log(`  Cross-referenced: ${result.updatedSlugs.join(", ")}`);
+  }
+}
+
 export async function runDelete(slug: string): Promise<void> {
   const { deleteWikiPage } = await import("./lib/lifecycle");
 
@@ -385,6 +566,40 @@ export async function runStatus(): Promise<void> {
   console.log(`Embeddings:\t${settings.embeddingSupport ? "available" : "not available"}`);
 }
 
+export async function runHistory(limit: number): Promise<void> {
+  const { readLedger } = await import("./lib/ingest");
+  const entries = await readLedger(limit);
+
+  if (entries.length === 0) {
+    console.log("No ingest history found.");
+    return;
+  }
+
+  // Print header
+  console.log(
+    "Timestamp".padEnd(25) +
+    "Slug".padEnd(30) +
+    "Source".padEnd(40) +
+    "Status",
+  );
+  console.log("-".repeat(100));
+
+  for (const entry of entries) {
+    const ts = entry.finished_at || entry.started_at || "";
+    const shortTs = ts.slice(0, 19).replace("T", " ");
+    const slug = entry.primary_slug || "";
+    const source = entry.source_url || "";
+    const status = entry.status || "";
+
+    console.log(
+      shortTs.padEnd(25) +
+      slug.slice(0, 28).padEnd(30) +
+      source.slice(0, 38).padEnd(40) +
+      status,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -420,6 +635,12 @@ async function main(): Promise<void> {
     case "read":
       await runRead(parsed.slug);
       return;
+    case "create":
+      await runCreate(parsed.slug, parsed.title, parsed.tags);
+      return;
+    case "update":
+      await runUpdate(parsed.slug, parsed.title, parsed.tags);
+      return;
     case "delete":
       await runDelete(parsed.slug);
       return;
@@ -431,6 +652,9 @@ async function main(): Promise<void> {
       return;
     case "status":
       await runStatus();
+      return;
+    case "history":
+      await runHistory(parsed.limit);
       return;
   }
 }

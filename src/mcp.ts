@@ -10,7 +10,9 @@
  *   update_page    — Update an existing wiki page
  *   delete_page    — Delete a wiki page by slug
  *   ingest_url     — Ingest a URL into the wiki (fetch → chunk → summarize → write)
+ *   batch_ingest_urls — Batch ingest multiple URLs with upfront validation
  *   ingest_text    — Ingest raw text content into the wiki (chunk → summarize → write)
+ *   ingest_x_mention — Ingest an X/Twitter post into the wiki with mention provenance
  *   query_wiki     — Ask the wiki a question with LLM synthesis
  *   save_query_answer — Save a query answer as a durable wiki page
  *   agent_context  — Get an agent's full context by agent ID
@@ -25,9 +27,12 @@
  *   add_comment        — Add a comment to a discussion thread
  *   resolve_discussion — Resolve a discussion thread
  *   reingest           — Re-ingest a wiki page from its original source URL
+ *   ingest_history     — View ingest ledger entries for provenance auditing
  *   dataview_query     — Query wiki pages by frontmatter fields
  *   list_revisions     — List revision history for a wiki page
  *   read_revision      — Read a specific revision's content
+ *   list_contributors  — List all contributors with trust scores
+ *   get_contributor    — Get a specific contributor's trust profile
  *
  * Usage:
  *   pnpm mcp          # starts the stdio server
@@ -48,12 +53,15 @@ import {
   deleteWikiPage,
   type Frontmatter,
 } from "./lib/wiki";
-import { extractSummary, ingest, ingestUrl, reingest } from "./lib/ingest";
+import { extractSummary, ingest, ingestUrl, ingestXMention, reingest, readLedger, type LedgerEntry } from "./lib/ingest";
 import { query, saveAnswerToWiki, type QueryFormat } from "./lib/query";
 import { isUrl } from "./lib/fetch";
+import { MAX_BATCH_URLS } from "./lib/constants";
+import { getErrorMessage } from "./lib/errors";
 import { getAgent, listAgents, updateAgent, deleteAgent, seedAgent } from "./lib/agents";
+import { listContributors, buildContributorProfile } from "./lib/contributors";
 import type { SeedAgentSection, UpdateAgentOptions } from "./lib/agents";
-import type { AgentProfile, IngestResult, QueryResult, LintResult, LintIssue } from "./lib/types";
+import type { AgentProfile, ContributorProfile, IngestResult, QueryResult, LintResult, LintIssue } from "./lib/types";
 import type { DeletePageResult } from "./lib/lifecycle";
 import { resolveScope, type ContentSearchResult } from "./lib/search";
 import { lint, ALL_CHECK_TYPES } from "./lib/lint";
@@ -210,7 +218,7 @@ export async function handleCreatePage(args: {
     summary,
     logOp: "ingest",
     author: args.author,
-    crossRefSource: null, // skip cross-ref for MCP writes
+    crossRefSource: args.content,
   });
 
   return { slug: args.slug, title, created: true };
@@ -259,7 +267,7 @@ export async function handleUpdatePage(args: {
     summary,
     logOp: "edit",
     author: args.author,
-    crossRefSource: null, // skip cross-ref for MCP writes
+    crossRefSource: args.content,
   });
 
   return { slug: args.slug, title, updated: true };
@@ -314,6 +322,69 @@ export async function handleIngestUrl(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Batch ingest handler
+// ---------------------------------------------------------------------------
+
+export interface BatchIngestResult {
+  url: string;
+  slug?: string;
+  error?: string;
+}
+
+export async function handleBatchIngest(args: {
+  urls: string[];
+  tags?: string[] | undefined;
+}): Promise<{
+  total: number;
+  succeeded: number;
+  failed: number;
+  results: BatchIngestResult[];
+}> {
+  const { urls, tags } = args;
+
+  // Enforce batch size limit
+  if (urls.length > MAX_BATCH_URLS) {
+    throw new Error(
+      `Too many URLs: ${urls.length} exceeds the maximum batch size of ${MAX_BATCH_URLS}`,
+    );
+  }
+
+  // Validate all URLs upfront — reject the whole batch if any are malformed
+  const malformed: { index: number; url: string }[] = [];
+  for (let i = 0; i < urls.length; i++) {
+    if (!isUrl(urls[i])) {
+      malformed.push({ index: i, url: urls[i] });
+    }
+  }
+
+  if (malformed.length > 0) {
+    throw new Error(
+      `Malformed URLs at indices ${malformed.map((m) => m.index).join(", ")}: ${malformed.map((m) => `"${m.url}"`).join(", ")}. Fix them and retry the entire batch.`,
+    );
+  }
+
+  // Ingest each URL sequentially, collecting per-URL results
+  const results: BatchIngestResult[] = [];
+  let succeeded = 0;
+  let failed = 0;
+
+  for (const url of urls) {
+    try {
+      const result: IngestResult = await ingestUrl(url, {
+        ...(tags && tags.length > 0 ? { tags } : {}),
+      });
+      results.push({ url, slug: result.primarySlug });
+      succeeded++;
+    } catch (err) {
+      results.push({ url, error: getErrorMessage(err) });
+      failed++;
+    }
+  }
+
+  return { total: urls.length, succeeded, failed, results };
+}
+
+// ---------------------------------------------------------------------------
 // Ingest text handler
 // ---------------------------------------------------------------------------
 
@@ -350,6 +421,54 @@ export async function handleIngestText(args: {
     title: pageTitle,
     summary,
     sourceUrl: "",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Ingest X mention handler
+// ---------------------------------------------------------------------------
+
+/** Pattern matching x.com or twitter.com post URLs. */
+const X_URL_PATTERN = /^https?:\/\/(www\.)?(x\.com|twitter\.com)\//i;
+
+export async function handleIngestXMention(args: {
+  url: string;
+  triggered_by: string;
+}): Promise<{
+  slug: string;
+  title: string;
+  summary: string;
+  sourceUrl: string;
+}> {
+  if (!args.url || args.url.trim().length === 0) {
+    throw new Error("url is required and must be a non-empty string");
+  }
+
+  if (!X_URL_PATTERN.test(args.url.trim())) {
+    throw new Error("url must be an x.com or twitter.com URL");
+  }
+
+  if (!args.triggered_by || args.triggered_by.trim().length === 0) {
+    throw new Error("triggered_by is required and must be a non-empty string");
+  }
+
+  const result: IngestResult = await ingestXMention(
+    args.url.trim(),
+    args.triggered_by.trim(),
+  );
+
+  // Read the written page to extract title and summary for the response
+  const page = await readWikiPageWithFrontmatter(result.primarySlug);
+  const title = page?.title ?? result.primarySlug;
+  const summary = page
+    ? extractSummary(page.body)
+    : `Ingested from ${args.url}`;
+
+  return {
+    slug: result.primarySlug,
+    title,
+    summary,
+    sourceUrl: args.url.trim(),
   };
 }
 
@@ -421,7 +540,7 @@ async function loadPages(slugs: string[]): Promise<{ content: string; count: num
 export async function handleAgentContext(args: {
   agent_id: string;
 }): Promise<{
-  agent: { id: string; name: string; description: string };
+  agent: AgentProfile;
   context: {
     identity: string;
     learnings: string;
@@ -448,11 +567,7 @@ export async function handleAgentContext(args: {
   const pageCount = identity.count + learnings.count + social.count;
 
   return {
-    agent: {
-      id: agent.id,
-      name: agent.name,
-      description: agent.description,
-    },
+    agent,
     context: {
       identity: identity.content,
       learnings: learnings.content,
@@ -547,6 +662,33 @@ export async function handleDeleteAgent(args: {
     throw new Error(`Agent not found: ${args.agent_id}`);
   }
   return { deleted: true, agent_id: args.agent_id };
+}
+
+// ---------------------------------------------------------------------------
+// Contributor handlers
+// ---------------------------------------------------------------------------
+
+export async function handleListContributors(): Promise<{
+  contributors: ContributorProfile[];
+}> {
+  const contributors = await listContributors();
+  return { contributors };
+}
+
+export async function handleGetContributor(args: {
+  handle: string;
+}): Promise<ContributorProfile> {
+  const profile = await buildContributorProfile(args.handle);
+  // buildContributorProfile returns a zeroed-out profile for unknown handles.
+  // Treat zero activity as "not found" for agent consumers.
+  if (
+    profile.editCount === 0 &&
+    profile.commentCount === 0 &&
+    profile.threadsCreated === 0
+  ) {
+    throw new Error(`No activity found for contributor: ${args.handle}`);
+  }
+  return profile;
 }
 
 // ---------------------------------------------------------------------------
@@ -682,7 +824,7 @@ export async function handleAddComment(args: {
     throw new Error("threadIndex is required");
   }
   if (!args.content || !args.content.trim()) {
-    throw new Error("body must be a non-empty string");
+    throw new Error("content must be a non-empty string");
   }
   const author = args.author && args.author.trim() ? args.author.trim() : "anonymous";
   return addComment(args.pageSlug, args.threadIndex, author, args.content.trim(), args.parentId);
@@ -699,6 +841,18 @@ export async function handleReingest(args: {
     throw new Error("slug is required");
   }
   return reingest(args.slug);
+}
+
+// ---------------------------------------------------------------------------
+// Ingest history handler
+// ---------------------------------------------------------------------------
+
+export async function handleIngestHistory(args: {
+  limit?: number | undefined;
+}): Promise<{ entries: LedgerEntry[] }> {
+  const limit = args.limit ?? 50;
+  const entries = await readLedger(limit);
+  return { entries };
 }
 
 export async function handleDataviewQuery(args: {
@@ -839,18 +993,32 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   }, async (args) => {
-    const results = await handleSearchWiki(args);
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(results, null, 2),
-        },
-      ],
-    };
+    try {
+      const results = await handleSearchWiki(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(results, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
   });
 
   // read_page — Read a single wiki page
@@ -861,6 +1029,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -903,18 +1073,32 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   }, async (args) => {
-    const pages = await handleListPages(args);
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(pages, null, 2),
-        },
-      ],
-    };
+    try {
+      const pages = await handleListPages(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(pages, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
   });
 
   // create_page — Create a new wiki page
@@ -927,6 +1111,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -963,6 +1149,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -997,6 +1185,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1036,11 +1226,56 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: true,
     },
   }, async (args) => {
     try {
       const result = await handleIngestUrl(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // batch_ingest_urls — Batch ingest multiple URLs into the wiki
+  server.registerTool("batch_ingest_urls", {
+    description:
+      "Batch ingest multiple URLs into the wiki — validates all URLs upfront (rejects the batch if any are malformed), then ingests each sequentially. Returns per-URL results with slugs for successes and errors for failures. Use this instead of calling ingest_url N times for multi-source workflows.",
+    inputSchema: {
+      urls: z
+        .array(z.string())
+        .describe("Array of URLs to ingest (each must start with http:// or https://)"),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe("Optional tags to apply to all created pages"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleBatchIngest(args);
       return {
         content: [
           {
@@ -1079,11 +1314,51 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
   }, async (args) => {
     try {
       const result = await handleIngestText(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // ingest_x_mention — Ingest an X/Twitter post into the wiki with mention provenance
+  server.registerTool("ingest_x_mention", {
+    description:
+      "Ingest an X (Twitter) post into the wiki — fetches the post content, processes it, and creates/updates a wiki page with x-mention provenance tracking. Use this when responding to @mentions or ingesting social media content.",
+    inputSchema: {
+      url: z.string().describe("X/Twitter URL to ingest (must be an x.com or twitter.com URL)"),
+      triggered_by: z.string().describe("Handle of the user who triggered the mention (e.g. '@username')"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleIngestXMention(args);
       return {
         content: [
           {
@@ -1122,6 +1397,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1170,6 +1447,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1205,6 +1484,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1248,6 +1529,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1281,6 +1564,8 @@ export function createMcpServer(): McpServer {
     inputSchema: {},
     annotations: {
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   }, async () => {
@@ -1325,6 +1610,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1360,6 +1647,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1392,7 +1681,7 @@ export function createMcpServer(): McpServer {
       "Run quality checks on the yopedia wiki. Returns an array of issues with type, severity, slug, and message. Optionally scope to specific check types or minimum severity.",
     inputSchema: {
       checks: z
-        .array(z.string())
+        .array(z.enum(ALL_CHECK_TYPES))
         .optional()
         .describe(
           `Check types to run (default: all). Valid: ${ALL_CHECK_TYPES.join(", ")}`,
@@ -1404,6 +1693,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1435,7 +1726,7 @@ export function createMcpServer(): McpServer {
     description:
       "Auto-fix a lint issue found by lint_wiki. Takes the issue type, slug, and optional target/message. Not all issue types are auto-fixable.",
     inputSchema: {
-      type: z.string().describe("Lint issue type (e.g. 'orphan-page', 'stale-index', 'empty-page')"),
+      type: z.enum(ALL_CHECK_TYPES).describe("Lint issue type (e.g. 'orphan-page', 'stale-index', 'empty-page')"),
       slug: z.string().describe("Slug of the affected page"),
       target: z
         .string()
@@ -1448,6 +1739,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1485,6 +1778,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1529,6 +1824,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1572,6 +1869,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1623,6 +1922,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1660,11 +1961,57 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
       openWorldHint: false,
     },
   }, async (args) => {
     try {
       const result = await handleReingest(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // ingest_history — View ingest ledger entries for provenance auditing
+  server.registerTool("ingest_history", {
+    description:
+      "View ingest ledger entries for provenance auditing. " +
+      "Returns structured JSON array of past ingest operations, most recent first. " +
+      "Each entry includes ingest_id, source_type, source_url, primary_slug, related_slugs, timestamps, and status.",
+    inputSchema: {
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Maximum number of entries to return (default: 50)"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleIngestHistory(args);
       return {
         content: [
           {
@@ -1717,6 +2064,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1755,6 +2104,8 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   }, async (args) => {
@@ -1796,11 +2147,87 @@ export function createMcpServer(): McpServer {
     },
     annotations: {
       readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
       openWorldHint: false,
     },
   }, async (args) => {
     try {
       const result = await handleReadRevision(args);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // list_contributors — List all contributors with trust scores
+  server.registerTool("list_contributors", {
+    description:
+      "List all contributors who have edited wiki pages or participated in discussions. " +
+      "Returns trust scores, edit counts, revert rates, and activity dates for each contributor.",
+    inputSchema: {},
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
+    try {
+      const result = await handleListContributors();
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: (err as Error).message,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  // get_contributor — Get a single contributor's profile
+  server.registerTool("get_contributor", {
+    description:
+      "Get the trust profile for a specific contributor by handle. " +
+      "Returns edit count, pages edited, comment count, revert rate, trust score, and activity dates.",
+    inputSchema: {
+      handle: z.string().describe("Contributor handle to look up"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async (args) => {
+    try {
+      const result = await handleGetContributor(args);
       return {
         content: [
           {

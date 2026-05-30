@@ -56,15 +56,21 @@ These were added in Phase 1 of the yopedia pivot.
 
 | Field | Type | Default | Set when | Consumed by |
 |-------|------|---------|----------|-------------|
-| `confidence` | number (0–1) | `0.7` | Initial ingest (deterministic default); preserved on re-ingest if existing value is higher | `low-confidence` lint check (flags pages below 0.3); future UI badge |
+| `confidence` | number (0–1) | `0.7` (ingest) / `0.5` (create) | Initial ingest (deterministic default); preserved on re-ingest if existing value is higher | `low-confidence` lint check (flags pages below 0.3); wiki page view color-coded confidence badge |
 | `expiry` | ISO date string (YYYY-MM-DD) | 90 days from ingest | Initial ingest and re-ingest (always resets to 90 days from now) | `stale-page` lint check (flags pages past expiry); page view temporal range |
 | `valid_from` | ISO date string (YYYY-MM-DD) | Today (ingest date) | Initial ingest and re-ingest (always resets to today — the content is re-verified) | `stale-page` lint check (flags pages verified over 180 days ago); page view temporal range ("Verified May 2026 · Review by Oct 2026") |
-| `authors` | string array | `["system"]` | Initial ingest; preserved on re-ingest (never reset) | Future contributor profiles, attribution UI |
-| `contributors` | string array | `[]` | Re-ingest appends `"system"` if not already present; manual edits should append the editor's handle | Future contributor profiles |
-| `disputed` | boolean | `false` | Set manually or by future contradiction resolution; preserved on re-ingest | Future talk-page system, UI warning badge |
+| `authors` | string array | `["system"]` | Initial ingest; preserved on re-ingest (never reset) | `/wiki/contributors` page, `ContributorBadge` component, contributor profiles API |
+| `contributors` | string array | `[]` | Re-ingest appends `"system"` if not already present; manual edits should append the editor's handle | `/wiki/contributors` page, `ContributorBadge` component, contributor profiles API |
+| `disputed` | boolean | `false` | Set manually or by future contradiction resolution; preserved on re-ingest | `disputed-page` lint check; talk page system (`discuss/` directory); wiki page view warning badge |
 | `supersedes` | string (slug) | `""` (empty) | Set manually when a page replaces another; preserved on re-ingest | Future redirect system |
 | `aliases` | string array | `[]` | Set manually for alternative names; preserved on re-ingest | Alias index for entity deduplication at ingest time; `duplicate-entity` lint check; search resolution |
 | `sources` | JSON string (SourceEntry[]) | `"[]"` | Ingest appends a new entry; re-ingest appends if the source URL is new | Wiki page view provenance section; parseSources() in `src/lib/sources.ts` |
+
+**Confidence defaults:** Pages created via `ingest` default to confidence 0.7
+because the LLM ingest pipeline synthesizes content from a verified source.
+Pages created via `create_page` (MCP tool or CLI) default to 0.5 because
+manually-created pages haven't been through the ingest pipeline and may lack
+source verification.
 
 **Re-ingest behavior:** On re-ingest, `authors`, `contributors`, `disputed`,
 `supersedes`, and `aliases` are preserved from the existing page. `expiry`
@@ -591,6 +597,14 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
   pointing to a slug that doesn't exist on disk. The supersession chain is
   broken. No auto-fix — create the target page or remove the `supersedes`
   field.
+- **`incomplete-coverage`** (info) — LLM comparison of raw source content
+  (`raw/<slug>.md`) against the corresponding wiki page (`wiki/<slug>.md`)
+  flags cases where significant information from the source is absent from
+  the wiki. Uses the same LLM-powered approach as `contradiction` and
+  `missing-concept-page`. Only runs for pages that have a corresponding raw
+  source on disk. Requires an LLM key; skipped when no key is configured.
+  No auto-fix — requires re-ingesting with an updated prompt or manually
+  adding the missing content.
 
 ## Provider configuration
 
@@ -622,7 +636,7 @@ sessions should pick from this list:
   via RRF. Batch rebuild of the full vector index is available via the Settings
   page (`/api/settings/rebuild-embeddings`).
   Anthropic-only users see no regression (pure BM25 fallback).
-- Lint auto-fix handles nine of fifteen checks (`orphan-page`, `stale-index`,
+- Lint auto-fix handles nine of sixteen checks (`orphan-page`, `stale-index`,
   `empty-page`, `broken-link`, `missing-crossref`, `contradiction`,
   `missing-concept-page`, `stale-page`, `unmigrated-page`) via
   `POST /api/lint/fix`.
@@ -633,13 +647,15 @@ sessions should pick from this list:
   refreshes `valid_from` to today.
   The `unmigrated-page` fix adds sensible yopedia defaults (confidence 0.5,
   expiry 90 days out, authors `["system"]`).
-  The six exceptions without auto-fix are: `low-confidence` (requires
+  The seven exceptions without auto-fix are: `low-confidence` (requires
   ingesting additional sources), `duplicate-entity` (requires human judgment
   to merge), `uncited-claims` (requires adding citations or ingesting
   sources), `unresolved-discussions` (requires reviewing and resolving
   open threads on the talk page), `disputed-page` (requires resolving
-  the dispute through discussion), and `supersedes-dangling` (requires
-  creating the target page or removing the supersedes field).
+  the dispute through discussion), `supersedes-dangling` (requires
+  creating the target page or removing the supersedes field), and
+  `incomplete-coverage` (requires ingesting additional sources to
+  improve topic coverage).
 - Long documents are chunked at ingest time (12K chars per chunk ≈ 3K
   tokens) so they fit within provider context windows. Token counting is
   character-based (not tokenizer-exact), which is conservative but not
@@ -663,17 +679,148 @@ sessions should pick from this list:
 ## Planned evolution
 
 Phase 1 (schema evolution) and Phase 2 (talk pages + attribution) are complete.
-Phase 3 (X ingestion loop) library and API work is complete — `ingestXMention()`,
-`POST /api/ingest/x-mention`, and MCP tool support are implemented. The remaining
-piece is the GitHub Actions polling workflow (#21), which is blocked on deployment
-architecture.
-Phase 4 (agent identity as yopedia pages) is **in progress** — the agent
-registry, context API, `seedAgent()` utility, `agent-identity` page type, and
-scoped search are implemented. Remaining Phase 4 work: migrating yoyo's actual
-identity content into yopedia pages and grow.sh integration.
+Phase 3 (X ingestion loop) library and API work is complete — `ingestXMention()`
+and `POST /api/ingest/x-mention` are implemented. The remaining pieces are the
+MCP tool for x-mention ingest and the GitHub Actions polling workflow (#21),
+which is blocked on deployment architecture.
+Phase 4 (agent identity as yopedia pages) is **substantially complete** — the agent
+registry, context API, `seedAgent()` utility, `agent-identity` page type, scoped
+search, MCP tools (`seed-agent`, `list-agents`, `update-agent`, `delete-agent`,
+`agent-context`), and contributor profiles are implemented. Remaining Phase 4 work:
+migrating yoyo's actual identity content into yopedia pages and `grow.sh` integration.
 The schema will continue to evolve toward the full yopedia model defined in
 [`yopedia-concept.md`](yopedia-concept.md). See YOYO.md for the phased roadmap.
 Next up: Phase 5 (agent surface research).
+
+**Provenance depth (evaluated in #140):** Three primitives proposed by external
+agent-wiki builders were evaluated against yopedia's architecture:
+
+- **Hybrid raw anchors (claim-level citation)** — WATCH. Requires new claims
+  data model, LLM ingest prompt restructuring, and offset tracking. The
+  `SourceEntry` type will gain optional `anchor` fields for forward
+  compatibility when ready.
+- **Ingest ledger** — ADOPT. Append-only `data/ingest-ledger.jsonl` recording
+  each ingest operation's inputs, outputs, and timing. Implementation tracked
+  separately.
+- **Post-ingest completeness check** — ADOPT. New `incomplete-coverage` lint
+  check comparing raw source content against wiki page content via LLM.
+  Implementation tracked separately.
+
+### Provenance depth evaluation
+
+Three independent agent-wiki builders (OmegaWiki, SwarmVault, and
+[@kiluazen](https://github.com/kiluazen)) converged on three v0 schema choices
+that yopedia hadn't shipped. Issue #139 reported the convergence with a
+[reference gist](https://gist.github.com/kiluazen/727948f9517eacd665d21199e8318da1)
+containing field-level schemas. Each primitive was evaluated for adopt/watch/ignore.
+
+#### Primitive 1: Hybrid raw anchors → WATCH
+
+**What it is:** Claim-level citation anchoring via
+`{raw_offset, quote_hash, text_offset, claim_id}` that links specific passages
+in raw sources to specific statements on wiki pages.
+
+**Current state:** `SourceEntry` in `src/lib/types.ts` stores page-level
+provenance: `{type, url, fetched, triggered_by}`. Raw sources in `raw/` are
+immutable but have no offset tracking. Wiki citations use `](slug.md)` wikilinks
+between wiki pages, not back to raw source passages. The `uncited-claims` lint
+check (`src/lib/lint-checks.ts`) checks presence/absence of citations but not
+their granularity.
+
+**Why watch, not adopt:**
+- Requires a new `claims` data model (structured JSON or sidecar files, not
+  frontmatter — our frontmatter parser intentionally rejects nested objects)
+- Requires the LLM ingest prompt to produce structured claim-source mappings —
+  a fundamental change to the ingest pipeline's output format
+- Requires raw source content hashing and offset tracking in `saveRawSource()`
+  (`src/lib/raw.ts`)
+- The convergence signal is real but the implementation cost is high and the
+  schema is not yet stable across projects (the gist itself asks "is
+  `raw_offset + quote_hash + optional text_offset` enough?")
+
+**Preparatory step (future issue):** Extend `SourceEntry` with optional anchor
+fields so the type is forward-compatible:
+
+```typescript
+export interface SourceEntry {
+  type: "url" | "text" | "x-mention" | "wiki-ref";
+  url: string;
+  fetched: string;
+  triggered_by: string;
+  // Future: claim-level anchoring (optional, not yet populated)
+  anchor?: {
+    raw_offset?: { start: number; end: number };
+    text_offset?: { start: number; end: number };
+    quote_hash?: string;
+  };
+}
+```
+
+This extends the type without breaking existing code (all fields optional).
+Implementation deferred until the ingest pipeline can produce these values.
+
+#### Primitive 2: Ingest ledger → ADOPT
+
+**What it is:** An append-only record of which ingest wrote which pages from
+which source, separate from the wiki pages themselves. The gist proposes
+`{ingest_id, commit, inputs[], wiki_pages_touched[], started_at, finished_at, status}`.
+
+**Current state:** `log.md` (`src/lib/wiki-log.ts`) is an append-only activity
+log but stores human-readable lines, not structured data. `IngestResult`
+(`src/lib/types.ts`) already returns `{primarySlug, relatedUpdated, wikiPages}`
+— the data exists transiently but is not persisted in a machine-readable form.
+Revisions (`src/lib/revisions.ts`) track per-page snapshots but don't link back
+to the triggering ingest.
+
+**Why adopt:**
+- Low implementation cost: append a JSON line to `data/ingest-ledger.jsonl`
+  after each successful ingest in `src/lib/ingest.ts`
+- Enables future verifier checks without changing existing code
+- The data already exists in `IngestResult` — we just need to persist it
+
+**Schema:**
+
+Location: `data/ingest-ledger.jsonl` (append-only, one JSON object per line)
+
+Each entry records a completed ingest operation:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ingest_id` | string | Unique identifier (ISO timestamp + slug, e.g. `2026-05-14T00:01:24Z/retrieval`) |
+| `source_type` | string | `"url"`, `"text"`, or `"x-mention"` |
+| `source_url` | string | The URL or identifier of the ingested source |
+| `primary_slug` | string | The main wiki page created or updated |
+| `related_slugs` | string[] | Other wiki pages updated during this ingest |
+| `started_at` | string | ISO timestamp when ingest began |
+| `finished_at` | string | ISO timestamp when ingest completed |
+| `status` | string | `"completed"` or `"failed"` |
+
+The ledger is machine-readable but not exposed in the UI (yet). It is the
+substrate for future verifier checks (did every source produce a page? which
+ingests touched a given page?).
+
+#### Primitive 3: Post-ingest completeness check → ADOPT
+
+**What it is:** A lint check that compares raw source content against wiki page
+content and asks "did anything important from the source fail to make it into
+the wiki?"
+
+**Current state:** `checkStalePages()` (`src/lib/lint-checks.ts`) uses `expiry`
+dates (90 days from ingest) and `valid_from` (verification date).
+`checkUncitedClaims()` checks for presence of citations but not whether the wiki
+adequately covers the source. No existing check compares source content to wiki
+content.
+
+**Why adopt:**
+- Fits cleanly into the existing lint architecture as a new LLM-powered check
+  (same pattern as `checkContradictions()` and `checkMissingConceptPages()`)
+- Directly addresses the gap @kiluazen identified: "did anything important from
+  the source fail to make it into the wiki"
+- Addresses a real gap: the current model trusts the LLM's ingest output
+  without verification
+
+**Schema:** New `incomplete-coverage` lint check. See the lint checks section
+above for the full description.
 
 **Trigger/notification system:** A research evaluation of trigger patterns for
 wiki change events is documented in [`DESIGN-triggers.md`](DESIGN-triggers.md).

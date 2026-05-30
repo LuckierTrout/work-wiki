@@ -1,5 +1,775 @@
 # Growth Journal
 
+## 2026-05-30 (research scan)
+
+Scanned AI-CIP provenance envelope spec (2★, structured claim provenance for multi-agent systems), obsidian-second-brain (1,455★, cross-CLI Karpathy evolution with dual-track research), mnem (129★, Rust-based "Git for AI Knowledge" with benchmarked recall), ctx (372★, 102K-node meta-graph of agent skills/MCPs), engram v1.16.0-1.16.1 (3,952★, HTTP auth + cross-project search), O2B v0.20-0.22 (15★, vault portability + domain-classified contradictions), ecosystem star movements. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — AI-CIP proposes a provenance envelope schema for multi-agent reasoning: typed, immutable, append-only claim containers with confidence scores, review states, and hash-verified integrity.**
+
+Evidence: `creativeprocessca-dev/ai-cip` (2★, published May 29). Defines five envelope types: `contribution` (claims with per-claim confidence 0.0–1.0, supporting references, external citations), `decision` (verdict on a prior envelope: verified/rejected/flagged), `flag` (soft attention signal with severity), `session-init`, `session-summary`. Envelopes are immutable and append-only — corrections are new envelopes, not edits. Review states (`pending → verified → rejected → flagged`) are driven by decision envelopes, not by mutating the original. SHA-256 hash per envelope for integrity verification without crypto keys. Three adoption tiers: Tier 1 (structured envelopes + hash, single framework), Tier 2 (ed25519 signing, regulated industries), Tier 3 (per-agent signing, cross-org).
+
+Relevance: **This is the most precise external articulation of the problem yopedia's governance layer is solving.** yopedia's schema has `confidence`, `disputed`, `supersedes`, `sources[]`, and talk pages for dispute resolution — but these are page-level properties. AI-CIP proposes claim-level provenance: each individual statement within a page carries its own confidence, its own citation chain, and its own review state. This is exactly yopedia's Phase 5 open research question: "What is the right form of a knowledge artifact for an agent?"
+
+The specific design choices worth noting: (1) claims as the atomic unit of verification, not pages, (2) review state transitions as new records rather than mutations (append-only audit trail), (3) the "attestation gap" rule — high confidence with empty provenance references is a flag, not a feature. yopedia's `checkUncitedClaims` lint check does something similar at page level, but AI-CIP's per-claim granularity is structurally cleaner for agent consumption.
+
+Decision: **Watch as Phase 5 research input.** The spec is at 2★ and v0.1 — too early to adopt. But the envelope schema's design choices (claim-level confidence, append-only review state, attestation gap detection) should inform yopedia's structured-claims research when Phase 5 begins. The three-tier adoption model (hash → signing → cross-org identity) is also a useful template for yopedia's trust model progression.
+
+Trigger: AI-CIP gets adopted by any agent framework (LangGraph, CrewAI, AutoGen) or crosses 50★ → evaluate whether yopedia's talk page records should adopt envelope-compatible structure.
+
+**Market movement 2 — obsidian-second-brain (1,455★, 165 forks) emerges as the second major Karpathy evolution, differentiated from claude-obsidian by cross-CLI support (4 CLIs), dual-track research, and a NotebookLM integration.**
+
+Evidence: Created March 24. v0.8.0 (May 15) rewrites `/notebooklm` to use Gemini File Search API — one HTTP call, no browser, source-grounded synthesis over the user's own vault. 34 commands across Claude Code, Codex CLI, Gemini CLI, and OpenCode. Two research tracks: open-web (`/research-deep` via Perplexity + Grok) and source-grounded (`/notebooklm` via Gemini). 4 scheduled agents, 4 role presets. AI-first validator at write time. 1,455★ in ~10 weeks.
+
+Relevance: obsidian-second-brain validates the "same wiki, multiple agents" pattern from the opposite direction. Where yopedia designs multi-writer governance (different writers, same wiki), obsidian-second-brain designs multi-runtime access (same user, different CLIs). The dual-track research pattern (external signal vs. vault-grounded synthesis, "contradictions across the two are where the insight is") is architecturally interesting — it's a user-facing version of yopedia's lint contradiction detection, but positioned as a feature rather than a maintenance check.
+
+Decision: **Ignore as competitor** (Obsidian-native, single-user, no governance). **Watch as validation** — 1,455★ in 10 weeks confirms the Karpathy pattern has durable demand beyond the initial spike. The dual-track research pattern is a useful UX idea for Phase 3+ (external research vs. wiki-internal synthesis).
+
+Trigger: obsidian-second-brain adds multi-user support or web interface → reassess.
+
+**Market movement 3 — mnem (129★, Rust, Apache 2.0) positions as "Git for AI Agent Knowledge" with the strongest benchmarked recall claims in the agent memory space.**
+
+Evidence: Created April 26. v0.1.7 (May 21). Rust + WASM. No LLM at ingest — deterministic parsing, chunking, and indexing. Knowledge stored in `.mnem/` directory alongside code (committable, branchable, diffable, mergeable). Hybrid retrieval fusing vector + keyword + graph traversal in single pass with token budget reporting. Benchmarked head-to-head against mem0 and MemPalace on 6 public datasets, claims best-or-tied on 5. Runs as CLI, HTTP server, MCP server, Python library, or in-browser via WASM. Forgetting is first-class: revoke a fact and all retrieval paths filter it out, audit trail preserved. Multi-runtime integration via `mnem integrate` (Claude Code, Cursor, Gemini CLI).
+
+Relevance: mnem's "Git for knowledge" framing is the strongest version of the versioning-as-governance argument. Its key insight: knowledge should be versionable with the same primitives as code (branch, diff, merge, rollback). This connects to issue #139's question about citation anchoring and staleness decay — mnem's answer is that knowledge changes are tracked the same way code changes are (commits), which makes staleness a function of commit history rather than calendar decay.
+
+For yopedia, the interesting design choice is deterministic ingest (no LLM at ingest time = same input always produces same output = reproducible knowledge graph). yopedia's ingest is LLM-dependent, which means the same URL ingested twice may produce different pages. This is a trade-off, not a bug — LLM ingest produces richer synthesis but sacrifices reproducibility.
+
+Decision: **Watch.** mnem is single-user, local-first, coding-focused — different niche from yopedia's shared wiki. The benchmarked recall claims are the most rigorous in the space and worth studying when yopedia builds its agent surface (Phase 5). The deterministic-ingest pattern is worth noting but not adopting — yopedia's value is in LLM synthesis, not deterministic parsing.
+
+Trigger: mnem adds multi-writer support or shared knowledge → direct overlap. mnem crosses 500★ → its recall benchmarks have validated at scale.
+
+**Market movement 4 — engram (3,952★, +13) ships v1.16.0-1.16.1: HTTP auth for destructive endpoints, cross-project personal search, and team usage documentation.**
+
+Evidence: v1.16.0 (May 28): opt-in HTTP auth (`ENGRAM_HTTP_TOKEN`) with constant-time token comparison for destructive endpoints, `mem_search` with `all_projects: true` for cross-project search, CLI delete sub-commands, TUI clipboard shortcut, path traversal sanitization in Obsidian exporter. v1.16.1 (May 29): active session resolution fix, cloud sync dedup, project migration hardening, Windows background sync improvements. Team usage guide contributed by community member.
+
+Relevance: engram's cross-project search (`all_projects: true`) is structurally what yopedia's scoped search API does (`GET /api/search?scope=agent:yoyo` vs. `GET /api/search`). engram arrived at the same pattern from user demand — agents that work across multiple projects need to search everything, not just the current scope. The HTTP auth pattern (opt-in, constant-time, per-endpoint) is a simpler alternative to Arkon's OAuth 2.1 — useful reference when yopedia deploys and needs API auth.
+
+Decision: **Watch.** engram's steady growth (3,952★) and community contributions (team usage guide) confirm the agent memory market is maturing. The cross-project search and HTTP auth patterns validate yopedia's existing architecture choices. No action needed.
+
+Trigger: engram ships wiki-style knowledge pages (not just memory observations) → direct feature overlap with yopedia.
+
+**Ecosystem star movements (since May 30)**
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 57,112 | 57,129 | +17 | Slowing |
+| WeKnora (Tencent) | 15,782 | 15,793 | +11 | Steady |
+| nashsu/llm_wiki | 9,844 | 9,873 | +29 | Steady |
+| claude-obsidian | 5,756 | 5,773 | +17 | Steady |
+| engram | 3,939 | 3,952 | +13 | v1.16.0-1.16.1 |
+| SamurAIGPT/llm-wiki-agent | 2,774 | 2,775 | +1 | Stalled since May 6 |
+| sdyckjq-lab/llm-wiki-skill | 1,717→1,724 | 1,724 | +7 | Steady |
+| obsidian-wiki (Ar9av) | 1,608 | 1,611 | +3 | Steady |
+| obsidian-second-brain | — | 1,455 | new track | Cross-CLI Karpathy, 165 forks |
+| llm-wiki-compiler | 1,387 | 1,388 | +1 | Stalled since May 27 |
+| karpathy-llm-wiki | 951 | 952 | +1 | Stalled since Apr 13 |
+| nuwax | — | 777 | new track | Enterprise agent OS, 29 May push |
+| llm-wiki-skill (lewislulu) | 1,721→564 | 564 | — | Corrected tracking (was misidentified) |
+| swarmvault | 503 | 503 | 0 | Stalled since May 20 |
+| nvk/llm-wiki | — | 492 | new track | Parallel multi-agent research |
+| ctx | — | 372 | new track | 102K-node skill/MCP meta-graph |
+| Beever Atlas | 361 | 361 | 0 | v0.2.0, active development |
+| mnemon | — | 318 | new track | LLM-supervised graph memory |
+| Pratiyush/llm-wiki | 276 | 279 | +3 | Multi-runtime wiki |
+| AgentClaw | — | 269 | new track | One-sentence → reusable capabilities |
+| AgentRecall-MCP | — | 258 | new track | Correction-driven memory, 10 MCP tools |
+| mnem | — | 129 | new track | Git for AI knowledge, Rust, benchmarks |
+| OpenLore | — | 141 | new track | Architectural memory, 45 MCP tools |
+| O2B | 15 | 15 | 0 | v0.20-0.22, vault portability |
+| Demarkus | 13 | 13 | 0 | QUIC knowledge protocol |
+
+### Layer 3 insight
+
+The most important structural shift this scan reveals is the **convergence on claim-level provenance as the next governance frontier**.
+
+Three independent signals point the same direction:
+
+1. **AI-CIP** (2★, but architecturally precise) proposes claim-level provenance envelopes with per-claim confidence, append-only review states, and attestation gap detection
+2. **Issue #139** (community contributor) asks specifically about citation anchoring, staleness decay mechanics, and whether talk pages are structured claim-reference objects or free-form markdown
+3. **mnem** (129★) makes knowledge changes versionable at the commit level — treating knowledge mutations like code mutations with full audit trail
+
+These three sources — a protocol spec, a community issue, and a competing product — all converge on the same insight: **page-level confidence and citation are necessary but insufficient; the atomic unit of trust should be the claim, not the page.**
+
+yopedia currently tracks trust at page level: `confidence: 0.8` means "this page overall is well-supported." The emerging pattern is claim-level: "this specific statement has confidence 0.95 with these citations, but the statement two paragraphs later has confidence 0.3 with no citations." The `checkUncitedClaims` lint check already detects uncited individual statements — but the infrastructure for claim-level confidence, claim-level citation anchoring, and claim-level review state doesn't exist yet.
+
+This is Phase 5 territory (agent surface research: "experiment with structured claims, fact triples"). The scan confirms that structured claims are not a theoretical exercise — the market is producing them independently. When Phase 5 begins, the AI-CIP envelope schema, mnem's versioned knowledge model, and issue #139's citation anchoring question should all inform the design.
+
+Not filing an issue because this is Phase 5 and the current phases (Schema, Talk Pages, X Ingestion) are the right sequence. But the evidence is strong enough that when Phase 5 planning begins, "claim-level provenance" should be the starting point, not one option among many.
+
+### Issues filed
+
+0 issues. AI-CIP provenance (most transferable finding) is Phase 5 research input. obsidian-second-brain is a different niche (single-user, Obsidian-native). mnem validates versioned knowledge but is single-user, local-first. engram's patterns validate existing yopedia architecture. All findings update the strategic model for Phase 5 planning.
+
+## 2026-05-30 (research scan)
+
+Scanned llm-wiki-compiler (1,387★, eval harness with CI-gated quality scores), nashsu/llm_wiki (9,844★, desktop app at scale), Beever Atlas (361★, chat-to-wiki pipeline), O2B (15★, v0.22, 4 releases today — vault portability + cross-agent query), Arkon (912★, enterprise wiki + RBAC + MCP), Demarkus (13★, QUIC-based knowledge protocol), ecosystem star movements. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — llm-wiki-compiler (1,387★) ships an eval harness: the first quantitative quality measurement system for LLM wikis.**
+
+Evidence: v0.8.0 (May 27). `llmwiki eval` produces a health score (0-100), citation coverage percentage, citation precision percentage, optional LLM-as-judge citation support scoring, corpus stats, and regression deltas. Thresholds are CI-gatable via `.llmwiki/eval/thresholds.yaml` — exit code is non-zero when any threshold is breached. Citation judgements are cached by content hash + judge prompt fingerprint + model, so prompt or model changes auto-invalidate stale entries. History stored as `.llmwiki/eval/history.jsonl` for tracking quality over time. v0.8.0 also ships `llmwiki quickstart` (one-command ingest→compile→view), `llmwiki next` (guided project flow), and a JSON export bridge contract for downstream importers.
+
+Relevance: **This is the first project in the LLM Wiki space to make knowledge quality measurable and CI-gatable.** yopedia has 15 lint checks (structural correctness: broken links, orphans, contradictions, stale pages, low confidence, uncited claims) but no aggregate quality score, no trend tracking, and no CI threshold gating. The gap is conceptual: yopedia's lint says "these pages have problems" — llm-wiki-compiler's eval says "the wiki as a whole is this good, and it got better/worse since last time." For a product that claims knowledge has provenance and confidence, the inability to answer "is the wiki getting more trustworthy?" is a blind spot.
+
+The eval pattern also connects to yopedia's lint infrastructure naturally. yopedia already has the building blocks: lint checks produce structured issues with severity; confidence scores exist on pages; citation data exists in sources. An aggregate health score could be computed from existing lint output + confidence distribution + citation coverage without new LLM calls.
+
+Decision: **Watch, leaning toward adopt.** The eval harness is the most transferable idea in this scan. yopedia's 15 lint checks are more comprehensive than llm-wiki-compiler's, but the aggregation layer (score + trend + CI gate) is missing. When yopedia deploys and starts accumulating real pages, a health score endpoint (`GET /api/status/health`) that aggregates lint results + confidence distribution into a single number would be genuinely useful — both for the human wiki surface ("is this wiki trustworthy?") and for the agent surface ("should I trust this source?"). Not filing an issue because this is deployment-gated — the score is meaningless without real content.
+
+Trigger: yopedia deploys and has >10 real wiki pages → file an issue for aggregate health scoring from existing lint + confidence data.
+
+**Market movement 2 — nashsu/llm_wiki (9,844★, 1,220 forks) is now the largest Karpathy LLM Wiki implementation. Desktop app with two-step chain-of-thought ingest, graph view, chat interface, and scenario templates.**
+
+Evidence: Created April 8. TypeScript desktop app (Electron). v0.4.16 (today). 144 open issues. Features: three-column layout (tree / chat / preview), two-step LLM ingest (analysis → generation), SHA256 incremental cache, persistent ingest queue with retry, folder import, scenario templates (Research, Reading, Personal Growth, Business), graph view (sigma.js), Obsidian compatibility, local HTTP API + agent skill (`nashsu/llm_wiki_skill`), multi-language (EN/CN/JA). 9,844★ makes it the #2 LLM Wiki project after WeKnora.
+
+Relevance: nashsu/llm_wiki validates the "full application" approach to LLM Wiki (not just a CLI skill, but a complete desktop experience). Its two-step chain-of-thought ingest (structured analysis first, then page generation) is architecturally cleaner than single-pass ingest. Its scenario templates (purpose.md as "the wiki's soul") is a UX innovation — giving the wiki a declared purpose shapes all downstream generation. However, it's single-user, no governance, no multi-writer, no confidence, no expiry — pure L2-L3 on the maturity ladder. The strategic lesson: **desktop apps at scale validate the pattern but don't threaten the governance position.**
+
+Decision: **Ignore as competitor.** Different form factor (desktop vs. web), different audience (personal vs. shared), no governance overlap. **Watch as validation** — 9,844★ proves the Karpathy LLM Wiki pattern has massive demand. Note the two-step ingest and scenario template patterns for future reference.
+
+Trigger: nashsu/llm_wiki adds multi-user or a web interface → reassess.
+
+**Market movement 3 — Beever Atlas (361★) is the first project to build a wiki automatically from team chat (Slack, Discord, Teams, Mattermost).**
+
+Evidence: Created April 21. Python + Google ADK. 6-stage pipeline: message sync → atomic fact extraction → deduplication → clustering → topic pages with citations → QA agent. Dual memory: 3-tier semantic store (channel / topic / atomic fact) + graph store (Neo4j for entities/relationships). MCP server with 16 tools, per-agent auth. Dashboard + wiki browser. Backed by Weaviate + Neo4j + MongoDB + Redis.
+
+Relevance: Beever Atlas introduces a new source type that no LLM Wiki project has explored: **real-time team chat as the primary knowledge source.** Every other project ingests documents, URLs, or manual input. Beever Atlas turns the conversations teams already have into a self-maintaining wiki — the knowledge is "harvested" rather than "authored." This is relevant to yopedia's source model: yopedia's current sources are `url`, `text`, `x-mention`. A `chat-channel` source type (Slack/Discord webhooks → atomic fact extraction → wiki page updates) would extend the compounding loop to a source that generates continuously. However, this is a major infrastructure addition (webhook integrations, message parsing, deduplication) — not a small move.
+
+Decision: **Watch.** The chat-to-wiki pattern is genuinely novel and validates demand for "knowledge that writes itself from existing activity." The 6-stage ingestion pipeline (especially the atomic-fact extraction + dedup + clustering steps) is the most sophisticated ingest architecture in the space. Too infrastructure-heavy for yopedia now, but the pattern of "harvest knowledge from existing activity streams" connects to yopedia's X-mention ingestion (Phase 3) — which is a lighter version of the same idea.
+
+Trigger: Beever Atlas crosses 1,000★ or another project ships a simpler chat-to-wiki pipeline → consider whether a lightweight Slack/Discord webhook → ingest path is worth building.
+
+**Market movement 4 — Open Second Brain (15★, v0.22) ships 8 releases in 48 hours: vault portability, cross-agent query, MCP context economy, brain lifecycle suite, and 2,828 tests.**
+
+Evidence: v0.15–v0.22 shipped between May 28 and May 29. Notable features: v0.15 adds cross-agent query foundation (ask what Claude, Codex, Hermes contributed and compare coverage), v0.18 adds MCP context economy (budgeted tool results with artifact fetch-on-demand), v0.20 adds adaptive recall + time-decay ranking, v0.21 adds domain-classified contradictions + budgeted session briefs, v0.22 adds multi-vault profiles with portable knowledge graphs. 46 MCP tools. 2,828 tests.
+
+Relevance: **O2B is now the most feature-rich single-agent governance system.** Its cross-agent query foundation (v0.15) is structurally similar to yopedia's agent registry + scoped search, but O2B approaches it from the opposite direction: "one vault, multiple agents write to it, an operator can ask who contributed what" vs. yopedia's "one wiki, agents have identity pages, contributors have trust profiles." The MCP context economy pattern (budgeted responses + artifact fetch-on-demand) is the most interesting transferable idea — when MCP tools return large results, returning a bounded preview + a fetch handle avoids flooding the caller's context window. yopedia's 29 MCP tools don't do this yet; some tools (like `search_wiki` with many results) could benefit.
+
+The strategic picture hasn't changed: O2B is single-vault, single-operator. It has more sophisticated governance machinery than yopedia (evidence-driven confidence, quarantine, domain-classified contradictions) but no multi-writer governance. yopedia's advantage remains: what happens when multiple writers who don't trust each other share a wiki.
+
+Decision: **Watch.** No code change warranted. Two patterns worth noting: (1) MCP context budgeting (bounded preview + artifact fetch) for Phase 5 agent surface research, (2) domain-classified contradictions (by topic, not just per-page) for potential lint enhancement.
+
+Trigger: O2B ships multi-writer support or shared knowledge → direct competitor. O2B crosses 100★ → its patterns have validated beyond a single builder.
+
+**Market movement 5 — Arkon (912★) is the first enterprise wiki+MCP project with RBAC, plan-review-before-write, and OAuth 2.1 for MCP auth.**
+
+Evidence: Created April 30. Python + FastAPI + PostgreSQL + pgvector. PolyForm Internal Use license (not open-source in the traditional sense). Features: MRP pipeline (Map → Reduce → Plan-review → Refine → Verify → Commit) with human-reviewable plans before any page is written, workspace-scoped RBAC (Viewer/Contributor/Editor/Admin), OAuth 2.1 + PKCE for MCP authentication, skill distribution (versioned .zip packages), audit log, multi-provider LLM catalog.
+
+Relevance: Arkon validates the enterprise wiki-as-service pattern and introduces "plan review before write" — a governance step that catches errors before they enter the wiki. yopedia's governance is post-hoc (lint, talk pages, disputed flags detect problems after writing). Arkon's is pre-hoc (human reviews a plan before the LLM writes pages). Both are valid; the pre-hoc pattern is more conservative but slower. Arkon's OAuth 2.1 for MCP is notable — it's the first project to solve "how do agents authenticate to a shared wiki MCP server" with a real auth standard.
+
+Decision: **Watch.** Arkon's PolyForm license limits adoption in open-source ecosystems. The plan-review-before-write pattern is interesting for quality control but would add significant friction to yopedia's current ingest flow. The OAuth 2.1 for MCP pattern is worth studying when yopedia deploys as a shared service.
+
+Trigger: Arkon switches to a permissive license → reassess as direct enterprise competitor. MCP auth becomes a community standard → implement for yopedia's MCP server.
+
+**Market movement 6 — Demarkus (13★) proposes `mark://` — a QUIC-based protocol for federated markdown knowledge serving.**
+
+Evidence: Created February 14. Go. AGPL-3.0 (implementation), CC0 (protocol spec). Transport: QUIC (UDP 6309). Scheme: `mark://`. Content: Markdown + YAML frontmatter. Verbs: FETCH, LIST, VERSIONS, PUBLISH, APPEND, ARCHIVE. MCP server for agents. Capability-based auth tokens. Federated "Demarkus Hubs" linking content across servers. Active development (pushed today).
+
+Relevance: Demarkus is attempting what yopedia's Phase 5 (agent surface research) and open research questions (federation) point toward: a protocol for serving knowledge to agents across boundaries. The `mark://` scheme is the simplest possible answer to "how do agents discover and read knowledge from multiple sources" — versioned markdown over QUIC with capability tokens. It's tiny (13★) and early, but the protocol design is the most elegant attempt at federated agent knowledge I've seen. Compared to yopedia's approach (REST API + MCP), Demarkus proposes a purpose-built protocol optimized for markdown documents. For yopedia's open research question about federation, this is a data point: one answer to "what does federation across separate yopedia instances look like" is "a simple protocol with FETCH/PUBLISH verbs and capability tokens."
+
+Decision: **Watch as research input for Phase 5.** Too early to adopt (13★, unproven). The protocol spec (CC0) is worth reading when yopedia reaches the federation question. Not filing an issue because this is Phase 5+ territory.
+
+Trigger: Demarkus crosses 100★ or gets adopted by a named agent runtime → evaluate protocol compatibility or `mark://` support as a source type.
+
+**Ecosystem star movements (since May 29)**
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 57,065 | 57,112 | +47 | Steady |
+| WeKnora (Tencent) | 15,755 | 15,782 | +27 | v0.6.0, wiki mode matured |
+| nashsu/llm_wiki | — | 9,844 | new track | Desktop app, #2 LLM Wiki by stars |
+| MemOS | — | 9,454 | new track | Memory OS, 46 MCP tools, L1-L3 tiered |
+| claude-obsidian | 5,724 | 5,756 | +32 | Steady |
+| ByteRover CLI | — | 4,802 | new track | Portable memory layer |
+| engram | 3,867 | 3,939 | +72 | Fastest growth this week |
+| SamurAIGPT/llm-wiki-agent | 2,769 | 2,774 | +5 | Stalled since May 6 |
+| llm-wiki-skill | 1,717 | 1,721 | +4 | Steady |
+| obsidian-wiki | 1,599 | 1,608 | +9 | Steady |
+| llm-wiki-compiler | — | 1,387 | new track | Eval harness, typed pages |
+| lucasastorian/llmwiki | — | 994 | new track | Supabase-backed MCP wiki |
+| karpathy-llm-wiki | 943 | 951 | +8 | Stalled since Apr 13 |
+| Arkon | — | 912 | new track | Enterprise wiki+MCP, RBAC |
+| swarmvault | 502 | 503 | +1 | Stalled since May 20 |
+| Beever Atlas | — | 361 | new track | Chat-to-wiki pipeline |
+| Pratiyush/llm-wiki | — | 276 | new track | Multi-runtime wiki |
+| semiont (AI Alliance) | 65 | 65 | 0 | Steady |
+| O2B | 14 | 15 | +1 | 8 releases in 48h, 2,828 tests |
+| Demarkus | — | 13 | new track | QUIC knowledge protocol |
+
+### Layer 3 insight
+
+The most important structural shift this scan reveals is the **emergence of knowledge quality measurement as a first-class feature category**.
+
+Previous scans tracked two competitive dimensions: *knowledge sophistication* (L1 chunks → L4 governance) and *distribution surface area* (plugin manifests, runtime integrations). This scan adds a third: *knowledge quality observability* — the ability to answer "how good is this wiki?" with a number that trends over time.
+
+The evidence:
+- llm-wiki-compiler ships `llmwiki eval` — health score (0-100), citation quality, regression deltas, CI threshold gating
+- O2B ships `brain_doctor` — semantic quality gate with contradiction detection, concept-gap surfacing, stale-claim surfacing, self-maintenance path
+- Arkon ships MRP pipeline with plan-review-before-write — quality gate before knowledge enters the wiki
+- Beever Atlas ships 6-stage ingestion with atomic-fact extraction + dedup — quality built into the pipeline
+
+Four independent projects, each approaching quality measurement from a different angle:
+1. **Post-hoc scoring** (llm-wiki-compiler): measure the wiki after it's built
+2. **Continuous health monitoring** (O2B): doctor runs periodically, surfaces problems
+3. **Pre-hoc gating** (Arkon): review plan before writing
+4. **Pipeline quality** (Beever Atlas): quality built into extraction steps
+
+yopedia sits between post-hoc and continuous: 15 lint checks detect problems, but there's no aggregate score, no trend line, no CI gate, no answer to "is the wiki getting better?" The lint infrastructure is comprehensive; the observability layer is missing.
+
+This connects to yopedia's identity. A wiki that claims to be "trusted because every claim has a citation and a confidence" should be able to prove that claim quantitatively. The aggregate health score is not just a nice feature — it's the measurable version of the trust promise.
+
+Not filing an issue because this is deployment-gated: a health score without real content is a vanity metric. But when yopedia deploys, the health score should be among the first things built — not as a new feature, but as an aggregation of existing lint + confidence data.
+
+### Issues filed
+
+0 issues. The eval harness pattern (most transferable finding) is deployment-gated. The chat-to-wiki pattern (Beever Atlas) is too infrastructure-heavy for current phase. O2B's cross-agent query and MCP context budgeting are Phase 5 inputs. Demarkus is Phase 5+ research. All findings update the strategic model or the deployment playbook, not the current backlog.
+
+## 2026-05-29 (research scan)
+
+Scanned claude-obsidian (5,724★, LLM Wiki star leader), Noosphere (53★, 4-runtime plugin proliferation), Semiont (65★, AI Alliance shared knowledge platform), Atlas-WiKi (3★, Supabase-backed enterprise wiki), plugin distribution pattern across mem0/engram/noosphere/claude-obsidian, ecosystem star movements. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — Plugin distribution has become the dominant adoption pattern for agent knowledge tools. Memory/wiki projects that ship multi-runtime plugins are growing faster than MCP-only projects.**
+
+Evidence: mem0 (57,065★) now ships plugins for Claude Code, Codex, Cursor, and Opencode (shipped this week). Engram (3,867★, +11) ships Claude Code plugin, MCP, and skills directory, plus a new team usage guide. Noosphere (53★, v1.6.8, pushed today) ships plugins for 4 runtimes: OpenClaw, Hermes Agent, Opencode, and Kilo Code. claude-obsidian (5,724★, 660 forks) distributes through Claude Code's plugin marketplace and AgentSkills.io. The pattern: a local MCP server is necessary but insufficient for adoption — projects also ship `.claude-plugin`, `.codex-plugin`, `.cursor-plugin` manifests and runtime-specific wrappers.
+
+The agent runtime landscape is now: Hermes Agent (172k★), Claude Code (128k★), claude-mem (80k★), cc-switch (85k★), CowAgent (45k★), Obsidian Skills (34k★). These runtimes all consume MCP, but users discover and install knowledge tools through runtime-specific plugin registries, not by pointing at raw MCP endpoints.
+
+Relevance: yopedia has 29 MCP tools (comprehensive) but zero runtime-specific plugin manifests. The MCP server positions correctly for interop, but the missing plugin manifests mean yopedia is invisible in the places where developers actually discover and install knowledge tools. This is a distribution gap, not a capability gap.
+
+Decision: **Watch.** yopedia is pre-deployment and has no users to reach yet. Plugin manifests are cheap to add (a JSON file + README), but premature to ship before the product is deployed and serving real requests. When yopedia deploys, the first distribution work should be a `.claude-plugin` manifest (largest runtime) and an entry on Claude Code's marketplace, not an MCP-only approach.
+
+Trigger: yopedia deploys → immediately add `.claude-plugin` manifest. A second runtime plugin (Hermes Agent or Opencode) should follow based on which runtime shows organic MCP usage.
+
+**Market movement 2 — claude-obsidian (5,724★) is now the star leader among LLM Wiki derivatives, with multi-writer support (v1.7+), methodology modes (LYT/PARA/Zettelkasten), and a thinking framework. It ships as both a git-clone vault and a Claude Code marketplace plugin.**
+
+Evidence: Created April 7, 5,724★, 660 forks. Python + Bash. 15 Claude Code skills (wiki, ingest, query, lint, retrieve, fold, save, autoresearch, canvas, think, etc.). v1.7 "Compound Vault" added hybrid retrieval (contextual prefix + BM25 + cosine rerank per Anthropic's research), per-file advisory locking for multi-writer safety, and Obsidian CLI transport. v1.8 added methodology modes (LYT, PARA, Zettelkasten, Generic). v1.9 added a 10-principle thinking framework. v1.9.2 (May 28) added prompt cache hardening and SEO/GEO pass. DragonScale Memory extension adds log folds, semantic tiling lint, boundary-first autoresearch. Single-tenant security model (wiki-lock.sh with stale-lock reaper, PostToolUse auto-commit opt-out).
+
+What claude-obsidian has that yopedia doesn't: Obsidian-native (graph view, canvas, methodology modes), Claude Code marketplace distribution, 15 agent skills, thinking framework, DragonScale Memory extension, SEO/GEO optimization. What yopedia has that claude-obsidian doesn't: web UI (no Obsidian dependency), confidence scoring, calendar expiry/decay, talk pages for dispute resolution, contributor trust profiles, `disputed` and `supersedes` flags, the governance layer, multi-provider LLM support (not Claude-only), 29 MCP tools, agent identity/context API.
+
+The strategic implication: claude-obsidian is the distribution winner in the Karpathy LLM Wiki space but stops at Level 3 (structured knowledge + multi-writer locking). It has no governance layer (no confidence, no decay, no talk pages, no contributor trust). Its multi-writer support is "advisory locking to prevent corruption" — not "multiple writers with different trust levels collaborating on shared knowledge with dispute resolution." yopedia's L4 position (governance) remains uncontested by the star leader.
+
+Decision: **Watch.** claude-obsidian's distribution success validates the LLM Wiki pattern at scale. Its SEO/GEO pass is a first-principles approach to agent-era discovery (optimizing for AI Overview + Perplexity citation, not just Google). yopedia should note this when it does its own distribution work. No issue filed because this is positioning awareness, not an implementation gap.
+
+Trigger: claude-obsidian adds confidence scoring or talk pages → yopedia's L4 position is directly threatened.
+
+**Market movement 3 — Noosphere (53★, v1.6.8) is the first project to ship a full "status lifecycle" for wiki articles (draft → reviewed → published) alongside a multi-runtime plugin strategy targeting 4 non-Claude runtimes.**
+
+Evidence: Created April 11, TypeScript. v1.6.7 (May 28), v1.6.8 (today). 10+ commits in the last 24 hours. Plugins for OpenClaw, Hermes Agent, Opencode, Kilo Code. Features: article status lifecycle (draft → reviewed → published), provider-agnostic memory with recall orchestration, conflict handling, promotion/backfill, local memory scheduling, Redis cache add-on, Obsidian export/import, multi-user with API key auth, image support in articles.
+
+Relevance: Noosphere's "status lifecycle" (draft → reviewed → published) is architecturally similar to what yopedia's talk pages + `disputed` flag provide, but simpler — a three-state machine vs. threaded discussion with resolution. The interesting pattern is Noosphere's plugin-first distribution: it targets 4 non-Claude runtimes (OpenClaw, Hermes, Opencode, Kilo Code) while claude-obsidian targets only Claude Code. Noosphere is betting on runtime fragmentation; claude-obsidian is betting on Claude Code dominance. The answer is probably "both."
+
+Decision: **Watch.** Noosphere validates the status lifecycle pattern (draft → reviewed → published) as a real user need. yopedia's current schema doesn't have a page status field beyond `disputed`. If Phase 5 introduces structured claims, a status lifecycle for claims (not pages) may be worth considering. But this is a schema thought, not an implementation gap.
+
+Trigger: Noosphere crosses 200★ or gets adopted by a named agent framework as default memory → track as a competitive signal.
+
+**Market movement 4 — Semiont (65★, AI Alliance) positions as the "source-grounded semantic knowledge platform" with eight composable flows and domain-specific knowledge bases.**
+
+Evidence: Apache 2.0, backed by The AI Alliance (IBM, Meta, Intel, etc.). TypeScript + Rust. "Eight composable flows" (frame, yield, mark, match, bind, gather, browse, beckon). Ships as desktop app, container, SDK, CLI, and agent skills. Demo KBs span Project Gutenberg, TPC-H, arXiv, MediaWiki, household records. Active development (May 27 latest). Alpha — API not stable.
+
+Relevance: Semiont is the most "institutional" project in the space — backed by an industry consortium, multi-KB architecture, protocol-level abstractions. The "eight composable flows" pattern is the most ambitious attempt at a knowledge protocol I've seen. However, it's also the most complex — the learning curve is orders of magnitude higher than yopedia's "drop a URL, get a wiki page." At 65★ despite AI Alliance backing, the adoption signal is weak.
+
+Decision: **Ignore as competitor.** Semiont serves enterprise/research use cases with institutional backing; yopedia serves individual developers and agents with zero-config simplicity. The audiences don't overlap. **Watch as protocol research** — Semiont's "composable flows" abstraction may inform Phase 5's agent surface design if it gains traction.
+
+Trigger: Semiont ships a simplified single-user mode or gains 500★ → reassess whether the protocol abstraction is finding real adoption.
+
+**Ecosystem star movements (since May 29)**
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| Hermes Agent | — | 172,474 | new track | Major runtime, plugins ecosystem |
+| Claude Code | — | 127,680 | new track | Primary runtime, plugin marketplace |
+| claude-mem | — | 79,549 | new track | Persistent memory across sessions |
+| mem0 | 57,028 | 57,065 | +37 | Shipped opencode-plugin |
+| WeKnora (Tencent) | 15,723 | 15,755 | +32 | 10 commits May 29, MCP server |
+| claude-obsidian | — | 5,724 | new track | LLM Wiki star leader, marketplace plugin |
+| Engram | 3,856 | 3,867 | +11 | Team usage guide, cloud sync fixes |
+| DeusData/codebase-memory-mcp | 2,777 | 2,786 | +9 | Steady |
+| mcp-memory-service | 1,905 | 1,911 | +6 | Steady |
+| llm-wiki-skill | — | 1,717 | new track | Chinese LLM Wiki skill |
+| obsidian-wiki | — | 1,599 | new track | Python Obsidian wiki framework |
+| swarmvault | 503 | 502 | -1 | Stalled since May 20 |
+| mnemon | 317 | 317 | 0 | Steady |
+| Uranid/mnem | 126 | 126 | 0 | Stalled since May 25 |
+| Semiont (AI Alliance) | — | 65 | new track | Enterprise knowledge platform |
+| Noosphere | — | 53 | new track | 4-runtime plugin strategy, active |
+| llm-wiki-skills | — | 38 | new track | Obsidian/Logseq skill set |
+| Mnemo | 17 | 17 | 0 | Stalled |
+| O2B | 14 | 14 | 0 | Still active (pushed today) |
+
+### Layer 3 insight
+
+The most important structural observation this scan isn't about any single competitor — it's about **distribution surface area as the new competitive dimension**.
+
+Previous scans positioned yopedia along a maturity ladder (L1 chunks → L2 graph → L3 structured → L4 governance). That ladder measured *knowledge sophistication*. This scan reveals a second axis: *distribution surface area* — how many runtime entry points a knowledge tool has.
+
+The evidence:
+- mem0 (57k★): 5 runtime plugins → fastest growing memory project
+- claude-obsidian (5.7k★): Claude Code marketplace plugin → star leader in LLM Wiki space
+- Noosphere (53★): 4 runtime plugins → shipping faster than any project at its star count
+- yopedia: 29 MCP tools, 0 runtime plugins → invisible in all plugin registries
+
+MCP is the interop protocol, but plugin manifests (`.claude-plugin`, `.codex-plugin`, skills directories) are the *discovery mechanism*. Users don't search for MCP servers; they search for plugins inside their runtime. A project can have the best knowledge governance in the space and still be invisible if it doesn't appear where developers look.
+
+This doesn't change yopedia's product strategy (L4 governance is still the right bet), but it changes the deployment strategy. When yopedia deploys, the distribution work is not "expose an API" (already done via MCP) — it's "appear in the places where developers discover tools." The first three moves after deployment should be: (1) `.claude-plugin` manifest for Claude Code marketplace, (2) AgentSkills.io listing, (3) skill directory compatible with at least one non-Claude runtime (Hermes Agent or OpenClaw).
+
+This is a deployment-gated insight, not an implementation gap. No issue filed because all distribution work is blocked until deployment.
+
+### Issues filed
+
+0 issues. All findings are deployment-gated (plugin manifests), strategic (positioning awareness), or schema-level thinking (status lifecycle) that should inform future phases rather than trigger immediate code changes. The dominant finding — that distribution surface area is a new competitive dimension — updates the deployment playbook, not the current backlog.
+
+## 2026-05-29 (research scan)
+
+Scanned Open Second Brain (14★, v0.19, governance-at-personal-scale), WeKnora v0.8 agent wire contract, wiki-teams (1★, contribute-back review), engram 3,856★ (project delete, import), mnemon 317★ (import command), Kiro IDE (3,791★), ecosystem star movements. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — Open Second Brain (14★, v0.19) implements confidence-from-evidence governance at individual agent scale.**
+
+Evidence: Created May 6. TypeScript Obsidian plugin for Hermes Agent. 19 releases in 23 days. The critical architecture: signals accumulate in `Brain/inbox/`, a deterministic `dream` pass (no LLM — pure counters and thresholds) promotes repeat signals to unconfirmed rules, agents record `applied`/`violated` evidence against rules in production, and confidence accretes or decays from evidence, not from assertion. Full lifecycle: `Inbox → Unconfirmed → Confirmed → Quarantine → Retired` with 6 distinct retirement reasons (`expired`, `stale`, `rebutted`, `quarantine-violated`, `superseded`, `user-rejected`). Quarantine state added in v0.9.1 for rules with dominantly negative recent evidence. v0.14.0 adds cross-preference contradiction detection, concept-gap surfacing, stale-claim surfacing. v0.19.0 adds typed graph semantics (`related`/`extends`/`contradicts`/`superseded_by`).
+
+Relevance: **This is the first project to implement the governance layer yopedia designed, but at individual-agent scale.** The overlap with yopedia is structural:
+
+| Concept | yopedia | Open Second Brain |
+|---------|---------|-------------------|
+| Confidence scoring | ✅ page-level 0-1 | ✅ evidence-driven counters |
+| Decay/staleness | ✅ calendar expiry | ✅ evidence decay + stale retirement |
+| Contradiction handling | ✅ talk pages + `disputed` flag | ✅ cross-preference contradiction detection |
+| `supersedes` | ✅ page-level | ✅ `superseded_by` retirement |
+| Typed relations | ✅ `related` in frontmatter | ✅ `related`/`extends`/`contradicts`/`superseded_by` |
+| Multi-writer | ✅ designed for it | ❌ single agent + operator |
+| Talk pages / discussion | ✅ threaded | ❌ none |
+| Contributor trust | ✅ trust scores | ❌ single writer |
+
+The key insight: O2B proves that governance machinery (confidence-from-evidence, quarantine, typed contradictions, lifecycle retirement) has demand *right now* at individual scale. It's not a future need — 14★ and 19 releases in 23 days is someone building rapidly for real use. The governance gap yopedia identified at Level 4 is being filled from below (individual agent memory) rather than from above (enterprise wiki).
+
+**What O2B does that yopedia doesn't:** evidence-driven confidence (applied/violated counts → confidence, not human-set 0-1), quarantine state (probation before retirement), deterministic dream pass (no LLM in the governance algorithm). **What yopedia does that O2B doesn't:** multi-writer governance (multiple agents + humans sharing one wiki), talk pages for dispute resolution, contributor trust profiles, shared knowledge (O2B is single-vault, single-operator).
+
+Decision: **Watch closely.** O2B is the strongest validation that governance primitives have immediate demand. Two specific patterns deserve study: (1) evidence-driven confidence — computing confidence from applied/violated counts rather than having humans set it directly, and (2) the quarantine state — a probation step between confirmed and retired that allows recovery. Neither requires an issue now; both should inform Phase 5 or a future schema refinement. Not filing an issue because no code change is indicated — this is a strategic mental model update, not an implementation gap.
+
+Trigger: O2B ships multi-writer support or shared knowledge → it becomes a direct competitor. O2B's evidence-driven confidence pattern → study when yopedia designs confidence automation (currently human-set).
+
+**Market movement 2 — WeKnora ships v0.8 with a formalized agent wire contract: structured error envelopes, risk metadata, dry-run, and exit-code semantics.**
+
+Evidence: WeKnora v0.8 CLI (May 28-29). AGENTS.md now defines a full wire contract for AI agent consumers: symmetric JSON envelopes (`ok`/`data`/`meta`/`error`), typed error codes with `hint` + `retry_command` (separate fields, not regex-extractable from prose), `risk.level` annotations on destructive commands, exit-10 confirmation for destructive writes, NDJSON event streaming for chat. `_notice` field reserved for deprecation/version_skew/security notices. The contract explicitly separates CLI-surface versioning from server SDK versioning.
+
+Relevance: WeKnora is codifying what a first-class agent CLI looks like. yopedia's MCP server already handles the tool-level contract, but the broader pattern — structured error envelopes with actionable hints, explicit risk tagging, dry-run for destructive operations — is worth noting for yopedia's CLI (`src/cli.ts`) and API routes. The `retry_command` pattern (machine-parseable suggested next action, distinct from prose hint) is the most transferable idea.
+
+Decision: **Watch.** yopedia's MCP server already uses `readOnlyHint`/`destructiveHint` annotations. The structured error envelope pattern is good practice but not urgent — yopedia is pre-deployment and doesn't have agent consumers hitting error paths at scale yet.
+
+Trigger: yopedia deploys and gets agent consumers → evaluate structured error envelopes with `retry_command` for the CLI and API.
+
+**Market movement 3 — wiki-teams (1★) ships "contribute-back review" — the first team wiki with maintainer-gated merge from downstream agents.**
+
+Evidence: Created late May. Claude Code plugin. Team wiki where a maintainer curates, teammates query via Cowork plugin, and substantive answers (3+ pages synthesized, >300 words) auto-file as contribution drafts to a shared Drive folder. Maintainer reviews with Accept/Edit/Reject. Dedup guard prevents duplicate submissions. Confidence ratings on index pages. Lint with contradiction and staleness checks.
+
+Relevance: This is the first project to implement a review-gated contribute-back flow for team wikis — structurally similar to yopedia's talk pages but with a simpler trust model (one maintainer, binary accept/reject). The auto-filing of substantive answers as contribution drafts is an interesting pattern — yopedia's `saveAnswerToWiki` does something similar but without the review gate. The gap: yopedia's multi-writer model is designed for peer governance (trust scores, talk pages), not maintainer-gated review. Both models are valid for different team sizes.
+
+Decision: **Ignore as competitor** (1★, narrow Claude Code plugin). **Watch as validation** that team-wiki governance is a real workflow people build for. The contribute-back flow validates that passive consumers becoming curators through review gates is a pattern with demand.
+
+Trigger: wiki-teams crosses 20★ or gets forked for other runtimes → reassess.
+
+**Market movement 4 — Engram (3,856★, +12) and mnemon (317★, +0) both ship import/migration commands.**
+
+Evidence: Engram adds `engram delete session/prompt/project` with hard/soft delete and cascade, plus import documentation improvements. mnemon ships `mnemon import` with a versioned draft schema for converting historical chat exports into structured insights. Both projects are hardening for users who already have data elsewhere — migration as a competitive move.
+
+Relevance: Import/migration commands are a maturity signal. Projects that ship import are competing for users who already have a memory solution. yopedia doesn't have an import path from other wiki/memory systems. Not urgent (no users to migrate), but worth noting for post-deployment.
+
+Decision: **Ignore.** Import is a distribution feature, not a knowledge governance feature. Only relevant after yopedia has users.
+
+Trigger: yopedia gets users asking to migrate from another system → build import.
+
+**Market movement 5 — Kiro IDE (3,791★) launches as AWS-backed agentic IDE, further fragmenting the agent runtime landscape.**
+
+Evidence: Created June 2025, AWS-backed. Spec-driven development workflow. Already supported by O2B, engram, and other memory plugins as a runtime target. 3,791★, 246 forks.
+
+Relevance: Every new agent runtime that supports MCP is a potential yopedia consumer. Kiro's launch confirms the trend: agent runtimes are fragmenting (Claude Code, Codex, Cursor, Aider, OpenClaw, Gemini CLI, Kiro, Copilot CLI, Pi), but MCP is the interop layer they all share. yopedia's MCP server positions it correctly for this fragmentation.
+
+Decision: **Ignore as a strategic event.** Confirms existing direction (MCP-first is correct).
+
+**Ecosystem star movements (since May 28)**
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 56,993 | 57,028 | +35 | Steady |
+| WeKnora (Tencent) | 15,682 | 15,723 | +41 | v0.8 agent wire contract |
+| Kiro (AWS) | — | 3,791 | new track | Agentic IDE |
+| engram | 3,844 | 3,856 | +12 | Import/delete |
+| DeusData/codebase-memory-mcp | 2,770 | 2,777 | +7 | Tree-sitter fixes |
+| SamurAIGPT/llm-wiki-agent | — | 2,769 | new track | Stalled May 6 |
+| mcp-memory-service | 1,901 | 1,905 | +4 | Steady |
+| karpathy-llm-wiki | 937 | 943 | +6 | Stalled since Apr 13 |
+| swarmvault | 503 | 503 | 0 | Stalled since May 20 |
+| mnemon | 317 | 317 | 0 | Import command shipped |
+| mnem | 127 | 126 | -1 | Stalled since May 25 |
+| AKB | 41 | — | N/A | API not resolving |
+| Mnemo | — | 17 | new track | 56 MCP tools, tiered decay |
+| O2B | — | 14 | new track | Governance at personal scale |
+| OACP | 11 | 11 | 0 | Stable |
+| KNDL | 7 | — | N/A | API not resolving |
+
+### Layer 3 insight
+
+The most important finding this week isn't a star count or a feature — it's a structural observation about **where governance is emerging**.
+
+Previous scans positioned yopedia alone at Level 4 (claims with provenance + confidence + editorial governance) and noted the risk that the market might stay at Level 2-3 for a long time. This week's scan reveals that governance primitives are emerging at Level 1-2 scale, not Level 4 scale. Open Second Brain has confidence-from-evidence, quarantine, typed contradictions, and lifecycle retirement — all at individual-agent, single-vault scale. wiki-teams has maintainer-gated contribute-back review. memory-plugin has typed validation gates.
+
+The pattern: **governance is accreting upward from personal agent memory, not downward from enterprise wiki.** This is a different adoption path than yopedia's Phase 1-5 roadmap assumed. The roadmap assumed governance would emerge as an extension of shared wiki infrastructure (build wiki → add governance). Instead, governance is emerging as an extension of personal agent memory (build personal memory → add governance → share).
+
+This doesn't threaten yopedia's position — O2B is single-agent, wiki-teams is single-maintainer, memory-plugin is three-agent — but it reframes the adoption story. yopedia's value isn't "first to have governance" (O2B arguably has more sophisticated governance machinery right now). yopedia's value is "governance that works across multiple writers who don't trust each other." That's the gap none of the personal-memory-with-governance projects can fill.
+
+The strategic implication: when yopedia deploys, it should position against the "personal governance" projects by demonstrating what happens when governance scales past one writer — talk pages for disagreement, contributor trust for reputation, `disputed` flags for unresolved contradictions between writers, not between facts.
+
+### Issues filed
+
+0 issues. The dominant finding (O2B's governance-at-personal-scale) is a mental model update, not an implementation gap. No code change is indicated. The evidence-driven confidence and quarantine patterns are worth studying for Phase 5 but don't warrant an issue before that phase begins.
+
+## 2026-05-28 (research scan)
+
+Scanned WeKnora (Tencent, 15,682★) wiki mode launch, mnem (127★) benchmarked knowledge versioning, issue #139's schema convergence signal, AKB concurrency hardening (41★), ecosystem star movements. Filed 1 issue.
+
+### Advantage Brief
+
+**Market movement 1 — WeKnora (Tencent, 15,682★) ships a full Wiki Mode with entity/concept extraction, knowledge graphs, issue flagging, and enterprise RBAC.**
+
+Evidence: WeKnora v0.6.0 (May 21). Go backend, PostgreSQL. Wiki mode auto-extracts entities and concepts from ingested documents, generates interlinked markdown pages with `summary`, `entity`, `concept`, `synthesis`, `comparison` page types, maintains a knowledge graph with ego/overview views, and provides 10 wiki-specific agent tools (`wiki_write_page`, `wiki_read_page`, `wiki_delete_page`, `wiki_rename_page`, `wiki_flag_issue`, `wiki_read_issue`, `wiki_update_issue`, `wiki_search`, `wiki_index_overview`, `wiki_merge_pages`). Multi-tenant RBAC with 4-tier role matrix (Owner/Admin/Contributor/Viewer). 2,002 forks, backed by WeChat Dialog Open Platform. Active: 15+ commits on May 28 alone. MIT license.
+
+Relevance: This is the first project with >1,000★ to ship a wiki mode that overlaps meaningfully with yopedia. The overlap is structural: document → entity/concept extraction → interlinked wiki pages → knowledge graph → agent tools for CRUD. **What WeKnora has that yopedia doesn't:** database-backed storage (PostgreSQL), multi-tenant RBAC out of the box, typed page categories (`entity`, `concept`, `synthesis`, `comparison`), wiki merge tool, chunk-level source references (`ChunkRefs`), page status lifecycle (`draft` → `published` → `archived`). **What yopedia has that WeKnora doesn't:** confidence scoring, calendar-based expiry/decay, talk pages for dispute resolution, contributor trust profiles, `disputed` and `supersedes` flags, the governance layer. WeKnora's issue flagging model (`wiki_flag_issue` with `mixed_entities | contradictory_facts | out_of_date | other`) is a point-fix — flags go into a flat issue list, not into structured talk pages with threaded discussion and resolution status. There's no confidence score, no expiry, no decay model.
+
+The strategic implication: WeKnora **validates the wiki pattern at scale** (15k★ is real adoption) but stops at Level 3 on the maturity ladder — structured knowledge with issue tracking, but no governance layer. This narrows yopedia's unique position to the governance gap: confidence, decay, talk pages, contributor trust. That gap is more defensible than the entire feature set, because governance requires editorial workflow design, not just engineering.
+
+Decision: **Watch closely. WeKnora is now the primary comparand for the wiki layer, replacing AKB.** File one issue to document the competitive finding and inform PM/Architect of schema implications (connects to issue #139).
+
+Trigger: WeKnora ships confidence/decay scoring or talk pages → yopedia's L4 position is directly threatened. WeKnora's typed page categories → evaluate whether yopedia should add `page_type` to frontmatter before Phase 5.
+
+**Market movement 2 — Issue #139 (community) surfaces three independent v0 schema convergences that WeKnora's code corroborates.**
+
+Evidence: @kiluazen's issue identifies three patterns converging across agent-wiki builders: (1) hybrid raw anchors for citations (raw_offset + quote_hash), (2) commit-keyed ingest ledger before semantic scoring, (3) post-ingest completeness + staleness as the real missing checks. WeKnora's `ChunkRefs` (chunk-level source tracing) is a concrete implementation of pattern #2. Provenant's attribution confidence is a concrete implementation of pattern #3. The convergence is now visible across 3+ independent projects.
+
+Relevance: This is the strongest external validation yopedia's schema decisions have received. The three patterns map directly to Phase 1 (`sources[]` schema) and existing lint checks (`checkStaleness`, `checkUncitedClaims`). The gap is in citation anchoring — yopedia uses page-level source references, not chunk-level or offset-level. WeKnora's `ChunkRefs` field shows the industry moving toward finer-grained provenance.
+
+Decision: **Adopt thinking, not code.** Issue #139 deserves a substantive response that maps yopedia's current schema choices against these three patterns. No code change yet — this is schema-level thinking that should inform Phase 1 refinement.
+
+**Market movement 3 — mnem (127★, Rust) positions as "Git for AI Agent Knowledge" with published benchmarks.**
+
+Evidence: Created April 26. Rust single binary. Knowledge graph in `.mnem/` directory (committable to git). Hybrid retrieval (vector + keyword + graph traversal). Published benchmarks: head-to-head against mem0 and MemPalace on 6 public datasets, leading on 5. Ships as CLI, HTTP server, MCP server, Python lib, and WASM. Multi-hop graph expansion. Forgetting is first-class (revoke facts, audit trail preserved). 127★, 35 forks in one month. Apache-2.0.
+
+Relevance: mnem occupies Level 2-3 on the maturity ladder (knowledge graph + decay via revocation). The "git for agent knowledge" framing is interesting — versioned knowledge committed alongside code, branching/merging/diffing facts like source. yopedia's revision history serves a similar role but isn't git-native. The published benchmarks are the most rigorous in the space after Provenant's. Not a competitor (per-project memory, not shared wiki), but the "knowledge-as-git" pattern is worth watching for Phase 5's claim versioning model.
+
+Decision: **Watch.** mnem validates that formal benchmarking is becoming table stakes for credibility. No action needed unless yopedia adds a benchmark suite.
+
+Trigger: mnem ships multi-writer collaboration or shared knowledge → reassess. yopedia reaches benchmark-worthy query traffic → study mnem's harness methodology.
+
+**Market movement 4 — Ecosystem star movements (weekly delta).**
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| WeKnora (Tencent) | — | 15,682 | new track | Wiki mode, enterprise RBAC |
+| mem0 | 56,993 | 56,993 | +10 | Steady |
+| engram | 3,837 | 3,844 | +7 | Steady |
+| DeusData/codebase-memory-mcp | 2,770 | 2,770 | +2 | Steady |
+| mcp-memory-service | 1,899 | 1,901 | +2 | Steady |
+| swarmvault | 503 | 503 | 0 | Stalled since May 20 |
+| karpathy-llm-wiki | — | 937 | new track | Agent skill, stalled Apr 13 |
+| mnemon | — | 317 | new track | Graph memory, active |
+| AgentRecall-MCP | — | 258 | new track | Correction-driven memory |
+| mnem | — | 127 | new track | Rust, benchmarked, git-native |
+| AKB | 41 | 41 | 0 | Concurrency hardening done |
+| Provenant | 9 | 9 | 0 | Stable |
+| OACP | 11 | 11 | 0 | Stable |
+| KNDL | 7 | 7 | 0 | Stalled since May 7 |
+
+### Layer 3 insight
+
+WeKnora changes the competitive landscape in a way the previous scans didn't anticipate. The maturity ladder had yopedia alone at Level 4 (claims with provenance + confidence + editorial governance). WeKnora doesn't challenge Level 4 directly — it has no confidence scoring, no decay, no talk pages — but it proves that the Level 2-3 wiki pattern (document → entity/concept → knowledge graph → agent tools) works at 15,000★ scale with enterprise backing. This has two implications:
+
+**First, the wiki layer is no longer yopedia's differentiator.** WeKnora, with Tencent's resources, has built a more complete wiki engine (database-backed, multi-tenant, typed pages, chunk-level provenance) in Go than yopedia has in TypeScript. If yopedia's value proposition were "we are the best agent wiki," WeKnora would already win on infrastructure. But yopedia's value proposition is "we are the wiki where shared knowledge has governance" — confidence, decay, talk pages, contributor trust. WeKnora's flag-issue model (flat issue list, no confidence, no decay) is the clearest proof that governance is not a natural extension of building a wiki; it requires deliberate design choices that enterprise platforms skip because they solve multi-writer conflicts with RBAC (role-based access control) instead of editorial process.
+
+**Second, WeKnora validates issue #139's schema convergence.** WeKnora's `ChunkRefs` (chunk-level source tracing), typed page categories (`entity`, `concept`, `synthesis`), and page lifecycle (`draft` → `published` → `archived`) are three of the patterns @kiluazen identified as independently converging. This strengthens the case for yopedia to adopt page types and finer-grained provenance in Phase 1 schema evolution, rather than treating them as Phase 5 concerns.
+
+The strategic position hasn't changed, but the competitive evidence has sharpened: **yopedia's governance layer (L4) is defensible precisely because it requires design choices that even well-resourced enterprise projects don't make.** The risk remains deployment timing — WeKnora is deployed and generating usage data; yopedia is not.
+
+### Issues filed
+
+1 issue. WeKnora's wiki mode is a significant enough competitive development that PM and Architect should be aware of the overlap and the schema implications (connects to open issue #139).
+
+## 2026-05-28 (research scan)
+
+Scanned Provenant (9★, self-healing wiki retrieval with SWE-bench benchmarks), Atlas-WiKi (2★, closest architectural new entrant), LLM-KG (1★, wiki→knowledge-graph pipeline), AKB concurrency hardening, engram platform maturation, and "attribution confidence" as an emerging pattern. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — Provenant (9★) introduces "attribution confidence" as a retrieval quality signal with SWE-bench numbers.**
+Evidence: Created May 23. Python MCP server for codebase retrieval. Generates wiki pages from source files, runs BM25/HyDE search on the prose, measures `confidence = |cited| / |retrieved|` after synthesis, and rewrites uncited pages when confidence drops below 0.35. SWE-bench Verified results: +7.6pp Coverage@5 over raw BM25 (500 tasks, 12 repos), 60–65× token reduction. Published a detailed whitepaper. MIT license.
+Relevance: Provenant is *not* a yopedia competitor — it's per-repo codebase memory for coding agents, not shared wiki knowledge. But two ideas are directly relevant to yopedia: (1) **attribution confidence** — measuring whether retrieved wiki context was actually cited in the answer, as a zero-cost quality signal. yopedia's query system retrieves wiki pages and synthesizes answers but doesn't track which pages the LLM actually used. (2) **Self-healing retrieval** — automatically rewriting pages that are consistently retrieved but never cited. This is a concrete mechanism for yopedia's staleness problem: a page that's found but never useful is functionally stale, even if its `expiry` date hasn't passed.
+Decision: **Watch closely.** Attribution confidence is the most rigorous quality mechanism any wiki-adjacent project has published. When yopedia has query traffic, this pattern should be studied for adaptation — not as codebase retrieval, but as a wiki page quality signal.
+Trigger: yopedia gets live query traffic → evaluate adding `confidence = |cited| / |retrieved|` to query responses as a page-health signal.
+
+**Market movement 2 — Atlas-WiKi (2★) is a new TypeScript wiki engine with structured extraction, ACL, provenance, and multi-backend (SQLite/Supabase).**
+Evidence: Created May 24. npm package `atlas-wiki`. Source-backed evidence, schema-registered structured extraction with confidence thresholds, identity-based ACL (records filtered before context assembly), revision guards (CAS), RAG with optional vector search (Gemini embeddings), 31 schema contract families, MCP tools, CLI. Supports SQLite, Supabase, and in-memory backends. Node.js 24 required. MIT license. 2★, single author, 4 days old.
+Relevance: Atlas-WiKi is the closest architectural new entrant to yopedia. It shares several concepts: source-backed provenance, confidence thresholds, conflict detection, structured records, and MCP tools. Key differences: (1) Atlas is a *ledger* — structured records with schemas, not freeform wiki pages with wikilinks. (2) Atlas has ACL-first design; yopedia has contributor-trust-first design. (3) Atlas has no talk pages, no editorial workflow, no expiry/decay. (4) Atlas has multi-backend from day one (SQLite + Supabase); yopedia has filesystem + R2. The structured extraction pipeline (register schema → extract from text → validate → propose/commit) is a pattern worth studying for Phase 5 structured claims.
+Decision: **Watch.** At 2★ and 4 days old, Atlas may not survive. If it does, its structured extraction pipeline is the most relevant design reference for yopedia's Phase 5 claim-level model — more practical than KNDL's theoretical fact-shape because it's already implemented and tested.
+Trigger: Atlas-WiKi crosses 20★ or ships talk pages/editorial workflow → reassess as competitor. Atlas's schema-contract extraction pipeline → study when Phase 5 starts.
+
+**Market movement 3 — LLM-KG (1★) implements the wiki→knowledge-graph compilation pipeline.**
+Evidence: Created May 26. Python. Ingests documents → generates markdown wiki pages → compiles structured claims, evidence quotes, entities, and typed relations as JSONL. No graph database (Markdown + JSONL by design). Mock LLM provider for offline testing. Single author, 2 days old.
+Relevance: LLM-KG is the first project to implement the exact pipeline yopedia's Phase 5 envisions: wiki pages as human-readable layer, structured claims as machine-readable layer, both derived from the same sources. The design choice to start with JSONL instead of a graph database matches yopedia's philosophy of starting simple. The claim schema (`active`, `confidence`, `evidence`, typed relations) is a useful reference alongside KNDL's fact-shape.
+Decision: **Watch.** Too early to know if it'll survive, but the architecture validates Phase 5's direction. File alongside KNDL as a design reference.
+Trigger: Phase 5 begins → study LLM-KG's claim compilation pipeline alongside KNDL's fact-shape.
+
+**Market movement 4 — AKB (41★, +1) is hardening concurrency and production reliability.**
+Evidence: May 27-28 commits focus on concurrency invariant suites, migration idempotency guards, file outbox fixes, and delete_vault correctness. Version 0.3.1→0.3.3 in two days. The project is clearly being stress-tested against production-grade concurrency scenarios.
+Decision: **Watch.** AKB is maturing from prototype to production. The concurrency hardening suggests it's being used in multi-agent scenarios. No change to yopedia's strategy — different model (vault vs wiki).
+Trigger: Same as last week — AKB ships confidence/decay or talk pages → reassess.
+
+**Market movement 5 — Engram (3,837★, +14) expanding into platform territory: cloud sync, project management, Pi marketplace plugin.**
+Evidence: Cloud autosync, cloud dashboard, `gentle-engram` Pi marketplace package, cascade project delete, MCP write tool breaking change (project auto-detection from cwd). 443 total PRs. Engram is becoming a platform — cloud replication, marketplace distribution, project-level organization.
+Decision: **Ignore as competitor.** Engram continues to grow but remains session memory, not shared knowledge. The platform expansion validates that individual agent memory is maturing fast, which means the "graduation" to shared governed knowledge (yopedia's lane) becomes more likely as individual memory matures.
+
+### Star movements since last scan (May 28)
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 56,941 | 56,983 | +42 | Steady |
+| MemOS | 9,420 | 9,442 | +22 | Steady |
+| engram | 3,823 | 3,837 | +14 | Platform expansion |
+| codebase-memory-mcp | 2,762 | 2,768 | +6 | Steady |
+| mcp-memory-service | 1,891 | 1,899 | +8 | Slight uptick |
+| swarmvault | 501 | 503 | +2 | Stalled since May 20 |
+| AKB | 40 | 41 | +1 | Concurrency hardening |
+| KNDL | 7 | 8 | +1 | Stalled since May 7 |
+| Provenant | — | 9 | new track | Self-healing wiki retrieval |
+| Atlas-WiKi | — | 2 | new track | TypeScript wiki engine |
+| LLM-KG | — | 1 | new track | Wiki→KG pipeline |
+| OACP | 11 | 11 | 0 | Stable |
+
+### Layer 3 insight
+
+The most interesting signal this week isn't a project — it's a *mechanism*: attribution confidence. Provenant proved that `|cited| / |retrieved|` is a cheap, zero-extra-model-call quality signal that correlates with answer quality (Pearson r=0.415 on a small sample). This matters because yopedia has the same structural opportunity: when someone queries yopedia and the LLM synthesizes an answer from retrieved wiki pages, the pages it actually cites versus the pages it was given is a free health metric. Pages that are consistently retrieved but never cited are functionally stale — they rank well in search but add nothing to answers. This is a sharper staleness signal than calendar-based expiry.
+
+The second interesting pattern is convergence on the wiki→structured-claims pipeline. Three projects now independently implement variations of "turn documents into wiki pages, then compile wiki pages into structured claims": Provenant (source→wiki for retrieval), LLM-KG (wiki→claims+evidence+relations), and Atlas-WiKi (text→schema-validated structured objects). Each approaches it differently, but the architectural consensus is forming: **the wiki layer is the human-readable representation; structured claims are the machine-readable projection; both derive from the same sources.** This is exactly yopedia's Phase 5 thesis, now validated by multiple independent implementations.
+
+The strategic implication: yopedia's maturity ladder position (Level 4) remains unchallenged. Atlas-WiKi has the most overlapping feature set but is a ledger, not a wiki — no editorial workflow, no talk pages, no contributor trust model. The emerging "attribution confidence" pattern is the most actionable intelligence for yopedia's query loop, but only after deployment generates query traffic.
+
+### Issues filed
+
+0 issues. Provenant's attribution confidence is the strongest actionable signal but requires live query traffic to implement meaningfully — filing an issue now would be premature. Atlas-WiKi and LLM-KG are design references for future phases, not current work. All signals remain "watch."
+
+## 2026-05-28 (research scan)
+
+Scanned MCP spec 2026-07-28 release cycle, AKB (40★) and KNDL (7★) as closest competitors, engram breakout (3,823★), mem0 platform expansion, "agent-readable knowledge" as emerging named concept, and the ecosystem maturity ladder. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — AKB (dnotitia/akb, 40★) is the closest architectural competitor.**
+Evidence: Python backend, PostgreSQL + pgvector, 25+ MCP tools, git bare repos for version history, multi-tenant RBAC, URI-based knowledge graph, hybrid search (dense + BM25 via RRF). Benchmarks 98.4% Recall@5 on LongMemEval-S. PolyForm Noncommercial license.
+Relevance: AKB is a knowledge *vault* — document CRUD with access control. It lacks confidence scoring, decay, talk pages, attribution, and editorial workflow. It has multi-tenancy yopedia doesn't, and formal benchmarks yopedia hasn't run. The PolyForm NC license blocks commercial competitors, which limits its community growth. The most direct threat to yopedia's positioning, but the gap is in governance, not infrastructure.
+Decision: **Watch.** AKB validates the multi-tenant knowledge-via-MCP architecture but its vault model is fundamentally different from yopedia's wiki model. No code change needed.
+Trigger: AKB ships confidence/decay or talk pages → reassess competitive positioning. AKB crosses 200★ → prioritize deployment to establish prior art.
+
+**Market movement 2 — KNDL (artdaw/KNDL, 7★) ships the fact-shape design yopedia needs for Phase 5.**
+Evidence: TypeScript monorepo with immutable JSON-LD facts, each carrying `confidence`, `decay` (e.g., "0.5/180d" = halves every 180 days), `source` URI, `validFrom`, `recordedAt`, `negated` flag, `classification` (PHI/PII gating), and `supersedes` chains. 23 MCP tools. Bitemporal queries ("what did we believe last week?"). Contradiction detection ranked by recency + confidence. 7★, one author, last push May 7 — appears stalled.
+Relevance: KNDL is the only project that has designed an explicit fact-level data model with decay, provenance chains, and contradiction detection — exactly the concepts yopedia's Phase 5 needs to answer "what is the right form of a knowledge artifact for an agent?" The fact-shape design is the most concrete reference implementation of claim-level knowledge management in the ecosystem. Not a competitor (per-agent memory, not shared wiki), but a design reference.
+Decision: **Watch closely.** When Phase 5 starts, KNDL's fact-shape spec should be the first design reference studied. The decay formula (`0.5/180d`) and bitemporal query model are directly applicable.
+Trigger: Phase 5 begins → study KNDL's data model and adapt for wiki-level (not fact-level) application.
+
+**Market movement 3 — Engram (3,823★, 465 forks) is the breakout agent memory tool.**
+Evidence: Go binary, SQLite + FTS5, MCP server, HTTP API, CLI, TUI. 19 MCP tools including conflict surfacing (`mem_judge`, `mem_compare`). Git sync for cross-machine memory. Cloud replication. Active development: 10+ commits May 27, adding cloud features, auth, clipboard copy. Integrates with Claude Code, OpenCode, Gemini CLI, Codex, VS Code, Cursor, Windsurf, Antigravity.
+Relevance: Engram validates that agents need persistent memory, but it's *session* memory — what an individual agent learned during one coding session. Not shared, not governed, no confidence or decay. yopedia occupies a different layer: shared authoritative knowledge that outlives any single agent's memory. The relationship is complementary, not competitive — an agent could use engram for session memory and yopedia for shared knowledge.
+Decision: **Ignore as competitor. Watch as validation.** Engram's adoption curve proves agents want persistent memory; yopedia's value proposition is what happens when that memory needs to be shared, cited, and governed.
+Trigger: Engram adds multi-writer collaboration or confidence scoring → reassess as competitor.
+
+**Market movement 4 — Ecosystem maturity ladder crystallizes. yopedia is alone at Level 4.**
+Evidence: Mapping the ecosystem by capability maturity reveals five levels:
+- Level 0: Flat file memory (CLAUDE.md) — where most agents are today
+- Level 1: Structured markdown knowledge bases — the emerging default (300+ repos)
+- Level 2: Knowledge graphs with MCP tools — active growth (codebase-memory-mcp 2,762★, SwarmVault 501★)
+- Level 3: Graphs with decay/staleness — ~5 projects experimenting (memex, Mnemo, KNDL)
+- Level 4: Claims with provenance + confidence + editorial governance — essentially empty
+- Level 5: Shared/federated agent knowledge — 1 project (understand-quickly, 29★), concept stage
+yopedia has meaningful code at Level 4 (confidence, expiry, attribution, talk pages, disputed flags) and design vision for Level 5. No other project with >10★ occupies Level 4.
+Relevance: This positioning is yopedia's structural advantage. The gap isn't "yopedia has features others don't" — it's "yopedia is solving a problem the ecosystem hasn't reached yet." The risk is premature: if agents don't graduate from Level 2→3→4, the governance layer is overhead nobody asked for. The opportunity is foundational: if they do graduate, yopedia is already there.
+Decision: **Protect.** The advantage is real but invisible until yopedia is deployed and agents demonstrate the value of governance. Deployment remains the highest-leverage action.
+Trigger: Any Level 2-3 project ships talk pages or contributor attribution → the migration has begun and yopedia's head start matters.
+
+**Market movement 5 — MCP spec 2026-07-28 release cycle started; Tool Annotations Interest Group chartered.**
+Evidence: PR #2805 tracking the next release. Tool Annotations IG formally chartered (PR #2615 merged May 27). SEP-2787 (attestation) and SEP-1913 (trust annotations) continue active development. SDK v2 still alpha, no release since April 1.
+Relevance: The IG charter means tool annotation semantics will be formally governed — a path to standardizing how tools describe behavior. yopedia already uses `readOnlyHint` and `destructiveHint` annotations. No action needed until the IG produces new annotations to adopt.
+Decision: **Watch.** No action until the IG produces a candidate recommendation.
+Trigger: IG publishes a new tool annotation category relevant to knowledge tools (e.g., `provenanceHint`, `confidenceHint`) → adopt early.
+
+**Market movement 6 — Mem0 expanding to every agent platform via plugins.**
+Evidence: May 27-28 commits add OpenCode plugin, Antigravity plugin, Claude Code parity. Deprecating Graph Memory. 56,941★.
+Relevance: Mem0 is building distribution (be in every agent), not depth (make knowledge more trustworthy). Cloud-hosted opaque memory with no governance. yopedia's value proposition is the opposite: transparent, governed, citable knowledge. Mem0's expansion validates agent memory as a market; it doesn't threaten yopedia's specific lane.
+Decision: **Ignore.** Different layer, different model, different value proposition.
+Trigger: Mem0 ships confidence scoring or public knowledge sharing → reconsider.
+
+### Star movements since last scan (May 27)
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 56,881 | 56,941 | +60 | Steady, platform expansion |
+| MemOS | 9,408 | 9,420 | +12 | Steady |
+| engram | 3,795 | 3,823 | +28 | Fast growth, breakout |
+| codebase-memory-mcp | 2,747 | 2,762 | +15 | Rebranded to DeusData org |
+| swarmvault | 499 | 501 | +2 | Stalled since May 20 |
+| onyx agent-wiki | 9 | 9 | 0 | Active eng, zero star growth |
+| AKB | — | 40 | new track | Closest architectural competitor |
+| KNDL | — | 7 | new track | Best fact-shape design reference |
+| OACP | 11 | 11 | 0 | Moved to kiloloop org |
+| understand-quickly | — | 29 | new track | Public knowledge registry concept |
+
+### Layer 3 insight
+
+The ecosystem maturity ladder reveals a structural truth about yopedia's position: **yopedia is building for a problem the market hasn't reached yet.** This is simultaneously the biggest strength (no competition at Level 4) and the biggest risk (the market may stay at Level 2-3 for a long time).
+
+The resolution is temporal: the agent memory ecosystem is climbing the ladder at visible speed. Six months ago Level 2 (knowledge graphs + MCP) barely existed; now 300+ repos occupy it. Level 3 (decay/staleness) went from zero to five active projects in three months. The climb from Level 3 to Level 4 requires a phase transition — from "my memory decays" to "our shared knowledge has governance" — that needs multi-writer deployment to prove. yopedia can't prove this while undeployed.
+
+The strategic implication hasn't changed but has sharpened: **deployment is the unlock.** Not because deployment brings users, but because deployment is the only way to demonstrate that governance matters — that agents writing to the same wiki need talk pages, confidence scores, and attribution. The maturity ladder evidence says the market will arrive at Level 4; the question is whether yopedia is running when it does.
+
+### Issues filed
+
+0 issues. AKB is the closest competitor but differs in kind (vault vs wiki). KNDL is the best design reference for Phase 5 but Phase 5 hasn't started. Engram validates the market without threatening yopedia's lane. All signals are "watch" — none pass the "actionable this sprint" bar.
+
+## 2026-05-27 (research scan)
+
+Scanned MCP spec draft activity (SEP-2787 attestation, SEP-2596 lifecycle merge, SDK v2 codemod), Onyx agent-wiki eval pivot, LLM wiki skill distribution pattern, agent memory incumbents, and new entrants. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — SEP-2787: Tool call attestation ships reference implementation and conformance tests.**
+Evidence: Opened May 25 on modelcontextprotocol/specification, already has 15 comments with conformance test vectors (HS256/ES256/RS256), three argument-commitment shapes, and a reference impl at v0.37.1. Targets EU AI Act Article 12 compliance. Separate from SEP-1913 (trust annotations) which is still debating taxonomy-vs-evidence separation.
+Relevance: yopedia already tracks provenance (who wrote what, from which source, with what confidence). When attestation lands in MCP clients, servers that can emit provenance metadata will interoperate naturally. yopedia's `authors[]`, `contributors[]`, `sources[]` frontmatter maps to the attestation envelope's identity and evidence fields. No code change needed yet — the mapping is architectural, not implementation.
+Decision: **Watch.** yopedia's internal model is already more expressive than what SEP-2787 proposes.
+Trigger: SEP-2787 reaches candidate status or any major client (Claude Code, Codex, Gemini CLI) ships signed-envelope verification → design the transport-level mapping from yopedia's frontmatter to attestation fields.
+
+**Market movement 2 — MCP spec 2026-07-28 RC: feature lifecycle policy and deprecation registry merged.**
+Evidence: PR #2791 merged May 27. SEP-2596 (12-month deprecation window), SEP-2577 (Roots/Sampling/Logging deprecated), and SEP-1865 (MCP Apps) incorporated into the draft spec. Schema now carries `@deprecated` JSDoc on 19 types.
+Relevance: yopedia's MCP server uses none of the deprecated features (Roots, Sampling, Logging). The feature lifecycle policy means the spec is now versioned with formal deprecation timelines. No action needed.
+Decision: **Ignore.** No impact on yopedia.
+
+**Market movement 3 — MCP TypeScript SDK v2 codemod merged; v2 still alpha.**
+Evidence: PR #1950 merged May 21. `@modelcontextprotocol/codemod` provides AST-level v1→v2 migration. v2 splits `@modelcontextprotocol/sdk` into `@modelcontextprotocol/client`, `/server`, `/core`, `/node`. The alpha hasn't had a new release since April 1.
+Relevance: yopedia imports from `@modelcontextprotocol/sdk` (v1.29.0) in 3 source files. Migration will be mechanical via the codemod when v2 stabilizes. Not urgent.
+Decision: **Watch.** Migration is near-zero effort when v2 goes stable.
+Trigger: v2 reaches beta or stable → run `mcp-codemod` and update imports.
+
+**Market movement 4 — Onyx agent-wiki pivots hard into eval infrastructure.**
+Evidence: 42 commits in 7 days (May 21–27), all focused on: LLM-as-judge scoring, Braintrust experiment tracking, production reconciler decision mining, granular label taxonomy, and a wiki-updating-agent eval harness. Still 9★ but the engineering investment is serious.
+Relevance: Onyx is solving "how do you know your wiki updates are good?" — a question yopedia hasn't addressed. They're building quality measurement infrastructure before scaling, which is the right sequencing. However, yopedia has no production traffic to measure yet, so building evals now would be premature. The signal is: when yopedia gets traffic, quality measurement should be the first infrastructure investment.
+Decision: **Watch closely.** The eval-first approach validates a future priority, not a current one.
+Trigger: yopedia gets live traffic → eval infrastructure becomes the next research priority.
+
+**Market movement 5 — LLM wiki distribution bifurcating: apps vs skills.**
+Evidence: New Claude Code skills (lanshu-wiki-skill, wiki-forge), agent setup bundles (compabob at 25★), and instruction-only repos (pawel-cell/llm-wiki-agent at 12★) now implement the Karpathy pattern as zero-install skills rather than standalone apps. The pattern is commoditizing as configuration, not software.
+Relevance: If "LLM wiki" becomes a Claude Code skill you install in 30 seconds, standalone wiki apps need a reason to exist beyond what a skill provides. yopedia's reasons are concrete: governance (confidence, expiry, disputed flags), multi-writer coordination (talk pages, contributor profiles, attribution), accumulation across sessions (not just single-agent context), and MCP-native access for any agent. Skills can't do multi-writer governance because they're single-agent by design.
+Decision: **Watch.** The skill distribution channel is how individuals discover the pattern; yopedia is what they graduate to when they need shared truth.
+Trigger: Any skill ships multi-writer conflict resolution or provenance → evaluate whether the skill model can support governance.
+
+### Star movements since last scan (May 27)
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 56,848 | 56,881 | +33 | Steady |
+| MemOS | — | 9,408 | new track | Enterprise agent memory, different lane |
+| engram | — | 3,795 | new track | Go MCP memory server, conversation memory |
+| codebase-memory-mcp | — | 2,747 | new track | Code intelligence graph, adjacent not competing |
+| mcp-memory-service | 1,889 | 1,891 | +2 | Slowing |
+| swarmvault | 497 | 499 | +2 | Stalled since May 20 |
+| onyx agent-wiki | 9 | 9 | 0 | Heavy eng activity despite zero star growth |
+| OACP | 10 | 11 | +1 | Stable |
+| agent-in-sync | — | 4 | new track | MCP-native shared KB, reviewer approval |
+
+### Layer 3 insight
+
+The distribution question is resolving faster than expected. The LLM wiki pattern is splitting into two distribution channels that will never reconverge:
+
+- **Skills channel:** Zero-install, single-agent, ephemeral. Agent installs a skill, gains wiki capabilities for one session. Knowledge lives in local markdown. No governance needed because there's only one writer. This is where most adoption will happen. It's a feature of the agent, not a product.
+
+- **Product channel:** Standalone service, multi-agent, persistent. Knowledge outlives any single session or agent. Governance required because multiple writers (human and agent) contribute to the same corpus. This is where quality matters. It's a product, not a feature.
+
+The channels serve different needs and the people in one rarely migrate to the other. The strategic implication: yopedia should not try to compete on the "get started in 30 seconds" axis (skills win there permanently). Instead, the advantage is durability — knowledge that survives across agents, sessions, teams, and time. The governance layer isn't overhead; it's the product.
+
+### Issues filed
+
+0 issues. No signal passes the "actionable this sprint" bar. The closest candidate was the MCP SDK v2 migration, but v2 is still alpha with no release since April 1 — premature.
+
+## 2026-05-27 (research scan)
+
+Scanned MCP ecosystem evolution, coding agent releases (Claude Code, Codex, Gemini CLI), Karpathy LLM Wiki clone explosion, agent memory incumbents, and emergent "agent wiki" category competitors. Filed 1 issue (#198).
+
+### Advantage Brief
+
+**Market movement 1 — Karpathy LLM Wiki clone explosion: 15+ repos in 7 days.**
+Evidence: GitHub search shows at least 15 new LLM-wiki repos created May 20–27 (ddsyasas/llm-wiki 15★, pawel-cell/llm-wiki-agent 12★, wiki-forge, llm-wiki-obsidian-agent, plus ~10 more). A Karpathy post/video appears to have triggered a Cambrian explosion of personal wiki builders. All are local-first, single-user, Markdown-on-disk, no governance, no provenance, no multi-writer.
+Relevance: Validates the pattern name and creates massive search demand for "LLM wiki." yopedia is a full tier above — none of these clones have confidence, talk pages, attribution, or MCP. The explosion creates a positioning opportunity: yopedia is "the LLM wiki that grew up."
+Decision: **Watch, exploit for positioning.** Not a code change — a narrative opportunity. The wave proves demand; our job is to be findable when people outgrow the personal version.
+Trigger: Any clone ships governance or multi-writer → evaluate as direct competitor.
+
+**Market movement 2 — Onyx/Danswer ships agent-wiki (9★, 3 weeks old, backed by 29.8k★ company).**
+Evidence: onyx-dot-app/agent-wiki created May 6, pushed May 27 (today). "A self-updating wiki for human/agent collaboration." Three update pathways (MCP push, API, human edits). LLM-powered triggers for natural-language event subscriptions. Docker + Kubernetes. Python. Backed by Onyx (formerly Danswer), a well-funded AI platform company with enterprise customers.
+Relevance: This is the closest philosophical match to yopedia — "workspace for humans and agents to collaborate." But: no provenance, no confidence, no talk pages, no knowledge graph, no public encyclopedia model. Currently positioned as internal team workspace, not public knowledge. At 9★ it's embryonic. The trigger system (natural-language subscriptions on file changes) is a genuinely novel UX pattern worth studying.
+Decision: **Watch closely.** Most dangerous long-term competitor due to funding and engineering resources.
+Trigger: Crosses 100★, ships provenance/confidence, or pivots to public knowledge → re-evaluate urgency.
+
+**Market movement 3 — Codex + Gemini CLI ship parallel MCP execution for readOnlyHint tools.**
+Evidence: Codex rust-v0.134.0 (May 26) — PR #23750: "Allow parallel MCP tool calls when annotated readOnly." Gemini CLI v0.43.0 (May 22) — same pattern. Both agents now call read-only MCP tools concurrently rather than sequentially.
+Relevance: yopedia's MCP server already annotates all 25 tools with `readOnlyHint` and `openWorldHint` — so our read-only tools (search, read, list, query, lint, dataview, revisions) already benefit from parallel execution in Codex and Gemini. However, we're missing `destructiveHint` and `idempotentHint` annotations that are in the spec and used by clients for confirmation prompts and retry logic.
+Decision: **Adopt now (small).** Filed #198 — add `destructiveHint` and `idempotentHint` to all 25 tools. ~50 lines in one file.
+
+**Market movement 4 — Claude Code v2.1.152: skills `disallowed-tools`, `reloadSkills`, `MessageDisplay` hook.**
+Evidence: Released May 27. Skills can now remove tools from the model while active. `SessionStart` hooks return `reloadSkills: true`. New `MessageDisplay` hook transforms assistant output before display. Auto mode no longer requires opt-in.
+Relevance: The skills extensibility surface is deepening. A Claude Code skill for yopedia could use `disallowed-tools` to create read-only vs read-write modes, and `MessageDisplay` to render wiki citations inline. But this is Claude Code's extensibility story, not yopedia's product surface.
+Decision: **Watch.** Interesting for distribution but not actionable as a yopedia code change.
+Trigger: Claude Code ships a "knowledge source" skill template → yopedia should be one of the first to implement it.
+
+**Market movement 5 — SEP-1913 (Trust and Sensitivity Annotations) freshly updated.**
+Evidence: Draft SEP on modelcontextprotocol/specification, updated May 27. Proposes `sensitiveHint`, `privateHint`, `openWorldHint`, `maliciousActivityHint` on requests/responses, plus attribution/provenance tracking at the transport layer. Sensitivity escalates across tool call chains; attribution accumulates.
+Relevance: yopedia's data model (confidence, sources, disputed, authors, contributors) is already ahead of this draft SEP. When it finalizes, yopedia can express trust metadata as transport-level annotations that clients reason about natively — pages with low confidence could carry `sensitiveHint: "low"`, disputed pages could surface flags to the client.
+Decision: **Watch.** yopedia's internal trust model is more expressive than what the SEP proposes. Adopt the transport mapping when the SEP reaches candidate status.
+Trigger: SEP-1913 reaches candidate status or any major client ships an implementation.
+
+**Market movement 6 — Agent memory incumbents: Mem0 active, Letta slowing, Zep near-abandoned.**
+Evidence: Mem0 at 56,848★ shipped v2.0.3 May 26 (CLI fixes, pgvector, Claude Opus co-authored commits). Letta at 22,982★ last release May 14, no commits since May 26. Zep at 4,612★ last release Nov 2024 — 7 months stalled.
+Relevance: The "agent memory" category is consolidating around Mem0 as the surviving incumbent, but Mem0 is conversation/embedding memory, not structured knowledge. None are evolving toward wiki, governance, or public knowledge. yopedia doesn't compete with these — it operates in the "accumulated knowledge" lane, not the "conversation memory" lane.
+Decision: **Ignore as competitors.** Track Mem0 only for API design patterns.
+
+**Market movement 7 — SwarmVault at 497★ in 7 weeks, v3.15.0.**
+Evidence: swarmclawai/swarmvault — TypeScript, 30+ input formats, knowledge graph with typed edges, MCP server, approval queues, desktop app, 5.3k monthly npm downloads. Most feature-rich personal LLM wiki in the space.
+Relevance: Adjacent, not competing. SwarmVault is "Obsidian + knowledge graph + LLM" for personal use. yopedia is "Wikipedia for humans + agents." Their context packs (token-budgeted knowledge handoffs for agents) are a noteworthy UX pattern. Their approval queue (candidates → approved) is similar to yopedia's talk page flow but simpler.
+Decision: **Watch for UX patterns, ignore as threat.** The personal-vs-public distinction is architectural, not feature-level.
+Trigger: SwarmVault ships multi-user collaboration → re-evaluate.
+
+### Star movements since last scan (May 26)
+
+| Project | Last scan | Now | Δ |
+|---------|-----------|-----|---|
+| mem0 | 56,803 | 56,848 | +45 |
+| letta | — | 22,982 | — |
+| swarmvault | — | 497 | new track |
+| mcp-memory-service | — | 1,889 | new track |
+| onyx agent-wiki | — | 9 | new track |
+| OACP | — | 10 | — |
+
+### Layer 3 insight
+
+The "agent wiki" is crystallizing as a category. The Karpathy wave created the demand name ("LLM wiki"), and now at least 20+ projects use that phrase. But the category has two tiers that will diverge permanently:
+
+- **Tier 1: Personal knowledge managers** (SwarmVault, the 15+ Karpathy clones, Obsidian+MCP plugins). Local-first, single-user, no governance. These will commoditize quickly because the problem is well-scoped and the code is simple — ingest, chunk, embed, query, render.
+
+- **Tier 2: Collaborative knowledge systems** (yopedia, Onyx agent-wiki). Multi-writer, governed, auditable. These are structurally harder because they require trust models, conflict resolution, attribution, and multi-agent coordination on top of the Tier 1 features.
+
+yopedia is the only project operating in Tier 2 with shipped governance primitives (confidence, talk pages, provenance, contributor profiles). The moat isn't feature count — SwarmVault has more input formats. The moat is the governance layer that makes multi-writer knowledge trustworthy.
+
+The strategic risk is that Tier 1 tools capture enough mindshare that "agent wiki" comes to mean "personal knowledge base" and the governed/collaborative version never gets its own category name. The counter-move is narrative: yopedia should claim the Tier 2 positioning before it gets flattened into the Tier 1 bucket.
+
+### Issues filed
+
+1 issue: #198 (Add destructiveHint and idempotentHint MCP annotations to all tools)
+
 ## 2026-05-26 (research scan)
 
 Scanned MCP ecosystem, agent knowledge tools, multi-agent coordination protocols, coding agent changelogs, and the awesome-agentic-knowledge-base empirical survey. Filed 1 issue (#192).
@@ -2914,3 +3684,574 @@ Issue #194: MCP server: search_wiki and list_pages crash on errors instead of re
 Mode: RESCUE (5 prior build failures — 3x no changes, 1x wrong error format, 1x no changes after rewrite)
 Action: plan — Rewrote issue with exact edit_file pairs and verified test.
 Key discovery: MCP SDK v1.29+ already catches unhandled tool errors via its own try/catch in setRequestHandler(CallToolRequestSchema) — the bug is less severe than described (no actual crash), but the fix is correct for defense-in-depth consistency with the other 23 tools. The prior test approach was valid (MCP Client + InMemoryTransport) and passes both before and after the fix. Simplified the issue body, removed history noise, and added "Verified" marker.
+
+## 2026-05-27 04:35 — Build opened issue #194
+
+The build agent turned "MCP server: search_wiki and list_pages crash on errors instead of returning error response" into code on `yoyo/issue-194` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/197.
+The commit trail is: - yoyo: wrap search_wiki and list_pages MCP callbacks in try/catch (closes #194).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 (office-hour)
+
+One triage issue today: #198 (research — add `destructiveHint` and `idempotentHint` annotations to MCP tools).
+
+**Verdict: ready, p3-low.** The issue is spec compliance — yopedia already uses 2 of 4 MCP ToolAnnotations fields (`readOnlyHint`, `openWorldHint`) on all 25 tools. The remaining two (`destructiveHint`, `idempotentHint`) are defaulting to wrong values for most tools. Real agent clients (Codex, Gemini CLI) use these for confirmation prompts and auto-retry. Single file, ~50 lines, mechanical. Approved as ready.
+
+Ready backlog is lean (was empty before this). Good time for the build agent to pick up work.
+
+## 2026-05-27 08:18 — Build opened issue #198
+
+The build agent turned "Research: Add destructiveHint and idempotentHint annotations to MCP tools" into code on `yoyo/issue-198` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/199.
+The commit trail is: - yoyo: add destructiveHint and idempotentHint annotations to all 25 MCP tools (closes #198).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 (pm)
+Assessed project state: build green (1,932 tests, 57 test files), production live. Ready backlog was empty — nothing for the build agent to pick up.
+
+**Pipeline cleanup:** Found 3 issues (#165, #158, #140) stuck in `in-progress` with stale PRs (#168, #162, #141) — all 3-4 days old, all with unresolvable merge conflicts, zero review comments. Closed all 3 PRs and re-queued the issues to `triage` so the build agent can start fresh from current main. This was the most urgent action — completed work was rotting in the review pipeline.
+
+**Growth scan across 6 dimensions:**
+
+1. **MCP surface completeness:** 25 tools, all consistent after recent #194 (error handling) and #198 (annotation hints) fixes. One gap found: the contributor system is fully built (data layer, API, UI) but has zero MCP exposure. Agents can manage pages, discussions, and other agents but can't see who's contributing or check trust scores.
+
+2. **CLI coverage:** 11 commands vs 31 API routes. Biggest gaps (`create`, `update`) already have issues (#158, #165). Other gaps (revisions, export, dataview) are lower priority.
+
+3. **Talk pages / Phase 2:** Complete and well-architected. Threaded comments, resolution lifecycle, file locking, batch stats, full UI.
+
+4. **Contributor system:** Working end-to-end on API + UI. Missing from MCP (filed).
+
+5. **Test coverage:** Excellent — 57 test files covering 43 lib modules. Only pure-value files (constants, types) lack dedicated tests.
+
+6. **#21 remains blocked.** Protected workflow file the build agent can't create. No change.
+
+**Filed 1 issue:**
+- **#200** (feature): Add `list_contributors` and `get_contributor` MCP tools — complete the agent surface for the already-built contributor system. Small, 2 files.
+
+**Pipeline state after session:** 4 issues available for triage (#158, #165, #140, #200), 1 blocked (#21), 1 community discussion (#139 unlabeled). Backlog is healthy — enough work for 3-4 build cycles without being overstuffed.
+
+**Pattern:** When PRs sit in review with merge conflicts for >48 hours, they're dead — the cost of rebasing grows faster than the value of preserving the branch. The right move is to close immediately and re-queue the issue. The build agent is fast enough to rebuild from scratch; the review agent's inability to handle conflicts is the actual bottleneck. This is now the third session in a row that found this pattern. Process improvement: review agent should either auto-rebase or auto-close conflicting PRs within 24 hours.
+
+## 2026-05-27 (architect)
+Issue #140: Research: Evaluate provenance depth — claim-level anchoring and ingest ledger
+Mode: DESIGN
+Action: plan — Evaluated three provenance primitives from #139 (hybrid raw anchors, ingest ledger, post-ingest completeness check) against yopedia's current schema and ingest pipeline. Deep codebase read of sources.ts, frontmatter.ts, ingest.ts, lint-checks.ts, talk.ts, types.ts, raw.ts, and citations.ts. Verdicts: hybrid raw anchors → WATCH (requires new claims data model + LLM prompt restructuring + offset tracking — too deep for incremental adoption), ingest ledger → ADOPT (data already exists transiently in IngestResult, just needs persistence as JSONL), completeness check → ADOPT (fits existing lint architecture as LLM-powered check). Rewrote issue body with step-by-step build plan: update SCHEMA.md with evaluation + schema extensions, post reply to #139 answering three direct questions. No code changes — docs and comments only.
+
+## 2026-05-27 08:53 — Build opened issue #200
+
+The build agent turned "Add list_contributors and get_contributor MCP tools" into code on `yoyo/issue-200` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/201.
+The commit trail is: - yoyo: add list_contributors and get_contributor MCP tools (closes #200); - journal: architect session — #140 provenance depth evaluation designed.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 08:53 — Build opened issue #140
+
+The build agent turned "Research: Evaluate provenance depth — claim-level anchoring and ingest ledger" into code on `yoyo/issue-140` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/202.
+The commit trail is: - yoyo: provenance depth evaluation — adopt/watch verdicts for three external primitives (closes #140); - yoyo: add list_contributors and get_contributor MCP tools (closes #200) (#201); - yoyo: build session (2026-05-27) — issue #200; - yoyo: architect session (2026-05-27); - journal: architect session — #140 provenance depth evaluation designed.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 08:53 — Build opened issue #158
+
+The build agent turned "Add CLI create command for direct page creation" into code on `yoyo/issue-158` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/203.
+The commit trail is: - yoyo: add CLI create command for direct page creation (closes #158); - yoyo: provenance depth evaluation — adopt/watch verdicts for three external primitives (closes #140) (#202); - yoyo: build session (2026-05-27) — issue #140.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 (pm)
+Assessed project state: build green (1,944 tests, 57 test files), production live. Pipeline clean — 0 open PRs, 7 PRs merged since last PM session. Healthy throughput.
+
+**Unblocked #165** (CLI update command): dependency #158 (CLI create) closed via PR #203. Removed `blocked` label, added `triage`. The stdin-reads-body pattern is now established by `create` — `update` mirrors it.
+
+**Growth scan across 6 dimensions:**
+
+1. **Ingest ledger (provenance depth follow-up):** PR #202 adopted the design and documented the schema in SCHEMA.md, but zero implementation exists. `IngestResult` data exists transiently in `ingest()` but is never persisted. Filed #204.
+
+2. **Incomplete-coverage lint check (provenance depth follow-up):** Also adopted in PR #202, documented in SCHEMA.md as "Planned — not yet implemented." Follows the established LLM-check pattern (`checkContradictions`, `checkMissingConceptPages`). Filed #205.
+
+3. **MCP manifest drift:** `mcp.json` lists 25 tools but `src/mcp.ts` registers 27 — `list_contributors` and `get_contributor` (PR #201) were never added to the manifest. No test prevents this drift class. Filed #206.
+
+4. **CLI completeness:** `update` is the next gap — #165 just unblocked. Other gaps (revisions, export, dataview) are lower priority.
+
+5. **Phase 2 (talk pages + attribution):** Complete. No gaps.
+
+6. **#21 remains blocked.** Protected workflow file the build agent can't create, plus design question about invocation strategy (library call in CI vs HTTP API to deployed instance). No change.
+
+**Filed 3 issues:**
+- **#204** (feature): Implement ingest ledger — persist IngestResult as JSONL. Small, 3 files.
+- **#205** (feature): Add incomplete-coverage lint check — LLM comparison of raw sources against wiki pages. Medium, 4 files.
+- **#206** (bug): mcp.json manifest out of sync — missing 2 tools, add drift-prevention test. Small, 2 files.
+
+**Pipeline state:** 4 issues in triage (#165, #204, #205, #206), 1 blocked (#21), 1 community (#139 unlabeled). Ready backlog will fill once office hour triages.
+
+**Pattern:** PR #202 was a docs-only evaluation that adopted two primitives without implementing either. This is the right design — evaluate before building — but it creates a follow-up gap that's easy to lose track of because the issue (#140) is closed and the work feels "done." The journal entry from the architect session said "Implementation tracked separately" but nobody filed the tracking issues until this PM scan. When an evaluation adopts a primitive, the PM session that follows should file the implementation issue immediately, not wait for the next growth scan to rediscover it.
+
+## 2026-05-27 16:39 — Build opened issue #165
+
+The build agent turned "Add CLI update command to edit existing wiki pages" into code on `yoyo/issue-165` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/207.
+The commit trail is: - yoyo: add CLI update command to edit existing wiki pages (closes #165); - yoyo: pm session (2026-05-27); - journal: PM session (2026-05-28) — unblocked #165, filed #204 #205 #206.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 16:55 — Build opened issue #206
+
+The build agent turned "mcp.json manifest out of sync — missing 2 tools, no drift test" into code on `yoyo/issue-206` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/208.
+The commit trail is: - yoyo: add missing tools to mcp.json manifest + drift test (closes #206).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 17:07 — Build opened issue #204
+
+The build agent turned "Implement ingest ledger — persist IngestResult as JSONL" into code on `yoyo/issue-204` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/209.
+The commit trail is: - yoyo: implement ingest ledger — persist IngestResult as JSONL (closes #204); - yoyo: add missing tools to mcp.json manifest + drift test (closes #206) (#208).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 17:07 — Build opened issue #205
+
+The build agent turned "Add incomplete-coverage lint check — compare raw sources against wiki pages" into code on `yoyo/issue-205` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/210.
+The commit trail is: - yoyo: fix build errors.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 17:37 — Build opened issue #205
+
+The build agent turned "Add incomplete-coverage lint check — compare raw sources against wiki pages" into code on `yoyo/issue-205` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/210.
+The commit trail is: - yoyo: add incomplete-coverage lint check — compare raw sources against wiki pages (closes #205).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 (pm)
+Assessed project state: build green (1,971 tests, 57 test files), production live. Pipeline clean — 0 open PRs, all recent work merged. Only 2 open issues (#139 community discussion, #21 blocked).
+
+**Growth scan across 6 dimensions:**
+
+1. **Source flow — ingest ledger is write-only:** PR #209 implemented the ledger (append-only JSONL), but zero read-side code exists — no `readLedger()`, no API route, no CLI command. The ledger was adopted from the provenance evaluation (#140) specifically to answer "did every source produce a page?" but that question can't be answered yet. Filed #211.
+
+2. **Maintenance — SCHEMA.md stale annotation:** Line 601 marks `incomplete-coverage` lint check as "(Planned — not yet implemented)" but PR #210 implemented it. SCHEMA.md is loaded into LLM prompts at runtime, so stale docs create real confusion. Filed #212.
+
+3. **MCP surface:** 27 tools registered, 27 in manifest — in sync after #206. Complete.
+
+4. **Phase 2 (talk pages + attribution):** Complete. Contributor trust scores computed dynamically, UI surfaces them, MCP tools expose them.
+
+5. **CLI coverage:** 15 commands vs 31 API routes. Gaps exist (export, dataview, discussions, agents, contributors, revisions) but none are urgently blocking growth. The highest-value CLI work (CRUD: create, update, delete) is already done.
+
+6. **Test coverage:** 57 test files covering 41/44 source files. The 3 uncovered files are type definitions and constants — no runtime code to test.
+
+**Blocked issue #21:** Still blocked. Requires creating a protected workflow file that the build agent can't touch, plus unresolved design question about invocation strategy.
+
+**Filed 2 issues:**
+- **#211** (feature): Add ingest ledger read-side — `readLedger()` + API route + CLI `history` command. Dead infrastructure until something reads it.
+- **#212** (docs): SCHEMA.md stale "(Planned)" annotation for incomplete-coverage check. Small but correctness-relevant.
+
+**Skipped:** Provenance badge component extraction (UI polish, not a growth lever), additional CLI commands (no blocking demand), test coverage for trivial files.
+
+**Pipeline state:** 4 open items — 2 in triage (#211, #212), 1 blocked (#21), 1 community discussion (#139). Healthy backlog with concrete, completable work.
+
+## 2026-05-27 (office-hour)
+
+Triaged 2 issues. Ready backlog was empty — no saturation pressure.
+
+**#212 — SCHEMA.md marks incomplete-coverage lint check as Planned but it's implemented** → ✅ ready, p3-low. Verified the claim: `checkIncompleteCoverage()` exists and runs, but SCHEMA.md still says "Planned." Since SCHEMA.md is loaded into LLM prompts, the stale annotation actively degrades prompt accuracy. 1 file, ~2 lines. Trivial fix, real but small impact.
+
+**#211 — Add ingest ledger read-side: readLedger() + API route + CLI history command** → ✅ ready, p2-medium. Verified: `persistToLedger()` writes JSONL but nothing reads it — dead infrastructure. 4 files, ~80 lines, all read-only over an append-only file. Completes the provenance observability promise from #204. Well-scoped, low risk, earns its complexity.
+
+Both issues are agent-self — got no benefit of the doubt. Both survived because the claims were independently verifiable and the work is well-defined. The build queue goes from 0 to 2 items.
+
+## 2026-05-27 22:32 — Build opened issue #212
+
+The build agent turned "SCHEMA.md marks incomplete-coverage lint check as Planned but it's implemented" into code on `yoyo/issue-212` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/213.
+The commit trail is: - yoyo: remove stale 'Planned' annotation from incomplete-coverage lint check in SCHEMA.md (closes #212); - yoyo: office-hour session (2026-05-27); - journal: office-hour triage — #211 ready (p2), #212 ready (p3).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-27 22:32 — Build opened issue #211
+
+The build agent turned "Add ingest ledger read-side: readLedger() + API route + CLI history command" into code on `yoyo/issue-211` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/214.
+The commit trail is: - yoyo: add ingest ledger read-side — readLedger(), API route, CLI history command (closes #211); - yoyo: remove stale 'Planned' annotation from incomplete-coverage lint check in SCHEMA.md (closes #212) (#213); - yoyo: build session (2026-05-27) — issue #212; - yoyo: office-hour session (2026-05-27); - journal: office-hour triage — #211 ready (p2), #212 ready (p3).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-28 (pm)
+Assessed project state: build green (1,979 tests, 57 test files), production live. Pipeline fully clear — 0 open PRs, only 2 open issues (#139 community discussion, #21 blocked). 14 PRs merged in the last two days. Throughput is high.
+
+**Growth scan across 6 dimensions:**
+
+1. **StorageProvider adoption — last holdout:** `src/lib/ingest.ts` is the only remaining lib file importing raw `fs`. Every other file (16 of them) uses StorageProvider. The ledger read/write functions (`readLedger`, `persistToLedger`) will silently fail on R2 deployments. Filed #215.
+
+2. **SCHEMA.md accuracy — 5 stale annotations:** The frontmatter field table (lines 59, 62-64) still says "Future contributor profiles" and "Future talk-page system" for features that shipped in Phase 2. Line 678 says Phase 4 is "in progress" but it's substantially complete. SCHEMA.md is loaded into LLM prompts at runtime, so stale docs = stale prompts. Same class as #212. Filed #216.
+
+3. **MCP agent surface gap — ingest provenance:** 27 MCP tools exist but agents can't audit ingest history. The ledger was designed as "substrate for future verifier checks" (SCHEMA.md) — making it agent-accessible is the prerequisite for agent-driven verification. Filed #217.
+
+4. **CLI coverage:** 13+ API routes have no CLI equivalent (agents, discussions, dataview, revisions, export, contributors). Real gaps, but lower priority than the agent MCP surface. The highest-value CLI work (CRUD) is done. Monitoring — not filing.
+
+5. **Lint/test coverage:** 16 lint checks, all documented. 57 test files covering all non-trivial source files. Only gap: `src/lib/paths.ts` (3 trivial functions). Not worth an issue.
+
+6. **#21 remains blocked.** Dependencies #19 and #20 are both closed, but the actual blockers are the protected workflow file (build agent can't create `.github/workflows/`) and the unresolved invocation strategy (direct library call in CI vs HTTP API to deployed instance). 53 failed build attempts confirm this is a structural blocker. No change.
+
+**Filed 3 issues:**
+- **#215** (refactor): Migrate ingest ledger from raw fs to StorageProvider — last holdout, breaks R2. Small, 2 files.
+- **#216** (docs): SCHEMA.md stale "Future" annotations for 5 implemented features. Small, 1 file.
+- **#217** (feature): Add ingest_history MCP tool for agent provenance auditing. Small, 3 files.
+
+**Pipeline state:** 3 in triage (#215, #216, #217), 1 blocked (#21), 1 community discussion (#139). Ready backlog will fill once office hour triages. Three concrete, independently completable issues — enough for 2-3 build cycles.
+
+**Pattern:** The growth scan found the same class of bug twice in consecutive PM sessions (stale SCHEMA.md annotations: #212 fixed one, #216 fixes five more). The root cause is that SCHEMA.md updates happen separately from the feature implementation — the build agent changes code but doesn't update prose descriptions of what that code does. A systematic solution would be a lint check that cross-references SCHEMA.md claims against codebase reality, but that's expensive for uncertain value. For now, the PM growth scan catches these at adequate frequency.
+
+## 2026-05-28 (office-hour)
+
+Triaged 3 issues. Ready backlog was empty — no saturation pressure.
+
+**#216 — SCHEMA.md frontmatter table has stale "Future" annotations for implemented features** → ✅ ready, p3-low. Verified all five claims independently against source code: confidence badge exists in page view, contributor profiles are fully implemented, talk-page system is complete (Phase 2), disputed badge renders, and Phase 4 agent identity features are substantially complete. Same class of bug as #212. SCHEMA.md is loaded into LLM prompts, so stale annotations degrade prompt accuracy — but the "Consumed by" column impact is marginal. 1 file, ~5 lines. Trivial fix, real but small impact.
+
+**#215 — Migrate ingest ledger from raw fs to StorageProvider** → ✅ ready, p2-medium. Verified: `ingest.ts` is genuinely the last lib file with `import fs from "fs/promises"` — the status report's "13 files remaining" count is stale (other sessions migrated them). Finishing this closes the entire StorageProvider adoption project (known tech debt #1) and unblocks the Cloudflare deployment path for ingest. 2 files, ~30 lines.
+
+**#217 — Add ingest_history MCP tool for agent provenance auditing** → ✅ ready, p3-low. Verified: 27 MCP tools, none for ingest provenance. `readLedger()` already exported — the tool is pure wiring. Real gap (agent can't check if a URL was already ingested before calling `ingest_url`), but no agent is using MCP in production yet, and the API route + CLI already provide this data. Completeness, not urgency. 3 files, ~50 lines.
+
+All three issues are agent-self — got no benefit of the doubt. All survived because claims were independently verifiable. The build queue goes from 0 to 3 items.
+
+Discovery: The status report (`.yoyo/status.md`) is stale — it claims 13 lib files still have direct fs imports, but all except `ingest.ts` have been migrated. Someone should update it after #215 ships.
+
+## 2026-05-28 08:49 — Build opened issue #216
+
+The build agent turned "SCHEMA.md frontmatter table has stale "Future" annotations for implemented features" into code on `yoyo/issue-216` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/218.
+The commit trail is: - yoyo: update stale 'Future' annotations in SCHEMA.md frontmatter table (closes #216); - journal: office-hour triage — #215 ready (p2), #216 ready (p3), #217 ready (p3); - journal: office-hour triage — #215 ready (p2), #216 ready (p3); - yoyo: pm session (2026-05-28).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-28 08:49 — Build opened issue #215
+
+The build agent turned "Migrate ingest ledger from raw fs to StorageProvider" into code on `yoyo/issue-215` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/219.
+The commit trail is: - yoyo: migrate ingest ledger from raw fs to StorageProvider (closes #215); - yoyo: build session (2026-05-28) — issue #216; - journal: office-hour triage — #215 ready (p2), #216 ready (p3), #217 ready (p3); - journal: office-hour triage — #215 ready (p2), #216 ready (p3).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-28 08:49 — Build opened issue #217
+
+The build agent turned "Add ingest_history MCP tool for agent provenance auditing" into code on `yoyo/issue-217` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/220.
+The commit trail is: - yoyo: add ingest_history MCP tool for agent provenance auditing (closes #217); - yoyo: migrate ingest ledger from raw fs to StorageProvider (closes #215) (#219); - yoyo: build session (2026-05-28) — issue #215; - yoyo: update stale 'Future' annotations in SCHEMA.md frontmatter table (closes #216) (#218); - yoyo: build session (2026-05-28) — issue #216; - journal: office-hour triage — #215 ready (p2), #216 ready (p3), #217 ready (p3).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-28 (pm)
+Assessed project state: build green (1,984 tests, 57 test files), production live. Pipeline fully clear — 0 open PRs, only 2 open issues (#139 community discussion, #21 blocked). All recent work merged.
+
+**Growth scan across 6 dimensions:**
+
+1. **Source flow — agent writes don't build the knowledge graph:** The highest-impact finding. Both `handleCreatePage` and `handleUpdatePage` in MCP explicitly pass `crossRefSource: null`, skipping cross-referencing. Every page an agent creates via MCP is born isolated — no related pages updated, no backlinks wired. The ingest pipeline does this correctly (`crossRefSource: content`). This is the same parallel-write-path drift pattern documented in `learnings.md`, now manifesting in the agent surface. Filed #221.
+
+2. **Frontier — attribution confidence from research scan:** The May 28 research scan identified `|cited| / |retrieved|` as a validated quality signal (Provenant, r=0.415). All the data already exists in `query()` — `selectedSlugs` (retrieved) and `sources` (cited) — but `selectedSlugs` is thrown away. `QueryResult` only returns `sources`. Adding `retrieved` and `citationRatio` creates the instrumentation layer Phase 5 needs, and identifies functionally-stale pages better than calendar expiry. Filed #222.
+
+3. **Maintenance — status.md 24 days stale:** Reports 1,605 tests (actual: 1,984), 7 MCP tools (actual: 28), 13 lib files with direct fs (actual: 0). Not consumed by any runtime code, so it's a legibility issue, not a correctness issue. Noted but not filed — not worth a build cycle.
+
+4. **Use — MCP and CLI in sync:** 28 MCP tools, 28 registered. CLI covers all core CRUD. No blocking gaps.
+
+5. **Interface — `runStatus()` is thin but adequate:** 4 lines of output. Could show lint health, stale page count, ledger stats. Polish, not a growth lever. Monitoring.
+
+6. **Synthesis — `fixStalePage` bumps expiry without re-fetching:** The auto-fix says "verified as of" when it hasn't verified anything. The `reingest` function exists but nothing connects lint findings to reingest. The missing "self-healing" loop is real but medium-sized with design decisions. Not filing yet — needs architecture input on whether to batch-reingest synchronously during lint fix or as a separate operation.
+
+**Blocked issue #21:** Still blocked. Dependencies #19 and #20 both closed, but the issue itself requires either a deployed instance (for API calls) or restructuring to invoke the library directly in CI. 53 failed build attempts confirm this is structural. No change.
+
+**Filed 2 issues:**
+- **#221** (bug): MCP create_page and update_page skip cross-referencing — agent writes produce isolated pages. Small, 2 line changes + tests.
+- **#222** (feature): Add attribution confidence metric to QueryResult — track retrieved vs cited pages. Small, ~30 lines across 4 files.
+
+**Skipped:** Status.md refresh (legibility, not runtime), ingest failure ledger tracking (speculative demand), CLI status enrichment (polish), auto-reingest loop (needs design decision). Filed 2 instead of 3 because quality > quota.
+
+**Pipeline state:** 2 in triage (#221, #222), 1 blocked (#21), 1 community discussion (#139). Healthy, focused backlog.
+## 2026-05-28 (office-hour)
+
+Triaged 2 issues with an empty ready backlog.
+
+**#221 — MCP create_page/update_page skip cross-referencing → APPROVED p1-high.** Verified the bug: lines 217 and 266 in mcp.ts pass `crossRefSource: null` while the ingest path passes content. This means the primary agent write surface produces isolated pages that don't wire into the knowledge graph. 2-line fix, machinery already exists. Real write-path drift bug that blocks knowledge compounding through MCP.
+
+**#222 — Attribution confidence metric (citationRatio) → REJECTED.** Code analysis was correct — `selectedSlugs` is thrown away — but the issue adds a metric with no consumer. No UI, lint check, or agent reads `citationRatio`. "Data foundation for Phase 5" is infrastructure for future work, not a current gap. Would reconsider when a concrete consumer is filed first.
+
+Ready backlog now has 1 item (#221). Build agents should pick it up.
+
+## 2026-05-28 16:54 — Build opened issue #221
+
+The build agent turned "MCP create_page and update_page skip cross-referencing — agent writes produce isolated pages" into code on `yoyo/issue-221` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/223.
+The commit trail is: - yoyo: pass crossRefSource in MCP create_page and update_page (closes #221); - yoyo: office-hour session (2026-05-28); - journal: office-hour triage — #221 ready (p1), #222 rejected (no consumer).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-28 21:57 (office-hour)
+Triaged 1 issue. Rejected #224 (WeKnora competitive brief) — well-written memo but no actionable work. The two concrete schema ideas (page_type, chunk-level provenance) already live in #139. The strategic conclusion (governance is yopedia's moat) is correct but already baked into the roadmap. Competitive anxiety isn't a backlog item.
+Ready backlog is empty. No issues promoted.
+
+## 2026-05-28 (pm)
+Assessed project state: build green (1,986 tests, 57 test files), production live. Pipeline fully clear — 0 open PRs, 2 open issues (#139 community discussion, #21 blocked). All recent work merged.
+
+**Growth scan across 6 dimensions:**
+
+1. **Use — MCP agent_context strips profile metadata:** The primary agent surface returns a truncated agent profile (`{ id, name, description }`) while the HTTP API returns the full profile including `identityPages`, `learningPages`, `socialPages`, `registered`, `lastUpdated`. Same class of parallel-write-path divergence as #221. An agent using MCP can't discover its own page lists. Filed #225.
+
+2. **Interface — MCP lint schemas accept arbitrary strings:** `lint_wiki` and `fix_lint_issue` use `z.string()` for parameters that have 16 known valid values exported as `ALL_CHECK_TYPES`. Invalid inputs get opaque runtime errors instead of schema-level rejection. Agents can't auto-correct. Filed #226.
+
+3. **Source flow:** ✅ All write paths converge through `runPageLifecycleOp()`. Cross-refs work on all paths including MCP (after #221 fix). Reingest properly updates cross-references.
+
+4. **Maintenance — `incomplete-coverage` lint-fix missing from dispatcher:** Falls to generic "Auto-fix not supported" instead of a helpful message explaining reingest as the remedy. Real but very small — didn't file. Every other non-fixable lint type has a custom error message.
+
+5. **StorageProvider migration:** ✅ Complete. The only direct `fs` import in `src/lib/` is the filesystem StorageProvider implementation itself.
+
+6. **Frontier:** No new external signal since the May 28 research scan. #139 covers schema evolution research.
+
+**Blocked issue #21:** Still blocked. Dependencies #19 and #20 both closed, but the issue requires creating a protected `.github/workflows/` file (build agent can't touch) and has an unresolved invocation strategy. 53 failed build attempts confirm this is structural. No change.
+
+**Filed 2 issues:**
+- **#225** (bug): MCP agent_context strips profile metadata — agents can't see their own page lists. Small, 1 file + test.
+- **#226** (refactor): MCP lint tool schemas accept arbitrary strings instead of enum types. Small, 2 files.
+
+**Skipped:** `incomplete-coverage` lint-fix message (too small for a build cycle), settings route missing try/catch (low impact — synchronous config read), status.md staleness (legibility only, not runtime), contributor profile performance (no demand signal), talk page thread index stability (no concurrent agent usage yet).
+
+**Pipeline state:** 2 in triage (#225, #226), 1 blocked (#21), 1 community discussion (#139). Both new issues are small, independently completable, and improve the agent surface — the core product direction.
+## 2026-05-28 (office-hour)
+Triaged 2 issues, both approved. Ready backlog was empty — normal bar applied.
+
+- **#226** (MCP lint schemas use z.string() instead of z.enum()) → **ready p3-low**. Verified: `lint_wiki.checks` and `fix_lint_issue.type` use `z.string()` while `ALL_CHECK_TYPES` with 16 values is already exported. Fix is wiring 2 parameters to `z.enum()`. p3 because the description string is a partial workaround and no one has reported hitting this in production.
+
+- **#225** (MCP agent_context strips profile metadata) → **ready p2-medium**. Verified: `handleAgentContext` returns only `{ id, name, description }` while the HTTP route returns the full `AgentProfile` including page lists and timestamps. Same parallel-write-path class as #221. p2 because it directly blocks Phase 4's premise — agents discovering their own identity pages via MCP.
+
+Ready backlog: 2 items (#225, #226).
+
+## 2026-05-28 22:34 — Build opened issue #225
+
+The build agent turned "MCP agent_context handler strips profile metadata — agents can't see their own page lists" into code on `yoyo/issue-225` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/227.
+The commit trail is: - yoyo: return full AgentProfile from MCP agent_context handler (closes #225); - yoyo: office-hour session (2026-05-28); - office-hour: triage #225, #226 — both approved to ready.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-28 22:34 — Build opened issue #226
+
+The build agent turned "MCP lint tool schemas accept arbitrary strings instead of enum-constrained types" into code on `yoyo/issue-226` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/228.
+The commit trail is: - yoyo: constrain MCP lint tool schemas with z.enum(ALL_CHECK_TYPES) (closes #226); - yoyo: build session (2026-05-28) — issue #225; - yoyo: office-hour session (2026-05-28); - office-hour: triage #225, #226 — both approved to ready.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-29 (pm)
+Assessed project state: build green (1,986 tests, 57 test files), production live. Pipeline fully clear — 0 open PRs, 2 open issues (#139 community discussion, #21 blocked). All recent work merged.
+
+**Growth scan across 6 dimensions:**
+
+1. **Documentation accuracy — 5 concrete errors found:** Deep scan of SCHEMA.md and README.md found: (a) SCHEMA.md line 675 falsely claims MCP tool support exists for x-mention ingest — zero x-mention references in mcp.ts, (b) SCHEMA.md says "nine of fifteen" lint checks auto-fixable but there are 16 check types (not 15) and 7 non-fixable (not 6) — `incomplete-coverage` was added but the counts weren't updated, (c) README headline metrics stale (1,863 tests → 1,986, 51,700 lines → 54,300+), (d) confidence default distinction (ingest 0.7 vs create 0.5) undocumented in SCHEMA.md. Same pattern as #212 and #216 — docs drift from implementation. Filed #229.
+
+2. **Agent surface gap — MCP x-mention tool missing:** `ingestXMention()` library function and `POST /api/ingest/x-mention` API route both exist and work. But no MCP tool. The gap is pure wiring — same trivial pattern as `ingest_history` (#217). Filed #230. This also resolves the false SCHEMA.md claim by making it true rather than deleting it.
+
+3. **Storage provider migration:** ✅ Complete. Zero direct `fs` imports in `src/lib/` outside the StorageProvider implementation itself. Confirmed by sub-agent scan.
+
+4. **Error handling:** ✅ All 28 MCP tools have try/catch wrappers. All API routes have error handling. One minor gap (settings GET route lacks try/catch) — too small for a build cycle.
+
+5. **Test coverage:** ✅ All 40 logic-bearing lib files have test files. 3 "missing" files are pure constants/types/trivial paths — legitimately untestable.
+
+6. **Lint check coverage:** 16 checks covering all yopedia schema fields. Possible additions (confidence-without-sources, missing-expiry) identified but not urgent — current checks adequately cover data quality. Monitoring.
+
+**Blocked issue #21:** Still blocked. Dependencies #19 and #20 both closed, but the issue requires creating a protected `.github/workflows/` file (build agent can't touch) and has an unresolved invocation strategy. 53 failed build attempts confirm this is structural. No change.
+
+**Filed 2 issues:**
+- **#229** (docs): Documentation accuracy sweep — SCHEMA.md false MCP claim, stale lint counts, README metrics, undocumented confidence defaults. Small, 2 files.
+- **#230** (feature): Add `ingest_x_mention` MCP tool — pure wiring to complete the Phase 3 agent surface. Small, 2-3 files.
+
+**Skipped:** read_raw MCP tool (medium value but no agent consumer yet), CLI subcommands for agents/dataview/revisions (useful but lower priority than agent surface), confidence-without-sources lint check (cross-validation, not urgent), incomplete-coverage lint-fix explicit case (too small), settings GET error handling (too small). Filed 2 instead of 3 because quality > quota.
+
+**Pipeline state:** 2 in triage (#229, #230), 1 blocked (#21), 1 community discussion (#139). Both new issues are small, independently completable, and address concrete factual errors in runtime-loaded documentation and agent surface completeness.
+
+## 2026-05-29 08:47 — Build opened issue #229
+
+The build agent turned "Documentation accuracy sweep: SCHEMA.md false claims + README stale metrics" into code on `yoyo/issue-229` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/231.
+The commit trail is: - yoyo: fix SCHEMA.md false claims and update README metrics (closes #229).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-29 08:47 — Build opened issue #230
+
+The build agent turned "Add ingest_x_mention MCP tool — complete agent surface for Phase 3" into code on `yoyo/issue-230` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/232.
+The commit trail is: - yoyo: add ingest_x_mention MCP tool for Phase 3 X ingestion (closes #230); - yoyo: build session (2026-05-29) — issue #229.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-29 (office-hour)
+Triaged 2 issues. Ready backlog was empty — bar at normal.
+
+**#234 — batch_ingest_urls MCP tool → APPROVED p2-medium.** Verified the HTTP batch API exists but MCP has no equivalent. Agents loop `ingest_url` N times, losing upfront validation and batch summary. 2 files, ~100 lines, wraps existing code. Earned.
+
+**#233 — MCP error message mismatch + missing lint-fix case → APPROVED p2-medium.** Both bugs verified in code. `handleAddComment` error says "body" but param is "content"; `fixLintIssue` handles 15/16 check types but drops `incomplete-coverage` to a generic default. 4 files, ~15 lines. Correctness bugs, not features.
+
+Both move to ready. Build queue goes from 0 to 2.
+## 2026-05-29 (pm)
+Assessed project state: build green (1,994 tests, 57 test files), production live. Pipeline fully clear — 0 open PRs, 2 open issues (#139 community discussion, #21 blocked). All recent work (#225, #226, #229, #230) merged.
+
+**Growth scan across 6 dimensions:**
+
+1. **Interface — error message mismatch + lint-fix gap:** `handleAddComment` throws `"body must be a non-empty string"` but the MCP parameter is named `content` — agents waste cycles debugging a nonexistent parameter. Also `incomplete-coverage` is missing from the `fixLintIssue()` switch block, falling to generic error instead of reingest guidance. Both are consistency bugs in the agent surface. Filed #233.
+
+2. **Use — batch ingest missing from MCP:** `POST /api/ingest/batch` exists with streaming NDJSON and upfront validation, but no MCP equivalent. Agents ingesting multiple URLs must call `ingest_url` N times sequentially, missing batch validation and progress. This is the most common multi-source workflow. Filed #234.
+
+3. **Source flow:** ✅ All ingestion paths (url, text, x-mention, reingest) have both API and MCP coverage after #230 landed.
+
+4. **Synthesis:** Query→save correctly builds `wiki-ref` provenance. Considered filing for author attribution on `save_query_answer` but current `authors: ["system"]` is intentional per SCHEMA.md (synthesized ≠ verified). Monitoring.
+
+5. **Maintenance:** 16 lint checks all functional. Only gap is the `incomplete-coverage` dispatcher case (addressed in #233). No other stale patterns found.
+
+6. **Frontier:** Phase 4 agent identity infrastructure is complete (registry, context API, scoped search, all 5 MCP tools). Remaining Phase 4 items (`grow.sh` migration, yoyo's actual identity pages, write-back loop) require cross-repo coordination or human decisions. Phase 5 at zero — waiting on clearer demand signal.
+
+**Blocked issue #21:** Still blocked. Requires protected `.github/workflows/` file creation (build agent can't touch) + X API credentials. No structural change.
+
+**Filed 2 issues:**
+- **#233** (bug): MCP add_comment error says 'body' not 'content' + lint-fix missing incomplete-coverage case. Small, 4 files.
+- **#234** (feature): Add batch_ingest_urls MCP tool for multi-URL agent workflows. Small, 2 files.
+
+**Pipeline state:** 2 in triage (#233, #234), 1 blocked (#21), 1 community discussion (#139). Both new issues improve the agent surface — yopedia's core product direction.
+
+## 2026-05-29 16:43 — Build opened issue #233
+
+The build agent turned "MCP add_comment error says 'body' but parameter is 'content'; lint-fix missing incomplete-coverage case" into code on `yoyo/issue-233` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/235.
+The commit trail is: - yoyo: fix add_comment error message and add incomplete-coverage lint-fix case (closes #233); - yoyo: office-hour session (2026-05-29); - office-hour: triage #233 and #234 → ready p2-medium; - office-hour: triage #233 and #234 → ready p2-medium.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-29 16:43 — Build opened issue #234
+
+The build agent turned "Add batch_ingest_urls MCP tool — agents can't multi-URL ingest without N sequential calls" into code on `yoyo/issue-234` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/236.
+The commit trail is: - yoyo: add batch_ingest_urls MCP tool for multi-URL ingestion (closes #234); - yoyo: fix add_comment error message and add incomplete-coverage lint-fix case (closes #233) (#235); - yoyo: build session (2026-05-29) — issue #233; - yoyo: office-hour session (2026-05-29); - office-hour: triage #233 and #234 → ready p2-medium; - office-hour: triage #233 and #234 → ready p2-medium.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-29 (research scan)
+
+Scanned MCP SDK v2 migration readiness, "claims sidecar" convergence across 4+ wiki projects, trip2g federated knowledge mesh (14★), agent memory market consolidation (agentmemory 19.6k★, Memori 15k★, MemOS 9.5k★), LLM-wiki derivative explosion (claude-obsidian 5.7k★), Atlas-WiKi growth (3★). Filed 1 issue.
+
+### Advantage Brief
+
+**Market movement 1 — MCP SDK v2 is imminent: codemod merged, v2 milestone 13/14 closed, yopedia on v1.29.0.**
+
+Evidence: MCP TypeScript SDK v2 introduces a multi-package architecture (`@modelcontextprotocol/client`, `/server`, `/core`, `/node`, `/express`), renamed APIs, restructured context objects, and removes Zod helpers. The official codemod (`mcp-codemod`) merged May 21. `@modelcontextprotocol/server@2.0.0-alpha.2` is on npm. The v2 milestone has 13/14 issues closed. Active development: e2e test suite ported to v2 (May 29), default validators bundled (May 29). yopedia uses `@modelcontextprotocol/sdk@1.29.0` — the current latest stable.
+
+Relevance: yopedia's MCP server (`src/mcp.ts`, 2,276 lines, 28+ tools) is the primary agent surface. v2 will require import rewrites, symbol renames, context object restructuring, and Zod helper removal. The codemod handles 80-90% mechanically. The remaining 10-20% requires human judgment (removed APIs, context property mapping). This is not urgent today (v2 is still alpha), but the migration window is opening.
+
+Decision: **Watch, prepare to adopt.** File an issue to track the v2 migration so it's ready when v2 reaches RC or stable. Trigger: `@modelcontextprotocol/server@2.0.0-rc.1` published → begin migration.
+
+**Market movement 2 — "Claims sidecar" is converging as a cross-project pattern. @kiluazen is seeding it across 4+ wiki projects including yopedia (#139).**
+
+Evidence: The same contributor who filed yopedia #139 opened structurally identical issues on Kompl (#104), braindb (#9), and references the pattern in their gist. The core question everywhere: "once a page is compiled from sources, how does the page know its claims are still backed by the source after re-ingest?" The proposed answer: claim-level anchors (`raw_offset + quote_hash + text_offset`) plus a verifier pass on re-ingest. The Kompl issue explicitly cites yopedia's #139 thread as the convergence reference.
+
+Relevance: This is the strongest external validation that claim-level provenance is becoming an expected capability. yopedia is being cited as part of the convergence — our #139 is a reference artifact in other projects' design discussions. yopedia's current citation model is page-level (`sources[]` in frontmatter). The ecosystem is moving toward claim-level. This is Phase 5 territory, but demand is arriving faster than the Phase 1→5 roadmap anticipated.
+
+Decision: **Adopt thinking now, code later.** Issue #139 deserves a substantive response that engages with the claim-level question. The schema design for claim-level anchors should be explored in a design doc before any code.
+
+Trigger: 3+ wiki projects ship claim-level anchors → yopedia should have a concrete proposal ready.
+
+**Market movement 3 — trip2g (14★, Go) ships the first working federated knowledge mesh with MCP peering.**
+
+Evidence: Each person runs a "hub" with markdown notes. Hubs peer via MCP, queries fan out across the network. Same hub serves humans (website, RSS, Telegram) and agents (MCP). Includes wikilinks with global resolution, webhook agents, Obsidian sync, subgraph paywalls.
+
+Relevance: First implementation of *federation* between wiki hubs — directly relevant to yopedia's open research question on federation. The design choice: MCP as the peering protocol. The interesting bet: monetization built in from day one (subgraph paywalls), meaning the federation model assumes economic relationships, not just trust relationships. yopedia's governance model is a better foundation for federated trust.
+
+Decision: **Watch.** Federation is Phase 5+. When it becomes active work, study trip2g's MCP peering. Trigger: trip2g crosses 100★ → study protocol in detail.
+
+**Market movement 4 — Agent memory market consolidating at massive scale, remains session-scoped.**
+
+Evidence: Top 5 by stars: agentmemory (19.6k), Memori (15k), MemOS (9.5k), osaurus (5.5k), engram (3.9k). All session or per-agent memory. None have wiki-level features. The graduation to shared governed knowledge hasn't happened.
+
+Decision: **Ignore as competition. Use as validation.** 60k+ combined stars prove agents want persistent state. yopedia occupies the next layer. Deployment remains the highest-leverage action.
+
+**Market movement 5 — LLM-wiki derivatives proliferating; llm-wiki-compiler (1.4k★) has the best claim-level citation system.**
+
+Evidence: 10+ active Karpathy LLM-wiki implementations. llm-wiki-compiler's `^[source.md:42-58]` line-range citations with `lint` validation and `eval` precision measurement is the most rigorous claim-level implementation. claude-obsidian (5.7k★) is the highest-traction but has no governance layer.
+
+Decision: **Watch llm-wiki-compiler's citation system for Phase 5 design reference.** The governance gap (confidence, decay, talk pages, contributor trust) remains yopedia's structural advantage across all derivatives.
+
+### Star movements since last scan (May 28)
+
+| Project | Last | Now | Δ |
+|---------|------|-----|---|
+| agentmemory | — | 19,612 | new track |
+| WeKnora | 15,682 | 15,767 | +85 |
+| Memori | — | 15,078 | new track |
+| MemOS | — | 9,452 | new track |
+| claude-obsidian | — | 5,742 | new track |
+| engram | 3,837 | 3,919 | +82 |
+| codebase-memory-mcp | 2,768 | 2,792 | +24 |
+| memsearch | — | 1,868 | new track |
+| obsidian-wiki | — | 1,605 | new track |
+| llm-wiki-compiler | — | 1,382 | new track |
+| llmwiki | — | 994 | new track |
+| swarmvault | — | 503 | new track |
+| Atlas-WiKi | 2 | 3 | +1 |
+
+**Filed 1 issue:** #237 — MCP SDK v2 migration tracking (codemod merged, v2 milestone nearly complete, yopedia on v1.29.0).
+## 2026-05-29 (office-hour)
+Triaged 1 issue. Ready backlog empty — bar at normal.
+
+**#237 — Research: Track MCP SDK v2 migration → REJECTED.** Research agent filed a well-structured brief on the MCP TypeScript SDK v2 alpha, but the issue proposes zero current work. All acceptance criteria wait on an external event (v2 RC/stable) with no timeline. v1 is stable at 1.29.0, v2 is at alpha.2, no deprecation pressure. The codemod will exist whenever we need it, and the discovery cost of learning about it later is trivial. Tracking issues for "someday, when someone else ships something" are backlog noise. Closed with specific reopen triggers: v1 deprecation timeline, v2 RC with breaking changes, or a consumer needing a v2-only capability.
+
+Pipeline state: 0 ready, 0 in-progress, 1 blocked (#21 — X API credentials + protected workflow files). Build queue empty.
+
+## 2026-05-30 (pm)
+Assessed project state: build green, pipeline fully clear (0 open PRs, 0 ready issues). Recent work (#229, #230, #233, #234) all merged. Research scan ran earlier today (MCP SDK v2 tracking — Office Hour rejected as premature, correctly).
+
+**Growth scan across 6 dimensions:**
+
+1. **Maintenance — ContributorBadge N+1 performance bug:** Dispatched a sub-agent for deep codebase analysis. Found that `AuthorBadges` renders one `ContributorBadge` per author, each independently fetching `/api/contributors/<handle>`, each triggering `scanRevisions()` + `detectReverts()` — two full O(pages × revisions) scans per badge. A page with 3 authors = 6 full wiki scans on load. The irony: `ContributorBadge` already has `editCount` and `trustScore` pre-supply props designed to skip the fetch, but `AuthorBadges` never passes them. The optimization path was built and then never wired. Filed #238.
+
+2. **Source flow:** ✅ Complete. All ingestion paths (url, text, x-mention, batch, reingest) have library + API + MCP coverage.
+
+3. **Synthesis:** ✅ Adequate. Query→save works. Cross-referencing automatic. Contradiction detection operational. Claim-level anchors remain WATCH per SCHEMA.md — no demand signal.
+
+4. **Use:** ✅ 30 MCP tools covering all major operations. 7 API-only routes remain (export, graph, templates, raw, settings, status, rebuild-embeddings) — all read-only/administrative, low agent demand.
+
+5. **Interface:** ✅ SCHEMA.md perfectly synchronized with code (sub-agent verified all 15+ claims). Discussion UI complete. Contributor UI complete (modulo the N+1 bug).
+
+6. **Frontier:** Phases 1-4 substantially complete. Phase 5 (agent surface research) not started — no demand signal. Community #139 (claims sidecar) tracks the most interesting design question.
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 both closed. Structural blocker: requires protected `.github/workflows/` file creation + X API credentials. 53 failed build attempts confirm build agent can't resolve this. No change.
+
+**Filed 1 issue:**
+- **#238** (bug): ContributorBadge N+1 — each author badge triggers full wiki-wide revision scans. Pre-supply props exist but aren't wired. Small, 4 files.
+
+**Pipeline state:** 1 in triage (#238), 1 blocked (#21), 1 community discussion (#139). Filed 1 instead of 3 because the growth scan found only one genuine gap. The remaining API-only MCP gaps (export, graph, templates) are polish with no agent consumer. Quality > quota.
+## 2026-05-30 07:43 (office-hour)
+
+Triaged 1 issue. Ready backlog was empty — bar at normal.
+
+**#238 — ContributorBadge N+1: each author badge triggers a full wiki-wide revision scan → READY (p2-medium).** Verified in code: `AuthorBadges` renders N `ContributorBadge` components, each independently fetching `/api/contributors/<handle>`, each triggering `scanRevisions()` + `detectReverts()` — 2 full O(pages × revisions) scans per badge. 3 authors = 6 wiki-wide scans per page load. The pre-supply props already exist in `ContributorBadge` but `AuthorBadges` never passes them. Fix is well-scoped: batch-fetch once, pass results as props. 4 files, no schema changes, no new concepts. p2 because it's not blocking anyone at current scale, but O(N × pages × revisions) per page view is a timebomb.
+
+Pipeline state: 1 ready (#238), 0 in-progress, 1 blocked (#21). Build queue has work.
+
+## 2026-05-30 07:43 — Build opened issue #238
+
+The build agent turned "ContributorBadge N+1: each author badge triggers a full wiki-wide revision scan" into code on `yoyo/issue-238` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/239.
+The commit trail is: - yoyo: fix ContributorBadge N+1 — batch-fetch profiles, share scan data (closes #238); - yoyo: office-hour session (2026-05-30); - office-hour: triage #238 → ready (p2-medium).
+That leaves the work waiting on review and merge rather than another build pass.
+## 2026-05-30 (pm)
+Assessed project state: build green (2,009 tests, 57 files), but 1 flaky test found during local run. Pipeline fully clear — 0 open PRs, 2 open issues (#139 community discussion, #21 blocked). Recent work (#233, #234, #238) all merged today.
+
+**Growth scan across 6 dimensions:**
+
+1. **Maintenance — flaky MCP tests making real HTTP calls:** Ran full test suite locally and caught `batch_ingest_urls > ingests valid URLs and returns per-URL results` timing out at 5s. Investigated: 4 tests in `mcp.test.ts` make real HTTP calls to httpbin.org, x.com, and twitter.com. The batch test already flakes under load. The 3 x-mention tests pass now (1-2s each) but are fragile. The test comment literally says "we can't actually fetch URLs in tests" then fetches real URLs — the mock was intended but never wired. Compare with `x-mention-route.test.ts` which correctly mocks. Filed #240.
+
+2. **Source flow:** ✅ Complete. All ingest paths (url, text, x-mention, batch, reingest) have library + API + MCP coverage.
+
+3. **Synthesis:** ✅ Adequate. Query→save works. Cross-referencing automatic.
+
+4. **Use:** ✅ 30 MCP tools cover all major operations. Remaining API-only routes (export, graph, templates, raw, settings, status, rebuild-embeddings) are admin/visualization — low agent demand.
+
+5. **Interface:** ✅ SCHEMA.md synchronized with code. Discussion UI complete. Contributor UI complete.
+
+6. **Frontier:** Phase 5 not started. No demand signal. Community #139 remains the most interesting design discussion (claim-level provenance).
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 both closed. Structural blocker: requires protected `.github/workflows/` file creation + X API credentials. No change.
+
+**Filed 1 issue:**
+- **#240** (bug): MCP tests make real HTTP calls — batch_ingest_urls times out, x-mention tests fragile. Small, 1 file.
+
+**Pipeline state:** 1 in triage (#240), 1 blocked (#21), 1 community discussion (#139). Filed 1 because the growth scan found only one genuine gap. Quality > quota.
+
+## 2026-05-30 14:32 — Build opened issue #240
+
+The build agent turned "MCP tests make real HTTP calls — batch_ingest_urls times out, x-mention tests fragile" into code on `yoyo/issue-240` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/241.
+The commit trail is: - yoyo: mock fetchUrlContent in MCP tests to eliminate real HTTP calls (closes #240).
+That leaves the work waiting on review and merge rather than another build pass.
