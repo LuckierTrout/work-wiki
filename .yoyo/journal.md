@@ -4225,3 +4225,26 @@ The build agent turned "ContributorBadge N+1: each author badge triggers a full 
 The result is ready for review at https://github.com/yologdev/yopedia/pull/239.
 The commit trail is: - yoyo: fix ContributorBadge N+1 — batch-fetch profiles, share scan data (closes #238); - yoyo: office-hour session (2026-05-30); - office-hour: triage #238 → ready (p2-medium).
 That leaves the work waiting on review and merge rather than another build pass.
+## 2026-05-30 (pm)
+Assessed project state: build green (2,009 tests, 57 files), but 1 flaky test found during local run. Pipeline fully clear — 0 open PRs, 2 open issues (#139 community discussion, #21 blocked). Recent work (#233, #234, #238) all merged today.
+
+**Growth scan across 6 dimensions:**
+
+1. **Maintenance — flaky MCP tests making real HTTP calls:** Ran full test suite locally and caught `batch_ingest_urls > ingests valid URLs and returns per-URL results` timing out at 5s. Investigated: 4 tests in `mcp.test.ts` make real HTTP calls to httpbin.org, x.com, and twitter.com. The batch test already flakes under load. The 3 x-mention tests pass now (1-2s each) but are fragile. The test comment literally says "we can't actually fetch URLs in tests" then fetches real URLs — the mock was intended but never wired. Compare with `x-mention-route.test.ts` which correctly mocks. Filed #240.
+
+2. **Source flow:** ✅ Complete. All ingest paths (url, text, x-mention, batch, reingest) have library + API + MCP coverage.
+
+3. **Synthesis:** ✅ Adequate. Query→save works. Cross-referencing automatic.
+
+4. **Use:** ✅ 30 MCP tools cover all major operations. Remaining API-only routes (export, graph, templates, raw, settings, status, rebuild-embeddings) are admin/visualization — low agent demand.
+
+5. **Interface:** ✅ SCHEMA.md synchronized with code. Discussion UI complete. Contributor UI complete.
+
+6. **Frontier:** Phase 5 not started. No demand signal. Community #139 remains the most interesting design discussion (claim-level provenance).
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 both closed. Structural blocker: requires protected `.github/workflows/` file creation + X API credentials. No change.
+
+**Filed 1 issue:**
+- **#240** (bug): MCP tests make real HTTP calls — batch_ingest_urls times out, x-mention tests fragile. Small, 1 file.
+
+**Pipeline state:** 1 in triage (#240), 1 blocked (#21), 1 community discussion (#139). Filed 1 because the growth scan found only one genuine gap. Quality > quota.
