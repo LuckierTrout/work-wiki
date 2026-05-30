@@ -2,6 +2,108 @@
 
 ## 2026-05-30 (research scan)
 
+Scanned AI-CIP provenance envelope spec (2★, structured claim provenance for multi-agent systems), obsidian-second-brain (1,455★, cross-CLI Karpathy evolution with dual-track research), mnem (129★, Rust-based "Git for AI Knowledge" with benchmarked recall), ctx (372★, 102K-node meta-graph of agent skills/MCPs), engram v1.16.0-1.16.1 (3,952★, HTTP auth + cross-project search), O2B v0.20-0.22 (15★, vault portability + domain-classified contradictions), ecosystem star movements. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — AI-CIP proposes a provenance envelope schema for multi-agent reasoning: typed, immutable, append-only claim containers with confidence scores, review states, and hash-verified integrity.**
+
+Evidence: `creativeprocessca-dev/ai-cip` (2★, published May 29). Defines five envelope types: `contribution` (claims with per-claim confidence 0.0–1.0, supporting references, external citations), `decision` (verdict on a prior envelope: verified/rejected/flagged), `flag` (soft attention signal with severity), `session-init`, `session-summary`. Envelopes are immutable and append-only — corrections are new envelopes, not edits. Review states (`pending → verified → rejected → flagged`) are driven by decision envelopes, not by mutating the original. SHA-256 hash per envelope for integrity verification without crypto keys. Three adoption tiers: Tier 1 (structured envelopes + hash, single framework), Tier 2 (ed25519 signing, regulated industries), Tier 3 (per-agent signing, cross-org).
+
+Relevance: **This is the most precise external articulation of the problem yopedia's governance layer is solving.** yopedia's schema has `confidence`, `disputed`, `supersedes`, `sources[]`, and talk pages for dispute resolution — but these are page-level properties. AI-CIP proposes claim-level provenance: each individual statement within a page carries its own confidence, its own citation chain, and its own review state. This is exactly yopedia's Phase 5 open research question: "What is the right form of a knowledge artifact for an agent?"
+
+The specific design choices worth noting: (1) claims as the atomic unit of verification, not pages, (2) review state transitions as new records rather than mutations (append-only audit trail), (3) the "attestation gap" rule — high confidence with empty provenance references is a flag, not a feature. yopedia's `checkUncitedClaims` lint check does something similar at page level, but AI-CIP's per-claim granularity is structurally cleaner for agent consumption.
+
+Decision: **Watch as Phase 5 research input.** The spec is at 2★ and v0.1 — too early to adopt. But the envelope schema's design choices (claim-level confidence, append-only review state, attestation gap detection) should inform yopedia's structured-claims research when Phase 5 begins. The three-tier adoption model (hash → signing → cross-org identity) is also a useful template for yopedia's trust model progression.
+
+Trigger: AI-CIP gets adopted by any agent framework (LangGraph, CrewAI, AutoGen) or crosses 50★ → evaluate whether yopedia's talk page records should adopt envelope-compatible structure.
+
+**Market movement 2 — obsidian-second-brain (1,455★, 165 forks) emerges as the second major Karpathy evolution, differentiated from claude-obsidian by cross-CLI support (4 CLIs), dual-track research, and a NotebookLM integration.**
+
+Evidence: Created March 24. v0.8.0 (May 15) rewrites `/notebooklm` to use Gemini File Search API — one HTTP call, no browser, source-grounded synthesis over the user's own vault. 34 commands across Claude Code, Codex CLI, Gemini CLI, and OpenCode. Two research tracks: open-web (`/research-deep` via Perplexity + Grok) and source-grounded (`/notebooklm` via Gemini). 4 scheduled agents, 4 role presets. AI-first validator at write time. 1,455★ in ~10 weeks.
+
+Relevance: obsidian-second-brain validates the "same wiki, multiple agents" pattern from the opposite direction. Where yopedia designs multi-writer governance (different writers, same wiki), obsidian-second-brain designs multi-runtime access (same user, different CLIs). The dual-track research pattern (external signal vs. vault-grounded synthesis, "contradictions across the two are where the insight is") is architecturally interesting — it's a user-facing version of yopedia's lint contradiction detection, but positioned as a feature rather than a maintenance check.
+
+Decision: **Ignore as competitor** (Obsidian-native, single-user, no governance). **Watch as validation** — 1,455★ in 10 weeks confirms the Karpathy pattern has durable demand beyond the initial spike. The dual-track research pattern is a useful UX idea for Phase 3+ (external research vs. wiki-internal synthesis).
+
+Trigger: obsidian-second-brain adds multi-user support or web interface → reassess.
+
+**Market movement 3 — mnem (129★, Rust, Apache 2.0) positions as "Git for AI Agent Knowledge" with the strongest benchmarked recall claims in the agent memory space.**
+
+Evidence: Created April 26. v0.1.7 (May 21). Rust + WASM. No LLM at ingest — deterministic parsing, chunking, and indexing. Knowledge stored in `.mnem/` directory alongside code (committable, branchable, diffable, mergeable). Hybrid retrieval fusing vector + keyword + graph traversal in single pass with token budget reporting. Benchmarked head-to-head against mem0 and MemPalace on 6 public datasets, claims best-or-tied on 5. Runs as CLI, HTTP server, MCP server, Python library, or in-browser via WASM. Forgetting is first-class: revoke a fact and all retrieval paths filter it out, audit trail preserved. Multi-runtime integration via `mnem integrate` (Claude Code, Cursor, Gemini CLI).
+
+Relevance: mnem's "Git for knowledge" framing is the strongest version of the versioning-as-governance argument. Its key insight: knowledge should be versionable with the same primitives as code (branch, diff, merge, rollback). This connects to issue #139's question about citation anchoring and staleness decay — mnem's answer is that knowledge changes are tracked the same way code changes are (commits), which makes staleness a function of commit history rather than calendar decay.
+
+For yopedia, the interesting design choice is deterministic ingest (no LLM at ingest time = same input always produces same output = reproducible knowledge graph). yopedia's ingest is LLM-dependent, which means the same URL ingested twice may produce different pages. This is a trade-off, not a bug — LLM ingest produces richer synthesis but sacrifices reproducibility.
+
+Decision: **Watch.** mnem is single-user, local-first, coding-focused — different niche from yopedia's shared wiki. The benchmarked recall claims are the most rigorous in the space and worth studying when yopedia builds its agent surface (Phase 5). The deterministic-ingest pattern is worth noting but not adopting — yopedia's value is in LLM synthesis, not deterministic parsing.
+
+Trigger: mnem adds multi-writer support or shared knowledge → direct overlap. mnem crosses 500★ → its recall benchmarks have validated at scale.
+
+**Market movement 4 — engram (3,952★, +13) ships v1.16.0-1.16.1: HTTP auth for destructive endpoints, cross-project personal search, and team usage documentation.**
+
+Evidence: v1.16.0 (May 28): opt-in HTTP auth (`ENGRAM_HTTP_TOKEN`) with constant-time token comparison for destructive endpoints, `mem_search` with `all_projects: true` for cross-project search, CLI delete sub-commands, TUI clipboard shortcut, path traversal sanitization in Obsidian exporter. v1.16.1 (May 29): active session resolution fix, cloud sync dedup, project migration hardening, Windows background sync improvements. Team usage guide contributed by community member.
+
+Relevance: engram's cross-project search (`all_projects: true`) is structurally what yopedia's scoped search API does (`GET /api/search?scope=agent:yoyo` vs. `GET /api/search`). engram arrived at the same pattern from user demand — agents that work across multiple projects need to search everything, not just the current scope. The HTTP auth pattern (opt-in, constant-time, per-endpoint) is a simpler alternative to Arkon's OAuth 2.1 — useful reference when yopedia deploys and needs API auth.
+
+Decision: **Watch.** engram's steady growth (3,952★) and community contributions (team usage guide) confirm the agent memory market is maturing. The cross-project search and HTTP auth patterns validate yopedia's existing architecture choices. No action needed.
+
+Trigger: engram ships wiki-style knowledge pages (not just memory observations) → direct feature overlap with yopedia.
+
+**Ecosystem star movements (since May 30)**
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 57,112 | 57,129 | +17 | Slowing |
+| WeKnora (Tencent) | 15,782 | 15,793 | +11 | Steady |
+| nashsu/llm_wiki | 9,844 | 9,873 | +29 | Steady |
+| claude-obsidian | 5,756 | 5,773 | +17 | Steady |
+| engram | 3,939 | 3,952 | +13 | v1.16.0-1.16.1 |
+| SamurAIGPT/llm-wiki-agent | 2,774 | 2,775 | +1 | Stalled since May 6 |
+| sdyckjq-lab/llm-wiki-skill | 1,717→1,724 | 1,724 | +7 | Steady |
+| obsidian-wiki (Ar9av) | 1,608 | 1,611 | +3 | Steady |
+| obsidian-second-brain | — | 1,455 | new track | Cross-CLI Karpathy, 165 forks |
+| llm-wiki-compiler | 1,387 | 1,388 | +1 | Stalled since May 27 |
+| karpathy-llm-wiki | 951 | 952 | +1 | Stalled since Apr 13 |
+| nuwax | — | 777 | new track | Enterprise agent OS, 29 May push |
+| llm-wiki-skill (lewislulu) | 1,721→564 | 564 | — | Corrected tracking (was misidentified) |
+| swarmvault | 503 | 503 | 0 | Stalled since May 20 |
+| nvk/llm-wiki | — | 492 | new track | Parallel multi-agent research |
+| ctx | — | 372 | new track | 102K-node skill/MCP meta-graph |
+| Beever Atlas | 361 | 361 | 0 | v0.2.0, active development |
+| mnemon | — | 318 | new track | LLM-supervised graph memory |
+| Pratiyush/llm-wiki | 276 | 279 | +3 | Multi-runtime wiki |
+| AgentClaw | — | 269 | new track | One-sentence → reusable capabilities |
+| AgentRecall-MCP | — | 258 | new track | Correction-driven memory, 10 MCP tools |
+| mnem | — | 129 | new track | Git for AI knowledge, Rust, benchmarks |
+| OpenLore | — | 141 | new track | Architectural memory, 45 MCP tools |
+| O2B | 15 | 15 | 0 | v0.20-0.22, vault portability |
+| Demarkus | 13 | 13 | 0 | QUIC knowledge protocol |
+
+### Layer 3 insight
+
+The most important structural shift this scan reveals is the **convergence on claim-level provenance as the next governance frontier**.
+
+Three independent signals point the same direction:
+
+1. **AI-CIP** (2★, but architecturally precise) proposes claim-level provenance envelopes with per-claim confidence, append-only review states, and attestation gap detection
+2. **Issue #139** (community contributor) asks specifically about citation anchoring, staleness decay mechanics, and whether talk pages are structured claim-reference objects or free-form markdown
+3. **mnem** (129★) makes knowledge changes versionable at the commit level — treating knowledge mutations like code mutations with full audit trail
+
+These three sources — a protocol spec, a community issue, and a competing product — all converge on the same insight: **page-level confidence and citation are necessary but insufficient; the atomic unit of trust should be the claim, not the page.**
+
+yopedia currently tracks trust at page level: `confidence: 0.8` means "this page overall is well-supported." The emerging pattern is claim-level: "this specific statement has confidence 0.95 with these citations, but the statement two paragraphs later has confidence 0.3 with no citations." The `checkUncitedClaims` lint check already detects uncited individual statements — but the infrastructure for claim-level confidence, claim-level citation anchoring, and claim-level review state doesn't exist yet.
+
+This is Phase 5 territory (agent surface research: "experiment with structured claims, fact triples"). The scan confirms that structured claims are not a theoretical exercise — the market is producing them independently. When Phase 5 begins, the AI-CIP envelope schema, mnem's versioned knowledge model, and issue #139's citation anchoring question should all inform the design.
+
+Not filing an issue because this is Phase 5 and the current phases (Schema, Talk Pages, X Ingestion) are the right sequence. But the evidence is strong enough that when Phase 5 planning begins, "claim-level provenance" should be the starting point, not one option among many.
+
+### Issues filed
+
+0 issues. AI-CIP provenance (most transferable finding) is Phase 5 research input. obsidian-second-brain is a different niche (single-user, Obsidian-native). mnem validates versioned knowledge but is single-user, local-first. engram's patterns validate existing yopedia architecture. All findings update the strategic model for Phase 5 planning.
+
+## 2026-05-30 (research scan)
+
 Scanned llm-wiki-compiler (1,387★, eval harness with CI-gated quality scores), nashsu/llm_wiki (9,844★, desktop app at scale), Beever Atlas (361★, chat-to-wiki pipeline), O2B (15★, v0.22, 4 releases today — vault portability + cross-agent query), Arkon (912★, enterprise wiki + RBAC + MCP), Demarkus (13★, QUIC-based knowledge protocol), ecosystem star movements. Filed 0 issues.
 
 ### Advantage Brief
