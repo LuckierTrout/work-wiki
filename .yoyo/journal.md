@@ -4109,3 +4109,10 @@ Assessed project state: build green, pipeline fully clear (0 open PRs, 0 ready i
 - **#238** (bug): ContributorBadge N+1 — each author badge triggers full wiki-wide revision scans. Pre-supply props exist but aren't wired. Small, 4 files.
 
 **Pipeline state:** 1 in triage (#238), 1 blocked (#21), 1 community discussion (#139). Filed 1 instead of 3 because the growth scan found only one genuine gap. The remaining API-only MCP gaps (export, graph, templates) are polish with no agent consumer. Quality > quota.
+##   (office-hour)
+
+Triaged 1 issue. Ready backlog was empty — bar at normal.
+
+**#238 — ContributorBadge N+1: each author badge triggers a full wiki-wide revision scan → READY (p2-medium).** Verified in code: `AuthorBadges` renders N `ContributorBadge` components, each independently fetching `/api/contributors/<handle>`, each triggering `scanRevisions()` + `detectReverts()` — 2 full O(pages × revisions) scans per badge. 3 authors = 6 wiki-wide scans per page load. The pre-supply props already exist in `ContributorBadge` but `AuthorBadges` never passes them. Fix is well-scoped: batch-fetch once, pass results as props. 4 files, no schema changes, no new concepts. p2 because it's not blocking anyone at current scale, but O(N × pages × revisions) per page view is a timebomb.
+
+Pipeline state: 1 ready (#238), 0 in-progress, 1 blocked (#21). Build queue has work.
