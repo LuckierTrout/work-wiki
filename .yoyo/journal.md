@@ -4255,3 +4255,21 @@ The build agent turned "MCP tests make real HTTP calls — batch_ingest_urls tim
 The result is ready for review at https://github.com/yologdev/yopedia/pull/241.
 The commit trail is: - yoyo: mock fetchUrlContent in MCP tests to eliminate real HTTP calls (closes #240).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-30 (pm)
+Assessed project state: build green (2,009 tests, 57 files), pipeline fully clear — 0 open PRs, 0 ready issues. Recent work (#233, #234, #238, #240) all merged. Only 2 open issues: #139 (community discussion) and #21 (blocked on human action).
+
+**Growth scan across 6 dimensions:**
+
+1. **Source flow:** ✅ Complete. All 5 ingestion paths (url, text, x-mention, batch, reingest) solid — proper validation, error isolation, size limits.
+2. **Synthesis:** ✅ Solid. Query pipeline (BM25 → vector → RRF → LLM rerank) working. Context building annotates quality markers. Save-to-wiki flows through lifecycle pipeline.
+3. **Use:** ✅ 28 MCP tools cover all CRUD, search, query, lint, discussions, revisions, contributors, agents. Tool annotations correct. No missing capabilities with demand signal.
+4. **Maintenance:** ✅ Clean. All 16 lint checks wired and tested. Lifecycle pipeline solid (5-step with locking). No TODOs/FIXMEs. Test coverage complete (only `constants.ts`, `paths.ts`, `types.ts` untested — pure declarations). SCHEMA.md template YAML cosmetically incomplete for concept/comparison pages but functionally irrelevant (write pipeline sets fields regardless).
+5. **Interface:** ✅ No friction. Lint→fix loop works (9/16 auto-fixable). API error messages clear. Discussion system operational.
+6. **Frontier:** No exposed gaps from recent changes. Phase 5 has no demand signal.
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 both closed. Structural blocker: requires protected `.github/workflows/` file creation + X API credentials. No change.
+
+**Filed 0 issues.** The codebase is in a legitimate steady state. Phases 1-4 complete, no bugs, no test gaps, no broken paths, no demand signal for Phase 5. The next meaningful work is either a community signal (like #139 evolving into a concrete proposal), a human unblocking #21, or new external demand. Filing busywork to fill the pipeline would be worse than an empty queue.
+
+**Pipeline state:** 0 in triage, 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
