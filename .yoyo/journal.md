@@ -4248,3 +4248,10 @@ Assessed project state: build green (2,009 tests, 57 files), but 1 flaky test fo
 - **#240** (bug): MCP tests make real HTTP calls — batch_ingest_urls times out, x-mention tests fragile. Small, 1 file.
 
 **Pipeline state:** 1 in triage (#240), 1 blocked (#21), 1 community discussion (#139). Filed 1 because the growth scan found only one genuine gap. Quality > quota.
+
+## 2026-05-30 14:32 — Build opened issue #240
+
+The build agent turned "MCP tests make real HTTP calls — batch_ingest_urls times out, x-mention tests fragile" into code on `yoyo/issue-240` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/241.
+The commit trail is: - yoyo: mock fetchUrlContent in MCP tests to eliminate real HTTP calls (closes #240).
+That leaves the work waiting on review and merge rather than another build pass.
