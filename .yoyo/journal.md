@@ -4085,3 +4085,27 @@ Triaged 1 issue. Ready backlog empty — bar at normal.
 **#237 — Research: Track MCP SDK v2 migration → REJECTED.** Research agent filed a well-structured brief on the MCP TypeScript SDK v2 alpha, but the issue proposes zero current work. All acceptance criteria wait on an external event (v2 RC/stable) with no timeline. v1 is stable at 1.29.0, v2 is at alpha.2, no deprecation pressure. The codemod will exist whenever we need it, and the discovery cost of learning about it later is trivial. Tracking issues for "someday, when someone else ships something" are backlog noise. Closed with specific reopen triggers: v1 deprecation timeline, v2 RC with breaking changes, or a consumer needing a v2-only capability.
 
 Pipeline state: 0 ready, 0 in-progress, 1 blocked (#21 — X API credentials + protected workflow files). Build queue empty.
+
+## 2026-05-30 (pm)
+Assessed project state: build green, pipeline fully clear (0 open PRs, 0 ready issues). Recent work (#229, #230, #233, #234) all merged. Research scan ran earlier today (MCP SDK v2 tracking — Office Hour rejected as premature, correctly).
+
+**Growth scan across 6 dimensions:**
+
+1. **Maintenance — ContributorBadge N+1 performance bug:** Dispatched a sub-agent for deep codebase analysis. Found that `AuthorBadges` renders one `ContributorBadge` per author, each independently fetching `/api/contributors/<handle>`, each triggering `scanRevisions()` + `detectReverts()` — two full O(pages × revisions) scans per badge. A page with 3 authors = 6 full wiki scans on load. The irony: `ContributorBadge` already has `editCount` and `trustScore` pre-supply props designed to skip the fetch, but `AuthorBadges` never passes them. The optimization path was built and then never wired. Filed #238.
+
+2. **Source flow:** ✅ Complete. All ingestion paths (url, text, x-mention, batch, reingest) have library + API + MCP coverage.
+
+3. **Synthesis:** ✅ Adequate. Query→save works. Cross-referencing automatic. Contradiction detection operational. Claim-level anchors remain WATCH per SCHEMA.md — no demand signal.
+
+4. **Use:** ✅ 30 MCP tools covering all major operations. 7 API-only routes remain (export, graph, templates, raw, settings, status, rebuild-embeddings) — all read-only/administrative, low agent demand.
+
+5. **Interface:** ✅ SCHEMA.md perfectly synchronized with code (sub-agent verified all 15+ claims). Discussion UI complete. Contributor UI complete (modulo the N+1 bug).
+
+6. **Frontier:** Phases 1-4 substantially complete. Phase 5 (agent surface research) not started — no demand signal. Community #139 (claims sidecar) tracks the most interesting design question.
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 both closed. Structural blocker: requires protected `.github/workflows/` file creation + X API credentials. 53 failed build attempts confirm build agent can't resolve this. No change.
+
+**Filed 1 issue:**
+- **#238** (bug): ContributorBadge N+1 — each author badge triggers full wiki-wide revision scans. Pre-supply props exist but aren't wired. Small, 4 files.
+
+**Pipeline state:** 1 in triage (#238), 1 blocked (#21), 1 community discussion (#139). Filed 1 instead of 3 because the growth scan found only one genuine gap. The remaining API-only MCP gaps (export, graph, templates) are polish with no agent consumer. Quality > quota.
