@@ -1,5 +1,128 @@
 # Growth Journal
 
+## 2026-05-30 (research scan)
+
+Scanned llm-wiki-compiler (1,387★, eval harness with CI-gated quality scores), nashsu/llm_wiki (9,844★, desktop app at scale), Beever Atlas (361★, chat-to-wiki pipeline), O2B (15★, v0.22, 4 releases today — vault portability + cross-agent query), Arkon (912★, enterprise wiki + RBAC + MCP), Demarkus (13★, QUIC-based knowledge protocol), ecosystem star movements. Filed 0 issues.
+
+### Advantage Brief
+
+**Market movement 1 — llm-wiki-compiler (1,387★) ships an eval harness: the first quantitative quality measurement system for LLM wikis.**
+
+Evidence: v0.8.0 (May 27). `llmwiki eval` produces a health score (0-100), citation coverage percentage, citation precision percentage, optional LLM-as-judge citation support scoring, corpus stats, and regression deltas. Thresholds are CI-gatable via `.llmwiki/eval/thresholds.yaml` — exit code is non-zero when any threshold is breached. Citation judgements are cached by content hash + judge prompt fingerprint + model, so prompt or model changes auto-invalidate stale entries. History stored as `.llmwiki/eval/history.jsonl` for tracking quality over time. v0.8.0 also ships `llmwiki quickstart` (one-command ingest→compile→view), `llmwiki next` (guided project flow), and a JSON export bridge contract for downstream importers.
+
+Relevance: **This is the first project in the LLM Wiki space to make knowledge quality measurable and CI-gatable.** yopedia has 15 lint checks (structural correctness: broken links, orphans, contradictions, stale pages, low confidence, uncited claims) but no aggregate quality score, no trend tracking, and no CI threshold gating. The gap is conceptual: yopedia's lint says "these pages have problems" — llm-wiki-compiler's eval says "the wiki as a whole is this good, and it got better/worse since last time." For a product that claims knowledge has provenance and confidence, the inability to answer "is the wiki getting more trustworthy?" is a blind spot.
+
+The eval pattern also connects to yopedia's lint infrastructure naturally. yopedia already has the building blocks: lint checks produce structured issues with severity; confidence scores exist on pages; citation data exists in sources. An aggregate health score could be computed from existing lint output + confidence distribution + citation coverage without new LLM calls.
+
+Decision: **Watch, leaning toward adopt.** The eval harness is the most transferable idea in this scan. yopedia's 15 lint checks are more comprehensive than llm-wiki-compiler's, but the aggregation layer (score + trend + CI gate) is missing. When yopedia deploys and starts accumulating real pages, a health score endpoint (`GET /api/status/health`) that aggregates lint results + confidence distribution into a single number would be genuinely useful — both for the human wiki surface ("is this wiki trustworthy?") and for the agent surface ("should I trust this source?"). Not filing an issue because this is deployment-gated — the score is meaningless without real content.
+
+Trigger: yopedia deploys and has >10 real wiki pages → file an issue for aggregate health scoring from existing lint + confidence data.
+
+**Market movement 2 — nashsu/llm_wiki (9,844★, 1,220 forks) is now the largest Karpathy LLM Wiki implementation. Desktop app with two-step chain-of-thought ingest, graph view, chat interface, and scenario templates.**
+
+Evidence: Created April 8. TypeScript desktop app (Electron). v0.4.16 (today). 144 open issues. Features: three-column layout (tree / chat / preview), two-step LLM ingest (analysis → generation), SHA256 incremental cache, persistent ingest queue with retry, folder import, scenario templates (Research, Reading, Personal Growth, Business), graph view (sigma.js), Obsidian compatibility, local HTTP API + agent skill (`nashsu/llm_wiki_skill`), multi-language (EN/CN/JA). 9,844★ makes it the #2 LLM Wiki project after WeKnora.
+
+Relevance: nashsu/llm_wiki validates the "full application" approach to LLM Wiki (not just a CLI skill, but a complete desktop experience). Its two-step chain-of-thought ingest (structured analysis first, then page generation) is architecturally cleaner than single-pass ingest. Its scenario templates (purpose.md as "the wiki's soul") is a UX innovation — giving the wiki a declared purpose shapes all downstream generation. However, it's single-user, no governance, no multi-writer, no confidence, no expiry — pure L2-L3 on the maturity ladder. The strategic lesson: **desktop apps at scale validate the pattern but don't threaten the governance position.**
+
+Decision: **Ignore as competitor.** Different form factor (desktop vs. web), different audience (personal vs. shared), no governance overlap. **Watch as validation** — 9,844★ proves the Karpathy LLM Wiki pattern has massive demand. Note the two-step ingest and scenario template patterns for future reference.
+
+Trigger: nashsu/llm_wiki adds multi-user or a web interface → reassess.
+
+**Market movement 3 — Beever Atlas (361★) is the first project to build a wiki automatically from team chat (Slack, Discord, Teams, Mattermost).**
+
+Evidence: Created April 21. Python + Google ADK. 6-stage pipeline: message sync → atomic fact extraction → deduplication → clustering → topic pages with citations → QA agent. Dual memory: 3-tier semantic store (channel / topic / atomic fact) + graph store (Neo4j for entities/relationships). MCP server with 16 tools, per-agent auth. Dashboard + wiki browser. Backed by Weaviate + Neo4j + MongoDB + Redis.
+
+Relevance: Beever Atlas introduces a new source type that no LLM Wiki project has explored: **real-time team chat as the primary knowledge source.** Every other project ingests documents, URLs, or manual input. Beever Atlas turns the conversations teams already have into a self-maintaining wiki — the knowledge is "harvested" rather than "authored." This is relevant to yopedia's source model: yopedia's current sources are `url`, `text`, `x-mention`. A `chat-channel` source type (Slack/Discord webhooks → atomic fact extraction → wiki page updates) would extend the compounding loop to a source that generates continuously. However, this is a major infrastructure addition (webhook integrations, message parsing, deduplication) — not a small move.
+
+Decision: **Watch.** The chat-to-wiki pattern is genuinely novel and validates demand for "knowledge that writes itself from existing activity." The 6-stage ingestion pipeline (especially the atomic-fact extraction + dedup + clustering steps) is the most sophisticated ingest architecture in the space. Too infrastructure-heavy for yopedia now, but the pattern of "harvest knowledge from existing activity streams" connects to yopedia's X-mention ingestion (Phase 3) — which is a lighter version of the same idea.
+
+Trigger: Beever Atlas crosses 1,000★ or another project ships a simpler chat-to-wiki pipeline → consider whether a lightweight Slack/Discord webhook → ingest path is worth building.
+
+**Market movement 4 — Open Second Brain (15★, v0.22) ships 8 releases in 48 hours: vault portability, cross-agent query, MCP context economy, brain lifecycle suite, and 2,828 tests.**
+
+Evidence: v0.15–v0.22 shipped between May 28 and May 29. Notable features: v0.15 adds cross-agent query foundation (ask what Claude, Codex, Hermes contributed and compare coverage), v0.18 adds MCP context economy (budgeted tool results with artifact fetch-on-demand), v0.20 adds adaptive recall + time-decay ranking, v0.21 adds domain-classified contradictions + budgeted session briefs, v0.22 adds multi-vault profiles with portable knowledge graphs. 46 MCP tools. 2,828 tests.
+
+Relevance: **O2B is now the most feature-rich single-agent governance system.** Its cross-agent query foundation (v0.15) is structurally similar to yopedia's agent registry + scoped search, but O2B approaches it from the opposite direction: "one vault, multiple agents write to it, an operator can ask who contributed what" vs. yopedia's "one wiki, agents have identity pages, contributors have trust profiles." The MCP context economy pattern (budgeted responses + artifact fetch-on-demand) is the most interesting transferable idea — when MCP tools return large results, returning a bounded preview + a fetch handle avoids flooding the caller's context window. yopedia's 29 MCP tools don't do this yet; some tools (like `search_wiki` with many results) could benefit.
+
+The strategic picture hasn't changed: O2B is single-vault, single-operator. It has more sophisticated governance machinery than yopedia (evidence-driven confidence, quarantine, domain-classified contradictions) but no multi-writer governance. yopedia's advantage remains: what happens when multiple writers who don't trust each other share a wiki.
+
+Decision: **Watch.** No code change warranted. Two patterns worth noting: (1) MCP context budgeting (bounded preview + artifact fetch) for Phase 5 agent surface research, (2) domain-classified contradictions (by topic, not just per-page) for potential lint enhancement.
+
+Trigger: O2B ships multi-writer support or shared knowledge → direct competitor. O2B crosses 100★ → its patterns have validated beyond a single builder.
+
+**Market movement 5 — Arkon (912★) is the first enterprise wiki+MCP project with RBAC, plan-review-before-write, and OAuth 2.1 for MCP auth.**
+
+Evidence: Created April 30. Python + FastAPI + PostgreSQL + pgvector. PolyForm Internal Use license (not open-source in the traditional sense). Features: MRP pipeline (Map → Reduce → Plan-review → Refine → Verify → Commit) with human-reviewable plans before any page is written, workspace-scoped RBAC (Viewer/Contributor/Editor/Admin), OAuth 2.1 + PKCE for MCP authentication, skill distribution (versioned .zip packages), audit log, multi-provider LLM catalog.
+
+Relevance: Arkon validates the enterprise wiki-as-service pattern and introduces "plan review before write" — a governance step that catches errors before they enter the wiki. yopedia's governance is post-hoc (lint, talk pages, disputed flags detect problems after writing). Arkon's is pre-hoc (human reviews a plan before the LLM writes pages). Both are valid; the pre-hoc pattern is more conservative but slower. Arkon's OAuth 2.1 for MCP is notable — it's the first project to solve "how do agents authenticate to a shared wiki MCP server" with a real auth standard.
+
+Decision: **Watch.** Arkon's PolyForm license limits adoption in open-source ecosystems. The plan-review-before-write pattern is interesting for quality control but would add significant friction to yopedia's current ingest flow. The OAuth 2.1 for MCP pattern is worth studying when yopedia deploys as a shared service.
+
+Trigger: Arkon switches to a permissive license → reassess as direct enterprise competitor. MCP auth becomes a community standard → implement for yopedia's MCP server.
+
+**Market movement 6 — Demarkus (13★) proposes `mark://` — a QUIC-based protocol for federated markdown knowledge serving.**
+
+Evidence: Created February 14. Go. AGPL-3.0 (implementation), CC0 (protocol spec). Transport: QUIC (UDP 6309). Scheme: `mark://`. Content: Markdown + YAML frontmatter. Verbs: FETCH, LIST, VERSIONS, PUBLISH, APPEND, ARCHIVE. MCP server for agents. Capability-based auth tokens. Federated "Demarkus Hubs" linking content across servers. Active development (pushed today).
+
+Relevance: Demarkus is attempting what yopedia's Phase 5 (agent surface research) and open research questions (federation) point toward: a protocol for serving knowledge to agents across boundaries. The `mark://` scheme is the simplest possible answer to "how do agents discover and read knowledge from multiple sources" — versioned markdown over QUIC with capability tokens. It's tiny (13★) and early, but the protocol design is the most elegant attempt at federated agent knowledge I've seen. Compared to yopedia's approach (REST API + MCP), Demarkus proposes a purpose-built protocol optimized for markdown documents. For yopedia's open research question about federation, this is a data point: one answer to "what does federation across separate yopedia instances look like" is "a simple protocol with FETCH/PUBLISH verbs and capability tokens."
+
+Decision: **Watch as research input for Phase 5.** Too early to adopt (13★, unproven). The protocol spec (CC0) is worth reading when yopedia reaches the federation question. Not filing an issue because this is Phase 5+ territory.
+
+Trigger: Demarkus crosses 100★ or gets adopted by a named agent runtime → evaluate protocol compatibility or `mark://` support as a source type.
+
+**Ecosystem star movements (since May 29)**
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 57,065 | 57,112 | +47 | Steady |
+| WeKnora (Tencent) | 15,755 | 15,782 | +27 | v0.6.0, wiki mode matured |
+| nashsu/llm_wiki | — | 9,844 | new track | Desktop app, #2 LLM Wiki by stars |
+| MemOS | — | 9,454 | new track | Memory OS, 46 MCP tools, L1-L3 tiered |
+| claude-obsidian | 5,724 | 5,756 | +32 | Steady |
+| ByteRover CLI | — | 4,802 | new track | Portable memory layer |
+| engram | 3,867 | 3,939 | +72 | Fastest growth this week |
+| SamurAIGPT/llm-wiki-agent | 2,769 | 2,774 | +5 | Stalled since May 6 |
+| llm-wiki-skill | 1,717 | 1,721 | +4 | Steady |
+| obsidian-wiki | 1,599 | 1,608 | +9 | Steady |
+| llm-wiki-compiler | — | 1,387 | new track | Eval harness, typed pages |
+| lucasastorian/llmwiki | — | 994 | new track | Supabase-backed MCP wiki |
+| karpathy-llm-wiki | 943 | 951 | +8 | Stalled since Apr 13 |
+| Arkon | — | 912 | new track | Enterprise wiki+MCP, RBAC |
+| swarmvault | 502 | 503 | +1 | Stalled since May 20 |
+| Beever Atlas | — | 361 | new track | Chat-to-wiki pipeline |
+| Pratiyush/llm-wiki | — | 276 | new track | Multi-runtime wiki |
+| semiont (AI Alliance) | 65 | 65 | 0 | Steady |
+| O2B | 14 | 15 | +1 | 8 releases in 48h, 2,828 tests |
+| Demarkus | — | 13 | new track | QUIC knowledge protocol |
+
+### Layer 3 insight
+
+The most important structural shift this scan reveals is the **emergence of knowledge quality measurement as a first-class feature category**.
+
+Previous scans tracked two competitive dimensions: *knowledge sophistication* (L1 chunks → L4 governance) and *distribution surface area* (plugin manifests, runtime integrations). This scan adds a third: *knowledge quality observability* — the ability to answer "how good is this wiki?" with a number that trends over time.
+
+The evidence:
+- llm-wiki-compiler ships `llmwiki eval` — health score (0-100), citation quality, regression deltas, CI threshold gating
+- O2B ships `brain_doctor` — semantic quality gate with contradiction detection, concept-gap surfacing, stale-claim surfacing, self-maintenance path
+- Arkon ships MRP pipeline with plan-review-before-write — quality gate before knowledge enters the wiki
+- Beever Atlas ships 6-stage ingestion with atomic-fact extraction + dedup — quality built into the pipeline
+
+Four independent projects, each approaching quality measurement from a different angle:
+1. **Post-hoc scoring** (llm-wiki-compiler): measure the wiki after it's built
+2. **Continuous health monitoring** (O2B): doctor runs periodically, surfaces problems
+3. **Pre-hoc gating** (Arkon): review plan before writing
+4. **Pipeline quality** (Beever Atlas): quality built into extraction steps
+
+yopedia sits between post-hoc and continuous: 15 lint checks detect problems, but there's no aggregate score, no trend line, no CI gate, no answer to "is the wiki getting better?" The lint infrastructure is comprehensive; the observability layer is missing.
+
+This connects to yopedia's identity. A wiki that claims to be "trusted because every claim has a citation and a confidence" should be able to prove that claim quantitatively. The aggregate health score is not just a nice feature — it's the measurable version of the trust promise.
+
+Not filing an issue because this is deployment-gated: a health score without real content is a vanity metric. But when yopedia deploys, the health score should be among the first things built — not as a new feature, but as an aggregation of existing lint + confidence data.
+
+### Issues filed
+
+0 issues. The eval harness pattern (most transferable finding) is deployment-gated. The chat-to-wiki pattern (Beever Atlas) is too infrastructure-heavy for current phase. O2B's cross-agent query and MCP context budgeting are Phase 5 inputs. Demarkus is Phase 5+ research. All findings update the strategic model or the deployment playbook, not the current backlog.
+
 ## 2026-05-29 (research scan)
 
 Scanned claude-obsidian (5,724★, LLM Wiki star leader), Noosphere (53★, 4-runtime plugin proliferation), Semiont (65★, AI Alliance shared knowledge platform), Atlas-WiKi (3★, Supabase-backed enterprise wiki), plugin distribution pattern across mem0/engram/noosphere/claude-obsidian, ecosystem star movements. Filed 0 issues.
