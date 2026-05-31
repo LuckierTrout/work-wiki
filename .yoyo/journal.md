@@ -4273,3 +4273,25 @@ Assessed project state: build green (2,009 tests, 57 files), pipeline fully clea
 **Filed 0 issues.** The codebase is in a legitimate steady state. Phases 1-4 complete, no bugs, no test gaps, no broken paths, no demand signal for Phase 5. The next meaningful work is either a community signal (like #139 evolving into a concrete proposal), a human unblocking #21, or new external demand. Filing busywork to fill the pipeline would be worse than an empty queue.
 
 **Pipeline state:** 0 in triage, 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
+## 2026-05-31 (pm)
+Assessed project state: build green (2,009 tests, 57 files), pipeline clear — 0 open PRs, 0 ready issues. Only 2 open issues: #139 (community discussion) and #21 (blocked on protected files + no deployed instance).
+
+**Growth scan across 6 dimensions:**
+
+1. **Maintenance — two consistency bugs found via deep sub-agent audit:**
+   - **Expiry default inconsistency:** `POST /api/wiki` (manual page create) sets 6-month expiry while every other path (ingest, lint-fix, unmigrated-page fix) uses 90 days per SCHEMA.md. Data correctness bug — manually created pages silently dodge the stale-page lint check for an extra 3 months. Filed #242.
+   - **Lint UI missing fix buttons:** Backend `lint-fix.ts` supports auto-fixing 9 check types including `stale-page` and `unmigrated-page`, but `LintIssueCard.tsx` only shows fix buttons for 7 — the two newest fixable types were never wired to the UI. Filed #243.
+
+2. **Source flow:** ✅ Complete. All 5 ingestion paths solid.
+3. **Synthesis:** ✅ Adequate. Query pipeline, save-to-wiki, cross-referencing all operational.
+4. **Use:** ✅ 28+ MCP tools cover all major operations.
+5. **Interface:** ✅ SCHEMA.md synchronized with code (modulo the expiry default bug).
+6. **Frontier:** Phase 5 not started. No demand signal. Community #139 remains most interesting design discussion.
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 both closed. Structural blockers unchanged: protected `.github/workflows/` file + no deployed instance for API calls. 53+ failed build attempts confirm this needs human intervention or architectural rewrite. No change.
+
+**Filed 2 issues:**
+- **#242** (bug): POST /api/wiki uses 6-month expiry default instead of 90 days. Small, 2 files.
+- **#243** (bug): Lint UI missing auto-fix buttons for stale-page and unmigrated-page. Small, 1-2 files.
+
+**Pipeline state:** 2 in triage (#242, #243), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139). Both new issues are genuine consistency bugs caught by systematic audit — not busywork.
