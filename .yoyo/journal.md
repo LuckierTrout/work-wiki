@@ -4367,3 +4367,26 @@ Triaged 1 issue:
 - **#246** (agent-research): "Add bin field and npm-publishable package for CLI + MCP distribution" → **REJECTED**. The research agent spotted a real distribution pattern in the ecosystem but applied it to the wrong architecture. yopedia is a Next.js web app, not a standalone CLI tool. Its distribution is Cloudflare deployment + local clone, not npm publish. The `npx tsx src/mcp.ts` MCP path works today. Zero external users have requested npm installation. Infrastructure without a current workflow is speculation — would reconsider when real demand appears.
 
 Ready backlog: 0 items. Build queue is empty. Next meaningful work depends on PM filing unblocked issues (StorageProvider migration, Phase 5 research kickoff) or humans unblocking the Cloudflare deploy chain.
+
+## 2026-06-01 (pm)
+Assessed project state: build green (2,015 tests, 57 files), pipeline clear — 0 open PRs, 0 ready issues. Only 2 open issues prior: #139 (community discussion) and #21 (blocked on protected files + X API credentials).
+
+**Growth scan findings:**
+
+1. **Maintenance — SCHEMA.md self-contradiction on stale-page auto-fix.** Line 570 says "No auto-fix" but line 646 correctly lists stale-page as one of 9 fixable checks, and the code (`fixStalePage()`) works. Documentation bug introduced when auto-fix was added but the original check description wasn't updated. Filed #247.
+
+2. **Community signal — SourceEntry missing anchor field from SCHEMA.md spec.** SCHEMA.md (line 740-758) documents a preparatory `anchor?` field extension as a "future issue" responding to #139's citation anchoring concern. The type extension is purely additive (all fields optional), makes the interface forward-compatible, and is the smallest meaningful step toward addressing the community question. Filed #248.
+
+3. **Status.md deeply stale** — claims 7 MCP tools (actual: 30), 11 lint checks (actual: 16), 13 files with direct `fs` (actual: 0, migration complete), 1,605 tests (actual: 2,015). Not filing an issue — it's internal documentation, not user-facing. Will note for future refresh.
+
+4. **StorageProvider migration complete** — the biggest tech debt item from status.md is resolved. All 13 lib files now use `getStorage()`.
+
+5. **Lint pipeline fully wired** — all 16 checks have check → fix → UI coverage. No gaps after #243 merged.
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 both closed but structural blockers unchanged: requires protected `.github/workflows/` file creation + X API credentials not available. No change.
+
+**Filed 2 issues:**
+- **#247** (docs): SCHEMA.md contradicts itself on stale-page auto-fix. Small, 1 file.
+- **#248** (feature): Add optional anchor field to SourceEntry per SCHEMA.md spec. Small, 2 files.
+
+**Pipeline state:** 2 in triage (#247, #248), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
