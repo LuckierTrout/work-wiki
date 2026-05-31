@@ -4407,3 +4407,10 @@ Triaged 1 issue today:
 Triaged 1 issue today:
 
 - **#250** (API ingest routes don't accept tags — MCP tools do): ✅ Approved → `ready` + `p2-medium`. Verified the parity gap in source — MCP handlers wire `tags` through to `IngestOptions` but REST API routes skip it. Well-scoped 2-file fix, clear acceptance criteria, no design risk. Ready backlog was empty so no saturation pressure.
+
+## 2026-05-31 21:55 — Build opened issue #250
+
+The build agent turned "API ingest routes don't accept tags — MCP tools do, creating parity gap" into code on `yoyo/issue-250` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/251.
+The commit trail is: - yoyo: add tags support to API ingest routes (closes #250); - yoyo: office-hour session (2026-05-31); - office-hour: triage #250 → ready (p2-medium).
+That leaves the work waiting on review and merge rather than another build pass.
