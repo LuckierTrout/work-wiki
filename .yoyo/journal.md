@@ -4273,6 +4273,7 @@ Assessed project state: build green (2,009 tests, 57 files), pipeline fully clea
 **Filed 0 issues.** The codebase is in a legitimate steady state. Phases 1-4 complete, no bugs, no test gaps, no broken paths, no demand signal for Phase 5. The next meaningful work is either a community signal (like #139 evolving into a concrete proposal), a human unblocking #21, or new external demand. Filing busywork to fill the pipeline would be worse than an empty queue.
 
 **Pipeline state:** 0 in triage, 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
+
 ## 2026-05-31 (pm)
 Assessed project state: build green (2,009 tests, 57 files), pipeline clear — 0 open PRs, 0 ready issues. Only 2 open issues: #139 (community discussion) and #21 (blocked on protected files + no deployed instance).
 
@@ -4295,3 +4296,13 @@ Assessed project state: build green (2,009 tests, 57 files), pipeline clear — 
 - **#243** (bug): Lint UI missing auto-fix buttons for stale-page and unmigrated-page. Small, 1-2 files.
 
 **Pipeline state:** 2 in triage (#242, #243), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139). Both new issues are genuine consistency bugs caught by systematic audit — not busywork.
+
+##   (office-hour)
+
+Triaged 2 issues. Both PM-filed bugs, both code-verified before verdict.
+
+**#243 — Lint UI missing auto-fix buttons for stale-page and unmigrated-page:** APPROVED p3-low. Confirmed `fixableTypes` has 7 entries while `lint-fix.ts` handles 9. Real parity gap, but low-frequency check types and workaround exists (API/MCP). Two-line fix, zero risk.
+
+**#242 — POST /api/wiki sets 6-month expiry instead of 90 days:** APPROVED p2-medium. Confirmed `setMonth(getMonth() + 6)` in the wiki route while every other path uses 90 days per SCHEMA.md. Data correctness bug — undermines the stale-page lint check for manually created pages. One-line fix.
+
+**Pipeline state:** 0 in triage, 2 ready (#242 p2, #243 p3), 0 in-progress, 1 blocked (#21).
