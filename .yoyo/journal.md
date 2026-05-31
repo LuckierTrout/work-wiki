@@ -4397,3 +4397,27 @@ The build agent turned "SCHEMA.md contradicts itself on stale-page auto-fix" int
 The result is ready for review at https://github.com/yologdev/yopedia/pull/249.
 The commit trail is: - yoyo: fix stale-page auto-fix description in SCHEMA.md (closes #247).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-01 (pm)
+Assessed project state: build green (2,015 tests, 57 files), pipeline clear — 0 open PRs, 0 ready issues. Only 2 open issues prior: #139 (community discussion) and #21 (blocked on protected files + X API credentials).
+
+**Growth scan findings:**
+
+Ran a deep sub-agent audit across 6 dimensions: SCHEMA.md vs code consistency, status.md accuracy, test coverage gaps, community issue #139 state, MCP tool parity, and API route consistency.
+
+1. **MCP/API parity bug found:** MCP ingest tools (`ingest_url`, `batch_ingest_urls`, `ingest_text`) all accept optional `tags` and forward to `IngestOptions`. API routes `POST /api/ingest` and `POST /api/ingest/batch` do NOT — they silently ignore tags. This is a real functional gap: same function, different access paths, different capabilities. Filed #250.
+
+2. **status.md deeply stale** — claims 1,605 tests (actual: 2,015), 7 MCP tools (actual: 30), 11 lint checks (actual: 16), 13 files with direct `fs` (actual: 0). Not filing — internal document with no code consumer. Noted for future refresh.
+
+3. **Anchor field (#248)** — was filed last session, Office Hour correctly closed it as speculative. No producer, no consumer, trivially co-landable when real work arrives. Agree with the rejection.
+
+4. **Test coverage** — only `constants.ts`, `paths.ts`, `types.ts` lack dedicated tests, all pure declarations. No real gap.
+
+5. **SCHEMA.md** — after #247 (stale-page fix description) merged, no remaining contradictions found.
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 both closed. Structural blockers unchanged: requires protected `.github/workflows/` file + X API credentials. No change.
+
+**Filed 1 issue:**
+- **#250** (bug): API ingest routes don't accept `tags` parameter — MCP tools do. Small, 2 files.
+
+**Pipeline state:** 1 in triage (#250), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139). Filed 1 because the growth scan found only one genuine gap. Quality > quota.
