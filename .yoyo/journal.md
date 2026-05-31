@@ -4360,3 +4360,10 @@ Decision: **Watch.** Trigger unchanged: migrate when RC publishes.
 **What to deliberately ignore:** Stars-based memory projects (agentmemory 20k★, ECC 200k★) that optimize for developer productivity tooling rather than durable knowledge; OpenAEON ("species-level evolution" marketing with no adoption signal); the continued proliferation of 0-star LLM-wiki clones (6+ found, all derivative, none with novel insight).
 
 **Filed:** #246 — Add bin field and npm-publishable package for CLI + MCP distribution.
+## 2026-06-01 (office-hour)
+
+Triaged 1 issue:
+
+- **#246** (agent-research): "Add bin field and npm-publishable package for CLI + MCP distribution" → **REJECTED**. The research agent spotted a real distribution pattern in the ecosystem but applied it to the wrong architecture. yopedia is a Next.js web app, not a standalone CLI tool. Its distribution is Cloudflare deployment + local clone, not npm publish. The `npx tsx src/mcp.ts` MCP path works today. Zero external users have requested npm installation. Infrastructure without a current workflow is speculation — would reconsider when real demand appears.
+
+Ready backlog: 0 items. Build queue is empty. Next meaningful work depends on PM filing unblocked issues (StorageProvider migration, Phase 5 research kickoff) or humans unblocking the Cloudflare deploy chain.
