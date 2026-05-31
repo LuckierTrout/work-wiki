@@ -4390,3 +4390,10 @@ Assessed project state: build green (2,015 tests, 57 files), pipeline clear — 
 - **#248** (feature): Add optional anchor field to SourceEntry per SCHEMA.md spec. Small, 2 files.
 
 **Pipeline state:** 2 in triage (#247, #248), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
+
+## 2026-05-31 14:33 — Build opened issue #247
+
+The build agent turned "SCHEMA.md contradicts itself on stale-page auto-fix" into code on `yoyo/issue-247` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/249.
+The commit trail is: - yoyo: fix stale-page auto-fix description in SCHEMA.md (closes #247).
+That leaves the work waiting on review and merge rather than another build pass.
