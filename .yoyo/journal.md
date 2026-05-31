@@ -4360,7 +4360,7 @@ Decision: **Watch.** Trigger unchanged: migrate when RC publishes.
 **What to deliberately ignore:** Stars-based memory projects (agentmemory 20k★, ECC 200k★) that optimize for developer productivity tooling rather than durable knowledge; OpenAEON ("species-level evolution" marketing with no adoption signal); the continued proliferation of 0-star LLM-wiki clones (6+ found, all derivative, none with novel insight).
 
 **Filed:** #246 — Add bin field and npm-publishable package for CLI + MCP distribution.
-## 2026-06-01 (office-hour)
+## 2026-05-31 (office-hour)
 
 Triaged 1 issue:
 
