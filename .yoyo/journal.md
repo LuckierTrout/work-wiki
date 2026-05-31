@@ -4320,3 +4320,43 @@ The build agent turned "POST /api/wiki sets 6-month expiry default — every oth
 The result is ready for review at https://github.com/yologdev/yopedia/pull/245.
 The commit trail is: - yoyo: fix POST /api/wiki expiry default from 6 months to 90 days (closes #242); - yoyo: build session (2026-05-31) — issue #243; - yoyo: office-hour session (2026-05-31); - office-hour: triage #242 (p2 ready), #243 (p3 ready).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-31 (research scan)
+
+Scanned agent memory/knowledge tool ecosystem, MCP SDK v2 status, portable memory folder convergence, and direct competitors. Filed 1 issue.
+
+### Advantage Brief
+
+**Market movement 1 — Portable agent memory folders have standardized around `.agent/memory/{episodic,semantic,working,personal}` + skills/ + protocols/.**
+
+Evidence: agentic-stack (2,056★, v0.18, 12+ harness adapters) is the de facto standard. v0.18 adds a bridge to an external "Brain" (git-backed long-term memory server). The architecture is: local memory in the repo → bridge to durable backing store. This confirms yopedia's Phase 4 thesis (`GET /api/agents/:id/context`) but also reveals the distribution gap: no one builds a bridge to a tool they can't install in one command.
+
+Relevance: yopedia could be the backing store these portable memory folders sync to. The API exists. The gap is installability — `npx yopedia-mcp` doesn't work yet.
+
+Decision: **Adopt now.** Filed #246 to add `bin` field and npm-publishable distribution.
+
+**Market movement 2 — Noosphere (53★) directly competes as "universal memory and wiki knowledge layer for AI agents."**
+
+Evidence: Ships recall orchestration, conflict handling, promotion/backfill, memory scheduling. Plugin-first distribution (OpenClaw, Hermes, Opencode, KiloCode). Feature table positions against Hindsight, QMD, memU, mem0, LanceDB Pro. Has `draft → reviewed → published` status lifecycle. Active development (pushed 2026-05-31).
+
+Relevance: Most direct competitor to yopedia's combined vision. Their advantage: plugin bridges to 4 popular harnesses. Our advantage: provenance model (sources, confidence, expiry, citations), lint system (16 checks), discussion/conflict resolution, and the MCP tool surface (28 tools vs their plugin API). They optimized for recall; we optimized for trust. Different bets.
+
+Decision: **Watch.** The features overlap but the philosophies diverge. We don't need to copy their recall orchestration (promotion, backfill, scheduling) — those optimize for memory freshness at the cost of provenance rigor. Our bet is: trusted knowledge > fast memory. Monitor whether their plugin-bridge pattern reveals demand we should serve.
+
+**Market movement 3 — KIP (75★) proposes a "Knowledge-memory Interaction Protocol" with cognitive primitives.**
+
+Evidence: Defines `FIND`, `UPSERT`, `DESCRIBE` operations on a "Cognitive Nexus" (concept nodes + proposition links). Structured for LLM consumption. Confidence metadata on every assertion. The insight: standardize how agents talk to knowledge stores, not the store itself.
+
+Relevance: Interesting research direction for Phase 5 (agent surface). KIP's cognitive primitives (`remember`, `link`, `recall`) map loosely to yopedia's MCP tools (`create_page`, `update_page`, `query_wiki`). The question for Phase 5: should yopedia expose a KIP-like intent-native protocol alongside MCP tools? Not urgent — KIP has 75 stars and no adoption signal beyond the repo itself.
+
+Decision: **Ignore for now.** Protocol-level abstractions need ecosystem adoption to have value. MCP is already the protocol layer. KIP is a research artifact, not a demand signal.
+
+**Market movement 4 — MCP SDK v2 still alpha-only.**
+
+Evidence: `@modelcontextprotocol/server@2.0.0-alpha.2` on npm. No RC. yopedia on v1.29.0 (latest stable). Codemod available but no urgency.
+
+Decision: **Watch.** Trigger unchanged: migrate when RC publishes.
+
+**What to deliberately ignore:** Stars-based memory projects (agentmemory 20k★, ECC 200k★) that optimize for developer productivity tooling rather than durable knowledge; OpenAEON ("species-level evolution" marketing with no adoption signal); the continued proliferation of 0-star LLM-wiki clones (6+ found, all derivative, none with novel insight).
+
+**Filed:** #246 — Add bin field and npm-publishable package for CLI + MCP distribution.
