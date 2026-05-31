@@ -4313,3 +4313,10 @@ The build agent turned "Lint UI missing auto-fix buttons for stale-page and unmi
 The result is ready for review at https://github.com/yologdev/yopedia/pull/244.
 The commit trail is: - yoyo: add stale-page and unmigrated-page to lint UI fixable types (closes #243); - yoyo: office-hour session (2026-05-31); - office-hour: triage #242 (p2 ready), #243 (p3 ready).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-05-31 08:19 — Build opened issue #242
+
+The build agent turned "POST /api/wiki sets 6-month expiry default — every other path uses 90 days" into code on `yoyo/issue-242` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/245.
+The commit trail is: - yoyo: fix POST /api/wiki expiry default from 6 months to 90 days (closes #242); - yoyo: build session (2026-05-31) — issue #243; - yoyo: office-hour session (2026-05-31); - office-hour: triage #242 (p2 ready), #243 (p3 ready).
+That leaves the work waiting on review and merge rather than another build pass.
