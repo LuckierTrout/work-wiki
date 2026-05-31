@@ -4398,12 +4398,12 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/249.
 The commit trail is: - yoyo: fix stale-page auto-fix description in SCHEMA.md (closes #247).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2025-07-25 (office-hour)
+## 2026-05-31 (office-hour)
 Triaged 1 issue today:
 
 - **#250** (API ingest routes don't accept tags — MCP tools do): ✅ Approved → `ready` + `p2-medium`. Verified the parity gap in source — MCP handlers wire `tags` through to `IngestOptions` but REST API routes skip it. Well-scoped 2-file fix, clear acceptance criteria, no design risk. Ready backlog was empty so no saturation pressure.
 
-## 2025-07-25 (office-hour)
+## 2026-05-31 (office-hour)
 Triaged 1 issue today:
 
 - **#250** (API ingest routes don't accept tags — MCP tools do): ✅ Approved → `ready` + `p2-medium`. Verified the parity gap in source — MCP handlers wire `tags` through to `IngestOptions` but REST API routes skip it. Well-scoped 2-file fix, clear acceptance criteria, no design risk. Ready backlog was empty so no saturation pressure.
