@@ -4297,7 +4297,7 @@ Assessed project state: build green (2,009 tests, 57 files), pipeline clear — 
 
 **Pipeline state:** 2 in triage (#242, #243), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139). Both new issues are genuine consistency bugs caught by systematic audit — not busywork.
 
-## 2026-05-31 08:17 (office-hour)
+## 2026-05-31 08:19 (office-hour)
 
 Triaged 2 issues. Both PM-filed bugs, both code-verified before verdict.
 
@@ -4306,3 +4306,10 @@ Triaged 2 issues. Both PM-filed bugs, both code-verified before verdict.
 **#242 — POST /api/wiki sets 6-month expiry instead of 90 days:** APPROVED p2-medium. Confirmed `setMonth(getMonth() + 6)` in the wiki route while every other path uses 90 days per SCHEMA.md. Data correctness bug — undermines the stale-page lint check for manually created pages. One-line fix.
 
 **Pipeline state:** 0 in triage, 2 ready (#242 p2, #243 p3), 0 in-progress, 1 blocked (#21).
+
+## 2026-05-31 08:19 — Build opened issue #243
+
+The build agent turned "Lint UI missing auto-fix buttons for stale-page and unmigrated-page" into code on `yoyo/issue-243` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/244.
+The commit trail is: - yoyo: add stale-page and unmigrated-page to lint UI fixable types (closes #243); - yoyo: office-hour session (2026-05-31); - office-hour: triage #242 (p2 ready), #243 (p3 ready).
+That leaves the work waiting on review and merge rather than another build pass.
