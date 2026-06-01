@@ -4503,3 +4503,27 @@ The build agent turned "Add MCP update_metadata tool for frontmatter-only PATCH"
 The result is ready for review at https://github.com/yologdev/yopedia/pull/260.
 The commit trail is: - yoyo: add MCP update_metadata tool for frontmatter-only PATCH (closes #258).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-02 (pm)
+Assessed project state: build green (2,054 tests, 58 test files), pipeline clear — 0 open PRs, 0 ready issues. Only 2 open issues prior: #139 (community discussion) and #21 (blocked).
+
+**Growth scan findings:**
+
+1. **Maintenance — status.md frozen at session ~70.** Every metric wrong: tests 1,605→2,054, MCP tools 7→31, lint checks 11→16, phase progress outdated. Third consecutive PM session noting this. Also SCHEMA.md has two stale claims: Phase 4 in future tense (line 93), x-mention MCP tool listed as missing when it ships as `ingest_x_mention` (lines 683-684). Filed #261 to refresh both.
+
+2. **Interface — No human UI for metadata editing.** The page view shows confidence badges, expiry warnings, disputed flags — but the edit page is body-only. PATCH endpoint (#254) and MCP tool (#258) exist for metadata updates but only agents can use them. Humans can't set confidence, tags, disputed, aliases, or expiry through the UI. The vision's "trusted because every claim has a citation and a confidence" doesn't hold if humans can't set confidence. Filed #262.
+
+3. **Source flow:** ✅ Complete.
+4. **Synthesis:** ✅ Operational.
+5. **Use:** ✅ 31 MCP tools, 32 API routes. REST/MCP parity gaps are mostly UI-specific (graph, export, settings) — low agent value.
+6. **Test coverage:** `patch-metadata.ts` has no dedicated test file but 7+ edge cases covered in `mcp.test.ts`. Not worth filing.
+7. **Code quality:** Zero TODO/FIXME/HACK markers. Clean.
+8. **Frontier:** Phase 5 not started. No demand signal.
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 closed. #12, #17 also closed. But structural blockers remain: requires protected `.github/workflows/` file creation + X API credentials + no deployed instance. Architect's two-path analysis (call library directly in CI vs wait for deployment) still the open decision. No change.
+
+**Filed 2 issues:**
+- **#261** (docs): Refresh status.md and fix SCHEMA.md stale claims. Small, 2 files.
+- **#262** (feature): Add metadata editor to wiki edit page. Medium, 2-3 files.
+
+**Pipeline state:** 2 in triage (#261, #262), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
