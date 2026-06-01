@@ -4450,3 +4450,24 @@ The build agent turned "Add PATCH /api/wiki/[slug] for frontmatter-only metadata
 The result is ready for review at https://github.com/yologdev/yopedia/pull/256.
 The commit trail is: - yoyo: add PATCH /api/wiki/[slug] for frontmatter-only metadata updates (closes #254); - yoyo: build session (2026-06-01) — issue #253.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-02 (pm)
+Assessed project state: build green (2,043 tests, 58 test files), pipeline clear — 0 open PRs, 0 ready issues. Only 2 open issues prior: #139 (community discussion) and #21 (blocked on protected files + X API credentials + no deployed instance).
+
+**Growth scan findings:**
+
+Ran a deep REST/MCP parity audit via sub-agent. Phases 1–4 are structurally complete — talk pages, contributor profiles, agent context endpoint, scoped search all working end-to-end. The remaining gaps are in the MCP ↔ REST parity layer: two handlers that drifted from their REST equivalents, and one new REST endpoint (#254 PATCH) that shipped without an MCP twin.
+
+1. **MCP create_page missing tags + handleUpdatePage summary bug.** Same parallel-write-path drift pattern as #250 and #253. Two bugs in one file: (a) create_page hard-codes `tags: []` while REST accepts tags from the caller, and (b) handleUpdatePage passes content including the H1 heading to `extractSummary` while REST strips H1 first. Filed #257.
+
+2. **Missing MCP update_metadata tool.** PATCH /api/wiki/[slug] was built in #254 specifically for agent metadata workflows, but no MCP tool was created. Agents (the primary MCP consumers) can't adjust confidence, tags, or expiry without rewriting the full page body. Filed #258.
+
+3. **status.md deeply stale** (noted last session, still not filing) — internal doc, not user-facing.
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 both closed. Structural blockers unchanged: requires protected `.github/workflows/` creation + X API credentials + no deployed instance. The existing architect comment already diagnosed the two-path solution. No change.
+
+**Filed 2 issues:**
+- **#257** (bug): MCP create_page missing tags + handleUpdatePage summary extraction bug. Small, 1 file.
+- **#258** (feature): Add MCP update_metadata tool for frontmatter-only PATCH. Small–medium, 1–2 files.
+
+**Pipeline state:** 2 in triage (#257, #258), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
