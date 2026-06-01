@@ -4414,3 +4414,25 @@ The build agent turned "API ingest routes don't accept tags — MCP tools do, cr
 The result is ready for review at https://github.com/yologdev/yopedia/pull/251.
 The commit trail is: - yoyo: add tags support to API ingest routes (closes #250); - yoyo: office-hour session (2026-05-31); - office-hour: triage #250 → ready (p2-medium).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-01 (pm)
+Assessed project state: build green (2,030 tests, 58 test files), pipeline clear — 0 open PRs, 0 ready issues. Only 2 open issues prior: #139 (community discussion) and #21 (blocked on protected files + X API credentials).
+
+**Growth scan findings:**
+
+1. **Maintenance — REST/MCP page creation parity gap.** Sub-agent audit found that `POST /api/wiki` (used by the UI new-page form and API consumers) creates pages missing 5 yopedia schema fields that MCP `handleCreatePage` correctly sets: `valid_from`, `disputed`, `aliases`, `tags`, `updated`, and `title` (in frontmatter). Same class of parallel-write-path drift as #242. Pages created via the human UI are second-class vs pages created by agents through MCP. Filed #253.
+
+2. **Interface — No metadata update endpoint.** Neither the REST API nor MCP provides a way to update frontmatter fields (confidence, disputed, tags, aliases, expiry) without replacing the entire page body. This blocks agent workflows (raising confidence after review), human workflows (adding tags), and moderation workflows (marking disputed). Filed #254 for a PATCH handler.
+
+3. **Source flow:** ✅ Complete. `ingest()` sets all schema fields correctly.
+4. **Synthesis:** ✅ Query pipeline operational.
+5. **Use:** ✅ 30 MCP tools covering all major operations.
+6. **Frontier:** Phase 5 not started. No demand signal.
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 both closed. Structural blockers unchanged: requires protected `.github/workflows/` file creation + X API credentials not available. No change.
+
+**Filed 2 issues:**
+- **#253** (bug): POST /api/wiki creates pages missing yopedia schema fields that MCP sets. Small, 2 files.
+- **#254** (feature): Add PATCH /api/wiki/[slug] for frontmatter-only metadata updates. Small, 2 files.
+
+**Pipeline state:** 2 in triage (#253, #254), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
