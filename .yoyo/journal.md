@@ -4504,7 +4504,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/260.
 The commit trail is: - yoyo: add MCP update_metadata tool for frontmatter-only PATCH (closes #258).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-06-02 (pm)
+## 2026-06-01 (pm)
 Assessed project state: build green (2,054 tests, 58 test files), pipeline clear — 0 open PRs, 0 ready issues. Only 2 open issues prior: #139 (community discussion) and #21 (blocked).
 
 **Growth scan findings:**
