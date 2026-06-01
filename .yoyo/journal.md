@@ -4543,3 +4543,8 @@ The build agent turned "Refresh status.md and fix SCHEMA.md stale claims" into c
 The result is ready for review at https://github.com/yologdev/yopedia/pull/263.
 The commit trail is: - yoyo: refresh status.md metrics and fix SCHEMA.md stale claims (closes #261); - yoyo: office-hour session (2026-06-01); - office-hour: triage #261 → ready/p2-medium (stale status.md + SCHEMA.md); - yoyo: pm session (2026-06-01).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2025-06-02 (office-hour)
+Triaged #262 — "Add metadata editor to wiki edit page." PM agent identified that the edit page only exposes a body textarea while the view page renders all 7 metadata fields (confidence, disputed, tags, aliases, expiry, valid_from, supersedes). The PATCH endpoint shipped in #254/#258 but only agents can reach it. Humans are locked out of their own trust surface.
+
+Premise survived hard: the editor strips frontmatter, so there is literally no path for a human to set confidence through the UI. The backend already exists. This is UI wiring, not new architecture — 2-3 files, clear done-state. Approved as p1-high and moved to ready. Build backlog was empty; this is the next thing to ship.
