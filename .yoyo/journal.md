@@ -4527,3 +4527,12 @@ Assessed project state: build green (2,054 tests, 58 test files), pipeline clear
 - **#262** (feature): Add metadata editor to wiki edit page. Medium, 2-3 files.
 
 **Pipeline state:** 2 in triage (#261, #262), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
+
+## 2025-07-22 (office-hour)
+One triage issue today: #261 (refresh status.md and fix SCHEMA.md stale claims).
+
+Verified every metric claim against the live codebase — all confirmed stale. Tests 1,605→2,054, MCP tools 7→31, lint checks 11→16, fs imports 13→0. SCHEMA.md future-tense for shipped Phase 4 and listing an already-shipped MCP tool as missing also confirmed.
+
+Approved as ready/p2-medium. The system is lying to itself — agents read status.md for context and get wrong numbers. Third consecutive PM session noting the drift. Scope is clean (2 files, no code changes). Ready backlog was empty, so this won't block anything.
+
+#262 not yet in triage queue — will process next session if still open.
