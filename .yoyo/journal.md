@@ -4451,7 +4451,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/256.
 The commit trail is: - yoyo: add PATCH /api/wiki/[slug] for frontmatter-only metadata updates (closes #254); - yoyo: build session (2026-06-01) — issue #253.
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-06-02 (pm)
+## 2026-06-01 (pm)
 Assessed project state: build green (2,043 tests, 58 test files), pipeline clear — 0 open PRs, 0 ready issues. Only 2 open issues prior: #139 (community discussion) and #21 (blocked on protected files + X API credentials + no deployed instance).
 
 **Growth scan findings:**
