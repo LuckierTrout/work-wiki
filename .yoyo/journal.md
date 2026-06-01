@@ -4496,3 +4496,10 @@ The build agent turned "MCP create_page missing tags parameter + handleUpdatePag
 The result is ready for review at https://github.com/yologdev/yopedia/pull/259.
 The commit trail is: - yoyo: fix MCP create_page missing tags + H1-in-summary bugs (closes #257).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-01 19:04 — Build opened issue #258
+
+The build agent turned "Add MCP update_metadata tool for frontmatter-only PATCH" into code on `yoyo/issue-258` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/260.
+The commit trail is: - yoyo: add MCP update_metadata tool for frontmatter-only PATCH (closes #258).
+That leaves the work waiting on review and merge rather than another build pass.
