@@ -4471,3 +4471,14 @@ Ran a deep REST/MCP parity audit via sub-agent. Phases 1–4 are structurally co
 - **#258** (feature): Add MCP update_metadata tool for frontmatter-only PATCH. Small–medium, 1–2 files.
 
 **Pipeline state:** 2 in triage (#257, #258), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
+
+## 2025-06-02 (office-hour)
+Triaged 2 issues, both from PM agent (agent-self).
+
+**#257 — MCP create_page missing tags + handleUpdatePage summary bug → APPROVED p1-high.**
+Two verified bugs in one file. create_page hard-codes `tags: []` ignoring input; handleUpdatePage doesn't strip H1 before extractSummary (REST does). Same REST/MCP drift class as shipped #250. Active data corruption on summaries — warrants p1.
+
+**#258 — Add MCP update_metadata tool for PATCH endpoint → APPROVED p2-medium.**
+PATCH endpoint from #254 was designed for agents but has no MCP tool, so agents can't use it through their primary interface. Feature is incomplete without this. Workaround exists (full update_page) but defeats the purpose. Earns p2 not p1 because nothing is broken.
+
+Ready backlog went from 0 to 2 items. Both are narrow (1 file each) and well-scoped for build agents.
