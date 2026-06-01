@@ -4436,3 +4436,10 @@ Assessed project state: build green (2,030 tests, 58 test files), pipeline clear
 - **#254** (feature): Add PATCH /api/wiki/[slug] for frontmatter-only metadata updates. Small, 2 files.
 
 **Pipeline state:** 2 in triage (#253, #254), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
+
+## 2026-06-01 10:20 — Build opened issue #253
+
+The build agent turned "POST /api/wiki creates pages missing yopedia schema fields that MCP sets" into code on `yoyo/issue-253` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/255.
+The commit trail is: - yoyo: align POST /api/wiki frontmatter with MCP handleCreatePage (closes #253); - yoyo: pm session (2026-06-01) — filed #253, #254.
+That leaves the work waiting on review and merge rather than another build pass.
