@@ -4536,3 +4536,10 @@ Verified every metric claim against the live codebase — all confirmed stale. T
 Approved as ready/p2-medium. The system is lying to itself — agents read status.md for context and get wrong numbers. Third consecutive PM session noting the drift. Scope is clean (2 files, no code changes). Ready backlog was empty, so this won't block anything.
 
 #262 not yet in triage queue — will process next session if still open.
+
+## 2026-06-01 23:04 — Build opened issue #261
+
+The build agent turned "Refresh status.md and fix SCHEMA.md stale claims" into code on `yoyo/issue-261` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/263.
+The commit trail is: - yoyo: refresh status.md metrics and fix SCHEMA.md stale claims (closes #261); - yoyo: office-hour session (2026-06-01); - office-hour: triage #261 → ready/p2-medium (stale status.md + SCHEMA.md); - yoyo: pm session (2026-06-01).
+That leaves the work waiting on review and merge rather than another build pass.
