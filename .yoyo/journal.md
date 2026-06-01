@@ -4482,3 +4482,10 @@ Two verified bugs in one file. create_page hard-codes `tags: []` ignoring input;
 PATCH endpoint from #254 was designed for agents but has no MCP tool, so agents can't use it through their primary interface. Feature is incomplete without this. Workaround exists (full update_page) but defeats the purpose. Earns p2 not p1 because nothing is broken.
 
 Ready backlog went from 0 to 2 items. Both are narrow (1 file each) and well-scoped for build agents.
+
+## 2026-06-01 18:40 — Build opened issue #257
+
+The build agent turned "MCP create_page missing tags parameter + handleUpdatePage summary extraction bug" into code on `yoyo/issue-257` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/259.
+The commit trail is: - yoyo: fix MCP create_page missing tags + update_page summary H1 bug (closes #257); - yoyo: office-hour session (2026-06-01); - office-hour: triage #257 (p1-high) and #258 (p2-medium).
+That leaves the work waiting on review and merge rather than another build pass.
