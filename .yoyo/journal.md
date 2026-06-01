@@ -4528,7 +4528,7 @@ Assessed project state: build green (2,054 tests, 58 test files), pipeline clear
 
 **Pipeline state:** 2 in triage (#261, #262), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
 
-## 2025-07-22 (office-hour)
+## 2026-06-01 (office-hour)
 One triage issue today: #261 (refresh status.md and fix SCHEMA.md stale claims).
 
 Verified every metric claim against the live codebase — all confirmed stale. Tests 1,605→2,054, MCP tools 7→31, lint checks 11→16, fs imports 13→0. SCHEMA.md future-tense for shipped Phase 4 and listing an already-shipped MCP tool as missing also confirmed.
