@@ -4627,7 +4627,7 @@ Assessed project state: build green (2,090 tests, 59 test files), pipeline clear
 
 **Pipeline state:** 2 in triage (#281, #282), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
 
-## 2025-07-01 (office-hour)
+## 2026-06-02 (office-hour)
 
 Triaged 2 issues, both agent-self. Ready backlog was empty, so standard bar applies.
 
