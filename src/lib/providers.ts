@@ -13,6 +13,7 @@ export const PROVIDER_INFO = [
   { value: "anthropic", label: "Anthropic" },
   { value: "openai", label: "OpenAI" },
   { value: "google", label: "Google" },
+  { value: "deepseek", label: "DeepSeek" },
   { value: "ollama", label: "Ollama" },
 ] as const;
 
@@ -27,12 +28,34 @@ export const VALID_PROVIDERS: ReadonlySet<string> = new Set(
 );
 
 /**
+ * Providers capable of producing embeddings. This is a different set from the
+ * LLM providers: it adds `workers-ai` (Cloudflare bge-m3) and excludes
+ * `anthropic`/`deepseek` (no embedding models). Kept as a single source of
+ * truth so the runtime check and the config type can't drift.
+ */
+export const EMBEDDING_PROVIDERS = [
+  "openai",
+  "google",
+  "ollama",
+  "workers-ai",
+] as const;
+
+/** Union of valid embedding-provider values. */
+export type EmbeddingProvider = (typeof EMBEDDING_PROVIDERS)[number];
+
+/** Type guard narrowing an arbitrary string to {@link EmbeddingProvider}. */
+export function isEmbeddingProvider(p: string): p is EmbeddingProvider {
+  return (EMBEDDING_PROVIDERS as readonly string[]).includes(p);
+}
+
+/**
  * Default model for each provider.
  */
 export const DEFAULT_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-20250514",
   openai: "gpt-4o",
   google: "gemini-2.0-flash",
+  deepseek: "deepseek-v4-flash",
   ollama: "llama3.2",
 };
 

@@ -97,6 +97,28 @@ export interface VectorizeIndex {
 }
 
 // ---------------------------------------------------------------------------
+// Workers AI — minimal binding type
+// ---------------------------------------------------------------------------
+
+/** Response shape from an embedding model run (e.g. @cf/baai/bge-m3). */
+export interface AiEmbeddingResponse {
+  shape: number[];
+  data: number[][];
+}
+
+/** Inputs for an embedding model run. `pooling: "cls"` is recommended for
+ *  bge-m3 (the default "mean" yields lower-quality embeddings). */
+export interface AiEmbeddingInputs {
+  text: string | string[];
+  pooling?: "cls" | "mean";
+}
+
+/** Minimal Workers AI binding surface — we only call `run()` for embeddings. */
+export interface Ai {
+  run(model: string, inputs: AiEmbeddingInputs): Promise<AiEmbeddingResponse>;
+}
+
+// ---------------------------------------------------------------------------
 // Cloudflare env bindings
 // ---------------------------------------------------------------------------
 
@@ -107,4 +129,6 @@ export interface CloudflareEnv {
   YOPEDIA_CONFIG: KVNamespace;
   /** Vectorize index for embedding search (optional — not all deployments need it) */
   YOPEDIA_VECTORIZE?: VectorizeIndex;
+  /** Workers AI binding for embeddings (e.g. @cf/baai/bge-m3, optional) */
+  AI?: Ai;
 }

@@ -2,6 +2,7 @@ import type { ProviderInfo } from "./types";
 import { hasEmbeddingSupport } from "./embeddings";
 import { isEnoent } from "./errors";
 import { VALID_PROVIDERS, DEFAULT_MODELS } from "./providers";
+import type { EmbeddingProvider } from "./providers";
 import { logger } from "./logger";
 import { getDataDir } from "./paths";
 import { getStorage } from "./storage";
@@ -15,10 +16,15 @@ export type { ProviderValue } from "./providers";
 // ---------------------------------------------------------------------------
 
 export interface AppConfig {
-  provider?: "anthropic" | "openai" | "google" | "ollama";
+  provider?: "anthropic" | "openai" | "google" | "deepseek" | "ollama";
   model?: string;
   ollamaBaseUrl?: string;
   embeddingModel?: string;
+  /** Override the provider used for embeddings, independent of the LLM
+   *  provider. Useful when the generation provider (e.g. deepseek) has no
+   *  embedding models. One of openai | google | ollama | workers-ai; any
+   *  other value disables embeddings (resolves to null). */
+  embeddingProvider?: EmbeddingProvider;
 }
 
 /** Describes where each setting was resolved from. */
@@ -209,6 +215,9 @@ export function detectEnvProvider(): {
   if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
     return { provider: "google", apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY };
   }
+  if (process.env.DEEPSEEK_API_KEY) {
+    return { provider: "deepseek", apiKey: process.env.DEEPSEEK_API_KEY };
+  }
   if (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_MODEL) {
     return { provider: "ollama", apiKey: null };
   }
@@ -380,6 +389,8 @@ export function getResolvedCredentials(): ResolvedCredentials {
     apiKey = process.env.OPENAI_API_KEY ?? null;
   } else if (provider === "google") {
     apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? null;
+  } else if (provider === "deepseek") {
+    apiKey = process.env.DEEPSEEK_API_KEY ?? null;
   } else {
     apiKey = null; // ollama is keyless
   }

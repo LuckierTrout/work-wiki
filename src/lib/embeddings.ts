@@ -2,10 +2,13 @@ import { embed, embedMany } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOllama } from "ollama-ai-provider-v2";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { EmbeddingModel } from "ai";
+import type { Ai } from "./storage/cloudflare-types";
 import { wikiRelPath, listWikiPages, readWikiPage } from "./wiki";
 import { getStorage } from "./storage";
 import { detectEnvProvider, loadConfigSync, getEmbeddingModelOverride, getOllamaBaseUrl } from "./config";
+import { EMBEDDING_PROVIDERS, isEmbeddingProvider, type EmbeddingProvider } from "./providers";
 import { withFileLock } from "./lock";
 import { isEnoent } from "./errors";
 import { MAX_EMBED_CHARS } from "./constants";
@@ -36,105 +39,161 @@ export interface VectorStore {
  * Default embedding models per provider. Can be overridden with the
  * `EMBEDDING_MODEL` env var.
  */
-const DEFAULT_EMBEDDING_MODELS: Record<string, string> = {
+const DEFAULT_EMBEDDING_MODELS: Record<EmbeddingProvider, string> = {
   openai: "text-embedding-3-small",
   google: "gemini-embedding-001",
   ollama: "nomic-embed-text",
+  // Workers AI BGE-M3: multilingual (strong CJK/Chinese), 1024-dim.
+  "workers-ai": "@cf/baai/bge-m3",
 };
 
-/** Providers that support embeddings (i.e. everything except Anthropic). */
-const EMBEDDING_CAPABLE_PROVIDERS = new Set(["openai", "google", "ollama"]);
+/** Workers AI model ids are namespaced with this prefix (e.g. @cf/baai/...). */
+const WORKERS_AI_MODEL_PREFIX = "@cf/";
 
 /**
- * Resolve the embedding model name using the standard priority chain:
- *   1. `EMBEDDING_MODEL` env var (highest priority)
- *   2. `config.embeddingModel` from config file
- *   3. Provider-specific default from {@link DEFAULT_EMBEDDING_MODELS}
+ * Return the Cloudflare Workers AI binding if available, else null.
+ *
+ * `getCloudflareContext()` throws when called outside the Workers request
+ * scope (local CLI, Node tests) — that case is expected and stays silent. But
+ * being on the Workers runtime with the `AI` binding *unbound* is a
+ * misconfiguration, not "no embeddings", so we surface it with a warning
+ * rather than silently degrading to BM25-only search.
+ */
+function getWorkersAiBinding(): Ai | null {
+  let env: { AI?: Ai };
+  try {
+    ({ env } = getCloudflareContext() as { env: { AI?: Ai } });
+  } catch {
+    // Expected off the Workers runtime — silent by design.
+    return null;
+  }
+  if (!env.AI) {
+    logger.warn(
+      "embeddings",
+      "On the Workers runtime but the AI binding is not bound — embeddings " +
+        "will fall back to the LLM provider or be disabled. Check the `ai` " +
+        "binding in wrangler.jsonc.",
+    );
+    return null;
+  }
+  return env.AI;
+}
+
+/**
+ * Resolve which provider to use for embeddings — independent of the LLM
+ * provider, so generation can run on a provider with no embedding models
+ * (e.g. deepseek) while embeddings run on Workers AI.
+ *
+ * Priority:
+ *   1. Explicit override — `EMBEDDING_PROVIDER` env var, then
+ *      `config.embeddingProvider`. An override that isn't embedding-capable
+ *      is rejected (returns null) and warned about — it does NOT fall through.
+ *   2. Workers AI auto-detect — on the CF runtime with the `AI` binding bound.
+ *   3. The LLM provider detected from env vars, if embedding-capable; otherwise
+ *      `config.provider` only when it is `ollama` (the one keyless provider —
+ *      other config providers need an env-var API key, handled by step 3a).
+ */
+function resolveEmbeddingProvider(
+  cfg: ReturnType<typeof loadConfigSync>,
+): EmbeddingProvider | null {
+  const override = process.env.EMBEDDING_PROVIDER ?? cfg.embeddingProvider;
+  if (override) {
+    if (isEmbeddingProvider(override)) return override;
+    logger.warn(
+      "embeddings",
+      `EMBEDDING_PROVIDER="${override}" is not embedding-capable ` +
+        `(valid: ${EMBEDDING_PROVIDERS.join(", ")}); embeddings are disabled. ` +
+        "Fix the override or unset it to auto-detect.",
+    );
+    return null;
+  }
+
+  // Auto-select Workers AI when its binding is available.
+  if (getWorkersAiBinding()) return "workers-ai";
+
+  // Fall back to the configured LLM provider when it supports embeddings.
+  const env = detectEnvProvider();
+  if (env.provider && isEmbeddingProvider(env.provider)) {
+    return env.provider;
+  }
+  if (cfg.provider === "ollama") return "ollama";
+
+  return null;
+}
+
+/** Resolve the API key for an embedding provider from its own env var. */
+function embeddingApiKeyFor(provider: EmbeddingProvider): string | null {
+  switch (provider) {
+    case "openai":
+      return process.env.OPENAI_API_KEY ?? null;
+    case "google":
+      return process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? null;
+    default:
+      return null; // ollama and workers-ai are keyless
+  }
+}
+
+/**
+ * Resolve the embedding model name for a provider.
+ *
+ * Priority: `EMBEDDING_MODEL` env → `config.embeddingModel` → provider default.
+ *
+ * The override is only honored when it belongs to the resolved provider's
+ * namespace — Workers AI ids start with `@cf/`, the AI-SDK providers don't.
+ * This prevents a stale override left over from a previous provider (e.g.
+ * `EMBEDDING_MODEL=text-embedding-3-small`) from leaking into a Workers AI
+ * call (or vice versa) and producing an invalid model id.
  */
 function resolveEmbeddingModelName(
-  provider: string,
+  provider: EmbeddingProvider,
   cfg: ReturnType<typeof loadConfigSync>,
 ): string {
-  const envOverride = getEmbeddingModelOverride();
-  return (
-    envOverride ?? cfg.embeddingModel ?? DEFAULT_EMBEDDING_MODELS[provider] ?? provider
-  );
+  const override = getEmbeddingModelOverride() ?? cfg.embeddingModel;
+  if (override) {
+    const overrideIsWorkersAi = override.startsWith(WORKERS_AI_MODEL_PREFIX);
+    const providerIsWorkersAi = provider === "workers-ai";
+    if (overrideIsWorkersAi === providerIsWorkersAi) return override;
+    // Namespace mismatch — ignore the override and use the provider default.
+  }
+  return DEFAULT_EMBEDDING_MODELS[provider] ?? provider;
 }
 
 /**
  * Returns the name of the currently selected embedding model, or null if no
  * embedding-capable provider is configured.
  *
- * Resolution order for model name:
+ * Provider is resolved by {@link resolveEmbeddingProvider} (override →
+ * Workers AI auto-detect → LLM provider). Model name resolution:
  *   1. `EMBEDDING_MODEL` env var (highest priority)
  *   2. `config.embeddingModel` from config file
  *   3. Provider-specific default
- *
- * Resolution order for provider:
- *   1. Env var API keys (highest priority — via `detectEnvProvider`)
- *   2. Config file provider + apiKey
  */
 export function getEmbeddingModelName(): string | null {
-  const env = detectEnvProvider();
   const cfg = loadConfigSync();
-
-  // --- Env var path: embedding-capable provider detected via env ---
-  if (env.provider && EMBEDDING_CAPABLE_PROVIDERS.has(env.provider)) {
-    return resolveEmbeddingModelName(env.provider, cfg);
-  }
-
-  // --- Config file fallback ---
-  const cfgProvider = cfg.provider;
-  if (cfgProvider && EMBEDDING_CAPABLE_PROVIDERS.has(cfgProvider)) {
-    // Ollama is keyless; non-ollama config providers need env var API keys
-    // which are handled by the env-var code path above.
-    if (cfgProvider === "ollama") {
-      return resolveEmbeddingModelName(cfgProvider, cfg);
-    }
-  }
-
-  // Anthropic has no embedding models — skip it entirely.
-  // No embedding-capable provider configured.
-  return null;
+  const provider = resolveEmbeddingProvider(cfg);
+  if (!provider) return null;
+  return resolveEmbeddingModelName(provider, cfg);
 }
 
 /**
- * Returns an AI SDK embedding model based on the configured provider, or
- * `null` if the provider doesn't support embeddings.
+ * Returns an AI SDK embedding model for the resolved embedding provider, or
+ * `null` if the provider doesn't support embeddings or is Workers AI (which
+ * is called via the binding, not the AI SDK).
  *
- * Provider detection is delegated to {@link detectEnvProvider} from
- * `config.ts` with config file fallback via {@link loadConfigSync}.
- *
- * Model name resolution:
- *   1. `EMBEDDING_MODEL` env var (highest)
- *   2. `config.embeddingModel` from config file
- *   3. Provider-specific default
+ * Provider is resolved by {@link resolveEmbeddingProvider}; the API key comes
+ * from {@link embeddingApiKeyFor} (the embedding provider's own env var, so it
+ * works even when the LLM provider differs).
  */
 export function getEmbeddingModel(): EmbeddingModel | null {
-  const env = detectEnvProvider();
   const cfg = loadConfigSync();
+  const provider = resolveEmbeddingProvider(cfg);
 
-  // --- Env var path: embedding-capable provider detected via env ---
-  if (env.provider && EMBEDDING_CAPABLE_PROVIDERS.has(env.provider)) {
-    const modelName = resolveEmbeddingModelName(env.provider, cfg);
-    return _createEmbeddingModel(env.provider, env.apiKey, modelName);
-  }
+  // Workers AI is not an AI SDK provider — it is called via the binding in
+  // {@link embedText}/{@link embedTexts}, so there is no EmbeddingModel here.
+  if (!provider || provider === "workers-ai") return null;
 
-  // --- Config file fallback ---
-  const cfgProvider = cfg.provider;
-
-  if (cfgProvider && EMBEDDING_CAPABLE_PROVIDERS.has(cfgProvider)) {
-    // Ollama is keyless; non-ollama config providers need env var API keys
-    // which are handled by the env-var code path above.
-    if (cfgProvider === "ollama") {
-      const modelName = resolveEmbeddingModelName(cfgProvider, cfg);
-      return _createEmbeddingModel(cfgProvider, null, modelName);
-    }
-  }
-
-  // Anthropic has no embedding models.
-  // No embedding-capable provider configured.
-  return null;
+  const modelName = resolveEmbeddingModelName(provider, cfg);
+  return _createEmbeddingModel(provider, embeddingApiKeyFor(provider), modelName);
 }
 
 /**
@@ -186,10 +245,19 @@ export function hasEmbeddingSupport(): boolean {
  * the model to stay within provider token limits.
  */
 export async function embedText(text: string): Promise<number[] | null> {
-  const model = getEmbeddingModel();
-  if (!model) return null;
+  const cfg = loadConfigSync();
+  const provider = resolveEmbeddingProvider(cfg);
+  if (!provider) return null;
 
   const truncated = text.length > MAX_EMBED_CHARS ? text.slice(0, MAX_EMBED_CHARS) : text;
+
+  if (provider === "workers-ai") {
+    const vectors = await runWorkersAiEmbedding([truncated], cfg);
+    return vectors?.[0] ?? null;
+  }
+
+  const model = getEmbeddingModel();
+  if (!model) return null;
   const result = await embed({ model, value: truncated });
   return result.embedding;
 }
@@ -204,14 +272,50 @@ export async function embedText(text: string): Promise<number[] | null> {
 export async function embedTexts(
   texts: string[],
 ): Promise<number[][] | null> {
-  const model = getEmbeddingModel();
-  if (!model) return null;
+  const cfg = loadConfigSync();
+  const provider = resolveEmbeddingProvider(cfg);
+  if (!provider) return null;
 
   const truncated = texts.map((t) =>
     t.length > MAX_EMBED_CHARS ? t.slice(0, MAX_EMBED_CHARS) : t,
   );
+
+  if (provider === "workers-ai") {
+    return runWorkersAiEmbedding(truncated, cfg);
+  }
+
+  const model = getEmbeddingModel();
+  if (!model) return null;
   const result = await embedMany({ model, values: truncated });
   return result.embeddings;
+}
+
+/**
+ * Embed one or more texts via the Cloudflare Workers AI binding
+ * (e.g. `@cf/baai/bge-m3`). Returns null if the binding is unavailable or the
+ * response shape is unexpected.
+ */
+async function runWorkersAiEmbedding(
+  texts: string[],
+  cfg: ReturnType<typeof loadConfigSync>,
+): Promise<number[][] | null> {
+  const ai = getWorkersAiBinding();
+  if (!ai) return null;
+
+  const model = resolveEmbeddingModelName("workers-ai", cfg);
+  // `pooling: "cls"` — Cloudflare recommends CLS pooling for bge-m3; the
+  // default ("mean") produces lower-quality embeddings.
+  const result = await ai.run(model, { text: texts, pooling: "cls" });
+  if (!Array.isArray(result?.data)) {
+    logger.warn(
+      "embeddings",
+      `Workers AI embedding (${model}) returned an unexpected response ` +
+        "shape (no data array) — treating as no embedding:",
+      result,
+    );
+    return null;
+  }
+  return result.data;
 }
 
 // ---------------------------------------------------------------------------
@@ -449,7 +553,8 @@ export async function rebuildVectorStore(
   const modelName = getEmbeddingModelName();
   if (!modelName) {
     throw new Error(
-      "No embedding provider configured. Set up OpenAI, Google, or Ollama in Settings.",
+      "No embedding provider configured. Set up OpenAI, Google, Ollama, or " +
+        "Cloudflare Workers AI (bind AI for @cf/baai/bge-m3) in Settings.",
     );
   }
 
