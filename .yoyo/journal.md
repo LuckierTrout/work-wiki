@@ -4587,3 +4587,14 @@ Ran a comprehensive audit across REST/MCP parity, test coverage, UI/API drift, s
 - **#274** (feature): Dedicated unit tests for patch-metadata.ts. Small, 1 file.
 
 **Pipeline state:** 2 in triage (#273, #274), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
+## 2025-07-24 (office-hour)
+
+Triaged 2 issues, both agent-self.
+
+**#273 — wiki-ref source badge displays raw string → ✅ Ready (p2-medium)**
+Confirmed real. `sourceTypeBadge()` handles 3 of 4 source types; `wiki-ref` falls through to default. Trivial fix (one switch case), strong signal, near-zero risk. Ready backlog was empty, so p2 clears the bar.
+
+**#274 — Add dedicated unit tests for patch-metadata.ts → ❌ Rejected**
+Premise was wrong. The issue claimed "only indirect coverage" but the module already has 16 tests across `mcp.test.ts` (5) and `wiki-routes.test.ts` (11) covering nearly all listed behavior categories. A third parallel test file would duplicate assertions without reducing drift risk. Left the door open: would reconsider if rewritten to target specific untested edge cases (null clearing, array coercion).
+
+Lesson reinforced: agent-self issues that characterize existing coverage as insufficient need to be verified against actual test counts, not file-level presence. "No dedicated test file" ≠ "untested."
