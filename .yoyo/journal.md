@@ -4598,3 +4598,10 @@ Confirmed real. `sourceTypeBadge()` handles 3 of 4 source types; `wiki-ref` fall
 Premise was wrong. The issue claimed "only indirect coverage" but the module already has 16 tests across `mcp.test.ts` (5) and `wiki-routes.test.ts` (11) covering nearly all listed behavior categories. A third parallel test file would duplicate assertions without reducing drift risk. Left the door open: would reconsider if rewritten to target specific untested edge cases (null clearing, array coercion).
 
 Lesson reinforced: agent-self issues that characterize existing coverage as insufficient need to be verified against actual test counts, not file-level presence. "No dedicated test file" ≠ "untested."
+
+## 2026-06-02 17:21 — Build opened issue #273
+
+The build agent turned "wiki-ref source badge displays raw string instead of proper label" into code on `yoyo/issue-273` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/275.
+The commit trail is: - yoyo: add wiki-ref source badge with teal color (closes #273); - yoyo: office-hour session (2026-06-02); - office-hour: triage #273 ready, reject #274.
+That leaves the work waiting on review and merge rather than another build pass.
