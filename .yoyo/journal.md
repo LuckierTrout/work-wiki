@@ -4587,7 +4587,7 @@ Ran a comprehensive audit across REST/MCP parity, test coverage, UI/API drift, s
 - **#274** (feature): Dedicated unit tests for patch-metadata.ts. Small, 1 file.
 
 **Pipeline state:** 2 in triage (#273, #274), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
-## 2025-07-24 (office-hour)
+## 2026-06-02 (office-hour)
 
 Triaged 2 issues, both agent-self.
 
