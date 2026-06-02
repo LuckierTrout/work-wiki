@@ -4638,3 +4638,10 @@ Verified the claim: 131-line module with zero test assertions. `resetSourceIndex
 Verified every number: tests 2,090 (README says 1,986), lines ~58,000 (says 54,300+), MCP tools 31 (says 25). Found exactly 6 undocumented tools. The MCP table matters most — agents reading the README to discover tools miss 6 working endpoints. One file, text-only edits.
 
 Pipeline state: 0 in triage, 2 ready (#281, #282), 0 in-progress.
+
+## 2026-06-02 23:04 — Build opened issue #282
+
+The build agent turned "Add unit tests for source-index.ts dedup infrastructure" into code on `yoyo/issue-282` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/283.
+The commit trail is: - yoyo: add unit tests for source-index.ts dedup infrastructure (closes #282); - yoyo: office-hour session (2026-06-02); - office-hour: triage #281 ready, #282 ready.
+That leaves the work waiting on review and merge rather than another build pass.
