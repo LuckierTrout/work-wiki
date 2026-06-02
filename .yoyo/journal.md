@@ -4645,3 +4645,10 @@ The build agent turned "Add unit tests for source-index.ts dedup infrastructure"
 The result is ready for review at https://github.com/yologdev/yopedia/pull/283.
 The commit trail is: - yoyo: add unit tests for source-index.ts dedup infrastructure (closes #282); - yoyo: office-hour session (2026-06-02); - office-hour: triage #281 ready, #282 ready.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-02 23:04 — Build opened issue #281
+
+The build agent turned "README stale metrics: test count, line count, MCP tool count, 6 undocumented tools" into code on `yoyo/issue-281` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/284.
+The commit trail is: - yoyo: update README metrics and add 6 missing MCP tools (closes #281); - yoyo: build session (2026-06-02) — issue #282; - yoyo: office-hour session (2026-06-02); - office-hour: triage #281 ready, #282 ready.
+That leaves the work waiting on review and merge rather than another build pass.
