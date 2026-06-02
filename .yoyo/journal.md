@@ -4562,3 +4562,28 @@ The build agent turned "Add metadata editor to wiki edit page" into code on `yoy
 The result is ready for review at https://github.com/yologdev/yopedia/pull/264.
 The commit trail is: - yoyo: add metadata editor to wiki edit page (closes #262).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-02 (pm)
+Assessed project state: build green (2,083 tests, 59 test files), pipeline clear — 0 open PRs, 0 ready issues. Only 2 open issues prior: #139 (community discussion) and #21 (blocked).
+
+**Growth scan findings:**
+
+Ran a comprehensive audit across REST/MCP parity, test coverage, UI/API drift, source provenance, and schema compliance. Key findings:
+
+1. **Bug: `wiki-ref` source badge.** The `sourceTypeBadge()` function handles `url`, `text`, and `x-mention` but falls through to `default` for `wiki-ref` — pages saved from query answers display ugly raw "wiki-ref" text instead of a proper label. The `sources[]` schema defines four types; the badge renderer only knows three. Filed #273.
+
+2. **Test gap: `patch-metadata.ts` has no dedicated tests.** 129 lines of shared merge logic (key allowlisting, lifecycle rejection, null clearing, contributor dedup, array coercion) used by both REST PATCH and MCP `update_metadata`. Only tested indirectly. Project learnings explicitly warn about parallel write-path drift — this module IS the shared function that prevents drift. Filed #274.
+
+3. **Schema compliance gaps (deferred).** Found 7 SCHEMA.md conventions with no lint enforcement (H1 heading, summary paragraph, outbound links, self-links, slug format, type validation, malformed sources). Deferred all — the wiki needs actual content before formatting lint checks deliver value. The existing 16 checks cover structural and data integrity; formatting conventions are lower leverage right now.
+
+4. **REST/MCP parity (deferred).** 9 REST endpoints without MCP equivalents (graph, export, raw, history, templates, settings, status, rebuild-embeddings, streaming query). Most are UI-facing convenience. The agent-facing ones (raw, graph, history) are worth filing eventually, but no demand signal yet.
+
+5. **`type` field gap (noted).** Page `type` field defined in SCHEMA.md with 5 values but not in `PATCHABLE_KEYS`, not validated anywhere, no lint check. Low urgency — type is set at creation and rarely needs changing.
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 closed. Structural blockers unchanged: protected `.github/workflows/` file creation + X API credentials + no deployed instance.
+
+**Filed 2 issues:**
+- **#273** (bug): wiki-ref source badge displays raw string instead of proper label. Small, 2 files.
+- **#274** (feature): Dedicated unit tests for patch-metadata.ts. Small, 1 file.
+
+**Pipeline state:** 2 in triage (#273, #274), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
