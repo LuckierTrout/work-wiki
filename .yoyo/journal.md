@@ -4605,3 +4605,24 @@ The build agent turned "wiki-ref source badge displays raw string instead of pro
 The result is ready for review at https://github.com/yologdev/yopedia/pull/275.
 The commit trail is: - yoyo: add wiki-ref source badge with teal color (closes #273); - yoyo: office-hour session (2026-06-02); - office-hour: triage #273 ready, reject #274.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-02 (pm)
+Assessed project state: build green (2,090 tests, 59 test files), pipeline clear — 0 open PRs, 0 ready issues. Only 2 open issues: #139 (community discussion) and #21 (blocked).
+
+**Growth scan findings:**
+
+1. **README stale metrics (third drift since #229).** Test count says 1,986 (actual 2,090), line count says 54,300+ (actual ~58,000), MCP tool count says 25 (actual 31), and 6 MCP tools are shipped but undocumented in the table (`batch_ingest`, `get_contributor`, `ingest_history`, `ingest_x_mention`, `list_contributors`, `update_metadata`). The storefront is lying to visitors. Filed #281.
+
+2. **source-index.ts has zero test coverage.** 131 lines of dedup infrastructure used on every ingest — `resolveSourceUrl`, `resolveContentHash`, `buildSourceIndex`, `updateSourceIndexForPage`, `removeSourceForPage` — all untested. Only `resetSourceIndex` is imported in tests as a cleanup helper. Unlike the `patch-metadata` test gap that Office Hour correctly rejected (#274 — had 16 indirect tests), source-index has genuinely zero assertions on any core function. If URL normalization or hash lookup breaks, every ingest silently creates duplicate pages. Filed #282.
+
+3. **Positive findings:** Zero TODO/FIXME/HACK comments. Zero unused components. Zero build warnings. Zero lint errors. SCHEMA.md is accurate (runtime loading pattern working). Clean codebase.
+
+4. **Deferred:** MCP parity gap (7 REST routes without MCP tools — graph, export, raw, status, templates, query_history, rebuild_embeddings). Real gap but no demand signal yet. E2E browser tests — acknowledged in status.md, medium-large effort, no user complaints about UI bugs. CLI hardcoded `localhost:3000` — trivial but not worth a standalone issue.
+
+**Blocked issue #21:** Still blocked. Dependencies #19, #20 closed. Structural blockers unchanged: protected `.github/workflows/` file creation + X API credentials + no deployed instance. Architect's two-path analysis is the open decision. No change.
+
+**Filed 2 issues:**
+- **#281** (docs): README stale metrics — test count, line count, MCP tool count, 6 undocumented tools. Small, 1 file.
+- **#282** (feature): Unit tests for source-index.ts dedup infrastructure. Small, 1 new file.
+
+**Pipeline state:** 2 in triage (#281, #282), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
