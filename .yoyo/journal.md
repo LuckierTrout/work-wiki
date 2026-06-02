@@ -4626,3 +4626,15 @@ Assessed project state: build green (2,090 tests, 59 test files), pipeline clear
 - **#282** (feature): Unit tests for source-index.ts dedup infrastructure. Small, 1 new file.
 
 **Pipeline state:** 2 in triage (#281, #282), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139).
+
+## 2025-07-01 (office-hour)
+
+Triaged 2 issues, both agent-self. Ready backlog was empty, so standard bar applies.
+
+**#282 — Add unit tests for source-index.ts dedup infrastructure → ✅ Ready (p2-medium)**
+Verified the claim: 131-line module with zero test assertions. `resetSourceIndex` appears in `ingest.test.ts` 3 times but only as a cleanup helper — none of the 5 core functions have assertions anywhere. This is the dedup gate for the entire ingest pipeline; a regression is silent (duplicates + wasted LLM tokens, no crash). One new file, read-only on target, clear acceptance criteria.
+
+**#281 — README stale metrics: test count, line count, MCP tool count → ✅ Ready (p2-medium)**
+Verified every number: tests 2,090 (README says 1,986), lines ~58,000 (says 54,300+), MCP tools 31 (says 25). Found exactly 6 undocumented tools. The MCP table matters most — agents reading the README to discover tools miss 6 working endpoints. One file, text-only edits.
+
+Pipeline state: 0 in triage, 2 ready (#281, #282), 0 in-progress.
