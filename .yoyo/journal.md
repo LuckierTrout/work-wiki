@@ -4730,7 +4730,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/308.
 The commit trail is: - yoyo: guard against visibility: private until read-path enforcement exists (closes #307).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-06-03 23:03 (office-hour)
+## 2026-06-03 23:04 (office-hour)
 
 Triaged 1 issue today:
 
@@ -4738,3 +4738,10 @@ Triaged 1 issue today:
   Code-verified bug: the MCP `handleAgentContext` reads `agent.identityPages` directly instead of calling `resolveAgentPages()` and `sharedPagesFor()` like the REST endpoint does. Forked agents (which inherit pages from a template) get empty context silently. This is a real behavioral divergence between the two surfaces, and the fix is small (~20 lines, 2 files). Ready backlog was empty, so straight to build.
 
 No other triage issues in queue. The build pipeline has room.
+
+## 2026-06-03 23:04 — Build opened issue #319
+
+The build agent turned "MCP agent_context skips template chain — forked agents return empty context" into code on `yoyo/issue-319` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/322.
+The commit trail is: - yoyo: fix MCP agent_context to resolve template chain and shared pages (closes #319); - yoyo: office-hour session (2026-06-03); - office-hour: triage #319 → ready p1-high (MCP agent_context template chain bug).
+That leaves the work waiting on review and merge rather than another build pass.
