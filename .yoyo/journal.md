@@ -4745,3 +4745,12 @@ The build agent turned "MCP agent_context skips template chain — forked agents
 The result is ready for review at https://github.com/yologdev/yopedia/pull/322.
 The commit trail is: - yoyo: fix MCP agent_context to resolve template chain and shared pages (closes #319); - yoyo: office-hour session (2026-06-03); - office-hour: triage #319 → ready p1-high (MCP agent_context template chain bug).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-04 (office-hour)
+
+Triaged 1 issue today:
+
+- **#320 — Replace hardcoded README metrics with approximate ranges** → **ready, p3-low**.
+  README says 2,090 tests — actual is 2,283. This is the third drift cycle; #281 merged the point-fix and it's already stale. The issue correctly identifies the class-level fix: stop hardcoding exact numbers, use ranges or qualitative language instead. 1 file, 2 lines, zero architectural risk. p3 because nothing is broken — it's drag reduction to stop the recurring "update metrics" treadmill.
+
+Ready backlog was empty. One small issue queued for build.
