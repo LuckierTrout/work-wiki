@@ -13,7 +13,7 @@ import {
   wikiRelPath,
 } from "./wiki";
 import { isEnoent } from "./errors";
-import { getAgent } from "./agents";
+import { getAgent, resolveAgentPages } from "./agents";
 import { getStorage } from "./storage";
 
 // ---------------------------------------------------------------------------
@@ -556,15 +556,25 @@ export async function resolveScope(
     const agent = await getAgent(agentId);
     if (!agent) return null;
 
+    // Effective pages = own + inherited from the template chain, so an
+    // `agent:<fork>` scope also searches the base content the fork inherits.
+    const pages = await resolveAgentPages(agent);
     const slugs = [
-      ...(agent.identityPages ?? []),
-      ...(agent.learningPages ?? []),
-      ...(agent.socialPages ?? []),
+      ...pages.identityPages,
+      ...pages.learningPages,
+      ...pages.socialPages,
     ];
 
     return { agentId: agent.id, slugs };
-  } catch {
-    // Invalid agent ID format or other error — treat as unresolvable
-    return null;
+  } catch (err) {
+    // A malformed agent id is genuinely unresolvable → null is correct. Any
+    // other error (storage outage, corrupt agent JSON in the template chain)
+    // must NOT be masked as an empty scope — that would silently mis-scope
+    // search during an outage. Log and rethrow those.
+    if (err instanceof Error && err.message.includes("Invalid agent ID")) {
+      return null;
+    }
+    logger.warn("search", `resolveScope failed for "${scopeParam}":`, err);
+    throw err;
   }
 }

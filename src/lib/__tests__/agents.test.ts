@@ -8,12 +8,17 @@ import {
   listAgents,
   listAgentsForOwner,
   getAgent,
+  getAgentByOwnerName,
   registerAgent,
   deleteAgent,
   seedAgent,
   updateAgent,
   assertCanMutateAgent,
   AgentOwnershipError,
+  agentIdFor,
+  agentShortName,
+  forkAgent,
+  resolveAgentPages,
 } from "../agents";
 import type { UpdateAgentPage } from "../agents";
 import { readWikiPage, readWikiPageWithFrontmatter } from "../wiki";
@@ -915,7 +920,7 @@ describe("agent ownership", () => {
     },
   ];
 
-  it("seedAgent persists the owner", async () => {
+  it("seedAgent persists the owner and a composite id", async () => {
     const profile = await seedAgent({
       id: "yoyo",
       name: "Yoyo",
@@ -924,10 +929,11 @@ describe("agent ownership", () => {
       sections,
     });
     expect(profile.owner).toBe("alice");
-    expect((await getAgent("yoyo"))!.owner).toBe("alice");
+    expect(profile.id).toBe(agentIdFor("alice", "yoyo")); // "alice-yoyo"
+    expect((await getAgentByOwnerName("alice", "yoyo"))!.owner).toBe("alice");
   });
 
-  it("re-seed preserves the original owner (ownership never transfers)", async () => {
+  it("re-seed by the owner keeps owner; a different owner gets a separate agent", async () => {
     await seedAgent({
       id: "yoyo",
       name: "Yoyo",
@@ -935,21 +941,35 @@ describe("agent ownership", () => {
       owner: "alice",
       sections,
     });
-    // A second seed claiming a different owner must NOT take over.
-    const reseeded = await seedAgent({
+    // Alice re-seeds her own yoyo — same composite id, owner stays alice.
+    const aliceReseed = await seedAgent({
       id: "yoyo",
       name: "Yoyo v2",
       description: "An agent, updated",
+      owner: "alice",
+      sections,
+    });
+    expect(aliceReseed.id).toBe(agentIdFor("alice", "yoyo"));
+    expect(aliceReseed.owner).toBe("alice");
+
+    // Bob seeding "yoyo" creates a SEPARATE agent (bob-yoyo) — not a takeover.
+    const bobSeed = await seedAgent({
+      id: "yoyo",
+      name: "Bob's Yoyo",
+      description: "Bob's agent",
       owner: "bob",
       sections,
     });
-    expect(reseeded.owner).toBe("alice");
-    expect((await getAgent("yoyo"))!.owner).toBe("alice");
+    expect(bobSeed.id).toBe(agentIdFor("bob", "yoyo"));
+    expect(bobSeed.owner).toBe("bob");
+    expect((await getAgentByOwnerName("alice", "yoyo"))!.owner).toBe("alice");
   });
 
   describe("assertCanMutateAgent", () => {
     it("allows creation when the agent does not exist yet", async () => {
-      await expect(assertCanMutateAgent("yoyo", "alice")).resolves.toBeNull();
+      await expect(
+        assertCanMutateAgent(agentIdFor("alice", "yoyo"), "alice"),
+      ).resolves.toBeNull();
     });
 
     it("allows the owner to mutate their agent", async () => {
@@ -960,7 +980,7 @@ describe("agent ownership", () => {
         owner: "alice",
         sections,
       });
-      const existing = await assertCanMutateAgent("yoyo", "alice");
+      const existing = await assertCanMutateAgent(agentIdFor("alice", "yoyo"), "alice");
       expect(existing!.owner).toBe("alice");
     });
 
@@ -972,9 +992,9 @@ describe("agent ownership", () => {
         owner: "alice",
         sections,
       });
-      await expect(assertCanMutateAgent("yoyo", "bob")).rejects.toBeInstanceOf(
-        AgentOwnershipError,
-      );
+      await expect(
+        assertCanMutateAgent(agentIdFor("alice", "yoyo"), "bob"),
+      ).rejects.toBeInstanceOf(AgentOwnershipError);
     });
 
     it("allows mutation of a legacy agent with no owner", async () => {
@@ -996,15 +1016,198 @@ describe("agent ownership", () => {
         sections,
       });
       await seedAgent({
-        id: "bobbot",
-        name: "BobBot",
+        id: "yoyo",
+        name: "Yoyo",
         description: "Bob's agent",
         owner: "bob",
-        sections: [{ ...sections[0], slug: "bobbot-identity" }],
+        sections,
       });
       const aliceAgents = await listAgentsForOwner("alice");
-      expect(aliceAgents.map((a) => a.id)).toEqual(["yoyo"]);
+      expect(aliceAgents.map((a) => a.id)).toEqual([agentIdFor("alice", "yoyo")]);
+      expect(aliceAgents[0].owner).toBe("alice");
       expect(await listAgentsForOwner("carol")).toEqual([]);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Addressing, fork + resolver
+// ---------------------------------------------------------------------------
+
+describe("agent addressing", () => {
+  it("agentIdFor composes owner + name with an unambiguous '--' separator", () => {
+    expect(agentIdFor("yopedia", "yoyo")).toBe("yopedia--yoyo");
+    expect(agentIdFor("Alice_B", "yoyo")).toBe("alice-b--yoyo");
+    expect(agentIdFor("bob")).toBe("bob--yoyo"); // default name
+  });
+
+  it("agentIdFor does not let a crafted name collide across owners", () => {
+    // The classic single-hyphen collision: owner "a_b"+"yoyo" vs owner "a"+"b_yoyo".
+    // With separate slugify + "--", these stay distinct.
+    expect(agentIdFor("a_b", "yoyo")).not.toBe(agentIdFor("a", "b_yoyo"));
+    expect(agentIdFor("a_b", "yoyo")).toBe("a-b--yoyo");
+    expect(agentIdFor("a", "b_yoyo")).toBe("a--b-yoyo");
+  });
+
+  describe("agentShortName round-trips agentIdFor", () => {
+    const cases: Array<[string, string]> = [
+      ["alice", "yoyo"],
+      ["Alice_B", "yoyo"],
+      ["bob-smith", "yoyo"], // (not a real Twitter handle, but exercises hyphens)
+      ["a", "yoyo"],
+      ["alice", "v2"],
+    ];
+    for (const [owner, name] of cases) {
+      it(`(${owner}, ${name})`, () => {
+        const id = agentIdFor(owner, name);
+        const short = agentShortName({
+          ...makeProfile({ id }),
+          owner,
+        });
+        // The short name must re-compose to the same id (URL round-trip).
+        expect(agentIdFor(owner, short)).toBe(id);
+      });
+    }
+
+    it("returns the full id for an unowned/legacy agent", () => {
+      expect(agentShortName(makeProfile({ id: "legacy", owner: undefined }))).toBe(
+        "legacy",
+      );
+    });
+  });
+
+  it("getAgentByOwnerName round-trips a seeded agent", async () => {
+    await seedAgent({
+      id: "yoyo",
+      name: "Yoyo",
+      description: "An agent",
+      owner: "alice",
+      sections: [
+        { type: "identity", slug: "yoyo-identity", title: "Id", content: "x" },
+      ],
+    });
+    const got = await getAgentByOwnerName("alice", "yoyo");
+    expect(got!.id).toBe(agentIdFor("alice", "yoyo"));
+    expect(got!.owner).toBe("alice");
+  });
+});
+
+describe("forkAgent", () => {
+  async function seedBase() {
+    return seedAgent({
+      id: "yoyo",
+      name: "Yoyo",
+      description: "Base yoyo",
+      owner: "yopedia",
+      sections: [
+        { type: "identity", slug: "yoyo-identity", title: "Id", content: "I am yoyo." },
+        { type: "learnings", slug: "yoyo-learnings", title: "L", content: "Lesson 1." },
+      ],
+    });
+  }
+
+  it("creates a fork owned by the user that inherits the base by reference", async () => {
+    const base = await seedBase();
+    const fork = await forkAgent({ owner: "alice", templateId: base.id });
+    expect(fork).not.toBeNull();
+    expect(fork!.id).toBe(agentIdFor("alice", "yoyo"));
+    expect(fork!.owner).toBe("alice");
+    expect(fork!.template).toBe(base.id);
+    // Own pages are empty — content is inherited.
+    expect(fork!.identityPages).toEqual([]);
+    expect(fork!.learningPages).toEqual([]);
+  });
+
+  it("is idempotent — re-forking returns the existing profile", async () => {
+    const base = await seedBase();
+    const first = await forkAgent({ owner: "alice", templateId: base.id });
+    const second = await forkAgent({ owner: "alice", templateId: base.id });
+    expect(second!.registered).toBe(first!.registered);
+  });
+
+  it("returns null when the template doesn't exist", async () => {
+    expect(
+      await forkAgent({ owner: "alice", templateId: "does-not-exist" }),
+    ).toBeNull();
+  });
+
+  it("never returns an agent owned by someone else (collision safety)", async () => {
+    // Simulate an id already taken by a different owner (e.g. an owner-slug
+    // collision): forkAgent must not hand it over.
+    const id = agentIdFor("alice", "yoyo");
+    await registerAgent(makeProfile({ id, owner: "mallory" }));
+    const base = await seedBase();
+    expect(await forkAgent({ owner: "alice", templateId: base.id })).toBeNull();
+  });
+});
+
+describe("resolveAgentPages cycle + depth", () => {
+  // Use the injectable `load` so we can build pathological chains in memory.
+  const mk = (id: string, template: string | undefined, pages: string[]) =>
+    makeProfile({ id, template, identityPages: pages });
+
+  it("terminates on a self-referential template", async () => {
+    const a = mk("a--yoyo", "a--yoyo", ["a-id"]);
+    const load = async () => a;
+    const resolved = await resolveAgentPages(a, load);
+    expect(resolved.identityPages).toEqual(["a-id"]); // once, no hang
+  });
+
+  it("terminates on a 2-node cycle and de-dupes", async () => {
+    const a = mk("a--yoyo", "b--yoyo", ["a-id"]);
+    const b = mk("b--yoyo", "a--yoyo", ["b-id"]);
+    const load = async (id: string) => (id === a.id ? a : b);
+    const resolved = await resolveAgentPages(a, load);
+    expect(resolved.identityPages.sort()).toEqual(["a-id", "b-id"]);
+  });
+
+  it("unions a multi-level chain own-first", async () => {
+    const a = mk("a--yoyo", "b--yoyo", ["a-id"]);
+    const b = mk("b--yoyo", "c--yoyo", ["b-id"]);
+    const c = mk("c--yoyo", undefined, ["c-id"]);
+    const load = async (id: string) =>
+      ({ [a.id]: a, [b.id]: b, [c.id]: c })[id] ?? null;
+    const resolved = await resolveAgentPages(a, load);
+    expect(resolved.identityPages).toEqual(["a-id", "b-id", "c-id"]);
+  });
+});
+
+describe("resolveAgentPages", () => {
+  it("resolves a fork's pages from its template chain", async () => {
+    const base = await seedAgent({
+      id: "yoyo",
+      name: "Yoyo",
+      description: "Base",
+      owner: "yopedia",
+      sections: [
+        { type: "identity", slug: "yoyo-identity", title: "Id", content: "x" },
+        { type: "learnings", slug: "yoyo-learnings", title: "L", content: "y" },
+        { type: "social", slug: "yoyo-social", title: "S", content: "z" },
+      ],
+    });
+    const fork = (await forkAgent({ owner: "alice", templateId: base.id }))!;
+
+    const resolved = await resolveAgentPages(fork);
+    expect(resolved.identityPages).toEqual(["yoyo-identity"]);
+    expect(resolved.learningPages).toEqual(["yoyo-learnings"]);
+    expect(resolved.socialPages).toEqual(["yoyo-social"]);
+  });
+
+  it("unions a fork's own pages on top of the inherited ones (de-duped)", async () => {
+    const base = await seedAgent({
+      id: "yoyo",
+      name: "Yoyo",
+      description: "Base",
+      owner: "yopedia",
+      sections: [
+        { type: "learnings", slug: "yoyo-learnings", title: "L", content: "y" },
+      ],
+    });
+    const fork = (await forkAgent({ owner: "alice", templateId: base.id }))!;
+    fork.learningPages = ["alice-own-learning"];
+    await registerAgent(fork);
+
+    const resolved = await resolveAgentPages(fork);
+    expect(resolved.learningPages).toEqual(["alice-own-learning", "yoyo-learnings"]);
   });
 });
