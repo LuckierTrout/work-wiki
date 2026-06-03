@@ -24,7 +24,6 @@ import {
   generateAgentToken,
   verifyAgentToken,
   revokeAgentToken,
-  publicAgent,
   addAgentLearningPage,
 } from "../agents";
 import type { UpdateAgentPage } from "../agents";
@@ -1340,15 +1339,16 @@ describe("per-agent credentials", () => {
     await registerAgent(makeProfile({ id, owner }));
   }
 
-  it("generateAgentToken returns <id>.<secret> and stores only the hash", async () => {
+  it("generateAgentToken returns <id>.<secret>, and the profile carries no secret", async () => {
     await seedAgentRecord();
     const token = await generateAgentToken("alice--yoyo");
     expect(token.startsWith("alice--yoyo.")).toBe(true);
+    expect(await verifyAgentToken(token)).toBe("alice--yoyo");
 
+    // The secret lives in a SEPARATE store — never on the serializable profile.
     const agent = await getAgent("alice--yoyo");
-    expect(agent!.tokenHash).toBeTruthy();
-    // The raw secret is never stored.
-    expect(agent!.tokenHash).not.toContain(token.split(".")[1]);
+    expect(JSON.stringify(agent)).not.toContain("tokenHash");
+    expect(JSON.stringify(agent)).not.toContain(token.split(".")[1]);
   });
 
   it("verifyAgentToken accepts the right token and rejects others", async () => {
@@ -1370,6 +1370,30 @@ describe("per-agent credentials", () => {
     expect(await verifyAgentToken("alice--yoyo")).toBeNull(); // no dot
   });
 
+  it("rejects ids that could escape the secret store (path traversal)", async () => {
+    // The id segment must pass AGENT_ID_RE before forming a storage path.
+    expect(await verifyAgentToken("../../etc/passwd.secret")).toBeNull();
+    expect(await verifyAgentToken("a/b.secret")).toBeNull();
+    expect(await verifyAgentToken("..%2f.secret")).toBeNull();
+    expect(await verifyAgentToken("UPPER.secret")).toBeNull(); // uppercase not allowed
+  });
+
+  it("fails closed on a corrupt secret file", async () => {
+    await getStorage().writeFile("agent-secrets/alice--yoyo.json", "not json{{{");
+    expect(await verifyAgentToken("alice--yoyo.anysecret")).toBeNull();
+  });
+
+  it("stores the hash only in the separate secret store", async () => {
+    await seedAgentRecord();
+    await generateAgentToken("alice--yoyo");
+    // Positively: the secret store holds a hash…
+    const raw = await getStorage().readFile("agent-secrets/alice--yoyo.json");
+    expect(JSON.parse(raw)).toHaveProperty("tokenHash");
+    // …and the profile object has no credential-bearing keys.
+    const agent = await getAgent("alice--yoyo");
+    expect(Object.keys(agent!)).not.toContain("tokenHash");
+  });
+
   it("rotating invalidates the previous token", async () => {
     await seedAgentRecord();
     const first = await generateAgentToken("alice--yoyo");
@@ -1384,17 +1408,16 @@ describe("per-agent credentials", () => {
     const token = await generateAgentToken("alice--yoyo");
     await revokeAgentToken("alice--yoyo");
     expect(await verifyAgentToken(token)).toBeNull();
-    expect((await getAgent("alice--yoyo"))!.tokenHash).toBeUndefined();
   });
 
-  it("publicAgent strips the tokenHash", async () => {
+  it("deleting an agent revokes its credential and removes the secret file", async () => {
     await seedAgentRecord();
-    await generateAgentToken("alice--yoyo");
-    const agent = await getAgent("alice--yoyo");
-    expect(agent!.tokenHash).toBeTruthy();
-    expect(publicAgent(agent!).tokenHash).toBeUndefined();
-    // Other fields survive.
-    expect(publicAgent(agent!).id).toBe("alice--yoyo");
+    const token = await generateAgentToken("alice--yoyo");
+    await deleteAgent("alice--yoyo");
+    expect(await verifyAgentToken(token)).toBeNull();
+    expect(
+      await getStorage().fileExists("agent-secrets/alice--yoyo.json"),
+    ).toBe(false);
   });
 });
 
