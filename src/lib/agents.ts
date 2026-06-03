@@ -72,6 +72,51 @@ function validateProfile(profile: AgentProfile): void {
 }
 
 // ---------------------------------------------------------------------------
+// Ownership
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown when an actor tries to mutate an agent they don't own. Routes map
+ * this to HTTP 403 (distinct from a 404 for a missing agent).
+ */
+export class AgentOwnershipError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentOwnershipError";
+  }
+}
+
+/**
+ * Assert that `actor` (a session principal handle) may mutate agent `id`, and
+ * return the existing profile (or null if it doesn't exist yet).
+ *
+ * A mutation is allowed when:
+ *   - the agent doesn't exist yet (this is a creation), OR
+ *   - the agent has no recorded owner (legacy/pre-ownership record), OR
+ *   - the agent's owner equals `actor`.
+ *
+ * Otherwise throws {@link AgentOwnershipError}. This is what makes "seed once,
+ * then only the owner can re-seed/feed/edit/delete" hold: the first seed claims
+ * ownership, and everyone else is read-only against that agent.
+ *
+ * Also throws a validation error first if `id` is malformed (routes map that to
+ * 400, distinct from the 403 ownership rejection).
+ */
+export async function assertCanMutateAgent(
+  id: string,
+  actor: string,
+): Promise<AgentProfile | null> {
+  validateAgentId(id);
+  const existing = await getAgent(id);
+  if (existing?.owner && existing.owner !== actor) {
+    throw new AgentOwnershipError(
+      `Agent "${id}" is owned by @${existing.owner}; @${actor} cannot modify it.`,
+    );
+  }
+  return existing;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -104,6 +149,17 @@ export async function listAgents(): Promise<AgentProfile[]> {
   // Sort alphabetically by ID for stable ordering.
   profiles.sort((a, b) => a.id.localeCompare(b.id));
   return profiles;
+}
+
+/**
+ * List the agents owned by a given principal handle, sorted by ID.
+ * Returns an empty array if the handle owns none (or the registry is empty).
+ */
+export async function listAgentsForOwner(
+  handle: string,
+): Promise<AgentProfile[]> {
+  const agents = await listAgents();
+  return agents.filter((a) => a.owner === handle);
 }
 
 /**
@@ -337,6 +393,10 @@ export interface SeedAgentOptions {
   id: string;
   name: string;
   description: string;
+  /** Accountable principal handle claiming ownership. Set from the session by
+   *  the route, never from client input. Ignored on re-seed if the agent
+   *  already has an owner (ownership never transfers via seed). */
+  owner?: string;
   /** Content sections to create as wiki pages. */
   sections: SeedAgentSection[];
 }
@@ -449,6 +509,7 @@ export async function seedAgent(options: SeedAgentOptions): Promise<AgentProfile
     id: options.id,
     name: options.name,
     description: options.description,
+    owner: options.owner,
     identityPages,
     learningPages,
     socialPages,
@@ -456,10 +517,13 @@ export async function seedAgent(options: SeedAgentOptions): Promise<AgentProfile
     lastUpdated: now.toISOString(),
   };
 
-  // If the agent already exists, preserve its original registration date
+  // If the agent already exists, preserve its original registration date and
+  // owner — an owned agent never changes hands here. An existing *unowned*
+  // (legacy) agent is claimed by this seeder via the `?? options.owner` fallback.
   const existingAgent = await getAgent(options.id);
   if (existingAgent) {
     profile.registered = existingAgent.registered;
+    profile.owner = existingAgent.owner ?? options.owner;
   }
 
   await registerAgent(profile);
