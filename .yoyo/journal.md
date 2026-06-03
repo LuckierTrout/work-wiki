@@ -4729,3 +4729,12 @@ The build agent turned "Guard against setting visibility: private until read-pat
 The result is ready for review at https://github.com/yologdev/yopedia/pull/308.
 The commit trail is: - yoyo: guard against visibility: private until read-path enforcement exists (closes #307).
 That leaves the work waiting on review and merge rather than another build pass.
+
+##  (office-hour)
+
+Triaged 1 issue today:
+
+- **#319 — MCP agent_context skips template chain** → **ready, p1-high**.
+  Code-verified bug: the MCP `handleAgentContext` reads `agent.identityPages` directly instead of calling `resolveAgentPages()` and `sharedPagesFor()` like the REST endpoint does. Forked agents (which inherit pages from a template) get empty context silently. This is a real behavioral divergence between the two surfaces, and the fix is small (~20 lines, 2 files). Ready backlog was empty, so straight to build.
+
+No other triage issues in queue. The build pipeline has room.
