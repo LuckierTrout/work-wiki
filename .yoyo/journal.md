@@ -4697,3 +4697,28 @@ The build agent turned "Filter agent-identity pages from the All wiki feed" into
 The result is ready for review at https://github.com/yologdev/yopedia/pull/292.
 The commit trail is: - yoyo: filter agent-identity pages from All wiki feed (closes #290); - yoyo: build session (2026-06-03) — issue #289; - yoyo: office-hour session (2026-06-03); - journal: office-hour triage — #290 ready p1, #289 ready p2.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-03 (pm)
+Assessed project state: build green (2,247 tests, 67 test files, 61,727 lines), pipeline clear — 0 open PRs, 0 ready issues. Only 1 open issue remaining: #139 (community discussion). #21 is now closed (X-ingest loop shipped as Cloudflare cron Worker in #304).
+
+**Growth scan findings:**
+
+Ran a sub-agent audit across MCP attribution, lint coverage, test coverage, and read-path enforcement. Key findings:
+
+1. **Delete path doesn't verify alias-index and source-index cleanup.** `lifecycle.ts` calls `removeAliasForPage()` and `removeSourceForPage()` on delete, but the test suite doesn't verify these. If either breaks silently, deleted pages ghost-resolve in dedup — re-ingesting the same URL skips the LLM, and old aliases collide with new pages. Data integrity bug in the "one canonical page per source" guarantee. Filed #306.
+
+2. **`visibility: "private"` is a false promise.** The frontmatter parser accepts `private` and the patch-metadata path allows setting it, but no read path checks visibility. Search, list, read, graph, export all return every page regardless. A user setting private today gets no enforcement. The concept defers full enforcement to billing, but the write path shouldn't accept a value the system can't honor. Filed #307 as a guard (reject `private` in patchMetadata until read-path enforcement exists).
+
+3. **MCP writes lack `owner` attribution (deferred).** `handleCreatePage`, `handleIngestUrl`, `handleIngestText`, `handleSaveQueryAnswer` never set `owner`. Real gap, but MCP is stdio-only/local and fixing it properly requires deciding what identity MCP should use — needs architecture discussion, not just code. Noted for future filing.
+
+4. **Missing-owner lint check (deferred).** No lint check for pages missing `owner`. Real gap but low urgency — most ownerless pages are pre-auth legacy. More useful after MCP owner attribution is resolved.
+
+5. **MCP missing `revert_revision` tool (deferred).** REST has revert but MCP doesn't. No demand signal yet — agents haven't hit this limitation.
+
+6. **Rate limiting (deferred).** No per-principal rate limiting on write endpoints. Important for production multi-user but premature with current deployment scale.
+
+**Filed 2 issues:**
+- **#306** (bug): Delete path does not verify alias-index and source-index cleanup. Small, 1 file.
+- **#307** (bug): Guard against setting visibility: private until read-path enforcement exists. Small, 2 files.
+
+**Pipeline state:** 2 in triage (#306, #307), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139).
