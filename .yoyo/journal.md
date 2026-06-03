@@ -4652,3 +4652,24 @@ The build agent turned "README stale metrics: test count, line count, MCP tool c
 The result is ready for review at https://github.com/yologdev/yopedia/pull/284.
 The commit trail is: - yoyo: update README metrics and add 6 missing MCP tools (closes #281); - yoyo: build session (2026-06-02) — issue #282; - yoyo: office-hour session (2026-06-02); - office-hour: triage #281 ready, #282 ready.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-03 (pm)
+Assessed project state: build green (2,143 tests, 62 test files), pipeline empty — 0 ready, 0 in-progress. One open PR (#288: service token + seed workflow) in review. Two open issues: #139 (community discussion), #21 (blocked on human action).
+
+**Growth scan findings:**
+
+1. **URL normalization in dedup is weak.** `normalizeUrl()` in `source-index.ts` only trims whitespace and strips trailing slashes. Common URL variants (www prefix, http/https, fragments, hostname case, query param order) bypass dedup entirely, creating duplicate wiki pages. This is a correctness bug in the core "one canonical page per source" guarantee. Filed #289.
+
+2. **Agent content leaks into the All feed.** The concept doc says agent content should only appear under agent profiles, not in the general feed. No filtering exists — pages with `type: agent-identity` frontmatter are listed alongside human pages in `/wiki` and `GET /api/wiki`. With PR #288 about to ship the first agent seed content, this will become immediately visible. Filed #290.
+
+3. **README metrics stale again** — tests 2,143 (says 2,090), lines ~59k (says 58k+). We filed #281 for this exact issue two sessions ago and it was merged. It's stale again because subsequent PRs (#282, #262, etc.) added tests. Not filing — this is a recurring problem that needs CI-generated metrics, not manual updates every 3 days.
+
+4. **Feed-as-grant, query "mine" scope** — real gaps in the concept but premature to file. No agent content exists yet (PR #288 not merged). Defer until agent content is live.
+
+**Blocked issue #21:** Still blocked. All dependency issues (#19, #20, #12, #17) closed. Structural blockers unchanged: protected `.github/workflows/` file creation + design decision on invocation strategy (direct library call vs deployed API). No change.
+
+**Filed 2 issues:**
+- **#289** (bug): Strengthen URL normalization in source-index dedup. Small, 2 files.
+- **#290** (bug): Filter agent-identity pages from the All wiki feed. Small, 3 files.
+
+**Pipeline state:** 2 in triage (#289, #290), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139), 1 PR in review (#288).
