@@ -28,6 +28,7 @@ import {
 import type { SearchScope } from "../search";
 import { registerAgent, ensureAgentsDir } from "../agents";
 import { serializeFrontmatter } from "../frontmatter";
+import { isAgentScopedType } from "../wiki";
 import type { AgentProfile } from "../types";
 import { _resetStorage } from "../storage";
 
@@ -71,6 +72,18 @@ afterEach(async () => {
 // searchWikiContent
 // ---------------------------------------------------------------------------
 
+describe("isAgentScopedType", () => {
+  it("is true only for agent-* types", () => {
+    expect(isAgentScopedType("agent-knowledge")).toBe(true);
+    expect(isAgentScopedType("agent-identity")).toBe(true);
+    expect(isAgentScopedType(undefined)).toBe(false);
+    expect(isAgentScopedType("")).toBe(false);
+    expect(isAgentScopedType("prose")).toBe(false);
+    // "agent" must be a prefix, not just contained.
+    expect(isAgentScopedType("my-agent-notes")).toBe(false);
+  });
+});
+
 describe("searchWikiContent", () => {
   it("returns empty array for empty query", async () => {
     await ensureDirectories();
@@ -99,6 +112,30 @@ describe("searchWikiContent", () => {
     expect(results).toHaveLength(1);
     expect(results[0].slug).toBe("neural-networks");
     expect(results[0].title).toBe("Neural Networks");
+  });
+
+  it("excludes agent-scoped pages from general (unscoped) search", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "normal-note",
+      "# Normal\n\nAttention mechanisms explained here.",
+    );
+    await writeWikiPage(
+      "agent-note",
+      serializeFrontmatter(
+        { type: "agent-knowledge" },
+        "# Agent Note\n\nAttention mechanisms explained here.",
+      ),
+    );
+    // Both must be in the index so the type-based exclusion can see them.
+    await writeWikiPage(
+      "index",
+      "# Index\n\n- [Normal](normal-note.md) — n\n- [Agent Note](agent-note.md) — a",
+    );
+
+    const slugs = (await searchWikiContent("attention")).map((r) => r.slug);
+    expect(slugs).toContain("normal-note");
+    expect(slugs).not.toContain("agent-note");
   });
 
   it("is case-insensitive", async () => {

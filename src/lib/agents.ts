@@ -16,6 +16,7 @@ import { serializeFrontmatter } from "./frontmatter";
 import { slugify } from "./slugify";
 import { writeWikiPageWithSideEffects } from "./lifecycle";
 import { readWikiPageWithFrontmatter, listWikiPages, writeWikiPage } from "./wiki";
+import { logger } from "./logger";
 import type { AgentProfile } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -212,6 +213,129 @@ export async function setPageShared(
     agentId,
     shared ? "shared with agent" : "unshared from agent",
   );
+}
+
+// ---------------------------------------------------------------------------
+// Per-agent credentials — a token an external runtime uses to ingest AS the
+// agent (e.g. openclaw). Only the SHA-256 hash is stored; the raw token is
+// shown to the owner once at generation (show-once + rotate). The token format
+// `<agentId>.<secret>` makes verification O(1) and self-scoping: a token can
+// only ever authenticate the agent whose id it carries.
+// ---------------------------------------------------------------------------
+
+function toHex(buf: ArrayBuffer): string {
+  return [...new Uint8Array(buf)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(input),
+  );
+  return toHex(digest);
+}
+
+/** Constant-time string compare (avoids leaking the secret via timing). */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/** Strip secret fields (tokenHash) before serving an agent profile publicly. */
+export function publicAgent(agent: AgentProfile): AgentProfile {
+  const { tokenHash: _omit, ...rest } = agent;
+  void _omit;
+  return rest;
+}
+
+/**
+ * Generate (or rotate) an agent's credential. Stores only the SHA-256 hash on
+ * the profile and returns the raw token ONCE — format `<agentId>.<secret>`.
+ * The caller must enforce that the actor owns the agent.
+ */
+export async function generateAgentToken(id: string): Promise<string> {
+  const agent = await getAgent(id);
+  if (!agent) throw new Error(`Agent "${id}" not found`);
+
+  const secretBytes = new Uint8Array(32);
+  crypto.getRandomValues(secretBytes);
+  const secret = toHex(secretBytes.buffer);
+
+  agent.tokenHash = await sha256Hex(secret);
+  agent.lastUpdated = new Date().toISOString();
+  await registerAgent(agent);
+
+  return `${id}.${secret}`;
+}
+
+/**
+ * Append a page slug to an agent's own `learningPages` (idempotent). Used when
+ * the agent ingests content into its own knowledge. No-op if the agent is gone.
+ */
+export async function addAgentLearningPage(
+  id: string,
+  slug: string,
+): Promise<void> {
+  const agent = await getAgent(id);
+  if (!agent) {
+    // The agent was just authenticated for this ingest, so a missing record
+    // here is an anomaly — the page was written but is now unattached.
+    logger.error(
+      "agents",
+      `addAgentLearningPage: agent "${id}" not found; page "${slug}" left unattached`,
+    );
+    return;
+  }
+  if (!agent.learningPages.includes(slug)) {
+    agent.learningPages = [...agent.learningPages, slug];
+    agent.lastUpdated = new Date().toISOString();
+    await registerAgent(agent);
+  }
+}
+
+/** Revoke an agent's credential (clears the stored hash). No-op if unset. */
+export async function revokeAgentToken(id: string): Promise<void> {
+  const agent = await getAgent(id);
+  if (!agent?.tokenHash) return;
+  delete agent.tokenHash;
+  agent.lastUpdated = new Date().toISOString();
+  await registerAgent(agent);
+}
+
+/**
+ * Verify an agent bearer token. Returns the agent id it authenticates, or null.
+ * Splits `<agentId>.<secret>`, looks up the agent, and constant-time-compares
+ * sha256(secret) to the stored `tokenHash`.
+ */
+export async function verifyAgentToken(token: string): Promise<string | null> {
+  if (!token) return null;
+  const dot = token.indexOf(".");
+  if (dot <= 0) return null;
+  const id = token.slice(0, dot);
+  const secret = token.slice(dot + 1);
+  if (!secret) return null;
+
+  let agent: AgentProfile | null;
+  try {
+    agent = await getAgent(id);
+  } catch (err) {
+    // A malformed id is a bad token (→ null → 401). A storage failure is OUR
+    // problem — surface it (route → 500) rather than masking an outage as an
+    // invalid credential, which would make a valid token look revoked.
+    if (err instanceof Error && err.message.includes("Invalid agent ID")) {
+      return null;
+    }
+    logger.error("agents", "verifyAgentToken: agent lookup failed:", err);
+    throw err;
+  }
+  if (!agent?.tokenHash) return null;
+
+  const hash = await sha256Hex(secret);
+  return timingSafeEqual(hash, agent.tokenHash) ? id : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -727,6 +851,9 @@ export async function seedAgent(options: SeedAgentOptions): Promise<AgentProfile
   if (existingAgent) {
     profile.registered = existingAgent.registered;
     profile.owner = existingAgent.owner ?? options.owner;
+    // Preserve a previously-issued credential — a re-seed must not silently
+    // revoke the agent's token.
+    if (existingAgent.tokenHash) profile.tokenHash = existingAgent.tokenHash;
   }
 
   await registerAgent(profile);
