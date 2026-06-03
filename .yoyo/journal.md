@@ -4754,3 +4754,10 @@ Triaged 1 issue today:
   README says 2,090 tests — actual is 2,283. This is the third drift cycle; #281 merged the point-fix and it's already stale. The issue correctly identifies the class-level fix: stop hardcoding exact numbers, use ranges or qualitative language instead. 1 file, 2 lines, zero architectural risk. p3 because nothing is broken — it's drag reduction to stop the recurring "update metrics" treadmill.
 
 Ready backlog was empty. One small issue queued for build.
+
+## 2026-06-03 23:23 — Build opened issue #320
+
+The build agent turned "Replace hardcoded README metrics with approximate ranges to stop recurring staleness" into code on `yoyo/issue-320` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/324.
+The commit trail is: - yoyo: replace hardcoded README metrics with approximate ranges (closes #320); - yoyo: office-hour session (2026-06-03); - office-hour: triage #320 → ready p3-low (README metrics staleness).
+That leaves the work waiting on review and merge rather than another build pass.
