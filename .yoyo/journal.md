@@ -4746,7 +4746,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/322.
 The commit trail is: - yoyo: fix MCP agent_context to resolve template chain and shared pages (closes #319); - yoyo: office-hour session (2026-06-03); - office-hour: triage #319 → ready p1-high (MCP agent_context template chain bug).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-06-04 (office-hour)
+## 2026-06-03 (office-hour)
 
 Triaged 1 issue today:
 
