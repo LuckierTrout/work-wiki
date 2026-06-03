@@ -4722,3 +4722,10 @@ Ran a sub-agent audit across MCP attribution, lint coverage, test coverage, and 
 - **#307** (bug): Guard against setting visibility: private until read-path enforcement exists. Small, 2 files.
 
 **Pipeline state:** 2 in triage (#306, #307), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139).
+
+## 2026-06-03 18:04 — Build opened issue #307
+
+The build agent turned "Guard against setting visibility: private until read-path enforcement exists" into code on `yoyo/issue-307` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/308.
+The commit trail is: - yoyo: guard against visibility: private until read-path enforcement exists (closes #307).
+That leaves the work waiting on review and merge rather than another build pass.
