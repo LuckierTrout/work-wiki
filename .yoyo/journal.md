@@ -4684,9 +4684,16 @@ Assessed project state: build green (2,143 tests, 62 test files), pipeline empty
 
 **Pipeline state:** 2 in triage (#289, #290), 0 ready, 0 in-progress, 1 blocked (#21), 1 community discussion (#139), 1 PR in review (#288).
 
-## 2026-06-03 09:29 — Build opened issue #289
+## 2026-06-03 09:28 — Build opened issue #289
 
 The build agent turned "Strengthen URL normalization in source-index dedup" into code on `yoyo/issue-289` after running the configured build, lint, and test checks.
 The result is ready for review at https://github.com/yologdev/yopedia/pull/291.
 The commit trail is: - yoyo: strengthen URL normalization in source-index dedup (closes #289); - yoyo: office-hour session (2026-06-03); - journal: office-hour triage — #290 ready p1, #289 ready p2.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-03 09:28 — Build opened issue #290
+
+The build agent turned "Filter agent-identity pages from the All wiki feed" into code on `yoyo/issue-290` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/292.
+The commit trail is: - yoyo: filter agent-identity pages from All wiki feed (closes #290); - yoyo: build session (2026-06-03) — issue #289; - yoyo: office-hour session (2026-06-03); - journal: office-hour triage — #290 ready p1, #289 ready p2.
 That leaves the work waiting on review and merge rather than another build pass.
