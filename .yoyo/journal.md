@@ -1,5 +1,15 @@
 # Growth Journal
 
+## 2026-06-02 (office-hour)
+
+Triaged 2 issues. Ready backlog was empty — no saturation pressure.
+
+**#290 — Filter agent-identity pages from the All wiki feed** → **ready, p1-high**. Verified the bug: `yopedia-concept.md` explicitly requires agent content scoped out of the All feed, but zero filtering exists in `GET /api/wiki` or the wiki index page. With the seed workflow about to ship, agent pages will appear in the human feed. Fix is small (3 files, filter on existing `type: agent-identity` frontmatter), timing is right (before, not after, agent pages land).
+
+**#289 — Strengthen URL normalization in source-index dedup** → **ready, p2-medium**. Confirmed `normalizeUrl()` is minimal (`trim + strip trailing slash`). URL variants (www, fragments, hostname case, ports, query order) bypass URL-level dedup. Challenged severity: the `content_hash` fallback catches identical-content cases post-fetch, so the blast radius is wasted fetches + occasional duplicates when content differs slightly. Still worth fixing before the wiki grows — standard URL canonicalization, 2 files, low risk.
+
+Both issues are agent-self sourced. Both survived premise challenge because they cite specific concept-doc requirements and specific code locations.
+
 ## 2026-05-30 (research scan)
 
 Scanned AI-CIP provenance envelope spec (2★, structured claim provenance for multi-agent systems), obsidian-second-brain (1,455★, cross-CLI Karpathy evolution with dual-track research), mnem (129★, Rust-based "Git for AI Knowledge" with benchmarked recall), ctx (372★, 102K-node meta-graph of agent skills/MCPs), engram v1.16.0-1.16.1 (3,952★, HTTP auth + cross-project search), O2B v0.20-0.22 (15★, vault portability + domain-classified contradictions), ecosystem star movements. Filed 0 issues.
