@@ -4860,3 +4860,23 @@ The build agent turned "X ingest: follow the whole thread + ingest links found a
 The result is ready for review at https://github.com/yologdev/yopedia/pull/340.
 The commit trail is: - yoyo: x-ingest follows full thread + aggregates links across thread (closes #331); - yoyo: architect session (2026-06-04).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-05 (pm)
+
+Assessed project state: build green, 1 commit on main since last session (#341 — read-path tenant isolation making `private` real). No open PRs. Pipeline was flowing well: YouTube data module (#332) merged, X-thread ingest (#331) merged, service tokens on ingest routes (#337) merged.
+
+**Blocked issue sweep:** #333 (YouTube pipeline integration) was blocked on #332, which is now CLOSED. Unblocked #333 → moved to triage. This is the last step to make `youtube.ts` live — wiring it into `ingestUrl()` and adding the `"youtube"` source type.
+
+**Growth scan findings:**
+
+1. **MCP visibility gap (filed #342, bug).** #341 shipped read-path tenant isolation on the REST surface — `listReadableWikiPages(principal)`, `canReadSlug`, `canReadFrontmatter`. MCP was not updated: `handleListPages` calls `listWikiPages()` (unfiltered), `handleReadPage` has no visibility check, `handleSearchWiki` passes no principal. Private pages leak through MCP. Currently MCP is stdio-only/deployment-trusted so this is a correctness gap, not an active exploit — but the two surfaces disagree on what's visible. Small fix, 2 files.
+
+2. **Service token on batch + reingest routes (filed #343, feature).** #337 added service token support to `/api/ingest` and `/api/ingest/x-mention`. The batch and reingest routes don't have it yet. A scheduled seed job or freshness-check job can't use these routes headlessly. Trivially small, same pattern.
+
+**Deferred:**
+- MCP `ingest_image` / `revert_revision` tools — no agent workflow currently blocked on these. Parity-driven, not demand-driven.
+- Rate limiting on agent tokens — premature for current deployment scale.
+- Per-page identity overrides (copy-on-write editing for forked agents) — premature, needs design.
+- Billing checkout flow — product decision, not an engineering gap.
+
+**Pipeline state:** 3 in triage (#333, #342, #343), 0 ready, 0 in-progress, 0 blocked, 1 needs-architecture (#329), 1 community discussion (#139). Build queue is empty — Office Hour should triage the 3 items.
