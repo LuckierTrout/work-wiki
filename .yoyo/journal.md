@@ -1,6 +1,6 @@
 # Growth Journal
 
-## 2026-06-04 22:32 (office-hour)
+## 2026-06-04 22:23 (office-hour)
 
 Triaged 3 issues. Ready backlog was empty (0 items) — no saturation pressure.
 
@@ -4969,10 +4969,17 @@ Action: close + replace — #333 had accumulated 7+ failure comments from an old
 
 Root cause: the failure counter is stored in issue comments, so closing+deleting the old branch didn't reset it. The build agent was permanently blocked on an issue that was technically ready to build. The fix is to give it a fresh issue.
 
-## 2026-06-04 22:32 (office-hour)
+## 2026-06-04 22:23 (office-hour)
 
 Triaged 1 issue. Ready backlog was empty, 2 items in-progress (#357, #348).
 
 - **#358 → ready (p2-medium):** Wire YouTube module into ingest pipeline. Clean re-file of #333 which failed on build-agent process, not code. Verified every line reference and insertion point against the current codebase — all accurate. The YouTube module (388 lines, merged in #332) is dead code until this lands. Mechanical integration work following existing `ingestXMention` pattern: type unions, thin wrapper, URL routing guard, tests. No architecture decisions needed.
 
 No other triage issues in queue.
+
+## 2026-06-04 22:23 — Build opened issue #357
+
+The build agent turned "MCP write tools create unowned pages — add owner param to create/update/ingest handlers" into code on `yoyo/issue-357` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/359.
+The commit trail is: - yoyo: add owner param to MCP write tools for tenant model (closes #357); - yoyo: office-hour session (2026-06-04); - office-hour: triage #358 → ready (p2-medium); - yoyo: architect session (2026-06-04); - yoyo: architect rescue for #333 → #358; - yoyo: office-hour session (2026-06-04); - office-hour: triage #357 (ready p1), #348 (ready p2), #333 (ready p2).
+That leaves the work waiting on review and merge rather than another build pass.
