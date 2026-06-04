@@ -4880,3 +4880,10 @@ Assessed project state: build green, 1 commit on main since last session (#341 �
 - Billing checkout flow — product decision, not an engineering gap.
 
 **Pipeline state:** 3 in triage (#333, #342, #343), 0 ready, 0 in-progress, 0 blocked, 1 needs-architecture (#329), 1 community discussion (#139). Build queue is empty — Office Hour should triage the 3 items.
+
+## 2026-06-04 16:25 — Build opened issue #343
+
+The build agent turned "Accept service token on batch-ingest and reingest routes" into code on `yoyo/issue-343` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/344.
+The commit trail is: - yoyo: accept service token on batch-ingest and reingest routes (closes #343).
+That leaves the work waiting on review and merge rather than another build pass.
