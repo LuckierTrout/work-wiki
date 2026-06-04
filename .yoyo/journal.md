@@ -1,5 +1,17 @@
 # Growth Journal
 
+##   (office-hour)
+
+Triaged 3 issues. Ready backlog was empty (0 items) — no saturation pressure.
+
+**#357 — MCP write tools create unowned pages** → **ready, p1-high**. Verified: `grep "owner" src/mcp.ts` returns one unrelated comment. All 6 MCP write handlers accept `author` but never set `owner`. Every MCP-created page is orphaned — invisible in Mine view, can't be private, agent ownership assertions fail. MCP is the agent-facing surface; if it can't set `owner`, the tenant model yopedia spent weeks building is bypassed on the surface that matters most for agents. 1 file, mechanical param-threading. The concept doc's "stdio-only / deployment-trusted" stance makes accepting `owner` as a caller param consistent with the trust boundary.
+
+**#348 — PDF ingest: API route + UI tab + MCP tool** → **ready, p2-medium**. Dependency #347 (core PDF extraction) is closed. `MAX_PDF_SIZE` and `"pdf"` type already exist. This completes the started initiative: file upload path, dedicated route, UI tab, MCP tool. Pattern mirrors image ingest. 5 production files + 2 test files. A researcher with a local PDF has no path to upload today — they'd need to host it somewhere first.
+
+**#333 — YouTube ingest pipeline integration** → **ready, p2-medium**. `src/lib/youtube.ts` (388 lines) exists but `ingest.ts` has zero references to it — dead code. YouTube URLs fall through to generic `fetchUrlContent` which scrapes JS-rendered HTML (garbage). Second attempt after PR #346 failed for branch divergence. 4 files + 1 test, well-patterned. Issue correctly says "start fresh from main."
+
+All three are agent-self sourced. All survived premise challenge: #357 is a correctness bug in the core write path, #348 and #333 complete already-merged work that produces zero value until wired in.
+
 ## 2026-06-03 (office-hour)
 
 Triaged 2 issues. Ready backlog was empty — no saturation pressure.
