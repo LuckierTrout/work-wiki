@@ -4853,3 +4853,10 @@ That leaves the work waiting on review and merge rather than another build pass.
 Issue #331: X ingest: follow the whole thread + ingest links found across the thread
 Mode: DESIGN
 Action: plan — Atomic single-file change to `workers/x-ingest/index.ts`. Added step-by-step implementation guide for thread traversal via X API v2 `conversation_id` + `from:` operator in recent-search. Four new functions, three loop modifications, graceful degradation to single-tweet on failure. Moved to `ready`.
+
+## 2026-06-04 10:42 — Build opened issue #331
+
+The build agent turned "X ingest: follow the whole thread + ingest links found across the thread" into code on `yoyo/issue-331` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/340.
+The commit trail is: - yoyo: x-ingest follows full thread + aggregates links across thread (closes #331); - yoyo: architect session (2026-06-04).
+That leaves the work waiting on review and merge rather than another build pass.
