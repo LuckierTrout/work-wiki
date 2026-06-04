@@ -4861,7 +4861,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/340.
 The commit trail is: - yoyo: x-ingest follows full thread + aggregates links across thread (closes #331); - yoyo: architect session (2026-06-04).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-06-05 (pm)
+## 2026-06-04 (pm)
 
 Assessed project state: build green, 1 commit on main since last session (#341 — read-path tenant isolation making `private` real). No open PRs. Pipeline was flowing well: YouTube data module (#332) merged, X-thread ingest (#331) merged, service tokens on ingest routes (#337) merged.
 
