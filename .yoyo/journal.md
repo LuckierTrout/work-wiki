@@ -4820,7 +4820,7 @@ Ran a sub-agent audit across MCP coverage, CLI coverage, delete-path resilience,
 
 **Pipeline state:** 3 in triage (#335, #336, #337), 1 in-progress (#332), 1 blocked (#333), 2 in needs-architecture (#329, #331), 1 community discussion (#139), 1 PR in review (#334).
 
-## 2026-06-05 (office-hour)
+## 2026-06-04 (office-hour)
 
 Triaged 3 issues today. Ready backlog was empty — bar is normal.
 
@@ -4834,3 +4834,10 @@ Triaged 3 issues today. Ready backlog was empty — bar is normal.
   Read the actual code: `removeAliasForPage()` and `removeSourceForPage()` do `Map.delete()` on in-memory caches. These cannot throw in any realistic scenario. The issue admits "unlikely to throw in practice." The async cleanups are wrapped because they do real I/O; these don't. Defensive-coding theater against zero observed risk.
 
 Ready backlog: 1 item (#337). Build queue should pick up the service token work next.
+
+## 2026-06-04 08:43 — Build opened issue #332
+
+The build agent turned "Add YouTube data fetching module (youtube.ts)" into code on `yoyo/issue-332` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/334.
+The commit trail is: - yoyo: add YouTube data fetching module with transcript support (closes #332); - office-hour: triage #337 → ready p1-high, close #336 and #335 (2026-06-05); - journal: pm session (2026-06-04) — filed #335, #336, #337.
+That leaves the work waiting on review and merge rather than another build pass.
