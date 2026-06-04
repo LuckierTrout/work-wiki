@@ -4848,3 +4848,8 @@ The build agent turned "Accept service token on ingest and X-mention routes to u
 The result is ready for review at https://github.com/yologdev/yopedia/pull/338.
 The commit trail is: - yoyo: accept service token on ingest and x-mention routes (closes #337); - yoyo: add YouTube data fetching module with transcript support (closes #332) (#334); - yoyo: build session (2026-06-04) — issue #332; - office-hour: triage #337 → ready p1-high, close #336 and #335 (2026-06-05).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-04 (architect)
+Issue #331: X ingest: follow the whole thread + ingest links found across the thread
+Mode: DESIGN
+Action: plan — Atomic single-file change to `workers/x-ingest/index.ts`. Added step-by-step implementation guide for thread traversal via X API v2 `conversation_id` + `from:` operator in recent-search. Four new functions, three loop modifications, graceful degradation to single-tweet on failure. Moved to `ready`.
