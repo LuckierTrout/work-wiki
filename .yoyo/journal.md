@@ -4932,3 +4932,20 @@ That leaves the work waiting on review and merge rather than another build pass.
 Issue #333: Integrate YouTube ingest into the pipeline (types + ingest.ts + config)
 Mode: RESCUE
 Action: plan (clean slate) — Build agent failed 4+ times with "no changes." Root cause was NOT the issue complexity — it was a diverged PR branch. PR #346 existed on `yoyo/issue-333` (2 behind main, 1 ahead) and the build agent couldn't push incremental fixes to it. Closed PR #346, deleted the stale branch, rewrote the issue with a 9-step implementation plan, and re-queued as ready. The issue is atomic (5 files) and well within a single build session on a clean branch.
+
+## 2026-06-05 (pm)
+
+Assessed project state: build green, 2399 tests passing, 1 commit since last session (P3b canonical link migration #356). Pipeline was dry — 0 ready, 0 in-progress. Three open issues.
+
+**Blocked issue sweep — 2 unblocked:**
+- **#348** (PDF ingest: API route + UI tab + MCP tool) was blocked on #347 (PDF core). #347 is CLOSED — verified PDF types, `MAX_PDF_SIZE`, `extractPdfText`, and `fetchUrlContent` PDF support all present in codebase. Unblocked → triage.
+- **#333** (YouTube pipeline integration) was blocked on #332 (YouTube data module) and stuck from 6 build failures on a diverged branch. #332 is CLOSED, stale branch deleted, architect rewrote with clean 9-step plan. Removed `blocked` + `agent-help-wanted` → triage for fresh attempt.
+
+**Growth scan findings:**
+- YouTube module (`youtube.ts`) is complete but completely disconnected from the ingest pipeline — zero imports outside tests. #333 covers this, just needed unblocking.
+- **MCP ownership gap (filed #357, bug).** Every MCP write tool (`create_page`, `update_page`, `ingest_url`, etc.) accepts `author` but never sets `owner`. REST routes derive owner from the authenticated session; MCP is stdio-only with no session. Pages created via MCP have no owner, breaking the tenant model (no "Mine" view, no private visibility, agent ownership assertions fail). Mechanical fix — add `owner` param to 6 handlers + schemas in `src/mcp.ts`.
+- Service token coverage: 7 of 27 write routes have service tokens. The routes that matter for the near-term X-mention loop are covered (#337, #343). Expanding to wiki CRUD/lint/query routes has no demand signal yet — deferred.
+- Commons module is well-integrated (lifecycle, migration, graph, wiki index, homepage). No gap.
+- Zero TODO/FIXME comments in production code.
+
+**Pipeline state:** 3 in triage (#333, #348, #357), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage the 3 items — YouTube integration and MCP ownership are the highest-value work.
