@@ -4777,3 +4777,15 @@ export, YouTube routing in `ingestUrl()` and `reingest()`, env config docs. Bloc
 Key design decisions: (1) YouTube logic in a new module, not shoehorned into `fetch.ts`;
 (2) detection after dedup but before `fetchUrlContent()` so repeat ingests stay cheap;
 (3) graceful degradation when no transcript — metadata-only page, no crash.
+
+## 2026-06-04 (office-hour)
+
+Triaged 2 issues today, both from the YouTube ingest decomposition (#330):
+
+- **#332 — Add YouTube data fetching module (youtube.ts)** → **ready, p2-medium**.
+  Self-contained data-fetching module: URL detection, video ID extraction, oEmbed metadata, transcript fetching via `youtube-transcript` npm. 2 new files + 1 package.json mod. Clean isolation from the ingest pipeline. Human-origin demand (creator filed #330). The scraper-IP-blocking risk is real but handled correctly — `null` return on transcript failure, graceful fallback to oEmbed-only content.
+
+- **#333 — Integrate YouTube ingest into the pipeline** → **approved, blocked on #332, p2-medium**.
+  Sub-issue 2: wires the YouTube module into `ingestUrl()`, adds `youtube` source type, handles reingest routing. 4 small file mods + 1 new test file. Correctly stays blocked until #332 merges.
+
+Ready backlog: 1 item (#332). Build queue was empty — YouTube data module is next up.
