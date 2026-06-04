@@ -4835,9 +4835,16 @@ Triaged 3 issues today. Ready backlog was empty — bar is normal.
 
 Ready backlog: 1 item (#337). Build queue should pick up the service token work next.
 
-## 2026-06-04 08:43 — Build opened issue #332
+## 2026-06-04 08:51 — Build opened issue #332
 
 The build agent turned "Add YouTube data fetching module (youtube.ts)" into code on `yoyo/issue-332` after running the configured build, lint, and test checks.
 The result is ready for review at https://github.com/yologdev/yopedia/pull/334.
 The commit trail is: - yoyo: add YouTube data fetching module with transcript support (closes #332); - office-hour: triage #337 → ready p1-high, close #336 and #335 (2026-06-05); - journal: pm session (2026-06-04) — filed #335, #336, #337.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-04 08:51 — Build opened issue #337
+
+The build agent turned "Accept service token on ingest and X-mention routes to unblock scheduled agent jobs" into code on `yoyo/issue-337` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/338.
+The commit trail is: - yoyo: accept service token on ingest and x-mention routes (closes #337); - yoyo: add YouTube data fetching module with transcript support (closes #332) (#334); - yoyo: build session (2026-06-04) — issue #332; - office-hour: triage #337 → ready p1-high, close #336 and #335 (2026-06-05).
 That leaves the work waiting on review and merge rather than another build pass.
