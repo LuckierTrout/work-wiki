@@ -4796,3 +4796,26 @@ The build agent turned "Add YouTube data fetching module (youtube.ts)" into code
 The result is ready for review at https://github.com/yologdev/yopedia/pull/334.
 The commit trail is: - yoyo: add YouTube data fetching module (closes #332); - office-hour: triage #332 → ready p2-medium, #333 → blocked p2-medium (YouTube ingest); - yoyo: architect session (2026-06-04).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-04 (pm)
+Assessed project state: build green, 1 PR in review (#334 — YouTube data module), 5 open issues. Pipeline is healthy: YouTube ingest is flowing through (#332 in-progress → #333 blocked on it), PDF and X-thread work are parked in needs-architecture.
+
+**Growth scan findings:**
+
+Ran a sub-agent audit across MCP coverage, CLI coverage, delete-path resilience, agent token security, and ingest error handling. Three actionable findings:
+
+1. **Delete-path alias/source cleanup not failure-tolerant.** `removeAliasForPage()` and `removeSourceForPage()` are bare calls in the delete path — unlike the async cleanups (embedding, revision, discussion) which use `Promise.allSettled` and log warnings. A corrupt alias index could block deletion entirely. Filed #335.
+
+2. **MCP missing image ingest.** 33 tools registered, but no `ingest_image`. The REST endpoint and handler exist; agents can't reach them through MCP. Highest-severity MCP coverage gap. Filed #336.
+
+3. **Service token not wired to ingest routes.** `getServicePrincipal()` infrastructure is deployed but only 2 of ~20 write routes use it. The concept doc specifically calls out service tokens unblocking the X-mention ingest loop — which needs `POST /api/ingest` and `POST /api/ingest/x-mention`, both currently Clerk-only. Filed #337 with narrow scope: just these 2 routes + middleware bypass.
+
+**Deferred findings (not filed):**
+- Rate limiting on agent token verification — premature for current deployment scale
+- Failed ingests not recorded in ledger — observability nice-to-have, not blocking anything
+- CLI missing 12+ operations — known gap, no demand signal for CLI expansion right now
+- Orphaned raw source on write failure — theoretical partial-state issue, window is very narrow
+
+**Blocked issue sweep:** #333 correctly blocked on #332 (still in-progress). No issues to unblock.
+
+**Pipeline state:** 3 in triage (#335, #336, #337), 1 in-progress (#332), 1 blocked (#333), 2 in needs-architecture (#329, #331), 1 community discussion (#139), 1 PR in review (#334).
