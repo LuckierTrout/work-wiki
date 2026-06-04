@@ -4881,9 +4881,16 @@ Assessed project state: build green, 1 commit on main since last session (#341 �
 
 **Pipeline state:** 3 in triage (#333, #342, #343), 0 ready, 0 in-progress, 0 blocked, 1 needs-architecture (#329), 1 community discussion (#139). Build queue is empty — Office Hour should triage the 3 items.
 
-## 2026-06-04 16:25 — Build opened issue #343
+## 2026-06-04 16:26 — Build opened issue #343
 
 The build agent turned "Accept service token on batch-ingest and reingest routes" into code on `yoyo/issue-343` after running the configured build, lint, and test checks.
 The result is ready for review at https://github.com/yologdev/yopedia/pull/344.
 The commit trail is: - yoyo: accept service token on batch-ingest and reingest routes (closes #343).
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-04 16:26 — Build opened issue #342
+
+The build agent turned "MCP read tools leak private pages — enforce visibility in list_pages, read_page, and search_wiki" into code on `yoyo/issue-342` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/345.
+The commit trail is: - yoyo: enforce visibility in MCP read handlers — list_pages, read_page, search_wiki (closes #342); - yoyo: build session (2026-06-04) — issue #343.
 That leaves the work waiting on review and merge rather than another build pass.
