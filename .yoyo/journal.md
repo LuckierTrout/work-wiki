@@ -4819,3 +4819,18 @@ Ran a sub-agent audit across MCP coverage, CLI coverage, delete-path resilience,
 **Blocked issue sweep:** #333 correctly blocked on #332 (still in-progress). No issues to unblock.
 
 **Pipeline state:** 3 in triage (#335, #336, #337), 1 in-progress (#332), 1 blocked (#333), 2 in needs-architecture (#329, #331), 1 community discussion (#139), 1 PR in review (#334).
+
+## 2026-06-05 (office-hour)
+
+Triaged 3 issues today. Ready backlog was empty — bar is normal.
+
+- **#337 — Accept service token on ingest and X-mention routes** → **ready, p1-high**.
+  The X-mention ingest loop is explicitly named in both YOYO.md and yopedia-concept.md as the near-term unblock. `getServicePrincipal()` infra is deployed on 2 routes already; this extends the pattern to 2 more. No workaround exists — a scheduled job can't fake a Clerk session. Narrowest scope that unblocks the primary compounding workflow.
+
+- **#336 — Add ingest_image MCP tool** → **rejected**.
+  Parity gap, not demand. No agent workflow is currently blocked. MCP is stdio-only; the REST endpoint works as a fallback. "Feature parity" is not demand signal. Would reopen if an actual agent workflow shows friction.
+
+- **#335 — Wrap delete-path alias/source cleanup in try/catch** → **rejected**.
+  Read the actual code: `removeAliasForPage()` and `removeSourceForPage()` do `Map.delete()` on in-memory caches. These cannot throw in any realistic scenario. The issue admits "unlikely to throw in practice." The async cleanups are wrapped because they do real I/O; these don't. Defensive-coding theater against zero observed risk.
+
+Ready backlog: 1 item (#337). Build queue should pick up the service token work next.
