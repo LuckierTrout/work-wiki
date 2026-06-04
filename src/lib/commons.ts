@@ -12,6 +12,8 @@
 import { getStorage } from "./storage";
 import { withFileLock } from "./lock";
 import { listWikiPages, isAgentScopedType, tenantForOwner } from "./wiki";
+import { logger } from "./logger";
+import type { IndexEntry } from "./types";
 
 /** KV/derived-index key (resolves to `_idx:commons` on R2, a JSON file on fs). */
 const COMMONS_KEY = "commons";
@@ -20,7 +22,10 @@ const COMMONS_LOCK = "commons-index";
 
 /** One public page in the commons, addressed by `(tenant, slug)`. */
 export interface CommonsEntry {
+  /** Lowercased owner handle — the storage key + silo identity. */
   tenant: string;
+  /** Original-case owner handle for display (`tenant` is the normalized key). */
+  owner?: string;
   slug: string;
   title: string;
   summary: string;
@@ -39,10 +44,48 @@ export function belongsInCommons(meta: {
   return meta.visibility !== "private" && !isAgentScopedType(meta.type);
 }
 
-/** Read the full commons index (empty array when absent). */
+/**
+ * Read the full commons index (empty array when absent). Fail-soft: a missing
+ * or corrupt index returns `[]` so reads fall back to deriving the public set
+ * rather than crashing a page render.
+ */
 export async function getCommonsIndex(): Promise<CommonsEntry[]> {
-  const idx = await getStorage().getIndex<CommonsEntry[]>(COMMONS_KEY);
-  return Array.isArray(idx) ? idx : [];
+  try {
+    const idx = await getStorage().getIndex<CommonsEntry[]>(COMMONS_KEY);
+    return Array.isArray(idx) ? idx : [];
+  } catch (err) {
+    logger.warn("commons", "commons index unreadable; treating as empty:", err);
+    return [];
+  }
+}
+
+/**
+ * The public commons as {@link IndexEntry}[] — the source of truth for the
+ * public listing surfaces (homepage, `/wiki` "All", graph). Reads the derived
+ * commons index when populated; FALLS BACK to deriving it from the flat wiki
+ * index (public, non-agent) when the commons is empty — so this stays correct
+ * and behavior-preserving before/independent of the migration. `owner` is the
+ * stored original-case handle when present, else the (lowercased) tenant — so
+ * the index path matches the fallback's display case (the commons is all-public;
+ * visibility is implicitly public).
+ */
+export async function listCommonsPages(): Promise<IndexEntry[]> {
+  const idx = await getCommonsIndex();
+  if (idx.length > 0) {
+    return idx.map((e) => ({
+      slug: e.slug,
+      title: e.title,
+      summary: e.summary,
+      ...(e.tags ? { tags: e.tags } : {}),
+      ...(e.updated ? { updated: e.updated } : {}),
+      ...(e.sourceCount !== undefined ? { sourceCount: e.sourceCount } : {}),
+      ...(e.confidence !== undefined ? { confidence: e.confidence } : {}),
+      ...(e.type ? { type: e.type } : {}),
+      owner: e.owner ?? e.tenant,
+    }));
+  }
+  // Fallback: derive the public, non-agent set from the flat index.
+  return (await listWikiPages()).filter((p) => belongsInCommons(p));
 }
 
 async function putCommonsIndex(entries: CommonsEntry[]): Promise<void> {
@@ -112,6 +155,7 @@ export async function syncCommonsForPage(
   if (belongsInCommons(meta)) {
     await upsertCommonsEntry({
       tenant,
+      owner: meta.owner?.trim() || undefined,
       slug,
       title: meta.title,
       summary: meta.summary,
@@ -137,6 +181,7 @@ export async function rebuildCommonsIndex(): Promise<number> {
     .filter((p) => belongsInCommons(p))
     .map((p) => ({
       tenant: tenantForOwner(p.owner),
+      owner: p.owner?.trim() || undefined,
       slug: p.slug,
       title: p.title,
       summary: p.summary,
