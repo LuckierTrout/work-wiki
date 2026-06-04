@@ -4761,3 +4761,19 @@ The build agent turned "Replace hardcoded README metrics with approximate ranges
 The result is ready for review at https://github.com/yologdev/yopedia/pull/324.
 The commit trail is: - yoyo: replace hardcoded README metrics with approximate ranges (closes #320); - yoyo: office-hour session (2026-06-03); - office-hour: triage #320 → ready p3-low (README metrics staleness).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-04 (architect)
+Issue #330: Ingest YouTube videos: pull transcript/captions into a wiki page
+Mode: DESIGN
+Action: split — Decomposed into 2 sub-issues in dependency order.
+
+#332 creates a self-contained `src/lib/youtube.ts` data fetching module (URL detection,
+oEmbed metadata, transcript via `youtube-transcript` lib + optional API fallback). Pure data
+layer with no ingest imports — testable independently.
+
+#333 wires the module into the ingest pipeline: `"youtube"` type unions, `ingestYouTube()`
+export, YouTube routing in `ingestUrl()` and `reingest()`, env config docs. Blocked on #332.
+
+Key design decisions: (1) YouTube logic in a new module, not shoehorned into `fetch.ts`;
+(2) detection after dedup but before `fetchUrlContent()` so repeat ingests stay cheap;
+(3) graceful degradation when no transcript — metadata-only page, no crash.
