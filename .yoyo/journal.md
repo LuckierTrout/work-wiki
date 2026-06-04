@@ -4920,3 +4920,10 @@ That leaves the work waiting on review and merge rather than another build pass.
 Issue #329: Ingest PDFs (URL + upload): parse text into a wiki page
 Mode: DESIGN
 Action: split — Decomposed into #347 (core: unpdf + types + fetch.ts PDF branch + constants + badge + tests) and #348 (surface: ingestPdf function + /api/ingest/pdf route + UI tab + MCP tool + tests). The split follows the natural dependency: #348 can't build the upload path or MCP tool without the types and extraction function from #347. Confirmed unpdf is Workers-compatible (serverless pdf.js, no native deps, ~500KB gzipped). Key design decisions: dynamic import of unpdf (avoid 1.6MB bundle load on every request), MAX_PDF_SIZE = 20MB (text PDFs are denser than HTML), scanned/image-only PDFs fail-soft with ClientInputError in v1 (no OCR).
+
+## 2026-06-04 17:47 — Build opened issue #347
+
+The build agent turned "PDF ingest: core extraction library + type plumbing" into code on `yoyo/issue-347` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/349.
+The commit trail is: - yoyo: PDF ingest core extraction library + type plumbing (closes #347); - yoyo: architect session (2026-06-04).
+That leaves the work waiting on review and merge rather than another build pass.
