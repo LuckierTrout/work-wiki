@@ -1,9 +1,42 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { slugify } from "@/lib/slugify";
 
 interface MarkdownRendererProps {
   content: string;
+  /**
+   * Extra classes appended to the prose wrapper. Pass `"prose-article"` for
+   * the long-form serif reading treatment (see globals.css); omit for the
+   * neutral sans look used by query answers.
+   */
+  className?: string;
+  /**
+   * Pre-computed heading ids (h2/h3, document order) from the page's
+   * `buildToc`. Consumed in order so the in-page Table of Contents anchors
+   * match the rendered heading ids exactly — including dedupe suffixes. When
+   * omitted (e.g. query answers), ids fall back to slugifying the heading text.
+   */
+  headingIds?: string[];
+}
+
+/** Flatten ReactMarkdown heading children to plain text for anchor IDs. */
+function headingText(children: ReactNode): string {
+  if (typeof children === "string") return children;
+  if (typeof children === "number") return String(children);
+  if (Array.isArray(children)) return children.map(headingText).join("");
+  if (
+    children &&
+    typeof children === "object" &&
+    "props" in children &&
+    (children as { props?: { children?: ReactNode } }).props
+  ) {
+    return headingText(
+      (children as { props: { children?: ReactNode } }).props.children,
+    );
+  }
+  return "";
 }
 
 /**
@@ -40,13 +73,44 @@ function resolveImageSrc(src: string): string {
   return src;
 }
 
-export function MarkdownRenderer({ content }: MarkdownRendererProps) {
+export function MarkdownRenderer({
+  content,
+  className,
+  headingIds,
+}: MarkdownRendererProps) {
   const body = stripFrontmatter(content);
+  // Headings render in document order; pull the next pre-computed id (which
+  // already carries dedupe suffixes), falling back to slugifying the rendered
+  // text when no list was supplied or it runs short.
+  let headingIndex = 0;
+  const nextHeadingId = (children: ReactNode): string => {
+    if (headingIds && headingIndex < headingIds.length) {
+      return headingIds[headingIndex++];
+    }
+    return slugify(headingText(children));
+  };
   return (
-    <div className="prose prose-neutral dark:prose-invert max-w-none">
+    <div
+      className={`prose prose-neutral dark:prose-invert max-w-none${
+        className ? ` ${className}` : ""
+      }`}
+    >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          // Stable heading IDs so an in-page Table of Contents can anchor to
+          // them (the typography plugin emits no ids). IDs come from the page's
+          // buildToc (via headingIds) so anchors and TOC links match exactly.
+          h2: ({ children, ...props }) => (
+            <h2 id={nextHeadingId(children)} {...props}>
+              {children}
+            </h2>
+          ),
+          h3: ({ children, ...props }) => (
+            <h3 id={nextHeadingId(children)} {...props}>
+              {children}
+            </h3>
+          ),
           img: ({ src, alt, ...props }) => {
             if (typeof src !== "string") return null;
             return (
