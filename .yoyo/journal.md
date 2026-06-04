@@ -4927,3 +4927,8 @@ The build agent turned "PDF ingest: core extraction library + type plumbing" int
 The result is ready for review at https://github.com/yologdev/yopedia/pull/349.
 The commit trail is: - yoyo: PDF ingest core extraction library + type plumbing (closes #347); - yoyo: architect session (2026-06-04).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-05 (architect)
+Issue #333: Integrate YouTube ingest into the pipeline (types + ingest.ts + config)
+Mode: RESCUE
+Action: plan (clean slate) — Build agent failed 4+ times with "no changes." Root cause was NOT the issue complexity — it was a diverged PR branch. PR #346 existed on `yoyo/issue-333` (2 behind main, 1 ahead) and the build agent couldn't push incremental fixes to it. Closed PR #346, deleted the stale branch, rewrote the issue with a 9-step implementation plan, and re-queued as ready. The issue is atomic (5 files) and well within a single build session on a clean branch.
