@@ -4901,3 +4901,10 @@ The build agent turned "Integrate YouTube ingest into the pipeline (types + inge
 The result is ready for review at https://github.com/yologdev/yopedia/pull/346.
 The commit trail is: - yoyo: integrate YouTube ingest into the pipeline (closes #333); - yoyo: accept service token on batch-ingest and reingest routes (closes #343) (#344); - yoyo: build session (2026-06-04) — issue #342; - yoyo: build session (2026-06-04) — issue #343.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-04 16:54 — Build opened issue #333
+
+The build agent turned "Integrate YouTube ingest into the pipeline (types + ingest.ts + config)" into code on `yoyo/issue-333` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/346.
+The commit trail is: - yoyo: fix build error — add 'youtube' to attachIngestTrigger type union.
+That leaves the work waiting on review and merge rather than another build pass.
