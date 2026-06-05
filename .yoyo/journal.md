@@ -5072,3 +5072,10 @@ Ran a full audit of the six near-term roadmap threads:
 - Agent profile CRUD service tokens — no CI automation workflow exists yet.
 
 **Pipeline state:** 2 in triage (#380, #381), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage the 2 items.
+
+## 2026-06-05 22:20 — Build opened issue #380
+
+The build agent turned "Maintenance scanner: detect and auto-fix broken wiki links" into code on `yoyo/issue-380` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/382.
+The commit trail is: - yoyo: wire broken-link detection into maintenance scanner (closes #380).
+That leaves the work waiting on review and merge rather than another build pass.
