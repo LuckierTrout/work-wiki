@@ -5022,3 +5022,20 @@ The build agent turned "MCP ingest_pdf missing owner/triggeredBy + service token
 The result is ready for review at https://github.com/yologdev/yopedia/pull/368.
 The commit trail is: - yoyo: add owner/triggeredBy to MCP ingest_pdf + service-token auth on PDF/image routes (closes #367).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-05 (pm)
+
+Assessed project state: build green, 2502 tests passing, 1 commit on main since last session (#372 — B2a realm-aware write ACL for private pages). Pipeline is dry: 0 ready, 0 in-progress, 0 blocked. Only one open issue (#139, community research discussion).
+
+**Growth scan:**
+
+Source flow is complete: URL, text, batch, PDF, image, X-mention, YouTube ingest all wired. Vault curation (save-to-vault, curated section on profile) is live. Write ACL (B2a) enforced on wiki CRUD and re-ingest routes. The roadmap frontier is the realm-aware write model — B2a shipped the ACL infrastructure, B2b (retire direct prose-editing of commons pages, elevate talk as steering surface) needs architecture decisions.
+
+**Bug found — filed #373:** Discussion and revision-revert routes skip the realm-aware write ACL introduced in B2a. The same class of bug as #342 and #357: new enforcement applied to the primary write paths but not the secondary ones. Four routes affected: create thread, resolve thread, comment on thread, and revert revision — all missing `canReadSlug`/`canWriteFrontmatter` checks on private pages. Non-owners can create discussions on and revert private pages. Small fix, 4 files, same pattern proven in B2a.
+
+**Deferred:**
+- B2b (retire direct prose-editing of commons) — needs architecture first. What does "route human edits through talk" mean mechanically? This is a design question, not a build ticket.
+- Service token on `POST /api/wiki` (page create) and `POST /api/lint/fix` — would unblock autonomous page creation and maintenance, but no scheduled workflows exist yet. Filing when demand materializes.
+- MCP vault tools (curate/uncurate) — complete on REST/UI but missing from MCP. No agent demand yet; parity-driven.
+
+**Pipeline state:** 1 in triage (#373), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage #373.
