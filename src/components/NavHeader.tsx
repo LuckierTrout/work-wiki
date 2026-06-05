@@ -3,16 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect, useRef } from "react";
-import {
-  Show,
-  SignInButton,
-  SignUpButton,
-  UserButton,
-  useUser,
-} from "@clerk/nextjs";
+import { Show, SignInButton, UserButton, useUser } from "@clerk/nextjs";
 import { GlobalSearch } from "./GlobalSearch";
 import { ThemeToggle } from "./ThemeToggle";
-import { Logo } from "./Logo";
 import { isOwnerHandle } from "@/lib/owner";
 
 // Primary actions — shown to everyone, always in the bar.
@@ -32,7 +25,10 @@ const secondaryLinks = [
 // Owner-only admin tools (also hard-gated server-side).
 const ownerLinks = [{ href: "/lint", label: "Lint" }];
 
-const utilityLinks = [{ href: "/settings", label: "Settings" }];
+// Settings is owner-only (admin) and lives under the user menu (UserButton),
+// not the public nav — so this is empty. Kept as the seam for any future
+// always-visible utility link.
+const utilityLinks: { href: string; label: string }[] = [];
 
 // Every link that can be "active" — used to highlight the matching nav item.
 const ALL_LINKS = [...primaryLinks, ...secondaryLinks, ...ownerLinks, ...utilityLinks];
@@ -89,8 +85,11 @@ export function NavHeader() {
   return (
     <header className="sticky top-0 z-50 bg-background border-b border-border shadow-sm">
       <nav aria-label="Main navigation" className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
-        <Link href="/" className="hover:opacity-90 transition-opacity">
-          <Logo />
+        <Link
+          href="/"
+          className="text-lg font-bold tracking-tight text-foreground hover:opacity-90 transition-opacity"
+        >
+          yopedia
         </Link>
 
         {/* Desktop nav */}
@@ -211,26 +210,32 @@ export function NavHeader() {
           <li className="mx-1 h-4 w-px bg-foreground/10" aria-hidden="true" />
           <li className="flex items-center gap-2">
             <Show when="signed-out">
+              {/* SSO only: a single button — Clerk auto-creates the account on
+                  first "Continue with X", so a separate sign-up is redundant. */}
               <SignInButton mode="modal">
-                <button className="rounded-md px-3 py-1.5 text-sm text-foreground/60 hover:text-foreground hover:bg-foreground/5 transition-colors">
-                  Sign in
+                <button className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground hover:bg-accent-hover transition-colors">
+                  Sign in with X
                 </button>
               </SignInButton>
-              <SignUpButton mode="modal">
-                <button className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground hover:bg-accent-hover transition-colors">
-                  Sign up
-                </button>
-              </SignUpButton>
             </Show>
             <Show when="signed-in">
               <UserButton>
-                {profileHref && (
+                {(profileHref || isOwner) && (
                   <UserButton.MenuItems>
-                    <UserButton.Link
-                      label="My pages"
-                      labelIcon={<span aria-hidden>📄</span>}
-                      href={profileHref}
-                    />
+                    {profileHref && (
+                      <UserButton.Link
+                        label="My pages"
+                        labelIcon={<span aria-hidden>📄</span>}
+                        href={profileHref}
+                      />
+                    )}
+                    {isOwner && (
+                      <UserButton.Link
+                        label="Settings"
+                        labelIcon={<span aria-hidden>⚙️</span>}
+                        href="/settings"
+                      />
+                    )}
                   </UserButton.MenuItems>
                 )}
               </UserButton>
@@ -345,11 +350,8 @@ export function NavHeader() {
           <div className="px-6 py-2 flex items-center gap-3 text-sm">
             <Show when="signed-out">
               <SignInButton mode="modal">
-                <button className="text-foreground/60 hover:text-foreground">Sign in</button>
+                <button className="font-medium text-accent">Sign in with X</button>
               </SignInButton>
-              <SignUpButton mode="modal">
-                <button className="font-medium text-accent">Sign up</button>
-              </SignUpButton>
             </Show>
             <Show when="signed-in">
               <UserButton />
