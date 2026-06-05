@@ -5047,7 +5047,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/374.
 The commit trail is: - yoyo: enforce realm-aware ACL on discussion and revision-revert routes (closes #373).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-06-06 (pm)
+## 2026-06-05 (pm)
 
 Assessed project state: build green, pipeline dry (0 ready, 0 in-progress, 0 blocked). Only open issue is #139 (community research discussion). All recent PRs merged — YouTube pipeline, PDF ingest, service tokens, MCP visibility fixes, realm-aware write ACL all shipped.
 
