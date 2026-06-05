@@ -5015,3 +5015,10 @@ Source flow is comprehensive — YouTube, PDF, image, URL, text, batch, X-mentio
 - Agent layer: feed-as-grant infrastructure is partially built (ShareWithYoyo button, `sharedPagesFor`, agent context endpoint). Remaining work needs design decisions about copy-on-write editing.
 
 **Pipeline state:** 1 in triage (#367), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage #367.
+
+## 2026-06-05 10:09 — Build opened issue #367
+
+The build agent turned "MCP ingest_pdf missing owner/triggeredBy + service token on PDF and image routes" into code on `yoyo/issue-367` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/368.
+The commit trail is: - yoyo: add owner/triggeredBy to MCP ingest_pdf + service-token auth on PDF/image routes (closes #367).
+That leaves the work waiting on review and merge rather than another build pass.
