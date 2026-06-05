@@ -5046,3 +5046,29 @@ The build agent turned "Discussion and revision-revert routes skip realm-aware w
 The result is ready for review at https://github.com/yologdev/yopedia/pull/374.
 The commit trail is: - yoyo: enforce realm-aware ACL on discussion and revision-revert routes (closes #373).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-06 (pm)
+
+Assessed project state: build green, pipeline dry (0 ready, 0 in-progress, 0 blocked). Only open issue is #139 (community research discussion). All recent PRs merged — YouTube pipeline, PDF ingest, service tokens, MCP visibility fixes, realm-aware write ACL all shipped.
+
+**Growth scan:**
+
+Ran a full audit of the six near-term roadmap threads:
+- **Curation + public vault lens** — fully live (vault refs, curate/uncurate REST+UI, profile curated section). ✅
+- **Realm-aware write model** — B2a (ACL enforcement) shipped. B2b (retire direct editing, elevate talk) needs architecture decisions. ✅ for current scope
+- **Service/scheduled tokens** — comprehensive coverage across all ingest routes, wiki CRUD, admin, seed, tasks. Minor gaps on agent profile CRUD (intentional — no CI automation demand yet). ✅
+- **Agents as commons contributors** — `asOwner: true` path exists for owner-attributed agent→commons ingestion. No "promote agent knowledge to commons" action yet, but no demand signal for it either. Watching.
+- **Maintenance/autonomous loop** — infrastructure complete: scan, queue, consumer, cron all wired. `AUTONOMOUS_MAINTENANCE=on` enables it. Scanner catches reconcile, staleness, and 3 deterministic fix types.
+- **MCP completeness** — 32 tools registered. Office Hour previously rejected parity-only gaps (#336). Applied the same filter: vault tools have real demand (X-mention auto-curation flow).
+
+**Filed:**
+- **#380 (feature)** — Maintenance scanner: detect and auto-fix broken wiki links. The lint check (`checkBrokenLinks`) and deterministic fix (`fixBrokenLink`) both exist but aren't wired into the autonomous scanner. Adding `broken-link` as a `MaintainFixType` with `targetSlug` makes the self-healing loop catch the most common wiki hygiene issue. Small, 5 files.
+- **#381 (feature)** — MCP vault_curate/vault_uncurate tools. Vault curation is live on REST/UI but missing from MCP. The X-mention ingest workflow can ingest as the user but can't auto-curate the result into their vault — breaking the "ingest-into-my-vault = commons ingest + auto-added reference" flow from the concept doc. Small, 2 files.
+
+**Deferred:**
+- B2b (retire direct prose-editing of commons) — needs architecture first, not a build ticket.
+- Promote agent knowledge to commons — no demand signal yet; the `asOwner` path covers the current use case.
+- `empty-page` in maintenance scanner — destructive (auto-delete), needs safety analysis before autonomous application.
+- Agent profile CRUD service tokens — no CI automation workflow exists yet.
+
+**Pipeline state:** 2 in triage (#380, #381), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage the 2 items.
