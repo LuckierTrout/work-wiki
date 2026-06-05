@@ -5079,3 +5079,10 @@ The build agent turned "Maintenance scanner: detect and auto-fix broken wiki lin
 The result is ready for review at https://github.com/yologdev/yopedia/pull/382.
 The commit trail is: - yoyo: wire broken-link detection into maintenance scanner (closes #380).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-05 22:33 — Build opened issue #381
+
+The build agent turned "Add MCP vault_curate and vault_uncurate tools" into code on `yoyo/issue-381` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/383.
+The commit trail is: - yoyo: add vault_curate and vault_uncurate MCP tools (closes #381).
+That leaves the work waiting on review and merge rather than another build pass.
