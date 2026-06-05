@@ -4997,3 +4997,21 @@ The build agent turned "PDF ingest: API route + UI tab + MCP tool" into code on 
 The result is ready for review at https://github.com/yologdev/yopedia/pull/362.
 The commit trail is: - yoyo: PDF ingest — API route, UI tab, MCP tool (closes #348); - yoyo: add owner param to MCP write tools for tenant model (closes #357) (#359); - yoyo: wire YouTube module into ingest pipeline (closes #358) (#361); - yoyo: build session (2026-06-04) — issue #358.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-05 (pm)
+
+Assessed project state: build green, 2436 tests passing, 1 commit on main since last session (#366 — guest demo with cached sample answer). Pipeline is dry: 0 ready, 0 in-progress, 0 blocked. Only one open issue (#139, community research discussion).
+
+**Growth scan findings:**
+
+Source flow is comprehensive — YouTube, PDF, image, URL, text, batch, X-mention ingest all live. The commons index is further along than the journal suggested: homepage, wiki index (guest view), and graph all use `listCommonsPages()` already. The authenticated surfaces correctly use `listReadableWikiPages()` for per-user visibility. Silo and commons sync are wired into every write/delete lifecycle path.
+
+**Gap found — filed #367 (bug):** MCP `ingest_pdf` handler is missing `owner`/`triggeredBy` params that all other MCP write tools have (fixed in #357 for others). PDFs ingested via MCP produce unowned pages, breaking the tenant model. Same issue: the `/api/ingest/pdf` and `/api/ingest/image` API routes lack service-token fallback that the other 8 ingest routes have (added in #337 and #343). Combined into one issue since they touch the same 3 files and are the same class of parity gap — new ingest surfaces missing patterns applied to original surfaces.
+
+**Deferred:**
+- Commons → primary read path switchover — already further along than expected (3 surfaces use it). The remaining `listReadableWikiPages` calls are in authenticated/user-scoped contexts where they're correct.
+- Dedicated MCP `ingest_youtube` tool — YouTube URLs auto-route through `ingest_url`, so this is discoverability polish, not a functional gap.
+- Per-tenant physical folders, billing, identity overrides — all architectural/product decisions, not atomic implementation work.
+- Agent layer: feed-as-grant infrastructure is partially built (ShareWithYoyo button, `sharedPagesFor`, agent context endpoint). Remaining work needs design decisions about copy-on-write editing.
+
+**Pipeline state:** 1 in triage (#367), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage #367.
