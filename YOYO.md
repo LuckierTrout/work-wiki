@@ -15,18 +15,21 @@ tests, all four founding pillars complete. Now yopedia is the destination.
 ## The Vision
 
 The full north star lives in **[`yopedia-concept.md`](yopedia-concept.md)** — read it
-there; don't duplicate it here. In one line: a shared second brain for humans and
-agents, **anti-RAG** (accumulate, don't re-derive), one substrate with a human wiki
-surface and an agent surface, multi-user and multi-agent from day one.
+there; don't duplicate it here. In one line: a **collective second brain** for humans
+and agents — one **commons** co-built by people and their agents (**agents maintain,
+humans discuss**), personal **vaults** as a lens on top (public by reference, private
+by clone, paid), **anti-RAG** (accumulate, don't re-derive), multi-user and multi-agent
+from day one. North Star: agents maintain the commons, the community funds the agents.
 
 ## How it works now (live)
 
 The founding LLM Wiki pillars (ingest, query, lint, browse) plus the agent-age layer
 are built and deployed:
 
-- **Ingest** — URL/text/batch, chunking, image download, re-ingest; **dedup** (one
-  canonical page per source — a duplicate ingest attaches the triggerer and skips the
-  LLM + embedding).
+- **Ingest** — URL/text/batch, chunking, image download, re-ingest; the **canonical
+  concept resolver** (one page per *concept*, not per source: concept-derived slug +
+  aliases, embedding nearest-page merge, re-synthesize-on-merge with `disputed`) plus
+  content **dedup** (identical source attaches the triggerer, skips the LLM).
 - **Query** — hybrid BM25 + vector (RRF), streaming, citations, save-to-wiki.
 - **Lint** — checks + auto-fix (orphans, stale, broken links, contradictions, …).
 - **Browse** — index/sort/filter, graph, backlinks, revisions, global search, Obsidian
@@ -40,14 +43,20 @@ are built and deployed:
 ## What's next
 
 The full picture is the **Roadmap** in [`yopedia-concept.md`](yopedia-concept.md).
-Near-term threads:
+Near-term threads (commons-first):
 
+- **Curation + the public vault lens** — save/curate a commons page into your vault;
+  ingest-into-my-vault = a commons ingest + an auto-added reference; a vault view that
+  renders your contributed ∪ curated commons pages, live.
+- **Realm-aware write model** — retire direct prose-editing of commons pages; elevate
+  **talk** as the human steering surface; owner-only writes for private/vault pages.
+- **Agents as commons contributors** — a deliberate agent→commons publish path, distinct
+  from the private agent-knowledge scratchpad.
+- **Private tier** — Clerk Billing checkout → `plan="pro"`; **clone-to-private** (snapshot
+  a commons page into an owned private vault page) + the clone/visibility UI.
 - **Service / scheduled tokens** — a non-human write credential. Unblocks the
-  **base-yoyo seed** and the **`@yoyoevolve` X-mention loop** (ingest *for* a user only
-  when their X handle is a registered yopedia user).
-- **The agent layer** — per-user yoyo seeded from the base yoyo-evolve identity; agent
-  ownership; feed-as-grant; scoped agent profiles at `/u/<handle>/a/<agent>`.
-- **Private content + billing**, trust scores, agent-surface research, federation.
+  **base-yoyo seed** and the **`@yoyoevolve` X-mention loop**.
+- Trust scores, agent-surface research, federation.
 
 ## Autonomous Growth Loop
 

@@ -6,7 +6,7 @@ Brand.
 
 ## Product Purpose
 
-yopedia is a wiki for the agent age: a shared second brain for humans and agents, with one durable knowledge substrate and separate human and agent surfaces. It is not a RAG interface. It accumulates knowledge over time through cited pages, revisions, confidence, expiry, discussion, and agent-readable structure.
+yopedia is a wiki for the agent age: a **collective second brain** for humans and agents. One shared knowledge **commons** — co-built by people and their agents, maintained by agents — with personal **vaults** (a reference lens over the commons, plus a paid private space) on top, and separate human and agent surfaces over one substrate. It is not a RAG interface. It accumulates knowledge over time through cited concept pages, revisions, confidence, expiry, discussion, and agent-readable structure. See [`yopedia-concept.md`](yopedia-concept.md) for the full model.
 
 ## Audience
 
@@ -24,7 +24,8 @@ Precise, evidence-rich, curious, and unsentimental. Copy should be short and dir
 
 - Show the trail. Public progress matters because it can be inspected.
 - Prefer durable knowledge over transient chat.
-- Treat agents and humans as contributors to the same commons.
+- Commons-first: humans and agents contribute to one shared wiki by default; personal vaults are a lens on top.
+- Agents maintain, humans discuss: ingestion feeds sources, agents synthesize and reconcile, humans steer via discussion.
 - Make provenance and staleness visible.
 - Let the current codebase win when concept docs and implementation differ.
 

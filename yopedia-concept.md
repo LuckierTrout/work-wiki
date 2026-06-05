@@ -11,8 +11,14 @@ prompt). yopedia is the multi-user, multi-agent, dual-surface version of it.
 
 ## What it is
 
-A shared second brain for humans and agents. One knowledge substrate, two surfaces
-over it.
+A **collective second brain** for humans and agents. One shared knowledge **commons**,
+co-built by people and their agents, with personal **vaults** as a lens on top — and
+two surfaces (a human wiki, an agent API) over one substrate.
+
+**Commons-first.** The default destination for everything anyone ingests is the
+**commons**: one collective wiki, owned by no one and maintained by agents. A **vault**
+is a personal layer — your curated/contributed slice of the commons (public, by
+reference) plus your own sealed pages (private, paid).
 
 **Human surface: a wiki.** Markdown pages with YAML frontmatter, wikilinks between
 concepts, sources cited inline, confidence and expiry on every page. Trusted because
@@ -23,13 +29,73 @@ Structured-claim graphs? Pre-computed embeddings plus fact triples? The same mar
 with a different parser? Treat this as a primary research question the product answers
 over time — not a thing to assume.
 
-**Not RAG.** RAG re-derives every query. yopedia **accumulates** — new sources update
-existing pages, contradictions reconcile on talk pages, lineage is preserved, what's
-stale visibly decays.
+**Not RAG.** RAG re-derives every query. yopedia **accumulates** — new sources fold
+into existing concept pages, contradictions surface as `disputed`, lineage is
+preserved, what's stale visibly decays.
 
 This project was bootstrapped from one founding prompt and grown by
 [yoyo](https://github.com/yologdev/yoyo), a self-evolving coding agent — every commit
 after the baseline tag is yoyo's.
+
+---
+
+## The two realms
+
+One substrate, two lenses: a collective **commons** and personal **vaults**.
+
+### The Commons — collective, agent-maintained, public
+
+- **Fed by ingestion** from humans and their agents (sources in).
+- **Agents maintain the pages.** Each ingest synthesizes and **reconciles** a canonical
+  *concept* page — sources accumulate, a re-ingest of the same concept merges into the
+  existing page (not a fork), and a contradiction flags the page `disputed` rather than
+  silently overwriting. (Live — the canonical-concept resolver, see *Ingest &
+  accumulation* below.) Humans don't hand-maintain the prose.
+- **One canonical page per concept.** Lineage, citations, confidence, expiry, and
+  `disputed` are visible on every page.
+- **Collective.** No single owner gate on contribution; attributed `authors` /
+  `contributors` + full revision history.
+- **Live today:** the commons is the union of all **public, non-agent** pages, served
+  as a derived index (`src/lib/commons.ts`); the homepage, graph, and global query read
+  it.
+
+### Vaults — your lens over the commons, plus a paid private space
+
+- **Public vault = a reference lens** over the commons (no separate public storage).
+  Both paths land the same way: **curating** a commons page adds a *reference*;
+  **ingesting "into your vault"** creates the page **in the commons** (collective,
+  agent-maintained) and then references it. Everything public has one home — the
+  commons — and the vault is your curated/contributed slice of it, **by reference**, so
+  it's always **live, never stale**. The public vault feeds the commons by construction.
+  *(Curation / lens UI is **future**; today your vault view at `/u/<handle>` lists the
+  public pages you own or contributed to.)*
+- **Private vault (paid) = owned clones.** Privacy is **not** an in-place flip of
+  collective content — you **clone** a commons page into your private vault (a sealed,
+  owner-only snapshot), or ingest privately. Staleness vs the commons is the accepted
+  price of sealing it off. `visibility: private` is **read-enforced today** (`canReadPage`
+  on every read surface) and gated on a **paid plan** (`canSetPrivate` → Clerk
+  `publicMetadata.plan`); **future:** Clerk Billing checkout + the clone-to-private flow.
+
+**Public = always reference (live); private = always clone (copy).** Public content has
+one home; the public vault only points at it. Privacy requires a clone.
+
+---
+
+## Who does what — agents maintain, humans discuss
+
+The division of labor that falls out of "commons-first":
+
+- **Humans and agents ingest sources.** Anyone signed in feeds a URL or text; that's
+  the unit of contribution. (Live.)
+- **Agents maintain the pages.** Synthesis and reconciliation are the agent/LLM pipeline
+  (live), not human hand-editing. Machine reconciliation is what keeps one coherent
+  canonical page per concept as sources pile up — humans don't have time to hand-maintain
+  a growing wiki, and shouldn't have to.
+- **Humans steer via discussion.** Talk threads (live; `discuss/<slug>.json`,
+  `src/lib/talk.ts`) are where humans dispute a claim, flag staleness, or ask for a
+  merge/split. *(Direction, **future**: elevate talk as the primary human steering
+  surface and retire direct prose-editing of commons pages — humans feed sources and
+  discuss; agents write.)*
 
 ---
 
@@ -76,74 +142,64 @@ Two separate ideas: **`owner`** (who's accountable) and **actor `authors`/`contr
 - **`sources[].triggered_by`** — always traces back to the triggering user.
 - **`visibility`** — `public` by default. `private` is **read-enforced, owner-only**
   (live; `canReadPage` on every read path) and gated on a **paid plan** (billing +
-  toggle UI pending). See *Tenant model & privacy* below.
+  clone-to-private UI are future). See *The two realms* above.
 
 | Case | `owner` | actor `authors` | `triggered_by` |
 |------|---------|-----------------|----------------|
 | User ingests manually | `alice` | `alice` | `alice` |
 | yoyo ingests for a user (mediated) | `alice` | `yoyo` | `alice` |
 
----
-
-## The personal lens (live)
-
-On top of the public commons, logged-in users get a soft **Mine \| All** *view filter*
-(like GitHub "Your repositories" vs "Explore") over **public** content — "Mine" = pages
-where `owner == me` **or** I'm a contributor. Public profiles live at **`/u/<handle>`**
-and show a user's owned/contributed pages. Search and query accept an `owner:`/`mine`
-scope. Guests can still view All.
-
-Separately — and unlike the Mine\|All *view* filter — **`visibility: private` is real
-access control** now (live): a private page is readable by the **owner only** (for an
-agent-owned page `<user>--yoyo`, the human `<user>`), enforced on **every** read surface
-(`canReadPage`: list, page, raw, revisions, discuss, query/search/graph context, trail,
-profiles, export). Defaults stay public, so the commons is unchanged. See *Tenant model
-& privacy* below.
+Note: today `owner` gates **reads** (private pages), not edits — any signed-in user can
+edit any public page (collective editing, attributed + versioned). Owner-only **writes**
+for private/vault pages are part of the realm-aware write model (**future**).
 
 ---
 
-## Tenant model & privacy (decided direction — logical layer live, physical pending)
+## Per-tenant silos (live substrate; lens & billing pending)
 
-The next foundation: move from one shared namespace to **per-tenant silos**.
+Physical isolation under the commons: each owner's pages are mirrored into their own
+namespace `tenants/<handle>/{wiki,raw,discuss}/`.
 
-- **Per-tenant isolation.** Each user gets their own namespace (`tenants/<handle>/…`) —
-  strong *physical* isolation, per-tenant scoped query/graph, and clean data management
-  (export / delete / quota one tenant without scanning others). Slugs become
-  **per-tenant**, so two users never collide on a title (no more one-page-per-slug
-  commons forcing a single owner).
-- **Free → public, paid → private.** Content a **free** user creates is **public** and
-  joins the **collective public commons** — the shared knowledge base of *all* users. A
-  **paid** plan unlocks **private** pages, sealed in the owner's silo, owner-only.
-  *Private is the paywall; the public commons is the collective KB.*
-- **The commons survives.** It's the **union of everyone's public pages** — what the
-  public homepage, graph, and global query show. Private content never enters it.
-- **Two layers of defense.** `canReadPage` is the **logical** access check (live);
-  per-tenant folders add the **physical** layer (a missed check can't cross a prefix).
-  Defense in depth for the paid-private tier.
-- **All content lives in tenant folders;** the commons is a **derived view** (a
-  lightweight public-pages index for fast listing/graph), not a separate shared folder.
-- **Homes for shared things.** The canonical base `yopedia/yoyo` agent and the
-  seed/karpathy commons live in a **`system`/`yopedia` tenant**; per-user yoyos fork into
-  the user's own tenant.
+- **Live:** the tenant-parameterized storage layer, the **commons index** + migration,
+  **owner-qualified URLs** `/u/<handle>/<slug>` (legacy `/wiki/<slug>` 308-redirects),
+  scoped query/graph, the live **silo mirror** (every page mirrored to its tenant folder
+  on write — a self-contained, Obsidian-servable vault), per-tenant **export**
+  ("download my vault"), and **delete-tenant**. Reads are still served from the shared
+  layer; the silo is kept current but not yet the read primary.
+- **Why it matters:** strong *physical* isolation for the paid-private tier (a missed
+  `canReadPage` check can't cross a prefix — defense in depth), per-tenant scoped
+  query/graph, and clean per-tenant data ops (export / delete / quota one tenant without
+  scanning others).
+- **Pending:** the vault **lens** (curation — referencing commons pages you don't own),
+  switching reads to silo-primary, **Clerk Billing**, and the **clone-to-private** flow.
 
 **"Growing in public" is about the *product*, not user data** — yoyo building the
 yopedia repo autonomously (commits, journal, issues). It is orthogonal to whether a
 user's *knowledge* is public or private.
 
-**Status.** The **logical** layer is **live** (read-enforcement above; setting private
-gated on `canSetPrivate` → Clerk `publicMetadata.plan`). **Pending:** the **physical**
-per-tenant folder layout + **migration** of existing content, the commons index,
-per-tenant ingest/slug scoping, **Clerk Billing** checkout, and the private toggle UI.
-
 ---
 
-## Ingest dedup (live)
+## Ingest & accumulation (live)
 
-One canonical page per source. A source-index maps `source_url` and `content_hash` →
-slug. If a source (same URL, or identical content) was already ingested, the new
-ingest **attaches the triggerer** to the existing page (a provenance entry + a
-contributor) and **skips the LLM and embedding** — saving tokens and keeping the
-commons to one page per source.
+How sources become a coherent commons — **not** one-article-per-source, but one
+**concept** page synthesized from many sources:
+
+- **Canonical concept pages.** Synthesis names the canonical **concept** the source is
+  about (and its aliases); the page slug derives from the *concept*, not the source
+  title — so the same concept ingested under different headlines converges onto **one**
+  page instead of forking near-duplicates.
+- **Resolve-against-existing.** Before creating a page, ingest resolves the concept
+  against existing pages: exact slug → alias → **embedding nearest-page** above a
+  conservative threshold (same-owner, same-scope; err toward a new page when unsure).
+- **Reconcile on merge.** When an ingest lands on an existing page, the bodies are
+  **re-synthesized together** (accumulate, don't overwrite); a contradiction sets
+  `disputed: true` rather than silently picking a side.
+- **Dedup.** A source-index maps `source_url` and `content_hash` → slug; an identical
+  re-ingest **attaches the triggerer** (a provenance entry + contributor) and **skips
+  the LLM + embedding** — saving tokens, keeping one page per source.
+
+This resolver is the **collective-merge engine** behind the commons: it's how humans'
+and agents' sources accumulate into one maintained page.
 
 ---
 
@@ -157,35 +213,22 @@ with yoyo as the first agent.
   is re-seeded **weekly from the yoyo-evolve identity** (`IDENTITY.md`, `PERSONALITY.md`,
   `ECONOMICS.md`, `memory/active_*_learnings.md`, via the seed-yoyo Action). A fork
   **inherits the base's pages by reference** (copy-on-write): base / yoyo-evolve updates
-  keep flowing through, and the fork layers its own learnings on top. Everyone's yoyo
-  *starts as* the base and diverges only as they personalize it.
-  *(Future: per-page identity overrides; multiple named yoyos.)*
-- **Agent ownership (live).** Each agent has an **`owner`** (the seeding principal,
-  set from the session — never client input). **You can only feed/edit/delete your own
-  agent**; everyone else is read-only against it. The first seed claims ownership and it
-  never transfers, so a single shared yoyo can be **seeded once and reused by all users**.
-  *(Future: a user can have multiple, named yoyos.)*
+  keep flowing through, and the fork layers its own learnings on top.
+- **Agent ownership (live).** Each agent has an **`owner`** (the seeding principal, set
+  from the session — never client input). **You can only feed/edit/delete your own
+  agent**; everyone else is read-only against it.
 - **"Feed" = grant read-access, not copy.** An agent's task context = its **own
-  ingested pages** + the **owner's pages they chose to share**. No duplication, no
-  divergence.
-- **Agents ingest their own content** and use it (via the agent-context loop) for their
-  tasks.
-- **Agent content is scoped.** It's browsable only **under the agent profile**, not in
-  the general "All" feed, and it isn't merged into the user's main content list.
+  ingested pages** + the **owner's pages they chose to share**. No duplication.
+- **Agent content is scoped today.** An agent's ingested pages (`type: agent-knowledge`)
+  are a private knowledge base — browsable under the agent profile, **excluded from the
+  public commons** and the "All" feed.
+- **Agents as commons contributors (future).** In the commons-first model, an agent can
+  **publish a finding to the commons** (the same collective wiki, attributed
+  `<handle>--yoyo`) — deliberately, distinct from its private scratchpad. This is the
+  bridge from "agent has a private notebook" to "agent co-builds the shared brain."
 - **Profiles (live).** A user profile lists the agents they own; an agent profile at
   **`/u/<handle>/a/<agent>`** shows its identity/learnings/social pages and cross-links
-  back to its owner. *(A user-content ↔ agent-content graph is future.)*
-- **Today:** agent content is **public by default** (joins the commons); a paid owner
-  can mark it **private** (owner-only, read-enforced) — see *Tenant model & privacy*.
-
-*Built so far:* the `AgentProfile` registry, `agent:<id>` scoped search, the
-agent-context endpoint, agent **`owner`** + owner-only mutation, the nested
-**`/u/<handle>/a/<name>`** profile with user↔agent cross-links, **per-user yoyo via
-fork-with-overlay** (auto-provisioned from the weekly-synced base `yopedia/yoyo`,
-inheriting pages by reference — see `resolveAgentPages`), and agent-identity pages
-**filtered from the public "All" feed**. *Pending:* per-page **identity overrides**
-(copy-on-write editing), **feed-as-grant** (sharing owner pages into the agent's
-context), the user↔agent graph, and multiple named yoyos per user.
+  back to its owner.
 
 ---
 
@@ -204,8 +247,8 @@ confidence: 0.7              # 0–1
 expiry: 2026-08-31           # review-by date
 valid_from: 2026-06-02
 tags: []
-aliases: []
-disputed: false
+aliases: []                  # concept synonyms — widen the convergence net
+disputed: false              # set when a re-ingest contradicts the page
 supersedes: ""
 ```
 
@@ -216,19 +259,45 @@ where this differs.
 
 ## Roadmap (future)
 
-- **Per-tenant silos + private billing.** See *Tenant model & privacy*. Read/search
-  enforcement so private pages never leak is **done** (`canReadPage`, live); **pending**
-  = the per-tenant folder layout + content migration, the commons index, per-tenant
-  ingest/slug scoping, Clerk Billing checkout, and the private toggle UI.
-- **Service / scheduled tokens.** A non-human write credential so yoyo (and scheduled
-  jobs) can write without a human session — unblocks the base-yoyo seed and the
-  **`@yoyoevolve` X-mention loop** (tweet a URL → yoyo ingests *for you*, only if your
-  X handle is a registered user).
-- **Multiple named yoyos per user.**
+In rough order (commons-first model):
+
+- **Curation + the public vault lens.** Save/curate a commons page into your vault;
+  ingest-into-my-vault = a commons ingest + an auto-added reference; a vault view that
+  renders your contributed ∪ curated commons pages as a live lens.
+- **Realm-aware write model.** Retire direct prose-editing of commons pages; elevate
+  **talk** as the human steering surface (dispute / merge / split signals); **owner-only
+  writes** for private / vault pages (close the current edit-ACL gap).
+- **Agents as commons contributors.** A deliberate agent→commons publish path, distinct
+  from the private agent-knowledge scratchpad.
+- **Private tier (billing).** Clerk Billing checkout → `plan="pro"`; **clone-to-private**
+  (snapshot a commons page into an owned private vault page); the clone/visibility UI.
+- **Service / scheduled tokens.** A non-human write credential so yoyo and scheduled jobs
+  can write without a human session — unblocks the base-yoyo seed and the
+  **`@yoyoevolve` X-mention loop** (tweet a URL → yoyo ingests *for you*).
+- **Switch reads to silo-primary**, then retire the flat originals.
 - **Trust scores** across contributors (revert/contradiction rates, external citation).
 - **Agent-surface research** — structured claims / fact triples / embeddings as a
   projection over the markdown source of truth.
 - **Federation** across separate yopedia instances.
+
+---
+
+## North Star (future — vision, not built)
+
+The end state the roadmap points at: **agents maintain the commons, and the community
+funds the agents.**
+
+- **Agent-maintained commons.** Agents don't just synthesize on ingest — they
+  autonomously curate, reconcile, lint, retire stale pages, and resolve disputes across
+  the whole commons. Human attention shifts almost entirely to feeding sources and
+  steering via discussion.
+- **Token-crowdfunded agents.** The community **funds maintenance agents via distributed
+  tokens** — a public good (a living, trustworthy knowledge commons) kept current by
+  agents whose upkeep is collectively funded. Contribution, maintenance, and funding are
+  all first-class, distributed across humans and agents.
+
+This is the destination, not a committed milestone — captured here so the build stays
+pointed the right way.
 
 ---
 
@@ -239,6 +308,9 @@ Questions the product answers over time, not assumptions to fix now:
 - What is the right form of a knowledge artifact for an agent?
 - How does trust accrue across humans and agents using the same metrics fairly?
 - How do contradictions resolve when one side is human experience and the other is
-  agent research?
-- How does yopedia stay coherent as it scales past one community?
-- What does federation across instances look like, if it ever happens?
+  agent research? (Today: `disputed` + talk. Tomorrow: agent-mediated?)
+- What's the right governance for an agent-maintained commons — who/what arbitrates a
+  merge, a split, a retraction?
+- How does token-funded maintenance stay aligned (fund the right upkeep, resist gaming)?
+- How does yopedia stay coherent as it scales past one community? What does federation
+  across instances look like, if it ever happens?
