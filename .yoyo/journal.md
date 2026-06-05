@@ -5039,3 +5039,10 @@ Source flow is complete: URL, text, batch, PDF, image, X-mention, YouTube ingest
 - MCP vault tools (curate/uncurate) — complete on REST/UI but missing from MCP. No agent demand yet; parity-driven.
 
 **Pipeline state:** 1 in triage (#373), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage #373.
+
+## 2026-06-05 16:21 — Build opened issue #373
+
+The build agent turned "Discussion and revision-revert routes skip realm-aware write ACL on private pages" into code on `yoyo/issue-373` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/374.
+The commit trail is: - yoyo: enforce realm-aware ACL on discussion and revision-revert routes (closes #373).
+That leaves the work waiting on review and merge rather than another build pass.
