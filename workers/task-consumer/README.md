@@ -23,22 +23,86 @@ a **cron** (`scheduled()`, daily) that POSTs `/api/tasks/scan`.
 
 ### Autonomous maintenance (Q2)
 
-The cron scans the wiki for upkeep no human reports — a `disputed` page with an
-open thread awaiting a reply → reconcile; an expired page with a `source_url` →
-re-ingest — and enqueues `maintain` tasks. It is **off by default**: the scan
-**dry-runs** (logs what it *would* enqueue, enqueues nothing) until you set
-`AUTONOMOUS_MAINTENANCE="on"` on the **main** worker. So the cron is safe to ship
-before you enable it — watch a few dry-runs in the logs first, then enable:
+The daily cron scans the **commons** (public pages only) for upkeep no human
+reports and enqueues `maintain` tasks:
+
+- a **`disputed`** page with an open discussion thread whose latest comment is
+  from a human (yoyo hasn't already answered) → **reconcile** it;
+- a page past its **`expiry`** that has a `source_url` → **re-ingest** from source.
+
+Guardrails: commons-only (never a private vault page), skip pages edited today,
+skip disputes yoyo already replied to, and a per-scan cap.
+
+#### It is OFF by default
+
+The cron runs daily regardless, but the scan **dry-runs** — it logs/returns what
+it *would* enqueue and enqueues **nothing** — until the flag is on. So shipping
+the cron is safe; you enable it deliberately, after inspecting a few dry-runs.
+
+The switch is the **`AUTONOMOUS_MAINTENANCE`** env var on the **main** worker
+(that's where the scan route runs — *not* this consumer). Any value other than
+exactly `"on"` (including unset) = dry-run.
+
+#### How to enable it
+
+**1. Inspect what it would do** (dry-run, works regardless of the flag). Replace
+the token with the same `YOPEDIA_SERVICE_TOKEN` the workers use:
 
 ```sh
-# Inspect what it would do (dry-run, regardless of the flag):
-curl -s -X POST "https://yopedia.<sub>.workers.dev/api/tasks/scan?dry=1" \
+curl -s -X POST "https://yopedia.yuanhao-li.workers.dev/api/tasks/scan?dry=1" \
   -H "Authorization: Bearer <YOPEDIA_SERVICE_TOKEN>" | jq
-
-# Enable autonomous maintenance (set on the MAIN worker, then redeploy/restart):
-#   add  "AUTONOMOUS_MAINTENANCE": "on"  to wrangler.jsonc `vars`, or
-pnpm exec wrangler secret put AUTONOMOUS_MAINTENANCE   # value: on
+# → { enabled, dry: true, found, enqueued: 0, tasks: [ { op, slug, threadIndex? } … ] }
 ```
+
+Or watch the daily cron's own dry-runs in the logs:
+
+```sh
+pnpm exec wrangler tail --config workers/task-consumer/wrangler.jsonc
+# look for:  task-consumer cron: scan → 200 { … dry:true found:N enqueued:0 … }
+```
+
+**2. Turn it on.** It's a non-sensitive flag, so the version-controlled way is
+preferred — add it to the **main** `wrangler.jsonc` `vars` block and deploy:
+
+```jsonc
+// wrangler.jsonc  (repo root — the MAIN worker)
+"vars": {
+  "NEXT_PUBLIC_OWNER_HANDLE": "yuanhao",
+  "AUTONOMOUS_MAINTENANCE": "on"
+}
+```
+
+```sh
+git add wrangler.jsonc && git commit -m "ops: enable autonomous maintenance" && git push
+# (push to main auto-deploys via deploy-cloudflare.yml)
+```
+
+Quick toggle without a code change (not version-controlled — prefer the var):
+
+```sh
+pnpm exec wrangler secret put AUTONOMOUS_MAINTENANCE   # enter:  on
+```
+
+**3. Verify it's live:** re-run the scan without `?dry=1` (or wait for the cron)
+and confirm `enabled: true`, `dry: false`, and `enqueued > 0` when there's work:
+
+```sh
+curl -s -X POST "https://yopedia.yuanhao-li.workers.dev/api/tasks/scan" \
+  -H "Authorization: Bearer <YOPEDIA_SERVICE_TOKEN>" | jq
+```
+
+#### Tuning
+
+- **Per-scan cap** (default 10) — pass `?cap=N` when invoking the scan, or change
+  `DEFAULT_MAINTENANCE_CAP` in `src/lib/maintenance.ts`.
+- **Cadence** — the cron schedule is `triggers.crons` in **this** worker's
+  `wrangler.jsonc` (default `0 6 * * *`, daily 06:00 UTC).
+
+#### How to disable
+
+Remove `"AUTONOMOUS_MAINTENANCE"` from the main `wrangler.jsonc` `vars` (and
+deploy), or `pnpm exec wrangler secret delete AUTONOMOUS_MAINTENANCE` if you set
+it as a secret. The cron keeps running but reverts to harmless dry-runs.
 
 **Ack/retry** maps onto Cloudflare Queues:
 - `2xx` → ack (done).
