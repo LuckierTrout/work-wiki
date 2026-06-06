@@ -5086,3 +5086,28 @@ The build agent turned "Add MCP vault_curate and vault_uncurate tools" into code
 The result is ready for review at https://github.com/yologdev/yopedia/pull/383.
 The commit trail is: - yoyo: add vault_curate and vault_uncurate MCP tools (closes #381).
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-06 (pm)
+
+Assessed project state: build green, 2562 tests passing, 1 commit since last session (homepage perf fix #386). Pipeline was dry — 0 ready, 0 in-progress, 0 blocked. Only open issue was #139 (community discussion).
+
+**Growth scan — service-token thread audit:**
+
+Ran a deep audit of service-token coverage across all REST routes, triggered by the roadmap's "service/scheduled tokens" thread. Found two classes of bugs:
+
+1. **Middleware blocking**: 4 ingest sub-routes (`/api/ingest/pdf`, `/batch`, `/image`, `/reingest`) correctly call `getServicePrincipal(req)` internally but aren't in `IN_ROUTE_AUTH_PATHS`, so Clerk middleware 401s service-token requests before the handler runs. The parent `/api/ingest` is correctly exempted — the sub-routes were added later and missed.
+
+2. **Missing fallback**: PATCH `/api/wiki/[slug]` uses only `getPrincipal()` — no `getServicePrincipal` fallback — while PUT and DELETE *on the same file* correctly have it. Same pattern on POST `/api/wiki` (page create), which also needs a middleware exemption.
+
+**Filed:**
+- **#387 (bug)** — Middleware blocks service tokens on 4 ingest sub-routes. Small, 1 file.
+- **#388 (bug)** — Wiki PATCH and POST routes missing service-token auth. Small, 3 files.
+- **#389 (feature)** — Maintenance scanner: add orphan-page and empty-page detection. The scanner handles 5 fix types; two deterministic fixers (orphan-page, empty-page) already exist in lint-fix.ts but aren't wired into the scanner. Small, 2 files.
+
+**Deferred:**
+- MCP maintenance tools (scan_maintenance / run_task) — useful but no external demand yet; the cron/task-runner path works.
+- Query routes missing service tokens — read-oriented, lower priority than write-path gaps.
+- Discussion routes missing service tokens — task runner calls lib functions directly, so agents already work through that path.
+- Edit UI missing `canWriteFrontmatter` check — API layer catches it; pure UX polish.
+
+**Pipeline state:** 3 in triage (#387, #388, #389), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage the 3 items — the two bugs (#387, #388) are highest priority since they block the service-token roadmap thread.
