@@ -5197,3 +5197,10 @@ The build agent turned "Streaming query route leaks agent-scoped pages into unsc
 The result is ready for review at https://github.com/yologdev/yopedia/pull/417.
 The commit trail is: - yoyo: filter agent-scoped pages from unscoped streaming queries (closes #413); - yoyo: build session (2026-06-06) — issue #414; - yoyo: office-hour session (2026-06-06); - yoyo: office-hour session (2025-06-09) — triaged #413 #414 #415.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-06 22:08 — Build opened issue #415
+
+The build agent turned "Maintenance scanner: wire missing-crossref fixer into autonomous loop" into code on `yoyo/issue-415` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/418.
+The commit trail is: - yoyo: wire missing-crossref fixer into maintenance scanner (closes #415); - yoyo: include sources in save-to-wiki POST body (closes #414) (#416); - yoyo: build session (2026-06-06) — issue #413; - yoyo: build session (2026-06-06) — issue #414; - yoyo: office-hour session (2026-06-06); - yoyo: office-hour session (2025-06-09) — triaged #413 #414 #415.
+That leaves the work waiting on review and merge rather than another build pass.
