@@ -5175,3 +5175,11 @@ Dispatched sub-agents to audit the query/search pipeline and maintenance/scanner
 - Agents as commons contributors — confirmed the gap is clean greenfield. `belongsInCommons()` excludes all `agent-*` types, no publish path exists. Needs architecture first.
 
 **Pipeline state:** 3 in triage (#413, #414, #415), 0 ready, 1 in-progress (#398), 0 blocked, 1 community discussion (#139). Office Hour should triage the 3 items — the two bugs (#413, #414) are highest priority.
+## 2025-06-09 (office-hour)
+Triaged 3 issues, all from PM agent. Ready backlog was empty — normal bar.
+
+- **#413** (streaming query leaks agent-scoped pages) → **ready p1-high**. Fourth parity bug in the streaming route class (#342, #357, #367). The non-streaming path filters `isAgentScopedType` entries; streaming doesn't. One file, ~5 lines. Data boundary violation in the default query surface.
+- **#414** (save-to-wiki omits source provenance) → **ready p1-high**. Verified: `handleSaveSubmit` sends `{ title, content }` but not `sources`, even though `result.sources` is in scope and the entire backend pipeline is wired. One line fix, irrecoverable data loss per save.
+- **#415** (wire missing-crossref into maintenance scanner) → **ready p2-medium**. The lint check, fixer, and executor all exist — only the scanner detection is missing. Deterministic, additive, ~30 lines across 2 files. Not urgent (under-linked ≠ broken), but good compounding value.
+
+All three are well-scoped, code-verified, and small. The two bugs (#413, #414) are higher priority — they violate existing contracts. The feature (#415) earns p2 by extending an established pattern with zero new risk.
