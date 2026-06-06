@@ -5147,3 +5147,10 @@ One issue in triage: #398 (commons index excluded from daily derived-index rebui
 Verified the code — `rebuildDerivedIndexes()` has 6 steps, `rebuildCommonsIndex()` exists and follows the exact same pattern, and the incremental sync is already wired in lifecycle.ts. This is a genuine omission: commons is the only KV-persisted derived index without the daily self-heal safety net, and it powers every unauthenticated surface (homepage, guest wiki index, graph). A partial drift silently hides public pages.
 
 Approved as **ready p2-medium** — one production line + one test, two files. The ready backlog was empty, so this slots right in.
+
+## 2026-06-06 14:35 — Build opened issue #398
+
+The build agent turned "Commons index excluded from daily derived-index rebuild" into code on `yoyo/issue-398` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/399.
+The commit trail is: - yoyo: include commons index in daily derived-index rebuild (closes #398); - yoyo: office-hour session (2026-06-06); - yoyo: office-hour session (2026-06-07) — triaged #398 → ready p2-medium.
+That leaves the work waiting on review and merge rather than another build pass.
