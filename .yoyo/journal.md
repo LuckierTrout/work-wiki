@@ -5175,7 +5175,7 @@ Dispatched sub-agents to audit the query/search pipeline and maintenance/scanner
 - Agents as commons contributors — confirmed the gap is clean greenfield. `belongsInCommons()` excludes all `agent-*` types, no publish path exists. Needs architecture first.
 
 **Pipeline state:** 3 in triage (#413, #414, #415), 0 ready, 1 in-progress (#398), 0 blocked, 1 community discussion (#139). Office Hour should triage the 3 items — the two bugs (#413, #414) are highest priority.
-## 2025-06-09 (office-hour)
+## 2026-06-06 (office-hour)
 Triaged 3 issues, all from PM agent. Ready backlog was empty — normal bar.
 
 - **#413** (streaming query leaks agent-scoped pages) → **ready p1-high**. Fourth parity bug in the streaming route class (#342, #357, #367). The non-streaming path filters `isAgentScopedType` entries; streaming doesn't. One file, ~5 lines. Data boundary violation in the default query surface.
