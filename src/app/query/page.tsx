@@ -11,6 +11,7 @@ import {
 import { QueryResultPanel } from "@/components/QueryResultPanel";
 import { useStreamingQuery } from "@/hooks/useStreamingQuery";
 import { Icon } from "@/components/folio/icons";
+import { logger } from "@/lib/logger";
 
 const EXAMPLES = [
   "What is harness engineering?",
@@ -69,6 +70,31 @@ export default function QueryPage() {
       cancelled = true;
     };
   }, [isSignedIn]);
+
+  // Example questions reference existing pages — hide them when the commons is
+  // empty (assume content until proven otherwise, so they don't flash away).
+  const [hasContent, setHasContent] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/wiki")
+      .then((r) => {
+        if (!r.ok) {
+          logger.warn("query", `/api/wiki returned ${r.status}; keeping chips`);
+          return null; // unknown — leave the default (shown), don't hide
+        }
+        return r.json();
+      })
+      .then((d: { pages?: unknown[] } | null) => {
+        // Only flip on a definitive answer; on error/uncertainty keep chips shown.
+        if (!cancelled && d) setHasContent((d.pages?.length ?? 0) > 0);
+      })
+      .catch((err) => {
+        if (!cancelled) logger.warn("query", "chip-gating /api/wiki fetch failed", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const {
     question,
@@ -287,7 +313,8 @@ export default function QueryPage() {
                   className="row"
                   style={{ gap: 8, flexWrap: "wrap", flex: "1 1 320px", minWidth: 0 }}
                 >
-                  {EXAMPLES.map((ex) => (
+                  {hasContent &&
+                    EXAMPLES.map((ex) => (
                     <button
                       type="button"
                       key={ex}
