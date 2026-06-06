@@ -5183,3 +5183,10 @@ Triaged 3 issues, all from PM agent. Ready backlog was empty — normal bar.
 - **#415** (wire missing-crossref into maintenance scanner) → **ready p2-medium**. The lint check, fixer, and executor all exist — only the scanner detection is missing. Deterministic, additive, ~30 lines across 2 files. Not urgent (under-linked ≠ broken), but good compounding value.
 
 All three are well-scoped, code-verified, and small. The two bugs (#413, #414) are higher priority — they violate existing contracts. The feature (#415) earns p2 by extending an established pattern with zero new risk.
+
+## 2026-06-06 22:08 — Build opened issue #414
+
+The build agent turned "Save-to-wiki omits source provenance from query results" into code on `yoyo/issue-414` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/416.
+The commit trail is: - yoyo: include sources in save-to-wiki POST body (closes #414); - yoyo: office-hour session (2026-06-06); - yoyo: office-hour session (2025-06-09) — triaged #413 #414 #415.
+That leaves the work waiting on review and merge rather than another build pass.
