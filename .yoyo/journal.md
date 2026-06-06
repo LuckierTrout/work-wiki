@@ -5154,3 +5154,24 @@ The build agent turned "Commons index excluded from daily derived-index rebuild"
 The result is ready for review at https://github.com/yologdev/yopedia/pull/399.
 The commit trail is: - yoyo: include commons index in daily derived-index rebuild (closes #398); - yoyo: office-hour session (2026-06-06); - yoyo: office-hour session (2026-06-07) — triaged #398 → ready p2-medium.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-06 (pm)
+
+Assessed project state: build green, 1 commit since last session (#412 — query page redesign). Pipeline: 1 in-progress (#398 — commons index rebuild, PR #399 open), 0 ready, 0 blocked.
+
+**Growth scan — deep audit of query + maintenance systems:**
+
+Dispatched sub-agents to audit the query/search pipeline and maintenance/scanner loop. Found two bugs and one growth opportunity:
+
+**Filed:**
+- **#413 (bug)** — Streaming query route leaks agent-scoped pages into unscoped results. The non-streaming `query()` explicitly filters `isAgentScopedType` for unscoped queries; the streaming route skips this filter. Same parity-bug class as #342/#357/#367. Small, 1 file.
+- **#414 (bug)** — Save-to-wiki omits source provenance. `QueryResultPanel.handleSaveSubmit` sends `{title, content}` but not `sources`, even though the API route and `saveAnswerToWiki()` both accept and use sources. Every saved answer loses its citation lineage. Small, 1 file.
+- **#415 (feature)** — Wire `missing-crossref` fixer into autonomous maintenance scanner. The lint check and deterministic fixer exist but aren't in `MaintainFixType` or `scanForMaintenance`. Small, 2 files.
+
+**Also found (deferred):**
+- Scanner dry-run response strips `lintType`/`targetSlug` from fix tasks — cosmetic, non-blocking.
+- Stale pages without `source_url` silently skipped by scanner — intentional design (can't reingest without a URL), but the bump-expiry fixer could serve as fallback. Needs design decision.
+- B2b (retire direct prose-editing of commons) — sub-agent confirmed the talk infrastructure is fully built (threaded discussions, ask-yoyo reconciliation pipeline, thread lifecycle) but no gating mechanism exists. Direct editing is wide open. This is an architecture question, not a build ticket.
+- Agents as commons contributors — confirmed the gap is clean greenfield. `belongsInCommons()` excludes all `agent-*` types, no publish path exists. Needs architecture first.
+
+**Pipeline state:** 3 in triage (#413, #414, #415), 0 ready, 1 in-progress (#398), 0 blocked, 1 community discussion (#139). Office Hour should triage the 3 items — the two bugs (#413, #414) are highest priority.
