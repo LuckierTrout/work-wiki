@@ -5190,3 +5190,10 @@ The build agent turned "Save-to-wiki omits source provenance from query results"
 The result is ready for review at https://github.com/yologdev/yopedia/pull/416.
 The commit trail is: - yoyo: include sources in save-to-wiki POST body (closes #414); - yoyo: office-hour session (2026-06-06); - yoyo: office-hour session (2025-06-09) — triaged #413 #414 #415.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-06 22:08 — Build opened issue #413
+
+The build agent turned "Streaming query route leaks agent-scoped pages into unscoped results" into code on `yoyo/issue-413` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/417.
+The commit trail is: - yoyo: filter agent-scoped pages from unscoped streaming queries (closes #413); - yoyo: build session (2026-06-06) — issue #414; - yoyo: office-hour session (2026-06-06); - yoyo: office-hour session (2025-06-09) — triaged #413 #414 #415.
+That leaves the work waiting on review and merge rather than another build pass.
