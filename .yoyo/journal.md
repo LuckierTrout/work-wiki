@@ -5119,7 +5119,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/390.
 The commit trail is: - yoyo: exempt ingest sub-routes from Clerk middleware write-gate (closes #387).
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2025-07-25 (office-hour)
+## 2026-06-06 (office-hour)
 
 Triaged 1 issue today. Ready backlog was empty — no saturation pressure.
 
