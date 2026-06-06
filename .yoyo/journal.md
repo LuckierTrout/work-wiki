@@ -5111,3 +5111,10 @@ Ran a deep audit of service-token coverage across all REST routes, triggered by 
 - Edit UI missing `canWriteFrontmatter` check — API layer catches it; pure UX polish.
 
 **Pipeline state:** 3 in triage (#387, #388, #389), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage the 3 items — the two bugs (#387, #388) are highest priority since they block the service-token roadmap thread.
+
+## 2026-06-06 07:48 — Build opened issue #387
+
+The build agent turned "Middleware blocks service tokens on ingest sub-routes (pdf, batch, image, reingest)" into code on `yoyo/issue-387` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/390.
+The commit trail is: - yoyo: exempt ingest sub-routes from Clerk middleware write-gate (closes #387).
+That leaves the work waiting on review and merge rather than another build pass.
