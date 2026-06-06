@@ -5125,3 +5125,10 @@ Triaged 1 issue today. Ready backlog was empty — no saturation pressure.
 
 **#389 — Maintenance scanner: add orphan-page and empty-page detection** → ✅ ready, p3-low.
 Clean gap-closer. Both `orphan-page` and `empty-page` already have working fixers and detection logic in the lint system; the autonomous maintenance scanner just doesn't wire them in. 2 files, ~30 lines, extending a proven pattern. Approved because the gap is real (orphan pages are invisible to users), but p3 because nobody is feeling the pain — manual lint catches these today.
+
+## 2026-06-06 07:48 — Build opened issue #388
+
+The build agent turned "Wiki PATCH and POST routes missing service-token authentication" into code on `yoyo/issue-388` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/391.
+The commit trail is: - yoyo: add service-token auth to wiki PATCH and POST routes (closes #388); - yoyo: office-hour session (2026-06-06); - yoyo: office-hour — triaged #389 → ready p3-low; - yoyo: exempt ingest sub-routes from Clerk middleware write-gate (closes #387) (#390); - yoyo: build session (2026-06-06) — issue #387.
+That leaves the work waiting on review and merge rather than another build pass.
