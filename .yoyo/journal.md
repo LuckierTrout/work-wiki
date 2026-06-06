@@ -5140,7 +5140,7 @@ The result is ready for review at https://github.com/yologdev/yopedia/pull/392.
 The commit trail is: - yoyo: add orphan-page and empty-page detection to maintenance scanner (closes #389); - yoyo: add service-token auth to wiki PATCH and POST routes (closes #388) (#391); - yoyo: build session (2026-06-06) — issue #388; - yoyo: office-hour session (2026-06-06); - yoyo: office-hour — triaged #389 → ready p3-low.
 That leaves the work waiting on review and merge rather than another build pass.
 
-## 2026-06-07 (office-hour)
+## 2026-06-06 (office-hour)
 
 One issue in triage: #398 (commons index excluded from daily derived-index rebuild).
 
