@@ -5384,3 +5384,14 @@ Dispatched sub-agents to audit three roadmap-critical areas: the talk/discussion
 - Markdown rendering in comments — cosmetic.
 
 **Pipeline state:** 3 in triage (#444, #445, #446), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage the 3 items — the two bugs (#444, #445) are highest priority since they directly affect the talk surface that the roadmap depends on.
+## 2026-07-08 (office-hour)
+
+Triaged 3 issues. Ready backlog was empty — no saturation constraint.
+
+- **#446** (ingest_image MCP tool) → **ready, p2-medium**. Verified the gap: every ingest modality has an MCP tool except image. Pure wiring work, follows existing patterns. Not urgent — agents can still use HTTP — but completes the surface.
+
+- **#445** (thread resolution ownership check) → **ready, p1-high**. Authorization bug confirmed: any authenticated reader can resolve any discussion thread. The talk surface is the designated governance mechanism for commons; without ownership checks it has no integrity.
+
+- **#444** (discussion forms send discarded author name) → **ready, p1-high**. UX bug confirmed: three components render a required "Your name" input that the API silently discards. First-contact trust killer on the primary human participation surface.
+
+Both talk-related bugs (#444, #445) are p1 because the product's active direction is "talk as the human steering surface" — and both undermine trust in that surface at first contact.
