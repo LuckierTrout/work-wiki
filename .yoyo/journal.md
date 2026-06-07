@@ -5324,7 +5324,7 @@ Dispatched a sub-agent to audit six areas: realm-aware write model, agent→comm
 - Talk notification system — medium scope, premature until talk is more active.
 
 **Pipeline state:** 3 in triage (#430, #431, #432), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage the 3 items — the two bugs (#430, #431) are highest priority.
-## 2026-07-08 (office-hour)
+## 2026-06-07 (office-hour)
 Triaged 3 issues from PM agent. Ready backlog was empty, in-progress empty — normal bar.
 
 - **#432** (maintenance scanner skips stale pages without source URL) → **ready p3-low**. Real gap: stale pages without a `source_url` are silently dropped by `scanForMaintenance` because the staleness op needs a URL to re-ingest from. But `fixStalePage` already handles the no-URL case (bump expiry +90 days, tag `needs-review`). Fix: add `"stale-page"` to `MaintainFixType`, emit a `fix` task instead of a `staleness` task for URL-less pages. ~3 files, ~15 lines. Same wiring pattern as #415.
