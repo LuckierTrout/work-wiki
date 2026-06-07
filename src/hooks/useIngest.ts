@@ -15,6 +15,7 @@ export interface IngestResponse {
   indexUpdated: boolean;
   previewContent?: string;
   preview?: IngestPreviewMeta;
+  sourceContent?: string;
   error?: string;
 }
 
@@ -184,6 +185,9 @@ export function useIngest(): UseIngestReturn {
             title: preview.title,
             content: preview.content,
             generatedContent: preview.previewContent,
+            // Preserve PDF/image provenance through the text commit path.
+            ...(preview.sourceType ? { sourceType: preview.sourceType } : {}),
+            ...(preview.sourceUrl ? { sourceUrl: preview.sourceUrl } : {}),
           };
 
       const res = await fetch("/api/ingest", {
@@ -208,8 +212,9 @@ export function useIngest(): UseIngestReturn {
     }
   }
 
-  /** Image ingest: store image, describe via vision model, write a page. Skips
-   *  the review gate (the body is just the image + description). */
+  /** Image ingest: store image + describe via vision model, then REVIEW before
+   *  publishing. The preview returns the body (image + description) as
+   *  sourceContent so approve commits via the shared text path. */
   async function handleImageIngest(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -237,6 +242,7 @@ export function useIngest(): UseIngestReturn {
         const fd = new FormData();
         fd.append("file", imageFile);
         if (title.trim()) fd.append("title", title.trim());
+        fd.append("preview", "true");
         res = await fetch("/api/ingest/image", { method: "POST", body: fd });
       } else {
         res = await fetch("/api/ingest/image", {
@@ -245,6 +251,7 @@ export function useIngest(): UseIngestReturn {
           body: JSON.stringify({
             imageUrl: imageUrl.trim(),
             title: title.trim() || undefined,
+            preview: true,
           }),
         });
       }
@@ -255,8 +262,19 @@ export function useIngest(): UseIngestReturn {
         setStage("form");
         return;
       }
-      setResult(data);
-      setStage("success");
+      setPreview({
+        slug: data.primarySlug,
+        previewContent: data.previewContent ?? "",
+        relatedPages: data.relatedUpdated ?? [],
+        title: data.preview?.title ?? title,
+        content: data.sourceContent ?? "",
+        url: undefined,
+        sourceType: "image",
+        // Real source URL only when ingesting by URL (uploads have none).
+        sourceUrl: imageFile ? undefined : imageUrl.trim() || undefined,
+        meta: data.preview,
+      });
+      setStage("review");
     } catch {
       setError("Network error — could not reach the server");
       setStage("form");
@@ -265,8 +283,9 @@ export function useIngest(): UseIngestReturn {
     }
   }
 
-  /** PDF ingest: extract text from a PDF, run through the ingest pipeline. Skips
-   *  the review gate (the body is the extracted text). */
+  /** PDF ingest: extract text, synthesize, then REVIEW before publishing. The
+   *  preview returns the extracted text as sourceContent so approve commits via
+   *  the shared text path (no re-fetch / re-extract). */
   async function handlePdfIngest(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -294,6 +313,7 @@ export function useIngest(): UseIngestReturn {
         const fd = new FormData();
         fd.append("file", pdfFile);
         if (title.trim()) fd.append("title", title.trim());
+        fd.append("preview", "true");
         res = await fetch("/api/ingest/pdf", { method: "POST", body: fd });
       } else {
         res = await fetch("/api/ingest/pdf", {
@@ -302,6 +322,7 @@ export function useIngest(): UseIngestReturn {
           body: JSON.stringify({
             pdfUrl: pdfUrl.trim(),
             title: title.trim() || undefined,
+            preview: true,
           }),
         });
       }
@@ -312,8 +333,19 @@ export function useIngest(): UseIngestReturn {
         setStage("form");
         return;
       }
-      setResult(data);
-      setStage("success");
+      setPreview({
+        slug: data.primarySlug,
+        previewContent: data.previewContent ?? "",
+        relatedPages: data.relatedUpdated ?? [],
+        title: data.preview?.title ?? title,
+        content: data.sourceContent ?? "",
+        url: undefined,
+        sourceType: "pdf",
+        // Real source URL only when ingesting by URL (uploads have none).
+        sourceUrl: pdfFile ? undefined : pdfUrl.trim() || undefined,
+        meta: data.preview,
+      });
+      setStage("review");
     } catch {
       setError("Network error — could not reach the server");
       setStage("form");
