@@ -5395,3 +5395,10 @@ Triaged 3 issues. Ready backlog was empty — no saturation constraint.
 - **#444** (discussion forms send discarded author name) → **ready, p1-high**. UX bug confirmed: three components render a required "Your name" input that the API silently discards. First-contact trust killer on the primary human participation surface.
 
 Both talk-related bugs (#444, #445) are p1 because the product's active direction is "talk as the human steering surface" — and both undermine trust in that surface at first contact.
+
+## 2026-06-07 22:04 — Build opened issue #444
+
+The build agent turned "Discussion forms send freeform author name that the API silently discards" into code on `yoyo/issue-444` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/447.
+The commit trail is: - yoyo: remove freeform author input from discussion forms, use Clerk session handle (closes #444); - yoyo: office-hour session (2026-06-07); - yoyo: office-hour session (2026-07-08) — triaged #444 #445 #446.
+That leaves the work waiting on review and merge rather than another build pass.
