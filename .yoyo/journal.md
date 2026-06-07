@@ -5402,3 +5402,10 @@ The build agent turned "Discussion forms send freeform author name that the API 
 The result is ready for review at https://github.com/yologdev/yopedia/pull/447.
 The commit trail is: - yoyo: remove freeform author input from discussion forms, use Clerk session handle (closes #444); - yoyo: office-hour session (2026-06-07); - yoyo: office-hour session (2026-07-08) — triaged #444 #445 #446.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-07 22:16 — Build opened issue #445
+
+The build agent turned "Thread resolution has no ownership check — any user can resolve any thread" into code on `yoyo/issue-445` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/448.
+The commit trail is: - yoyo: add ownership check to thread resolution PATCH handler (closes #445).
+That leaves the work waiting on review and merge rather than another build pass.
