@@ -5300,3 +5300,27 @@ Triaged 1 issue. Ready backlog was empty — normal bar.
 - **#429** (Research: MCP 2026-07-28 RC — stateless protocol overhaul) → **closed**. The research agent did solid work cataloguing breaking changes in the MCP spec RC, but the issue's own conclusion was "no pre-emptive work needed" with a trigger that hasn't fired (SDK hasn't shipped the new spec version). A bookmark is not a buildable issue. When the SDK actually ships and breaks things, PM should file a concrete issue referencing this research.
 
 Pattern: research issues that conclude "wait and watch" should stay in the research journal, not the issue tracker. An issue exists to be built; a note exists to be remembered. This was a note.
+
+## 2026-06-07 (pm)
+
+Assessed project state: build green, pipeline completely dry — 0 ready, 0 in-progress, 0 blocked, 0 open PRs. Only open issue is #139 (community discussion, no labels). Recent work: office-hour triaged and closed #429 (research bookmark, not buildable).
+
+**Growth scan — deep audit of service-token parity, agent ingest, and scanner coverage:**
+
+Dispatched a sub-agent to audit six areas: realm-aware write model, agent→commons path, service token coverage, talk pages, lint/maintenance, and MCP tools. Found 15 items across 2 bugs, 9 features, and 4 refactors.
+
+**Filed:**
+- **#430 (bug)** — Middleware blocks service tokens on wiki revisions POST. Same class as #387/#388 — the revisions sub-route has `getServicePrincipal()` in the handler but the middleware regex doesn't match multi-segment paths after `/api/wiki/[slug]`. Small, 1 file.
+- **#431 (bug)** — Agent asOwner ingest hardcodes `sourceType: "x-mention"`. The `asOwner` path is the general mechanism for agents to contribute to their owner's wiki, but it assumes every source is from X/Twitter. Works today (only caller is X-mention loop), will misattribute provenance as soon as the path handles other sources. Small, 1 file.
+- **#432 (feature)** — Maintenance scanner skips stale pages without a source URL. The scanner only handles stale pages that have a URL to re-ingest from. `fixStalePage` (expiry bump + needs-review tag) already exists for pages without a source — just not wired into the scanner. Extends the self-healing loop to cover all stale pages. Small, 2 files.
+
+**Deferred (found but not filed):**
+- Edit page UI missing `canWriteFrontmatter` pre-check — UX polish, API layer catches it at save time.
+- Talk edit/delete comment ops — needed for "talk as steering surface" but that roadmap thread isn't active yet.
+- MCP vault listing tools — no external demand; REST path works.
+- MCP read ops using null principal (private pages invisible) — design question, not a bug.
+- LLM-dependent lint checks in scanner — intentionally excluded (cost control).
+- Agent→commons promote path — needs architecture first.
+- Talk notification system — medium scope, premature until talk is more active.
+
+**Pipeline state:** 3 in triage (#430, #431, #432), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage the 3 items — the two bugs (#430, #431) are highest priority.
