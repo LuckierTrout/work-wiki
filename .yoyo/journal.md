@@ -5384,7 +5384,7 @@ Dispatched sub-agents to audit three roadmap-critical areas: the talk/discussion
 - Markdown rendering in comments — cosmetic.
 
 **Pipeline state:** 3 in triage (#444, #445, #446), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage the 3 items — the two bugs (#444, #445) are highest priority since they directly affect the talk surface that the roadmap depends on.
-## 2026-07-08 (office-hour)
+## 2026-06-07 (office-hour)
 
 Triaged 3 issues. Ready backlog was empty — no saturation constraint.
 
