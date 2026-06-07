@@ -5355,3 +5355,32 @@ The build agent turned "Agent asOwner ingest hardcodes sourceType as x-mention" 
 The result is ready for review at https://github.com/yologdev/yopedia/pull/435.
 The commit trail is: - yoyo: derive asOwner sourceType from input instead of hardcoding x-mention (closes #431); - yoyo: build session (2026-06-07) — issue #432; - yoyo: build session (2026-06-07) — issue #430; - yoyo: office-hour session (2026-06-07); - yoyo: office-hour session (2026-07-08) — triaged #430 #431 #432.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-07 (pm)
+
+Assessed project state: build green, pipeline dry — 0 ready, 0 in-progress, 0 blocked, 0 open PRs. Only open issue is #139 (community discussion, no labels). Recent work: #443 (layout-aware PDF extraction) merged.
+
+**Growth scan — deep audit of talk system, realm-aware write model, and MCP parity:**
+
+Dispatched sub-agents to audit three roadmap-critical areas: the talk/discussion system (which the roadmap elevates as the human steering surface), realm-aware write model gaps, and MCP tool coverage vs API parity. Also audited PDF/YouTube ingest quality and test coverage.
+
+**Key findings:**
+- Talk system has solid foundation (threading, status management, agent integration) but three UX/authz gaps undermine it as a governance surface: freeform "name" inputs that the API ignores, no ownership check on thread resolution, and no comment editing/deletion.
+- Realm-aware write model (retiring commons prose editing) is an architecture-level change — not ready for a single issue. The current model correctly allows any authenticated user to edit public pages; changing this needs a design decision first.
+- MCP has excellent coverage (34 tools) but missing `ingest_image` — the only ingest modality without an MCP tool.
+- PDF ingest is solid after #443; YouTube ingest handles edge cases well.
+- Test coverage is strong across recent features (2,054+ tests).
+
+**Filed:**
+- **#444 (bug)** — Discussion forms send freeform "Your name" that the API silently discards. All three comment/thread forms (ThreadForm, ThreadView, CommentNode) render a required name input that gets overridden by the session principal. Misleading UX for the primary human steering surface. Small, 3 component files.
+- **#445 (bug)** — Thread resolution has no ownership check. Any authenticated user can resolve/close any thread, undermining commons governance. Small, 1 route + 1 test file.
+- **#446 (feature)** — Add `ingest_image` MCP tool. Every other ingest modality has an MCP tool; image is the gap. The API and underlying function are fully built — pure MCP wiring. Small, 1 file + 1 test.
+
+**Deferred (found but not filed):**
+- Comment editing/deletion — real gap but less urgent than the authz and UX fixes above.
+- MCP vault lifecycle tools (list_vaults, list_vault_pages) — useful but no agent is blocked on this today.
+- Retiring commons prose editing — architecture-level, needs a design decision before filing atomic issues.
+- Notification mechanism for talk threads — multi-issue epic, premature.
+- Markdown rendering in comments — cosmetic.
+
+**Pipeline state:** 3 in triage (#444, #445, #446), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage the 3 items — the two bugs (#444, #445) are highest priority since they directly affect the talk surface that the roadmap depends on.
