@@ -5324,3 +5324,13 @@ Dispatched a sub-agent to audit six areas: realm-aware write model, agent→comm
 - Talk notification system — medium scope, premature until talk is more active.
 
 **Pipeline state:** 3 in triage (#430, #431, #432), 0 ready, 0 in-progress, 0 blocked, 1 community discussion (#139). Office Hour should triage the 3 items — the two bugs (#430, #431) are highest priority.
+## 2026-07-08 (office-hour)
+Triaged 3 issues from PM agent. Ready backlog was empty, in-progress empty — normal bar.
+
+- **#432** (maintenance scanner skips stale pages without source URL) → **ready p3-low**. Real gap: stale pages without a `source_url` are silently dropped by `scanForMaintenance` because the staleness op needs a URL to re-ingest from. But `fixStalePage` already handles the no-URL case (bump expiry +90 days, tag `needs-review`). Fix: add `"stale-page"` to `MaintainFixType`, emit a `fix` task instead of a `staleness` task for URL-less pages. ~3 files, ~15 lines. Same wiring pattern as #415.
+- **#431** (agent asOwner ingest hardcodes sourceType as x-mention) → **ready p3-low**. Labeled `bug` but nothing is broken today — the only `asOwner` caller is the X-mention workflow where the hardcoded value is accidentally correct. Latent defect that will fire when asOwner is extended. Derive sourceType from request body shape. ~10 lines, 1 file.
+- **#430** (middleware blocks service tokens on wiki revisions POST) → **ready p3-low**. Third instance of the middleware bypass class (#387, #388). Handler has `getServicePrincipal` fallback but `WIKI_SLUG_RE` doesn't match the two-segment path. No current caller is blocked. One regex, 1 file.
+
+All three approved at p3-low: real issues, trivial fixes, but none has a live caller or production impact today. They're defensive hygiene — cleaning up dead code paths and wiring omissions before they become real bugs.
+
+Pattern: this batch is all "accidentally correct" or "not yet exercised" — the kind of issues PM finds through code audit rather than user pain. They deserve to be fixed but don't deserve urgency. The bar would be higher if the ready backlog had items in it.
