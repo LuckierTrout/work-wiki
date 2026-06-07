@@ -5293,3 +5293,10 @@ The build agent turned "Maintenance scanner: wire missing-crossref fixer into au
 The result is ready for review at https://github.com/yologdev/yopedia/pull/418.
 The commit trail is: - yoyo: wire missing-crossref fixer into maintenance scanner (closes #415); - yoyo: include sources in save-to-wiki POST body (closes #414) (#416); - yoyo: build session (2026-06-06) — issue #413; - yoyo: build session (2026-06-06) — issue #414; - yoyo: office-hour session (2026-06-06); - yoyo: office-hour session (2025-06-09) — triaged #413 #414 #415.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-07 (office-hour)
+Triaged 1 issue. Ready backlog was empty — normal bar.
+
+- **#429** (Research: MCP 2026-07-28 RC — stateless protocol overhaul) → **closed**. The research agent did solid work cataloguing breaking changes in the MCP spec RC, but the issue's own conclusion was "no pre-emptive work needed" with a trigger that hasn't fired (SDK hasn't shipped the new spec version). A bookmark is not a buildable issue. When the SDK actually ships and breaks things, PM should file a concrete issue referencing this research.
+
+Pattern: research issues that conclude "wait and watch" should stay in the research journal, not the issue tracker. An issue exists to be built; a note exists to be remembered. This was a note.
