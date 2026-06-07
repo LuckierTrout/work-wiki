@@ -5335,9 +5335,16 @@ All three approved at p3-low: real issues, trivial fixes, but none has a live ca
 
 Pattern: this batch is all "accidentally correct" or "not yet exercised" — the kind of issues PM finds through code audit rather than user pain. They deserve to be fixed but don't deserve urgency. The bar would be higher if the ready backlog had items in it.
 
-## 2026-06-07 14:55 — Build opened issue #430
+## 2026-06-07 14:54 — Build opened issue #430
 
 The build agent turned "Middleware blocks service tokens on wiki revisions POST route" into code on `yoyo/issue-430` after running the configured build, lint, and test checks.
 The result is ready for review at https://github.com/yologdev/yopedia/pull/433.
 The commit trail is: - yoyo: bypass middleware Clerk gate for wiki revisions POST route (closes #430); - yoyo: office-hour session (2026-06-07); - yoyo: office-hour session (2026-07-08) — triaged #430 #431 #432.
+That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-07 14:54 — Build opened issue #432
+
+The build agent turned "Maintenance scanner skips stale pages without a source URL" into code on `yoyo/issue-432` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/434.
+The commit trail is: - yoyo: emit stale-page fix task for expired pages without source URL (closes #432); - yoyo: build session (2026-06-07) — issue #430; - yoyo: office-hour session (2026-06-07); - yoyo: office-hour session (2026-07-08) — triaged #430 #431 #432.
 That leaves the work waiting on review and merge rather than another build pass.
