@@ -17,7 +17,7 @@ import { ingest, ingestImage } from "../ingest";
 import { hasLLMKey, callLLM } from "../llm";
 import { describeImage } from "../vision";
 import { fetchImageBytes, storeImageBytes } from "../fetch";
-import { readWikiPageWithFrontmatter } from "../wiki";
+import { readWikiPageWithFrontmatter, readRawSourceById } from "../wiki";
 import { parseSources } from "../sources";
 import { resetSourceIndex } from "../source-index";
 import { resetAliasIndex } from "../alias-index";
@@ -129,10 +129,13 @@ describe("ingestImage", () => {
   });
 });
 
-describe("appendSourceImages (via ingest, LLM path)", () => {
-  it("appends a ## Images section with source images the LLM distillation dropped", async () => {
+describe("inline source images (via ingest, LLM path)", () => {
+  it("places a kept [[IMG:n]] token inline as the real image ref (no ## Images dump)", async () => {
     mockedHasLLMKey.mockReturnValue(true);
-    mockedCallLLM.mockResolvedValue("# Doc\n\n## Summary\n\nDistilled text, no images.");
+    // The LLM keeps the image by echoing its placeholder token inline.
+    mockedCallLLM.mockResolvedValue(
+      "# Doc\n\n## Summary\n\nDistilled.\n\n[[IMG:1]]\n\n## Details\n\nMore.",
+    );
 
     const result = await ingest(
       "Doc With Pics",
@@ -141,8 +144,49 @@ describe("appendSourceImages (via ingest, LLM path)", () => {
     );
 
     const page = await readWikiPageWithFrontmatter(result.primarySlug);
-    expect(page!.content).toContain("## Images");
     expect(page!.content).toContain("![a chart](assets/doc/chart.png)");
+    expect(page!.content).not.toContain("## Images");
+    expect(page!.content).not.toContain("[[IMG:"); // token substituted, none left
+
+    // Invariant: the RAW source keeps the original refs untokenized — tokenizing
+    // only the LLM input, never `content` (which feeds saveRawSource + dedup hash).
+    const rawId = parseSources(page!.frontmatter.sources as string)[0]?.raw_id;
+    const raw = await readRawSourceById(result.primarySlug, rawId!);
+    expect(raw.content).toContain("![a chart](assets/doc/chart.png)");
+    expect(raw.content).not.toContain("[[IMG:");
+  });
+
+  it("drops an image whose token the LLM omitted (relevance filtering)", async () => {
+    mockedHasLLMKey.mockReturnValue(true);
+    mockedCallLLM.mockResolvedValue("# Doc\n\n## Summary\n\nDistilled, image not kept.");
+
+    const result = await ingest(
+      "Doc No Pics",
+      "Some text.\n\n![a chart](assets/doc/chart.png)\n\nmore text.",
+      { author: "alice", owner: "alice" },
+    );
+
+    const page = await readWikiPageWithFrontmatter(result.primarySlug);
+    expect(page!.content).not.toContain("chart.png");
+    expect(page!.content).not.toContain("## Images");
+  });
+
+  it("strips decorative images (logo) before the LLM sees them", async () => {
+    mockedHasLLMKey.mockReturnValue(true);
+    // Even if the LLM emits IMG:1, the logo was never tokenized → nothing to restore.
+    mockedCallLLM.mockResolvedValue("# Doc\n\n## Summary\n\nText.\n\n[[IMG:1]]");
+
+    const result = await ingest(
+      "Doc Logo",
+      "Intro.\n\n![site logo](assets/doc/logo.png)\n\nbody.",
+      { author: "alice", owner: "alice" },
+    );
+
+    const page = await readWikiPageWithFrontmatter(result.primarySlug);
+    expect(page!.content).not.toContain("logo.png");
+    // Distinguish "logo stripped" from "feature silently no-op": the token the
+    // LLM emitted had no ref to restore, so it must be dropped, not left raw.
+    expect(page!.content).not.toContain("[[IMG:");
   });
 });
 
