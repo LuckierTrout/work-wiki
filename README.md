@@ -69,73 +69,11 @@ We took Karpathy's [LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf55
 
 Six specialized agents form a self-healing pipeline. No single agent does everything — each has one job, runs on its own schedule, and communicates through GitHub Issues:
 
-```
-                          GitHub Issues
-                    (the shared communication bus)
-                                |
-    ┌───────────┐    ┌──────────┴──────────┐    ┌───────────┐
-    |  RESEARCH  |    |    OFFICE HOUR       |    |   REVIEW   |
-    |  Sun 9am   |--->|  Daily 7am +        |    |  On PR     |
-    |            |    |  on issue open       |    |  opened    |
-    | Scans the  |    |                      |    |            |
-    | field for  |    | Triages issues:      |    | Reviews    |
-    | competitor |    |  simple → [ready]    |    | the diff   |
-    | intel      |    |  complex → architect |    | against    |
-    |            |    |  bad → close         |    | acceptance |
-    | Files max  |    |                      |    | criteria   |
-    | 3 issues   |    | Adds priority        |    |            |
-    └─────┬──────┘    └───┬─────────┬────────┘    | Merges if  |
-          |               |         |              | passing;   |
-          v               |         |              | requests   |
-     ┌─────────┐          |         |              | retry      |
-     |   PM    |          |         |              └──────┬─────┘
-     | Daily   |          |         |                     |
-     | 6am     |          v         v                     |
-     |         |   ┌────────┐  ┌──────────────────┐       |
-     | Reads   |   | BUILD  |  |    ARCHITECT      |       |
-     | vision, |   | On     |  |  On complex issue |       |
-     | assesses|   | ready  |  |  + on build fail  |       |
-     | gaps    |   | + 4h   |  |  + daily 8am      |       |
-     |         |   |        |  |                    |       |
-     | Files   |   | Claims |  | Reads codebase    |       |
-     | max 3   |   | issue  |  | Designs plan      |       |
-     | issues  |   | Builds |  | Splits or rewrites|       |
-     |         |   | Opens  |->| issue with step-  |       |
-     └────┬────┘   | PR ----+->| by-step guide     |       |
-          |        |        |  |                    |       |
-          v        └────┬───┘  └────────┬───────────┘       |
-    [triage] issues     |               |                   |
-                        |       back to triage / ready      |
-                        |                                   |
-                        └──────────> PR ────────────────────┘
-```
+![GitHub Issues self-healing agent pipeline](docs/assets/github-issues-pipeline.png)
 
 **The lifecycle of an idea:**
 
-```
-  Human files issue          PM spots a gap           Research finds intel
-        |                        |                          |
-        v                        v                          v
-   ┌─────────┐  Office   ┌───────────────────────────────────────┐
-   | [triage] |  Hour     |                                       |
-   |          |---------->|  simple?  ──> [ready] ──> Build ──> PR ──> Review
-   └─────────┘  triages   |                                       |
-                          |  complex? ──> [needs-architecture]    |
-                          |                    |                   |
-                          |              Architect designs         |
-                          |                    |                   |
-                          |              sub-issues or plan        |
-                          |                    |                   |
-                          |              back to [triage]          |
-                          |                                       |
-                          |  build fails 3x? ──> [help-wanted]   |
-                          |                    |                   |
-                          |              Architect rescues         |
-                          |                    |                   |
-                          |              splits / rewrites         |
-                          |              back to [triage]          |
-                          └───────────────────────────────────────┘
-```
+![Lifecycle of an idea through the agent pipeline](docs/assets/lifecycle-of-an-idea.png)
 
 **Each agent has its own expertise** — not just instructions, but judgment:
 - **Research** has a signal filter (distinguishes "this exists" from "this changes our strategy")
