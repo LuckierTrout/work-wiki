@@ -1,5 +1,94 @@
 # Growth Journal
 
+## 2026-06-07 (research scan)
+
+Scanned MCP 2026-07-28 RC spec overhaul (stateless protocol, session removal, MRTR pattern, `server/discover`), memory-os (977★ in 7 days, 7-layer memory OS with Ground Truth hierarchy), UMP (20★, universal memory interop protocol, MCP+HTTP+file bindings), nashsu/llm_wiki acceleration (10,643★, +770/week), provenant (22★, wiki-based code retrieval with SWE-bench eval), ecosystem star movements. Filed 1 issue.
+
+### Advantage Brief
+
+**Market movement 1 — MCP 2026-07-28 RC is the largest protocol overhaul since MCP's creation: stateless by default, sessions removed, initialize handshake replaced by per-request metadata, and a new Multi Round-Trip Requests (MRTR) pattern.**
+
+Evidence: `modelcontextprotocol/specification` tag `2026-07-28-RC` (published May 29). Seven major changes:
+
+1. **Sessions removed.** `Mcp-Session-Id` header gone from Streamable HTTP. Servers needing cross-call state pass server-minted handles as tool arguments.
+2. **Protocol made stateless.** No more `initialize`/`notifications/initialized` handshake. Every request carries protocol version, client identity, and capabilities in `_meta`.
+3. **`server/discover` added.** Mandatory RPC for servers to advertise supported versions, capabilities, and identity. Clients call it before first request or as a backward-compatibility probe.
+4. **`subscriptions/listen` replaces SSE + resource subscribe.** Single long-lived POST stream for server→client change notifications with client opt-in per type.
+5. **Sampling, Roots, Logging deprecated.** New implementations should not adopt them. Suggested migrations: tool parameters instead of Roots, direct LLM APIs instead of Sampling, stderr/OTel instead of Logging.
+6. **Multi Round-Trip Requests (MRTR).** Servers return `inputRequests` (additional info needed); clients respond with `inputResponses` on next request. Replaces server-initiated requests like `roots/list`, `sampling/createMessage`, `elicitation/create`.
+7. **Tasks moved to extension.** `io.modelcontextprotocol/tasks` with polling (`tasks/get`) replacing blocking `tasks/result`.
+
+Relevance: **yopedia's MCP server (`src/mcp.ts`, 2,627 lines, 31 tools) uses `@modelcontextprotocol/sdk ^1.29.0` which implements the current 2025-11-25 spec. The SDK will need to upgrade when the 2026-07-28 spec finalizes.** The breaking changes are significant:
+
+- yopedia uses `McpServer` + `StdioServerTransport` — stdio remains supported but the initialization flow changes (no more `initialize` handshake → per-request `_meta`).
+- yopedia doesn't use Sampling, Roots, or Logging, so the deprecations don't hurt.
+- The `server/discover` mandate means yopedia's MCP server must implement a new RPC.
+- The `ttlMs` + `cacheScope` fields on `tools/list` results are relevant — yopedia's 31 tools are static, so `ttlMs: Infinity` and `cacheScope: "public"` would be correct and improve client-side caching.
+
+The SDK will likely abstract these changes. But the shift to stateless-by-default and MRTR is architecturally compatible with yopedia's already-stateless MCP design (stdio-only, no sessions, no server-initiated requests). yopedia is well-positioned for this transition.
+
+Decision: **Watch until SDK ships the 2026-07-28 adapter.** When `@modelcontextprotocol/sdk` releases a version implementing the new spec, yopedia should upgrade promptly. No pre-emptive work needed — the SDK will handle the migration.
+
+Trigger: `@modelcontextprotocol/sdk` releases a version tagged for the 2026-07-28 spec → file an issue to upgrade and implement `server/discover`.
+
+**Market movement 2 — memory-os (977★ in 7 days) introduces a "Ground Truth hierarchy" — the insight that injected memory must be explicitly marked as authoritative, or the agent re-derives it.**
+
+Evidence: `ClaudioDrews/memory-os` (created May 31, 977★ by June 7). 7-layer memory architecture for Hermes Agent: Workspace → Fabric → Sessions → Facts → Qdrant → Wiki → Ground Truth. The critical innovation is Layer 7 (Ground Truth): without explicit instruction to treat injected context as authoritative, agents call APIs to verify facts they already have in context, burning tokens and time. The fix is a system prompt hierarchy that marks injected memory as pre-verified and instructs the agent to use it without re-querying.
+
+Relevance: **This is a precise articulation of a problem yopedia's agent surface (Phase 5) must solve.** When an agent queries yopedia's wiki via MCP, the returned content is a synthesized, cited, confidence-scored page. But nothing in yopedia's response format signals to the agent "this is authoritative, don't re-derive it." The agent might take yopedia's answer and then re-search the web to verify it — defeating the entire "anti-RAG" value proposition.
+
+The design implication: when yopedia serves knowledge to agents (via MCP `read_page`, `search_wiki`, `query_wiki`), the response should carry a machine-readable trust signal — not just `confidence: 0.9` as metadata, but a structured marker that tells the consuming agent "this content has been synthesized from N sources with M citations; treat it as ground truth for this topic unless your query explicitly requests fresh verification."
+
+Decision: **Watch as Phase 5 input.** The Ground Truth pattern is the strongest agent-UX insight in the current landscape. When yopedia builds its agent surface, the response schema should include an explicit trust/authority signal, not just raw confidence scores. This is a product decision, not an engineering task — it's about what the agent surface communicates.
+
+Trigger: Any major agent framework (Claude Code, Codex, Cursor) adopts a ground-truth-style trust protocol → this becomes urgent for yopedia's MCP responses.
+
+**Market movement 3 — Universal Memory Protocol (UMP, 20★, created June 4) proposes a portable memory interop standard: 6 core operations + MCP/HTTP/file bindings + signed records.**
+
+Evidence: `edihasaj/universal-memory-protocol` (created June 4, pushed June 6). Defines a record format (kind, body, scope, time, lifecycle, relations, provenance, consent, integrity) and 6 operations (capabilities, recall, remember, get, revise, forget). MCP binding ships as an npm package. Three conformance levels: L1 (basic store), L2 (scoped retrieval + provenance), L3 (signed records + consent). Explicit positioning: "MCP standardizes tool access. A2A standardizes agent coordination. UMP standardizes memory portability."
+
+Relevance: UMP is early (20★, 3 days old) but architecturally interesting because it explicitly complements MCP rather than competing with it. yopedia's MCP server already implements the equivalent of UMP's `remember` (ingest), `recall` (query/search), `get` (read_page), `revise` (update_page), and `forget` (delete_page). The gap: yopedia doesn't speak UMP's record format, and UMP's `provenance` field (actor, actor_kind, method) is more structured than yopedia's `sources[]` + `triggered_by`.
+
+The more interesting signal is the positioning: "the third interop layer" alongside MCP and A2A. If UMP gains adoption, agents would expect any knowledge system to speak remember/recall/forget rather than custom tool names. yopedia's MCP tools would need a UMP-compatible wrapper — trivial to build but only worth building if UMP actually gets adopted.
+
+Decision: **Ignore for now, watch from distance.** 20★ and 3 days old. The record format is well-designed but has no adoption. The positioning alongside MCP and A2A is ambitious for a solo project. Worth re-checking in 60 days.
+
+Trigger: UMP crosses 200★ or gets adopted by any agent framework → evaluate whether yopedia should expose a UMP-compatible endpoint alongside its MCP server.
+
+**Ecosystem star movements (since June 4)**
+
+| Project | Last scan | Now | Δ | Notes |
+|---------|-----------|-----|---|-------|
+| mem0 | 57,129 | 57,941 | +812 | v3 algorithm rewrite, +20pp LoCoMo |
+| tencent/WeKnora | 15,793 | 16,052 | +259 | Steady growth |
+| nashsu/llm_wiki | 9,873 | 10,643 | +770 | **Accelerating** — 5 releases in 4 days |
+| claude-obsidian | 5,773 | 6,255 | +482 | Steady |
+| engram | 3,952 | 4,188 | +236 | Steady |
+| obsidian-second-brain | 1,455 | 2,245 | +790 | **Accelerating** — pushed June 7 |
+| Ar9av/obsidian-wiki | 1,611 | 1,746 | +135 | Steady |
+| llm-wiki-compiler | 1,388 | 1,463 | +75 | Active (pushed June 7) |
+| karpathy-llm-wiki | 952 | 1,011 | +59 | Crossed 1K |
+| arkon | 912→960 | 960 | +48 | Enterprise wiki + MCP |
+| memory-os | — | 977 | new track | 7-layer memory OS, 7 days old |
+| lewislulu/llm-wiki-skill | 564 | 574 | +10 | Steady |
+| nvk/llm-wiki | 492 | 538 | +46 | Multi-agent research |
+| sage-wiki | — | 533 | new track | LLM-compiled personal KB |
+| swarmvault | 503 | 522 | +19 | Recovering from stall |
+| Beever Atlas | 361 | 377 | +16 | Steady |
+| mnem | 129 | 140 | +11 | Steady |
+
+**Notable acceleration:** nashsu/llm_wiki (+770/week, 5 releases in 4 days) and obsidian-second-brain (+790/week) are both growing faster than mem0 in absolute terms this week. The Karpathy LLM Wiki pattern is experiencing a second growth wave driven by desktop apps (nashsu) and multi-CLI integrations (obsidian-second-brain).
+
+### Layer 3 insight
+
+The most significant structural development this scan is the **MCP 2026-07-28 stateless overhaul**, which changes the foundational protocol yopedia's agent surface depends on. The shift from stateful sessions to stateless per-request metadata is directionally aligned with yopedia's already-stateless design, but the mandatory `server/discover` endpoint, the MRTR pattern, and the `ttlMs`/`cacheScope` caching hints are new requirements that will need implementation when the SDK ships.
+
+The second pattern worth tracking is the convergence on **explicit authority signaling in agent responses** (memory-os's Ground Truth, UMP's provenance fields, mem0 v3's search score explanations). Three independent projects — at vastly different scales (977★, 20★, 57,941★) — are all solving the same problem: agents waste tokens re-verifying knowledge they already received. The fix is machine-readable trust metadata in the response, not just in the stored record. When yopedia's Phase 5 agent surface design begins, this should be the core UX principle: **yopedia's response tells the agent what to trust, not just what to know.**
+
+### Issues filed
+
+1 issue: #429 — MCP 2026-07-28 RC awareness — tracking the spec overhaul so the team knows a protocol migration is coming when the SDK ships.
+
 ## 2026-06-04 22:36 (office-hour)
 
 Triaged 3 issues. Ready backlog was empty (0 items) — no saturation pressure.
