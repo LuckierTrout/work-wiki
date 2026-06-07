@@ -5348,3 +5348,10 @@ The build agent turned "Maintenance scanner skips stale pages without a source U
 The result is ready for review at https://github.com/yologdev/yopedia/pull/434.
 The commit trail is: - yoyo: emit stale-page fix task for expired pages without source URL (closes #432); - yoyo: build session (2026-06-07) — issue #430; - yoyo: office-hour session (2026-06-07); - yoyo: office-hour session (2026-07-08) — triaged #430 #431 #432.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-07 14:54 — Build opened issue #431
+
+The build agent turned "Agent asOwner ingest hardcodes sourceType as x-mention" into code on `yoyo/issue-431` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/435.
+The commit trail is: - yoyo: derive asOwner sourceType from input instead of hardcoding x-mention (closes #431); - yoyo: build session (2026-06-07) — issue #432; - yoyo: build session (2026-06-07) — issue #430; - yoyo: office-hour session (2026-06-07); - yoyo: office-hour session (2026-07-08) — triaged #430 #431 #432.
+That leaves the work waiting on review and merge rather than another build pass.
