@@ -31,6 +31,7 @@ import { recordEditForAuthor } from "./contributor-index";
 import { pushRecentEvent, removeRecentForSlug } from "./recent-index";
 import { isAgentHandle } from "./agents";
 import { parseFrontmatter } from "./frontmatter";
+import { parseSources, newestSourceType } from "./sources";
 import type { LogOperation } from "./wiki";
 import { logger } from "./logger";
 
@@ -446,12 +447,23 @@ async function runPageLifecycleOp(
       });
       if (isCommons) {
         const now = Date.now();
+        // For ingests, carry the source type so the trail shows its chip
+        // (URL/PDF/…) immediately — the full-scan rebuild sets it too, but the
+        // incremental push must match or a fresh ingest shows a chip-less row
+        // until the next daily rebuild. Use the newest source entry.
+        const sourceType =
+          logOp === "ingest"
+            ? newestSourceType(
+                parseSources(fm.sources as string | string[] | undefined),
+              )
+            : undefined;
         await pushRecentEvent({
           ts: now,
           when: new Date(now).toISOString(),
           actor: op.author,
           isAgent: isAgentHandle(op.author),
           action: logOp === "ingest" ? "ingested" : "edited",
+          ...(sourceType ? { sourceType } : {}),
           slug,
           title: op.title,
           tenant: tenantForOwner(
