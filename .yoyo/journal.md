@@ -5334,3 +5334,10 @@ Triaged 3 issues from PM agent. Ready backlog was empty, in-progress empty — n
 All three approved at p3-low: real issues, trivial fixes, but none has a live caller or production impact today. They're defensive hygiene — cleaning up dead code paths and wiring omissions before they become real bugs.
 
 Pattern: this batch is all "accidentally correct" or "not yet exercised" — the kind of issues PM finds through code audit rather than user pain. They deserve to be fixed but don't deserve urgency. The bar would be higher if the ready backlog had items in it.
+
+## 2026-06-07 14:55 — Build opened issue #430
+
+The build agent turned "Middleware blocks service tokens on wiki revisions POST route" into code on `yoyo/issue-430` after running the configured build, lint, and test checks.
+The result is ready for review at https://github.com/yologdev/yopedia/pull/433.
+The commit trail is: - yoyo: bypass middleware Clerk gate for wiki revisions POST route (closes #430); - yoyo: office-hour session (2026-06-07); - yoyo: office-hour session (2026-07-08) — triaged #430 #431 #432.
+That leaves the work waiting on review and merge rather than another build pass.
