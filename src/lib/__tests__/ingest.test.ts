@@ -2908,6 +2908,138 @@ describe("reingest", () => {
     }
   });
 
+  it("preview re-synthesizes a draft WITHOUT writing the page", async () => {
+    mockedHasLLMKey.mockReturnValue(true);
+    const originalFetch = global.fetch;
+    try {
+      mockedCallLLM.mockResolvedValue("CONCEPT: Topic\n\n# Topic\n\n## Summary\n\nv1 body.");
+      await ingest("Topic", "seed", { sourceUrl: "https://example.com/doc" });
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Map([["content-type", "text/html"]]) as unknown as Headers,
+        body: null,
+        text: () =>
+          Promise.resolve("<html><head><title>Doc</title></head><body><p>fresh</p></body></html>"),
+      });
+      mockedCallLLM.mockResolvedValue("CONCEPT: Topic\n\n# Topic\n\n## Summary\n\nv2 PREVIEW.");
+
+      const result = await reingest("topic", { preview: true });
+      expect(result.previewContent).toContain("v2 PREVIEW");
+      expect(result.indexUpdated).toBe(false);
+      // The stored page is untouched — still v1.
+      const page = await readWikiPageWithFrontmatter("topic");
+      expect(page!.content).toContain("v1 body");
+      expect(page!.content).not.toContain("v2 PREVIEW");
+    } finally {
+      global.fetch = originalFetch;
+      mockedHasLLMKey.mockReturnValue(false);
+      mockedCallLLM.mockReset();
+    }
+  });
+
+  it("commits a reviewed draft in place — an edited H1 doesn't fork the slug", async () => {
+    mockedHasLLMKey.mockReturnValue(true);
+    const originalFetch = global.fetch;
+    try {
+      mockedCallLLM.mockResolvedValue("CONCEPT: Topic\n\n# Topic\n\n## Summary\n\nv1.");
+      await ingest("Topic", "seed", { sourceUrl: "https://example.com/doc" });
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Map([["content-type", "text/html"]]) as unknown as Headers,
+        body: null,
+        text: () =>
+          Promise.resolve("<html><head><title>Doc</title></head><body><p>fresh</p></body></html>"),
+      });
+
+      // Commit the reviewed draft with an edited H1 (different name).
+      const result = await reingest("topic", {
+        generatedContent: "# Renamed Topic\n\n## Summary\n\nEdited body.",
+      });
+
+      expect(result.primarySlug).toBe("topic"); // pinned — no fork to renamed-topic
+      expect(await readWikiPageWithFrontmatter("renamed-topic")).toBeNull();
+      const page = await readWikiPageWithFrontmatter("topic");
+      expect(page!.content).toContain("Edited body.");
+      // The title follows the edited H1.
+      const entries = await listWikiPages();
+      expect(entries.find((e) => e.slug === "topic")!.title).toBe("Renamed Topic");
+    } finally {
+      global.fetch = originalFetch;
+      mockedHasLLMKey.mockReturnValue(false);
+      mockedCallLLM.mockReset();
+    }
+  });
+
+  it("commit with NO H1 in the draft preserves the existing title (not the source <title>)", async () => {
+    mockedHasLLMKey.mockReturnValue(true);
+    const originalFetch = global.fetch;
+    try {
+      mockedCallLLM.mockResolvedValue("CONCEPT: Topic\n\n# Topic\n\n## Summary\n\nv1.");
+      await ingest("Topic", "seed", { sourceUrl: "https://example.com/doc" });
+
+      // The re-fetch returns a junk <title> ("Something Went Wrong").
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Map([["content-type", "text/html"]]) as unknown as Headers,
+        body: null,
+        text: () =>
+          Promise.resolve(
+            "<html><head><title>Something Went Wrong</title></head><body><p>x</p></body></html>",
+          ),
+      });
+
+      // Reviewed draft has NO H1 — title must NOT become the junk source title.
+      await reingest("topic", { generatedContent: "## Summary\n\nBody without a heading." });
+
+      const entries = await listWikiPages();
+      expect(entries.find((e) => e.slug === "topic")!.title).toBe("Topic");
+    } finally {
+      global.fetch = originalFetch;
+      mockedHasLLMKey.mockReturnValue(false);
+      mockedCallLLM.mockReset();
+    }
+  });
+
+  it("a pinned commit never clobbers a DIFFERENT existing page even if the edited H1 collides", async () => {
+    mockedHasLLMKey.mockReturnValue(true);
+    const originalFetch = global.fetch;
+    try {
+      mockedCallLLM.mockResolvedValue("CONCEPT: Topic\n\n# Topic\n\n## Summary\n\nv1.");
+      await ingest("Topic", "seed", { sourceUrl: "https://example.com/doc" });
+      // A separate, pre-existing page the edited H1 would slugify onto.
+      mockedCallLLM.mockResolvedValue("CONCEPT: Other Page\n\n# Other Page\n\n## Summary\n\nOriginal other.");
+      await ingest("Other Page", "other seed");
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Map([["content-type", "text/html"]]) as unknown as Headers,
+        body: null,
+        text: () =>
+          Promise.resolve("<html><head><title>Doc</title></head><body><p>x</p></body></html>"),
+      });
+
+      // Re-ingest "topic" with an H1 that collides with the "other-page" slug.
+      const result = await reingest("topic", {
+        generatedContent: "# Other Page\n\n## Summary\n\nTopic's new body.",
+      });
+
+      expect(result.primarySlug).toBe("topic"); // stayed pinned
+      const other = await readWikiPageWithFrontmatter("other-page");
+      expect(other!.content).toContain("Original other."); // untouched
+      expect(other!.content).not.toContain("Topic's new body.");
+    } finally {
+      global.fetch = originalFetch;
+      mockedHasLLMKey.mockReturnValue(false);
+      mockedCallLLM.mockReset();
+    }
+  });
+
   it("dedups a re-ingested source by URL even when the type differs", async () => {
     // A PDF page re-fetched as a plain "url" must not create a second source
     // entry for the same URL (the bug behind the duplicated arxiv sources).
