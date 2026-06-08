@@ -17,6 +17,7 @@ import type {
   FileWithEtag,
   FileEntry,
   EmbeddingMatch,
+  EmbeddingEntry,
 } from "./types";
 
 import type {
@@ -25,6 +26,7 @@ import type {
   KVNamespace,
   VectorizeIndex,
 } from "./cloudflare-types";
+import { logger } from "../logger";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -265,6 +267,19 @@ export class R2StorageProvider implements StorageProvider {
     return scored.slice(0, topK);
   }
 
+  async getEmbeddingById(id: string): Promise<EmbeddingEntry | null> {
+    if (this.vectorize) {
+      const got = await this.vectorize.getByIds([id]);
+      const v = got?.[0];
+      return v
+        ? { id: v.id, vector: v.values, metadata: v.metadata ?? {} }
+        : null;
+    }
+    const entries = await this.loadEmbeddingsFromKV();
+    const e = entries.find((x) => x.id === id);
+    return e ? { id: e.id, vector: e.vector, metadata: e.metadata } : null;
+  }
+
   async removeEmbedding(id: string): Promise<void> {
     if (this.vectorize) {
       await this.vectorize.deleteByIds([id]);
@@ -273,6 +288,24 @@ export class R2StorageProvider implements StorageProvider {
       const filtered = entries.filter((e) => e.id !== id);
       await this.kv.put(EMBEDDINGS_KV_KEY, JSON.stringify(filtered));
     }
+  }
+
+  async clearEmbeddings(): Promise<void> {
+    if (this.vectorize) {
+      // Vectorize has no bulk-clear primitive (deleting by id needs the full id
+      // list, which we don't track). After a content reset every page is gone,
+      // so orphaned vectors are filtered out at query time anyway — a full purge
+      // means recreating the index. Best-effort no-op here, by design — but log
+      // it so a caller (admin reset) isn't silently reporting success for a clear
+      // the managed index didn't actually perform.
+      logger.warn(
+        "storage",
+        "clearEmbeddings: Vectorize has no bulk-clear; vectors left in place " +
+          "(filtered at query time). Recreate the index to fully purge.",
+      );
+      return;
+    }
+    await this.kv.put(EMBEDDINGS_KV_KEY, JSON.stringify([]));
   }
 
   // -------------------------------------------------------------------------
