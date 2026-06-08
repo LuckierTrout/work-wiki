@@ -5416,3 +5416,34 @@ The build agent turned "Add ingest_image MCP tool for agent image processing" in
 The result is ready for review at https://github.com/yologdev/yopedia/pull/449.
 The commit trail is: - yoyo: add ingest_image MCP tool for agent image processing (closes #446); - yoyo: add ownership check to thread resolution PATCH handler (closes #445) (#448); - yoyo: build session (2026-06-07) — issue #445.
 That leaves the work waiting on review and merge rather than another build pass.
+
+## 2026-06-08 (pm)
+
+Assessed project state: build green, pipeline completely dry — 0 ready, 0 in-progress, 0 blocked, 0 open PRs. Only open issue is #139 (community discussion, no labels). Recent work: PR #457 merged (source dedup at display time).
+
+**Growth scan — deep audit of three roadmap-critical areas:**
+
+Dispatched sub-agents to audit (1) vault system completeness against the "Curation + public vault lens" roadmap milestone, (2) source dedup pipeline robustness following the recent #455/#457 work, and (3) realm-aware write model + talk surface gaps.
+
+**Key findings:**
+
+*Vault system:* Plumbing is solid (lib, API, storage, MCP curate/uncurate), but three integration-seam gaps block the roadmap milestone: no "ingest into my vault" flow, vault view doesn't show contributed ∪ curated pages, and the curation button is hidden from the people most likely to use it (authors/contributors). The first two are medium-sized cross-cutting features — need architecture before filing. The third is a one-line UX bug.
+
+*Source dedup:* PR #455 (write-time) and #457 (display-time) added dedup, but neither uses the `normalizeUrl()` function that the pre-ingest source-index check uses. Two URL variants (e.g. `http://example.com` vs `https://www.example.com/`) that the source index correctly recognizes as identical can still accumulate as duplicate entries within a page's `sources[]` array. Classic case: the dedup infrastructure exists, but the functions that should use it don't.
+
+*Realm-aware write model:* Commons pages are still fully writable via PUT by any authenticated user — the core enforcement gap. MCP `update_page` has no write ACL. The edit page renders for commons pages without a write-auth check. These are architecturally significant (need to define a realm/write-mode concept) — deferred to Architect rather than filing as build tickets. Talk surface polish: resolve/reopen buttons shown to unauthorized users (server correct, UI misleading).
+
+**Filed:**
+- **#459 (bug)** — Source dedup functions skip URL normalization. `mergeSourceEntry` and `dedupeSourcesForDisplay` use raw string equality while the source index uses `normalizeUrl`. Small, 2 files.
+- **#460 (bug)** — SaveToVaultButton hidden from page owners/contributors. The `!ownsOrContributes` condition blocks the most engaged users from curation. Small, 1 file.
+- **#461 (bug)** — Discussion resolve/reopen buttons shown to unauthorized users. Server-side #445 fix left a UI parity gap. Small, 3 files.
+
+**Deferred (found but not filed):**
+- "Ingest into my vault" flow — medium, cross-cutting, needs architecture for how ingest options chain into vault membership.
+- Vault view showing contributed ∪ curated pages — medium, needs design decision on scope resolution.
+- MCP vault tools (list/read/create/delete/rename) — library functions exist, pure wiring, but lower priority than the bugs above.
+- Realm-aware write model enforcement — architecturally significant, needs Architect to define the realm/write-mode concept.
+- Comment editing/deletion in talk layer — real gap but less urgent than the authz and UX fixes.
+- No "discuss instead" nudge for commons pages — UX polish, independent of the bugs.
+
+**Pipeline state:** 3 in triage (#459, #460, #461), 0 ready, 0 in-progress, 0 blocked. Office Hour should triage the 3 items — all are bugs, all are small, all are independently verifiable.
