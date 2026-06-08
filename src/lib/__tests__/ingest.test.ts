@@ -12,6 +12,7 @@ import {
   parseConceptMarker,
   parseDisputedMarker,
   normalizeTags,
+  deriveTitleFromContent,
   collectTagVocabulary,
   computeConfidence,
   tokenizeSourceImages,
@@ -115,23 +116,81 @@ describe("slugify", () => {
 // ingest — empty slug guard
 // ---------------------------------------------------------------------------
 
-describe("ingest — empty slug guard", () => {
-  it('rejects empty title (slug would be "")', async () => {
-    await expect(ingest("", "some content")).rejects.toThrow(
-      /empty slug/,
-    );
+describe("deriveTitleFromContent", () => {
+  it("prefers a markdown H1", () => {
+    expect(deriveTitleFromContent("# My Heading\n\nbody")).toBe("My Heading");
+  });
+  it("falls back to the first non-empty line, markers stripped", () => {
+    expect(deriveTitleFromContent("\n\n- First bullet line\nmore")).toBe("First bullet line");
+  });
+  it("truncates at a sentence boundary", () => {
+    expect(deriveTitleFromContent("This is a sentence. And more.")).toBe("This is a sentence");
+  });
+  it("returns '' when there's no usable line", () => {
+    expect(deriveTitleFromContent("   \n  ###  ")).toBe("");
+  });
+});
+
+describe("ingest — title derivation", () => {
+  it("derives the title/slug from the content when the title is empty", async () => {
+    const result = await ingest("", "Distributed Systems\n\nSome content about consensus.");
+    // First non-empty line becomes the provisional title (no LLM in this test).
+    expect(result.primarySlug).toBe("distributed-systems");
+    // The written body must use the derived title, not an empty `# ` heading.
+    const page = await readWikiPageWithFrontmatter("distributed-systems");
+    expect(page!.content).toContain("# Distributed Systems");
+    expect(page!.content).not.toMatch(/^#\s*$/m);
   });
 
-  it("rejects title that produces empty slug after stripping special chars", async () => {
-    await expect(ingest("!!!", "some content")).rejects.toThrow(
-      /empty slug/,
-    );
+  it("derives from a markdown H1 when the title is empty", async () => {
+    const result = await ingest("", "# Vector Databases\n\nThey store embeddings.");
+    expect(result.primarySlug).toBe("vector-databases");
   });
 
-  it("rejects whitespace-only title", async () => {
-    await expect(ingest("   ", "some content")).rejects.toThrow(
-      /empty slug/,
-    );
+  it("throws only when neither a title nor content yields a usable slug", async () => {
+    await expect(ingest("!!!", "###  \n  ")).rejects.toThrow(/could be derived/);
+    await expect(ingest("   ", "   ")).rejects.toThrow(/could be derived/);
+  });
+
+  it("a title-less paste with an LLM CONCEPT lands on the concept slug + records the derived title as an alias", async () => {
+    mockedHasLLMKey.mockReturnValue(true);
+    try {
+      mockedCallLLM.mockResolvedValue(
+        "CONCEPT: Vector Databases\nALIASES: none\n\n# Vector Databases\n\n## Summary\n\nThey store embeddings.",
+      );
+      const result = await ingest(
+        "",
+        "Vector search systems store embeddings for similarity.",
+      );
+      // Concept slug wins over the first-line-derived provisional slug.
+      expect(result.primarySlug).toBe("vector-databases");
+      const page = await readWikiPageWithFrontmatter("vector-databases");
+      const aliases = (page!.frontmatter.aliases ?? []) as string[];
+      // The derived provisional title becomes an alias; no empty string leaks.
+      expect(aliases).toContain(
+        "Vector search systems store embeddings for similarity",
+      );
+      expect(aliases).not.toContain("");
+    } finally {
+      mockedHasLLMKey.mockReturnValue(false);
+      mockedCallLLM.mockReset();
+    }
+  });
+
+  it("commit-from-preview for a title-less paste stays on the concept slug (no fork)", async () => {
+    mockedHasLLMKey.mockReturnValue(true);
+    try {
+      // Commit a reviewed draft (generatedContent) with no title — the body H1
+      // drives the slug, not the empty/derived title.
+      const result = await ingest("", "some pasted content here.", {
+        generatedContent: "# Topic X\n\n## Summary\n\nApproved body.",
+      });
+      expect(result.primarySlug).toBe("topic-x");
+      expect(await readWikiPageWithFrontmatter("topic-x")).not.toBeNull();
+    } finally {
+      mockedHasLLMKey.mockReturnValue(false);
+      mockedCallLLM.mockReset();
+    }
   });
 });
 

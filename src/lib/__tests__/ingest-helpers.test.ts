@@ -35,16 +35,12 @@ describe("validateIngestInput", () => {
 
   // ── Text mode ─────────────────────────────────────────────────────────
 
-  it("text mode with empty title → error", () => {
-    expect(validateIngestInput("text", "", "some content", "")).toBe(
-      "Please enter a title",
-    );
+  it("text mode with empty title → null (title is optional, derived from content)", () => {
+    expect(validateIngestInput("text", "", "some content", "")).toBeNull();
   });
 
-  it("text mode with whitespace-only title → error", () => {
-    expect(validateIngestInput("text", "   ", "some content", "")).toBe(
-      "Please enter a title",
-    );
+  it("text mode with whitespace-only title → null (title optional)", () => {
+    expect(validateIngestInput("text", "   ", "some content", "")).toBeNull();
   });
 
   it("text mode with empty content → error", () => {
@@ -67,17 +63,20 @@ describe("validateIngestInput", () => {
 
   // ── batch mode (falls through to text branch) ────────────────────────
 
-  it("batch mode without title → error (uses text branch)", () => {
-    expect(validateIngestInput("batch", "", "content", "")).toBe(
+  it("image/pdf mode without title → error (title still required there)", () => {
+    expect(validateIngestInput("image", "", "content", "")).toBe(
+      "Please enter a title",
+    );
+    expect(validateIngestInput("pdf", "", "content", "")).toBe(
       "Please enter a title",
     );
   });
 
-  // ── title is checked before content ───────────────────────────────────
+  // ── text title is optional, so content is the blocking field ──────────
 
-  it("text mode with both empty → title error takes precedence", () => {
+  it("text mode with both empty → content error (title is optional)", () => {
     expect(validateIngestInput("text", "", "", "")).toBe(
-      "Please enter a title",
+      "Please enter some content",
     );
   });
 });
