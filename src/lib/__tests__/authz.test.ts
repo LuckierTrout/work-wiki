@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import {
   canReadPage,
   canReadEntry,
@@ -6,6 +6,7 @@ import {
   canSetPrivate,
   canWritePage,
   canWriteFrontmatter,
+  isAdmin,
 } from "../authz";
 import { agentOwnerHandle } from "../agents";
 import type { IndexEntry } from "../types";
@@ -136,6 +137,53 @@ describe("canWritePage", () => {
 
   it("fails closed on a private page with no owner", () => {
     expect(canWritePage({ visibility: "private" }, aliceP)).toBe(false);
+  });
+});
+
+describe("admin role (ADMIN_HANDLES)", () => {
+  const saved = process.env.ADMIN_HANDLES;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.ADMIN_HANDLES;
+    else process.env.ADMIN_HANDLES = saved;
+  });
+
+  it("isAdmin matches ADMIN_HANDLES case-insensitively; unset/empty/anon → false", () => {
+    delete process.env.ADMIN_HANDLES;
+    expect(isAdmin(aliceP)).toBe(false); // no admins configured
+
+    process.env.ADMIN_HANDLES = "yuanhao, Alice";
+    expect(isAdmin({ handle: "alice" })).toBe(true); // case-insensitive
+    expect(isAdmin({ handle: "yuanhao" })).toBe(true);
+    expect(isAdmin(bob)).toBe(false);
+    expect(isAdmin(null)).toBe(false);
+    expect(isAdmin({ handle: "" })).toBe(false);
+    process.env.ADMIN_HANDLES = "   ";
+    expect(isAdmin({ handle: "alice" })).toBe(false); // whitespace-only → no admins
+  });
+
+  it("isAdmin matches a Clerk user id exactly (spoof-proof) regardless of handle", () => {
+    process.env.ADMIN_HANDLES = "user_2abc";
+    expect(isAdmin({ id: "user_2abc", handle: "anything" })).toBe(true);
+    // A different user who set their handle to the id string is NOT admin
+    // (id is matched exactly against principal.id, not the handle).
+    expect(isAdmin({ id: "user_evil", handle: "user_2abc" })).toBe(false);
+  });
+
+  it("an admin reads and writes any page, including others' private pages", () => {
+    process.env.ADMIN_HANDLES = "alice";
+    const bobsPrivate = { owner: "bob", visibility: "private" };
+    expect(canReadPage(bobsPrivate, aliceP)).toBe(true);
+    expect(canWritePage(bobsPrivate, aliceP)).toBe(true);
+    // A non-admin, non-owner is still denied.
+    const carol = { id: "user_carol", handle: "carol" };
+    expect(canReadPage(bobsPrivate, carol)).toBe(false);
+    expect(canWritePage(bobsPrivate, carol)).toBe(false);
+  });
+
+  it("grants nothing extra when ADMIN_HANDLES is unset", () => {
+    delete process.env.ADMIN_HANDLES;
+    expect(canWritePage({ owner: "bob", visibility: "private" }, aliceP)).toBe(false);
+    expect(canReadPage({ owner: "bob", visibility: "private" }, aliceP)).toBe(false);
   });
 });
 
