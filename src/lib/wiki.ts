@@ -12,6 +12,7 @@ import {
 } from "./config";
 import { getTenantWikiDir, getTenantRawDir } from "./paths";
 import { DEFAULT_TENANT, ownerToTenant } from "./links";
+import { parseSources, dedupeSourcesForDisplay } from "./sources";
 
 // ---------------------------------------------------------------------------
 // Configurable base directories — delegated to the config layer
@@ -379,7 +380,13 @@ export function enrichEntry(
   const updated =
     typeof fm.updated === "string" && fm.updated.length > 0 ? fm.updated : undefined;
 
-  // source_count may be a number (new behavior) or a string (legacy).
+  // Displayed source count = number of DISTINCT sources (deduped by URL), so it
+  // matches the SOURCES panel. `source_count` frontmatter is an ingest-EVENT
+  // counter (re-ingesting one URL bumps it), so it overcounts — only fall back
+  // to it for legacy pages that have no structured `sources[]`.
+  const distinctSources = dedupeSourcesForDisplay(
+    parseSources(fm.sources as string | string[] | undefined),
+  ).length;
   const sourceCountRaw = fm.source_count;
   const sourceCountNum =
     typeof sourceCountRaw === "number"
@@ -387,8 +394,9 @@ export function enrichEntry(
       : typeof sourceCountRaw === "string" && sourceCountRaw.length > 0
         ? Number.parseInt(sourceCountRaw, 10)
         : NaN;
-  const sourceCount =
+  const legacyCount =
     Number.isFinite(sourceCountNum) && sourceCountNum >= 0 ? sourceCountNum : undefined;
+  const sourceCount = distinctSources > 0 ? distinctSources : legacyCount;
 
   const sourceUrl =
     typeof fm.source_url === "string" && fm.source_url.length > 0
