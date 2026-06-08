@@ -370,6 +370,45 @@ describe("findBacklinks", () => {
     const slugs = backlinks.map((b) => b.slug).sort();
     expect(slugs).toEqual(["page-a", "page-b", "page-c"]);
   });
+
+  it("excludes agent-scoped pages from a wiki page's backlinks", async () => {
+    await ensureDirectories();
+    await writeWikiPage("target", "# Target\n\nContent.");
+    await writeWikiPage("real-linker", "# Real\n\nSee [Target](target.md).");
+    await writeWikiPage(
+      "agent-linker",
+      "---\ntype: agent-knowledge\n---\n\n# Agent Linker\n\nSee [Target](target.md).",
+    );
+    await updateIndex([
+      { title: "Target", slug: "target", summary: "Content." },
+      { title: "Real", slug: "real-linker", summary: "Links." },
+      { title: "Agent Linker", slug: "agent-linker", summary: "Agent." },
+    ]);
+
+    const backlinks = await findBacklinks("target");
+    expect(backlinks.map((b) => b.slug)).toEqual(["real-linker"]); // agent excluded
+  });
+
+  it("excludes agent-scoped backlinks via the precomputed index (fast path)", async () => {
+    await ensureDirectories();
+    await writeWikiPage("target", "# Target\n\nContent.");
+    await writeWikiPage("real-linker", "# Real\n\nSee [Target](target.md).");
+    await writeWikiPage(
+      "agent-linker",
+      "---\ntype: agent-knowledge\n---\n\n# Agent\n\nSee [Target](target.md).",
+    );
+    await updateIndex([
+      { title: "Target", slug: "target", summary: "t" },
+      { title: "Real", slug: "real-linker", summary: "r" },
+      { title: "Agent", slug: "agent-linker", summary: "a" },
+    ]);
+    // Seed the reverse-link index so findBacklinks takes the FAST path, not the scan.
+    const { rebuildBacklinkIndex } = await import("../backlink-index");
+    await rebuildBacklinkIndex();
+
+    const backlinks = await findBacklinks("target");
+    expect(backlinks.map((b) => b.slug)).toEqual(["real-linker"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -407,6 +446,53 @@ describe("findSimilarPages", () => {
 
     const related = await findSimilarPages("anchor");
     expect(related.map((r) => r.slug)).toEqual(["real"]);
+  });
+
+  it("excludes agent-scoped pages from a wiki page's related list", async () => {
+    await ensureDirectories();
+    await writeWikiPage("anchor", "# anchor\n\nBody.");
+    await writeWikiPage("real", "# real\n\nBody.");
+    await writeWikiPage(
+      "agent-pg",
+      "---\ntype: agent-knowledge\n---\n\n# Agent Page\n\nAgent body.",
+    );
+    await updateIndex([
+      { title: "Anchor", slug: "anchor", summary: "a" },
+      { title: "Real", slug: "real", summary: "r" },
+      { title: "Agent Page", slug: "agent-pg", summary: "ag" },
+    ]);
+    mockedRelatedByVector.mockResolvedValueOnce([
+      { slug: "agent-pg", score: 0.9 }, // agent content — must be excluded
+      { slug: "real", score: 0.8 },
+    ]);
+
+    const related = await findSimilarPages("anchor");
+    expect(related.map((r) => r.slug)).toEqual(["real"]);
+  });
+
+  it("an agent page's related list excludes commons (wiki) pages", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "agent-anchor",
+      "---\ntype: agent-knowledge\n---\n\n# Agent Anchor\n\nBody.",
+    );
+    await writeWikiPage(
+      "agent-other",
+      "---\ntype: agent-knowledge\n---\n\n# Agent Other\n\nBody.",
+    );
+    await writeWikiPage("commons-pg", "# Commons\n\nBody.");
+    await updateIndex([
+      { title: "Agent Anchor", slug: "agent-anchor", summary: "a" },
+      { title: "Agent Other", slug: "agent-other", summary: "o" },
+      { title: "Commons", slug: "commons-pg", summary: "c" },
+    ]);
+    mockedRelatedByVector.mockResolvedValueOnce([
+      { slug: "commons-pg", score: 0.9 }, // wiki content — excluded for an agent anchor
+      { slug: "agent-other", score: 0.8 },
+    ]);
+
+    const related = await findSimilarPages("agent-anchor");
+    expect(related.map((r) => r.slug)).toEqual(["agent-other"]);
   });
 
   it("excludes pages not in the reader's readable set", async () => {
