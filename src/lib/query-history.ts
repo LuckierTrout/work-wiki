@@ -8,6 +8,7 @@ import { getStorage } from "./storage";
 import { withFileLock } from "./lock";
 import { isEnoent } from "./errors";
 import { logger } from "./logger";
+import type { QueryFormat } from "./query-format";
 
 // ---------------------------------------------------------------------------
 // Query history — per-asker, persisted INSIDE the asker's tenant silo.
@@ -54,6 +55,12 @@ export interface QueryHistoryEntry {
   savedAs?: string;
   /** Owner handle — the asker. Resolved to a tenant for storage placement. */
   owner?: string;
+  /**
+   * Answer format the entry was generated in. Persisted so a restored "html"
+   * answer re-renders in the sandboxed iframe rather than as escaped markdown.
+   * Absent on legacy entries — treat as "prose".
+   */
+  format?: QueryFormat;
 }
 
 // ---------------------------------------------------------------------------

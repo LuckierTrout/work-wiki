@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { extractCitedSlugs } from "@/lib/citations";
+import type { QueryFormat } from "@/lib/query-format";
 
 export interface QueryResponse {
   answer: string;
@@ -12,8 +13,8 @@ export interface QueryResponse {
 export interface UseStreamingQueryReturn {
   question: string;
   setQuestion: (q: string) => void;
-  format: "prose" | "table" | "slides" | "html";
-  setFormat: (f: "prose" | "table" | "slides" | "html") => void;
+  format: QueryFormat;
+  setFormat: (f: QueryFormat) => void;
   /** Active scope sent with each query ("mine", "owner:<h>", or undefined=All). */
   scope: string | undefined;
   setScope: (s: string | undefined) => void;
@@ -36,7 +37,12 @@ export interface UseStreamingQueryReturn {
 }
 
 interface UseStreamingQueryOptions {
-  onComplete?: (question: string, answer: string, sources: string[]) => void;
+  onComplete?: (
+    question: string,
+    answer: string,
+    sources: string[],
+    format: QueryFormat,
+  ) => void;
   onSubmitStart?: () => void;
   /** Initial query scope (e.g. "mine" when signed in, or a deep-linked owner:<h>). */
   initialScope?: string;
@@ -46,7 +52,7 @@ export function useStreamingQuery(
   options: UseStreamingQueryOptions = {},
 ): UseStreamingQueryReturn {
   const [question, setQuestion] = useState("");
-  const [format, setFormat] = useState<"prose" | "table" | "slides" | "html">("prose");
+  const [format, setFormat] = useState<QueryFormat>("prose");
   const [scope, setScope] = useState<string | undefined>(options.initialScope);
   const [result, setResult] = useState<QueryResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -122,6 +128,7 @@ export function useStreamingQuery(
             trimmed,
             fallbackData.answer,
             fallbackData.sources,
+            format,
           );
           return;
         }
@@ -171,7 +178,7 @@ export function useStreamingQuery(
         setStreaming(false);
 
         // Notify caller that query completed
-        onCompleteRef.current?.(trimmed, answer, finalSources);
+        onCompleteRef.current?.(trimmed, answer, finalSources, format);
       } catch (err) {
         // Don't report abort errors as failures
         if (err instanceof DOMException && err.name === "AbortError") {

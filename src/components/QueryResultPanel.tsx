@@ -5,12 +5,11 @@ import Link from "next/link";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { SlidePreview } from "@/components/SlidePreview";
 import { HtmlPreview } from "@/components/HtmlPreview";
+import { stripHtmlFence } from "@/lib/html";
 import { Alert } from "@/components/Alert";
 import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { logger } from "@/lib/logger";
-
-/** Answer format hint (mirrors QueryFormat in lib/query) — the panel renders accordingly. */
-type AnswerFormat = "prose" | "table" | "slides" | "html";
+import type { QueryFormat } from "@/lib/query-format";
 
 interface SaveState {
   status: "idle" | "editing" | "saving" | "saved" | "error";
@@ -27,7 +26,7 @@ export interface QueryResultPanelProps {
   /** Hide the "Save to Wiki" action (e.g. the signed-out homepage demo). */
   readOnly?: boolean;
   /** The format the answer was generated in — drives rendering + save. */
-  format?: AnswerFormat;
+  format?: QueryFormat;
 }
 
 export function QueryResultPanel({
@@ -64,7 +63,7 @@ export function QueryResultPanel({
     // formats copy a markdown wrapper with a heading + sources.
     let text: string;
     if (isHtml) {
-      text = result.answer;
+      text = stripHtmlFence(result.answer);
     } else {
       const lines = [`# ${question.trim()}`, "", result.answer];
       if (result.sources.length > 0) {
@@ -143,10 +142,12 @@ export function QueryResultPanel({
   // This is handled via the useEffect reset above + parent re-rendering with new props.
 
   // HTML answers render in a sandboxed iframe (HtmlPreview). Drive off the chosen
-  // format, with a content sniff as a fallback for answers reloaded without it.
+  // format, with a content sniff as a fallback for legacy history entries reloaded
+  // without one. Strip a wrapping ```html fence before sniffing so a fenced answer
+  // is still recognized as HTML.
   const isHtmlAnswer =
     format === "html" ||
-    /^\s*(<!doctype html|<html)/i.test(result.answer);
+    /^\s*(<!doctype html|<html)/i.test(stripHtmlFence(result.answer));
   const isMarp = result.answer.trimStart().startsWith("---\nmarp: true");
 
   return (
@@ -257,12 +258,12 @@ export function QueryResultPanel({
 
           {saveState.status === "saved" && saveState.slug && (
             <Alert variant="success">
-              Saved to the wiki and your vault.{" "}
+              {isHtml ? "Saved to your pages." : "Saved to the wiki."}{" "}
               <Link
                 href={hrefForSlug(saveState.slug)}
                 className="underline font-medium hover:opacity-80"
               >
-                View wiki page →
+                View →
               </Link>
             </Alert>
           )}

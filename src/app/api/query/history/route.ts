@@ -3,6 +3,7 @@ import { appendQuery, listQueries, markSaved } from "@/lib/query-history";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { isQueryFormat } from "@/lib/query-format";
 
 /**
  * GET /api/query/history?limit=20
@@ -40,7 +41,7 @@ export async function GET(request: NextRequest) {
  * Append a new query to history, or mark an existing entry as saved.
  *
  * Body for appending:
- *   { question: string, answer: string, sources: string[] }
+ *   { question: string, answer: string, sources: string[], format?: "prose" | "table" | "slides" | "html" }
  *
  * Body for marking saved:
  *   { action: "markSaved", id: string, slug: string }
@@ -69,7 +70,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Default: append a new query entry
-    const { question, answer, sources } = body;
+    const { question, answer, sources, format } = body;
+    // Persist only a format that changes how a restored answer renders. "prose"
+    // is the default, so it (and anything unrecognized) is stored as absent and
+    // defaults back to "prose" on restore.
+    const validFormat =
+      isQueryFormat(format) && format !== "prose" ? format : undefined;
 
     if (!question || typeof question !== "string" || !question.trim()) {
       return NextResponse.json(
@@ -90,6 +96,7 @@ export async function POST(request: NextRequest) {
       sources: Array.isArray(sources) ? sources : [],
       timestamp: new Date().toISOString(),
       owner: (await getPrincipal())?.handle,
+      format: validFormat,
     });
 
     return NextResponse.json({ entry, success: true });
