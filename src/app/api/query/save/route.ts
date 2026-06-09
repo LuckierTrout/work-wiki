@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { saveAnswerToWiki } from "@/lib/query";
+import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 
@@ -7,7 +8,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
-    const { title, content, sources } = body;
+    const { title, content, sources, format } = body;
 
     if (!title || typeof title !== "string" || title.trim().length === 0) {
       return NextResponse.json(
@@ -43,11 +44,32 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // An HTML answer is saved verbatim as a sandboxed, personal artifact owned by
+    // the asker. Writes are middleware-gated to a signed-in user; if the principal
+    // can't be resolved here (a transient auth failure) we must NOT silently write
+    // a mis-attributed system-owned page — surface it. Other formats save as
+    // markdown (unchanged, system-owned behavior).
+    const isHtml = format === "html";
+    let owner: string | undefined;
+    if (isHtml) {
+      const principal = await getPrincipal();
+      if (!principal) {
+        logger.error("query", "HTML save: could not resolve principal despite write-gate");
+        return NextResponse.json(
+          { error: "Could not resolve your account — sign in again and retry." },
+          { status: 401 },
+        );
+      }
+      owner = principal.handle;
+    }
+
     const result = await saveAnswerToWiki(
       title.trim(),
       content.trim(),
       undefined,
       validatedSources,
+      isHtml ? "html" : "markdown",
+      owner,
     );
 
     return NextResponse.json({ slug: result.slug, success: true });
