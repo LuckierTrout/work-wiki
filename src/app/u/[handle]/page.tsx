@@ -1,12 +1,15 @@
 import Link from "next/link";
-import { listReadableWikiPages } from "@/lib/wiki";
+import { listReadableWikiPages, isArtifactType } from "@/lib/wiki";
 import { slugsForOwner } from "@/lib/search";
-import { listAgentsForOwner, agentShortName } from "@/lib/agents";
+import { listAgentsForOwner } from "@/lib/agents";
 import { getDiscussionStatsForSlugs } from "@/lib/talk";
 import { getPrincipal } from "@/lib/auth";
 import { listVaults } from "@/lib/vault";
 import { decodeSlug } from "@/lib/slugify";
 import { buildContributorProfile } from "@/lib/contributors";
+import { belongsInCommons } from "@/lib/commons";
+import { trailEventsForPages } from "@/lib/trail";
+import { Trail } from "@/components/Trail";
 import { ProfileBlogIndex } from "@/components/ProfileBlogIndex";
 
 /** Trust score → a short label (mirrors the retired contributor detail page). */
@@ -39,20 +42,6 @@ function StatCell({ label, value }: { label: string; value: string | number }) {
   );
 }
 
-// Shared Folio pill style for the owner-scoped action links.
-const pill = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 7,
-  fontSize: 13,
-  padding: "7px 13px",
-  borderRadius: 999,
-  border: "1px solid var(--rule)",
-  color: "var(--ink-2)",
-  textDecoration: "none",
-  whiteSpace: "nowrap" as const,
-};
-
 // Public profile: pages a given handle owns or has contributed to. Visible to
 // anyone (guests included) — yopedia is a public observer surface.
 export default async function UserPage({
@@ -70,6 +59,11 @@ export default async function UserPage({
   const pages = readable
     .filter((p) => mine.has(p.slug))
     .sort((a, b) => (b.updated ?? "").localeCompare(a.updated ?? ""));
+  // Two public surfaces: commons pages render as a user-scoped activity trail
+  // (ingests + edits on those pages); saved HTML artifacts render as cards.
+  const commonsPages = pages.filter((p) => belongsInCommons(p));
+  const artifacts = pages.filter((p) => isArtifactType(p.type));
+  const trail = await trailEventsForPages(commonsPages, 60);
   const agents = await listAgentsForOwner(handle);
 
   // Contribution stats (edits/comments/trust) — moved here from the retired
@@ -86,7 +80,7 @@ export default async function UserPage({
     (v) => v.visibility === "public",
   );
 
-  const statsMap = await getDiscussionStatsForSlugs(pages.map((p) => p.slug));
+  const statsMap = await getDiscussionStatsForSlugs(artifacts.map((p) => p.slug));
   const discussionStats: Record<string, { total: number; open: number }> = {};
   for (const [slug, stats] of statsMap) discussionStats[slug] = stats;
 
@@ -115,22 +109,6 @@ export default async function UserPage({
         <p style={{ margin: 0, color: "var(--muted)" }}>
           Public pages owned or contributed by {handle}.
         </p>
-
-        {/* Silo actions — query/graph/export scoped to this handle's pages. */}
-        {pages.length > 0 && (
-          <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 16 }}>
-            <Link href={`/query?scope=owner:${encodeURIComponent(handle)}`} style={pill}>
-              💬 Ask these pages
-            </Link>
-            <Link href={`/wiki/graph?scope=owner:${encodeURIComponent(handle)}`} style={pill}>
-              🕸 Graph this silo
-            </Link>
-            {/* Plain anchor — this is a file download, not a route. */}
-            <a href={`/api/wiki/export?scope=owner:${encodeURIComponent(handle)}`} style={pill}>
-              ⬇ Download vault
-            </a>
-          </div>
-        )}
 
         {/* Contribution stats — only when the handle has activity. */}
         {hasActivity && (
@@ -178,44 +156,51 @@ export default async function UserPage({
           <p className="fmark" style={{ marginBottom: 12 }}>
             Agents
           </p>
-          <div className="stack" style={{ gap: 8 }}>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
             {agents.map((agent) => (
-              <Link
+              <span
                 key={agent.id}
-                href={`/u/${handle}/a/${agentShortName(agent)}`}
-                className="stack"
                 style={{
-                  gap: 3,
-                  textDecoration: "none",
+                  fontWeight: 600,
+                  color: "var(--ink)",
                   border: "1px solid var(--rule)",
-                  borderRadius: 12,
+                  borderRadius: 999,
                   background: "var(--paper-2)",
-                  padding: "13px 16px",
+                  padding: "5px 13px",
                 }}
               >
-                <span style={{ fontWeight: 600, color: "var(--ink)" }}>
-                  {agent.name}
-                </span>
-                <span style={{ fontSize: 13.5, color: "var(--muted)" }}>
-                  {agent.description}
-                </span>
-              </Link>
+                {agent.name}
+              </span>
             ))}
           </div>
         </section>
       )}
 
-      {pages.length === 0 && vaults.length === 0 ? (
-        <p style={{ color: "var(--muted)" }}>No pages yet.</p>
-      ) : (
-        pages.length > 0 && (
-          <section>
-            <p className="fmark" style={{ marginBottom: 14 }}>
-              {pages.length} {pages.length === 1 ? "page" : "pages"}
-            </p>
-            <ProfileBlogIndex pages={pages} discussionStats={discussionStats} />
-          </section>
-        )
+      {/* Key the empty state off the RENDERED surfaces — a profile whose only
+          content is non-public (private/agent pages, not shown here) should still
+          read "No pages yet" rather than a blank gap. */}
+      {trail.length === 0 && artifacts.length === 0 && vaults.length === 0 && (
+        <p style={{ color: "var(--muted)" }}>No public pages yet.</p>
+      )}
+
+      {/* Commons pages → a user-scoped activity trail (ingests + edits). */}
+      {trail.length > 0 && (
+        <section style={{ marginBottom: 40 }}>
+          <p className="fmark" style={{ marginBottom: 14 }}>
+            Activity
+          </p>
+          <Trail events={trail} />
+        </section>
+      )}
+
+      {/* Saved HTML artifacts → cards. */}
+      {artifacts.length > 0 && (
+        <section>
+          <p className="fmark" style={{ marginBottom: 14 }}>
+            {artifacts.length} {artifacts.length === 1 ? "artifact" : "artifacts"}
+          </p>
+          <ProfileBlogIndex pages={artifacts} discussionStats={discussionStats} />
+        </section>
       )}
 
       {vaults.length > 0 && (
