@@ -5,7 +5,7 @@ import Link from "next/link";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { SlidePreview } from "@/components/SlidePreview";
 import { HtmlPreview } from "@/components/HtmlPreview";
-import { stripHtmlFence } from "@/lib/html";
+import { stripHtmlFence, composeSrcDoc, usesChartLib } from "@/lib/html";
 import { Alert } from "@/components/Alert";
 import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { logger } from "@/lib/logger";
@@ -59,20 +59,28 @@ export function QueryResultPanel({
 
   const isHtml = format === "html";
   const handleCopy = useCallback(async () => {
-    // HTML copies the document verbatim (it's the shareable artifact); other
-    // formats copy a markdown wrapper with a heading + sources.
-    let text: string;
-    if (isHtml) {
-      text = stripHtmlFence(result.answer);
-    } else {
-      const lines = [`# ${question.trim()}`, "", result.answer];
-      if (result.sources.length > 0) {
-        lines.push("", "## Sources", "");
-        for (const slug of result.sources) lines.push(`- [[${slug}]]`);
-      }
-      text = lines.join("\n");
-    }
+    // HTML copies the fully self-contained document (CSP + baseline styles +
+    // inlined Chart.js) so a pasted/hosted copy renders standalone offline — the
+    // shareable artifact. Other formats copy a markdown wrapper with a heading.
     try {
+      let text: string;
+      if (isHtml) {
+        // Inline Chart.js into the shared copy too (when used), so the standalone
+        // file renders offline — lazy-loaded to keep it off the default bundle.
+        // The import() is inside the try so a chunk-load failure surfaces as the
+        // "Copy failed" state rather than an unhandled rejection.
+        const chartLib = usesChartLib(result.answer)
+          ? (await import("@/lib/vendor/chartjs.generated")).CHARTJS_SOURCE
+          : undefined;
+        text = composeSrcDoc(result.answer, chartLib);
+      } else {
+        const lines = [`# ${question.trim()}`, "", result.answer];
+        if (result.sources.length > 0) {
+          lines.push("", "## Sources", "");
+          for (const slug of result.sources) lines.push(`- [[${slug}]]`);
+        }
+        text = lines.join("\n");
+      }
       await navigator.clipboard.writeText(text);
       setCopyState("copied");
     } catch (err) {

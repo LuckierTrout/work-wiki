@@ -3,9 +3,11 @@ import {
   composeSrcDoc,
   htmlToPlainText,
   stripHtmlFence,
+  usesChartLib,
   HTML_SANDBOX,
   HTML_MAX_HEIGHT,
 } from "../html";
+import { CHARTJS_VERSION, CHARTJS_SOURCE } from "../vendor/chartjs.generated";
 
 describe("stripHtmlFence", () => {
   it("strips a wrapping ```html fence", () => {
@@ -124,6 +126,83 @@ describe("composeSrcDoc", () => {
     expect(HTML_SANDBOX).toContain("allow-scripts");
     expect(HTML_SANDBOX).not.toContain("allow-same-origin");
     expect(HTML_MAX_HEIGHT).toBeGreaterThan(0);
+  });
+
+  it("injects the editorial baseline style + tab controller", () => {
+    const out = composeSrcDoc("<p>plain answer</p>");
+    // A predefined component class and the brand accent token are present.
+    expect(out).toContain(".callout");
+    expect(out).toContain("--accent");
+    // The delegated tab controller ships so `.tabs` markup works.
+    expect(out).toContain("data-tab");
+  });
+});
+
+describe("Chart.js injection", () => {
+  it("usesChartLib detects a new Chart(...) call", () => {
+    expect(usesChartLib("<canvas></canvas><script>new Chart(el,{})</script>")).toBe(true);
+    expect(usesChartLib("<script>const x = new  Chart( a )</script>")).toBe(true);
+    expect(usesChartLib("<p>no charts here</p>")).toBe(false);
+  });
+
+  it("usesChartLib also detects Chart.register / Chart.defaults usage", () => {
+    // Plugin registration / global config without a literal `new Chart(` must
+    // still pull the library, or the chart silently fails to render.
+    expect(usesChartLib("<script>Chart.register(BarController)</script>")).toBe(true);
+    expect(usesChartLib("<script>Chart.defaults.font.size=14</script>")).toBe(true);
+    // A near-miss that should NOT trip detection.
+    expect(usesChartLib("<p>The Chart.io product is unrelated.</p>")).toBe(false);
+  });
+
+  it("never trips detection on its own injected runtime (no self-injection)", () => {
+    // composeSrcDoc always injects BASE_SCRIPT (resize + tabs); even with a
+    // source supplied, a chartless doc must not pull the library.
+    const out = composeSrcDoc("<p>prose only</p>", CHARTJS_SOURCE);
+    expect(out).not.toContain("Chart.js v");
+  });
+
+  it("inlines the supplied Chart.js source ONLY when the document uses it", () => {
+    const chartDoc =
+      "<body><canvas id='c'></canvas><script>new Chart(document.getElementById('c'),{type:'bar',data:{}})</script></body>";
+    const withChart = composeSrcDoc(chartDoc, CHARTJS_SOURCE);
+    const without = composeSrcDoc("<body><p>just prose, no chart</p></body>", CHARTJS_SOURCE);
+    // The library (identified by its version banner) is present only when used.
+    expect(withChart).toContain(`Chart.js v${CHARTJS_VERSION}`);
+    expect(without).not.toContain("Chart.js v");
+    // ...and its absence keeps the chartless document dramatically smaller.
+    expect(without.length).toBeLessThan(withChart.length - 100_000);
+  });
+
+  it("never injects Chart.js when no source is supplied (lazy-load contract)", () => {
+    // HtmlPreview composes immediately (no lib) and re-composes once the lazy
+    // import resolves; without a source, a chart doc must compose lib-free.
+    const out = composeSrcDoc(
+      "<body><canvas id='c'></canvas><script>new Chart(c,{})</script></body>",
+    );
+    expect(out).not.toContain("Chart.js v");
+  });
+
+  it("injects the library into an existing <head>, exactly once, before </head>", () => {
+    const doc =
+      "<!doctype html><html><head><title>T</title></head><body><canvas id='c'></canvas><script>new Chart(c,{})</script></body></html>";
+    const out = composeSrcDoc(doc, CHARTJS_SOURCE);
+    const banner = `Chart.js v${CHARTJS_VERSION}`;
+    const first = out.indexOf(banner);
+    expect(first).toBeGreaterThanOrEqual(0);
+    // The library lands inside <head> (before the head closes), and only once.
+    expect(first).toBeLessThan(out.indexOf("</head>"));
+    expect(out.indexOf(banner, first + 1)).toBe(-1);
+  });
+
+  it("keeps the locked-down CSP even with the library inlined (no network for charts)", () => {
+    const out = composeSrcDoc(
+      "<body><canvas id='c'></canvas><script>new Chart(c,{})</script></body>",
+      CHARTJS_SOURCE,
+    );
+    expect(out).toContain("default-src 'none'");
+    expect(out).not.toContain("connect-src");
+    // The library is inline (no external script tag / CDN).
+    expect(out).not.toMatch(/<script[^>]+src=/i);
   });
 });
 
