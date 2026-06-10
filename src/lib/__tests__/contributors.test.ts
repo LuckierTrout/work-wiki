@@ -111,7 +111,7 @@ describe("contributors data layer", () => {
       expect(contributors.map((c) => c.handle)).toEqual(["alice"]);
     });
 
-    it("excludes the 'system' seed/placeholder author (scan + index paths)", async () => {
+    it("folds automation authors (system/lint-fix) into the agent, not their own handles", async () => {
       await createPage(
         "page-a",
         "Page A",
@@ -119,17 +119,28 @@ describe("contributors data layer", () => {
       );
       await saveRevision("page-a", "# Page A\n\nv1", "alice");
       await saveRevision("page-a", "# Page A\n\nv2", "system");
+      await saveRevision("page-a", "# Page A\n\nv3", "lint-fix");
+      // ...and a talk comment by an automation actor (the mergeTalkActivity path).
+      await createThread("page-a", "T", "alice", "post");
+      await addComment("page-a", 0, "lint-fix", "auto comment");
 
-      // Live-scan path.
+      // Live-scan path: system/lint-fix are credited to the agent (yoyo), never
+      // shown as their own contributors.
       const scanned = await listContributors({ id: "alice", handle: "alice" });
-      expect(scanned.map((c) => c.handle)).toContain("alice");
-      expect(scanned.map((c) => c.handle)).not.toContain("system");
+      const handles = scanned.map((c) => c.handle);
+      expect(handles).toContain("alice");
+      expect(handles).toContain("yoyo");
+      expect(handles).not.toContain("system");
+      expect(handles).not.toContain("lint-fix");
+      // The lint-fix comment counts toward yoyo, not its own handle.
+      expect(scanned.find((c) => c.handle === "yoyo")?.commentCount).toBe(1);
 
-      // Index fast path (anonymous) — the index stores system, listContributors filters it.
+      // Index fast path (anonymous) stays clean too.
       const { rebuildContributorIndex } = await import("../contributor-index");
       await rebuildContributorIndex();
-      const anon = await listContributors(null);
-      expect(anon.map((c) => c.handle)).not.toContain("system");
+      const anon = await listContributors(null).then((cs) => cs.map((c) => c.handle));
+      expect(anon).not.toContain("system");
+      expect(anon).not.toContain("lint-fix");
     });
 
     it("takes the contributor-index fast path ONLY for an anonymous viewer; a non-null principal uses the per-principal scan (sees their own private pages)", async () => {

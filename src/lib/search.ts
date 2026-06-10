@@ -130,6 +130,24 @@ export async function updateRelatedPages(
     const updatedSlugs: string[] = [];
 
     for (const slug of relatedSlugs) {
+      // Never append markdown cross-references to an HTML artifact — its body is
+      // a self-contained document, and the "See also" markdown would render as
+      // literal text below it. (Read frontmatter only for this type check.)
+      const meta = await readWikiPageWithFrontmatter(slug);
+      if (
+        meta &&
+        isArtifactType(
+          typeof meta.frontmatter.type === "string"
+            ? meta.frontmatter.type
+            : undefined,
+        )
+      ) {
+        continue;
+      }
+
+      // Operate on the FULL file content (frontmatter + body) so the write-back
+      // preserves the frontmatter block — writeWikiPage writes verbatim, and
+      // `readWikiPageWithFrontmatter.body` would have stripped the frontmatter.
       const page = await readWikiPage(slug);
       if (!page) continue;
 
