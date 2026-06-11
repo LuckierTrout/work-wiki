@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { ingest, ingestUrl } from "@/lib/ingest";
 import type { IngestOptions } from "@/lib/ingest";
 import { isUrl } from "@/lib/fetch";
+import { isYouTubeUrl } from "@/lib/youtube";
+import { enqueueTask } from "@/lib/tasks";
+import { createIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
@@ -86,7 +89,53 @@ export async function POST(request: NextRequest) {
 
     // URL path takes precedence
     if (url && typeof url === "string" && isUrl(url.trim())) {
-      const result = await ingestUrl(url.trim(), options);
+      const trimmedUrl = url.trim();
+
+      // YouTube transcripts are long → synchronous synthesis exceeds the Worker
+      // request budget. Enqueue the ingest and let the task-consumer process it;
+      // the client polls the job status (queued → done/failed).
+      if (isYouTubeUrl(trimmedUrl)) {
+        const jobId = crypto.randomUUID();
+        await createIngestJob({
+          jobId,
+          url: trimmedUrl,
+          owner: principal.handle,
+        });
+        let enqueued: boolean;
+        try {
+          enqueued = await enqueueTask({
+            kind: "ingest",
+            url: trimmedUrl,
+            owner: options.owner,
+            author: options.author,
+            ...(options.tags && options.tags.length > 0
+              ? { tags: options.tags }
+              : {}),
+            jobId,
+          });
+        } catch (e) {
+          // Enqueue threw after the job was created → it would be orphaned at
+          // "queued"; mark it failed so it can't show "working…" forever.
+          await updateIngestJob(jobId, {
+            status: "failed",
+            error: getErrorMessage(e),
+          }).catch(() => {});
+          throw e; // surfaces as a 500 to the submitter
+        }
+        if (enqueued) {
+          return NextResponse.json({ queued: true, jobId });
+        }
+        // Off-Workers (local dev / tests): no queue — run it inline and mark the
+        // job done so the same client flow still resolves.
+        const result = await ingestUrl(trimmedUrl, options);
+        await updateIngestJob(jobId, {
+          status: "done",
+          slug: result.primarySlug,
+        });
+        return NextResponse.json(result);
+      }
+
+      const result = await ingestUrl(trimmedUrl, options);
       return NextResponse.json(result);
     }
 
