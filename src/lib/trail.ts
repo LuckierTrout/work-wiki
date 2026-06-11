@@ -3,6 +3,8 @@ import { listRevisions } from "./revisions";
 import { parseSources } from "./sources";
 import { isAgentHandle } from "./agents";
 import { normalizeActor } from "./agent-handle";
+import { belongsInCommons } from "./commons";
+import { logger } from "./logger";
 import type { SourceEntry } from "./types";
 import type { Principal } from "./auth";
 
@@ -25,6 +27,14 @@ export interface TrailEvent {
   title: string;
   /** Canonical tenant for linking to `/u/<tenant>/<slug>`. */
   tenant: string;
+  /**
+   * True when the page is a public commons page (`/wiki/<slug>`); false for a
+   * private / agent / artifact page that lives only at `/u/<tenant>/<slug>`.
+   * Drives the Trail's link target so an owned/artifact page doesn't 404.
+   * Optional like {@link sourceType}: absent on entries persisted before this
+   * field existed — treat absent as false (owner-scoped, never 404s).
+   */
+  commons?: boolean;
 }
 
 // Bound the work: only scan the most-recently-updated public pages. The trail
@@ -108,9 +118,36 @@ export async function trailEventsForPages(
     pages.slice(0, MAX_PAGES_SCANNED).map(async (page): Promise<TrailEvent[]> => {
       const evs: TrailEvent[] = [];
 
+      // Read the page once: it feeds the ingest provenance AND the commons flag
+      // that decides the link target (a private/artifact page 404s at /wiki/).
+      let full: Awaited<ReturnType<typeof readWikiPageWithFrontmatter>> = null;
+      try {
+        full = await readWikiPageWithFrontmatter(page.slug);
+      } catch (err) {
+        // A missing page returns null (not a throw), so reaching here is an
+        // UNEXPECTED read failure (storage I/O, corrupt frontmatter). Log it
+        // (house convention) and fall through with no frontmatter.
+        logger.warn("trail", `unexpected error reading page "${page.slug}":`, err);
+      }
+      // An unreadable page defaults to the OWNER-scoped path (commons=false),
+      // not /wiki/ — that link resolves for a public page (served/redirected at
+      // the owner path) and doesn't 404 a private one, matching the project's
+      // secure-default stance.
+      const commons = full
+        ? belongsInCommons({
+            visibility:
+              typeof full.frontmatter.visibility === "string"
+                ? full.frontmatter.visibility
+                : undefined,
+            type:
+              typeof full.frontmatter.type === "string"
+                ? full.frontmatter.type
+                : undefined,
+          })
+        : false;
+
       // Ingests — structured provenance entries.
       try {
-        const full = await readWikiPageWithFrontmatter(page.slug);
         const sources = parseSources(
           full?.frontmatter.sources as string | string[] | undefined,
         );
@@ -130,6 +167,7 @@ export async function trailEventsForPages(
             slug: page.slug,
             title: page.title,
             tenant: ownerToTenant(page.owner),
+            commons,
           });
         }
       } catch {
@@ -151,6 +189,7 @@ export async function trailEventsForPages(
             slug: page.slug,
             title: page.title,
             tenant: ownerToTenant(page.owner),
+            commons,
           });
         }
       } catch {
