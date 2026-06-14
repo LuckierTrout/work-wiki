@@ -31,8 +31,10 @@ export type Task =
       requestedBy?: string;
     }
   | {
-      /** Async/batch ingestion (the queue is the scale path; interactive ingest
-       *  stays synchronous). One of `url` or `content` must be set. */
+      /** Async ingestion. Every interactive/API ingest dispatches through this
+       *  Task type (enqueued on Workers; run inline off-Workers via
+       *  `enqueueOrInline`). Exactly ONE source: `url`, `content`, or `staged`
+       *  (re-ingest is the exception — it runs synchronously, never enqueued). */
       kind: "ingest";
       url?: string;
       title?: string;
@@ -43,6 +45,19 @@ export type Task =
       /** When set, the consumer records this async job's status (queued →
        *  processing → done/failed) so the UI can poll the outcome. */
       jobId?: string;
+      /** URL-based PDF/image: routes the consumer to ingestPdf/ingestImage on the
+       *  `url` (a plain `url` would go to ingestUrl). Uploaded bytes use `staged`. */
+      source?: "pdf" | "image";
+      /** Uploaded bytes (or oversized pasted text) staged to R2 first, since a
+       *  queue message caps at 128 KB. The consumer reads the blob, ingests, then
+       *  deletes it. `key` is the R2/storage-relative path; `kind` picks the
+       *  ingest path. */
+      staged?: {
+        key: string;
+        kind: "pdf" | "image" | "text";
+        filename?: string;
+        contentType?: string;
+      };
     }
   | {
       /** Autonomous maintenance, enqueued by the scan cron (Q2). `reconcile` a
@@ -150,7 +165,32 @@ export function parseTask(body: unknown): Task | null {
     case "ingest": {
       const hasUrl = typeof t.url === "string" && t.url.trim() !== "";
       const hasContent = typeof t.content === "string" && t.content.trim() !== "";
-      if (!hasUrl && !hasContent) return null; // need a source
+      // Validate a staged-upload descriptor: a non-empty key + an allowed kind.
+      let staged: Extract<Task, { kind: "ingest" }>["staged"];
+      if (t.staged && typeof t.staged === "object") {
+        const s = t.staged as Record<string, unknown>;
+        const kindOk = s.kind === "pdf" || s.kind === "image" || s.kind === "text";
+        if (typeof s.key === "string" && s.key.trim() !== "" && kindOk) {
+          staged = {
+            key: s.key,
+            kind: s.kind as "pdf" | "image" | "text",
+            ...(typeof s.filename === "string" ? { filename: s.filename } : {}),
+            ...(typeof s.contentType === "string"
+              ? { contentType: s.contentType }
+              : {}),
+          };
+        }
+      }
+      // URL-based PDF/image carry an explicit source so the consumer routes to
+      // ingestPdf/ingestImage rather than ingestUrl.
+      const source =
+        t.source === "pdf" || t.source === "image" ? t.source : undefined;
+      if (!hasUrl && !hasContent && !staged) return null; // need a source
+      // Reject incoherent combinations so the consumer's branch-order precedence
+      // is an ENFORCED invariant, not a silent "first match wins". `staged` is
+      // exclusive (it's its own source); `source` only qualifies a `url`.
+      if (staged && (hasUrl || hasContent)) return null;
+      if (source && !hasUrl) return null;
       const tags =
         Array.isArray(t.tags) && t.tags.every((x) => typeof x === "string")
           ? (t.tags as string[])
@@ -164,6 +204,8 @@ export function parseTask(body: unknown): Task | null {
         ...(typeof t.author === "string" ? { author: t.author } : {}),
         ...(tags && tags.length > 0 ? { tags } : {}),
         ...(typeof t.jobId === "string" ? { jobId: t.jobId } : {}),
+        ...(source ? { source } : {}),
+        ...(staged ? { staged } : {}),
       };
     }
     case "maintain": {
