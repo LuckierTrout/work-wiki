@@ -1,36 +1,29 @@
 /**
- * Client-side filling of `yoyo-illustration` directives. The slides/HTML LLM
- * emits a placeholder figure with the scene in `data-scene`; here (in the parent
- * app) we POST each scene to `/api/illustrate`, get a self-contained `data:`
- * image back, and inject it — so the sandboxed HTML iframe receives a static
- * data-URI image (CSP-safe), exactly like the Mermaid path. Generation is paid +
- * cached server-side, so this only runs for directives that are actually present
- * and is bounded to a few per document.
+ * Server-side baking of `yoyo-illustration` directives. The slides/HTML LLM
+ * emits a placeholder — a ` ```yoyo-illustration ` fence in markdown, or a
+ * `<figure class="yoyo-illustration" data-scene="…">` in HTML — and here we
+ * replace each with a real image reference. The `fetcher` generates each scene
+ * once, stores it in R2, and returns a servable image reference — an
+ * `/api/assets/…` URL for slides/markdown (`generateYoyoIllustration`), or a
+ * self-contained `data:` URI for the HTML artifact
+ * (`generateYoyoIllustrationDataUri`, whose sandboxed iframe can't load a
+ * same-origin URL) — so the baked answer renders for every viewer (including
+ * anonymous shares) with no per-view fetch. Generation is paid + cached
+ * server-side, so only directives actually present are filled, bounded to a few
+ * per document.
  */
 
 /** Max illustrations filled per document (cost/latency guard). */
 export const MAX_ILLUSTRATIONS = 3;
 
-/** Fetch a scene's illustration as a data URI (or null). Injectable for tests. */
+/** Generate a scene's illustration, returning a servable image reference — an
+ *  `/api/assets/…` URL or a self-contained `data:` URI — or null. Injectable for
+ *  tests; in production it's `generateYoyoIllustration` (slides) or
+ *  `generateYoyoIllustrationDataUri` (HTML). */
 export type IllustrateFetcher = (
   scene: string,
   lang: string,
 ) => Promise<string | null>;
-
-const defaultFetcher: IllustrateFetcher = async (scene, lang) => {
-  try {
-    const res = await fetch("/api/illustrate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scene, lang }),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { image?: string | null };
-    return data.image ?? null;
-  } catch {
-    return null;
-  }
-};
 
 const FIGURE_RE =
   /<figure\b[^>]*\bclass=["'][^"']*\byoyo-illustration\b[^"']*["'][^>]*>[\s\S]*?<\/figure>/gi;
@@ -59,32 +52,33 @@ function escapeHtml(s: string): string {
 
 /**
  * What to do with a directive whose scene can't be generated.
- * - `"drop"` (default): remove the placeholder — right for client-side iframe
- *   rendering, where a leftover `data-scene` figure would just be blank.
- * - `"keep"`: leave the original directive untouched — right for **baking at
- *   save time**, so a transient generation failure doesn't permanently strip the
- *   directive (an on-demand viewer can still fill it later).
+ * - `"drop"` (default): remove the placeholder — a clean answer with no
+ *   illustration, no leaked directive in the rendered/saved output.
+ * - `"keep"`: leave the original directive untouched.
  */
 export interface IllustrationRenderOptions {
   onMissing?: "drop" | "keep";
 }
 
-/** True when an HTML document contains a `yoyo-illustration` figure. Pure. */
-export function htmlHasYoyoIllustration(html: string): boolean {
-  return /<figure\b[^>]*\bclass=["'][^"']*\byoyo-illustration\b/i.test(html);
-}
-
 /**
- * Replace up to {@link MAX_ILLUSTRATIONS} `yoyo-illustration` figures in an HTML
- * string with the generated image (parallel). A figure whose scene can't be
- * generated is dropped (default) or left in place (`onMissing: "keep"`).
+ * Replace up to {@link MAX_ILLUSTRATIONS} *unbaked* `yoyo-illustration` figures
+ * (those carrying a `data-scene`) in an HTML string with the generated image
+ * (parallel). An already-baked figure (an `<img>`, no `data-scene`) is left
+ * untouched, so re-baking the same content is idempotent. A figure whose scene
+ * can't be generated is dropped (default) or left in place (`onMissing: "keep"`).
  */
 export async function renderYoyoIllustrationsInHtml(
   html: string,
-  fetcher: IllustrateFetcher = defaultFetcher,
+  fetcher: IllustrateFetcher,
   { onMissing = "drop" }: IllustrationRenderOptions = {},
 ): Promise<string> {
-  const matches = [...html.matchAll(FIGURE_RE)].slice(0, MAX_ILLUSTRATIONS);
+  // Only act on figures that still carry a scene to generate. A baked figure
+  // (no `data-scene`, just an `<img>`) must pass through untouched — otherwise a
+  // second bake (e.g. save-time after query-time) would match it, find no scene,
+  // and drop the already-generated image.
+  const matches = [...html.matchAll(FIGURE_RE)]
+    .filter((m) => attr(m[0], "data-scene"))
+    .slice(0, MAX_ILLUSTRATIONS);
   if (matches.length === 0) return html;
 
   const filled = await Promise.all(
@@ -115,26 +109,16 @@ export async function renderYoyoIllustrationsInHtml(
 /** A ` ```yoyo-illustration ` fenced block; the body is the scene. */
 const MD_FENCE_RE = /```yoyo-illustration\b[^\n]*\n([\s\S]*?)\n```/g;
 
-/** True when markdown (e.g. slides) contains a `yoyo-illustration` fence. Pure. */
-export function markdownHasYoyoIllustration(md: string): boolean {
-  return /```yoyo-illustration\b/.test(md);
-}
-
 /**
  * Replace up to {@link MAX_ILLUSTRATIONS} ` ```yoyo-illustration ` fences in a
- * markdown string (slides) with a baked `![scene](data:...)` image. A fence
- * whose scene can't be generated is dropped (default) or left in place
- * (`onMissing: "keep"`). Used to bake slide illustrations at save time.
- *
- * Labels bake in English — a slide fence carries no lang hint (unlike the HTML
- * `data-lang`). A *kept* fence still renders in our app (the slide/page
- * MarkdownRenderer routes it to `<YoyoIllustration>`), but shows as a literal
- * code block in a plain-markdown viewer; that's the accepted price of not
- * permanently dropping a directive on a transient failure.
+ * markdown string (slides) with a baked `![scene](/api/assets/…)` image. A fence
+ * whose scene can't be generated is dropped (the default `onMissing`). Labels
+ * bake in English — a slide fence carries no lang hint (unlike the HTML
+ * `data-lang`).
  */
 export async function renderYoyoIllustrationsInMarkdown(
   md: string,
-  fetcher: IllustrateFetcher = defaultFetcher,
+  fetcher: IllustrateFetcher,
   { onMissing = "drop" }: IllustrationRenderOptions = {},
 ): Promise<string> {
   const matches = [...md.matchAll(MD_FENCE_RE)].slice(0, MAX_ILLUSTRATIONS);
