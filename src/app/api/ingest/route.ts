@@ -9,12 +9,22 @@ import { stageText } from "@/lib/ingest-staging";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { addToVault, vaultOwnedBy } from "@/lib/vault";
 
 /** Pasted text larger than this is staged to R2 rather than carried inline in
  *  the queue message (Cloudflare Queues cap a message at 128 KB). 96000 chars
  *  leaves headroom under the cap for the task envelope and multibyte (UTF-8)
  *  characters — this repo is CJK-heavy, so don't raise it toward 128k blindly. */
 const MAX_INLINE_CONTENT_CHARS = 96000;
+
+/** File a page into a vault, fail-soft: log a warning but never throw. */
+async function fileIntoVault(vid: string, slug: string): Promise<void> {
+  try {
+    await addToVault(vid, slug);
+  } catch (err) {
+    logger.warn("ingest", `vault filing failed for vault="${vid}" slug="${slug}"`, err);
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -29,7 +39,7 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
 
-    const { url, title, content, triggeredBy, tags, sourceUrl, sourceType } = body;
+    const { url, title, content, triggeredBy, tags, sourceUrl, sourceType, vaultId } = body;
 
     // Validate triggeredBy if provided
     if (triggeredBy !== undefined && typeof triggeredBy !== "string") {
@@ -67,6 +77,23 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Validate vaultId if provided: must be a string and owned by the caller.
+    // Ownership is an O(1) check on the id's tenant prefix (no storage read).
+    let validatedVaultId: string | undefined;
+    if (vaultId !== undefined) {
+      if (typeof vaultId !== "string" || vaultId.trim().length === 0) {
+        return NextResponse.json(
+          { error: "vaultId must be a non-empty string if provided" },
+          { status: 400 },
+        );
+      }
+      if (!vaultOwnedBy(vaultId, principal.handle)) {
+        logger.warn("ingest", `vaultId "${vaultId}" not owned by "${principal.handle}" — ignoring`);
+      } else {
+        validatedVaultId = vaultId;
+      }
+    }
+
     // Build ingest options from the request body (used only on the inline
     // off-Workers fallback; the queue carries its own minimal fields).
     const options: IngestOptions = {};
@@ -90,6 +117,8 @@ export async function POST(request: NextRequest) {
 
     const tagsForTask =
       options.tags && options.tags.length > 0 ? { tags: options.tags } : {};
+    const vaultForTask =
+      validatedVaultId ? { vaultId: validatedVaultId } : {};
 
     // ----- URL path (takes precedence) -----
     if (url && typeof url === "string" && isUrl(url.trim())) {
@@ -104,9 +133,14 @@ export async function POST(request: NextRequest) {
           owner: options.owner,
           author: options.author,
           ...tagsForTask,
+          ...vaultForTask,
           jobId,
         },
-        () => ingestUrl(trimmedUrl, options),
+        async () => {
+          const result = await ingestUrl(trimmedUrl, options);
+          if (validatedVaultId) await fileIntoVault(validatedVaultId, result.primarySlug);
+          return result;
+        },
       );
     }
 
@@ -147,6 +181,7 @@ export async function POST(request: NextRequest) {
         owner: options.owner,
         author: options.author,
         ...tagsForTask,
+        ...vaultForTask,
         jobId,
       };
     } else {
@@ -157,14 +192,17 @@ export async function POST(request: NextRequest) {
         owner: options.owner,
         author: options.author,
         ...tagsForTask,
+        ...vaultForTask,
         jobId,
         staged: { key, kind: "text" },
       };
     }
 
-    return await enqueueOrInline(jobId, task, () =>
-      ingest(trimmedTitle, trimmedContent, options),
-    );
+    return await enqueueOrInline(jobId, task, async () => {
+      const result = await ingest(trimmedTitle, trimmedContent, options);
+      if (validatedVaultId) await fileIntoVault(validatedVaultId, result.primarySlug);
+      return result;
+    });
   } catch (error) {
     const msg = getErrorMessage(error);
     // Bad-input failures (e.g. a deleted/private X post, an unsafe URL) are
