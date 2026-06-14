@@ -373,6 +373,7 @@ export async function handleIngestUrl(args: {
   tags?: string[] | undefined;
   owner?: string;
   triggeredBy?: string;
+  vaultId?: string;
 }): Promise<{
   slug: string;
   title: string;
@@ -390,6 +391,11 @@ export async function handleIngestUrl(args: {
     ...(args.owner ? { owner: args.owner } : {}),
     ...(args.triggeredBy ? { triggeredBy: args.triggeredBy } : {}),
   });
+
+  if (args.vaultId) {
+    try { await addToVault(args.vaultId, result.primarySlug); }
+    catch (err) { console.warn(`[mcp] vault filing failed for vault="${args.vaultId}" slug="${result.primarySlug}"`, err); }
+  }
 
   // Read the written page to extract title and summary for the response
   const page = await readWikiPageWithFrontmatter(result.primarySlug);
@@ -483,6 +489,7 @@ export async function handleIngestText(args: {
   tags?: string[] | undefined;
   owner?: string;
   triggeredBy?: string;
+  vaultId?: string;
 }): Promise<{
   slug: string;
   title: string;
@@ -501,6 +508,11 @@ export async function handleIngestText(args: {
     ...(args.owner ? { owner: args.owner } : {}),
     ...(args.triggeredBy ? { triggeredBy: args.triggeredBy } : {}),
   });
+
+  if (args.vaultId) {
+    try { await addToVault(args.vaultId, result.primarySlug); }
+    catch (err) { console.warn(`[mcp] vault filing failed for vault="${args.vaultId}" slug="${result.primarySlug}"`, err); }
+  }
 
   // Read the written page to extract title and summary for the response
   const page = await readWikiPageWithFrontmatter(result.primarySlug);
