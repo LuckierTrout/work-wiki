@@ -93,6 +93,7 @@ import { reconcileFromTalk, type ReconcileFromTalkResult } from "./lib/reconcile
 import { buildWikiGraph, type GraphNode, type GraphEdge } from "./lib/graph-build";
 import { mergePages, type MergePagesResult } from "./lib/merge";
 import type { TalkThread, TalkComment } from "./lib/types";
+import { logger } from "./lib/logger";
 
 // ---------------------------------------------------------------------------
 // Tool handler logic — exported for direct testing without transport
@@ -373,6 +374,7 @@ export async function handleIngestUrl(args: {
   tags?: string[] | undefined;
   owner?: string;
   triggeredBy?: string;
+  vaultId?: string;
 }): Promise<{
   slug: string;
   title: string;
@@ -398,12 +400,17 @@ export async function handleIngestUrl(args: {
     ? extractSummary(page.body)
     : `Ingested from ${args.url}`;
 
-  return {
+  const response = {
     slug: result.primarySlug,
     title,
     summary,
     sourceUrl: args.url,
   };
+  if (args.vaultId) {
+    try { await addToVault(args.vaultId, result.primarySlug); }
+    catch (err) { logger.warn("mcp", `vault filing failed: ${(err as Error).message}`); }
+  }
+  return response;
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +490,7 @@ export async function handleIngestText(args: {
   tags?: string[] | undefined;
   owner?: string;
   triggeredBy?: string;
+  vaultId?: string;
 }): Promise<{
   slug: string;
   title: string;
@@ -509,12 +517,17 @@ export async function handleIngestText(args: {
     ? extractSummary(page.body)
     : `Ingested from text input`;
 
-  return {
+  const response = {
     slug: result.primarySlug,
     title: pageTitle,
     summary,
     sourceUrl: "",
   };
+  if (args.vaultId) {
+    try { await addToVault(args.vaultId, result.primarySlug); }
+    catch (err) { logger.warn("mcp", `vault filing failed: ${(err as Error).message}`); }
+  }
+  return response;
 }
 
 // ---------------------------------------------------------------------------
