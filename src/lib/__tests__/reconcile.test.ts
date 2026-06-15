@@ -137,6 +137,85 @@ describe("reconcileFromTalk", () => {
     expect(mockedCallLLM).not.toHaveBeenCalled();
   });
 
+  it("CLEARS disputed when the reconcile resolves the contradiction (closes the loop)", async () => {
+    await seedPage("settled", "Older text with a contradiction.", {
+      disputed: true,
+    });
+    await createThread("settled", "Sources disagree", "frank", "please reconcile");
+    // An explicit "DISPUTED: no" verdict → contradiction resolved, flag cleared.
+    mockedCallLLM.mockResolvedValue(
+      "DISPUTED: no\n\n# settled\n\nReconciled: the dates agree once normalized.",
+    );
+
+    const result = await reconcileFromTalk("settled", 0, { author: "frank--yoyo" });
+
+    expect(result.disputed).toBe(false);
+    const page = await readWikiPageWithFrontmatter("settled");
+    expect(page!.frontmatter.disputed).toBe(false); // CLEARED (was true)
+    expect(page!.body).not.toContain("DISPUTED:"); // verdict line stripped
+    const thread = await getThread("settled", 0);
+    expect(thread!.status).toBe("resolved");
+    expect(
+      thread!.comments[thread!.comments.length - 1].body.toLowerCase(),
+    ).toContain("cleared");
+  });
+
+  it("clears disputed even when the body needs no change (write-gate covers the flag flip)", async () => {
+    const body = "Already consistent prose, nothing to edit.";
+    await seedPage("flagonly", body, { disputed: true });
+    await createThread("flagonly", "Sources disagree", "gina", "reconcile pls");
+    // The LLM returns the SAME body with an explicit "DISPUTED: no" → no content
+    // change, verdict resolved → the flag must still flip to false.
+    mockedCallLLM.mockResolvedValue(`DISPUTED: no\n\n# flagonly\n\n${body}`);
+
+    const result = await reconcileFromTalk("flagonly", 0, { author: "gina--yoyo" });
+
+    expect(result.changed).toBe(false);
+    expect(result.disputed).toBe(false);
+    const page = await readWikiPageWithFrontmatter("flagonly");
+    expect(page!.frontmatter.disputed).toBe(false); // cleared despite no body change
+  });
+
+  it("PRESERVES disputed when the LLM omits the verdict line (no silent downgrade)", async () => {
+    // Tri-state safety: a malformed/forgotten marker must NOT clear a genuine
+    // dispute — only an explicit "DISPUTED: no" does.
+    await seedPage("kept", "Contested prose with a real contradiction.", {
+      disputed: true,
+    });
+    await createThread("kept", "Sources disagree", "hank", "reconcile pls");
+    // A revision with NO DISPUTED line at all → leave the flag unchanged.
+    mockedCallLLM.mockResolvedValue(
+      "# kept\n\nReworded prose, but the verdict line was forgotten.",
+    );
+
+    const result = await reconcileFromTalk("kept", 0, { author: "hank--yoyo" });
+
+    expect(result.changed).toBe(true); // body did change…
+    expect(result.disputed).toBe(true); // …but the dispute is preserved
+    const page = await readWikiPageWithFrontmatter("kept");
+    expect(page!.frontmatter.disputed).toBe(true);
+    // Still unresolved → thread stays open for a human.
+    expect((await getThread("kept", 0))!.status).toBe("open");
+  });
+
+  it("KEEPS disputed on an already-disputed page when the verdict is still 'yes'", async () => {
+    await seedPage("stuck", "1956 (McCarthy) vs 1955 (others).", {
+      disputed: true,
+    });
+    await createThread("stuck", "Sources disagree", "ivy", "reconcile pls");
+    mockedCallLLM.mockResolvedValue(
+      "DISPUTED: yes\n\n# stuck\n\nStill unresolved: 1956 vs 1955, both attributed.",
+    );
+
+    const result = await reconcileFromTalk("stuck", 0, { author: "ivy--yoyo" });
+
+    expect(result.disputed).toBe(true);
+    expect(
+      (await readWikiPageWithFrontmatter("stuck"))!.frontmatter.disputed,
+    ).toBe(true);
+    expect((await getThread("stuck", 0))!.status).toBe("open");
+  });
+
   it("throws on a missing page (→ poison/422 at the route)", async () => {
     await expect(reconcileFromTalk("nope", 0)).rejects.toThrow(/not found/i);
   });
