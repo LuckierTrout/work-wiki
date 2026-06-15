@@ -9,6 +9,7 @@ vi.mock("@clerk/nextjs/server", () => ({
 
 import { getServicePrincipal, getPrincipal } from "../auth";
 import { auth, currentUser } from "@clerk/nextjs/server";
+import { logger } from "../logger";
 
 const mockedAuth = vi.mocked(auth);
 const mockedCurrentUser = vi.mocked(currentUser);
@@ -168,8 +169,28 @@ describe("getPrincipal", () => {
     expect(await getPrincipal()).toEqual({ id: "user_8", handle: "user_8" });
   });
 
-  it("returns null (fails closed) when Clerk throws outside a request context", async () => {
+  it("returns null and warns (not errors) when auth() throws — no context or secret mismatch", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(logger, "error").mockImplementation(() => {});
     mockedAuth.mockRejectedValue(new Error("no request context"));
     expect(await getPrincipal()).toBeNull();
+    expect(warn).toHaveBeenCalled(); // the downgrade must not be silent…
+    expect(error).not.toHaveBeenCalled(); // …but an auth() throw is warn, not error
+    warn.mockRestore();
+    error.mockRestore();
+  });
+
+  it("returns null and errors (not warns) when currentUser() throws for a signed-in user", async () => {
+    // auth() gave us a userId, so this is a real Clerk backend error (outage /
+    // bad secret key), not a missing context — still anonymous, but surfaced.
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(logger, "error").mockImplementation(() => {});
+    mockedAuth.mockResolvedValue({ userId: "user_9" } as never);
+    mockedCurrentUser.mockRejectedValue(new Error("clerk backend 503"));
+    expect(await getPrincipal()).toBeNull();
+    expect(error).toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled(); // a currentUser() failure is error, not warn
+    warn.mockRestore();
+    error.mockRestore();
   });
 });
