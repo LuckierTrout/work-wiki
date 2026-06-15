@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { SignInButton } from "@clerk/nextjs";
 import { getPrincipal } from "@/lib/auth";
 import { listAgentsForOwner } from "@/lib/agents";
@@ -6,7 +7,8 @@ import { AgentManager } from "@/components/AgentManager";
 /**
  * `/agents` — the signed-in user's agent management surface: list their agents
  * with inline edit / token / delete, plus a create form. A top-level page (moved
- * off `/vault`). Signed-out visitors see only a sign-in prompt — no data fetched.
+ * off `/vault`). Signed-out visitors see a sign-in prompt plus a waitlist link
+ * — no data fetched.
  */
 export default async function AgentsPage() {
   const principal = await getPrincipal();
@@ -42,6 +44,13 @@ export default async function AgentsPage() {
           <SignInButton mode="modal">
             <button className="btn primary">Sign in to view your agents</button>
           </SignInButton>
+          <p style={{ marginTop: 14, fontSize: 13, color: "var(--faint)" }}>
+            No account yet?{" "}
+            <Link href="/waitlist" className="underline">
+              Join the waitlist
+            </Link>
+            .
+          </p>
         </section>
       </div>
     );

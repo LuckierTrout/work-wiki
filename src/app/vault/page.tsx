@@ -7,8 +7,8 @@ import { VaultManager } from "@/components/VaultManager";
 /**
  * `/vault` — the signed-in user's vault management surface: a list of their
  * named vaults (each a curated reference lens over the commons) with create /
- * rename / delete / view. Agents live on the top-level `/agents`. Signed-out visitors
- * see only a sign-in prompt — no data is fetched or leaked.
+ * rename / delete / view. Agents live on the top-level `/agents`. Signed-out
+ * visitors see a sign-in prompt plus a waitlist link — no data is fetched or leaked.
  */
 export default async function VaultPage() {
   const principal = await getPrincipal();
@@ -44,6 +44,13 @@ export default async function VaultPage() {
           <SignInButton mode="modal">
             <button className="btn primary">Sign in to view your vaults</button>
           </SignInButton>
+          <p style={{ marginTop: 14, fontSize: 13, color: "var(--faint)" }}>
+            No account yet?{" "}
+            <Link href="/waitlist" className="underline">
+              Join the waitlist
+            </Link>
+            .
+          </p>
         </section>
       </div>
     );
