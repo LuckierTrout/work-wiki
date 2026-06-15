@@ -148,6 +148,41 @@ describe("composeSrcDoc", () => {
     // The delegated tab controller ships so `.tabs` markup works.
     expect(out).toContain("data-tab");
   });
+
+  it("centers document-style content in a column of the shared --measure", () => {
+    const out = composeSrcDoc("<p>a blog-post style answer</p>");
+    // The shared measure token is defined, and the body is capped + centered to
+    // it — so even un-wrapped content (no <main>/.doc) sits in a column whose
+    // edges match the full-width yoyo illustrations.
+    expect(out).toContain("--measure:46rem");
+    expect(out).toContain("body{max-width:var(--measure);margin-inline:auto}");
+    // All three consumers share the token: the body column, the wrapper, and
+    // the illustration figure — so they align whether or not content is wrapped.
+    expect(out).toContain(".doc,main,article{max-width:var(--measure)");
+    expect(out).toContain("figure.yoyo-illustration{max-width:var(--measure)");
+  });
+
+  it("injects the body-column cap BEFORE the model's own <style> so the model can override it", () => {
+    const out = composeSrcDoc(
+      "<html><head><style>body{max-width:1200px}</style></head><body><p>x</p></body></html>",
+    );
+    // CSS is last-wins on source order (both are bare `body{}` selectors, no
+    // !important), so our injected cap MUST precede the model's style for the
+    // model to win. Guards against a refactor that appends head bits after the
+    // model markup and silently overrides every model/app layout.
+    expect(
+      out.indexOf("body{max-width:var(--measure);margin-inline:auto}"),
+    ).toBeLessThan(out.indexOf("body{max-width:1200px}"));
+  });
+
+  it("leaves app-style (viewport-unit) layouts full-bleed — no body column cap", () => {
+    const out = composeSrcDoc("<div style='height:100vh'>full-screen app</div>");
+    // App-style docs define their own full-screen width; don't impose a column.
+    expect(out).not.toContain("body{max-width:var(--measure)");
+    // The shared token + illustration cap still ship (harmless, and bound any
+    // illustration an app-style doc happens to use).
+    expect(out).toContain("--measure:46rem");
+  });
 });
 
 describe("Chart.js injection", () => {
