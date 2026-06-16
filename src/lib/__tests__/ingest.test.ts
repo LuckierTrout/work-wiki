@@ -406,7 +406,12 @@ describe("ingest — auto tags", () => {
     const result = await ingest("Topic Alpha", "second source, changed content");
 
     const page = await readWikiPageWithFrontmatter(result.primarySlug);
-    expect((page!.frontmatter.tags as string[]).sort()).toEqual(["keep-me", "new-one"]);
+    // `topic-alpha` is the always-added concept tag (the page's own topic).
+    expect((page!.frontmatter.tags as string[]).sort()).toEqual([
+      "keep-me",
+      "new-one",
+      "topic-alpha",
+    ]);
   });
 
   it("persists LLM-synthesized TAGS to the page frontmatter", async () => {
@@ -416,7 +421,81 @@ describe("ingest — auto tags", () => {
 
     const result = await ingest("Vector DBs", "A source about vector databases and ANN search.");
     const page = await readWikiPageWithFrontmatter(result.primarySlug);
-    expect(page!.frontmatter.tags).toEqual(["databases", "vector-search", "ai"]);
+    // The concept ("Vector Databases" → `vector-databases`) leads, then the
+    // synthesized facets — the page is always tagged with its own topic.
+    expect(page!.frontmatter.tags).toEqual([
+      "vector-databases",
+      "databases",
+      "vector-search",
+      "ai",
+    ]);
+  });
+
+  it("always tags the page with its own concept, and caps the set at MAX_AUTO_TAGS", async () => {
+    // The LLM emits coarse facets (more than the cap); the page's concept
+    // ("Agent Harness" → `agent-harness`) is added as a topic tag, LEADS (so it
+    // survives the cap), and the whole set is bounded — the LLM never coins the
+    // concept itself because it's told to keep facets coarser than it.
+    mockedCallLLM.mockResolvedValueOnce(
+      "CONCEPT: Agent Harness\nTAGS: ai-agents, llm, orchestration, software, systems, tooling, infra\n\n# Agent Harness\n\nBody.",
+    );
+    const result = await ingest("Agent Harness", "Source about the agent harness loop.");
+    const tags = (await readWikiPageWithFrontmatter(result.primarySlug))!.frontmatter
+      .tags as string[];
+    expect(tags).toContain("agent-harness"); // the page's own topic is tagged
+    expect(tags[0]).toBe("agent-harness"); // leads, so it survives the cap
+    expect(tags.length).toBeLessThanOrEqual(6); // MAX_AUTO_TAGS — no sprawl
+  });
+
+  it("caps the tag union on re-ingest and keeps established tags over fresh facets (sprawl fix)", async () => {
+    // First ingest fills the page to the cap: concept + 5 facets = 6 tags.
+    mockedCallLLM.mockResolvedValueOnce(
+      "CONCEPT: Topic Beta\nTAGS: old-a, old-b, old-c, old-d, old-e\n\n# Topic Beta\n\nV1.",
+    );
+    await ingest("Topic Beta", "first source about topic beta");
+
+    // Re-ingest with five all-new facets. The OLD unbounded union would reach 11
+    // tags; the cap holds it at 6, preserving the concept + established tags. Fresh
+    // facets fill only free slots (here: none), so they wait — this guards both the
+    // bound AND that a re-ingest doesn't churn/evict the page's existing tags.
+    mockedCallLLM.mockResolvedValueOnce(
+      "CONCEPT: Topic Beta\nTAGS: new-a, new-b, new-c, new-d, new-e\n\n# Topic Beta\n\nV2, changed.",
+    );
+    const result = await ingest("Topic Beta", "second source, changed content");
+
+    const tags = (await readWikiPageWithFrontmatter(result.primarySlug))!.frontmatter
+      .tags as string[];
+    expect(tags.length).toBeLessThanOrEqual(6); // bounded — the sprawl fix
+    expect(tags[0]).toBe("topic-beta"); // concept still leads after the merge
+    expect(tags).toContain("old-a"); // established tags preserved (no churn)
+    expect(tags).not.toContain("new-e"); // fresh facets wait for a free slot
+  });
+
+  it("dedupes the concept tag against an identical synthesized facet (no wasted slot)", async () => {
+    // The concept slug and one facet collide ("databases"). The concept must
+    // appear once, leading — not twice, and without consuming an extra slot.
+    mockedCallLLM.mockResolvedValueOnce(
+      "CONCEPT: Databases\nTAGS: databases, vector-search\n\n# Databases\n\nBody.",
+    );
+    const result = await ingest("Databases", "A source about databases.");
+    const tags = (await readWikiPageWithFrontmatter(result.primarySlug))!.frontmatter
+      .tags as string[];
+    expect(tags).toEqual(["databases", "vector-search"]);
+  });
+
+  it("tags a CJK-titled page with its own concept (CJK tags preserved, not stripped)", async () => {
+    // slugify keeps CJK and normalizeTags now shares that char class, so a Chinese
+    // concept becomes a real tag instead of being stripped to empty (the old bug
+    // that left CJK pages — first-class on this wiki — with no concept tag).
+    mockedCallLLM.mockResolvedValueOnce(
+      "CONCEPT: 知识库\nTAGS: 数据, ai\n\n# 知识库\n\nBody.",
+    );
+    const result = await ingest("知识库", "A source about knowledge bases.");
+    const tags = (await readWikiPageWithFrontmatter(result.primarySlug))!.frontmatter
+      .tags as string[];
+    expect(tags[0]).toBe("知识库"); // the CJK concept leads — survives normalization
+    expect(tags).toContain("数据"); // CJK facets survive too
+    expect(tags).toContain("ai");
   });
 
   it("merges synthesized tags with caller-supplied tags (deduped)", async () => {
@@ -1978,6 +2057,16 @@ describe("normalizeTags", () => {
 
   it("drops entries that normalize to empty", () => {
     expect(normalizeTags(["###", "  ", "ok"])).toEqual(["ok"]);
+  });
+
+  it("preserves CJK tags (shares slugify's char class)", () => {
+    // CJK is kept, not stripped — a Chinese/Korean concept tag must survive the
+    // same way CJK slugs do. ASCII normalization is unchanged.
+    expect(normalizeTags(["知识库", "Machine Learning", "데이터"])).toEqual([
+      "知识库",
+      "machine-learning",
+      "데이터",
+    ]);
   });
 });
 

@@ -111,7 +111,7 @@ import {
   TAG_VOCAB_LIMIT,
 } from "./constants";
 import { ClientInputError } from "./errors";
-import { slugify } from "./slugify";
+import { slugify, SLUG_SEPARATOR_RE } from "./slugify";
 import { loadPageConventions } from "./schema";
 import { resolveAlias } from "./alias-index";
 import {
@@ -869,6 +869,12 @@ export function parseConceptMarker(raw: string): {
  * Normalize free-text tags to the wiki's canonical form: lowercase,
  * hyphen-separated, no leading `#`, deduped, capped at {@link MAX_AUTO_TAGS}.
  * Keeps tags consistent regardless of how the LLM (or a caller) cased/spaced them.
+ *
+ * Uses the SAME separator class as {@link slugify} (`SLUG_SEPARATOR_RE`), so a
+ * slugified concept survives normalization unchanged and CJK tags are PRESERVED
+ * (not stripped) — Chinese/Japanese/Korean pages get a real concept tag, the way
+ * their slugs already keep CJK. For ASCII input this is identical to the old
+ * `[^a-z0-9]+` strip. (The leading-`#` strip is kept for the `#tag` convention.)
  */
 export function normalizeTags(raw: string[], max: number = MAX_AUTO_TAGS): string[] {
   const seen = new Set<string>();
@@ -878,7 +884,7 @@ export function normalizeTags(raw: string[], max: number = MAX_AUTO_TAGS): strin
       .toLowerCase()
       .trim()
       .replace(/^#+/, "")
-      .replace(/[^a-z0-9]+/g, "-")
+      .replace(SLUG_SEPARATOR_RE, "-")
       .replace(/^-+|-+$/g, "");
     if (tag && !seen.has(tag)) {
       seen.add(tag);
@@ -1629,10 +1635,21 @@ export async function ingest(
   const sourceEntry = buildSourceEntry(sourceUrl, sourceType, options?.triggeredBy, rawId);
   frontmatter.sources = serializeSources([sourceEntry]);
 
-  // Tags: synthesized (conceptTags, empty for a prebuilt body/fallback) plus
-  // any caller-supplied tags — normalized to the canonical form so caller tags
-  // dedupe against synthesized ones. Merged with existing tags below for re-ingests.
-  const newTags = normalizeTags([...(options?.tags ?? []), ...conceptTags], Infinity);
+  // Tags = the page's own CONCEPT as a topic tag (deterministic) + caller tags +
+  // the synthesized COARSE facets (conceptTags). The LLM is TOLD to keep facets
+  // coarser than the concept (they group many pages), so it usually won't coin the
+  // concept itself — we add it here so a page is always tagged with its own topic
+  // (e.g. "Agent Harness" → `agent-harness`), which is what readers expect. We put
+  // it FIRST, so even if the LLM does emit the concept, normalizeTags dedups it to
+  // one copy that leads. slugify keeps CJK, and normalizeTags now does too, so a
+  // CJK concept (e.g. "知识库") becomes a real tag instead of being stripped away.
+  // Capped at MAX_AUTO_TAGS — the prompt's "3-6" is only a request; this cap is
+  // what actually bounds the set. Merged below for re-ingests.
+  const conceptTag = concept ? slugify(concept) : "";
+  const newTags = normalizeTags(
+    [...(conceptTag ? [conceptTag] : []), ...(options?.tags ?? []), ...conceptTags],
+    MAX_AUTO_TAGS,
+  );
   if (newTags.length > 0) {
     frontmatter.tags = newTags;
   }
@@ -1654,11 +1671,20 @@ export async function ingest(
       (Number.isFinite(prevCount) ? prevCount : 0) + 1,
     );
     if (Array.isArray(existing.frontmatter.tags)) {
-      // Merge existing tags with any new tags from options (deduplicated)
       const existingTags = existing.frontmatter.tags.filter(
         (t): t is string => typeof t === "string",
       );
-      const merged = normalizeTags([...existingTags, ...newTags], Infinity);
+      // Cap the union at MAX_AUTO_TAGS (the old `Infinity` let it sprawl every
+      // re-ingest). The concept tag leads; then the page's ESTABLISHED tags are
+      // preserved ahead of freshly-synthesized facets, which fill only the
+      // leftover slots. Existing-first on purpose: a re-ingest should stabilize
+      // the tag set, not churn it — and it must not silently evict a tag a human
+      // edited in (`tags` is user-patchable). Fresh facets that don't fit wait
+      // for a slot to free up (e.g. an old tag dropping on a future synthesis).
+      const merged = normalizeTags(
+        [...(conceptTag ? [conceptTag] : []), ...existingTags, ...newTags],
+        MAX_AUTO_TAGS,
+      );
       frontmatter.tags = merged;
     }
     // Preserve existing source_url if the new ingest doesn't provide one.
