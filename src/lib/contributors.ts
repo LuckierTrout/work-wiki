@@ -264,6 +264,13 @@ function buildProfileFromActivity(
  * scan and uses the pre-computed data. This is the recommended path when
  * building profiles for multiple handles (e.g. batch badge rendering).
  *
+ * Otherwise it reads the precomputed contributor index (the handle's public
+ * edit/comment/thread/trust tallies) — an O(1) read instead of scanning every
+ * page's revisions + every discuss file. Only a MISSING index falls through to
+ * the live scan (which still honors `principal`). Because the index reflects
+ * PUBLIC contributions, the profile shows public-contribution stats — the right
+ * thing for this public surface, and consistent with `listContributors`.
+ *
  * Returns a zeroed-out profile (not an error) when the handle has no activity.
  */
 export async function buildContributorProfile(
@@ -271,7 +278,23 @@ export async function buildContributorProfile(
   scanData?: ContributorScanData,
   principal: Principal | null = null,
 ): Promise<ContributorProfile> {
-  const data = scanData ?? await computeScanData(principal);
+  if (!scanData) {
+    try {
+      const { contributorProfileFromIndex } = await import("./contributor-index");
+      const fromIndex = await contributorProfileFromIndex(handle);
+      if (fromIndex) return fromIndex;
+    } catch (err) {
+      // The index is purely an accelerator — a module-load or build error here
+      // must degrade to the live scan, never crash the profile page awaiting
+      // this. Log it (don't swallow silently) so a broken index is visible.
+      logger.warn(
+        "contributors",
+        `contributor-index fast-path failed for "${handle}"; falling back to the live scan:`,
+        err,
+      );
+    }
+  }
+  const data = scanData ?? (await computeScanData(principal));
   const act = data.activityMap.get(handle) ?? emptyActivity();
   const revertCount = data.revertCounts.get(handle) ?? 0;
   return buildProfileFromActivity(handle, act, revertCount);

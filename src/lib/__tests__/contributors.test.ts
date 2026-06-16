@@ -194,6 +194,35 @@ describe("contributors data layer", () => {
       expect(profile.pagesEdited).toBe(2);
     });
 
+    it("uses the contributor index when present (O(1) fast-path, not a live scan)", async () => {
+      await createPage("idx-page", "Idx", "# Idx\n\nc");
+      await saveRevision("idx-page", "# Idx\n\nv1", "alice");
+      // Seed the index from the current on-disk state → alice has 1 edit.
+      const { rebuildContributorIndex } = await import("../contributor-index");
+      await rebuildContributorIndex();
+      // Add MORE on-disk activity the index doesn't know about.
+      await saveRevision("idx-page", "# Idx\n\nv2", "alice");
+      // The profile must come from the (now-stale) index, not a fresh scan — so
+      // it still reports 1 edit. A re-scan would read the revisions → 2.
+      const profile = await buildContributorProfile("alice");
+      expect(profile.editCount).toBe(1);
+    });
+
+    it("returns an empty profile (no scan) for a handle absent from a present index", async () => {
+      await createPage("idx-page2", "Idx2", "# Idx2\n\nc");
+      await saveRevision("idx-page2", "# Idx2\n\nv1", "alice");
+      const { rebuildContributorIndex } = await import("../contributor-index");
+      await rebuildContributorIndex(); // index present, knows only alice
+      // bob isn't in the index; give him on-disk activity a scan WOULD find.
+      await saveRevision("idx-page2", "# Idx2\n\nv2", "bob");
+      // Index present → bob short-circuits to a zeroed profile, NOT a scan
+      // (which would report editCount 1). Guards the "absent handle still skips
+      // the scan" contract against a regression that re-scans unknown handles.
+      const profile = await buildContributorProfile("bob");
+      expect(profile.handle).toBe("bob");
+      expect(profile.editCount).toBe(0);
+    });
+
     it("counts talk comments and threads", async () => {
       await ensureDirectories();
 
