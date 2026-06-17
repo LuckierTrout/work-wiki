@@ -93,6 +93,69 @@ describe("recent-index", () => {
     expect(idx?.map((e) => e.slug)).toEqual(["page-b"]);
   });
 
+  it("pushRecentEvent routes to BOTH the global and the owner's per-tenant index", async () => {
+    await getStorage().putIndex("recent", []);
+    await getStorage().putIndex("recent:alice", []);
+    await pushRecentEvent(ev({ ts: 1000, slug: "page-a", tenant: "alice" }));
+    expect((await getRecentIndex())?.map((e) => e.slug)).toEqual(["page-a"]);
+    expect((await getRecentIndex("alice"))?.map((e) => e.slug)).toEqual(["page-a"]);
+  });
+
+  it("a per-tenant index is independent — its push no-ops until that tenant is seeded", async () => {
+    await getStorage().putIndex("recent", []); // global seeded; alice NOT
+    await pushRecentEvent(ev({ ts: 1000, slug: "page-a", tenant: "alice" }));
+    expect((await getRecentIndex())?.map((e) => e.slug)).toEqual(["page-a"]); // global got it
+    expect(await getRecentIndex("alice")).toBeNull(); // per-tenant still unseeded → no-op
+  });
+
+  it("routes events to the index matching their tenant (owners stay isolated)", async () => {
+    await getStorage().putIndex("recent", []);
+    await getStorage().putIndex("recent:alice", []);
+    await getStorage().putIndex("recent:bob", []);
+    await pushRecentEvent(ev({ ts: 1000, slug: "a1", tenant: "alice" }));
+    await pushRecentEvent(ev({ ts: 2000, slug: "b1", tenant: "bob" }));
+    expect((await getRecentIndex("alice"))?.map((e) => e.slug)).toEqual(["a1"]);
+    expect((await getRecentIndex("bob"))?.map((e) => e.slug)).toEqual(["b1"]);
+    expect((await getRecentIndex())?.map((e) => e.slug)).toEqual(["b1", "a1"]); // global has both
+  });
+
+  it("removeRecentForSlug(slug, tenants) prunes the global and each per-tenant index", async () => {
+    await getStorage().putIndex("recent", []);
+    await getStorage().putIndex("recent:alice", []);
+    await pushRecentEvent(ev({ ts: 1000, slug: "page-a", tenant: "alice" }));
+    await pushRecentEvent(ev({ ts: 2000, slug: "page-b", tenant: "alice" }));
+    await removeRecentForSlug("page-a", ["alice"]);
+    expect((await getRecentIndex())?.map((e) => e.slug)).toEqual(["page-b"]);
+    expect((await getRecentIndex("alice"))?.map((e) => e.slug)).toEqual(["page-b"]);
+  });
+
+  it("fans an event out to owner AND contributor indexes (a contributor's trail stays fresh)", async () => {
+    await getStorage().putIndex("recent", []);
+    await getStorage().putIndex("recent:owner", []);
+    await getStorage().putIndex("recent:contrib", []);
+    // The lifecycle passes [owner, ...contributors] as the routing tenants.
+    await pushRecentEvent(ev({ slug: "shared", tenant: "owner" }), ["owner", "contrib"]);
+    expect((await getRecentIndex("owner"))?.some((e) => e.slug === "shared")).toBe(true);
+    expect((await getRecentIndex("contrib"))?.some((e) => e.slug === "shared")).toBe(true);
+  });
+
+  it("the profile READ key equals the write PUSH key for a normalized owner (end-to-end)", async () => {
+    const { getOwnerTrail } = await import("../trail");
+    const { tenantForOwner } = await import("../wiki");
+    const handle = "Alice Smith"; // tenantForOwner → "alice-smith" (normalized)
+    const tenant = tenantForOwner(handle);
+    await getStorage().putIndex(`recent:${tenant}`, []); // seed the per-owner index
+    // Write path keys by tenantForOwner(owner):
+    await pushRecentEvent(ev({ slug: "page-a", title: "Page A", tenant }), [tenant]);
+    // Read path keys by tenantForOwner(handle) — must resolve to the SAME index:
+    const trail = await getOwnerTrail(
+      tenantForOwner(handle),
+      [{ slug: "page-a", title: "Page A" }],
+      60,
+    );
+    expect(trail.map((e) => e.slug)).toEqual(["page-a"]);
+  });
+
   it("getTrail serves the index for anonymous reads, capped to limit", async () => {
     await seedEmpty();
     await pushRecentEvent(ev({ ts: 1000, slug: "page-a" }));

@@ -851,6 +851,49 @@ describe("recent trail action labeling", () => {
     expect(actions).toContain("edited");
     expect(actions).not.toContain("re-ingested");
   });
+
+  it("a delete prunes the page from BOTH the global and the owner's per-tenant index", async () => {
+    const { getRecentIndex } = await import("../recent-index");
+    await getStorage().putIndex("recent", []);
+    await getStorage().putIndex("recent:tester", []); // owner tester's profile index
+
+    // An owned, public commons page → its event routes to recent:tester + global.
+    const content = serializeFrontmatter(
+      { title: "Owned Page", owner: "tester" },
+      "# Owned Page\n\nv1.",
+    );
+    await writeWikiPageWithSideEffects(
+      makeOpts({ slug: "owned-page", title: "Owned Page", author: "tester", content }),
+    );
+    expect((await getRecentIndex("tester"))?.some((e) => e.slug === "owned-page")).toBe(true);
+    expect((await getRecentIndex())?.some((e) => e.slug === "owned-page")).toBe(true);
+
+    // Delete → pruned from BOTH; the per-tenant key is derived from prevContent's owner.
+    await deleteWikiPage("owned-page");
+    expect((await getRecentIndex("tester"))?.some((e) => e.slug === "owned-page")).toBe(false);
+    expect((await getRecentIndex())?.some((e) => e.slug === "owned-page")).toBe(false);
+  });
+
+  it("fans a write out to a CONTRIBUTOR's index, not just the owner's", async () => {
+    const { getRecentIndex } = await import("../recent-index");
+    await getStorage().putIndex("recent", []);
+    await getStorage().putIndex("recent:owner-x", []);
+    await getStorage().putIndex("recent:contrib-y", []);
+
+    // Owned by owner-x with contrib-y as a contributor → the page shows on BOTH
+    // profiles (slugsForOwner matches owner + contributors), so its activity must
+    // reach BOTH per-tenant indexes — else contrib-y's profile trail goes stale.
+    const content = serializeFrontmatter(
+      { title: "Shared Page", owner: "owner-x", contributors: ["contrib-y"] },
+      "# Shared Page\n\nv1.",
+    );
+    await writeWikiPageWithSideEffects(
+      makeOpts({ slug: "shared-page", title: "Shared Page", author: "owner-x", content }),
+    );
+
+    expect((await getRecentIndex("owner-x"))?.some((e) => e.slug === "shared-page")).toBe(true);
+    expect((await getRecentIndex("contrib-y"))?.some((e) => e.slug === "shared-page")).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
