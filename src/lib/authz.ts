@@ -13,6 +13,7 @@
 import { agentOwnerHandle } from "./agents";
 import { belongsInCommons } from "./commons";
 import { slugify } from "./slugify";
+import { isOwnerHandle } from "./owner";
 import type { IndexEntry } from "./types";
 import type { Principal } from "./auth";
 
@@ -50,6 +51,15 @@ type Reader = { id?: string; handle: string } | null;
 export function isAdmin(
   principal: { id?: string; handle?: string } | null | undefined,
 ): boolean {
+  // The site owner runs the instance, so they ARE the operator/admin — they may
+  // delete commons pages and manage any page. Matched by handle (case-insensitive)
+  // against the deploy-configured NEXT_PUBLIC_OWNER_HANDLE — the SAME handle-trust
+  // caveat as the ADMIN_HANDLES path below (it assumes Clerk usernames aren't
+  // user-editable; registration here is invite-only + owner-controlled, which
+  // closes that gap). This is the one place owner ⇒ admin is granted for PAGE
+  // authz; the admin/tenant + admin/migrate routes do their own owner checks.
+  if (isOwnerHandle(principal?.handle)) return true;
+
   const raw = process.env.ADMIN_HANDLES;
   if (!raw) return false;
   const admins = raw
