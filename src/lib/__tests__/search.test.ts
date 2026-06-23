@@ -175,6 +175,61 @@ describe("searchWikiContent", () => {
     expect(slugs).not.toContain("agent-note");
   });
 
+  it("excludes artifacts even WITHIN a scope (vault/owner) — markup is never query knowledge", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "note-x",
+      "# Note X\n\nAttention mechanisms explained here.",
+    );
+    await writeWikiPage(
+      "artifact-x",
+      serializeFrontmatter(
+        { type: "html" },
+        "# Artifact X\n\nAttention mechanisms explained here.",
+      ),
+    );
+    await writeWikiPage(
+      "deck-x",
+      serializeFrontmatter(
+        { type: "slides" },
+        "# Deck X\n\nAttention mechanisms explained here.",
+      ),
+    );
+    await writeWikiPage(
+      "index",
+      "# Index\n\n- [Note](note-x.md) — n\n- [Artifact](artifact-x.md) — a\n- [Deck](deck-x.md) — d",
+    );
+    // All slugs are in the scope (as if a vault curated the artifacts), but the
+    // artifacts (html AND slides) must still NOT surface as search hits.
+    const scope = { agentId: "vault:v1", slugs: ["note-x", "artifact-x", "deck-x"] };
+    const slugs = (await searchWikiContent("attention", 10, scope)).map(
+      (r) => r.slug,
+    );
+    expect(slugs).toContain("note-x");
+    expect(slugs).not.toContain("artifact-x");
+    expect(slugs).not.toContain("deck-x");
+  });
+
+  it("an `agent:` scope STILL surfaces agent-typed pages (only unscoped excludes them)", async () => {
+    await ensureDirectories();
+    await writeWikiPage(
+      "ak",
+      serializeFrontmatter(
+        { type: "agent-knowledge" },
+        "# AK\n\nAttention mechanisms explained here.",
+      ),
+    );
+    await writeWikiPage("index", "# Index\n\n- [AK](ak.md) — a");
+    // Unscoped: agent-scoped page excluded.
+    expect((await searchWikiContent("attention")).map((r) => r.slug)).not.toContain("ak");
+    // Scoped (the agent's own lens): it MUST surface — guards the scope-aware
+    // includeAgentScoped:!scope refactor.
+    const scope = { agentId: "agent:x", slugs: ["ak"] };
+    expect(
+      (await searchWikiContent("attention", 10, scope)).map((r) => r.slug),
+    ).toContain("ak");
+  });
+
   it("is case-insensitive", async () => {
     await ensureDirectories();
     await writeWikiPage("test-page", "# Test Page\n\nHello WORLD.");
