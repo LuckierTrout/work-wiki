@@ -14,6 +14,7 @@ import { Icon } from "@/components/folio/icons";
 import { Avatar, Mark, Confidence, Freshness } from "@/components/folio/primitives";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { HtmlPreview } from "@/components/HtmlPreview";
+import { isHtmlDeck } from "@/lib/html";
 import { SlidePreview } from "@/components/SlidePreview";
 import { SharePageButton } from "@/components/SharePageButton";
 import { ArticleActions } from "@/components/ArticleActions";
@@ -426,10 +427,14 @@ export async function ArticleView({
               // (isolated; no app cookie/DOM/network access) — never markdown.
               <HtmlPreview html={page.body} />
             ) : pageType === "slides" ? (
-              // A saved slide deck renders as a paginated carousel (SlidePreview
-              // splits the body on `---` and renders each slide as markdown), not
-              // one flattened markdown flow. (No Marp engine / Marp directives.)
-              <SlidePreview content={page.body} />
+              // A slide deck. New decks are self-contained HTML (rendered in the
+              // sandboxed iframe with the deck runtime); legacy decks are Marp
+              // markdown (the `<SlidePreview>` carousel) — sniff the body to pick.
+              isHtmlDeck(page.body) ? (
+                <HtmlPreview html={page.body} deck />
+              ) : (
+                <SlidePreview content={page.body} />
+              )
             ) : (
               <MarkdownRenderer
                 content={articleBody}

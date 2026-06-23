@@ -11,6 +11,7 @@ import { stripLeadingH1 } from "@/lib/markdown";
 import type { SourceEntry } from "@/lib/types";
 import { Colophon } from "@/components/folio/primitives";
 import { HtmlPreview } from "@/components/HtmlPreview";
+import { isHtmlDeck } from "@/lib/html";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { SlidePreview } from "@/components/SlidePreview";
 
@@ -143,10 +144,12 @@ export default async function SharePage({ params }: ShareProps) {
         // 100dvh) so there's no page scrollbar; its sources stay one click away
         // via "Open in wiki" rather than forcing a scroll past the full frame.
         <HtmlPreview html={page.body} bare />
+      ) : pageType === "slides" && isHtmlDeck(page.body) ? (
+        // A new HTML deck fills the viewport (full-screen deck with nav), same as
+        // an html artifact's share view.
+        <HtmlPreview html={page.body} bare deck />
       ) : pageType === "slides" ? (
-        // A shared deck renders as a paginated carousel (SlidePreview splits the
-        // body on `---`, each slide rendered as markdown) — not flattened markdown
-        // or raw text in the HTML iframe.
+        // Legacy Marp deck → the markdown carousel.
         <main
           style={{ maxWidth: 960, margin: "0 auto", padding: "40px 24px 80px" }}
         >
