@@ -195,12 +195,51 @@ describe("composeSrcDoc", () => {
       undefined,
       true,
     );
-    expect(out).toContain(".slide.active{display:flex}"); // deck CSS
+    expect(out).toContain(".slide.active{display:flex!important}"); // deck CSS
     expect(out).toContain("ArrowRight"); // deck nav script
     expect(out).not.toContain("body{max-width:var(--measure)}"); // no article column
     // Non-deck doc gets neither the deck runtime.
     const plain = composeSrcDoc("<p>x</p>");
     expect(plain).not.toContain(".slide.active");
+  });
+
+  it("deck layout uses !important so a model's own .slide CSS can't stack slides", () => {
+    // A model that redefines `.slide{display:flex}` would otherwise win at equal
+    // specificity (its <style> is injected after ours), showing every slide at once.
+    const modelSlide = ".slide{display:flex;min-height:80vh}";
+    const out = composeSrcDoc(
+      `<head><style>${modelSlide}</style></head>` +
+        '<section class="slide"><h1>A</h1></section>',
+      undefined,
+      false,
+      undefined,
+      true,
+    );
+    // The make-or-break props are !important ON the .slide selector itself
+    // (not just present somewhere — `display:none!important` also appears on the
+    // yoyo ::before/::after rule).
+    expect(out).toMatch(
+      /\.slide\{position:absolute!important;inset:0!important;display:none!important;/,
+    );
+    expect(out).toContain(".slide.active{display:flex!important}");
+    // The whole premise: our baseline .slide rule must precede the model's, so
+    // !important (not source order) is what wins. Assert the source ordering the
+    // fix depends on.
+    expect(out.indexOf(".slide{position:absolute!important")).toBeLessThan(
+      out.indexOf(modelSlide),
+    );
+  });
+
+  it("neutralizes model-authored ::before/::after art on the yoyo figure", () => {
+    // The yoyo illustration is a baked <img>; some models layer emoji/CSS art via
+    // pseudo-elements. The baseline kills those (with !important) on both decks and
+    // articles, so only the real generated image shows.
+    for (const deck of [true, false]) {
+      const out = composeSrcDoc("<p>x</p>", undefined, false, undefined, deck);
+      expect(out).toContain(
+        "figure.yoyo-illustration::before,figure.yoyo-illustration::after{content:none!important",
+      );
+    }
   });
 
   it("forces the resolved app theme (overrides the OS prefers-color-scheme default)", () => {
