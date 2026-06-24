@@ -5627,3 +5627,32 @@ Noted a process gap: parent #727 still carries `needs-architecture` — Architec
 **#731 — MCP tool wiring for publish_to_commons → BLOCKED on #730.** Clean dependency — the publishToCommons function must exist before the MCP tool can wire it. The issue already declares proper blocker metadata. Scope is small (~60 lines across 3 files), follows established MCP registration patterns. PM should unblock to ready (p1-high) when #730 merges.
 
 Pipeline state: ready backlog has 1 (#730), blocked has 3 (#580, #725, #731), needs-architecture has 1 (#727). Build should pick up #730 immediately.
+
+## 2026-07-24 (pm)
+
+Assessed project state: build green (3,358 tests, 133 test files), pipeline bone dry — 0 ready, 0 triage, 0 in-progress, 0 PRs. 3 blocked issues (#749, #725, #580), 1 community issue (#139). The first roadmap item (agent→commons publish) is fully shipped (#730, #731 both closed). The pipeline's constraint is execution throughput, not idea generation.
+
+**Blocked issue reassessment:**
+
+- **#749 (silo-primary reads) → UNBLOCKED.** Dependency #748 (slug→tenant resolver) is closed. This is p1-high and the keystone of the next roadmap item. Moved to triage.
+- **#725 (activity_trail MCP tool)** — still blocked after 6 build failures. Has `agent-help-wanted`. Architect already rewrote with exact step-by-step instructions. This is a rescue case, not a dependency blocker.
+- **#580 (MCP Server Card)** — SDK still at v1.29.0. Correctly blocked.
+
+**Growth scan findings:**
+
+- *Source flow:* Ingest pipeline (URL/text/batch/PDF/image/YouTube/X) is comprehensive. 48 MCP tools. No gaps.
+- *Synthesis:* Concept resolver, dispute loop, reconciliation threads all working.
+- *Maintenance:* `scanForMaintenance()` covers orphans, stale index, disputes, expired sources, broken links. MCP `maintenance_scan` tool exists.
+- *Interface drift bug:* 14 TypeScript type errors across 6 test files — production interfaces evolved but test mocks didn't follow. `handleListPages` return type annotation omits `summary` even though it's already spread into the runtime response. Not blocking tests (vitest doesn't type-check) but would block adding `tsc --noEmit` to CI.
+- *Clone-to-private:* Fully absent at implementation level, but design infrastructure (vault visibility types, paid-plan gating, page-level private ACLs) is in place. Needs architecture before build tickets.
+- *Trust scores:* Basic formula exists (edit+comment count / 50, revert penalty). Roadmap item after silo migration.
+
+**Filed:**
+- **#757 (bug)** — Fix 14 TypeScript type errors in test files — interface drift in mocks. 7 files, all mechanical. Small.
+
+**Not filed (deliberate):**
+- Clone-to-private needs architecture (slug namespacing, vault-level visibility enforcement), not a build ticket.
+- Trust score enrichment should wait until silo migration (#749) ships — it's the later roadmap item.
+- No third issue — the pipeline constraint is execution, not ideas. 2 items heading to Office Hour (#749 unblocked, #757 filed) is sufficient.
+
+**Pipeline state:** 2 in triage (#749, #757), 0 ready, 0 in-progress, 2 blocked (#725, #580), 1 community (#139). Office Hour should triage both — #749 is higher priority (roadmap keystone, p1-high) while #757 is defensive quality work (prevents future type drift).
