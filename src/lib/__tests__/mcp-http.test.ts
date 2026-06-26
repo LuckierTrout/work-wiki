@@ -128,10 +128,10 @@ describe("dispatchMcp — tools/call auth gating", () => {
     const writes = MCP_TOOLS.filter((t) => t.write).map((t) => t.name);
     const reads = MCP_TOOLS.filter((t) => !t.write).map((t) => t.name);
     expect(writes).toEqual(
-      expect.arrayContaining(["ingest_url", "ingest_text", "create_page", "save_query_answer", "reingest", "update_metadata"]),
+      expect.arrayContaining(["ingest_url", "ingest_text", "create_page", "save_query_answer", "reingest", "update_metadata", "fix_lint_issue", "reconcile_page"]),
     );
     expect(reads).toEqual(
-      expect.arrayContaining(["search_wiki", "read_page", "list_pages", "query_wiki"]),
+      expect.arrayContaining(["search_wiki", "read_page", "list_pages", "query_wiki", "lint_wiki"]),
     );
   });
 
@@ -254,5 +254,75 @@ describe("dispatchMcp — update_metadata", () => {
     const page = await readFm("meta-test");
     expect(page!.frontmatter.disputed).toBe(true);
     expect(page!.frontmatter.confidence).toBe(0.5);
+  });
+});
+
+describe("dispatchMcp — lint_wiki", () => {
+  it("tools/list returns lint_wiki", async () => {
+    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
+    const tools = (res!.result as { tools: { name: string }[] }).tools;
+    expect(tools.map((t) => t.name)).toContain("lint_wiki");
+  });
+
+  it("lint_wiki works without authentication (read-only)", async () => {
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: { name: "lint_wiki", arguments: {} },
+      },
+      null,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    // Should not be an auth error — lint is read-only
+    expect(r.isError).toBeFalsy();
+    // Should return a valid lint result (JSON with issues array)
+    const parsed = JSON.parse(r.content[0].text);
+    expect(parsed).toHaveProperty("issues");
+    expect(Array.isArray(parsed.issues)).toBe(true);
+  });
+});
+
+describe("dispatchMcp — fix_lint_issue", () => {
+  it("tools/list returns fix_lint_issue", async () => {
+    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
+    const tools = (res!.result as { tools: { name: string }[] }).tools;
+    expect(tools.map((t) => t.name)).toContain("fix_lint_issue");
+  });
+
+  it("rejects fix_lint_issue without auth (write-gated)", async () => {
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: { name: "fix_lint_issue", arguments: { type: "orphan-page", slug: "test" } },
+      },
+      null,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/authentication required/i);
+  });
+});
+
+describe("dispatchMcp — reconcile_page", () => {
+  it("tools/list returns reconcile_page", async () => {
+    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
+    const tools = (res!.result as { tools: { name: string }[] }).tools;
+    expect(tools.map((t) => t.name)).toContain("reconcile_page");
+  });
+
+  it("rejects reconcile_page without auth (write-gated)", async () => {
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: { name: "reconcile_page", arguments: { pageSlug: "test", threadIndex: 0 } },
+      },
+      null,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/authentication required/i);
   });
 });
