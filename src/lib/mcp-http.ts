@@ -28,6 +28,8 @@ import {
   handleIngestText,
   handleReingest,
   handleCreatePage,
+  handleUpdatePage,
+  handleDeletePage,
   handleSaveQueryAnswer,
   handleMaintenanceScan,
   handlePublishToCommons,
@@ -220,6 +222,47 @@ export const MCP_TOOLS: ToolDef[] = [
       handleCreatePage(
         attributed(a, p!.handle) as Parameters<typeof handleCreatePage>[0],
       ),
+  },
+  {
+    name: "update_page",
+    description:
+      "Update an existing wiki page's content. You can only edit pages you own or public commons pages.",
+    inputSchema: schema(
+      {
+        slug: str("Page slug to update"),
+        content: str("New markdown body"),
+      },
+      ["slug", "content"],
+    ),
+    write: true,
+    // Enforce realm-aware write ACL: the handler itself checks principal-based
+    // ACL, but we pass the principal through so it has the real caller identity
+    // rather than a service principal.
+    run: (a, p) =>
+      handleUpdatePage({
+        ...attributed(a, p!.handle),
+        principal: p,
+      } as Parameters<typeof handleUpdatePage>[0]),
+  },
+  {
+    name: "delete_page",
+    description:
+      "Delete a wiki page. You can only delete pages you own or public commons pages.",
+    inputSchema: schema(
+      {
+        slug: str("Page slug to delete"),
+      },
+      ["slug"],
+    ),
+    write: true,
+    // Enforce realm-aware write ACL: the handler checks principal-based ACL
+    // (ownership / commons editability). Cloaked errors prevent private-page
+    // existence oracles — matching the reingest pattern.
+    run: (a, p) =>
+      handleDeletePage({
+        ...attributed(a, p!.handle),
+        principal: p,
+      } as Parameters<typeof handleDeletePage>[0]),
   },
   {
     name: "save_query_answer",

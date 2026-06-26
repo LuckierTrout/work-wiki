@@ -124,11 +124,84 @@ describe("dispatchMcp — tools/call auth gating", () => {
     expect(r.content[0].text).toMatch(/not found or you don't have permission/i);
   });
 
+  it("update_page is blocked when unauthenticated", async () => {
+    const res = await dispatchMcp(
+      { id: 1, method: "tools/call", params: { name: "update_page", arguments: { slug: "x", content: "new" } } },
+      null,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/authentication required/i);
+  });
+
+  it("delete_page is blocked when unauthenticated", async () => {
+    const res = await dispatchMcp(
+      { id: 1, method: "tools/call", params: { name: "delete_page", arguments: { slug: "x" } } },
+      null,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/authentication required/i);
+  });
+
+  it("update_page passes principal for ACL — rejects nonexistent page", async () => {
+    const res = await dispatchMcp(
+      { id: 1, method: "tools/call", params: { name: "update_page", arguments: { slug: "nope", content: "x" } } },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/not found/i);
+  });
+
+  it("delete_page passes principal for ACL — rejects nonexistent page", async () => {
+    const res = await dispatchMcp(
+      { id: 1, method: "tools/call", params: { name: "delete_page", arguments: { slug: "nope" } } },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/not found/i);
+  });
+
+  it("update_page succeeds on an owned page", async () => {
+    // Create a private page owned by alice, then update it via MCP.
+    const { writeWikiPage } = await import("../wiki");
+    await writeWikiPage("my-page", "---\ntitle: Old\nowner: alice\nvisibility: private\n---\nold body.");
+    const res = await dispatchMcp(
+      { id: 2, method: "tools/call", params: { name: "update_page", arguments: { slug: "my-page", content: "# Updated\n\nnew body." } } },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBeFalsy();
+    expect(r.content[0].text).toContain("updated");
+    // Verify the content was actually written.
+    const { readWikiPage } = await import("../wiki");
+    const page = await readWikiPage("my-page");
+    expect(page).not.toBeNull();
+    expect(page!.content).toContain("new body");
+  });
+
+  it("delete_page succeeds on an owned page", async () => {
+    // Create a private page owned by alice, then delete it via MCP.
+    const { writeWikiPage } = await import("../wiki");
+    await writeWikiPage("doomed", "---\ntitle: Doomed\nowner: alice\nvisibility: private\n---\nbody.");
+    const res = await dispatchMcp(
+      { id: 2, method: "tools/call", params: { name: "delete_page", arguments: { slug: "doomed" } } },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBeFalsy();
+    // Verify the page is gone.
+    const { readWikiPage } = await import("../wiki");
+    expect(await readWikiPage("doomed")).toBeNull();
+  });
+
   it("every write tool is gated and every read tool is open", () => {
     const writes = MCP_TOOLS.filter((t) => t.write).map((t) => t.name);
     const reads = MCP_TOOLS.filter((t) => !t.write).map((t) => t.name);
     expect(writes).toEqual(
-      expect.arrayContaining(["ingest_url", "ingest_text", "create_page", "save_query_answer", "reingest"]),
+      expect.arrayContaining(["ingest_url", "ingest_text", "create_page", "update_page", "delete_page", "save_query_answer", "reingest"]),
     );
     expect(reads).toEqual(
       expect.arrayContaining(["search_wiki", "read_page", "list_pages", "query_wiki"]),
