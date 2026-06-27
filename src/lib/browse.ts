@@ -12,15 +12,17 @@
  * visibility-scoped candidate pool, so a search never WIDENS visibility beyond
  * what the scope's pool already allows (same guard as the /query retrieval). For
  * `scope=all` that pool is public + non-agent by construction; for a `vault:<id>`
- * scope it's the viewer's readable vault refs with agent-scoped pages excluded —
- * so a viewer's OWN private page in their public vault stays visible to them (and
- * only them), but no search can surface another user's private page.
+ * scope it's the viewer's readable refs of a PUBLIC vault — INCLUDING agent-knowledge
+ * filed into it. Readability is the only gate: a viewer's OWN private page in their
+ * public vault stays visible to them (and only them), a public vault's
+ * publicly-readable agent-knowledge is visible to all, and no search can surface
+ * another user's private page.
  */
 
 import type { IndexEntry } from "./types";
 import type { Principal } from "./auth";
 import { listCommonsPages } from "./commons";
-import { listReadableWikiPages, isAgentScopedType } from "./wiki";
+import { listReadableWikiPages } from "./wiki";
 import { getVault } from "./vault";
 import { getDiscussionStatsForSlugs } from "./talk";
 import { tokenize, buildCorpusStats, bm25Score } from "./bm25";
@@ -75,9 +77,12 @@ export const BROWSE_PAGE_SIZE = 30;
 /**
  * Resolve the candidate pool for a scope. `"all"` → the public commons (already
  * public + non-agent by construction). `"vault:<id>"` → a PUBLIC vault's
- * referenced pages the viewer may read, with agent-scoped pages excluded (the
- * readable set can include the owner's own agent/private pages, the commons
- * cannot — so re-apply the agent filter here).
+ * referenced pages the viewer may read — INCLUDING agent-knowledge filed into it.
+ * A vault is the owner's deliberate collection, so readability is the only gate:
+ * the owner always sees their own filed pages, and a public vault's agent-knowledge
+ * (which is publicly readable) is visible to any viewer — matching the vault-scope
+ * search API. (The `"all"` commons lens still excludes agent-scoped by construction.)
+ * Private vaults aren't resolved here yet (owner+agent view is a separate feature).
  */
 async function resolveCandidates(
   scope: string,
@@ -88,9 +93,7 @@ async function resolveCandidates(
     const vault = await getVault(vaultId);
     if (!vault || vault.visibility !== "public") return [];
     const refs = new Set(vault.slugs);
-    return (await listReadableWikiPages(principal))
-      .filter((p) => refs.has(p.slug))
-      .filter((p) => !isAgentScopedType(p.type));
+    return (await listReadableWikiPages(principal)).filter((p) => refs.has(p.slug));
   }
   return listCommonsPages();
 }
