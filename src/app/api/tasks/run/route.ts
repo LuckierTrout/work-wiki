@@ -6,7 +6,7 @@ import { ingest, ingestUrl, ingestPdf, ingestImage, reingest } from "@/lib/inges
 import { fixLintIssue } from "@/lib/lint-fix";
 import { updateIngestJob } from "@/lib/ingest-jobs";
 import { readStagedBytes, readStagedText, deleteStaged } from "@/lib/ingest-staging";
-import { agentIdFor, DEFAULT_AGENT_NAME } from "@/lib/agents";
+import { agentIdFor, addAgentLearningPage, DEFAULT_AGENT_NAME } from "@/lib/agents";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { addToVault } from "@/lib/vault";
@@ -93,9 +93,17 @@ export async function POST(req: Request) {
     }
 
     // kind === "ingest"
+    // triggeredBy defaults to author (the common case); agent ingests pass it
+    // explicitly so author=agent while triggeredBy=human owner.
+    const triggeredBy = task.triggeredBy ?? task.author;
     const opts = {
       ...(task.owner ? { owner: task.owner } : {}),
-      ...(task.author ? { author: task.author, triggeredBy: task.author } : {}),
+      ...(task.author ? { author: task.author } : {}),
+      ...(triggeredBy ? { triggeredBy } : {}),
+      // Agent ingests carry a scoped page type + (text) provenance url/type.
+      ...(task.pageType ? { pageType: task.pageType } : {}),
+      ...(task.sourceUrl ? { sourceUrl: task.sourceUrl } : {}),
+      ...(task.sourceType ? { sourceType: task.sourceType } : {}),
       ...(task.tags && task.tags.length > 0 ? { tags: task.tags } : {}),
       // A user-supplied title must survive the queue hop — ingestPdf/ingestImage
       // use it to override the derived title (and, for images, the slug). The
@@ -150,6 +158,22 @@ export async function POST(req: Request) {
         status: "done",
         slug: result.primarySlug,
       });
+    }
+
+    // Agent-scoped ingest: attach the page to the agent's learnings. Fail-soft —
+    // the job is already `done` and the page exists; we won't fail the ingest over
+    // this. But a THROW here means the page is orphaned from the agent (it won't
+    // surface under the profile / `agent:` scope), so log it at error (matching
+    // addAgentLearningPage's own severity for the missing-agent case).
+    if (task.learningFor) {
+      try {
+        await addAgentLearningPage(task.learningFor, result.primarySlug);
+      } catch (err) {
+        logger.error(
+          "tasks",
+          `learning-page attach failed for agent="${task.learningFor}" slug="${result.primarySlug}": ${getErrorMessage(err)}`,
+        );
+      }
     }
 
     // Auto-file into vault if requested (fail-soft: never fail the ingest).
