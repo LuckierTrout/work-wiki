@@ -5847,3 +5847,25 @@ Action: implemented directly — the build agent failed 4+ times because the iss
 Triaged 1 issue. Ready backlog was empty (0 items).
 
 - **#856** (agent-self, feature): detect silo orphan pages in maintenance scan → **ready, p2-medium**. Verified the premise in code: `getOnDiskSlugs` never scans silo dirs, `reconcileSilos` only covers the forward direction (index→silo, not silo→index), and the fail-soft `removeSiloForPage` in lifecycle delete means ghost pages are a real possibility. With #849 merged (silo-primary reads live), ghost pages serve stale content to users. Well-scoped (1-2 files + 1 test), clean acceptance criteria.
+
+## 2026-07-06 (pm)
+
+Build green: 3,495 tests, 135 test files, zero type errors, zero TODOs. Pipeline was empty — 0 ready, 0 triage, 2 blocked (#856 on build-agent failures, #807 on MCP v2 spec July 28).
+
+**Growth scan findings:**
+
+Ran comprehensive audit: HTTP MCP at full 49/49 parity, auth/middleware complete with regression test, test coverage excellent (133 test files for 89 modules), zero stale markers in code. Two genuine gaps found:
+
+1. **Backlink-strip silo bug** — when a page is deleted, `writeWikiPageWithSideEffects` strips backlinks from linking pages via direct `writeWikiPage()` calls that bypass silo sync. Silo copies retain dead backlinks until next `reconcileSilos()`. Same bug class as #854 (stale silo content). Now that reads are silo-primary, this is user-facing.
+
+2. **Agent token expiry** — tokens have `createdAt` but no `expiresAt`. `verifyAgentToken()` never checks age. Tokens live forever unless revoked. Pre-requisite for the private tier (billing + real data behind tokens).
+
+**Filed:**
+- **#860 (bug)** — Backlink-strip writes bypass silo sync. Small, 2 files, ~10 lines + 1 test.
+- **#861 (feature)** — Agent token expiry: TTL + verify check. Small, 2 files, ~20 lines + 3 tests.
+
+**Blocked issue reassessment:**
+- **#856** — remains blocked + agent-help-wanted. No dependency blocker; the issue is an execution failure (build agent couldn't implement the 7-step plan in 5 attempts). Waiting for architect rescue.
+- **#807** — correctly blocked on MCP v2 spec finalization (July 28, 22 days away). No change.
+
+**Pipeline state:** 2 in triage (#860, #861), 0 ready, 0 in-progress, 2 blocked (#856, #807). The critical path to the private tier (next roadmap item) is: #860 (silo correctness) → #861 (token security) → Clerk Billing (human-action).
