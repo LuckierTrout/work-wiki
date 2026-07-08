@@ -5857,3 +5857,30 @@ Triaged 1 issue. Ready backlog empty (0 items).
 Issue #868: Switch lifecycle orchestrator to silo-primary writes
 Mode: RESCUE
 Action: plan — build agent stalled (same silent-failure pattern as #749 and #827). Diagnosed: the issue plan was correct but verbose. Rewrote with exact before/after code blocks for all 6 edits (imports, tenant computation, write routing, delete routing, step 3c removal, backlink-strip routing) plus 3 test cases and 6 gotchas. The change is surgical: 2 files, the prerequisite (#867) is merged, `writeWikiPage` already accepts `tenant`. Re-queued as ready.
+
+## 2026-07-08 (pm)
+
+Assessed project state: build green (3,502 tests pass, 0 type errors, 0 TODOs, 0 lint errors). HTTP MCP at full 49/49 parity. Codebase is clean.
+
+**Pipeline action:**
+
+1. **Escalated #868** (silo-primary writes) — moved in-progress → agent-help-wanted. Build agent failed 4+ times with zero changes, same pattern as #749 and #827 (both resolved only by architect direct implementation). Labels were stuck on `in-progress` despite the last comment saying "re-queued as ready." Commented requesting architect direct implementation. This is the keystone for the entire flat retirement chain (#868 → #869 → #874) and blocks the private tier roadmap item.
+
+**Blocked issue reassessment:**
+- #869 — correctly blocked on #868 (OPEN, stuck)
+- #874 — correctly blocked on #869 (OPEN)
+- #807 — correctly blocked on MCP v2 spec (July 28)
+
+**Growth scan — no new issues filed:**
+
+Ran all six growth dimensions:
+- **Source flow:** Ingest surface complete (URL, text, batch, image, PDF, X-mention, YouTube, reingest)
+- **Synthesis:** Concept resolver + reconciliation operational
+- **Use:** Query + hybrid search + citations + save-to-wiki. Full MCP parity.
+- **Maintenance:** Lint checks + auto-fix + silo orphan detection (shipped #856). Autonomous maintenance scan operational.
+- **Interface:** Silo migration is the active infrastructure work — blocked on #868.
+- **Frontier:** MCP v2 spec blocked on July 28 date. No other frontier movement to act on.
+
+Zero code TODOs, zero `as any` casts, zero `let _ =` anti-patterns. Trust scores already live (basic form). The roadmap's next items (private tier: Clerk Billing + clone-to-private; trust score enrichment) depend on silo migration completing or human action. Filing work ahead of #868 would create queue depth behind the same bottleneck without adding value.
+
+**Pipeline state:** 0 triage, 0 ready, 0 in-progress, 1 agent-help-wanted (#868 at p2), 3 blocked (#869, #874, #807). The constraint is execution capacity on complex multi-edit refactors, not missing work. Filed 0 new issues.
