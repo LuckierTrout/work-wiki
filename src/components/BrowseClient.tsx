@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import type { IndexEntry } from "@/lib/types";
@@ -35,6 +36,12 @@ interface BrowseClientProps {
   pageSize: number;
   /** Initial tag filter (from `?tag=` — e.g. a tag chip on an article). */
   initialTag?: string | null;
+  /** How many agents (besides yoyo) tend the commons — the rail's tender line. */
+  tenderAgents: number;
+  /** ISO timestamp of the most recent update in the initially-rendered pool
+   * (scope-wide normally; tag-scoped when the page loads with `?tag=`) —
+   * the rail's "last sweep" line. */
+  lastTended: string | null;
 }
 
 /** A single editorial result row (Folio `PageRow`). */
@@ -51,6 +58,9 @@ function PageRow({
   const owner = page.owner && page.owner !== "system" ? page.owner : null;
   const agentOwned = !!owner && owner.includes("--");
   const rel = page.updated ? formatRelativeTime(page.updated) : null;
+  // The product's staleness rule (lib/maintenance): a page past its `expiry`
+  // is decaying — surfaced as a quiet rust receipt, not an alarm.
+  const decaying = !!page.expiry && page.expiry <= new Date().toISOString().slice(0, 10);
   const openCount = discussion?.open ?? 0;
   // The vault lens can include the viewer's PRIVATE pages — those have no global
   // URL (and `/wiki/<slug>` 404s them), so only PUBLIC commons pages link to the
@@ -67,18 +77,23 @@ function PageRow({
     <li style={{ borderTop: "1px solid var(--rule)" }}>
       <Link
         href={href}
+        className="browse-row"
         style={{
           display: "grid",
           gridTemplateColumns: "1fr auto",
           gap: 22,
           alignItems: "baseline",
-          padding: removeVaultId ? "22px 0 12px" : "22px 0",
+          padding: removeVaultId ? "22px 10px 12px" : "22px 10px",
           textDecoration: "none",
         }}
       >
         <div>
-          <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+          <div
+            className="row"
+            style={{ gap: 10, flexWrap: "wrap", alignItems: "baseline" }}
+          >
             <h3
+              className="browse-row-title"
               style={{
                 margin: 0,
                 fontSize: 21,
@@ -86,6 +101,7 @@ function PageRow({
                 letterSpacing: "-.02em",
                 lineHeight: 1.2,
                 color: "var(--ink)",
+                transition: "color .15s",
               }}
             >
               {page.title}
@@ -118,24 +134,34 @@ function PageRow({
               {page.summary}
             </p>
           )}
-          <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
-            {(page.tags ?? []).slice(0, 3).map((t) => (
+          <div
+            className="row"
+            style={{ gap: 16, flexWrap: "wrap", marginTop: 2 }}
+          >
+            {(page.tags ?? []).length > 0 && (
               <span
-                key={t}
                 className="receipt"
                 style={{ fontSize: 11.5, color: "var(--ink-2)" }}
               >
-                #{t}
+                {(page.tags ?? [])
+                  .slice(0, 3)
+                  .map((t) => `#${t}`)
+                  .join(" ")}
               </span>
-            ))}
+            )}
             {owner && <Mark id={owner} agent={agentOwned} />}
             <span
               className="receipt"
-              style={{ fontSize: 11.5, color: "var(--faint)" }}
+              style={{
+                fontSize: 11.5,
+                color: "var(--faint)",
+                fontVariantNumeric: "tabular-nums",
+              }}
             >
               {(page.sourceCount ?? 0)}{" "}
               {(page.sourceCount ?? 0) === 1 ? "source" : "sources"}
               {rel ? ` · ${rel}` : ""}
+              {decaying && <span style={{ color: "var(--rust)" }}> · decaying</span>}
             </span>
           </div>
         </div>
@@ -171,9 +197,12 @@ function FilterRow({
   disabled?: boolean;
 }) {
   return (
-    <div className="stack" style={{ gap: 9, opacity: disabled ? 0.45 : 1 }}>
+    <div className="stack" style={{ gap: 9 }}>
       <span className="fmark">{label}</span>
-      <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+      <div
+        className="row"
+        style={{ gap: 6, flexWrap: "wrap", opacity: disabled ? 0.45 : 1 }}
+      >
         {options.map((o) => {
           const active = value === o.id;
           return (
@@ -181,6 +210,7 @@ function FilterRow({
               key={o.id}
               disabled={disabled}
               onClick={() => onChange(o.id)}
+              className={`browse-pill${active ? " on" : ""}`}
               style={{
                 fontSize: 13,
                 padding: "5px 12px",
@@ -202,6 +232,38 @@ function FilterRow({
   );
 }
 
+/** One topic chip — mono, tabular-nums, accent when active (Folio `f2chip`). */
+function TopicChip({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`receipt browse-chip${active ? " on" : ""}`}
+      style={{
+        fontSize: 11.5,
+        padding: "4px 9px",
+        borderRadius: 6,
+        transition: "all .15s",
+        fontVariantNumeric: "tabular-nums",
+        border: `1px solid ${active ? "var(--accent)" : "var(--rule)"}`,
+        background: active ? "var(--accent-soft)" : "transparent",
+        color: active ? "var(--accent)" : "var(--muted)",
+      }}
+    >
+      #{label} <span style={{ opacity: 0.6 }}>{count}</span>
+    </button>
+  );
+}
+
 export function BrowseClient({
   myHandle,
   activeScope,
@@ -212,6 +274,8 @@ export function BrowseClient({
   initialDiscussionStats,
   pageSize,
   initialTag,
+  tenderAgents,
+  lastTended,
 }: BrowseClientProps) {
   // The active vault id (if the lens is a vault scope) and whether it's one of
   // the viewer's OWN vaults — only then do rows get a per-row Remove control.
@@ -318,9 +382,11 @@ export function BrowseClient({
   return (
     <div className="fade">
       <section className="shell" style={{ paddingTop: 64 }}>
-        <p className="fmark" style={{ marginBottom: 20 }}>
+        <p className="fmark" style={{ marginBottom: 18 }}>
           {activeVault
-            ? `vault · ${activeVault.visibility}`
+            ? activeVault.visibility === "private"
+              ? "vault · private — visible only to you"
+              : "vault · public"
             : "the commons · public"}
         </p>
         <div
@@ -334,7 +400,12 @@ export function BrowseClient({
         >
           <h1
             className="display"
-            style={{ fontSize: "clamp(38px,5vw,62px)", margin: 0 }}
+            style={{
+              fontSize: "clamp(38px,5vw,52px)",
+              margin: 0,
+              letterSpacing: "-.026em",
+              lineHeight: 1.05,
+            }}
           >
             {activeVault ? activeVault.name : "Browse the commons"}
           </h1>
@@ -346,6 +417,7 @@ export function BrowseClient({
               margin: 0,
               paddingBottom: 8,
               whiteSpace: "nowrap",
+              fontVariantNumeric: "tabular-nums",
             }}
           >
             <span style={{ color: "var(--ink)", fontSize: 15 }}>{total}</span>{" "}
@@ -366,7 +438,7 @@ export function BrowseClient({
           }}
         >
           <span style={{ color: "var(--muted)" }}>
-            <Icon.search width="19" height="19" />
+            <Icon.search width="16" height="16" />
           </span>
           <input
             value={q}
@@ -429,13 +501,15 @@ export function BrowseClient({
                   { scope: "all", label: "Public", active: !activeVaultId },
                   ...myVaults.map((v) => ({
                     scope: `vault:${v.id}`,
-                    label: v.name,
+                    label:
+                      v.visibility === "private" ? `${v.name} · private` : v.name,
                     active: activeVaultId === v.id,
                   })),
                 ].map((o) => (
                   <Link
                     key={o.scope}
                     href={lensHref(o.scope)}
+                    className={`browse-pill${o.active ? " on" : ""}`}
                     style={{
                       fontSize: 13,
                       padding: "5px 12px",
@@ -454,7 +528,7 @@ export function BrowseClient({
             </div>
           )}
 
-          <div className="stack" style={{ gap: 6 }}>
+          <div className="stack" style={{ gap: 9 }}>
             <FilterRow
               label="sort by"
               value={sort}
@@ -480,30 +554,74 @@ export function BrowseClient({
             <div className="stack" style={{ gap: 9 }}>
               <span className="fmark">topics</span>
               <div className="row" style={{ gap: 7, flexWrap: "wrap" }}>
-                {initialTags.map(([t, n]) => {
-                  const active = tag === t;
-                  return (
-                    <button
-                      key={t}
-                      onClick={() => onTagChange(active ? null : t)}
-                      className="receipt"
-                      style={{
-                        fontSize: 11.5,
-                        padding: "4px 9px",
-                        borderRadius: 6,
-                        transition: "all .15s",
-                        border: `1px solid ${active ? "var(--accent)" : "var(--rule)"}`,
-                        background: active ? "var(--accent-soft)" : "transparent",
-                        color: active ? "var(--accent)" : "var(--muted)",
-                      }}
-                    >
-                      #{t} <span style={{ opacity: 0.6 }}>{n}</span>
-                    </button>
-                  );
-                })}
+                {/* The "#all" chip is rendered statically (not inferred from a
+                    tag string) so a real tag literally named "all" can never
+                    collide with it — no duplicate keys, no hijacked filter. */}
+                <TopicChip
+                  label="all"
+                  count={initialTotal}
+                  active={tag === null}
+                  onClick={() => onTagChange(null)}
+                />
+                {initialTags.map(([t, n]) => (
+                  <TopicChip
+                    key={t}
+                    label={t}
+                    count={n}
+                    active={tag === t}
+                    onClick={() => onTagChange(tag === t ? null : t)}
+                  />
+                ))}
               </div>
             </div>
           )}
+
+          {/* The tender — yoyo stewards the rail: one appearance per surface,
+              always next to a receipt (design 2a / yoyo usage rules). */}
+          <div
+            style={{
+              borderTop: "1px solid var(--rule)",
+              paddingTop: 16,
+              display: "flex",
+              gap: 10,
+              alignItems: "flex-start",
+            }}
+          >
+            <Image
+              src="/yoyo.png"
+              alt="yoyo, the steward octopus"
+              width={26}
+              height={23}
+              style={{ width: 26, height: "auto", flex: "none", marginTop: 1 }}
+            />
+            <span className="stack" style={{ gap: 4 }}>
+              <span
+                className="receipt"
+                style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.45 }}
+              >
+                tended by yoyo{tenderAgents > 0 ? ` + ${tenderAgents} agents` : ""}
+              </span>
+              {lastTended && (
+                <span className="row" style={{ gap: 6, alignItems: "center" }}>
+                  <span
+                    className="pulse"
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: "50%",
+                      background: "var(--accent)",
+                    }}
+                  />
+                  <span
+                    className="receipt"
+                    style={{ fontSize: 10.5, color: "var(--faint)" }}
+                  >
+                    last sweep {formatRelativeTime(lastTended)}
+                  </span>
+                </span>
+              )}
+            </span>
+          </div>
         </aside>
 
         {/* Results */}
@@ -576,103 +694,123 @@ export function BrowseClient({
             </div>
           )}
           {results.length === 0 ? (
-            <div style={{ padding: "60px 0", textAlign: "center" }}>
-              <p style={{ fontSize: 22, color: "var(--ink-2)" }}>
-                Nothing in the commons matches.
+            <div
+              style={{
+                borderTop: "1px solid var(--rule)",
+                padding: "52px 0",
+                textAlign: "center",
+              }}
+            >
+              <Image
+                src="/yoyo.png"
+                alt="yoyo, the steward octopus"
+                width={76}
+                height={67}
+                style={{
+                  width: 76,
+                  height: "auto",
+                  margin: "0 auto 14px",
+                  display: "block",
+                }}
+              />
+              <p style={{ margin: 0, fontSize: 22, color: "var(--ink-2)" }}>
+                Nothing in this lens matches.
               </p>
-              <p style={{ color: "var(--muted)", fontSize: 14 }}>
-                Loosen a filter, or{" "}
+              <p style={{ margin: "8px 0 0", color: "var(--muted)", fontSize: 14 }}>
+                yoyo hasn&apos;t filed this one yet — loosen a filter, or{" "}
                 <Link
                   href="/ingest"
                   style={{
-                    color: "var(--accent)",
+                    color: "inherit",
                     borderBottom: "1px solid var(--accent-soft)",
                     textDecoration: "none",
                   }}
                 >
-                  ingest a new source
-                </Link>
-                .
+                  ingest a source
+                </Link>{" "}
+                and it will.
               </p>
             </div>
           ) : (
-            <>
-              <ul
-                style={{
-                  listStyle: "none",
-                  margin: 0,
-                  padding: 0,
-                  borderTop: "1px solid var(--rule)",
-                  opacity: loading ? 0.55 : 1,
-                  transition: "opacity .15s",
-                }}
-              >
-                {results.map((p) => (
-                  <PageRow
-                    key={p.slug}
-                    page={p}
-                    discussion={discussionStats?.[p.slug]}
-                    removeVaultId={ownVaultLens ? ownVaultLens.id : undefined}
-                  />
-                ))}
-              </ul>
-
-              {totalPages > 1 && (
-                <div
-                  className="row"
-                  style={{
-                    gap: 16,
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    paddingTop: 26,
-                    marginTop: 8,
-                    borderTop: "1px solid var(--rule)",
-                  }}
-                >
-                  <button
-                    type="button"
-                    disabled={page <= 1 || loading}
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    className="receipt"
-                    style={{
-                      fontSize: 13,
-                      padding: "6px 14px",
-                      borderRadius: 999,
-                      border: "1px solid var(--rule)",
-                      background: "transparent",
-                      color: page <= 1 ? "var(--faint)" : "var(--ink-2)",
-                      cursor: page <= 1 ? "default" : "pointer",
-                    }}
-                  >
-                    ← Prev
-                  </button>
-                  <span
-                    className="receipt"
-                    style={{ fontSize: 12.5, color: "var(--muted)" }}
-                  >
-                    {from}–{to} of {total} · page {page} of {totalPages}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={page >= totalPages || loading}
-                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                    className="receipt"
-                    style={{
-                      fontSize: 13,
-                      padding: "6px 14px",
-                      borderRadius: 999,
-                      border: "1px solid var(--rule)",
-                      background: "transparent",
-                      color: page >= totalPages ? "var(--faint)" : "var(--ink-2)",
-                      cursor: page >= totalPages ? "default" : "pointer",
-                    }}
-                  >
-                    Next →
-                  </button>
-                </div>
-              )}
-            </>
+            <ul
+              style={{
+                listStyle: "none",
+                margin: 0,
+                padding: 0,
+                borderTop: "1px solid var(--rule)",
+                opacity: loading ? 0.55 : 1,
+                transition: "opacity .15s",
+              }}
+            >
+              {results.map((p) => (
+                <PageRow
+                  key={p.slug}
+                  page={p}
+                  discussion={discussionStats?.[p.slug]}
+                  removeVaultId={ownVaultLens ? ownVaultLens.id : undefined}
+                />
+              ))}
+            </ul>
           )}
+
+          {/* Pagination sits OUTSIDE the empty-state conditional (design 2a):
+              the row is always present, inert at page 1 of 1. */}
+          <div
+            className="row"
+            style={{
+              gap: 16,
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: "18px 0 6px",
+              marginTop: 8,
+              borderTop: "1px solid var(--rule)",
+            }}
+          >
+            <button
+              type="button"
+              disabled={page <= 1 || loading}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="receipt"
+              style={{
+                fontSize: 13,
+                padding: "6px 14px",
+                borderRadius: 999,
+                border: "1px solid var(--rule)",
+                background: "transparent",
+                color: page <= 1 ? "var(--faint)" : "var(--ink-2)",
+                cursor: page <= 1 ? "default" : "pointer",
+              }}
+            >
+              ← Prev
+            </button>
+            <span
+              className="receipt"
+              style={{
+                fontSize: 12.5,
+                color: "var(--muted)",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {from}–{to} of {total} · page {page} of {totalPages}
+            </span>
+            <button
+              type="button"
+              disabled={page >= totalPages || loading}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className="receipt"
+              style={{
+                fontSize: 13,
+                padding: "6px 14px",
+                borderRadius: 999,
+                border: "1px solid var(--rule)",
+                background: "transparent",
+                color: page >= totalPages ? "var(--faint)" : "var(--ink-2)",
+                cursor: page >= totalPages ? "default" : "pointer",
+              }}
+            >
+              Next →
+            </button>
+          </div>
         </div>
       </section>
     </div>
