@@ -85,7 +85,7 @@ jobs:
       - name: Seed yopedia
         env:
           YOPEDIA_SERVICE_TOKEN: ${{ secrets.YOPEDIA_SERVICE_TOKEN }}
-          YOPEDIA_URL: ${{ vars.YOPEDIA_URL || 'https://yopedia.yuanhao-li.workers.dev' }}
+          YOPEDIA_URL: ${{ vars.YOPEDIA_URL || 'https://yopedia.christianlee-flightwall.workers.dev' }}
         run: |
           set -euo pipefail
           if [ -z "${YOPEDIA_SERVICE_TOKEN:-}" ]; then

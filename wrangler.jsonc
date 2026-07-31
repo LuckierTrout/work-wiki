@@ -14,7 +14,7 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "yopedia",
 	"main": ".open-next/worker.js",
-	"compatibility_date": "2025-01-01",
+	"compatibility_date": "2026-07-31",
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
@@ -39,7 +39,7 @@
 	"kv_namespaces": [
 		{
 			"binding": "YOPEDIA_CONFIG",
-			"id": "31e48c3fc033443788f1d3fe130e6266"
+			"id": "874e4a8165ff4725ad24b4dfd62d479b"
 		}
 	],
 	// --- Vectorize: Semantic search embeddings (optional) ---
@@ -80,7 +80,7 @@
 	// deterministic janitorial fixes). Anything other than "on" = dry-run.
 	// See workers/task-consumer/README.md.
 	"vars": {
-		"NEXT_PUBLIC_OWNER_HANDLE": "yuanhao",
+		"NEXT_PUBLIC_OWNER_HANDLE": "LuckierTrout",
 		"AUTONOMOUS_MAINTENANCE": "on"
 	}
 }
