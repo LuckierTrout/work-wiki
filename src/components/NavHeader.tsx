@@ -164,18 +164,18 @@ export function NavHeader() {
                       href="/agents"
                     />
                     {isOwner && (
-                      <>
-                        <UserButton.Link
-                          label="Lint"
-                          labelIcon={<span aria-hidden>✓</span>}
-                          href="/lint"
-                        />
-                        <UserButton.Link
-                          label="Settings"
-                          labelIcon={<span aria-hidden>⚙️</span>}
-                          href="/settings"
-                        />
-                      </>
+                      <UserButton.Link
+                        label="Lint"
+                        labelIcon={<span aria-hidden>✓</span>}
+                        href="/lint"
+                      />
+                    )}
+                    {isOwner && (
+                      <UserButton.Link
+                        label="Settings"
+                        labelIcon={<span aria-hidden>⚙️</span>}
+                        href="/settings"
+                      />
                     )}
                   </UserButton.MenuItems>
                 }
