@@ -99,7 +99,8 @@ export function EmailIngestSettings() {
     window.setTimeout(() => setCopied(false), 1600);
   }
 
-  const ready = Boolean(settings?.routingReady && settings.enabled);
+  const routingConnected = Boolean(settings?.routingReady);
+  const ready = Boolean(routingConnected && settings?.enabled);
 
   return (
     <section className="mt-12 border-t border-foreground/10 pt-10" aria-labelledby="email-ingest-heading">
@@ -121,7 +122,13 @@ export function EmailIngestSettings() {
             borderColor: ready ? "color-mix(in srgb, var(--accent) 35%, transparent)" : "var(--rule-strong)",
           }}
         >
-          {loading ? "checking…" : ready ? "accepting mail" : "not connected"}
+          {loading
+            ? "checking…"
+            : ready
+              ? "accepting mail"
+              : routingConnected
+                ? "connected · paused"
+                : "not connected"}
         </span>
       </div>
 
