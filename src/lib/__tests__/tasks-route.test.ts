@@ -135,6 +135,33 @@ describe("POST /api/tasks/run", () => {
     );
   });
 
+  it("threads email provenance through the queued text ingest", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngest.mockResolvedValue({ primarySlug: "emailed-note" } as any);
+    const res = await run({
+      kind: "ingest",
+      content: "Email body",
+      title: "Emailed note",
+      owner: "alice",
+      author: "alice",
+      triggeredBy: "alice",
+      sourceType: "email",
+      email: {
+        from: "alice@example.com",
+        to: "ingest@example.com",
+        subject: "Emailed note",
+        messageId: "<email@example.com>",
+        attachmentNames: [],
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(mockedIngest).toHaveBeenCalledWith(
+      "Emailed note",
+      "Email body",
+      expect.objectContaining({ sourceType: "email", owner: "alice" }),
+    );
+  });
+
   it("attaches the page to the agent's learnings on success (learningFor)", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockedIngest.mockResolvedValue({ primarySlug: "k" } as any);

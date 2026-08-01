@@ -134,6 +134,30 @@ describe("parseTask", () => {
     expect(bad).not.toHaveProperty("learningFor");
   });
 
+  it("preserves complete email metadata and rejects incoherent email tasks", () => {
+    const email = {
+      from: "alice@example.com",
+      to: "ingest@example.com",
+      subject: "Quarterly notes",
+      messageId: "<mail-1@example.com>",
+      attachmentNames: ["deck.pptx"],
+    };
+    expect(
+      parseTask({
+        kind: "ingest",
+        content: "Notes",
+        sourceType: "email",
+        email,
+      }),
+    ).toMatchObject({ sourceType: "email", email });
+    expect(
+      parseTask({ kind: "ingest", content: "Notes", sourceType: "email" }),
+    ).toBeNull();
+    expect(
+      parseTask({ kind: "ingest", content: "Notes", sourceType: "text", email }),
+    ).toBeNull();
+  });
+
   it("rejects a malformed staged descriptor", () => {
     // Empty key, bad kind, or non-object → staged dropped; with no url/content → null.
     expect(parseTask({ kind: "ingest", staged: { key: "", kind: "pdf" } })).toBeNull();

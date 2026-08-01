@@ -8,6 +8,7 @@ import {
   updateIngestJob,
   effectiveStatus,
   purgeStaleIngestJobs,
+  listIngestJobs,
   INGEST_JOB_STALE_MS,
   INGEST_JOB_GC_TTL_MS,
 } from "../ingest-jobs";
@@ -68,6 +69,47 @@ describe("ingest-jobs", () => {
 
   it("rejects a path-traversing job id", async () => {
     await expect(getIngestJob("../secrets")).rejects.toThrow(/invalid ingest job id/);
+  });
+
+  it("lists only one owner's email jobs, newest first", async () => {
+    await createIngestJob({
+      jobId: "email-a",
+      owner: "alice",
+      source: "email",
+      title: "First",
+      email: {
+        from: "alice@example.com",
+        to: "ingest@example.com",
+        subject: "First",
+        messageId: "<a@example.com>",
+        attachmentNames: [],
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await createIngestJob({
+      jobId: "email-b",
+      owner: "alice",
+      source: "email",
+      title: "Second",
+      email: {
+        from: "alice@example.com",
+        to: "ingest@example.com",
+        subject: "Second",
+        messageId: "<b@example.com>",
+        attachmentNames: ["notes.pdf"],
+      },
+    });
+    await createIngestJob({ jobId: "web", owner: "alice", title: "Browser" });
+    await createIngestJob({
+      jobId: "email-other",
+      owner: "bob",
+      source: "email",
+      title: "Private sender detail",
+    });
+
+    const jobs = await listIngestJobs({ owner: "alice", source: "email" });
+    expect(jobs.map((job) => job.jobId)).toEqual(["email-b", "email-a"]);
+    expect(jobs[0].email?.attachmentNames).toEqual(["notes.pdf"]);
   });
 });
 

@@ -23,6 +23,7 @@ const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 //   - /api/ingest/x-mention       — Clerk session OR the system service token
 //   - /api/tasks/run              — the system service token ONLY (the task-
 //                                   consumer worker; has no Clerk session)
+//   - /api/email/ingest           — the system service token ONLY (Email Worker)
 //   - /api/tasks/scan            — the system service token ONLY (the cron)
 //   - /api/wiki                   — Clerk session OR the system service token
 //   - /api/wiki/<slug>            — Clerk session OR the system service token
@@ -40,6 +41,7 @@ const IN_ROUTE_AUTH_PATHS = new Set([
   "/api/ingest/pdf",
   "/api/ingest/reingest",
   "/api/ingest/x-mention",
+  "/api/email/ingest",
   // Agent task-queue executor + maintenance scanner: authenticated in-route by
   // the service token (getServicePrincipal); the sole callers are the
   // task-consumer worker (queue handler + cron), which has no Clerk session.

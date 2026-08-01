@@ -16,7 +16,18 @@
 
 interface Env {
   YOPEDIA_URL?: string;
+  YOPEDIA_SITE_URL?: string;
   YOPEDIA_SERVICE_TOKEN?: string;
+  YOPEDIA_EMAIL_FROM?: string;
+  YOPEDIA?: { fetch(request: Request): Promise<Response> };
+  EMAIL?: {
+    send(message: {
+      from: string;
+      to: string;
+      subject: string;
+      text: string;
+    }): Promise<unknown>;
+  };
 }
 
 // Minimal Cloudflare Queues consumer types (avoid pulling @cloudflare/workers-types).
@@ -36,20 +47,26 @@ interface ScheduledEvent {
 }
 
 async function runTask(
-  base: string,
-  token: string,
+  env: Env,
   message: QueueMessage,
 ): Promise<void> {
+  const base = (env.YOPEDIA_URL ?? "").replace(/\/+$/, "");
+  const token = env.YOPEDIA_SERVICE_TOKEN!;
+  const requestInit: RequestInit = {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(message.body),
+  };
   let res: Response;
   try {
-    res = await fetch(`${base}/api/tasks/run`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(message.body),
-    });
+    res = env.YOPEDIA
+      ? await env.YOPEDIA.fetch(
+          new Request("https://yopedia.internal/api/tasks/run", requestInit),
+        )
+      : await fetch(`${base}/api/tasks/run`, requestInit);
   } catch (err) {
     console.error(`task-consumer: fetch failed for ${message.id} — retry`, err);
     message.retry();
@@ -57,6 +74,12 @@ async function runTask(
   }
 
   if (res.status >= 200 && res.status < 300) {
+    const result = (await res.json().catch(() => null)) as
+      | Record<string, unknown>
+      | null;
+    await notifyEmailCompletion(env, message.body, result).catch((error) =>
+      console.error(`task-consumer: completion email failed for ${message.id}`, error),
+    );
     message.ack();
     return;
   }
@@ -72,11 +95,57 @@ async function runTask(
   message.retry();
 }
 
+function emailMetadata(body: unknown): {
+  from: string;
+  subject: string;
+  attachmentNames: string[];
+} | null {
+  if (!body || typeof body !== "object") return null;
+  const email = (body as Record<string, unknown>).email;
+  if (!email || typeof email !== "object") return null;
+  const value = email as Record<string, unknown>;
+  if (typeof value.from !== "string" || typeof value.subject !== "string") {
+    return null;
+  }
+  return {
+    from: value.from,
+    subject: value.subject,
+    attachmentNames: Array.isArray(value.attachmentNames)
+      ? value.attachmentNames.filter(
+          (name): name is string => typeof name === "string",
+        )
+      : [],
+  };
+}
+
+async function notifyEmailCompletion(
+  env: Env,
+  body: unknown,
+  result: Record<string, unknown> | null,
+): Promise<void> {
+  const email = emailMetadata(body);
+  const from = env.YOPEDIA_EMAIL_FROM;
+  const slug = typeof result?.slug === "string" ? result.slug : "";
+  if (!email || !env.EMAIL || !from || !slug) return;
+
+  const site = (env.YOPEDIA_SITE_URL || env.YOPEDIA_URL || "").replace(/\/+$/, "");
+  const pageUrl = site ? `${site}/wiki/${encodeURIComponent(slug)}` : slug;
+  const attachmentNote = email.attachmentNames.length
+    ? `\n\n${email.attachmentNames.length} attachment${email.attachmentNames.length === 1 ? " was" : "s were"} recorded but not processed in this phase.`
+    : "";
+  await env.EMAIL.send({
+    from,
+    to: email.from,
+    subject: `Ready: ${email.subject}`,
+    text: `Yopedia finished processing your email.\n\n${pageUrl}${attachmentNote}`,
+  });
+}
+
 export default {
   async queue(batch: MessageBatch, env: Env): Promise<void> {
-    const base = (env.YOPEDIA_URL ?? "").replace(/\/+$/, "");
     const token = env.YOPEDIA_SERVICE_TOKEN;
-    if (!base || !token) {
+    const base = (env.YOPEDIA_URL ?? "").replace(/\/+$/, "");
+    if ((!env.YOPEDIA && !base) || !token) {
       // Misconfiguration — retry the whole batch so nothing is lost.
       console.error(
         "task-consumer: missing YOPEDIA_URL or YOPEDIA_SERVICE_TOKEN — retrying batch",
@@ -88,7 +157,7 @@ export default {
     // Sequential (not Promise.all): each task triggers an LLM call in the main
     // app; serial processing keeps us within provider rate limits.
     for (const message of batch.messages) {
-      await runTask(base, token, message);
+      await runTask(env, message);
     }
   },
 
@@ -98,15 +167,20 @@ export default {
   async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
     const base = (env.YOPEDIA_URL ?? "").replace(/\/+$/, "");
     const token = env.YOPEDIA_SERVICE_TOKEN;
-    if (!base || !token) {
-      console.error("task-consumer cron: missing YOPEDIA_URL or YOPEDIA_SERVICE_TOKEN");
+    if ((!env.YOPEDIA && !base) || !token) {
+      console.error("task-consumer cron: missing YOPEDIA binding/URL or service token");
       return;
     }
     try {
-      const res = await fetch(`${base}/api/tasks/scan`, {
+      const requestInit: RequestInit = {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
-      });
+      };
+      const res = env.YOPEDIA
+        ? await env.YOPEDIA.fetch(
+            new Request("https://yopedia.internal/api/tasks/scan", requestInit),
+          )
+        : await fetch(`${base}/api/tasks/scan`, requestInit);
       const body = (await res.text().catch(() => "")).slice(0, 400);
       console.log(`task-consumer cron: scan → ${res.status} ${body}`);
     } catch (err) {

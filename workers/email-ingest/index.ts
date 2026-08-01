@@ -1,0 +1,239 @@
+import PostalMime from "postal-mime";
+
+interface KVNamespace {
+  get(key: string, type: "json"): Promise<unknown>;
+}
+
+interface Fetcher {
+  fetch(request: Request): Promise<Response>;
+}
+
+interface EmailIngestConfig {
+  enabled?: boolean;
+  inboundAddress?: string;
+  allowedSenders?: string[];
+}
+
+interface ForwardableEmailMessage {
+  readonly from: string;
+  readonly to: string;
+  readonly headers: Headers;
+  readonly raw: ReadableStream<Uint8Array>;
+  readonly rawSize: number;
+  setReject(reason: string): void;
+  reply(builder: {
+    from: string;
+    subject: string;
+    text: string;
+  }): Promise<unknown>;
+}
+
+interface Env {
+  YOPEDIA_CONFIG: KVNamespace;
+  YOPEDIA: Fetcher;
+  YOPEDIA_SERVICE_TOKEN?: string;
+  YOPEDIA_SITE_URL?: string;
+}
+
+const CONFIG_KEY = "_idx:email-ingest-config";
+const MAX_RAW_EMAIL_BYTES = 10 * 1024 * 1024;
+const MAX_EMAIL_CONTENT_CHARS = 100_000;
+const TRUNCATION_MARKER = "\n\n[Email body truncated]";
+
+function normalizeAddress(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function htmlToText(html: string): string {
+  return html
+    .replace(/<\s*(script|style)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, " ")
+    .replace(/<\s*br\s*\/?\s*>/gi, "\n")
+    .replace(/<\s*\/\s*(p|div|li|h[1-6])\s*>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function reply(
+  message: ForwardableEmailMessage,
+  subject: string,
+  text: string,
+): Promise<void> {
+  try {
+    await message.reply({
+      from: message.to,
+      subject: `Re: ${subject}`,
+      text,
+    });
+  } catch (error) {
+    console.error("email-ingest: reply failed", error);
+  }
+}
+
+function safeError(value: unknown): string {
+  if (!value || typeof value !== "object") return "Yopedia could not accept this email.";
+  const error = (value as Record<string, unknown>).error;
+  return typeof error === "string" && error.trim()
+    ? error.replace(/[\r\n]+/g, " ").slice(0, 300)
+    : "Yopedia could not accept this email.";
+}
+
+export default {
+  async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
+    const config = (await env.YOPEDIA_CONFIG.get(CONFIG_KEY, "json")) as
+      | EmailIngestConfig
+      | null;
+    if (!config?.enabled) {
+      message.setReject("Email ingestion is not enabled for this Yopedia.");
+      return;
+    }
+
+    const from = normalizeAddress(message.from);
+    const to = normalizeAddress(message.to);
+    const allowed = Array.isArray(config.allowedSenders)
+      ? config.allowedSenders.map(normalizeAddress)
+      : [];
+    if (!allowed.includes(from)) {
+      message.setReject("This sender is not approved for Yopedia ingestion.");
+      return;
+    }
+    if (config.inboundAddress && normalizeAddress(config.inboundAddress) !== to) {
+      message.setReject("This address is not configured for Yopedia ingestion.");
+      return;
+    }
+
+    const headerSubject =
+      message.headers.get("subject")?.replace(/[\r\n]+/g, " ").trim() ||
+      "Emailed note";
+    if (message.rawSize > MAX_RAW_EMAIL_BYTES) {
+      await reply(
+        message,
+        headerSubject,
+        "Yopedia did not process this message because it is larger than 10 MB. Attachment handling will be added in a later phase.",
+      );
+      return;
+    }
+
+    const serviceToken = env.YOPEDIA_SERVICE_TOKEN;
+    if (!serviceToken) {
+      console.error("email-ingest: YOPEDIA_SERVICE_TOKEN is missing");
+      await reply(
+        message,
+        headerSubject,
+        "Yopedia could not queue this email because the ingest service is not configured.",
+      );
+      return;
+    }
+
+    let parsed: Awaited<ReturnType<typeof PostalMime.parse>>;
+    try {
+      parsed = await PostalMime.parse(message.raw);
+    } catch (error) {
+      console.error("email-ingest: MIME parse failed", error);
+      await reply(
+        message,
+        headerSubject,
+        "Yopedia could not read this email. Send a new message with a plain-text or HTML body.",
+      );
+      return;
+    }
+
+    const subject =
+      parsed.subject?.replace(/[\r\n]+/g, " ").trim() || headerSubject;
+    const messageId =
+      parsed.messageId?.trim() || message.headers.get("message-id")?.trim() || "";
+    const rawContent = parsed.text?.trim() || htmlToText(parsed.html || "");
+    if (!messageId) {
+      await reply(
+        message,
+        subject,
+        "Yopedia could not process this message because it has no Message-ID. Please resend it from a standard email client.",
+      );
+      return;
+    }
+    if (!rawContent) {
+      const attachmentNote = parsed.attachments.length
+        ? " Attachment handling will be added in a later phase."
+        : "";
+      await reply(
+        message,
+        subject,
+        `Yopedia found no email text to ingest.${attachmentNote}`,
+      );
+      return;
+    }
+
+    const content =
+      rawContent.length > MAX_EMAIL_CONTENT_CHARS
+        ? `${rawContent.slice(0, MAX_EMAIL_CONTENT_CHARS - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`
+        : rawContent;
+    const attachmentNames = parsed.attachments
+      .map((attachment) => attachment.filename || "unnamed attachment")
+      .slice(0, 20);
+
+    let response: Response;
+    try {
+      response = await env.YOPEDIA.fetch(
+        new Request("https://yopedia.internal/api/email/ingest", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${serviceToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            from,
+            to,
+            subject,
+            messageId,
+            content,
+            attachmentNames,
+          }),
+        }),
+      );
+    } catch (error) {
+      console.error("email-ingest: service binding request failed", error);
+      await reply(
+        message,
+        subject,
+        "Yopedia could not queue this email. Please try again in a few minutes.",
+      );
+      return;
+    }
+
+    const result = (await response.json().catch(() => null)) as Record<
+      string,
+      unknown
+    > | null;
+    if (!response.ok) {
+      await reply(message, subject, safeError(result));
+      return;
+    }
+
+    const site = (env.YOPEDIA_SITE_URL || "").replace(/\/+$/, "");
+    const jobId = typeof result?.jobId === "string" ? result.jobId : "";
+    const slug = typeof result?.slug === "string" ? result.slug : "";
+    const lines = [
+      slug ? "Yopedia has already processed this email." : "Yopedia received your email and queued it for processing.",
+      jobId ? `Job: ${jobId}` : "",
+      slug && site ? `Page: ${site}/wiki/${encodeURIComponent(slug)}` : "",
+      !slug && site ? `Track it under Recent ingests: ${site}/ingest` : "",
+      attachmentNames.length
+        ? `${attachmentNames.length} attachment${attachmentNames.length === 1 ? " was" : "s were"} recorded but not processed in this phase.`
+        : "",
+    ].filter(Boolean);
+    await reply(message, subject, lines.join("\n\n"));
+  },
+
+  async fetch(): Promise<Response> {
+    return new Response("yopedia email-ingest ok\n", {
+      headers: { "content-type": "text/plain" },
+    });
+  },
+};

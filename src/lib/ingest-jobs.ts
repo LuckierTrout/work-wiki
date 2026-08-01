@@ -9,6 +9,7 @@
 import { getStorage } from "./storage";
 import { isEnoent } from "./errors";
 import { logger } from "./logger";
+import type { EmailIngestMetadata } from "./email-ingest";
 
 /** Default TTL for terminal ingest jobs before GC deletes the file (7 days). */
 export const INGEST_JOB_GC_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -57,6 +58,10 @@ export interface IngestJob {
   error?: string;
   /** Display title for the recent-ingests list (best-effort). */
   title?: string;
+  /** Submission channel. Absent on older/browser-created jobs. */
+  source?: "email";
+  /** Owner-only inbound-email details shown in Recent ingests. */
+  email?: EmailIngestMetadata;
   createdAt: string;
   updatedAt: string;
 }
@@ -76,6 +81,8 @@ export async function createIngestJob(input: {
   url?: string;
   owner: string;
   title?: string;
+  source?: "email";
+  email?: EmailIngestMetadata;
 }): Promise<IngestJob> {
   const now = new Date().toISOString();
   const job: IngestJob = {
@@ -83,12 +90,45 @@ export async function createIngestJob(input: {
     ...(input.url ? { url: input.url } : {}),
     owner: input.owner,
     title: input.title,
+    ...(input.source ? { source: input.source } : {}),
+    ...(input.email ? { email: input.email } : {}),
     status: "queued",
     createdAt: now,
     updatedAt: now,
   };
   await getStorage().writeFile(relPathFor(input.jobId), JSON.stringify(job));
   return job;
+}
+
+/**
+ * List tracked jobs for one owner, newest first. Job files are already bounded
+ * by the seven-day GC, and malformed/vanished entries are skipped fail-soft.
+ */
+export async function listIngestJobs(input: {
+  owner: string;
+  source?: "email";
+  limit?: number;
+}): Promise<IngestJob[]> {
+  const entries = await getStorage().listFiles(JOBS_PREFIX);
+  const jobs: IngestJob[] = [];
+
+  for (const entry of entries) {
+    if (entry.isDirectory || !entry.name.endsWith(".json")) continue;
+    try {
+      const raw = await getStorage().readFile(`${JOBS_PREFIX}/${entry.name}`);
+      const job = JSON.parse(raw) as IngestJob;
+      if (job.owner !== input.owner) continue;
+      if (input.source && job.source !== input.source) continue;
+      jobs.push(job);
+    } catch (error) {
+      if (!isEnoent(error)) {
+        logger.warn("ingest-jobs", `list: failed to read ${entry.name}`, error);
+      }
+    }
+  }
+
+  jobs.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  return jobs.slice(0, Math.max(1, input.limit ?? 20));
 }
 
 /** Read a job, or `null` if it doesn't exist. */

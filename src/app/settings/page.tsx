@@ -4,6 +4,7 @@ import Link from "next/link";
 import { providerLabel } from "@/lib/providers";
 import { ProviderForm } from "@/components/ProviderForm";
 import { EmbeddingSettings } from "@/components/EmbeddingSettings";
+import { EmailIngestSettings } from "@/components/EmailIngestSettings";
 import { useSettings } from "@/hooks/useSettings";
 
 // ---------------------------------------------------------------------------
@@ -72,7 +73,7 @@ export default function SettingsPage() {
         Settings
       </h1>
       <p className="mt-2 text-foreground/60">
-        View your LLM provider status and model preferences.
+        Manage the intelligence and delivery routes behind this Yopedia.
       </p>
 
       {/* ---- Status indicator ---- */}
@@ -184,6 +185,8 @@ export default function SettingsPage() {
         )}
       </form>
       </fieldset>
+
+      <EmailIngestSettings />
     </main>
   );
 }

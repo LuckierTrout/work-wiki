@@ -15,6 +15,7 @@
 
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { logger } from "./logger";
+import type { EmailIngestMetadata } from "./email-ingest";
 
 /**
  * A unit of asynchronous agent work. Discriminated by `kind` so the executor
@@ -73,7 +74,10 @@ export type Task =
        *  x-mention/url/text); when absent the pipeline derives it. Intentionally a
        *  SUBSET of `IngestOptions["sourceType"]` — image/pdf/youtube are set
        *  internally by the ingest functions, never carried over the queue. */
-      sourceType?: "x-mention" | "url" | "text";
+      sourceType?: "x-mention" | "url" | "text" | "email";
+      /** Inbound-email metadata used for owner-only activity and completion
+       *  notifications. Attachment bytes are intentionally not carried. */
+      email?: EmailIngestMetadata;
       /** Agent id to attach the resulting page to as one of its learning pages
        *  (agent-scoped ingests). */
       learningFor?: string;
@@ -214,6 +218,35 @@ export function parseTask(body: unknown): Task | null {
         Array.isArray(t.tags) && t.tags.every((x) => typeof x === "string")
           ? (t.tags as string[])
           : undefined;
+      let email: EmailIngestMetadata | undefined;
+      if (t.email && typeof t.email === "object") {
+        const e = t.email as Record<string, unknown>;
+        if (
+          typeof e.from !== "string" ||
+          typeof e.to !== "string" ||
+          typeof e.subject !== "string" ||
+          typeof e.messageId !== "string" ||
+          !Array.isArray(e.attachmentNames) ||
+          !e.attachmentNames.every((name) => typeof name === "string")
+        ) {
+          return null;
+        }
+        email = {
+          from: e.from,
+          to: e.to,
+          subject: e.subject,
+          messageId: e.messageId,
+          attachmentNames: e.attachmentNames as string[],
+        };
+      }
+      const sourceType =
+        t.sourceType === "x-mention" ||
+        t.sourceType === "url" ||
+        t.sourceType === "text" ||
+        t.sourceType === "email"
+          ? t.sourceType
+          : undefined;
+      if ((sourceType === "email") !== Boolean(email)) return null;
       return {
         kind: "ingest",
         ...(hasUrl ? { url: t.url as string } : {}),
@@ -237,11 +270,8 @@ export function parseTask(body: unknown): Task | null {
         ...(typeof t.sourceUrl === "string" && t.sourceUrl.trim() !== ""
           ? { sourceUrl: t.sourceUrl }
           : {}),
-        ...(t.sourceType === "x-mention" ||
-        t.sourceType === "url" ||
-        t.sourceType === "text"
-          ? { sourceType: t.sourceType }
-          : {}),
+        ...(sourceType ? { sourceType } : {}),
+        ...(email ? { email } : {}),
         ...(typeof t.learningFor === "string" && t.learningFor.trim() !== ""
           ? { learningFor: t.learningFor }
           : {}),

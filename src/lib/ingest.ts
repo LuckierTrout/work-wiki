@@ -71,6 +71,7 @@ const SOURCE_TYPE_WEIGHT: Record<SourceEntry["type"], number> = {
   url: 0.6,
   youtube: 0.55,
   image: 0.5,
+  email: 0.5,
   text: 0.5,
   "x-mention": 0.5,
 };
@@ -1204,7 +1205,7 @@ export interface IngestOptions {
    * default `"url"` / `"text"` heuristic when building the `sources[]` entry.
    * Used by `ingestXMention()` to set `"x-mention"` provenance.
    */
-  sourceType?: "url" | "text" | "x-mention" | "image" | "pdf" | "youtube";
+  sourceType?: "url" | "text" | "x-mention" | "image" | "pdf" | "youtube" | "email";
   /**
    * Who triggered the ingest (user handle or agent ID). Defaults to `"system"`.
    * Passed through to the `triggered_by` field on the `SourceEntry`.
@@ -1506,7 +1507,9 @@ export async function ingest(
     const dupSlug = await resolveContentHash(hash);
     if (dupSlug) {
       const result = await attachIngestTrigger(dupSlug, {
-        url: options?.sourceUrl ?? "text-paste",
+        url:
+          options?.sourceUrl ??
+          (options?.sourceType === "email" ? "email" : "text-paste"),
         type: options?.sourceType ?? (options?.sourceUrl ? "url" : "text"),
         triggeredBy: options?.triggeredBy,
         actorOwner: owner,
@@ -1665,9 +1668,12 @@ export async function ingest(
   // content instead, since they share the "text-paste" placeholder url.
   const sourceType = options?.sourceType
     ?? (options?.sourceUrl ? "url" : "text");
-  const sourceUrl = options?.sourceUrl ?? "text-paste";
+  const sourceUrl =
+    options?.sourceUrl ?? (sourceType === "email" ? "email" : "text-paste");
   const rawId = contentHash(
-    sourceUrl !== "text-paste" && sourceUrl !== "upload" ? sourceUrl : content,
+    sourceUrl !== "text-paste" && sourceUrl !== "upload" && sourceUrl !== "email"
+      ? sourceUrl
+      : content,
   );
   await saveRawSourceFor(slug, rawId, content);
   const sourceEntry = buildSourceEntry(sourceUrl, sourceType, options?.triggeredBy, rawId);

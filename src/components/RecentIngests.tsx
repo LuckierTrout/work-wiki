@@ -22,7 +22,22 @@ interface LedgerEntry {
   primary_slug: string;
   finished_at: string;
   status: string;
+  source_type: string;
   deduped?: boolean;
+}
+
+interface EmailJob {
+  jobId: string;
+  status: "queued" | "processing" | "done" | "failed";
+  slug?: string;
+  error?: string;
+  title?: string;
+  createdAt: string;
+  email?: {
+    from: string;
+    subject: string;
+    attachmentNames: string[];
+  };
 }
 
 function ago(iso: string): string {
@@ -49,6 +64,7 @@ function ago(iso: string): string {
 export function RecentIngests() {
   const [inflight, setInflight] = useState<InFlight[]>([]);
   const [history, setHistory] = useState<LedgerEntry[]>([]);
+  const [emailJobs, setEmailJobs] = useState<EmailJob[]>([]);
   const [errored, setErrored] = useState(false);
 
   useEffect(() => {
@@ -57,6 +73,7 @@ export function RecentIngests() {
     let polls = 0;
 
     async function tick() {
+      let fetchedEmailJobs: EmailJob[] = [];
       // 1. Durable server history (the source of truth).
       try {
         const res = await fetch("/api/ingest/history?limit=20");
@@ -79,7 +96,27 @@ export function RecentIngests() {
         if (!cancelled) setErrored(true);
       }
 
-      // 2. This browser's in-flight (and just-failed) jobs (live status until
+      // 2. Email-created jobs are not tied to this browser's localStorage. They
+      //    are owner-scoped on the server and carry sender/attachment metadata
+      //    that must never be exposed through the global ingest ledger.
+      try {
+        const res = await fetch("/api/ingest/jobs?source=email&limit=20");
+        if (res.ok) {
+          const data = (await res.json()) as { jobs?: EmailJob[] };
+          fetchedEmailJobs = Array.isArray(data.jobs) ? data.jobs : [];
+          if (!cancelled) {
+            setEmailJobs(fetchedEmailJobs);
+          }
+        } else if (res.status !== 401) {
+          console.warn("[recent-ingests] email jobs fetch failed:", res.status);
+          if (!cancelled) setErrored(true);
+        }
+      } catch (err) {
+        console.warn("[recent-ingests] email jobs fetch error:", err);
+        if (!cancelled) setErrored(true);
+      }
+
+      // 3. This browser's in-flight (and just-failed) jobs (live status until
       //    success lands in the ledger above).
       const ids = getRecentJobIds();
       const results = ids.length
@@ -112,6 +149,8 @@ export function RecentIngests() {
       polls += 1;
       const stillRunning = live.some(
         (j) => j.status === "queued" || j.status === "processing",
+      ) || fetchedEmailJobs.some(
+        (j) => j.status === "queued" || j.status === "processing",
       );
       if (polls < 90 && stillRunning) timer = setTimeout(tick, 4000);
     }
@@ -130,7 +169,7 @@ export function RecentIngests() {
     };
   }, []);
 
-  if (inflight.length === 0 && history.length === 0) {
+  if (inflight.length === 0 && history.length === 0 && emailJobs.length === 0) {
     if (!errored) return null;
     // A load error with nothing to show — say so rather than looking empty.
     return (
@@ -151,6 +190,61 @@ export function RecentIngests() {
         Recent ingests
       </p>
       <ul className="stack" style={{ gap: 9, listStyle: "none", margin: 0, padding: 0 }}>
+        {emailJobs.map((job) => {
+          const failed = job.status === "failed";
+          const done = job.status === "done";
+          const names = job.email?.attachmentNames ?? [];
+          return (
+            <li
+              key={job.jobId}
+              style={{
+                border: "1px solid var(--rule)",
+                borderRadius: 12,
+                padding: "10px 12px",
+                background: "color-mix(in srgb, var(--accent) 3%, transparent)",
+              }}
+            >
+              <div className="row" style={{ gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+                <span
+                  className="receipt"
+                  style={{ fontSize: 10.5, color: "var(--accent)", minWidth: 44 }}
+                >
+                  email
+                </span>
+                <span
+                  className="receipt"
+                  style={{ fontSize: 10.5, color: failed ? "var(--rust)" : "var(--muted)" }}
+                >
+                  {failed ? "failed" : done ? ago(job.createdAt) : job.status === "processing" ? "working…" : "queued"}
+                </span>
+                {done && job.slug ? (
+                  <Link href={commonsPath(job.slug)} style={{ color: "var(--accent)", fontSize: 13.5 }}>
+                    {job.email?.subject || job.title || job.slug}
+                  </Link>
+                ) : (
+                  <span style={{ fontSize: 13.5, color: "var(--ink-2)" }}>
+                    {job.email?.subject || job.title || "Emailed note"}
+                  </span>
+                )}
+                {job.email?.from && (
+                  <span className="receipt" style={{ fontSize: 10.5, color: "var(--faint)" }}>
+                    from {job.email.from}
+                  </span>
+                )}
+              </div>
+              {failed && job.error && (
+                <p className="receipt" style={{ margin: "6px 0 0 54px", fontSize: 11.5, color: "var(--rust)" }}>
+                  {job.error}
+                </p>
+              )}
+              {names.length > 0 && (
+                <p className="receipt" style={{ margin: "6px 0 0 54px", fontSize: 10.5, color: "var(--faint)" }}>
+                  {names.join(", ")} · recorded, not processed
+                </p>
+              )}
+            </li>
+          );
+        })}
         {inflight.map((j) => {
           const failed = j.status === "failed";
           return (
@@ -176,7 +270,7 @@ export function RecentIngests() {
             </li>
           );
         })}
-        {history.map((e) => (
+        {history.filter((entry) => entry.source_type !== "email").map((e) => (
           <li
             key={e.ingest_id}
             className="row"

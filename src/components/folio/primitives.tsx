@@ -131,6 +131,7 @@ export function SrcChip({ type }: { type: SourceEntry["type"] }) {
     image: "IMG",
     pdf: "PDF",
     youtube: "YT",
+    email: "MAIL",
   };
   return (
     <span
