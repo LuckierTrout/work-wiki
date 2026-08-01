@@ -81,6 +81,7 @@
 	// See workers/task-consumer/README.md.
 	"vars": {
 		"NEXT_PUBLIC_OWNER_HANDLE": "christianlee",
-		"AUTONOMOUS_MAINTENANCE": "on"
+		"AUTONOMOUS_MAINTENANCE": "on",
+		"YOPEDIA_EMAIL_ROUTING_READY": "1"
 	}
 }
