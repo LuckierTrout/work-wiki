@@ -80,7 +80,7 @@
 	// deterministic janitorial fixes). Anything other than "on" = dry-run.
 	// See workers/task-consumer/README.md.
 	"vars": {
-		"NEXT_PUBLIC_OWNER_HANDLE": "LuckierTrout",
+		"NEXT_PUBLIC_OWNER_HANDLE": "christianlee",
 		"AUTONOMOUS_MAINTENANCE": "on"
 	}
 }
