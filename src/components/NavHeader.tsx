@@ -183,31 +183,35 @@ export function NavHeader() {
             </span>
           </Show>
 
-          {/* Hamburger (mobile only) */}
-          <button
-            type="button"
-            className="btn ghost md:hidden"
-            style={{ padding: 8, borderRadius: 10, width: 38, height: 38 }}
-            onClick={() => setMobileOpen((prev) => !prev)}
-            aria-label="Toggle navigation menu"
-            aria-expanded={mobileOpen}
-          >
-            <svg
-              width="20"
-              height="20"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              viewBox="0 0 24 24"
+          {/* Hamburger (mobile only). Keep the responsive display class on a
+              wrapper: `.btn` sets display after Tailwind's utilities and would
+              otherwise override `md:hidden` at desktop widths. */}
+          <span className="md:hidden">
+            <button
+              type="button"
+              className="btn ghost"
+              style={{ padding: 8, borderRadius: 10, width: 38, height: 38 }}
+              onClick={() => setMobileOpen((prev) => !prev)}
+              aria-label="Toggle navigation menu"
+              aria-expanded={mobileOpen}
             >
-              {mobileOpen ? (
-                <path d="M6 18 18 6M6 6l12 12" />
-              ) : (
-                <path d="M4 7h16M4 12h16M4 17h16" />
-              )}
-            </svg>
-          </button>
+              <svg
+                width="20"
+                height="20"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                viewBox="0 0 24 24"
+              >
+                {mobileOpen ? (
+                  <path d="M6 18 18 6M6 6l12 12" />
+                ) : (
+                  <path d="M4 7h16M4 12h16M4 17h16" />
+                )}
+              </svg>
+            </button>
+          </span>
         </div>
       </nav>
 
