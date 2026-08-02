@@ -162,7 +162,7 @@ const CACHE_TTL_MS = 5_000;
  * The cache is populated by `loadConfig()` and `saveConfig()`. If neither
  * has been called yet, this returns `{}` (same as "file doesn't exist").
  * This is safe because:
- *   - LLM calls use env vars as the primary config source
+ *   - LLM calls await `loadConfig()` before resolving the active provider
  *   - The config file is optional — `{}` is the documented default
  *   - The app's startup sequence calls `loadConfig()` before any LLM call
  */
@@ -187,8 +187,8 @@ export function _resetConfigCache(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Detect the active provider from env vars alone (same logic as the original
- * `getProviderInfo()` in llm.ts).
+ * Detect a fallback provider from env vars alone. This is used only when the
+ * owner has not saved a provider selection yet.
  *
  * Exported so that `embeddings.ts` and `llm.ts` can reuse it rather than
  * duplicating the env-var sniffing logic.
@@ -218,16 +218,41 @@ export function detectEnvProvider(): {
   return { provider: null, apiKey: null };
 }
 
+/** Return the server-side credential for a specific provider. */
+export function apiKeyForProvider(provider: string | null): string | null {
+  switch (provider) {
+    case "anthropic":
+      return process.env.ANTHROPIC_API_KEY ?? null;
+    case "openai":
+      return process.env.OPENAI_API_KEY ?? null;
+    case "google":
+      return process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? null;
+    case "deepseek":
+      return process.env.DEEPSEEK_API_KEY ?? null;
+    case "ollama-cloud":
+      return process.env.OLLAMA_API_KEY ?? null;
+    default:
+      return null;
+  }
+}
+
+function providerIsConfigured(provider: string | null): boolean {
+  return provider === "ollama" || apiKeyForProvider(provider) !== null;
+}
+
 /**
- * Merge config file + env vars to produce the effective provider.
- * Priority: env vars > config file > defaults.
+ * Merge the owner's saved selection with server credentials.
+ * Priority: saved provider selection > env auto-detection fallback.
+ *
+ * Environment variables provide credentials, not preference. This allows an
+ * installation to keep several provider keys and switch between them in the
+ * Settings UI without whichever secret is checked first taking over.
  */
 export function getEffectiveProvider(): ProviderInfo {
   const cfg = loadConfigSync();
   const env = detectEnvProvider();
 
-  // Resolve provider: env wins, then config
-  const provider = env.provider ?? cfg.provider ?? null;
+  const provider = cfg.provider ?? env.provider ?? null;
   if (!provider) {
     return {
       configured: false,
@@ -254,7 +279,7 @@ export function getEffectiveProvider(): ProviderInfo {
   }
 
   return {
-    configured: provider === "ollama" || env.apiKey !== null,
+    configured: providerIsConfigured(provider),
     provider,
     model,
     embeddingSupport: hasEmbeddingSupport(),
@@ -271,19 +296,19 @@ export function getEffectiveSettings(): EffectiveSettings {
   // Provider
   let provider: string | null;
   let providerSource: SettingSource;
-  if (env.provider) {
-    provider = env.provider;
-    providerSource = "env";
-  } else if (cfg.provider) {
+  if (cfg.provider) {
     provider = cfg.provider;
     providerSource = "config";
+  } else if (env.provider) {
+    provider = env.provider;
+    providerSource = "env";
   } else {
     provider = null;
     providerSource = "none";
   }
 
   // API key — env only
-  const envApiKey = env.apiKey;
+  const envApiKey = apiKeyForProvider(provider);
   const apiKeySource: SettingSource = envApiKey ? "env" : "none";
 
   // Model
@@ -348,7 +373,7 @@ export function getEffectiveSettings(): EffectiveSettings {
     providerSource,
     model,
     modelSource,
-    configured: provider === "ollama" || envApiKey !== null,
+    configured: providerIsConfigured(provider),
     embeddingSupport: hasEmbeddingSupport(),
     embeddingModel,
     embeddingModelSource,
@@ -373,32 +398,20 @@ export interface ResolvedCredentials {
 
 /**
  * Return the fully-resolved credentials for constructing an LLM model.
- * This merges env > config > defaults, intended for use from `getModel()`.
+ * The saved provider selection chooses which environment credential to use;
+ * env auto-detection remains the fallback when no preference has been saved.
  */
 export function getResolvedCredentials(): ResolvedCredentials {
   const cfg = loadConfigSync();
   const env = detectEnvProvider();
 
-  const provider = env.provider ?? cfg.provider ?? null;
+  const provider = cfg.provider ?? env.provider ?? null;
   if (!provider) {
     return { provider: null, apiKey: null, model: null, ollamaBaseUrl: null };
   }
 
-  // API key: env only
-  let apiKey: string | null;
-  if (provider === "anthropic") {
-    apiKey = process.env.ANTHROPIC_API_KEY ?? null;
-  } else if (provider === "openai") {
-    apiKey = process.env.OPENAI_API_KEY ?? null;
-  } else if (provider === "google") {
-    apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? null;
-  } else if (provider === "deepseek") {
-    apiKey = process.env.DEEPSEEK_API_KEY ?? null;
-  } else if (provider === "ollama-cloud") {
-    apiKey = process.env.OLLAMA_API_KEY ?? null;
-  } else {
-    apiKey = null; // self-hosted Ollama is keyless
-  }
+  // API keys remain server-side environment secrets.
+  const apiKey = apiKeyForProvider(provider);
 
   // Model
   const modelOverride = process.env.LLM_MODEL;

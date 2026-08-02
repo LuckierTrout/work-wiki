@@ -148,8 +148,10 @@ export async function PUT(request: Request) {
 
     await saveConfig(updated);
 
-    // Reset the sync cache so the next read picks up the new config
+    // Re-prime the sync cache so the response and any immediate LLM request use
+    // the newly selected provider rather than falling back to env detection.
     _resetConfigCache();
+    await loadConfig();
 
     // Return updated effective settings
     const effective = getEffectiveProvider();

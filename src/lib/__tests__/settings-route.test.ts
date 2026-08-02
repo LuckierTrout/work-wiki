@@ -90,6 +90,7 @@ describe("/api/settings", () => {
       provider: "ollama-cloud",
       model: "gpt-oss:120b",
     });
+    expect(mockedLoad).toHaveBeenCalledTimes(2);
   });
 
   it("honors the explicit deployment read-only switch", async () => {

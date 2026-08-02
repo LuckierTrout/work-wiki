@@ -143,7 +143,7 @@ pnpm install
 Create `.env.local` with one LLM provider key (see the table below for all options):
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...   # the default provider
+OPENAI_API_KEY=sk-...          # example; any supported provider works
 # LLM_MODEL=...                 # optional: override the default model
 ```
 
@@ -153,9 +153,10 @@ pnpm dev        # http://localhost:3000
 
 ### Supported LLM providers
 
-The app auto-detects a provider from environment variables. Priority (first match
-wins): **Anthropic -> OpenAI -> Google -> DeepSeek -> Ollama Cloud -> Ollama**.
-Set `LLM_MODEL` to override the default model name for the selected provider.
+API keys are server credentials; choose the active provider in **Settings**.
+When no preference has ever been saved, the app auto-detects the first available
+credential for backwards compatibility. Set `LLM_MODEL` to force a model name
+for the selected provider.
 
 | Provider | Env var | Default model | Notes |
 |---|---|---|---|

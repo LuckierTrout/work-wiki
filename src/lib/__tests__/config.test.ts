@@ -207,7 +207,7 @@ describe("isValidProvider", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Merge priority: env vars > config file > defaults
+// Merge priority: saved provider selection > env auto-detection fallback
 // ---------------------------------------------------------------------------
 
 describe("getEffectiveProvider — merge priority", () => {
@@ -228,13 +228,30 @@ describe("getEffectiveProvider — merge priority", () => {
     expect(info.model).toBe("gpt-4o-mini");
   });
 
-  it("env var provider wins over config file provider", async () => {
+  it("saved provider selection wins when another provider key also exists", async () => {
     await saveConfig({ provider: "openai" });
     await loadConfig();
     process.env.ANTHROPIC_API_KEY = "sk-ant-env-key";
+    process.env.OPENAI_API_KEY = "sk-openai-env-key";
 
     const info = getEffectiveProvider();
-    expect(info.provider).toBe("anthropic");
+    expect(info.provider).toBe("openai");
+    expect(info.configured).toBe(true);
+  });
+
+  it("supports selecting Google while several provider credentials coexist", async () => {
+    await saveConfig({ provider: "google", model: "gemini-2.0-flash" });
+    await loadConfig();
+    process.env.ANTHROPIC_API_KEY = "sk-ant-env-key";
+    process.env.OPENAI_API_KEY = "sk-openai-env-key";
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-env-key";
+
+    const info = getEffectiveProvider();
+    expect(info).toMatchObject({
+      provider: "google",
+      model: "gemini-2.0-flash",
+      configured: true,
+    });
   });
 
   it("LLM_MODEL env var wins over config file model", async () => {
@@ -277,6 +294,20 @@ describe("getEffectiveSettings", () => {
     const settings = getEffectiveSettings();
     expect(settings.providerSource).toBe("env");
     expect(settings.apiKeySource).toBe("env");
+  });
+
+  it("reports the saved provider and its matching key with multiple keys present", async () => {
+    await saveConfig({ provider: "google", model: "gemini-2.0-flash" });
+    await loadConfig();
+    process.env.ANTHROPIC_API_KEY = "sk-ant-env-key-1234567890";
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-env-key";
+
+    const settings = getEffectiveSettings();
+    expect(settings.provider).toBe("google");
+    expect(settings.providerSource).toBe("config");
+    expect(settings.apiKeySource).toBe("env");
+    expect(settings.hasApiKey).toBe(true);
+    expect(settings.configured).toBe(true);
   });
 
   it("detects Ollama Cloud from OLLAMA_API_KEY", () => {
@@ -336,6 +367,20 @@ describe("getResolvedCredentials", () => {
 
     const creds = getResolvedCredentials();
     expect(creds.apiKey).toBe("sk-env-key");
+  });
+
+  it("uses the credential matching the saved provider when multiple keys exist", async () => {
+    await saveConfig({ provider: "openai", model: "gpt-4o-mini" });
+    await loadConfig();
+    process.env.ANTHROPIC_API_KEY = "sk-ant-env-key";
+    process.env.OPENAI_API_KEY = "sk-openai-env-key";
+
+    const creds = getResolvedCredentials();
+    expect(creds).toMatchObject({
+      provider: "openai",
+      apiKey: "sk-openai-env-key",
+      model: "gpt-4o-mini",
+    });
   });
 
   it("resolves ollama base url from config", async () => {
