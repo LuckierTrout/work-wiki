@@ -8,9 +8,9 @@ does not replace the upstream project's issue tracker.
 - [x] Make the provider selected in Settings authoritative so Anthropic,
   OpenAI, Google, and Ollama Cloud credentials can coexist without Anthropic
   automatically becoming primary.
-- [ ] Securely install the Ollama Cloud, OpenAI, Anthropic, and Google API keys
+- [x] Securely install the Ollama Cloud, OpenAI, Anthropic, and Google API keys
   as Cloudflare Worker secrets. Never store keys in this repository or chat.
-- [ ] Select each provider in Settings and pass **Test Connection** with the
+- [x] Select each provider in Settings and pass **Test Connection** with the
   other provider keys also present. Confirm the selected model, useful error
   messages, and persistence after reload.
 
