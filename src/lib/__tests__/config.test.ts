@@ -36,6 +36,7 @@ const ENV_KEYS = [
   "OPENAI_API_KEY",
   "GOOGLE_GENERATIVE_AI_API_KEY",
   "DEEPSEEK_API_KEY",
+  "OLLAMA_API_KEY",
   "OLLAMA_BASE_URL",
   "OLLAMA_MODEL",
   "LLM_MODEL",
@@ -59,6 +60,7 @@ beforeEach(async () => {
   delete process.env.OPENAI_API_KEY;
   delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   delete process.env.DEEPSEEK_API_KEY;
+  delete process.env.OLLAMA_API_KEY;
   delete process.env.OLLAMA_BASE_URL;
   delete process.env.OLLAMA_MODEL;
   delete process.env.LLM_MODEL;
@@ -193,6 +195,7 @@ describe("isValidProvider", () => {
     expect(isValidProvider("anthropic")).toBe(true);
     expect(isValidProvider("openai")).toBe(true);
     expect(isValidProvider("google")).toBe(true);
+    expect(isValidProvider("ollama-cloud")).toBe(true);
     expect(isValidProvider("ollama")).toBe(true);
   });
 
@@ -214,13 +217,13 @@ describe("getEffectiveProvider — merge priority", () => {
     expect(info.provider).toBeNull();
   });
 
-  it("uses config file when env vars are absent", async () => {
+  it("uses config selection but remains unconfigured without credentials", async () => {
     await saveConfig({ provider: "openai", model: "gpt-4o-mini" });
     // Prime the sync cache so loadConfigSync returns data
     await loadConfig();
 
     const info = getEffectiveProvider();
-    expect(info.configured).toBe(true);
+    expect(info.configured).toBe(false);
     expect(info.provider).toBe("openai");
     expect(info.model).toBe("gpt-4o-mini");
   });
@@ -274,6 +277,17 @@ describe("getEffectiveSettings", () => {
     const settings = getEffectiveSettings();
     expect(settings.providerSource).toBe("env");
     expect(settings.apiKeySource).toBe("env");
+  });
+
+  it("detects Ollama Cloud from OLLAMA_API_KEY", () => {
+    process.env.OLLAMA_API_KEY = "ollama-test-key";
+
+    const settings = getEffectiveSettings();
+    expect(settings.provider).toBe("ollama-cloud");
+    expect(settings.providerSource).toBe("env");
+    expect(settings.model).toBe("gpt-oss:120b");
+    expect(settings.hasApiKey).toBe(true);
+    expect(settings.ollamaBaseUrl).toBe("https://ollama.com/api");
   });
 
   it("reports source as 'none' when nothing is set", () => {
@@ -332,6 +346,18 @@ describe("getResolvedCredentials", () => {
     expect(creds.provider).toBe("ollama");
     expect(creds.ollamaBaseUrl).toBe("http://myhost:11434/api");
     expect(creds.apiKey).toBeNull();
+  });
+
+  it("resolves Ollama Cloud credentials from the server secret", () => {
+    process.env.OLLAMA_API_KEY = "ollama-cloud-key";
+
+    const creds = getResolvedCredentials();
+    expect(creds).toMatchObject({
+      provider: "ollama-cloud",
+      apiKey: "ollama-cloud-key",
+      model: "gpt-oss:120b",
+      ollamaBaseUrl: "https://ollama.com/api",
+    });
   });
 
   it("detects deepseek from DEEPSEEK_API_KEY with its default model", () => {
@@ -452,9 +478,9 @@ describe("isReadOnly", () => {
     expect(isReadOnly()).toBe(false);
   });
 
-  it("returns true when STORAGE_PROVIDER=cloudflare-r2", () => {
+  it("does not become read-only merely because storage is Cloudflare R2", () => {
     process.env.STORAGE_PROVIDER = "cloudflare-r2";
-    expect(isReadOnly()).toBe(true);
+    expect(isReadOnly()).toBe(false);
   });
 
   it("returns false when STORAGE_PROVIDER=fs", () => {

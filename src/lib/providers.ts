@@ -14,7 +14,8 @@ export const PROVIDER_INFO = [
   { value: "openai", label: "OpenAI" },
   { value: "google", label: "Google" },
   { value: "deepseek", label: "DeepSeek" },
-  { value: "ollama", label: "Ollama" },
+  { value: "ollama-cloud", label: "Ollama Cloud" },
+  { value: "ollama", label: "Ollama (self-hosted)" },
 ] as const;
 
 /** Union type of valid provider values. */
@@ -56,6 +57,7 @@ export const DEFAULT_MODELS: Record<string, string> = {
   openai: "gpt-4o",
   google: "gemini-2.0-flash",
   deepseek: "deepseek-v4-flash",
+  "ollama-cloud": "gpt-oss:120b",
   ollama: "llama3.2",
 };
 

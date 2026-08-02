@@ -66,6 +66,7 @@ export function ProviderForm({
   const effectiveProvider =
     provider || (settings?.providerSource === "env" ? settings.provider : null);
   const showOllamaUrl = effectiveProvider === "ollama";
+  const showOllamaCloud = effectiveProvider === "ollama-cloud";
 
   return (
     <>
@@ -166,6 +167,17 @@ export function ProviderForm({
               className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20 font-mono"
             />
           )}
+        </div>
+      )}
+
+      {showOllamaCloud && (
+        <div className="rounded-md border border-foreground/10 bg-foreground/[0.03] px-3 py-3 text-sm text-foreground/60">
+          <p className="font-medium text-foreground/80">Ollama Cloud</p>
+          <p className="mt-1">
+            Models run at <span className="font-mono">ollama.com</span>. The
+            API key stays encrypted as a Cloudflare Worker secret and is never
+            returned to this page.
+          </p>
         </div>
       )}
     </>

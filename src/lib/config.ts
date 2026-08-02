@@ -16,7 +16,13 @@ export type { ProviderValue } from "./providers";
 // ---------------------------------------------------------------------------
 
 export interface AppConfig {
-  provider?: "anthropic" | "openai" | "google" | "deepseek" | "ollama";
+  provider?:
+    | "anthropic"
+    | "openai"
+    | "google"
+    | "deepseek"
+    | "ollama-cloud"
+    | "ollama";
   model?: string;
   ollamaBaseUrl?: string;
   embeddingModel?: string;
@@ -53,28 +59,13 @@ export interface EffectiveSettings {
 /**
  * Returns `true` when the instance should reject settings writes.
  *
- * True when:
- *   1. `YOPEDIA_READONLY=1` environment variable is set, **or**
- *   2. `STORAGE_PROVIDER=cloudflare-r2` env var is set, **or**
- *   3. Cloudflare Workers runtime is detected (globalThis.caches.default)
- *
- * This protects public cloud deployments from unauthenticated config changes.
+ * True only when `YOPEDIA_READONLY=1` is explicitly set. Cloud deployments
+ * can safely persist non-secret provider preferences because every settings
+ * write is independently owner-gated by the API route. Provider credentials
+ * remain environment secrets and are never accepted by the settings API.
  */
 export function isReadOnly(): boolean {
-  if (process.env.YOPEDIA_READONLY === "1") return true;
-  if (process.env.STORAGE_PROVIDER === "cloudflare-r2") return true;
-
-  // Cloudflare Workers runtime detection (mirrors storage/index.ts logic)
-  if (
-    typeof globalThis !== "undefined" &&
-    typeof (globalThis as Record<string, unknown>).caches === "object" &&
-    (globalThis as Record<string, unknown>).caches !== null &&
-    typeof ((globalThis as Record<string, unknown>).caches as Record<string, unknown>).default === "object"
-  ) {
-    return true;
-  }
-
-  return false;
+  return process.env.YOPEDIA_READONLY === "1";
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +209,9 @@ export function detectEnvProvider(): {
   if (process.env.DEEPSEEK_API_KEY) {
     return { provider: "deepseek", apiKey: process.env.DEEPSEEK_API_KEY };
   }
+  if (process.env.OLLAMA_API_KEY) {
+    return { provider: "ollama-cloud", apiKey: process.env.OLLAMA_API_KEY };
+  }
   if (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_MODEL) {
     return { provider: "ollama", apiKey: null };
   }
@@ -250,14 +244,17 @@ export function getEffectiveProvider(): ProviderInfo {
     model = modelOverride;
   } else if (cfg.model) {
     model = cfg.model;
-  } else if (provider === "ollama" && process.env.OLLAMA_MODEL) {
+  } else if (
+    (provider === "ollama" || provider === "ollama-cloud") &&
+    process.env.OLLAMA_MODEL
+  ) {
     model = process.env.OLLAMA_MODEL;
   } else {
     model = DEFAULT_MODELS[provider] ?? provider;
   }
 
   return {
-    configured: true,
+    configured: provider === "ollama" || env.apiKey !== null,
     provider,
     model,
     embeddingSupport: hasEmbeddingSupport(),
@@ -300,7 +297,10 @@ export function getEffectiveSettings(): EffectiveSettings {
     model = cfg.model;
     modelSource = "config";
   } else if (provider) {
-    if (provider === "ollama" && process.env.OLLAMA_MODEL) {
+    if (
+      (provider === "ollama" || provider === "ollama-cloud") &&
+      process.env.OLLAMA_MODEL
+    ) {
       model = process.env.OLLAMA_MODEL;
       modelSource = "env";
     } else {
@@ -315,7 +315,10 @@ export function getEffectiveSettings(): EffectiveSettings {
   // Ollama base URL
   let ollamaBaseUrl: string | null;
   let ollamaBaseUrlSource: SettingSource;
-  if (process.env.OLLAMA_BASE_URL) {
+  if (provider === "ollama-cloud") {
+    ollamaBaseUrl = "https://ollama.com/api";
+    ollamaBaseUrlSource = "default";
+  } else if (process.env.OLLAMA_BASE_URL) {
     ollamaBaseUrl = process.env.OLLAMA_BASE_URL;
     ollamaBaseUrlSource = "env";
   } else if (cfg.ollamaBaseUrl) {
@@ -345,7 +348,7 @@ export function getEffectiveSettings(): EffectiveSettings {
     providerSource,
     model,
     modelSource,
-    configured: provider !== null,
+    configured: provider === "ollama" || envApiKey !== null,
     embeddingSupport: hasEmbeddingSupport(),
     embeddingModel,
     embeddingModelSource,
@@ -391,8 +394,10 @@ export function getResolvedCredentials(): ResolvedCredentials {
     apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? null;
   } else if (provider === "deepseek") {
     apiKey = process.env.DEEPSEEK_API_KEY ?? null;
+  } else if (provider === "ollama-cloud") {
+    apiKey = process.env.OLLAMA_API_KEY ?? null;
   } else {
-    apiKey = null; // ollama is keyless
+    apiKey = null; // self-hosted Ollama is keyless
   }
 
   // Model
@@ -402,14 +407,20 @@ export function getResolvedCredentials(): ResolvedCredentials {
     model = modelOverride;
   } else if (cfg.model) {
     model = cfg.model;
-  } else if (provider === "ollama" && process.env.OLLAMA_MODEL) {
+  } else if (
+    (provider === "ollama" || provider === "ollama-cloud") &&
+    process.env.OLLAMA_MODEL
+  ) {
     model = process.env.OLLAMA_MODEL;
   } else {
     model = DEFAULT_MODELS[provider] ?? provider;
   }
 
   // Ollama base URL
-  const ollamaBaseUrl = process.env.OLLAMA_BASE_URL ?? cfg.ollamaBaseUrl ?? null;
+  const ollamaBaseUrl =
+    provider === "ollama-cloud"
+      ? "https://ollama.com/api"
+      : process.env.OLLAMA_BASE_URL ?? cfg.ollamaBaseUrl ?? null;
 
   return { provider, apiKey, model, ollamaBaseUrl };
 }

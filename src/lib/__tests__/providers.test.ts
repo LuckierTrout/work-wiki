@@ -11,17 +11,18 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("PROVIDER_INFO", () => {
-  it("has entries for anthropic, openai, google, deepseek, ollama", () => {
+  it("has entries for every supported provider", () => {
     const values = PROVIDER_INFO.map((p) => p.value);
     expect(values).toContain("anthropic");
     expect(values).toContain("openai");
     expect(values).toContain("google");
     expect(values).toContain("deepseek");
+    expect(values).toContain("ollama-cloud");
     expect(values).toContain("ollama");
   });
 
-  it("has exactly 5 providers", () => {
-    expect(PROVIDER_INFO).toHaveLength(5);
+  it("has exactly 6 providers", () => {
+    expect(PROVIDER_INFO).toHaveLength(6);
   });
 
   it("each entry has value and label properties", () => {
@@ -46,13 +47,14 @@ describe("PROVIDER_INFO", () => {
 // ---------------------------------------------------------------------------
 
 describe("VALID_PROVIDERS", () => {
-  it("is a Set containing exactly the 5 provider values", () => {
+  it("is a Set containing exactly the 6 provider values", () => {
     expect(VALID_PROVIDERS).toBeInstanceOf(Set);
-    expect(VALID_PROVIDERS.size).toBe(5);
+    expect(VALID_PROVIDERS.size).toBe(6);
     expect(VALID_PROVIDERS.has("anthropic")).toBe(true);
     expect(VALID_PROVIDERS.has("openai")).toBe(true);
     expect(VALID_PROVIDERS.has("google")).toBe(true);
     expect(VALID_PROVIDERS.has("deepseek")).toBe(true);
+    expect(VALID_PROVIDERS.has("ollama-cloud")).toBe(true);
     expect(VALID_PROVIDERS.has("ollama")).toBe(true);
   });
 
@@ -81,8 +83,8 @@ describe("DEFAULT_MODELS", () => {
     }
   });
 
-  it("has exactly 5 entries", () => {
-    expect(Object.keys(DEFAULT_MODELS)).toHaveLength(5);
+  it("has exactly 6 entries", () => {
+    expect(Object.keys(DEFAULT_MODELS)).toHaveLength(6);
   });
 
   it("deepseek default model is deepseek-v4-flash", () => {
@@ -115,8 +117,9 @@ describe("providerLabel", () => {
     expect(providerLabel("google")).toBe("Google");
   });
 
-  it("returns 'Ollama' for 'ollama'", () => {
-    expect(providerLabel("ollama")).toBe("Ollama");
+  it("distinguishes Ollama Cloud from self-hosted Ollama", () => {
+    expect(providerLabel("ollama-cloud")).toBe("Ollama Cloud");
+    expect(providerLabel("ollama")).toBe("Ollama (self-hosted)");
   });
 
   it("returns 'DeepSeek' for 'deepseek'", () => {

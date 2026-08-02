@@ -216,22 +216,17 @@ export function useSettings(): UseSettingsReturn {
     setTestResult(null);
 
     try {
-      const res = await fetch("/api/status");
-      if (!res.ok) throw new Error("Status endpoint returned an error");
-      const data: ProviderStatus = await res.json();
+      const res = await fetch("/api/settings/test", { method: "POST" });
+      const data = (await res.json()) as ProviderStatus & { error?: string };
+      if (!res.ok) {
+        throw new Error(data.error ?? "Provider connection failed");
+      }
       setStatus(data);
 
-      if (data.configured) {
-        setTestResult({
-          ok: true,
-          message: `Connected to ${providerLabel(data.provider ?? "anthropic")} (${data.model})${data.embeddingSupport ? " — embeddings supported" : ""}`,
-        });
-      } else {
-        setTestResult({
-          ok: false,
-          message: "No provider configured. Save your settings first.",
-        });
-      }
+      setTestResult({
+        ok: true,
+        message: `Live connection succeeded: ${providerLabel(data.provider ?? "anthropic")} (${data.model})${data.embeddingSupport ? " — embeddings supported" : ""}`,
+      });
     } catch (err) {
       setTestResult({
         ok: false,

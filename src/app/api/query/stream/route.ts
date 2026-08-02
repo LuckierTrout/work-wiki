@@ -130,7 +130,7 @@ export async function POST(request: NextRequest) {
     );
 
     // Stream the LLM response
-    const result = callLLMStream(systemPrompt, trimmedQuestion, {
+    const result = await callLLMStream(systemPrompt, trimmedQuestion, {
       maxOutputTokens: QUERY_MAX_OUTPUT_TOKENS,
     });
 

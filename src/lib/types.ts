@@ -221,7 +221,7 @@ export interface AgentProfile {
 export interface ProviderInfo {
   /** true if any provider key / config is set */
   configured: boolean;
-  /** "anthropic" | "openai" | "google" | "ollama" | null */
+  /** Provider identifier, or null when no provider is selected. */
   provider: string | null;
   /** resolved model name (including LLM_MODEL override) */
   model: string | null;

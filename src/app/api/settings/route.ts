@@ -14,12 +14,23 @@ import {
   isEmbeddingProvider,
 } from "@/lib/providers";
 import { getErrorMessage } from "@/lib/errors";
+import { getPrincipal } from "@/lib/auth";
+import { isOwnerHandle } from "@/lib/owner";
+
+async function requireOwner() {
+  const principal = await getPrincipal();
+  return principal && isOwnerHandle(principal.handle) ? principal : null;
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/settings — return effective settings with source annotations
 // ---------------------------------------------------------------------------
 
 export async function GET() {
+  if (!(await requireOwner())) {
+    return Response.json({ error: "Not found" }, { status: 404 });
+  }
+  await loadConfig();
   const settings = getEffectiveSettings();
   return Response.json(settings);
 }
@@ -29,10 +40,15 @@ export async function GET() {
 // ---------------------------------------------------------------------------
 
 export async function PUT(request: Request) {
-  // Block writes in read-only mode (cloud deployments)
+  if (!(await requireOwner())) {
+    return Response.json({ error: "Not found" }, { status: 404 });
+  }
+
+  // Optional deployment-wide kill switch. Cloud storage itself is writable;
+  // credentials still remain server secrets and never pass through this API.
   if (isReadOnly()) {
     return Response.json(
-      { error: "Settings are read-only in this deployment. Configure via environment variables instead." },
+      { error: "Settings are read-only in this deployment." },
       { status: 403 },
     );
   }

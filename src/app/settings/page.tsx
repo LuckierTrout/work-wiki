@@ -108,8 +108,8 @@ export default function SettingsPage() {
       {/* ---- Read-only banner ---- */}
       {readOnly && (
         <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-50 p-4 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-400">
-          <strong>Read-only mode</strong> — Settings cannot be changed in this
-          cloud deployment. Configure via environment variables instead.
+          <strong>Read-only mode</strong> — This deployment has explicitly
+          disabled settings changes.
         </div>
       )}
 

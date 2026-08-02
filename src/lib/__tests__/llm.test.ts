@@ -13,6 +13,7 @@ import { logger } from "../logger";
 let savedAnthropic: string | undefined;
 let savedOpenAI: string | undefined;
 let savedGoogle: string | undefined;
+let savedOllamaApiKey: string | undefined;
 let savedOllamaBaseURL: string | undefined;
 let savedOllamaModel: string | undefined;
 let savedModel: string | undefined;
@@ -22,6 +23,7 @@ beforeEach(() => {
   savedAnthropic = process.env.ANTHROPIC_API_KEY;
   savedOpenAI = process.env.OPENAI_API_KEY;
   savedGoogle = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  savedOllamaApiKey = process.env.OLLAMA_API_KEY;
   savedOllamaBaseURL = process.env.OLLAMA_BASE_URL;
   savedOllamaModel = process.env.OLLAMA_MODEL;
   savedModel = process.env.LLM_MODEL;
@@ -31,6 +33,7 @@ beforeEach(() => {
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.OPENAI_API_KEY;
   delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  delete process.env.OLLAMA_API_KEY;
   delete process.env.OLLAMA_BASE_URL;
   delete process.env.OLLAMA_MODEL;
   delete process.env.LLM_MODEL;
@@ -54,6 +57,7 @@ afterEach(() => {
   restore("ANTHROPIC_API_KEY", savedAnthropic);
   restore("OPENAI_API_KEY", savedOpenAI);
   restore("GOOGLE_GENERATIVE_AI_API_KEY", savedGoogle);
+  restore("OLLAMA_API_KEY", savedOllamaApiKey);
   restore("OLLAMA_BASE_URL", savedOllamaBaseURL);
   restore("OLLAMA_MODEL", savedOllamaModel);
   restore("LLM_MODEL", savedModel);
@@ -87,6 +91,11 @@ describe("hasLLMKey", () => {
     expect(hasLLMKey()).toBe(true);
   });
 
+  it("returns true when OLLAMA_API_KEY is set", () => {
+    process.env.OLLAMA_API_KEY = "ollama-cloud-key";
+    expect(hasLLMKey()).toBe(true);
+  });
+
   it("returns true when only OLLAMA_MODEL is set", () => {
     process.env.OLLAMA_MODEL = "llama3.2";
     expect(hasLLMKey()).toBe(true);
@@ -115,21 +124,19 @@ describe("callLLM", () => {
 });
 
 describe("callLLMStream", () => {
-  it("throws a clear error mentioning all four providers when no env vars are set", () => {
-    // callLLMStream is synchronous (returns a StreamTextResult) but
-    // getModel() throws immediately when no provider is configured.
-    expect(() => callLLMStream("system", "hello")).toThrow(
+  it("throws a clear error mentioning supported providers when no env vars are set", async () => {
+    await expect(callLLMStream("system", "hello")).rejects.toThrow(
       /No LLM API key found/,
     );
-    expect(() => callLLMStream("system", "hello")).toThrow(/ANTHROPIC_API_KEY/);
-    expect(() => callLLMStream("system", "hello")).toThrow(/OPENAI_API_KEY/);
-    expect(() => callLLMStream("system", "hello")).toThrow(
+    await expect(callLLMStream("system", "hello")).rejects.toThrow(/ANTHROPIC_API_KEY/);
+    await expect(callLLMStream("system", "hello")).rejects.toThrow(/OPENAI_API_KEY/);
+    await expect(callLLMStream("system", "hello")).rejects.toThrow(
       /GOOGLE_GENERATIVE_AI_API_KEY/,
     );
-    expect(() => callLLMStream("system", "hello")).toThrow(/OLLAMA/);
+    await expect(callLLMStream("system", "hello")).rejects.toThrow(/OLLAMA_API_KEY/);
   });
 
-  it("returns synchronously — streamText() is not async, so retryWithBackoff cannot wrap it", () => {
+  it("returns the stream result after loading persisted settings", async () => {
     // This test documents *why* callLLMStream doesn't use retryWithBackoff:
     // streamText() returns a StreamTextResult synchronously. The actual API
     // call happens lazily when the stream is consumed, so connection errors
@@ -141,13 +148,11 @@ describe("callLLMStream", () => {
     process.env.OPENAI_API_KEY = "sk-test-fake-key";
     _resetConfigCache();
 
-    const result = callLLMStream("system prompt", "user message");
+    const result = await callLLMStream("system prompt", "user message");
 
     // streamText returns an object, not a Promise
     expect(result).toBeDefined();
     expect(typeof result).toBe("object");
-    // It should NOT be a Promise (i.e., no retry wrapper making it async)
-    expect(result).not.toBeInstanceOf(Promise);
     // It should have stream-specific methods
     expect(typeof result.toTextStreamResponse).toBe("function");
   });
