@@ -42,15 +42,11 @@
 			"id": "874e4a8165ff4725ad24b4dfd62d479b"
 		}
 	],
-	// --- Vectorize: Semantic search embeddings (optional) ---
+	// --- Vectorize: bge-m3 emits fixed 1024-dimensional vectors ---
 	"vectorize": [
 		{
 			"binding": "YOPEDIA_VECTORIZE",
-			"index_name": "yopedia-embeddings"
-		},
-		{
-			"binding": "VECTORIZE",
-			"index_name": "yopedia-embeddings"
+			"index_name": "yopedia-embeddings-bge-m3"
 		}
 	],
 	// --- Workers AI: serverless embeddings (e.g. @cf/baai/bge-m3 for CJK) ---
@@ -82,6 +78,8 @@
 	"vars": {
 		"NEXT_PUBLIC_OWNER_HANDLE": "christianlee",
 		"AUTONOMOUS_MAINTENANCE": "on",
-		"YOPEDIA_EMAIL_ROUTING_READY": "1"
+		"YOPEDIA_EMAIL_ROUTING_READY": "1",
+		"EMBEDDING_PROVIDER": "workers-ai",
+		"EMBEDDING_MODEL": "@cf/baai/bge-m3"
 	}
 }

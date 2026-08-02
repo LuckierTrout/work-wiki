@@ -167,6 +167,12 @@ for the selected provider.
 | Ollama Cloud | `OLLAMA_API_KEY=...` | `gpt-oss:120b` | Hosted API at `https://ollama.com/api`; store the key as a server secret |
 | Ollama | `OLLAMA_BASE_URL=http://localhost:11434/api` and/or `OLLAMA_MODEL=llama3.2` | `llama3.2` | `ollama-ai-provider-v2`; runs against a local Ollama server, no API key needed |
 
+Cloudflare deployments use the `AI` binding with `@cf/baai/bge-m3` for
+embeddings. BGE-M3 produces 1,024-dimensional vectors, so its Vectorize index
+must also be created with 1,024 dimensions. Generation-provider keys remain
+independent and can be switched in Settings without changing the embedding
+model.
+
 ## Watch It Grow
 
 **Star the repo** and follow the commits. Each one is the agent's work.

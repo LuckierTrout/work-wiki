@@ -7,7 +7,7 @@ import type { EmbeddingModel } from "ai";
 import type { Ai } from "./storage/cloudflare-types";
 import { listWikiPages, readWikiPage } from "./wiki";
 import { getStorage } from "./storage";
-import { detectEnvProvider, loadConfigSync, getEmbeddingModelOverride, getOllamaBaseUrl } from "./config";
+import { loadConfigSync, getEmbeddingModelOverride, getOllamaBaseUrl } from "./config";
 import { EMBEDDING_PROVIDERS, isEmbeddingProvider, type EmbeddingProvider } from "./providers";
 import { withFileLock } from "./lock";
 import { MAX_EMBED_CHARS } from "./constants";
@@ -27,6 +27,14 @@ const DEFAULT_EMBEDDING_MODELS: Record<EmbeddingProvider, string> = {
   ollama: "nomic-embed-text",
   // Workers AI BGE-M3: multilingual (strong CJK/Chinese), 1024-dim.
   "workers-ai": "@cf/baai/bge-m3",
+};
+
+/** Fixed output widths for Workers AI embedding models supported here. */
+export const WORKERS_AI_EMBEDDING_DIMENSIONS: Readonly<Record<string, number>> = {
+  "@cf/baai/bge-small-en-v1.5": 384,
+  "@cf/baai/bge-base-en-v1.5": 768,
+  "@cf/baai/bge-large-en-v1.5": 1024,
+  "@cf/baai/bge-m3": 1024,
 };
 
 /** Workers AI model ids are namespaced with this prefix (e.g. @cf/baai/...). */
@@ -80,25 +88,38 @@ function resolveEmbeddingProvider(
 ): EmbeddingProvider | null {
   const override = process.env.EMBEDDING_PROVIDER ?? cfg.embeddingProvider;
   if (override) {
-    if (isEmbeddingProvider(override)) return override;
-    logger.warn(
-      "embeddings",
-      `EMBEDDING_PROVIDER="${override}" is not embedding-capable ` +
-        `(valid: ${EMBEDDING_PROVIDERS.join(", ")}); embeddings are disabled. ` +
-        "Fix the override or unset it to auto-detect.",
-    );
-    return null;
+    if (!isEmbeddingProvider(override)) {
+      logger.warn(
+        "embeddings",
+        `EMBEDDING_PROVIDER="${override}" is not embedding-capable ` +
+          `(valid: ${EMBEDDING_PROVIDERS.join(", ")}); embeddings are disabled. ` +
+          "Fix the override or unset it to auto-detect.",
+      );
+      return null;
+    }
+    if (override === "workers-ai") {
+      return getWorkersAiBinding() ? override : null;
+    }
+    if (override === "ollama") return override;
+    return embeddingApiKeyFor(override) ? override : null;
   }
 
   // Auto-select Workers AI when its binding is available.
   if (getWorkersAiBinding()) return "workers-ai";
 
-  // Fall back to the configured LLM provider when it supports embeddings.
-  const env = detectEnvProvider();
-  if (env.provider && isEmbeddingProvider(env.provider)) {
-    return env.provider;
+  // Prefer the owner's saved generation provider when it can also embed.
+  if (cfg.provider && isEmbeddingProvider(cfg.provider)) {
+    if (cfg.provider === "ollama" || embeddingApiKeyFor(cfg.provider)) {
+      return cfg.provider;
+    }
   }
-  if (cfg.provider === "ollama") return "ollama";
+
+  // Otherwise use any available embedding-capable credential. Do not reuse
+  // generation-provider auto-detection here because an Anthropic key can be
+  // first while a valid OpenAI or Google embedding key also exists.
+  if (process.env.OPENAI_API_KEY) return "openai";
+  if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) return "google";
+  if (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_MODEL) return "ollama";
 
   return null;
 }
@@ -297,6 +318,34 @@ async function runWorkersAiEmbedding(
     );
     return null;
   }
+
+  if (result.data.length !== texts.length) {
+    throw new Error(
+      `Workers AI embedding (${model}) returned ${result.data.length} vectors ` +
+        `for ${texts.length} inputs.`,
+    );
+  }
+
+  const dimensions = result.data[0]?.length ?? 0;
+  if (
+    dimensions === 0 ||
+    result.data.some(
+      (vector) => !Array.isArray(vector) || vector.length !== dimensions,
+    )
+  ) {
+    throw new Error(
+      `Workers AI embedding (${model}) returned empty or inconsistent vectors.`,
+    );
+  }
+
+  const expectedDimensions = WORKERS_AI_EMBEDDING_DIMENSIONS[model];
+  if (expectedDimensions && dimensions !== expectedDimensions) {
+    throw new Error(
+      `Workers AI embedding dimension mismatch for ${model}: ` +
+        `expected ${expectedDimensions}, received ${dimensions}.`,
+    );
+  }
+
   return result.data;
 }
 
