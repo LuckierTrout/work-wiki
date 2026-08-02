@@ -16,6 +16,7 @@ import { fetchUrlContent, fetchImageBytes, storeImageBytes, pdfToText } from "./
 import { describeImage } from "./vision";
 import { isYouTubeUrl, fetchYouTubeContent } from "./youtube";
 import { isXPostUrl, fetchXPostContent, isXArticleTeaser } from "./x-post";
+import { extractDocumentText } from "./document-extract";
 import type { IngestResult, SourceEntry } from "./types";
 import {
   serializeSources,
@@ -67,6 +68,10 @@ export function mergeSourceEntry(sources: SourceEntry[], entry: SourceEntry): So
  */
 const SOURCE_TYPE_WEIGHT: Record<SourceEntry["type"], number> = {
   pdf: 0.68,
+  docx: 0.68,
+  pptx: 0.65,
+  xlsx: 0.65,
+  csv: 0.62,
   "wiki-ref": 0.65,
   url: 0.6,
   youtube: 0.55,
@@ -461,6 +466,19 @@ export async function ingestPdf(
   return ingest(title, content, {
     ...options,
     sourceType: "pdf",
+  });
+}
+
+/** Extract and ingest an uploaded Office document or CSV file. */
+export async function ingestDocument(
+  input: { bytes: ArrayBuffer; filename: string; contentType?: string },
+  options?: Omit<IngestOptions, "sourceType"> & { title?: string; tags?: string[] },
+): Promise<IngestResult> {
+  const extracted = extractDocumentText(input);
+  return ingest(options?.title ?? extracted.title, extracted.text, {
+    ...options,
+    sourceUrl: "upload",
+    sourceType: extracted.format,
   });
 }
 
@@ -1205,7 +1223,7 @@ export interface IngestOptions {
    * default `"url"` / `"text"` heuristic when building the `sources[]` entry.
    * Used by `ingestXMention()` to set `"x-mention"` provenance.
    */
-  sourceType?: "url" | "text" | "x-mention" | "image" | "pdf" | "youtube" | "email";
+  sourceType?: "url" | "text" | "x-mention" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "csv" | "youtube" | "email";
   /**
    * Who triggered the ingest (user handle or agent ID). Defaults to `"system"`.
    * Passed through to the `triggered_by` field on the `SourceEntry`.

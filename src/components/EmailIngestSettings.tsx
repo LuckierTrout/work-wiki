@@ -189,7 +189,7 @@ export function EmailIngestSettings() {
               <li>Email subject becomes the page title.</li>
               <li>Body text and links are synthesized.</li>
               <li>Progress appears under Recent ingests.</li>
-              <li>Attachment names are recorded; file processing comes next.</li>
+              <li>DOCX, PPTX, XLSX, and CSV attachments are included.</li>
             </ul>
           </div>
         </div>

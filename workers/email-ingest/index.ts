@@ -39,6 +39,19 @@ const CONFIG_KEY = "_idx:email-ingest-config";
 const MAX_RAW_EMAIL_BYTES = 10 * 1024 * 1024;
 const MAX_EMAIL_CONTENT_CHARS = 100_000;
 const TRUNCATION_MARKER = "\n\n[Email body truncated]";
+const SUPPORTED_EXTENSIONS = new Set(["docx", "pptx", "xlsx", "csv"]);
+const SUPPORTED_MIME_TYPES = new Set([
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "text/csv",
+  "application/csv",
+]);
+
+function supportedAttachment(filename: string | null, mimeType: string): boolean {
+  const ext = filename?.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
+  return SUPPORTED_EXTENSIONS.has(ext) || SUPPORTED_MIME_TYPES.has(mimeType.toLowerCase());
+}
 
 function normalizeAddress(value: string): string {
   return value.trim().toLowerCase();
@@ -116,7 +129,7 @@ export default {
       await reply(
         message,
         headerSubject,
-        "Yopedia did not process this message because it is larger than 10 MB. Attachment handling will be added in a later phase.",
+        "Yopedia did not process this message because it is larger than 10 MB.",
       );
       return;
     }
@@ -158,14 +171,16 @@ export default {
       );
       return;
     }
-    if (!rawContent) {
-      const attachmentNote = parsed.attachments.length
-        ? " Attachment handling will be added in a later phase."
-        : "";
+    const supportedAttachments = parsed.attachments
+      .filter((attachment) => supportedAttachment(attachment.filename, attachment.mimeType))
+      .slice(0, 10);
+    if (!rawContent && supportedAttachments.length === 0) {
       await reply(
         message,
         subject,
-        `Yopedia found no email text to ingest.${attachmentNote}`,
+        parsed.attachments.length
+          ? "Yopedia found no email text or supported document attachment. Supported attachments: DOCX, PPTX, XLSX, and CSV."
+          : "Yopedia found no email text to ingest.",
       );
       return;
     }
@@ -180,21 +195,39 @@ export default {
 
     let response: Response;
     try {
+      const site = (env.YOPEDIA_SITE_URL || "").replace(/\/+$/, "");
+      if (!site) throw new Error("YOPEDIA_SITE_URL is missing");
+      const form = new FormData();
+      form.append("from", from);
+      form.append("to", to);
+      form.append("subject", subject);
+      form.append("messageId", messageId);
+      if (content) form.append("content", content);
+      for (const name of attachmentNames) form.append("attachmentName", name);
+      for (const [index, attachment] of supportedAttachments.entries()) {
+        const filename = attachment.filename || `attachment-${index + 1}`;
+        const bytes = typeof attachment.content === "string"
+          ? new TextEncoder().encode(attachment.content)
+          : attachment.content instanceof ArrayBuffer
+            ? new Uint8Array(attachment.content)
+            : new Uint8Array(
+                attachment.content.buffer,
+                attachment.content.byteOffset,
+                attachment.content.byteLength,
+              );
+        form.append(
+          "attachments",
+          new Blob([bytes], { type: attachment.mimeType || "application/octet-stream" }),
+          filename,
+        );
+      }
       response = await env.YOPEDIA.fetch(
-        new Request("https://yopedia.internal/api/email/ingest", {
+        new Request(`${site}/api/email/ingest`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${serviceToken}`,
-            "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            from,
-            to,
-            subject,
-            messageId,
-            content,
-            attachmentNames,
-          }),
+          body: form,
         }),
       );
     } catch (error) {
@@ -224,8 +257,11 @@ export default {
       jobId ? `Job: ${jobId}` : "",
       slug && site ? `Page: ${site}/wiki/${encodeURIComponent(slug)}` : "",
       !slug && site ? `Track it under Recent ingests: ${site}/ingest` : "",
-      attachmentNames.length
-        ? `${attachmentNames.length} attachment${attachmentNames.length === 1 ? " was" : "s were"} recorded but not processed in this phase.`
+      supportedAttachments.length
+        ? `${supportedAttachments.length} supported attachment${supportedAttachments.length === 1 ? " was" : "s were"} queued for ingestion.`
+        : "",
+      attachmentNames.length > supportedAttachments.length
+        ? `${attachmentNames.length - supportedAttachments.length} unsupported attachment${attachmentNames.length - supportedAttachments.length === 1 ? " was" : "s were"} recorded but skipped.`
         : "",
     ].filter(Boolean);
     await reply(message, subject, lines.join("\n\n"));

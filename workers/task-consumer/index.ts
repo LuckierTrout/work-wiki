@@ -104,6 +104,7 @@ function emailMetadata(body: unknown): {
   from: string;
   subject: string;
   attachmentNames: string[];
+  processedAttachmentCount: number;
 } | null {
   if (!body || typeof body !== "object") return null;
   const email = (body as Record<string, unknown>).email;
@@ -120,6 +121,9 @@ function emailMetadata(body: unknown): {
           (name): name is string => typeof name === "string",
         )
       : [],
+    processedAttachmentCount: Array.isArray((body as Record<string, unknown>).attachments)
+      ? ((body as Record<string, unknown>).attachments as unknown[]).length
+      : 0,
   };
 }
 
@@ -135,8 +139,8 @@ async function notifyEmailCompletion(
 
   const site = (env.YOPEDIA_SITE_URL || env.YOPEDIA_URL || "").replace(/\/+$/, "");
   const pageUrl = site ? `${site}/wiki/${encodeURIComponent(slug)}` : slug;
-  const attachmentNote = email.attachmentNames.length
-    ? `\n\n${email.attachmentNames.length} attachment${email.attachmentNames.length === 1 ? " was" : "s were"} recorded but not processed in this phase.`
+  const attachmentNote = email.processedAttachmentCount
+    ? `\n\n${email.processedAttachmentCount} supported attachment${email.processedAttachmentCount === 1 ? " was" : "s were"} included in the page.`
     : "";
   await env.EMAIL.send({
     from,

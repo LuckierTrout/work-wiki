@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { rememberRecentJob } from "@/lib/recent-ingests";
 
-export type Mode = "url" | "pdf" | "xpost" | "youtube" | "text" | "image" | "batch";
+export type Mode = "url" | "pdf" | "document" | "xpost" | "youtube" | "text" | "image" | "batch";
 /** All ingests are async now: submit → `queued` (poll the job) → `success`. */
 export type Stage = "form" | "queued" | "success";
 
@@ -44,6 +44,7 @@ export interface UseIngestReturn {
   imageFile: File | null;
   pdfUrl: string;
   pdfFile: File | null;
+  documentFile: File | null;
   vaultId: string | null;
   loading: boolean;
   error: string | null;
@@ -57,10 +58,12 @@ export interface UseIngestReturn {
   setImageFile: (f: File | null) => void;
   setPdfUrl: (v: string) => void;
   setPdfFile: (f: File | null) => void;
+  setDocumentFile: (f: File | null) => void;
   setVaultId: (v: string | null) => void;
   handleSourceSubmit: (e: React.FormEvent) => void;
   handleImageIngest: (e: React.FormEvent) => void;
   handlePdfIngest: (e: React.FormEvent) => void;
+  handleDocumentIngest: (e: React.FormEvent) => void;
   reset: () => void;
 }
 
@@ -105,6 +108,7 @@ export function useIngest(): UseIngestReturn {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [pdfUrl, setPdfUrl] = useState("");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [vaultId, setVaultId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -172,6 +176,7 @@ export function useIngest(): UseIngestReturn {
       setPdfUrl("");
       setPdfFile(null);
     }
+    if (newMode !== "document") setDocumentFile(null);
   }
 
   /**
@@ -353,6 +358,40 @@ export function useIngest(): UseIngestReturn {
     }
   }
 
+  /** Office/CSV upload → stage in R2 → queue extraction + ingest → poll. */
+  async function handleDocumentIngest(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (!documentFile) {
+      setError("Choose a .docx, .pptx, .xlsx, or .csv file");
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    try {
+      const form = new FormData();
+      form.append("file", documentFile);
+      if (title.trim()) form.append("title", title.trim());
+      if (vaultId) form.append("vaultId", vaultId);
+      const res = await fetch("/api/ingest/document", { method: "POST", body: form });
+      const data: IngestResponse = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Something went wrong");
+        setStage("form");
+        return;
+      }
+      if (!onQueued(data)) {
+        setError("Unexpected response — the ingest was not queued.");
+        setStage("form");
+      }
+    } catch {
+      setError("Network error — could not reach the server");
+      setStage("form");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function reset() {
     stopPolling();
     setTitle("");
@@ -362,6 +401,7 @@ export function useIngest(): UseIngestReturn {
     setImageFile(null);
     setPdfUrl("");
     setPdfFile(null);
+    setDocumentFile(null);
     setVaultId(null);
     setError(null);
     setResult(null);
@@ -378,6 +418,7 @@ export function useIngest(): UseIngestReturn {
     imageFile,
     pdfUrl,
     pdfFile,
+    documentFile,
     vaultId,
     loading,
     error,
@@ -390,10 +431,12 @@ export function useIngest(): UseIngestReturn {
     setImageFile,
     setPdfUrl,
     setPdfFile,
+    setDocumentFile,
     setVaultId,
     handleSourceSubmit,
     handleImageIngest,
     handlePdfIngest,
+    handleDocumentIngest,
     reset,
   };
 }

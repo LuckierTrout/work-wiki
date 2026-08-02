@@ -7,6 +7,7 @@ vi.mock("@/lib/ingest", () => ({
   ingestUrl: vi.fn(),
   ingestPdf: vi.fn(),
   ingestImage: vi.fn(),
+  ingestDocument: vi.fn(),
   reingest: vi.fn(),
 }));
 vi.mock("@/lib/lint-fix", () => ({ fixLintIssue: vi.fn() }));
@@ -28,7 +29,7 @@ vi.mock("@/lib/vault", () => ({
 
 import { getServicePrincipal } from "@/lib/auth";
 import { reconcileFromTalk } from "@/lib/reconcile";
-import { ingest, ingestUrl, ingestPdf, ingestImage, reingest } from "@/lib/ingest";
+import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest } from "@/lib/ingest";
 import { fixLintIssue } from "@/lib/lint-fix";
 import { updateIngestJob } from "@/lib/ingest-jobs";
 import { readStagedBytes, readStagedText, deleteStaged } from "@/lib/ingest-staging";
@@ -39,6 +40,7 @@ const mockedIngest = vi.mocked(ingest);
 const mockedIngestUrl = vi.mocked(ingestUrl);
 const mockedIngestPdf = vi.mocked(ingestPdf);
 const mockedIngestImage = vi.mocked(ingestImage);
+const mockedIngestDocument = vi.mocked(ingestDocument);
 const mockedReingest = vi.mocked(reingest);
 const mockedFixLint = vi.mocked(fixLintIssue);
 const mockedUpdateJob = vi.mocked(updateIngestJob);
@@ -292,6 +294,53 @@ describe("POST /api/tasks/run", () => {
     expect(mockedDeleteStaged).toHaveBeenCalledWith("raw/uploads/j/p.png");
   });
 
+  it("reads a staged Office/CSV document and dispatches document ingestion", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngestDocument.mockResolvedValue({ primarySlug: "staged-doc" } as any);
+    const res = await run({
+      kind: "ingest",
+      owner: "alice",
+      staged: {
+        key: "raw/uploads/j/plan.docx",
+        kind: "document",
+        filename: "plan.docx",
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(mockedIngestDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: "plan.docx" }),
+      expect.objectContaining({ owner: "alice" }),
+    );
+    expect(mockedDeleteStaged).toHaveBeenCalledWith("raw/uploads/j/plan.docx");
+  });
+
+  it("folds staged email attachments into the email body", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngest.mockResolvedValue({ primarySlug: "email-with-sheet" } as any);
+    const res = await run({
+      kind: "ingest",
+      title: "Planning",
+      content: "Email body",
+      owner: "alice",
+      sourceType: "email",
+      email: {
+        from: "alice@example.com",
+        to: "ingest@example.com",
+        subject: "Planning",
+        messageId: "<planning@example.com>",
+        attachmentNames: ["plan.csv"],
+      },
+      attachments: [{ key: "raw/uploads/j/plan.csv", filename: "plan.csv", contentType: "text/csv" }],
+    });
+    expect(res.status).toBe(200);
+    expect(mockedIngest).toHaveBeenCalledWith(
+      "Planning",
+      expect.stringContaining("# Attachment: plan.csv"),
+      expect.objectContaining({ sourceType: "email" }),
+    );
+    expect(mockedDeleteStaged).toHaveBeenCalledWith("raw/uploads/j/plan.csv");
+  });
+
   it("reads staged text from R2, ingests it, and deletes the blob", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockedIngest.mockResolvedValue({ primarySlug: "staged-text" } as any);
@@ -311,7 +360,7 @@ describe("POST /api/tasks/run", () => {
     expect(mockedDeleteStaged).toHaveBeenCalledWith("raw/uploads/j/text.md");
   });
 
-  it("deletes the staged blob even when the ingest throws", async () => {
+  it("keeps a staged blob when a transient ingest failure should be retried", async () => {
     mockedIngestPdf.mockRejectedValueOnce(new Error("R2 read flaked"));
     const res = await run({
       kind: "ingest",
@@ -320,8 +369,7 @@ describe("POST /api/tasks/run", () => {
       staged: { key: "raw/uploads/j/doc.pdf", kind: "pdf" },
     });
     expect(res.status).toBe(500); // transient → retry
-    // Cleanup still runs in the finally.
-    expect(mockedDeleteStaged).toHaveBeenCalledWith("raw/uploads/j/doc.pdf");
+    expect(mockedDeleteStaged).not.toHaveBeenCalled();
     // The tracked job is recorded failed.
     expect(mockedUpdateJob).toHaveBeenCalledWith("job-x", {
       status: "failed",

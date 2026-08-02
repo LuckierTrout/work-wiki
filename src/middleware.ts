@@ -17,6 +17,7 @@ const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 //   - /api/agents/<id>/publish    — the agent's own per-agent token
 //   - /api/ingest                 — Clerk session OR the system service token
 //   - /api/ingest/batch           — Clerk session OR the system service token
+//   - /api/ingest/document        — Clerk session OR the system service token
 //   - /api/ingest/image           — Clerk session OR the system service token
 //   - /api/ingest/pdf             — Clerk session OR the system service token
 //   - /api/ingest/reingest        — Clerk session OR the system service token
@@ -37,6 +38,7 @@ const IN_ROUTE_AUTH_PATHS = new Set([
   "/api/mcp",
   "/api/ingest",
   "/api/ingest/batch",
+  "/api/ingest/document",
   "/api/ingest/image",
   "/api/ingest/pdf",
   "/api/ingest/reingest",

@@ -130,6 +130,10 @@ export function SrcChip({ type }: { type: SourceEntry["type"] }) {
     "wiki-ref": "WIKI",
     image: "IMG",
     pdf: "PDF",
+    docx: "Word",
+    pptx: "PowerPoint",
+    xlsx: "Excel",
+    csv: "CSV",
     youtube: "YT",
     email: "MAIL",
   };

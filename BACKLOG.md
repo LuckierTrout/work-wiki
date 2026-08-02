@@ -40,6 +40,8 @@ The items below begin after the API-key checks pass.
 
 ## Imports and document handling
 
+- [x] Add secure single-file DOCX, PPTX, XLSX, and CSV upload plus inbound-email
+  attachment extraction through R2 staging and the asynchronous ingest queue.
 - [ ] Add single-file and bulk import with preview, destination selection,
   progress, retry, errors, duplicate detection, and source provenance.
 - [ ] Support Markdown, TXT, HTML, PDF, DOCX, PPTX, CSV, ZIP archives, and an

@@ -8,7 +8,10 @@ vi.mock("@/lib/ingest-jobs", () => ({
   createIngestJob: vi.fn(),
   getIngestJob: vi.fn(),
 }));
-vi.mock("@/lib/ingest-staging", () => ({ stageText: vi.fn() }));
+vi.mock("@/lib/ingest-staging", () => ({
+  stageText: vi.fn(),
+  stageBytes: vi.fn(async (_jobId: string, filename: string) => `raw/uploads/job/${filename}`),
+}));
 vi.mock("@/lib/email-ingest", async (original) => ({
   ...(await original<typeof import("@/lib/email-ingest")>()),
   loadEmailIngestConfig: vi.fn(),
@@ -39,6 +42,20 @@ function request(overrides: Record<string, unknown> = {}) {
       ...overrides,
     }),
   });
+}
+
+function multipartRequest(options: { content?: string; file?: File } = {}) {
+  const form = new FormData();
+  form.append("from", "owner@example.com");
+  form.append("to", "ingest@example.com");
+  form.append("subject", "Quarterly review");
+  form.append("messageId", "<message-attachment@example.com>");
+  if (options.content !== undefined) form.append("content", options.content);
+  if (options.file) {
+    form.append("attachmentName", options.file.name);
+    form.append("attachments", options.file, options.file.name);
+  }
+  return new Request("http://localhost/api/email/ingest", { method: "POST", body: form });
 }
 
 beforeEach(() => {
@@ -123,6 +140,32 @@ describe("POST /api/email/ingest", () => {
       status: "done",
       slug: "project-notes",
     });
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("accepts an attachment-only email and queues its staged document", async () => {
+    const { POST } = await import("@/app/api/email/ingest/route");
+    const response = await POST(multipartRequest({
+      file: new File(["name,total\nAlpha,10"], "metrics.csv", { type: "text/csv" }),
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ supportedAttachmentCount: 1 });
+    expect(mockedEnqueue).toHaveBeenCalledWith(
+      expect.stringMatching(/^email-/),
+      expect.objectContaining({
+        sourceType: "email",
+        attachments: [expect.objectContaining({ filename: "metrics.csv" })],
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("rejects attachment-only email when its file type is unsupported", async () => {
+    const { POST } = await import("@/app/api/email/ingest/route");
+    const response = await POST(multipartRequest({
+      file: new File(["zip"], "archive.zip", { type: "application/zip" }),
+    }));
+    expect(response.status).toBe(400);
     expect(mockedEnqueue).not.toHaveBeenCalled();
   });
 });

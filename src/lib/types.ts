@@ -95,7 +95,7 @@ export interface LintResult {
 /** A single provenance entry in the structured `sources[]` array. */
 export interface SourceEntry {
   /** Provenance type: how the source was acquired. */
-  type: "url" | "text" | "x-mention" | "wiki-ref" | "image" | "pdf" | "youtube" | "email";
+  type: "url" | "text" | "x-mention" | "wiki-ref" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "csv" | "youtube" | "email";
   /** Source URL or "text-paste" for pasted content. */
   url: string;
   /** ISO date string of when the source was fetched/ingested. */

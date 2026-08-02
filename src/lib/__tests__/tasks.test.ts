@@ -158,6 +158,31 @@ describe("parseTask", () => {
     ).toBeNull();
   });
 
+  it("accepts staged email attachments and rejects them on non-email tasks", () => {
+    const email = {
+      from: "alice@example.com",
+      to: "ingest@example.com",
+      subject: "Spreadsheet",
+      messageId: "<sheet@example.com>",
+      attachmentNames: ["sheet.xlsx"],
+    };
+    expect(parseTask({
+      kind: "ingest",
+      sourceType: "email",
+      email,
+      attachments: [{ key: "raw/uploads/j/sheet.xlsx", filename: "sheet.xlsx" }],
+    })).toMatchObject({
+      sourceType: "email",
+      attachments: [{ key: "raw/uploads/j/sheet.xlsx", filename: "sheet.xlsx" }],
+    });
+    expect(parseTask({
+      kind: "ingest",
+      content: "x",
+      sourceType: "text",
+      attachments: [{ key: "raw/uploads/j/sheet.xlsx", filename: "sheet.xlsx" }],
+    })).toBeNull();
+  });
+
   it("rejects a malformed staged descriptor", () => {
     // Empty key, bad kind, or non-object → staged dropped; with no url/content → null.
     expect(parseTask({ kind: "ingest", staged: { key: "", kind: "pdf" } })).toBeNull();

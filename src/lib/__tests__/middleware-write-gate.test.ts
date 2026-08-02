@@ -18,6 +18,7 @@ describe("write-gate in-route auth exemptions", () => {
     expect(authenticatesInRoute("/api/ingest")).toBe(true);
     expect(authenticatesInRoute("/api/ingest/x-mention")).toBe(true);
     expect(authenticatesInRoute("/api/ingest/batch")).toBe(true);
+    expect(authenticatesInRoute("/api/ingest/document")).toBe(true);
     expect(authenticatesInRoute("/api/ingest/image")).toBe(true);
     expect(authenticatesInRoute("/api/ingest/pdf")).toBe(true);
     expect(authenticatesInRoute("/api/ingest/reingest")).toBe(true);

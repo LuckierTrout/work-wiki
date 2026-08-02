@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 import { getServicePrincipal } from "@/lib/auth";
 import { parseTask } from "@/lib/tasks";
 import { reconcileFromTalk } from "@/lib/reconcile";
-import { ingest, ingestUrl, ingestPdf, ingestImage, reingest } from "@/lib/ingest";
+import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest } from "@/lib/ingest";
+import { extractDocumentText } from "@/lib/document-extract";
 import { fixLintIssue } from "@/lib/lint-fix";
 import { updateIngestJob } from "@/lib/ingest-jobs";
 import { readStagedBytes, readStagedText, deleteStaged } from "@/lib/ingest-staging";
 import { agentIdFor, addAgentLearningPage, DEFAULT_AGENT_NAME } from "@/lib/agents";
-import { getErrorMessage } from "@/lib/errors";
+import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { addToVault } from "@/lib/vault";
 
@@ -47,6 +48,11 @@ export async function POST(req: Request) {
     // Poison message — don't retry.
     return NextResponse.json({ error: "malformed task" }, { status: 400 });
   }
+
+  const stagedKeys = task.kind === "ingest"
+    ? [task.staged?.key, ...(task.attachments?.map((attachment) => attachment.key) ?? [])]
+        .filter((key): key is string => Boolean(key))
+    : [];
 
   try {
     if (task.kind === "reconcile") {
@@ -118,30 +124,43 @@ export async function POST(req: Request) {
     //  - source pdf/image with a url: the URL PDF/image path (not generic);
     //  - url: generic URL; content: pasted text.
     let result;
-    if (task.staged) {
+    if (task.sourceType === "email" && task.attachments?.length) {
+      let combined = task.content ?? "";
+      if (task.staged) combined = await readStagedText(task.staged.key);
+      for (const attachment of task.attachments) {
+        const bytes = await readStagedBytes(attachment.key);
+        const extracted = extractDocumentText({
+          bytes,
+          filename: attachment.filename,
+          contentType: attachment.contentType,
+        });
+        combined += `${combined.trim() ? "\n\n" : ""}# Attachment: ${attachment.filename}\n\n${extracted.text}`;
+      }
+      result = await ingest(task.title?.trim() || "Emailed document", combined, opts);
+    } else if (task.staged) {
       const { key, kind, filename, contentType } = task.staged;
-      try {
-        if (kind === "pdf") {
-          const bytes = await readStagedBytes(key);
-          result = await ingestPdf(
-            { bytes, filename: filename || "document.pdf" },
-            opts,
-          );
-        } else if (kind === "image") {
-          const bytes = await readStagedBytes(key);
-          result = await ingestImage(
-            { bytes, filename: filename || "image", contentType },
-            opts,
-          );
-        } else {
-          // kind === "text"
-          const text = await readStagedText(key);
-          result = await ingest(task.title?.trim() || "Untitled", text, opts);
-        }
-      } finally {
-        // R2 has no TTL — drop the staged blob whether the ingest succeeded or
-        // threw. Best-effort: deleteStaged never throws.
-        await deleteStaged(key);
+      if (kind === "pdf") {
+        const bytes = await readStagedBytes(key);
+        result = await ingestPdf(
+          { bytes, filename: filename || "document.pdf" },
+          opts,
+        );
+      } else if (kind === "image") {
+        const bytes = await readStagedBytes(key);
+        result = await ingestImage(
+          { bytes, filename: filename || "image", contentType },
+          opts,
+        );
+      } else if (kind === "document") {
+        const bytes = await readStagedBytes(key);
+        result = await ingestDocument(
+          { bytes, filename: filename || "document", contentType },
+          opts,
+        );
+      } else {
+        // kind === "text"
+        const text = await readStagedText(key);
+        result = await ingest(task.title?.trim() || "Untitled", text, opts);
       }
     } else if (task.source === "pdf" && task.url) {
       result = await ingestPdf({ pdfUrl: task.url }, opts);
@@ -185,6 +204,10 @@ export async function POST(req: Request) {
       }
     }
 
+    // R2 has no TTL. Delete only after the ingest and tracked-job update both
+    // succeed so a transient failure can be retried against the same source.
+    await Promise.all(stagedKeys.map((key) => deleteStaged(key)));
+
     return NextResponse.json({ ok: true, slug: result.primarySlug });
   } catch (err) {
     const message = getErrorMessage(err);
@@ -206,6 +229,11 @@ export async function POST(req: Request) {
     // A missing page/thread is permanent → poison (4xx), don't retry forever.
     if (/not found/i.test(message)) {
       logger.warn("tasks", `task "${task.kind}" permanently failed: ${message}`);
+      return NextResponse.json({ error: message }, { status: 422 });
+    }
+    if (err instanceof ClientInputError) {
+      await Promise.all(stagedKeys.map((key) => deleteStaged(key)));
+      logger.warn("tasks", `task "${task.kind}" rejected: ${message}`);
       return NextResponse.json({ error: message }, { status: 422 });
     }
     // Otherwise transient (LLM hiccup, lock contention) → retry.

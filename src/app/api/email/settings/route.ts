@@ -29,7 +29,7 @@ export async function GET() {
     addressConfigured: config.inboundAddress.length > 0,
     routingReady,
     bodyIngestEnabled: true,
-    attachmentIngestEnabled: false,
+    attachmentIngestEnabled: true,
   });
 }
 
@@ -107,7 +107,7 @@ export async function PUT(request: Request) {
         config.inboundAddress.length > 0 &&
         process.env.YOPEDIA_EMAIL_ROUTING_READY === "1",
       bodyIngestEnabled: true,
-      attachmentIngestEnabled: false,
+      attachmentIngestEnabled: true,
     });
   } catch (error) {
     logger.error("email-ingest", "settings update failed", error);

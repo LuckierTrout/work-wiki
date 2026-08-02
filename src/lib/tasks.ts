@@ -55,10 +55,17 @@ export type Task =
        *  ingest path. */
       staged?: {
         key: string;
-        kind: "pdf" | "image" | "text";
+        kind: "pdf" | "image" | "text" | "document";
         filename?: string;
         contentType?: string;
       };
+      /** Supported email attachments staged separately in R2. They may coexist
+       *  with an inline/staged email body and are folded into the same page. */
+      attachments?: Array<{
+        key: string;
+        filename: string;
+        contentType?: string;
+      }>;
       /** Optional vault to auto-file the resulting page into (fail-soft). */
       vaultId?: string;
       /** Agent ingests: the page `type` (scoped knowledge/identity), so the page
@@ -76,7 +83,7 @@ export type Task =
        *  internally by the ingest functions, never carried over the queue. */
       sourceType?: "x-mention" | "url" | "text" | "email";
       /** Inbound-email metadata used for owner-only activity and completion
-       *  notifications. Attachment bytes are intentionally not carried. */
+       *  notifications. Attachment bytes are referenced through staged keys. */
       email?: EmailIngestMetadata;
       /** Agent id to attach the resulting page to as one of its learning pages
        *  (agent-scoped ingests). */
@@ -192,11 +199,15 @@ export function parseTask(body: unknown): Task | null {
       let staged: Extract<Task, { kind: "ingest" }>["staged"];
       if (t.staged && typeof t.staged === "object") {
         const s = t.staged as Record<string, unknown>;
-        const kindOk = s.kind === "pdf" || s.kind === "image" || s.kind === "text";
+        const kindOk =
+          s.kind === "pdf" ||
+          s.kind === "image" ||
+          s.kind === "text" ||
+          s.kind === "document";
         if (typeof s.key === "string" && s.key.trim() !== "" && kindOk) {
           staged = {
             key: s.key,
-            kind: s.kind as "pdf" | "image" | "text",
+            kind: s.kind as "pdf" | "image" | "text" | "document",
             ...(typeof s.filename === "string" ? { filename: s.filename } : {}),
             ...(typeof s.contentType === "string"
               ? { contentType: s.contentType }
@@ -208,7 +219,30 @@ export function parseTask(body: unknown): Task | null {
       // ingestPdf/ingestImage rather than ingestUrl.
       const source =
         t.source === "pdf" || t.source === "image" ? t.source : undefined;
-      if (!hasUrl && !hasContent && !staged) return null; // need a source
+      let attachments: Extract<Task, { kind: "ingest" }>["attachments"];
+      if (t.attachments !== undefined) {
+        if (!Array.isArray(t.attachments) || t.attachments.length > 10) return null;
+        attachments = [];
+        for (const value of t.attachments) {
+          if (!value || typeof value !== "object") return null;
+          const attachment = value as Record<string, unknown>;
+          if (
+            typeof attachment.key !== "string" ||
+            attachment.key.trim() === "" ||
+            typeof attachment.filename !== "string" ||
+            attachment.filename.trim() === ""
+          ) return null;
+          attachments.push({
+            key: attachment.key,
+            filename: attachment.filename,
+            ...(typeof attachment.contentType === "string"
+              ? { contentType: attachment.contentType }
+              : {}),
+          });
+        }
+        if (attachments.length === 0) attachments = undefined;
+      }
+      if (!hasUrl && !hasContent && !staged && !attachments) return null; // need a source
       // Reject incoherent combinations so the consumer's branch-order precedence
       // is an ENFORCED invariant, not a silent "first match wins". `staged` is
       // exclusive (it's its own source); `source` only qualifies a `url`.
@@ -247,6 +281,8 @@ export function parseTask(body: unknown): Task | null {
           ? t.sourceType
           : undefined;
       if ((sourceType === "email") !== Boolean(email)) return null;
+      if (attachments && sourceType !== "email") return null;
+      if (attachments && staged && staged.kind !== "text") return null;
       return {
         kind: "ingest",
         ...(hasUrl ? { url: t.url as string } : {}),
@@ -258,6 +294,7 @@ export function parseTask(body: unknown): Task | null {
         ...(typeof t.jobId === "string" ? { jobId: t.jobId } : {}),
         ...(source ? { source } : {}),
         ...(staged ? { staged } : {}),
+        ...(attachments ? { attachments } : {}),
         ...(typeof t.vaultId === "string" && t.vaultId.trim() !== ""
           ? { vaultId: t.vaultId }
           : {}),
