@@ -18,7 +18,7 @@ The items below begin after the API-key checks pass.
 
 ## Retrieval and chat
 
-- [ ] Correct vector-search readiness. Resolve the current Vectorize index and
+- [x] Correct vector-search readiness. Resolve the current Vectorize index and
   embedding dimension mismatch, align provider/model detection, rebuild the
   embeddings, and verify hybrid search against known documents.
 - [ ] Add a multi-turn, citation-first chat agent over the user's wiki. Include

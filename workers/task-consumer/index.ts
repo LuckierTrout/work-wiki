@@ -10,8 +10,8 @@
  *
  * Ack/retry maps straight onto Cloudflare Queues semantics:
  *   - 2xx  → ack (done).
- *   - 4xx  → poison (malformed / not-found) → ack + drop (don't retry forever).
- *   - 5xx / network → retry (CF redelivers; → DLQ after max_retries).
+ *   - 400/404/422 → poison (malformed / not-found) → ack + drop.
+ *   - other 4xx / 5xx / network → retry (then DLQ after max_retries).
  */
 
 interface Env {
@@ -52,6 +52,7 @@ async function runTask(
 ): Promise<void> {
   const base = (env.YOPEDIA_URL ?? "").replace(/\/+$/, "");
   const token = env.YOPEDIA_SERVICE_TOKEN!;
+  const taskUrl = `${base}/api/tasks/run`;
   const requestInit: RequestInit = {
     method: "POST",
     headers: {
@@ -64,9 +65,12 @@ async function runTask(
   try {
     res = env.YOPEDIA
       ? await env.YOPEDIA.fetch(
-          new Request("https://yopedia.internal/api/tasks/run", requestInit),
+          // Service bindings choose the destination Worker; the Request URL is
+          // still visible to the target app. Preserve its configured origin so
+          // host-aware middleware does not reject/cancel the internal request.
+          new Request(taskUrl, requestInit),
         )
-      : await fetch(`${base}/api/tasks/run`, requestInit);
+      : await fetch(taskUrl, requestInit);
   } catch (err) {
     console.error(`task-consumer: fetch failed for ${message.id} — retry`, err);
     message.retry();
@@ -83,14 +87,15 @@ async function runTask(
     message.ack();
     return;
   }
-  if (res.status >= 400 && res.status < 500) {
+  if (res.status === 400 || res.status === 404 || res.status === 422) {
     // Permanently-bad task — don't retry it forever.
     const snip = (await res.text().catch(() => "")).slice(0, 200).replace(/\s+/g, " ");
     console.warn(`task-consumer: poison ${message.id} (${res.status}): ${snip}`);
     message.ack();
     return;
   }
-  // 5xx — transient; let CF redeliver (and DLQ after max_retries).
+  // Other 4xx (notably auth/rate-limit) and 5xx are operational/transient;
+  // retry instead of silently dropping a valid task on configuration drift.
   console.warn(`task-consumer: transient ${message.id} (${res.status}) — retry`);
   message.retry();
 }
@@ -145,7 +150,7 @@ export default {
   async queue(batch: MessageBatch, env: Env): Promise<void> {
     const token = env.YOPEDIA_SERVICE_TOKEN;
     const base = (env.YOPEDIA_URL ?? "").replace(/\/+$/, "");
-    if ((!env.YOPEDIA && !base) || !token) {
+    if (!base || !token) {
       // Misconfiguration — retry the whole batch so nothing is lost.
       console.error(
         "task-consumer: missing YOPEDIA_URL or YOPEDIA_SERVICE_TOKEN — retrying batch",
@@ -167,7 +172,7 @@ export default {
   async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
     const base = (env.YOPEDIA_URL ?? "").replace(/\/+$/, "");
     const token = env.YOPEDIA_SERVICE_TOKEN;
-    if ((!env.YOPEDIA && !base) || !token) {
+    if (!base || !token) {
       console.error("task-consumer cron: missing YOPEDIA binding/URL or service token");
       return;
     }
@@ -178,7 +183,7 @@ export default {
       };
       const res = env.YOPEDIA
         ? await env.YOPEDIA.fetch(
-            new Request("https://yopedia.internal/api/tasks/scan", requestInit),
+            new Request(`${base}/api/tasks/scan`, requestInit),
           )
         : await fetch(`${base}/api/tasks/scan`, requestInit);
       const body = (await res.text().catch(() => "")).slice(0, 400);

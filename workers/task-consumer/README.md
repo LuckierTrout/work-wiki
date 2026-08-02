@@ -106,13 +106,14 @@ it as a secret. The cron keeps running but reverts to harmless dry-runs.
 
 **Ack/retry** maps onto Cloudflare Queues:
 - `2xx` → ack (done).
-- `4xx` → poison (malformed / not-found) → ack + drop (don't retry forever).
-- `5xx` / network → retry (CF redelivers; → dead-letter queue after `max_retries`).
+- `400`, `404`, or `422` → poison (malformed / not-found) → ack + drop.
+- Other `4xx`, `5xx`, or network failures → retry (then DLQ after max retries).
 
 > **Same-zone fetch note:** the `/api/tasks/run` call targets the main yopedia
-> Worker on the same account. A plain same-zone Worker→Worker `fetch()` is blocked
-> (**error 1042**), so this Worker sets the **`global_fetch_strictly_public`**
-> compatibility flag.
+> Worker through the `YOPEDIA` service binding. The forwarded Request keeps the
+> configured public origin because the app's middleware is host-aware. The
+> **`global_fetch_strictly_public`** compatibility flag supports the public-URL
+> fallback when the service binding is unavailable.
 
 ## One-time setup (operator)
 
