@@ -10,7 +10,7 @@ import { stageBytes } from "@/lib/ingest-staging";
 import { logger } from "@/lib/logger";
 import { addToVault, vaultOwnedBy } from "@/lib/vault";
 
-/** POST /api/ingest/document — upload a DOCX, PPTX, XLSX, or CSV file. */
+/** POST /api/ingest/document — upload a supported document or safe archive. */
 export async function POST(request: NextRequest) {
   try {
     const principal = (await getPrincipal()) ?? getServicePrincipal(request);
@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
     }
     if (!(request.headers.get("content-type") || "").includes("multipart/form-data")) {
       return NextResponse.json(
-        { error: "Upload a .docx, .pptx, .xlsx, or .csv file as multipart form data." },
+        { error: "Upload a supported document as multipart form data." },
         { status: 400 },
       );
     }
@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
     const format = detectDocumentFormat(file.name, file.type);
     if (!format) {
       return NextResponse.json(
-        { error: "Unsupported document type. Upload a .docx, .pptx, .xlsx, or .csv file." },
+        { error: "Unsupported document type. Use Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP." },
         { status: 400 },
       );
     }
@@ -54,6 +54,11 @@ export async function POST(request: NextRequest) {
     if (typeof tags === "string" && tags.trim()) {
       options.tags = tags.split(",").map((tag) => tag.trim()).filter(Boolean);
     }
+    const relativePathValue = form.get("relativePath");
+    const relativePath =
+      typeof relativePathValue === "string" && relativePathValue.trim()
+        ? relativePathValue.trim().slice(0, 1_000)
+        : undefined;
 
     const formVaultId = form.get("vaultId");
     let vaultId: string | undefined;
@@ -91,11 +96,17 @@ export async function POST(request: NextRequest) {
           kind: "document",
           filename: file.name,
           ...(file.type ? { contentType: file.type } : {}),
+          ...(relativePath ? { relativePath } : {}),
         },
       },
       async () => {
         const result = await ingestDocument(
-          { bytes, filename: file.name, contentType: file.type },
+          {
+            bytes,
+            filename: file.name,
+            contentType: file.type,
+            ...(relativePath ? { relativePath } : {}),
+          },
           options,
         );
         if (vaultId) {

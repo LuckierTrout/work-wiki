@@ -3,6 +3,7 @@ import { strToU8, zipSync } from "fflate";
 import {
   detectDocumentFormat,
   extractDocumentText,
+  extractDocumentTextAsync,
   parseCsv,
 } from "@/lib/document-extract";
 
@@ -25,7 +26,9 @@ describe("document extraction", () => {
   it("detects supported extensions and MIME types", () => {
     expect(detectDocumentFormat("report.DOCX")).toBe("docx");
     expect(detectDocumentFormat("upload", "text/csv; charset=utf-8")).toBe("csv");
-    expect(detectDocumentFormat("archive.zip")).toBeNull();
+    expect(detectDocumentFormat("archive.zip")).toBe("zip");
+    expect(detectDocumentFormat("notes.markdown")).toBe("md");
+    expect(detectDocumentFormat("page.htm")).toBe("html");
   });
 
   it("extracts DOCX headings, paragraphs, tables, entities, and core title", () => {
@@ -115,10 +118,45 @@ describe("document extraction", () => {
     expect(result.text).toContain("| Alpha | 10 |");
   });
 
-  it("rejects unsupported, corrupt, and empty documents", () => {
+  it("extracts Markdown, HTML, and safe ZIP vault paths", async () => {
+    const markdown = new TextEncoder().encode("# Notes\n\nSee [[Project]].");
+    const md = await extractDocumentTextAsync({
+      bytes: markdown.buffer,
+      filename: "Notes.md",
+      relativePath: "Vault/Notes.md",
+    });
+    expect(md.text).toContain("`Vault/Notes.md`");
+    expect(md.text).toContain("[[Project]]");
+
+    const htmlBytes = new TextEncoder().encode(
+      "<title>Web note</title><h1>Heading</h1><p>Read <a href=\"https://example.com\">this</a>.</p>",
+    );
+    const html = await extractDocumentTextAsync({
+      bytes: htmlBytes.buffer,
+      filename: "note.html",
+    });
+    expect(html.title).toBe("Web note");
+    expect(html.text).toContain("[this](https://example.com)");
+
+    const zipped = zipSync({
+      "Vault/Folder/Plan.md": strToU8("# Plan\n\n- [ ] Ship it"),
+      "Vault/Reference.txt": strToU8("Reference text"),
+      "Vault/image.png": new Uint8Array([1, 2, 3]),
+    });
+    const archive = await extractDocumentTextAsync({
+      bytes: Uint8Array.from(zipped).buffer,
+      filename: "vault.zip",
+    });
+    expect(archive.text).toContain("## File: Vault/Folder/Plan.md");
+    expect(archive.text).toContain("## File: Vault/Reference.txt");
+    expect(archive.text).not.toContain("image.png");
+  });
+
+  it("rejects unsupported, corrupt, and empty documents", async () => {
     const bytes = new TextEncoder().encode("not a zip");
     expect(() => extractDocumentText({ bytes: bytes.buffer, filename: "a.docx" })).toThrow(/not a valid/i);
-    expect(() => extractDocumentText({ bytes: bytes.buffer, filename: "a.zip" })).toThrow(/unsupported/i);
+    expect(() => extractDocumentText({ bytes: bytes.buffer, filename: "a.exe" })).toThrow(/unsupported/i);
+    await expect(extractDocumentTextAsync({ bytes: bytes.buffer, filename: "a.zip" })).rejects.toThrow(/not a valid/i);
     expect(() => extractDocumentText({ bytes: new ArrayBuffer(0), filename: "a.csv" })).toThrow(/empty/i);
   });
 });

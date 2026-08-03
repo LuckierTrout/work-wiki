@@ -16,6 +16,7 @@ import { isOwnerHandle } from "@/lib/owner";
 const primaryLinks = [
   { href: "/wiki", label: "Browse" },
   { href: "/query", label: "Ask" },
+  { href: "/chat", label: "Chat" },
   { href: "/ingest", label: "Ingest" },
   { href: "/save", label: "Save" },
 ];
@@ -23,6 +24,7 @@ const primaryLinks = [
 /** Which primary link should read as "active" for the current path. */
 function getActiveHref(pathname: string): string | null {
   if (pathname === "/query" || pathname.startsWith("/query/")) return "/query";
+  if (pathname === "/chat" || pathname.startsWith("/chat/")) return "/chat";
   if (pathname === "/ingest" || pathname.startsWith("/ingest/")) return "/ingest";
   if (pathname === "/save" || pathname.startsWith("/save/")) return "/save";
   // Browse owns the commons + article reading surfaces.
@@ -163,6 +165,11 @@ export function NavHeader() {
                       labelIcon={<span aria-hidden>🤖</span>}
                       href="/agents"
                     />
+                    <UserButton.Link
+                      label="Tasks"
+                      labelIcon={<span aria-hidden>☑️</span>}
+                      href="/tasks"
+                    />
                     {isOwner && (
                       <UserButton.Link
                         label="Lint"
@@ -250,6 +257,36 @@ export function NavHeader() {
               </Link>
             );
           })}
+          <Show when="signed-in">
+            <Link
+              href="/tasks"
+              onClick={() => setMobileOpen(false)}
+              className="block transition-colors"
+              style={{
+                paddingInline: 24,
+                paddingBlock: 9,
+                fontSize: 15,
+                color: pathname.startsWith("/tasks") ? "var(--ink)" : "var(--muted)",
+                background: pathname.startsWith("/tasks") ? "var(--paper-2)" : "transparent",
+              }}
+            >
+              Tasks
+            </Link>
+            <Link
+              href="/agents"
+              onClick={() => setMobileOpen(false)}
+              className="block transition-colors"
+              style={{
+                paddingInline: 24,
+                paddingBlock: 9,
+                fontSize: 15,
+                color: pathname.startsWith("/agents") ? "var(--ink)" : "var(--muted)",
+                background: pathname.startsWith("/agents") ? "var(--paper-2)" : "transparent",
+              }}
+            >
+              Agents
+            </Link>
+          </Show>
           <div
             style={{
               margin: "8px 24px",

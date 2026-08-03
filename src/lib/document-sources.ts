@@ -106,7 +106,7 @@ async function appendSourceFigures(
 }
 
 /**
- * Permanently preserve original Office/CSV bytes and their web-safe embedded
+ * Permanently preserve original document/archive bytes and their web-safe embedded
  * figures after the canonical page slug is known. Originals are owner-scoped
  * in R2; figures are stored under the page slug so the existing authenticated
  * asset route can enforce the page's visibility.

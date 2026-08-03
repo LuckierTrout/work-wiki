@@ -95,7 +95,7 @@ export interface LintResult {
 /** A single provenance entry in the structured `sources[]` array. */
 export interface SourceEntry {
   /** Provenance type: how the source was acquired. */
-  type: "url" | "text" | "x-mention" | "wiki-ref" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "csv" | "youtube" | "email";
+  type: "url" | "text" | "x-mention" | "wiki-ref" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "csv" | "md" | "txt" | "html" | "zip" | "youtube" | "email";
   /** Source URL or "text-paste" for pasted content. */
   url: string;
   /** ISO date string of when the source was fetched/ingested. */
@@ -209,6 +209,21 @@ export interface AgentProfile {
    *  connecting agent via the MCP `initialize` instructions and the write-tool
    *  descriptions in `tools/list`. */
   defaultVault?: string;
+  /** Owner-authored operating instructions for this specialized agent. */
+  instructions?: string;
+  /** Optional search scope (`mine`, `vault:<id>`, `agent:<id>`, or general). */
+  knowledgeScope?: string;
+  /** When this agent is eligible to run. Manual is the safe default. */
+  trigger?: "manual" | "after-ingest" | "daily" | "weekly";
+  /** Explicit enable switch for automatic triggers. */
+  enabled?: boolean;
+  /** Capabilities the owner has granted to the agent runtime. */
+  allowedTools?: Array<"search-wiki" | "propose-tasks">;
+  /** Optional provider/model override; credentials remain server-side secrets. */
+  provider?: "anthropic" | "openai" | "google" | "deepseek" | "ollama-cloud" | "ollama";
+  model?: string;
+  /** Last completed run, used to determine whether scheduled work is due. */
+  lastRunAt?: string;
   /** ISO date of when the agent was registered */
   registered: string;
   /** ISO date of last context update */

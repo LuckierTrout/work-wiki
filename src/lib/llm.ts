@@ -9,7 +9,10 @@ import {
   detectEnvProvider,
   loadConfig,
   loadConfigSync,
+  apiKeyForProvider,
+  DEFAULT_MODELS,
 } from "./config";
+import type { ProviderValue } from "./config";
 import { getErrorMessage } from "./errors";
 import { logger } from "./logger";
 import {
@@ -289,6 +292,50 @@ function getModel() {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/** Resolve the active AI SDK model for server-side agents and structured jobs. */
+export async function getConfiguredModel(options?: {
+  provider?: ProviderValue;
+  model?: string;
+}) {
+  await loadConfig();
+  if (options?.provider) {
+    const provider = options.provider;
+    const apiKey = apiKeyForProvider(provider);
+    if (provider !== "ollama" && !apiKey) {
+      throw new Error(`The ${provider} provider is not configured on this server.`);
+    }
+    const model =
+      options.model?.trim() ||
+      ((provider === "ollama" || provider === "ollama-cloud")
+        ? process.env.OLLAMA_MODEL
+        : undefined) ||
+      DEFAULT_MODELS[provider];
+    switch (provider) {
+      case "anthropic":
+        return createAnthropic({ apiKey: apiKey! })(model);
+      case "openai":
+        return createOpenAI({ apiKey: apiKey! })(model);
+      case "google":
+        return createGoogleGenerativeAI({ apiKey: apiKey! })(model);
+      case "deepseek":
+        return createOpenAI({ apiKey: apiKey!, baseURL: DEEPSEEK_BASE_URL }).chat(model);
+      case "ollama":
+        return createOllama({
+          ...(process.env.OLLAMA_BASE_URL
+            ? { baseURL: process.env.OLLAMA_BASE_URL }
+            : {}),
+        })(model);
+      case "ollama-cloud":
+        return createOllama({
+          baseURL: "https://ollama.com/api",
+          headers: { Authorization: `Bearer ${apiKey}` },
+          compatibility: "strict",
+        })(model);
+    }
+  }
+  return getModel();
+}
 
 /**
  * Call the configured LLM provider and return the assistant's text response.

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServicePrincipal } from "@/lib/auth";
 import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
-import { extractDocumentText, isSupportedDocument } from "@/lib/document-extract";
+import { extractDocumentTextAsync, isSupportedDocument } from "@/lib/document-extract";
 import { ingest } from "@/lib/ingest";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { createIngestJob, getIngestJob } from "@/lib/ingest-jobs";
@@ -235,7 +235,7 @@ export async function POST(request: Request) {
       let combined = content;
       const documentSources: DocumentSourceInput[] = [];
       for (const { file, bytes } of attachmentBytes) {
-        const extracted = extractDocumentText({
+        const extracted = await extractDocumentTextAsync({
           bytes,
           filename: file.name,
           contentType: file.type,

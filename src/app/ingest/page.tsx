@@ -12,7 +12,7 @@ import { useIngest, isUrlMode, type Mode } from "@/hooks/useIngest";
 const TABS: { mode: Mode; label: string }[] = [
   { mode: "url", label: "URL" },
   { mode: "pdf", label: "PDF" },
-  { mode: "document", label: "Office / CSV" },
+  { mode: "document", label: "Files / folder" },
   { mode: "xpost", label: "X post" },
   { mode: "youtube", label: "YouTube" },
   { mode: "text", label: "Paste text" },
@@ -372,7 +372,7 @@ export default function IngestPage() {
             </form>
           )}
 
-          {/* Office documents and CSV */}
+          {/* Documents, notes, archives, and folders */}
           {mode === "document" && (
             <BulkDocumentImport vaultId={vaultId} />
           )}

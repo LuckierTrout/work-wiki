@@ -45,6 +45,28 @@ describe("enqueueTask", () => {
 });
 
 describe("parseTask", () => {
+  it("accepts action-extraction and specialized-agent tasks", () => {
+    expect(parseTask({ kind: "extract-actions", slug: "notes", owner: "alice" })).toEqual({
+      kind: "extract-actions",
+      slug: "notes",
+      owner: "alice",
+    });
+    expect(parseTask({
+      kind: "run-agent",
+      agentId: "alice--scout",
+      owner: "alice",
+      trigger: "after-ingest",
+      sourceSlug: "notes",
+    })).toEqual({
+      kind: "run-agent",
+      agentId: "alice--scout",
+      owner: "alice",
+      trigger: "after-ingest",
+      sourceSlug: "notes",
+    });
+    expect(parseTask({ kind: "run-agent", agentId: "a", owner: "alice", trigger: "hourly" })).toBeNull();
+  });
+
   it("accepts a well-formed reconcile task", () => {
     expect(
       parseTask({ kind: "reconcile", slug: "p", threadIndex: 3, requestedBy: "alice" }),

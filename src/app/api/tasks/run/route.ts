@@ -1,13 +1,18 @@
 import { NextResponse } from "next/server";
 import { getServicePrincipal } from "@/lib/auth";
-import { parseTask } from "@/lib/tasks";
+import { enqueueTask, parseTask } from "@/lib/tasks";
 import { reconcileFromTalk } from "@/lib/reconcile";
 import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest } from "@/lib/ingest";
-import { extractDocumentText } from "@/lib/document-extract";
+import { extractDocumentTextAsync } from "@/lib/document-extract";
 import { fixLintIssue } from "@/lib/lint-fix";
 import { getIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
 import { readStagedBytes, readStagedText, deleteStaged } from "@/lib/ingest-staging";
-import { agentIdFor, addAgentLearningPage, DEFAULT_AGENT_NAME } from "@/lib/agents";
+import {
+  agentIdFor,
+  addAgentLearningPage,
+  DEFAULT_AGENT_NAME,
+  listAgentsForOwner,
+} from "@/lib/agents";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { addToVault } from "@/lib/vault";
@@ -15,6 +20,8 @@ import {
   preserveDocumentSources,
   type DocumentSourceInput,
 } from "@/lib/document-sources";
+import { extractActionsFromPage } from "@/lib/action-extractor";
+import { runSpecializedAgent } from "@/lib/agent-runtime";
 
 /**
  * POST /api/tasks/run — execute one agent task.
@@ -127,6 +134,22 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, slug: result.primarySlug });
     }
 
+    if (task.kind === "extract-actions") {
+      const items = await extractActionsFromPage(task.owner, task.slug);
+      return NextResponse.json({ ok: true, created: items.length });
+    }
+
+    if (task.kind === "run-agent") {
+      const activity = await runSpecializedAgent({
+        agentId: task.agentId,
+        owner: task.owner,
+        trigger: task.trigger,
+        ...(task.sourceSlug ? { sourceSlug: task.sourceSlug } : {}),
+        ...(task.prompt ? { prompt: task.prompt } : {}),
+      });
+      return NextResponse.json({ ok: true, activity });
+    }
+
     // kind === "ingest"
     // triggeredBy defaults to author (the common case); agent ingests pass it
     // explicitly so author=agent while triggeredBy=human owner.
@@ -159,7 +182,7 @@ export async function POST(req: Request) {
       if (task.staged) combined = await readStagedText(task.staged.key);
       for (const attachment of task.attachments) {
         const bytes = await readStagedBytes(attachment.key);
-        const extracted = extractDocumentText({
+        const extracted = await extractDocumentTextAsync({
           bytes,
           filename: attachment.filename,
           contentType: attachment.contentType,
@@ -190,7 +213,14 @@ export async function POST(req: Request) {
       } else if (kind === "document") {
         const bytes = await readStagedBytes(key);
         result = await ingestDocument(
-          { bytes, filename: filename || "document", contentType },
+          {
+            bytes,
+            filename: filename || "document",
+            contentType,
+            ...(task.staged.relativePath
+              ? { relativePath: task.staged.relativePath }
+              : {}),
+          },
           opts,
         );
       } else {
@@ -245,6 +275,43 @@ export async function POST(req: Request) {
         await addToVault(task.vaultId, result.primarySlug);
       } catch (err) {
         logger.warn("tasks", `vault filing failed for vault="${task.vaultId}" slug="${result.primarySlug}": ${(err as Error).message}`);
+      }
+    }
+
+    // Proposals belong to the accountable HUMAN. Agent-routed email ingests set
+    // owner=agent-id and triggeredBy=human; prefer the latter so the private
+    // inbox and after-ingest agents stay in the human tenant silo.
+    const actionOwner = task.triggeredBy?.trim() || task.owner?.trim();
+    if (actionOwner) {
+      try {
+        await enqueueTask({
+          kind: "extract-actions",
+          slug: result.primarySlug,
+          owner: actionOwner,
+        });
+      } catch (err) {
+        logger.warn(
+          "tasks",
+          `action extraction enqueue failed for slug="${result.primarySlug}": ${getErrorMessage(err)}`,
+        );
+      }
+      try {
+        const agents = await listAgentsForOwner(actionOwner);
+        for (const agent of agents) {
+          if (!agent.enabled || agent.trigger !== "after-ingest") continue;
+          await enqueueTask({
+            kind: "run-agent",
+            agentId: agent.id,
+            owner: actionOwner,
+            trigger: "after-ingest",
+            sourceSlug: result.primarySlug,
+          });
+        }
+      } catch (err) {
+        logger.warn(
+          "tasks",
+          `after-ingest agent enqueue failed for owner="${actionOwner}": ${getErrorMessage(err)}`,
+        );
       }
     }
 

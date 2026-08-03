@@ -9,6 +9,7 @@ import {
 import { enqueueTask } from "@/lib/tasks";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { listDueScheduledAgents } from "@/lib/agent-runtime";
 
 /**
  * POST /api/tasks/scan — the autonomous-maintenance producer (Q2).
@@ -29,8 +30,9 @@ export async function POST(req: Request) {
   try {
     const url = new URL(req.url);
     const enabled = process.env.AUTONOMOUS_MAINTENANCE === "on";
+    const forceDry = url.searchParams.get("dry") === "1";
     // Off (default) → always dry-run; never auto-edits until explicitly enabled.
-    const dry = url.searchParams.get("dry") === "1" || !enabled;
+    const dry = forceDry || !enabled;
 
     const capParam = Number(url.searchParams.get("cap"));
     const cap =
@@ -55,6 +57,22 @@ export async function POST(req: Request) {
       }
     }
 
+    const dueAgents = (await listDueScheduledAgents()).slice(0, 25);
+    let scheduledAgentsEnqueued = 0;
+    if (!forceDry) {
+      for (const agent of dueAgents) {
+        if (!agent.owner || (agent.trigger !== "daily" && agent.trigger !== "weekly")) continue;
+        if (await enqueueTask({
+          kind: "run-agent",
+          agentId: agent.id,
+          owner: agent.owner,
+          trigger: agent.trigger,
+        })) {
+          scheduledAgentsEnqueued += 1;
+        }
+      }
+    }
+
     logger.info(
       "maintenance",
       `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued}`,
@@ -67,6 +85,8 @@ export async function POST(req: Request) {
       enqueued,
       indexRebuild,
       jobsPurged,
+      scheduledAgentsDue: dueAgents.length,
+      scheduledAgentsEnqueued,
       // The candidate list — for dry-run inspection of what it would do.
       tasks: tasks.map((t) =>
         t.kind === "maintain"

@@ -134,6 +134,10 @@ export function SrcChip({ type }: { type: SourceEntry["type"] }) {
     pptx: "PowerPoint",
     xlsx: "Excel",
     csv: "CSV",
+    md: "MD",
+    txt: "TXT",
+    html: "HTML",
+    zip: "ZIP",
     youtube: "YT",
     email: "MAIL",
   };

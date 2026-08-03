@@ -58,6 +58,8 @@ export type Task =
         kind: "pdf" | "image" | "text" | "document";
         filename?: string;
         contentType?: string;
+        /** Browser folder / Obsidian-vault relative path. */
+        relativePath?: string;
       };
       /** Supported email attachments staged separately in R2. They may coexist
        *  with an inline/staged email body and are folded into the same page. */
@@ -88,6 +90,21 @@ export type Task =
       /** Agent id to attach the resulting page to as one of its learning pages
        *  (agent-scoped ingests). */
       learningFor?: string;
+    }
+  | {
+      /** Extract owner-only action proposals from a newly ingested page. */
+      kind: "extract-actions";
+      slug: string;
+      owner: string;
+    }
+  | {
+      /** Execute one owner-configured specialized agent. */
+      kind: "run-agent";
+      agentId: string;
+      owner: string;
+      trigger: "manual" | "after-ingest" | "daily" | "weekly";
+      sourceSlug?: string;
+      prompt?: string;
     }
   | {
       /** Autonomous maintenance, enqueued by the scan cron (Q2). `reconcile` a
@@ -211,6 +228,9 @@ export function parseTask(body: unknown): Task | null {
             ...(typeof s.filename === "string" ? { filename: s.filename } : {}),
             ...(typeof s.contentType === "string"
               ? { contentType: s.contentType }
+              : {}),
+            ...(typeof s.relativePath === "string" && s.relativePath.trim()
+              ? { relativePath: s.relativePath.slice(0, 1_000) }
               : {}),
           };
         }
@@ -351,6 +371,45 @@ export function parseTask(body: unknown): Task | null {
       }
       return null;
     }
+    case "extract-actions":
+      if (
+        typeof t.slug !== "string" ||
+        t.slug.trim() === "" ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return {
+        kind: "extract-actions",
+        slug: t.slug,
+        owner: t.owner,
+      };
+    case "run-agent":
+      if (
+        typeof t.agentId !== "string" ||
+        t.agentId.trim() === "" ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === "" ||
+        (t.trigger !== "manual" &&
+          t.trigger !== "after-ingest" &&
+          t.trigger !== "daily" &&
+          t.trigger !== "weekly")
+      ) {
+        return null;
+      }
+      return {
+        kind: "run-agent",
+        agentId: t.agentId,
+        owner: t.owner,
+        trigger: t.trigger,
+        ...(typeof t.sourceSlug === "string" && t.sourceSlug.trim()
+          ? { sourceSlug: t.sourceSlug }
+          : {}),
+        ...(typeof t.prompt === "string" && t.prompt.trim()
+          ? { prompt: t.prompt.slice(0, 4_000) }
+          : {}),
+      };
     default:
       return null;
   }

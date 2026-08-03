@@ -1,9 +1,21 @@
 import { MAX_DOCUMENT_SIZE } from "./constants";
 
-export const MAX_BULK_DOCUMENTS = 20;
+export const MAX_BULK_DOCUMENTS = 200;
 export const BULK_DOCUMENT_UPLOAD_CONCURRENCY = 2;
 
-const SUPPORTED_EXTENSIONS = new Set(["docx", "pptx", "xlsx", "csv"]);
+const SUPPORTED_EXTENSIONS = new Set([
+  "md",
+  "markdown",
+  "txt",
+  "html",
+  "htm",
+  "pdf",
+  "docx",
+  "pptx",
+  "xlsx",
+  "csv",
+  "zip",
+]);
 
 export interface RejectedBulkDocument {
   file: File;
@@ -33,7 +45,7 @@ export function formatDocumentBytes(bytes: number): string {
 function validationError(file: File): string | null {
   if (file.size === 0) return "The file is empty.";
   if (documentExtension(file.name) === "file") {
-    return "Use a DOCX, PPTX, XLSX, or CSV file.";
+    return "Use Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP.";
   }
   if (file.size > MAX_DOCUMENT_SIZE) {
     return `The file is larger than ${MAX_DOCUMENT_SIZE / 1024 / 1024} MB.`;

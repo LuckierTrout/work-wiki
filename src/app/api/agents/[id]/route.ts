@@ -159,6 +159,61 @@ export async function PUT(req: Request, { params }: RouteParams) {
       );
     }
 
+    if (
+      body.trigger !== undefined &&
+      body.trigger !== "manual" &&
+      body.trigger !== "after-ingest" &&
+      body.trigger !== "daily" &&
+      body.trigger !== "weekly"
+    ) {
+      return NextResponse.json({ error: "Invalid agent trigger" }, { status: 400 });
+    }
+    if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
+      return NextResponse.json({ error: "enabled must be a boolean" }, { status: 400 });
+    }
+    if (
+      body.instructions !== undefined &&
+      body.instructions !== null &&
+      typeof body.instructions !== "string"
+    ) {
+      return NextResponse.json({ error: "instructions must be a string or null" }, { status: 400 });
+    }
+    if (
+      body.knowledgeScope !== undefined &&
+      body.knowledgeScope !== null &&
+      typeof body.knowledgeScope !== "string"
+    ) {
+      return NextResponse.json({ error: "knowledgeScope must be a string or null" }, { status: 400 });
+    }
+    if (
+      body.allowedTools !== undefined &&
+      (!Array.isArray(body.allowedTools) ||
+        !body.allowedTools.every(
+          (value) => value === "search-wiki" || value === "propose-tasks",
+        ))
+    ) {
+      return NextResponse.json({ error: "Invalid allowedTools" }, { status: 400 });
+    }
+    if (
+      body.provider !== undefined &&
+      body.provider !== null &&
+      body.provider !== "anthropic" &&
+      body.provider !== "openai" &&
+      body.provider !== "google" &&
+      body.provider !== "deepseek" &&
+      body.provider !== "ollama-cloud" &&
+      body.provider !== "ollama"
+    ) {
+      return NextResponse.json({ error: "Invalid agent provider" }, { status: 400 });
+    }
+    if (
+      body.model !== undefined &&
+      body.model !== null &&
+      typeof body.model !== "string"
+    ) {
+      return NextResponse.json({ error: "model must be a string or null" }, { status: 400 });
+    }
+
     // Owns-or-403; also resolves whether the agent exists (404 below).
     const existing = await assertCanMutateAgent(id, principal.handle);
     if (!existing) {

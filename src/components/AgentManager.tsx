@@ -80,9 +80,31 @@ function AgentCard({
   agent: AgentProfile;
 }) {
   const router = useRouter();
-  const [mode, setMode] = useState<null | "edit" | "token">(null);
+  const [mode, setMode] = useState<null | "edit" | "token" | "activity">(null);
   const [name, setName] = useState(agent.name);
   const [description, setDescription] = useState(agent.description);
+  const [instructions, setInstructions] = useState(agent.instructions ?? "");
+  const [knowledgeScope, setKnowledgeScope] = useState(agent.knowledgeScope ?? "");
+  const [trigger, setTrigger] = useState(agent.trigger ?? "manual");
+  const [enabled, setEnabled] = useState(agent.enabled ?? false);
+  const [searchWiki, setSearchWiki] = useState(
+    (agent.allowedTools ?? ["search-wiki"]).includes("search-wiki"),
+  );
+  const [proposeTasks, setProposeTasks] = useState(
+    (agent.allowedTools ?? []).includes("propose-tasks"),
+  );
+  const [provider, setProvider] = useState(agent.provider ?? "");
+  const [model, setModel] = useState(agent.model ?? "");
+  const [runPrompt, setRunPrompt] = useState("");
+  const [runOutput, setRunOutput] = useState<string | null>(null);
+  const [activity, setActivity] = useState<Array<{
+    id: string;
+    trigger: string;
+    output: string;
+    toolsUsed: string[];
+    createdAt: string;
+  }>>([]);
+  const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -93,7 +115,20 @@ function AgentCard({
       const res = await fetch(`/api/agents/${agent.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, description }),
+        body: JSON.stringify({
+          name,
+          description,
+          instructions,
+          knowledgeScope,
+          trigger,
+          enabled,
+          allowedTools: [
+            ...(searchWiki ? ["search-wiki"] : []),
+            ...(proposeTasks ? ["propose-tasks"] : []),
+          ],
+          provider: provider || null,
+          model,
+        }),
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -105,6 +140,51 @@ function AgentCard({
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function runAgent() {
+    setRunning(true);
+    setError(null);
+    setRunOutput(null);
+    try {
+      const res = await fetch(`/api/agents/${agent.id}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: runPrompt }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        activity?: { output?: string };
+      };
+      if (!res.ok) throw new Error(body.error ?? `request failed (${res.status})`);
+      setRunOutput(body.activity?.output ?? "Run complete.");
+      setRunPrompt("");
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Agent run failed");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function toggleActivity() {
+    if (mode === "activity") {
+      setMode(null);
+      return;
+    }
+    setMode("activity");
+    setError(null);
+    try {
+      const res = await fetch(`/api/agents/${agent.id}/activity`);
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        activity?: typeof activity;
+      };
+      if (!res.ok) throw new Error(body.error ?? `request failed (${res.status})`);
+      setActivity(body.activity ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Activity could not be loaded");
     }
   }
 
@@ -169,6 +249,21 @@ function AgentCard({
           >
             {agent.description}
           </p>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+            <span className="receipt" style={{ fontSize: 9.5, color: "var(--muted)" }}>
+              {agent.trigger ?? "manual"}
+            </span>
+            {(agent.trigger ?? "manual") !== "manual" && (
+              <span className="receipt" style={{ fontSize: 9.5, color: agent.enabled ? "var(--accent)" : "var(--faint)" }}>
+                {agent.enabled ? "enabled" : "paused"}
+              </span>
+            )}
+            {agent.lastRunAt && (
+              <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>
+                last run {new Date(agent.lastRunAt).toLocaleString()}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -189,6 +284,9 @@ function AgentCard({
           onClick={() => setMode(mode === "token" ? null : "token")}
         >
           Token
+        </button>
+        <button type="button" className="btn ghost" onClick={() => void toggleActivity()}>
+          {mode === "activity" ? "Close history" : "History"}
         </button>
         <button
           type="button"
@@ -211,6 +309,57 @@ function AgentCard({
             placeholder="What this agent is"
             multiline
           />
+          <FInput
+            value={instructions}
+            onChange={setInstructions}
+            placeholder="Operating instructions: what to look for and what a useful result contains"
+            multiline
+          />
+          <FInput
+            value={knowledgeScope}
+            onChange={setKnowledgeScope}
+            placeholder="Knowledge scope (blank, mine, vault:…, or agent:…)"
+          />
+          <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+            <label style={{ flex: "1 1 190px", fontSize: 13, color: "var(--muted)" }}>
+              Provider
+              <select value={provider} onChange={(event) => setProvider(event.target.value as typeof provider)} style={{ width: "100%", marginTop: 5, border: "1px solid var(--rule-strong)", borderRadius: 9, background: "var(--paper)", color: "var(--ink)", padding: "9px 10px" }}>
+                <option value="">App default</option>
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="google">Google</option>
+                <option value="ollama-cloud">Ollama Cloud</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="ollama">Ollama</option>
+              </select>
+            </label>
+            <label style={{ flex: "2 1 260px", fontSize: 13, color: "var(--muted)" }}>
+              Model override
+              <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="Leave blank for provider default" style={{ width: "100%", marginTop: 5, border: "1px solid var(--rule-strong)", borderRadius: 9, background: "var(--paper)", color: "var(--ink)", padding: "9px 10px" }} />
+            </label>
+          </div>
+          <div className="row" style={{ gap: 14, flexWrap: "wrap" }}>
+            <label style={{ fontSize: 13, color: "var(--muted)" }}>
+              Trigger{" "}
+              <select value={trigger} onChange={(event) => setTrigger(event.target.value as typeof trigger)} style={{ marginLeft: 6, border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper)", color: "var(--ink)", padding: "7px 9px" }}>
+                <option value="manual">Manual</option>
+                <option value="after-ingest">After ingest</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+              </select>
+            </label>
+            <label className="row" style={{ gap: 6, fontSize: 13, color: "var(--muted)" }}>
+              <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+              Enable automatic runs
+            </label>
+          </div>
+          <fieldset style={{ border: "1px solid var(--rule)", borderRadius: 10, padding: "10px 12px" }}>
+            <legend className="receipt" style={{ padding: "0 5px", fontSize: 10, color: "var(--faint)" }}>Allowed tools</legend>
+            <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
+              <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={searchWiki} onChange={(event) => setSearchWiki(event.target.checked)} />Search wiki</label>
+              <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={proposeTasks} onChange={(event) => setProposeTasks(event.target.checked)} />Propose tasks</label>
+            </div>
+          </fieldset>
           <div className="row" style={{ gap: 8 }}>
             <button
               type="button"
@@ -229,6 +378,32 @@ function AgentCard({
           <AgentTokenPanel agentId={agent.id} />
         </div>
       )}
+
+      {mode === "activity" && (
+        <div className="stack" style={{ gap: 10, marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--rule)" }}>
+          {activity.length === 0 ? (
+            <p style={{ margin: 0, color: "var(--muted)", fontSize: 13 }}>No runs recorded yet.</p>
+          ) : activity.slice(0, 10).map((entry) => (
+            <div key={entry.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--rule)" }}>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                <span className="receipt" style={{ fontSize: 9.5 }}>{entry.trigger}</span>
+                <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>{new Date(entry.createdAt).toLocaleString()}</span>
+                {entry.toolsUsed.map((tool) => <span key={tool} className="receipt" style={{ fontSize: 9.5, color: "var(--accent)" }}>{tool}</span>)}
+              </div>
+              <p style={{ margin: "7px 0 0", fontSize: 13.5, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{entry.output}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--rule)" }}>
+        <p className="fmark" style={{ marginBottom: 8 }}>Run now</p>
+        <div className="row" style={{ gap: 8, alignItems: "end" }}>
+          <input value={runPrompt} onChange={(event) => setRunPrompt(event.target.value)} placeholder="Optional focus for this run" style={{ flex: 1, border: "1px solid var(--rule-strong)", borderRadius: 10, background: "var(--paper)", color: "var(--ink)", padding: "9px 11px", fontSize: 13.5 }} />
+          <button type="button" className="btn primary" onClick={() => void runAgent()} disabled={running}>{running ? "Running…" : "Run agent"}</button>
+        </div>
+        {runOutput && <p style={{ margin: "10px 0 0", padding: 11, borderRadius: 10, background: "var(--paper)", fontSize: 13.5, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{runOutput}</p>}
+      </div>
     </div>
   );
 }

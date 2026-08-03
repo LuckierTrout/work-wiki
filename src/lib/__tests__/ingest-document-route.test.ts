@@ -42,7 +42,7 @@ describe("POST /api/ingest/document", () => {
 
   it("rejects missing and unsupported files", async () => {
     expect((await POST(upload() as never)).status).toBe(400);
-    expect((await POST(upload(new File(["x"], "archive.zip")) as never)).status).toBe(400);
+    expect((await POST(upload(new File(["x"], "program.exe")) as never)).status).toBe(400);
   });
 
   it("ingests supported files inline with owner attribution", async () => {

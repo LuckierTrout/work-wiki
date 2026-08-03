@@ -1,9 +1,21 @@
 import { unzipSync } from "fflate";
 import { MAX_CONTENT_LENGTH, MAX_DOCUMENT_SIZE } from "./constants";
 import { ClientInputError } from "./errors";
+import { extractTitle, htmlToMarkdown } from "./html-parse";
 
-export const DOCUMENT_FORMATS = ["docx", "pptx", "xlsx", "csv"] as const;
+export const DOCUMENT_FORMATS = [
+  "docx",
+  "pptx",
+  "xlsx",
+  "csv",
+  "md",
+  "txt",
+  "html",
+  "pdf",
+  "zip",
+] as const;
 export type DocumentFormat = (typeof DOCUMENT_FORMATS)[number];
+type OfficeFormat = "docx" | "pptx" | "xlsx";
 
 const MAX_ARCHIVE_TEXT_BYTES = 12 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRY_BYTES = 6 * 1024 * 1024;
@@ -13,6 +25,9 @@ const MAX_DOCUMENT_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024;
 const MAX_SHEETS = 100;
 const MAX_ROWS_PER_SHEET = 10_000;
 const MAX_COLUMNS_PER_SHEET = 256;
+const MAX_ZIP_ENTRIES = 500;
+const MAX_ZIP_ENTRY_BYTES = 10 * 1024 * 1024;
+const MAX_ZIP_TOTAL_BYTES = 30 * 1024 * 1024;
 
 const MIME_FORMATS: Record<string, DocumentFormat> = {
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
@@ -20,6 +35,14 @@ const MIME_FORMATS: Record<string, DocumentFormat> = {
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
   "text/csv": "csv",
   "application/csv": "csv",
+  "text/markdown": "md",
+  "text/x-markdown": "md",
+  "text/plain": "txt",
+  "text/html": "html",
+  "application/xhtml+xml": "html",
+  "application/pdf": "pdf",
+  "application/zip": "zip",
+  "application/x-zip-compressed": "zip",
 };
 
 export interface ExtractedDocument {
@@ -64,6 +87,8 @@ export function detectDocumentFormat(
   contentType?: string,
 ): DocumentFormat | null {
   const ext = extension(filename);
+  if (ext === "markdown") return "md";
+  if (ext === "htm") return "html";
   if (DOCUMENT_FORMATS.includes(ext as DocumentFormat)) {
     return ext as DocumentFormat;
   }
@@ -164,7 +189,7 @@ function archiveEntryKind(
 
 function openOfficeArchive(
   bytes: ArrayBuffer,
-  format: Exclude<DocumentFormat, "csv">,
+  format: OfficeFormat,
 ): Record<string, Uint8Array> {
   const input = new Uint8Array(bytes);
   if (input[0] !== 0x50 || input[1] !== 0x4b) {
@@ -544,7 +569,28 @@ export function extractDocumentText(input: {
   }
   const format = detectDocumentFormat(filename, contentType);
   if (!format) {
-    throw new ClientInputError("Unsupported document type. Upload a .docx, .pptx, .xlsx, or .csv file.");
+    throw new ClientInputError(
+      "Unsupported document type. Upload Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP.",
+    );
+  }
+
+  if (format === "pdf" || format === "zip") {
+    throw new ClientInputError(`.${format} extraction requires the asynchronous document pipeline.`);
+  }
+
+  if (format === "md" || format === "txt" || format === "html") {
+    const decoded = new TextDecoder().decode(bytes).replace(/^\uFEFF/, "");
+    const text = truncate(format === "html" ? htmlToMarkdown(decoded) : decoded);
+    if (!text) throw new ClientInputError(`The .${format} file contains no extractable text.`);
+    return {
+      format,
+      title:
+        (format === "html" ? extractTitle(decoded) : undefined) ??
+        fallbackTitle(filename, `${format.toUpperCase()} document`),
+      text,
+      metadata: {},
+      assets: [],
+    };
   }
 
   if (format === "csv") {
@@ -587,5 +633,116 @@ export function extractDocumentText(input: {
       ...(core.modified ? { modified: core.modified } : {}),
     },
     assets: extracted.assets,
+  };
+}
+
+function safeArchiveEntries(bytes: ArrayBuffer): Array<[string, Uint8Array]> {
+  const input = new Uint8Array(bytes);
+  if (input[0] !== 0x50 || input[1] !== 0x4b) {
+    throw new ClientInputError("The .zip file is not a valid ZIP archive.");
+  }
+  let count = 0;
+  let total = 0;
+  try {
+    const files = unzipSync(input, {
+      filter(file) {
+        if (file.name.endsWith("/")) return false;
+        count += 1;
+        if (count > MAX_ZIP_ENTRIES) {
+          throw new ClientInputError(`ZIP archives may contain at most ${MAX_ZIP_ENTRIES} files.`);
+        }
+        if (file.originalSize > MAX_ZIP_ENTRY_BYTES) {
+          throw new ClientInputError(`ZIP entry "${file.name}" is too large.`);
+        }
+        total += file.originalSize;
+        if (total > MAX_ZIP_TOTAL_BYTES) {
+          throw new ClientInputError("The ZIP archive expands beyond the safe extraction limit.");
+        }
+        return true;
+      },
+    });
+    return Object.entries(files).sort(([a], [b]) => a.localeCompare(b));
+  } catch (error) {
+    if (error instanceof ClientInputError) throw error;
+    throw new ClientInputError("The .zip file could not be opened.");
+  }
+}
+
+/** Full async extractor, including PDFs and safe ZIP/Obsidian exports. */
+export async function extractDocumentTextAsync(input: {
+  bytes: ArrayBuffer;
+  filename: string;
+  contentType?: string;
+  relativePath?: string;
+}): Promise<ExtractedDocument> {
+  const format = detectDocumentFormat(input.filename, input.contentType);
+  if (format === "pdf") {
+    if (input.bytes.byteLength === 0) throw new ClientInputError("The document is empty.");
+    const { pdfToText } = await import("./fetch");
+    const text = truncate(await pdfToText(input.bytes));
+    if (!text) {
+      throw new ClientInputError(
+        "PDF has no extractable text layer. Scanned/image-only PDFs are not supported yet.",
+      );
+    }
+    const firstLine = text.split("\n").find((line) => line.trim())?.trim();
+    return {
+      format,
+      title: firstLine?.slice(0, 200) || fallbackTitle(input.filename, "PDF document"),
+      text,
+      metadata: {},
+      assets: [],
+    };
+  }
+
+  if (format === "zip") {
+    const sections: string[] = [];
+    const assets: ExtractedDocumentAsset[] = [];
+    for (const [relativePath, value] of safeArchiveEntries(input.bytes)) {
+      if (
+        relativePath.startsWith("__MACOSX/") ||
+        relativePath.split("/").some((part) => part.startsWith("."))
+      ) continue;
+      const nestedFormat = detectDocumentFormat(relativePath);
+      if (!nestedFormat || nestedFormat === "zip") continue;
+      const nestedBytes = value.buffer.slice(
+        value.byteOffset,
+        value.byteOffset + value.byteLength,
+      ) as ArrayBuffer;
+      try {
+        const nested = await extractDocumentTextAsync({
+          bytes: nestedBytes,
+          filename: relativePath,
+          relativePath,
+        });
+        sections.push(`## File: ${relativePath}\n\n${nested.text}`);
+        assets.push(...nested.assets);
+      } catch (error) {
+        if (error instanceof ClientInputError && /no extractable text layer/i.test(error.message)) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    const text = truncate(sections.join("\n\n---\n\n"));
+    if (!text) {
+      throw new ClientInputError(
+        "The ZIP archive contains no supported text or document files.",
+      );
+    }
+    return {
+      format,
+      title: fallbackTitle(input.filename, "ZIP archive"),
+      text,
+      metadata: {},
+      assets,
+    };
+  }
+
+  const extracted = extractDocumentText(input);
+  if (!input.relativePath || input.relativePath === input.filename) return extracted;
+  return {
+    ...extracted,
+    text: truncate(`## Import location\n\n\`${input.relativePath}\`\n\n${extracted.text}`),
   };
 }

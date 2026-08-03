@@ -23,7 +23,7 @@ import { commonsPath } from "@/lib/links";
 import { rememberRecentJob } from "@/lib/recent-ingests";
 
 const ACCEPTED_DOCUMENTS =
-  ".docx,.pptx,.xlsx,.csv,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv";
+  ".md,.markdown,.txt,.html,.htm,.pdf,.docx,.pptx,.xlsx,.csv,.zip,text/markdown,text/plain,text/html,application/pdf,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv";
 const MAX_POLL_ATTEMPTS = 100;
 
 type ImportStatus =
@@ -84,6 +84,7 @@ function statusColor(status: ImportStatus): string {
 
 export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
   const latestItemsRef = useRef<ImportItem[]>([]);
   const [items, setItems] = useState<ImportItem[]>([]);
@@ -91,6 +92,11 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
   const [uploadingBatch, setUploadingBatch] = useState(false);
   const [selectionError, setSelectionError] = useState<string | null>(null);
   const [singleTitle, setSingleTitle] = useState("");
+
+  useEffect(() => {
+    folderInputRef.current?.setAttribute("webkitdirectory", "");
+    folderInputRef.current?.setAttribute("directory", "");
+  }, []);
 
   const readyItems = items.filter((item) => item.status === "ready");
   const failedItems = items.filter((item) => item.status === "failed");
@@ -173,6 +179,9 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
     try {
       const form = new FormData();
       form.append("file", item.file);
+      const relativePath = (item.file as File & { webkitRelativePath?: string })
+        .webkitRelativePath;
+      if (relativePath) form.append("relativePath", relativePath);
       if (items.length === 1 && singleTitle.trim()) form.append("title", singleTitle.trim());
       if (vaultId) form.append("vaultId", vaultId);
 
@@ -298,6 +307,7 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
     setSelectionError(null);
     setSingleTitle("");
     if (inputRef.current) inputRef.current.value = "";
+    if (folderInputRef.current) folderInputRef.current.value = "";
   }
 
   const canEditManifest = activeCount === 0 && !uploadingBatch;
@@ -315,6 +325,17 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
 
       <input
         ref={inputRef}
+        type="file"
+        multiple
+        accept={ACCEPTED_DOCUMENTS}
+        onChange={(event) => {
+          addFiles(Array.from(event.target.files ?? []));
+          event.target.value = "";
+        }}
+        className="sr-only"
+      />
+      <input
+        ref={folderInputRef}
         type="file"
         multiple
         accept={ACCEPTED_DOCUMENTS}
@@ -372,13 +393,28 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
             {dragActive ? "Release to add files" : "Drop documents here"}
           </p>
           <p style={{ margin: "6px 0 0", color: "var(--muted)", fontSize: 13 }}>
-            or click to browse · DOCX, PPTX, XLSX, CSV
+            or click to browse · notes, documents, PDFs, and ZIP exports
           </p>
           <p id="bulk-document-limits" className="receipt" style={{ margin: "10px 0 0", color: "var(--faint)", fontSize: 10.5 }}>
             up to {MAX_BULK_DOCUMENTS} files · {MAX_DOCUMENT_SIZE / 1024 / 1024} MB each
           </p>
         </div>
       </button>
+
+      <div className="spread" style={{ gap: 12, alignItems: "center" }}>
+        <p style={{ margin: 0, color: "var(--muted)", fontSize: 12.5 }}>
+          Importing an Obsidian vault? Folder paths and Markdown links are preserved.
+        </p>
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={() => folderInputRef.current?.click()}
+          disabled={!canEditManifest}
+          style={{ whiteSpace: "nowrap" }}
+        >
+          Choose folder
+        </button>
+      </div>
 
       {selectionError && <Alert variant="error">{selectionError}</Alert>}
 
@@ -481,7 +517,7 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
                         textOverflow: "ellipsis",
                       }}
                     >
-                      {item.file.name}
+                      {(item.file as File & { webkitRelativePath?: string }).webkitRelativePath || item.file.name}
                     </p>
                     <div className="row" style={{ gap: 8, marginTop: 3, flexWrap: "wrap" }}>
                       <span className="receipt" style={{ fontSize: 10.5, color: "var(--faint)" }}>

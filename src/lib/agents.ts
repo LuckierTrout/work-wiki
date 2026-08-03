@@ -600,6 +600,19 @@ export interface UpdateAgentOptions {
   /** Vault id to file this agent's remote-MCP ingests into (must be a vault the
    *  agent's owner owns). Pass `""`/`null` to clear. */
   defaultVault?: string | null;
+  /** Specialized-agent operating instructions. Empty clears. */
+  instructions?: string | null;
+  /** Read scope used by the search tool. Empty clears to general readable pages. */
+  knowledgeScope?: string | null;
+  /** Automatic trigger cadence. */
+  trigger?: "manual" | "after-ingest" | "daily" | "weekly";
+  /** Automatic triggers only run when explicitly enabled. */
+  enabled?: boolean;
+  /** Tool grants for the bounded in-app runtime. */
+  allowedTools?: Array<"search-wiki" | "propose-tasks">;
+  /** Provider/model override. Empty provider clears both and uses the app default. */
+  provider?: "anthropic" | "openai" | "google" | "deepseek" | "ollama-cloud" | "ollama" | null;
+  model?: string | null;
 }
 
 /**
@@ -657,6 +670,46 @@ export async function updateAgent(
       }
       existing.defaultVault = options.defaultVault;
     }
+  }
+  if (options.instructions !== undefined) {
+    if (options.instructions?.trim()) {
+      existing.instructions = options.instructions.trim().slice(0, 8_000);
+    } else delete existing.instructions;
+  }
+  if (options.knowledgeScope !== undefined) {
+    if (options.knowledgeScope?.trim()) {
+      existing.knowledgeScope = options.knowledgeScope.trim().slice(0, 240);
+    } else delete existing.knowledgeScope;
+  }
+  if (options.trigger !== undefined) existing.trigger = options.trigger;
+  if (options.enabled !== undefined) existing.enabled = options.enabled;
+  if (options.allowedTools !== undefined) {
+    const allowed = new Set(["search-wiki", "propose-tasks"]);
+    if (!options.allowedTools.every((value) => allowed.has(value))) {
+      throw new Error("allowedTools contains an unsupported tool");
+    }
+    existing.allowedTools = [...new Set(options.allowedTools)];
+  }
+  if (options.provider !== undefined) {
+    if (!options.provider) {
+      delete existing.provider;
+      delete existing.model;
+    } else {
+      const providers = new Set([
+        "anthropic",
+        "openai",
+        "google",
+        "deepseek",
+        "ollama-cloud",
+        "ollama",
+      ]);
+      if (!providers.has(options.provider)) throw new Error("Unsupported agent provider");
+      existing.provider = options.provider;
+    }
+  }
+  if (options.model !== undefined) {
+    if (options.model?.trim()) existing.model = options.model.trim().slice(0, 240);
+    else delete existing.model;
   }
 
   // Remove pages from lists (before adding, so add-then-remove of same slug

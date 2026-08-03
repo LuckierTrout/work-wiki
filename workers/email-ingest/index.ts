@@ -39,13 +39,32 @@ const CONFIG_KEY = "_idx:email-ingest-config";
 const MAX_RAW_EMAIL_BYTES = 10 * 1024 * 1024;
 const MAX_EMAIL_CONTENT_CHARS = 100_000;
 const TRUNCATION_MARKER = "\n\n[Email body truncated]";
-const SUPPORTED_EXTENSIONS = new Set(["docx", "pptx", "xlsx", "csv"]);
+const SUPPORTED_EXTENSIONS = new Set([
+  "md",
+  "markdown",
+  "txt",
+  "html",
+  "htm",
+  "pdf",
+  "docx",
+  "pptx",
+  "xlsx",
+  "csv",
+  "zip",
+]);
 const SUPPORTED_MIME_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "text/csv",
   "application/csv",
+  "text/markdown",
+  "text/plain",
+  "text/html",
+  "application/xhtml+xml",
+  "application/pdf",
+  "application/zip",
+  "application/x-zip-compressed",
 ]);
 
 function supportedAttachment(filename: string | null, mimeType: string): boolean {
@@ -179,7 +198,7 @@ export default {
         message,
         subject,
         parsed.attachments.length
-          ? "Yopedia found no email text or supported document attachment. Supported attachments: DOCX, PPTX, XLSX, and CSV."
+          ? "Yopedia found no email text or supported document attachment. Supported attachments: Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, and ZIP."
           : "Yopedia found no email text to ingest.",
       );
       return;

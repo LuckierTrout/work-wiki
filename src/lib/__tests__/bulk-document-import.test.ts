@@ -19,19 +19,21 @@ describe("bulk document import", () => {
       file("deck.pptx"),
       file("data.xlsx"),
       file("people.csv"),
+      file("notes.md"),
+      file("archive.zip"),
     ]);
 
-    expect(selection.accepted).toHaveLength(4);
+    expect(selection.accepted).toHaveLength(6);
     expect(selection.rejected).toEqual([]);
     expect(documentExtension("brief.DOCX")).toBe("docx");
-    expect(documentExtension("archive.zip")).toBe("file");
+    expect(documentExtension("archive.zip")).toBe("zip");
   });
 
   it("rejects unsupported, empty, oversized, and duplicate files", () => {
     const existing = file("existing.csv", 5, 9);
     const selection = selectBulkDocuments(
       [
-        file("archive.zip"),
+        file("malware.exe"),
         file("empty.csv", 0),
         file("large.docx", MAX_DOCUMENT_SIZE + 1),
         file("existing.csv", 5, 9),
@@ -41,7 +43,7 @@ describe("bulk document import", () => {
 
     expect(selection.accepted).toEqual([]);
     expect(selection.rejected.map((item) => item.reason).join(" ")).toMatch(
-      /DOCX, PPTX, XLSX, or CSV/i,
+      /Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP/i,
     );
     expect(selection.rejected.map((item) => item.reason).join(" ")).toMatch(/empty/i);
     expect(selection.rejected.map((item) => item.reason).join(" ")).toMatch(/larger than 10 MB/i);
@@ -58,7 +60,9 @@ describe("bulk document import", () => {
     );
 
     expect(selection.accepted.map((item) => item.name)).toEqual(["last.csv"]);
-    expect(selection.rejected[0].reason).toMatch(/up to 20 files/i);
+    expect(selection.rejected[0].reason).toMatch(
+      new RegExp(`up to ${MAX_BULK_DOCUMENTS} files`, "i"),
+    );
   });
 
   it("bounds upload concurrency without dropping work", async () => {

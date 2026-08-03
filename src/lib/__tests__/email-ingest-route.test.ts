@@ -217,7 +217,7 @@ describe("POST /api/email/ingest", () => {
   it("rejects attachment-only email when its file type is unsupported", async () => {
     const { POST } = await import("@/app/api/email/ingest/route");
     const response = await POST(multipartRequest({
-      file: new File(["zip"], "archive.zip", { type: "application/zip" }),
+      file: new File(["binary"], "program.exe", { type: "application/octet-stream" }),
     }));
     expect(response.status).toBe(400);
     expect(mockedEnqueue).not.toHaveBeenCalled();

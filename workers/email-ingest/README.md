@@ -4,7 +4,7 @@ This Worker receives Cloudflare Email Routing events, checks the owner-managed
 allowlist in `YOPEDIA_CONFIG`, parses the MIME body, and submits trusted text and
 supported document attachments to the main Yopedia Worker through a service binding.
 
-DOCX, PPTX, XLSX, and CSV attachments are forwarded to the main Worker, staged
+Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, and ZIP attachments are forwarded to the main Worker, staged
 in R2, and extracted by the task queue. Unsupported attachment names remain in
 activity history and are reported as skipped. The owner can route accepted mail
 to an owned vault and/or agent in Settings. Original documents and supported
