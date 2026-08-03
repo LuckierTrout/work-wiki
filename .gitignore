@@ -22,3 +22,6 @@ generate_video.py
 .yoyo/scripts/__pycache__/
 journal-site/dist/
 .dev.vars
+
+# clerk configuration (can include secrets)
+/.clerk/

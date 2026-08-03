@@ -12,6 +12,7 @@ import { canReadFrontmatter } from "@/lib/authz";
 import { belongsInCommons } from "@/lib/commons";
 import { ArticleView } from "@/components/ArticleView";
 import { hasOpenThread } from "@/lib/talk";
+import { getPageEvidence } from "@/lib/evidence";
 
 interface WikiPageProps {
   params: Promise<{ handle: string; slug: string }>;
@@ -146,6 +147,9 @@ export default async function WikiPageView({ params }: WikiPageProps) {
   // (hasOpenThread is fail-soft — a discuss-read error can't break the render.)
   const hasOpenReconciliation =
     page.frontmatter.disputed === true && (await hasOpenThread(slug));
+  const evidenceBundle = principal && tenantForOwner(principal.handle) === pageTenant
+    ? await getPageEvidence(principal.handle, slug)
+    : null;
   return (
     <ArticleView
       page={page}
@@ -153,6 +157,7 @@ export default async function WikiPageView({ params }: WikiPageProps) {
       pageTenant={pageTenant}
       principal={principal}
       hasOpenReconciliation={hasOpenReconciliation}
+      evidenceBundle={evidenceBundle}
     />
   );
 }

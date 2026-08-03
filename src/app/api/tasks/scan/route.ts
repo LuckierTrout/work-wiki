@@ -10,6 +10,9 @@ import { enqueueTask } from "@/lib/tasks";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { listDueScheduledAgents } from "@/lib/agent-runtime";
+import { listDueSourceMonitors } from "@/lib/source-monitors";
+import { listDueOutboxEvents } from "@/lib/integration-outbox";
+import { isOwnerBackupDue } from "@/lib/backups";
 
 /**
  * POST /api/tasks/scan — the autonomous-maintenance producer (Q2).
@@ -73,6 +76,41 @@ export async function POST(req: Request) {
       }
     }
 
+    const dueMonitors = await listDueSourceMonitors(new Date(), 25);
+    let sourceMonitorsEnqueued = 0;
+    if (!forceDry) {
+      for (const monitor of dueMonitors) {
+        if (await enqueueTask({
+          kind: "monitor-source",
+          monitorId: monitor.id,
+          owner: monitor.owner,
+        })) {
+          sourceMonitorsEnqueued += 1;
+        }
+      }
+    }
+
+    const dueOutbox = await listDueOutboxEvents(new Date(), 50);
+    let outboxDeliveriesEnqueued = 0;
+    if (!forceDry) {
+      for (const event of dueOutbox) {
+        if (await enqueueTask({
+          kind: "deliver-integration",
+          outboxId: event.id,
+          owner: event.owner,
+        })) {
+          outboxDeliveriesEnqueued += 1;
+        }
+      }
+    }
+
+    const backupOwner = process.env.NEXT_PUBLIC_OWNER_HANDLE?.trim();
+    const backupDue = backupOwner ? await isOwnerBackupDue(backupOwner) : false;
+    let backupEnqueued = false;
+    if (!forceDry && backupOwner && backupDue) {
+      backupEnqueued = await enqueueTask({ kind: "create-backup", owner: backupOwner });
+    }
+
     logger.info(
       "maintenance",
       `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued}`,
@@ -87,6 +125,13 @@ export async function POST(req: Request) {
       jobsPurged,
       scheduledAgentsDue: dueAgents.length,
       scheduledAgentsEnqueued,
+      sourceMonitorsDue: dueMonitors.length,
+      sourceMonitorsEnqueued,
+      outboxDue: dueOutbox.length,
+      outboxDeliveriesEnqueued,
+      backupOwnerConfigured: Boolean(backupOwner),
+      backupDue,
+      backupEnqueued,
       // The candidate list — for dry-run inspection of what it would do.
       tasks: tasks.map((t) =>
         t.kind === "maintain"

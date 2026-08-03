@@ -20,6 +20,8 @@ import { SharePageButton } from "@/components/SharePageButton";
 import { ArticleActions } from "@/components/ArticleActions";
 import { RevisionHistory } from "@/components/RevisionHistory";
 import { DiscussionPanel } from "@/components/DiscussionPanel";
+import { contentHash } from "@/lib/embeddings";
+import type { EvidenceLocation, PageEvidenceBundle } from "@/lib/evidence";
 
 /** A single Table-of-Contents entry parsed from the markdown body. */
 interface TocItem {
@@ -124,6 +126,20 @@ interface ArticleViewProps {
    * default so a caller that hasn't computed it can't make the banner over-claim.
    */
   hasOpenReconciliation?: boolean;
+  /** Owner-only, claim-level provenance. Public pages omit this private bundle. */
+  evidenceBundle?: PageEvidenceBundle | null;
+}
+
+function evidenceLocationLabel(location: EvidenceLocation): string {
+  switch (location.kind) {
+    case "text-range": return location.heading ?? `characters ${location.start}-${location.end}`;
+    case "document-section": return location.heading;
+    case "pdf-page": return `PDF page ${location.page}`;
+    case "slide": return `slide ${location.slide}${location.section === "speaker-notes" ? ", notes" : ""}`;
+    case "spreadsheet": return `${location.sheet}${location.range ? ` ${location.range}` : ""}`;
+    case "email": return `email ${location.section}${location.attachmentName ? `, ${location.attachmentName}` : ""}`;
+    case "url-fragment": return location.fragment || "web passage";
+  }
 }
 
 /**
@@ -139,6 +155,7 @@ export async function ArticleView({
   pageTenant,
   principal,
   hasOpenReconciliation = false,
+  evidenceBundle = null,
 }: ArticleViewProps) {
   // Slug→tenant map + commons slug set so in-content links and backlinks resolve
   // to each target's canonical URL: PUBLIC targets to the global `/wiki/<slug>`,
@@ -201,6 +218,8 @@ export async function ArticleView({
 
   const toc = buildToc(page.body);
   const articleBody = stripLeadingH1(page.body);
+  const evidenceIsCurrent = evidenceBundle?.pageContentHash === contentHash(page.content);
+  const evidenceById = new Map(evidenceBundle?.evidence.map((anchor) => [anchor.id, anchor]) ?? []);
 
   // ---- Folio header / provenance values (from real frontmatter) ----------
   const fm = page.frontmatter;
@@ -524,6 +543,40 @@ export async function ArticleView({
             paddingLeft: 28,
           }}
         >
+          {evidenceBundle && evidenceBundle.claims.length > 0 && (
+            <>
+              <div className="spread" style={{ gap: 8, marginBottom: 14 }}>
+                <p className="fmark">claim evidence · {evidenceBundle.claims.length}</p>
+                <span className="receipt" style={{ fontSize: 9.5, color: evidenceIsCurrent ? "var(--accent)" : "var(--rust)" }}>
+                  {evidenceIsCurrent ? "current" : "stale"}
+                </span>
+              </div>
+              {!evidenceIsCurrent && (
+                <p style={{ color: "var(--rust)", fontSize: 12, lineHeight: 1.45, margin: "0 0 14px" }}>
+                  These anchors belong to an earlier page version. Re-extract knowledge before relying on them.
+                </p>
+              )}
+              <div style={{ display: "grid", gap: 15 }}>
+                {evidenceBundle.claims.slice(0, 12).map((claim) => (
+                  <article key={claim.id} style={{ paddingLeft: 12, borderLeft: `2px solid ${claim.relation === "contradicts" || claim.relation === "incomplete" ? "var(--rust)" : "var(--accent)"}` }}>
+                    <span className="receipt" style={{ fontSize: 9, color: claim.relation === "contradicts" ? "var(--rust)" : "var(--muted)" }}>{claim.relation}</span>
+                    <p style={{ color: "var(--ink-2)", fontSize: 12.5, lineHeight: 1.5, margin: "4px 0 0" }}>{claim.claim}</p>
+                    {claim.evidenceIds.slice(0, 2).map((id) => {
+                      const anchor = evidenceById.get(id);
+                      return anchor ? (
+                        <details key={id} style={{ marginTop: 6 }}>
+                          <summary style={{ color: "var(--accent)", cursor: "pointer", fontSize: 11.5 }}>{evidenceLocationLabel(anchor.location)}</summary>
+                          <blockquote style={{ margin: "6px 0 0", color: "var(--muted)", fontSize: 11.5, lineHeight: 1.5 }}>{anchor.excerpt}</blockquote>
+                        </details>
+                      ) : null;
+                    })}
+                  </article>
+                ))}
+              </div>
+              <div className="rule" style={{ margin: "24px 0" }} />
+            </>
+          )}
+
           {lineageSources.length > 0 && (
             <>
               <p className="fmark" style={{ marginBottom: 16 }}>

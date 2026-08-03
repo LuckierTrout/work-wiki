@@ -22,6 +22,11 @@ import {
 } from "@/lib/document-sources";
 import { extractActionsFromPage } from "@/lib/action-extractor";
 import { runSpecializedAgent } from "@/lib/agent-runtime";
+import { runSourceMonitor } from "@/lib/source-monitors";
+import { extractStructuredKnowledge } from "@/lib/structured-knowledge";
+import { deliverOutboxEvent } from "@/lib/integration-outbox";
+import { createOwnerBackup, summarizeBackup, verifyOwnerBackup } from "@/lib/backups";
+import { recordOperationSafe } from "@/lib/operation-ledger";
 
 /**
  * POST /api/tasks/run — execute one agent task.
@@ -64,6 +69,10 @@ export async function POST(req: Request) {
     ? [task.staged?.key, ...(task.attachments?.map((attachment) => attachment.key) ?? [])]
         .filter((key): key is string => Boolean(key))
     : [];
+  const operationOwner = task.kind === "ingest"
+    ? task.triggeredBy?.trim() || task.owner?.trim() || task.author?.trim() || null
+    : null;
+  const operationStartedAt = Date.now();
 
   try {
     // A queue delivery can be retried after the first request has committed the
@@ -83,6 +92,17 @@ export async function POST(req: Request) {
         existingJob.owner.toLowerCase() === taskJobOwner
       ) {
         await Promise.all(stagedKeys.map((key) => deleteStaged(key)));
+        if (operationOwner) {
+          await recordOperationSafe(operationOwner, {
+            kind: "ingest",
+            operation: "ingest-replay",
+            status: "succeeded",
+            subjectId: existingJob.slug,
+            actor: task.author,
+            durationMs: Date.now() - operationStartedAt,
+            detail: task.jobId,
+          });
+        }
         return NextResponse.json({
           ok: true,
           slug: existingJob.slug,
@@ -139,6 +159,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, created: items.length });
     }
 
+    if (task.kind === "extract-knowledge") {
+      const graph = await extractStructuredKnowledge(task.owner, task.slug);
+      return NextResponse.json({ ok: true, records: graph.records.length, relations: graph.relations.length });
+    }
+
     if (task.kind === "run-agent") {
       const activity = await runSpecializedAgent({
         agentId: task.agentId,
@@ -148,6 +173,29 @@ export async function POST(req: Request) {
         ...(task.prompt ? { prompt: task.prompt } : {}),
       });
       return NextResponse.json({ ok: true, activity });
+    }
+
+    if (task.kind === "monitor-source") {
+      const result = await runSourceMonitor(task.owner, task.monitorId);
+      if (result.outcome === "failed") {
+        throw new Error(result.error);
+      }
+      return NextResponse.json({ ok: true, ...result });
+    }
+
+    if (task.kind === "deliver-integration") {
+      const event = await deliverOutboxEvent(task.owner, task.outboxId);
+      if (event.status === "failed") throw new Error(event.lastError ?? "Integration delivery failed");
+      return NextResponse.json({ ok: true, event });
+    }
+
+    if (task.kind === "create-backup") {
+      const backup = await createOwnerBackup(task.owner);
+      const verified = await verifyOwnerBackup(task.owner, backup.id);
+      if (verified.verificationStatus !== "passed") {
+        throw new Error(verified.verificationError ?? "Backup verification failed");
+      }
+      return NextResponse.json({ ok: true, backup: summarizeBackup(verified) });
     }
 
     // kind === "ingest"
@@ -296,6 +344,18 @@ export async function POST(req: Request) {
         );
       }
       try {
+        await enqueueTask({
+          kind: "extract-knowledge",
+          slug: result.primarySlug,
+          owner: actionOwner,
+        });
+      } catch (err) {
+        logger.warn(
+          "tasks",
+          `structured knowledge enqueue failed for slug="${result.primarySlug}": ${getErrorMessage(err)}`,
+        );
+      }
+      try {
         const agents = await listAgentsForOwner(actionOwner);
         for (const agent of agents) {
           if (!agent.enabled || agent.trigger !== "after-ingest") continue;
@@ -319,6 +379,18 @@ export async function POST(req: Request) {
     // succeed so a transient failure can be retried against the same source.
     await Promise.all(stagedKeys.map((key) => deleteStaged(key)));
 
+    if (task.kind === "ingest" && operationOwner) {
+      await recordOperationSafe(operationOwner, {
+        kind: "ingest",
+        operation: task.sourceType === "email" ? "ingest-email" : "ingest",
+        status: "succeeded",
+        subjectId: result.primarySlug,
+        actor: task.author,
+        durationMs: Date.now() - operationStartedAt,
+        detail: task.jobId,
+      });
+    }
+
     return NextResponse.json({ ok: true, slug: result.primarySlug });
   } catch (err) {
     const message = getErrorMessage(err);
@@ -336,6 +408,17 @@ export async function POST(req: Request) {
           writeErr,
         );
       }
+    }
+    if (task.kind === "ingest" && operationOwner) {
+      await recordOperationSafe(operationOwner, {
+        kind: "ingest",
+        operation: task.sourceType === "email" ? "ingest-email" : "ingest",
+        status: "failed",
+        subjectId: task.jobId,
+        actor: task.author,
+        durationMs: Date.now() - operationStartedAt,
+        detail: message,
+      });
     }
     // A missing page/thread is permanent → poison (4xx), don't retry forever.
     if (/not found/i.test(message)) {

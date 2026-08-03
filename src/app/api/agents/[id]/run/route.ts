@@ -14,14 +14,21 @@ export async function POST(request: Request, { params }: RouteContext) {
   }
   try {
     const { id } = await params;
-    const body = (await request.json().catch(() => ({}))) as { prompt?: unknown };
+    const body = (await request.json().catch(() => ({}))) as {
+      prompt?: unknown;
+      dryRun?: unknown;
+    };
     if (body.prompt !== undefined && typeof body.prompt !== "string") {
       return NextResponse.json({ error: "prompt must be a string" }, { status: 400 });
+    }
+    if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") {
+      return NextResponse.json({ error: "dryRun must be a boolean" }, { status: 400 });
     }
     const activity = await runSpecializedAgent({
       agentId: id,
       owner: principal.handle,
       trigger: "manual",
+      dryRun: body.dryRun === true,
       ...(typeof body.prompt === "string" && body.prompt.trim()
         ? { prompt: body.prompt.slice(0, 4_000) }
         : {}),

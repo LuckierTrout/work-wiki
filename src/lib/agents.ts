@@ -609,7 +609,13 @@ export interface UpdateAgentOptions {
   /** Automatic triggers only run when explicitly enabled. */
   enabled?: boolean;
   /** Tool grants for the bounded in-app runtime. */
-  allowedTools?: Array<"search-wiki" | "propose-tasks">;
+  allowedTools?: Array<"search-wiki" | "propose-tasks" | "propose-memory">;
+  /** Consequential-write approval policy. Current runtime always proposes. */
+  approvalPolicy?: "proposal-only" | "allow-low-risk";
+  /** Bounded run settings. */
+  maxSteps?: number;
+  maxOutputTokens?: number;
+  timeoutMs?: number;
   /** Provider/model override. Empty provider clears both and uses the app default. */
   provider?: "anthropic" | "openai" | "google" | "deepseek" | "ollama-cloud" | "ollama" | null;
   model?: string | null;
@@ -684,11 +690,35 @@ export async function updateAgent(
   if (options.trigger !== undefined) existing.trigger = options.trigger;
   if (options.enabled !== undefined) existing.enabled = options.enabled;
   if (options.allowedTools !== undefined) {
-    const allowed = new Set(["search-wiki", "propose-tasks"]);
+    const allowed = new Set(["search-wiki", "propose-tasks", "propose-memory"]);
     if (!options.allowedTools.every((value) => allowed.has(value))) {
       throw new Error("allowedTools contains an unsupported tool");
     }
     existing.allowedTools = [...new Set(options.allowedTools)];
+  }
+  if (options.approvalPolicy !== undefined) {
+    if (options.approvalPolicy !== "proposal-only" && options.approvalPolicy !== "allow-low-risk") {
+      throw new Error("Unsupported agent approval policy");
+    }
+    existing.approvalPolicy = options.approvalPolicy;
+  }
+  if (options.maxSteps !== undefined) {
+    if (!Number.isInteger(options.maxSteps) || options.maxSteps < 1 || options.maxSteps > 12) {
+      throw new Error("maxSteps must be an integer from 1 to 12");
+    }
+    existing.maxSteps = options.maxSteps;
+  }
+  if (options.maxOutputTokens !== undefined) {
+    if (!Number.isInteger(options.maxOutputTokens) || options.maxOutputTokens < 256 || options.maxOutputTokens > 16_000) {
+      throw new Error("maxOutputTokens must be an integer from 256 to 16000");
+    }
+    existing.maxOutputTokens = options.maxOutputTokens;
+  }
+  if (options.timeoutMs !== undefined) {
+    if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 5_000 || options.timeoutMs > 300_000) {
+      throw new Error("timeoutMs must be an integer from 5000 to 300000");
+    }
+    existing.timeoutMs = options.timeoutMs;
   }
   if (options.provider !== undefined) {
     if (!options.provider) {

@@ -177,6 +177,28 @@ model.
 
 Yopedia chat can use a separately hosted [Hermes Agent API server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server/) for orchestration while Yopedia remains responsible for authentication, retrieval scopes, source context, citation validation, and conversation storage. Set `HERMES_AGENT_URL` to the Hermes server root, store its `API_SERVER_KEY` as the `HERMES_API_KEY` Worker secret, and optionally set `HERMES_MODEL`. Configure a dedicated Hermes profile for the API server and disable host-mutating toolsets such as terminal, file, code execution, cron, delegation, and memory. Yopedia checks `/v1/toolsets` and refuses Hermes when those tools are enabled. If Hermes is unconfigured, unsafe, or temporarily unavailable, chat falls back to Yopedia's selected LLM provider.
 
+### Trusted memory and operations
+
+Signed-in users have owner-scoped workspaces for reviewable memory proposals,
+claim evidence, monitored sources, structured knowledge, integrations, and
+system health. Automated research and agents create proposals; they do not edit
+the durable page until the owner accepts in **Review**. Accepted changes use the
+normal revision lifecycle, so they remain revertible from the page history.
+
+The **System** workspace provides retrieval/privacy evaluation cases, operation
+receipts, token usage, and checksummed tenant backups. Production backup requests
+are queued, and each backup is restored into a disposable isolated prefix before
+it is marked verified. The scheduled scanner also creates a daily backup for
+`NEXT_PUBLIC_OWNER_HANDLE`.
+
+Webhook delivery is optional and idempotent. Configure an HTTPS URL in
+**Integrations** and set `YOPEDIA_WEBHOOK_SIGNING_SECRET` as a Worker secret to
+add an HMAC SHA-256 signature. `LLM_INPUT_COST_PER_MILLION` and
+`LLM_OUTPUT_COST_PER_MILLION` may be configured as Worker vars to add approximate
+USD cost to Agent Studio receipts; token usage is recorded even when those rates
+are unset. Queue depth and dead-letter messages remain visible in Cloudflare,
+while Yopedia surfaces durable task outcomes, retries, and delivery receipts.
+
 ## Watch It Grow
 
 **Star the repo** and follow the commits. Each one is the agent's work.

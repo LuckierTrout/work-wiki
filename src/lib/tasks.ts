@@ -98,6 +98,12 @@ export type Task =
       owner: string;
     }
   | {
+      /** Derive source-linked structured records from an accepted page revision. */
+      kind: "extract-knowledge";
+      slug: string;
+      owner: string;
+    }
+  | {
       /** Execute one owner-configured specialized agent. */
       kind: "run-agent";
       agentId: string;
@@ -105,6 +111,24 @@ export type Task =
       trigger: "manual" | "after-ingest" | "daily" | "weekly";
       sourceSlug?: string;
       prompt?: string;
+    }
+  | {
+      /** Check an owner-configured source monitor and create a review proposal
+       *  when the source changed meaningfully. Never writes the page directly. */
+      kind: "monitor-source";
+      monitorId: string;
+      owner: string;
+    }
+  | {
+      /** Deliver one durable, idempotent integration-outbox event. */
+      kind: "deliver-integration";
+      outboxId: string;
+      owner: string;
+    }
+  | {
+      /** Snapshot one tenant and verify it through an isolated restore prefix. */
+      kind: "create-backup";
+      owner: string;
     }
   | {
       /** Autonomous maintenance, enqueued by the scan cron (Q2). `reconcile` a
@@ -385,6 +409,16 @@ export function parseTask(body: unknown): Task | null {
         slug: t.slug,
         owner: t.owner,
       };
+    case "extract-knowledge":
+      if (
+        typeof t.slug !== "string" ||
+        t.slug.trim() === "" ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return { kind: "extract-knowledge", slug: t.slug, owner: t.owner };
     case "run-agent":
       if (
         typeof t.agentId !== "string" ||
@@ -410,6 +444,33 @@ export function parseTask(body: unknown): Task | null {
           ? { prompt: t.prompt.slice(0, 4_000) }
           : {}),
       };
+    case "monitor-source":
+      if (
+        typeof t.monitorId !== "string" ||
+        !/^mon_[a-z0-9-]{8,80}$/i.test(t.monitorId) ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return {
+        kind: "monitor-source",
+        monitorId: t.monitorId,
+        owner: t.owner,
+      };
+    case "deliver-integration":
+      if (
+        typeof t.outboxId !== "string" ||
+        !/^out_[a-f0-9]{16,128}$/i.test(t.outboxId) ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return { kind: "deliver-integration", outboxId: t.outboxId, owner: t.owner };
+    case "create-backup":
+      if (typeof t.owner !== "string" || t.owner.trim() === "") return null;
+      return { kind: "create-backup", owner: t.owner };
     default:
       return null;
   }

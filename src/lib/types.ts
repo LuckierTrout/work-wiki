@@ -61,6 +61,8 @@ export interface IngestResult {
 export interface QueryResult {
   answer: string; // Markdown-formatted answer with citations
   sources: string[]; // slugs of wiki pages used as sources
+  /** Readable pages placed in model context. Used by owner-only retrieval evaluations. */
+  retrievedSources?: string[];
 }
 
 /** A single issue found by the lint operation. */
@@ -218,7 +220,14 @@ export interface AgentProfile {
   /** Explicit enable switch for automatic triggers. */
   enabled?: boolean;
   /** Capabilities the owner has granted to the agent runtime. */
-  allowedTools?: Array<"search-wiki" | "propose-tasks">;
+  allowedTools?: Array<"search-wiki" | "propose-tasks" | "propose-memory">;
+  /** All consequential writes remain proposals. Reserved for future narrowly
+   *  scoped auto-approval rules without weakening the current default. */
+  approvalPolicy?: "proposal-only" | "allow-low-risk";
+  /** Bounded runtime budget. */
+  maxSteps?: number;
+  maxOutputTokens?: number;
+  timeoutMs?: number;
   /** Optional provider/model override; credentials remain server-side secrets. */
   provider?: "anthropic" | "openai" | "google" | "deepseek" | "ollama-cloud" | "ollama";
   model?: string;

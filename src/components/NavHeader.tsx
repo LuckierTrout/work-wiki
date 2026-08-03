@@ -170,6 +170,31 @@ export function NavHeader() {
                       labelIcon={<span aria-hidden>☑️</span>}
                       href="/tasks"
                     />
+                    <UserButton.Link
+                      label="Review"
+                      labelIcon={<span aria-hidden>◫</span>}
+                      href="/review"
+                    />
+                    <UserButton.Link
+                      label="Sources"
+                      labelIcon={<span aria-hidden>◎</span>}
+                      href="/monitors"
+                    />
+                    <UserButton.Link
+                      label="Knowledge"
+                      labelIcon={<span aria-hidden>◇</span>}
+                      href="/knowledge"
+                    />
+                    <UserButton.Link
+                      label="Integrations"
+                      labelIcon={<span aria-hidden>↗</span>}
+                      href="/integrations"
+                    />
+                    <UserButton.Link
+                      label="System"
+                      labelIcon={<span aria-hidden>◉</span>}
+                      href="/system"
+                    />
                     {isOwner && (
                       <UserButton.Link
                         label="Lint"
@@ -258,6 +283,64 @@ export function NavHeader() {
             );
           })}
           <Show when="signed-in">
+            <Link
+              href="/system"
+              onClick={() => setMobileOpen(false)}
+              className="block transition-colors"
+              style={{ paddingInline: 24, paddingBlock: 9, fontSize: 15, color: pathname.startsWith("/system") ? "var(--ink)" : "var(--muted)", background: pathname.startsWith("/system") ? "var(--paper-2)" : "transparent" }}
+            >
+              System
+            </Link>
+            <Link
+              href="/integrations"
+              onClick={() => setMobileOpen(false)}
+              className="block transition-colors"
+              style={{ paddingInline: 24, paddingBlock: 9, fontSize: 15, color: pathname.startsWith("/integrations") ? "var(--ink)" : "var(--muted)", background: pathname.startsWith("/integrations") ? "var(--paper-2)" : "transparent" }}
+            >
+              Integrations
+            </Link>
+            <Link
+              href="/knowledge"
+              onClick={() => setMobileOpen(false)}
+              className="block transition-colors"
+              style={{
+                paddingInline: 24,
+                paddingBlock: 9,
+                fontSize: 15,
+                color: pathname.startsWith("/knowledge") ? "var(--ink)" : "var(--muted)",
+                background: pathname.startsWith("/knowledge") ? "var(--paper-2)" : "transparent",
+              }}
+            >
+              Knowledge
+            </Link>
+            <Link
+              href="/monitors"
+              onClick={() => setMobileOpen(false)}
+              className="block transition-colors"
+              style={{
+                paddingInline: 24,
+                paddingBlock: 9,
+                fontSize: 15,
+                color: pathname.startsWith("/monitors") ? "var(--ink)" : "var(--muted)",
+                background: pathname.startsWith("/monitors") ? "var(--paper-2)" : "transparent",
+              }}
+            >
+              Sources
+            </Link>
+            <Link
+              href="/review"
+              onClick={() => setMobileOpen(false)}
+              className="block transition-colors"
+              style={{
+                paddingInline: 24,
+                paddingBlock: 9,
+                fontSize: 15,
+                color: pathname.startsWith("/review") ? "var(--ink)" : "var(--muted)",
+                background: pathname.startsWith("/review") ? "var(--paper-2)" : "transparent",
+              }}
+            >
+              Review
+            </Link>
             <Link
               href="/tasks"
               onClick={() => setMobileOpen(false)}

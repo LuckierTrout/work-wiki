@@ -93,6 +93,15 @@ function AgentCard({
   const [proposeTasks, setProposeTasks] = useState(
     (agent.allowedTools ?? []).includes("propose-tasks"),
   );
+  const [proposeMemory, setProposeMemory] = useState(
+    (agent.allowedTools ?? []).includes("propose-memory"),
+  );
+  const [approvalPolicy, setApprovalPolicy] = useState(
+    agent.approvalPolicy ?? "proposal-only",
+  );
+  const [maxSteps, setMaxSteps] = useState(agent.maxSteps ?? 8);
+  const [maxOutputTokens, setMaxOutputTokens] = useState(agent.maxOutputTokens ?? 2500);
+  const [timeoutMs, setTimeoutMs] = useState(agent.timeoutMs ?? 90000);
   const [provider, setProvider] = useState(agent.provider ?? "");
   const [model, setModel] = useState(agent.model ?? "");
   const [runPrompt, setRunPrompt] = useState("");
@@ -102,9 +111,19 @@ function AgentCard({
     trigger: string;
     output: string;
     toolsUsed: string[];
+    mode?: "execute" | "dry-run";
+    status?: "completed" | "failed";
+    retrievedSlugs?: string[];
+    proposedTaskIds?: string[];
+    proposedMemoryIds?: string[];
+    expectedChanges?: string[];
+    usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
+    estimatedCostUsd?: number;
+    durationMs?: number;
+    error?: string;
     createdAt: string;
   }>>([]);
-  const [running, setRunning] = useState(false);
+  const [running, setRunning] = useState<"execute" | "dry-run" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -125,7 +144,12 @@ function AgentCard({
           allowedTools: [
             ...(searchWiki ? ["search-wiki"] : []),
             ...(proposeTasks ? ["propose-tasks"] : []),
+            ...(proposeMemory ? ["propose-memory"] : []),
           ],
+          approvalPolicy,
+          maxSteps,
+          maxOutputTokens,
+          timeoutMs,
           provider: provider || null,
           model,
         }),
@@ -143,28 +167,30 @@ function AgentCard({
     }
   }
 
-  async function runAgent() {
-    setRunning(true);
+  async function runAgent(dryRun: boolean) {
+    setRunning(dryRun ? "dry-run" : "execute");
     setError(null);
     setRunOutput(null);
     try {
       const res = await fetch(`/api/agents/${agent.id}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: runPrompt }),
+        body: JSON.stringify({ prompt: runPrompt, dryRun }),
       });
       const body = (await res.json().catch(() => ({}))) as {
         error?: string;
         activity?: { output?: string };
       };
       if (!res.ok) throw new Error(body.error ?? `request failed (${res.status})`);
-      setRunOutput(body.activity?.output ?? "Run complete.");
+      setRunOutput(
+        `${dryRun ? "Dry run complete. " : "Run complete. "}${body.activity?.output ?? ""}`.trim(),
+      );
       setRunPrompt("");
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Agent run failed");
     } finally {
-      setRunning(false);
+      setRunning(null);
     }
   }
 
@@ -358,6 +384,28 @@ function AgentCard({
             <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
               <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={searchWiki} onChange={(event) => setSearchWiki(event.target.checked)} />Search wiki</label>
               <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={proposeTasks} onChange={(event) => setProposeTasks(event.target.checked)} />Propose tasks</label>
+              <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={proposeMemory} onChange={(event) => setProposeMemory(event.target.checked)} />Propose memory changes</label>
+            </div>
+          </fieldset>
+          <div className="grid sm:grid-cols-2" style={{ gap: 10 }}>
+            <label style={{ fontSize: 13, color: "var(--muted)" }}>
+              Approval policy
+              <select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value as typeof approvalPolicy)} style={{ width: "100%", marginTop: 5, border: "1px solid var(--rule-strong)", borderRadius: 9, background: "var(--paper)", color: "var(--ink)", padding: "9px 10px" }}>
+                <option value="proposal-only">Every write needs review</option>
+                <option value="allow-low-risk">Allow future low-risk rules</option>
+              </select>
+            </label>
+            <div style={{ padding: "9px 11px", borderLeft: "2px solid var(--accent)", background: "var(--paper)" }}>
+              <span className="receipt" style={{ display: "block", color: "var(--accent)", fontSize: 9.5 }}>CURRENT SAFETY BOUNDARY</span>
+              <span style={{ display: "block", color: "var(--muted)", fontSize: 12, lineHeight: 1.45, marginTop: 4 }}>Tasks and memory changes remain proposals in both modes.</span>
+            </div>
+          </div>
+          <fieldset style={{ border: "1px solid var(--rule)", borderRadius: 10, padding: "10px 12px" }}>
+            <legend className="receipt" style={{ padding: "0 5px", fontSize: 10, color: "var(--faint)" }}>Run budget</legend>
+            <div className="grid sm:grid-cols-3" style={{ gap: 10 }}>
+              <label style={{ fontSize: 12, color: "var(--muted)" }}>Max steps<input type="number" min={1} max={12} value={maxSteps} onChange={(event) => setMaxSteps(Number(event.target.value))} style={{ width: "100%", marginTop: 5, border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper)", color: "var(--ink)", padding: "8px 9px" }} /></label>
+              <label style={{ fontSize: 12, color: "var(--muted)" }}>Output tokens<input type="number" min={256} max={16000} step={256} value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(Number(event.target.value))} style={{ width: "100%", marginTop: 5, border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper)", color: "var(--ink)", padding: "8px 9px" }} /></label>
+              <label style={{ fontSize: 12, color: "var(--muted)" }}>Timeout (seconds)<input type="number" min={5} max={300} value={Math.round(timeoutMs / 1000)} onChange={(event) => setTimeoutMs(Number(event.target.value) * 1000)} style={{ width: "100%", marginTop: 5, border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper)", color: "var(--ink)", padding: "8px 9px" }} /></label>
             </div>
           </fieldset>
           <div className="row" style={{ gap: 8 }}>
@@ -387,10 +435,21 @@ function AgentCard({
             <div key={entry.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--rule)" }}>
               <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                 <span className="receipt" style={{ fontSize: 9.5 }}>{entry.trigger}</span>
+                <span className="receipt" style={{ fontSize: 9.5, color: entry.status === "failed" ? "var(--rust)" : "var(--accent)" }}>{entry.mode ?? "execute"} · {entry.status ?? "completed"}</span>
                 <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>{new Date(entry.createdAt).toLocaleString()}</span>
                 {entry.toolsUsed.map((tool) => <span key={tool} className="receipt" style={{ fontSize: 9.5, color: "var(--accent)" }}>{tool}</span>)}
               </div>
               <p style={{ margin: "7px 0 0", fontSize: 13.5, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{entry.output}</p>
+              <div className="row" style={{ gap: 10, flexWrap: "wrap", marginTop: 7 }}>
+                {entry.retrievedSlugs?.length ? <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>{entry.retrievedSlugs.length} pages retrieved</span> : null}
+                {entry.proposedTaskIds?.length ? <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>{entry.proposedTaskIds.length} task proposals</span> : null}
+                {entry.proposedMemoryIds?.length ? <Link href="/review" className="receipt" style={{ fontSize: 9.5, color: "var(--accent)" }}>{entry.proposedMemoryIds.length} memory proposals</Link> : null}
+                {entry.usage && <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>{entry.usage.totalTokens.toLocaleString()} tokens</span>}
+                {entry.estimatedCostUsd !== undefined && <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>${entry.estimatedCostUsd.toFixed(4)} est.</span>}
+                {entry.durationMs !== undefined && <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>{(entry.durationMs / 1000).toFixed(1)}s</span>}
+              </div>
+              {entry.expectedChanges?.length ? <ul style={{ margin: "8px 0 0", paddingLeft: 18, color: "var(--muted)", fontSize: 12.5 }}>{entry.expectedChanges.map((change) => <li key={change}>{change}</li>)}</ul> : null}
+              {entry.error && <p style={{ margin: "7px 0 0", color: "var(--rust)", fontSize: 12.5 }}>{entry.error}</p>}
             </div>
           ))}
         </div>
@@ -400,7 +459,8 @@ function AgentCard({
         <p className="fmark" style={{ marginBottom: 8 }}>Run now</p>
         <div className="row" style={{ gap: 8, alignItems: "end" }}>
           <input value={runPrompt} onChange={(event) => setRunPrompt(event.target.value)} placeholder="Optional focus for this run" style={{ flex: 1, border: "1px solid var(--rule-strong)", borderRadius: 10, background: "var(--paper)", color: "var(--ink)", padding: "9px 11px", fontSize: 13.5 }} />
-          <button type="button" className="btn primary" onClick={() => void runAgent()} disabled={running}>{running ? "Running…" : "Run agent"}</button>
+          <button type="button" className="btn ghost" onClick={() => void runAgent(true)} disabled={running !== null}>{running === "dry-run" ? "Planning…" : "Dry run"}</button>
+          <button type="button" className="btn primary" onClick={() => void runAgent(false)} disabled={running !== null}>{running === "execute" ? "Running…" : "Run agent"}</button>
         </div>
         {runOutput && <p style={{ margin: "10px 0 0", padding: 11, borderRadius: 10, background: "var(--paper)", fontSize: 13.5, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{runOutput}</p>}
       </div>

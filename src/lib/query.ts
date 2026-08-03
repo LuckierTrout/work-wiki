@@ -299,6 +299,7 @@ export async function query(
       return {
         answer: `**No API key configured.** Set an API key (\`ANTHROPIC_API_KEY\`, \`OPENAI_API_KEY\`, etc.) to enable querying.\n\nYour wiki currently contains these pages:\n${pageList}`,
         sources: [],
+        retrievedSources: selectedSlugs,
       };
     }
 
@@ -329,7 +330,7 @@ export async function query(
     const allSlugs = entries.map((e) => e.slug);
     const sources = extractCitedSlugs(answer, allSlugs);
 
-    return { answer, sources };
+    return { answer, sources, retrievedSources: selectedSlugs };
   });
 }
 

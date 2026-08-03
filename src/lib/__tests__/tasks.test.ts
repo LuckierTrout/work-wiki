@@ -67,6 +67,39 @@ describe("parseTask", () => {
     expect(parseTask({ kind: "run-agent", agentId: "a", owner: "alice", trigger: "hourly" })).toBeNull();
   });
 
+  it("accepts only owner-scoped source-monitor tasks", () => {
+    expect(parseTask({
+      kind: "monitor-source",
+      monitorId: "mon_12345678",
+      owner: "alice",
+    })).toEqual({ kind: "monitor-source", monitorId: "mon_12345678", owner: "alice" });
+    expect(parseTask({ kind: "monitor-source", monitorId: "bad", owner: "alice" })).toBeNull();
+    expect(parseTask({ kind: "monitor-source", monitorId: "mon_12345678", owner: "" })).toBeNull();
+  });
+
+  it("accepts owner-scoped structured-knowledge extraction tasks", () => {
+    expect(parseTask({ kind: "extract-knowledge", slug: "notes", owner: "alice" })).toEqual({
+      kind: "extract-knowledge",
+      slug: "notes",
+      owner: "alice",
+    });
+    expect(parseTask({ kind: "extract-knowledge", slug: "", owner: "alice" })).toBeNull();
+  });
+
+  it("accepts only valid integration-delivery tasks", () => {
+    expect(parseTask({ kind: "deliver-integration", outboxId: "out_1234567890abcdef", owner: "alice" })).toEqual({
+      kind: "deliver-integration",
+      outboxId: "out_1234567890abcdef",
+      owner: "alice",
+    });
+    expect(parseTask({ kind: "deliver-integration", outboxId: "out_bad", owner: "alice" })).toBeNull();
+  });
+
+  it("accepts owner-scoped backup tasks", () => {
+    expect(parseTask({ kind: "create-backup", owner: "alice" })).toEqual({ kind: "create-backup", owner: "alice" });
+    expect(parseTask({ kind: "create-backup", owner: "" })).toBeNull();
+  });
+
   it("accepts a well-formed reconcile task", () => {
     expect(
       parseTask({ kind: "reconcile", slug: "p", threadIndex: 3, requestedBy: "alice" }),

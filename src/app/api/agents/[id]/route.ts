@@ -189,10 +189,38 @@ export async function PUT(req: Request, { params }: RouteParams) {
       body.allowedTools !== undefined &&
       (!Array.isArray(body.allowedTools) ||
         !body.allowedTools.every(
-          (value) => value === "search-wiki" || value === "propose-tasks",
+          (value) =>
+            value === "search-wiki" ||
+            value === "propose-tasks" ||
+            value === "propose-memory",
         ))
     ) {
       return NextResponse.json({ error: "Invalid allowedTools" }, { status: 400 });
+    }
+    if (
+      body.approvalPolicy !== undefined &&
+      body.approvalPolicy !== "proposal-only" &&
+      body.approvalPolicy !== "allow-low-risk"
+    ) {
+      return NextResponse.json({ error: "Invalid approvalPolicy" }, { status: 400 });
+    }
+    if (
+      body.maxSteps !== undefined &&
+      (typeof body.maxSteps !== "number" || !Number.isInteger(body.maxSteps))
+    ) {
+      return NextResponse.json({ error: "maxSteps must be an integer" }, { status: 400 });
+    }
+    if (
+      body.maxOutputTokens !== undefined &&
+      (typeof body.maxOutputTokens !== "number" || !Number.isInteger(body.maxOutputTokens))
+    ) {
+      return NextResponse.json({ error: "maxOutputTokens must be an integer" }, { status: 400 });
+    }
+    if (
+      body.timeoutMs !== undefined &&
+      (typeof body.timeoutMs !== "number" || !Number.isInteger(body.timeoutMs))
+    ) {
+      return NextResponse.json({ error: "timeoutMs must be an integer" }, { status: 400 });
     }
     if (
       body.provider !== undefined &&

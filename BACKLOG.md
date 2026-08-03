@@ -72,6 +72,46 @@ The items below begin after the API-key checks pass.
   Two remaining approved senders need their one-time Cloudflare
   destination-verification links opened.
 
+## Trusted memory roadmap
+
+Architecture and acceptance criteria are recorded in
+[`docs/trusted-memory-roadmap.md`](docs/trusted-memory-roadmap.md).
+
+- [ ] Add reviewable memory updates with owner-scoped proposals, semantic diffs,
+  evidence, stale-base protection, approval, rejection, revision history, and
+  rollback. **Implemented locally on `feature/trusted-memory-platform`;**
+  owner-session browser acceptance and production deployment remain.
+- [ ] Add claim-level evidence anchored to exact source excerpts, document
+  sections, PDF pages, slides, spreadsheet ranges, email sections, and URL
+  fragments where the source format provides them. **Implemented locally;** the
+  private page marginalia marks evidence stale when it belongs to an older page
+  revision.
+- [ ] Add continuous source monitoring with conditional fetches, meaningful
+  change detection, review proposals, failure handling, and owner-controlled
+  digests. **Monitoring and proposal creation are implemented locally.** Digest
+  delivery remains a follow-up after owner-session monitoring acceptance.
+- [ ] Add source-linked structured records for people, organizations, projects,
+  decisions, commitments, risks, events, and temporal relationships.
+  **Implemented locally** with Atlas, filtered views, timeline, and relationship
+  ledger; production extraction acceptance remains.
+- [ ] Harden Agent Studio with scoped permissions, budgets, dry runs, approval
+  policies, auditable activity, and rollback. Hermes remains optional
+  orchestration, not the authorization or storage boundary. **Implemented
+  locally** with explicit grants, proposal-only writes, budgets, timeouts, dry
+  runs, and richer receipts; owner-session agent acceptance remains.
+- [ ] Add an idempotent integration outbox and owner-approved delivery adapters.
+  Begin with provider-neutral webhook and iCalendar output; select any task or
+  calendar SaaS adapter separately. **Webhook, HMAC signing, iCalendar, retries,
+  and idempotency are implemented locally;** selecting a SaaS-specific adapter
+  remains a separate product choice.
+- [ ] Add owner-only operational health for queue failures, retries, backups,
+  restore verification, retrieval quality, provider usage, cost, and privacy
+  boundary checks. **Implemented locally** with a System workspace, operation
+  ledger, queued checksummed backups, isolated restore verification, and a
+  golden-question evaluation suite. Cloudflare queue depth and DLQ inspection
+  remain in provider telemetry. Off-account backup replication remains a future
+  disaster-recovery hardening step.
+
 ## Definition of done for backlog features
 
 Each feature needs owner-level privacy controls, visible runtime verification,

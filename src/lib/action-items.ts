@@ -2,6 +2,7 @@ import { isEnoent } from "./errors";
 import { withFileLock } from "./lock";
 import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
+import { stageAcceptedActionIntegrations } from "./integration-outbox";
 
 export type ActionItemStatus =
   | "inbox"
@@ -174,6 +175,11 @@ export async function updateActionItem(
     }
     item.updatedAt = new Date().toISOString();
     await writeItems(owner, items);
+    if (patch.status === "accepted") {
+      // Idempotent staging means a client may safely retry an acceptance after
+      // an operational error without creating duplicate external actions.
+      await stageAcceptedActionIntegrations(owner, item);
+    }
     return item;
   });
 }
