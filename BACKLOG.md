@@ -49,12 +49,16 @@ The items below begin after the API-key checks pass.
   Obsidian-vault/folder import. Preserve titles, dates, hierarchy, and links
   where the source format allows it. Evaluate Notion and other export adapters
   after the core import flow works.
-- [ ] Design the document extraction/conversion pipeline for DOCX and PPTX,
+- [x] Design the document extraction/conversion pipeline for DOCX and PPTX,
   including slide order, headings, tables, images, speaker notes, and storage
-  of the original file in R2.
+  of the original file in R2. Deployed and owner-session verified on 2026-08-02
+  with a live DOCX, rendered embedded figure, and byte-for-byte R2 source check.
 - [ ] Extend inbound email ingestion to process supported attachments, route
   them to the correct owner/vault/agent, and send clear success or failure
-  receipts after the conversion pipeline is settled.
+  receipts after the conversion pipeline is settled. The implementation,
+  settings UI, routing, and Cloudflare send binding are deployed; production
+  receipt sending passed for one verified destination. Two remaining approved
+  senders need their one-time Cloudflare destination-verification links opened.
 
 ## Definition of done for backlog features
 
