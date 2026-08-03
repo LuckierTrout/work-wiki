@@ -18,6 +18,10 @@
 		{
 			"pattern": "workwiki.app",
 			"custom_domain": true
+		},
+		{
+			"pattern": "www.workwiki.app",
+			"custom_domain": true
 		}
 	],
 	"main": ".open-next/worker.js",
