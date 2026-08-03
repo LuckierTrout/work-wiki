@@ -16,6 +16,20 @@ does not replace the upstream project's issue tracker.
 
 The items below begin after the API-key checks pass.
 
+## Production acceptance blockers
+
+The 2026-08-03 owner-session run is recorded in
+[`docs/production-owner-session-acceptance-2026-08-03.md`](docs/production-owner-session-acceptance-2026-08-03.md).
+
+- [ ] Confirm the prepared rollback of the temporary accepted
+  `live-verification` revision, then verify the restored page and revision
+  receipt.
+- [ ] Fix Structured Knowledge extraction with the Ollama Cloud default or add
+  a reliable feature-level provider override. The production attempt returned
+  `No object generated: could not parse the response.`
+- [ ] Move `workwiki.app` from Clerk development keys to a Clerk production
+  instance and repeat the owner and signed-out access gates.
+
 ## Retrieval and chat
 
 - [x] Correct vector-search readiness. Resolve the current Vectorize index and
@@ -28,7 +42,10 @@ The items below begin after the API-key checks pass.
   and an optional, safety-gated Hermes API backend are live. Hermes 0.19.1 now
   runs in an isolated, zero-tool profile on the Abacus.ai host behind the
   `hermes.workwiki.app` Cloudflare Tunnel; its bearer credential is installed
-  only as a Worker secret. Owner-session chat acceptance remains.
+  only as a Worker secret. **Production owner-session verification passed for
+  a persisted My Pages conversation with a grounded answer and page citation
+  on 2026-08-03.** A multi-turn follow-up and Save to wiki remain before full
+  closure.
 
 ## Personal agents and actions
 
@@ -79,8 +96,9 @@ Architecture and acceptance criteria are recorded in
 
 - [ ] Add reviewable memory updates with owner-scoped proposals, semantic diffs,
   evidence, stale-base protection, approval, rejection, revision history, and
-  rollback. **Implemented locally on `feature/trusted-memory-platform`;**
-  owner-session browser acceptance and production deployment remain.
+  rollback. **Deployed and production owner-session verified on 2026-08-03 for
+  proposal isolation, owner editing, rejection, acceptance, and revision
+  history.** Final rollback confirmation remains open on the acceptance page.
 - [ ] Add claim-level evidence anchored to exact source excerpts, document
   sections, PDF pages, slides, spreadsheet ranges, email sections, and URL
   fragments where the source format provides them. **Implemented locally;** the
@@ -88,27 +106,35 @@ Architecture and acceptance criteria are recorded in
   revision.
 - [ ] Add continuous source monitoring with conditional fetches, meaningful
   change detection, review proposals, failure handling, and owner-controlled
-  digests. **Monitoring and proposal creation are implemented locally.** Digest
-  delivery remains a follow-up after owner-session monitoring acceptance.
+  digests. **Production owner-session verification passed on 2026-08-03 for
+  baseline creation, meaningful-change proposals, unsupported-content failure,
+  pause, and resume.** Digest delivery remains a follow-up.
 - [ ] Add source-linked structured records for people, organizations, projects,
   decisions, commitments, risks, events, and temporal relationships.
-  **Implemented locally** with Atlas, filtered views, timeline, and relationship
-  ledger; production extraction acceptance remains.
+  **Deployed** with Atlas, filtered views, timeline, and relationship ledger.
+  Production extraction failed on 2026-08-03 because the Ollama Cloud response
+  could not be parsed into the required object, so Phase C remains blocked.
 - [ ] Harden Agent Studio with scoped permissions, budgets, dry runs, approval
   policies, auditable activity, and rollback. Hermes remains optional
   orchestration, not the authorization or storage boundary. **Implemented
-  locally** with explicit grants, proposal-only writes, budgets, timeouts, dry
-  runs, and richer receipts; owner-session agent acceptance remains.
+  and deployed** with explicit grants, proposal-only writes, budgets, timeouts,
+  dry runs, and richer receipts. **A production Action Extractor dry run passed
+  on 2026-08-03 with five pages retrieved, 5,835 tokens recorded, and zero
+  writes.** A fresh-ingest automatic-trigger run remains.
 - [ ] Add an idempotent integration outbox and owner-approved delivery adapters.
   Begin with provider-neutral webhook and iCalendar output; select any task or
   calendar SaaS adapter separately. **Webhook, HMAC signing, iCalendar, retries,
-  and idempotency are implemented locally;** selecting a SaaS-specific adapter
-  remains a separate product choice.
+  and idempotency are deployed;** the owner workspace and disabled safe state
+  passed production verification on 2026-08-03. Signed external delivery awaits
+  an approved endpoint and secret, and selecting a SaaS-specific adapter remains
+  a separate product choice.
 - [ ] Add owner-only operational health for queue failures, retries, backups,
   restore verification, retrieval quality, provider usage, cost, and privacy
-  boundary checks. **Implemented locally** with a System workspace, operation
+  boundary checks. **Deployed** with a System workspace, operation
   ledger, queued checksummed backups, isolated restore verification, and a
-  golden-question evaluation suite. Cloudflare queue depth and DLQ inspection
+  golden-question evaluation suite. **Two production backups passed isolated
+  restore verification, and the initial retrieval case passed all four quality
+  measures at 100% on 2026-08-03.** Cloudflare queue depth and DLQ inspection
   remain in provider telemetry. Off-account backup replication remains a future
   disaster-recovery hardening step.
 

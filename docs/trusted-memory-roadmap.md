@@ -143,3 +143,15 @@ task/calendar SaaS adapter remain follow-up choices rather than implicit scope.
 The first backup implementation is an isolated, checksummed snapshot in the
 configured storage account; off-account disaster-recovery replication remains a
 separate hardening step.
+
+## Production acceptance status
+
+The production owner-session run on 2026-08-03 is documented in
+[`production-owner-session-acceptance-2026-08-03.md`](production-owner-session-acceptance-2026-08-03.md).
+Review, monitoring, Hermes chat, Agent Studio dry-run safety, owner access
+boundaries, queued backups, isolated restore verification, and the first
+golden-question retrieval evaluation passed. Structured Knowledge remains
+blocked by an unparseable Ollama Cloud structured response. The temporary
+accepted test revision also remains pending the owner's prepared public-content
+rollback confirmation. Production Clerk keys must replace the development
+instance before the identity boundary is considered production-ready.
