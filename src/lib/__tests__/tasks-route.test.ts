@@ -17,7 +17,10 @@ vi.mock("@/lib/agents", async (orig) => ({
   ...(await orig<typeof import("@/lib/agents")>()),
   addAgentLearningPage: vi.fn(async () => {}),
 }));
-vi.mock("@/lib/ingest-jobs", () => ({ updateIngestJob: vi.fn(async () => ({})) }));
+vi.mock("@/lib/ingest-jobs", () => ({
+  getIngestJob: vi.fn(async () => null),
+  updateIngestJob: vi.fn(async () => ({})),
+}));
 vi.mock("@/lib/ingest-staging", () => ({
   readStagedBytes: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
   readStagedText: vi.fn(async () => "staged pasted text"),
@@ -34,7 +37,7 @@ import { getServicePrincipal } from "@/lib/auth";
 import { reconcileFromTalk } from "@/lib/reconcile";
 import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest } from "@/lib/ingest";
 import { fixLintIssue } from "@/lib/lint-fix";
-import { updateIngestJob } from "@/lib/ingest-jobs";
+import { getIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
 import { readStagedBytes, readStagedText, deleteStaged } from "@/lib/ingest-staging";
 import { preserveDocumentSources } from "@/lib/document-sources";
 
@@ -47,6 +50,7 @@ const mockedIngestImage = vi.mocked(ingestImage);
 const mockedIngestDocument = vi.mocked(ingestDocument);
 const mockedReingest = vi.mocked(reingest);
 const mockedFixLint = vi.mocked(fixLintIssue);
+const mockedGetJob = vi.mocked(getIngestJob);
 const mockedUpdateJob = vi.mocked(updateIngestJob);
 const mockedReadStagedBytes = vi.mocked(readStagedBytes);
 const mockedReadStagedText = vi.mocked(readStagedText);
@@ -72,6 +76,7 @@ async function run(body: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedGetJob.mockResolvedValue(null);
   // Default: authenticated as the service principal.
   mockedGetService.mockReturnValue({ id: "service:yopedia", handle: "yopedia" });
 });
@@ -317,6 +322,40 @@ describe("POST /api/tasks/run", () => {
       expect.objectContaining({ owner: "alice" }),
     );
     expect(mockedDeleteStaged).toHaveBeenCalledWith("raw/uploads/j/plan.docx");
+  });
+
+  it("returns a completed tracked ingest on queue replay without rereading deleted staging", async () => {
+    mockedGetJob.mockResolvedValue({
+      jobId: "job-done",
+      owner: "alice",
+      status: "done",
+      slug: "live-verification",
+      createdAt: "2026-08-02T00:00:00.000Z",
+      updatedAt: "2026-08-02T00:01:00.000Z",
+    });
+    const res = await run({
+      kind: "ingest",
+      owner: "alice",
+      jobId: "job-done",
+      staged: {
+        key: "raw/uploads/job-done/plan.docx",
+        kind: "document",
+        filename: "plan.docx",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      slug: "live-verification",
+      replayed: true,
+    });
+    expect(mockedReadStagedBytes).not.toHaveBeenCalled();
+    expect(mockedIngestDocument).not.toHaveBeenCalled();
+    expect(mockedUpdateJob).not.toHaveBeenCalled();
+    expect(mockedDeleteStaged).toHaveBeenCalledWith(
+      "raw/uploads/job-done/plan.docx",
+    );
   });
 
   it("folds staged email attachments into the email body", async () => {

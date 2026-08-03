@@ -5,7 +5,7 @@ import { reconcileFromTalk } from "@/lib/reconcile";
 import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest } from "@/lib/ingest";
 import { extractDocumentText } from "@/lib/document-extract";
 import { fixLintIssue } from "@/lib/lint-fix";
-import { updateIngestJob } from "@/lib/ingest-jobs";
+import { getIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
 import { readStagedBytes, readStagedText, deleteStaged } from "@/lib/ingest-staging";
 import { agentIdFor, addAgentLearningPage, DEFAULT_AGENT_NAME } from "@/lib/agents";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
@@ -59,6 +59,31 @@ export async function POST(req: Request) {
     : [];
 
   try {
+    // A queue delivery can be retried after the first request has committed the
+    // page and terminal job status but before the consumer receives its 2xx.
+    // At that point staging has legitimately been deleted. Replaying extraction
+    // would turn a completed ingest into repeated R2-not-found failures, so use
+    // the tracked job as the idempotency record and return the original result.
+    if (task.kind === "ingest" && task.jobId) {
+      const existingJob = await getIngestJob(task.jobId);
+      const taskJobOwner = (
+        task.triggeredBy ?? task.author ?? task.owner ?? ""
+      ).toLowerCase();
+      if (
+        existingJob?.status === "done" &&
+        existingJob.slug &&
+        taskJobOwner &&
+        existingJob.owner.toLowerCase() === taskJobOwner
+      ) {
+        await Promise.all(stagedKeys.map((key) => deleteStaged(key)));
+        return NextResponse.json({
+          ok: true,
+          slug: existingJob.slug,
+          replayed: true,
+        });
+      }
+    }
+
     if (task.kind === "reconcile") {
       // Attribute the edit to the requester's yoyo (the human who asked), else a
       // generic yoyo for autonomous/unknown triggers.
