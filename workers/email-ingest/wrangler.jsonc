@@ -1,6 +1,7 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "yopedia-email-ingest",
+  "workers_dev": false,
   "main": "index.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -21,7 +22,7 @@
     }
   ],
   "vars": {
-    "YOPEDIA_SITE_URL": "https://yopedia.christianlee-flightwall.workers.dev"
+    "YOPEDIA_SITE_URL": "https://workwiki.app"
   }
   // Secret (set with `wrangler secret put --config workers/email-ingest/wrangler.jsonc`):
   //   YOPEDIA_SERVICE_TOKEN — same value as the main and task-consumer Workers.

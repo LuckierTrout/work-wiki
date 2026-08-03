@@ -6,6 +6,7 @@
   // dispatcher; the actual work runs in the main app (full lib + OpenNext context).
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "yopedia-task-consumer",
+  "workers_dev": false,
   "main": "index.ts",
   "compatibility_date": "2026-08-01",
 
@@ -55,8 +56,8 @@
   // Public fallback URL for local testing and links in completion notifications.
   // Production task calls use the YOPEDIA service binding above.
   "vars": {
-    "YOPEDIA_URL": "https://yopedia.christianlee-flightwall.workers.dev",
-    "YOPEDIA_SITE_URL": "https://yopedia.christianlee-flightwall.workers.dev",
+    "YOPEDIA_URL": "https://workwiki.app",
+    "YOPEDIA_SITE_URL": "https://workwiki.app",
     "YOPEDIA_EMAIL_FROM": "ingest@workwiki.app"
   }
 

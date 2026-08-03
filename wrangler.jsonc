@@ -1,5 +1,5 @@
 {
-	// yopedia — Cloudflare Pages deployment via @opennextjs/cloudflare
+	// yopedia — Cloudflare Worker deployment via @opennextjs/cloudflare
 	//
 	// Binding names match src/lib/storage/cloudflare-types.ts CloudflareEnv:
 	//   YOPEDIA_BUCKET   → R2Bucket
@@ -13,6 +13,13 @@
 	//   npx wrangler vectorize list
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "yopedia",
+	"workers_dev": false,
+	"routes": [
+		{
+			"pattern": "workwiki.app",
+			"custom_domain": true
+		}
+	],
 	"main": ".open-next/worker.js",
 	"compatibility_date": "2026-08-01",
 	"compatibility_flags": [
