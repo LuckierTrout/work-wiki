@@ -25,8 +25,10 @@ The items below begin after the API-key checks pass.
   durable conversations, follow-up questions, retrieval scope controls,
   per-answer source citations, context/token limits, and an option to save a
   useful answer back to the wiki. **Deployed 2026-08-03:** the native chat path
-  and an optional, safety-gated Hermes API backend are live. Owner-session chat
-  acceptance and Hermes host/secret provisioning remain.
+  and an optional, safety-gated Hermes API backend are live. Hermes 0.19.1 now
+  runs in an isolated, zero-tool profile on the Abacus.ai host behind the
+  `hermes.workwiki.app` Cloudflare Tunnel; its bearer credential is installed
+  only as a Worker secret. Owner-session chat acceptance remains.
 
 ## Personal agents and actions
 

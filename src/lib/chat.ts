@@ -159,6 +159,17 @@ interface HermesCompletion {
   choices?: Array<{ message?: { content?: string } }>;
 }
 
+interface HermesToolsetRow {
+  name?: string;
+  enabled?: boolean;
+  tools?: string[];
+}
+
+interface HermesToolsetEnvelope {
+  data?: HermesToolsetRow[];
+  toolsets?: HermesToolsetRow[];
+}
+
 function hermesConfigured(): boolean {
   return Boolean(process.env.HERMES_AGENT_URL && process.env.HERMES_API_KEY);
 }
@@ -191,11 +202,17 @@ export async function getHermesStatus(): Promise<{
         reason: "Hermes health or tool discovery failed.",
       };
     }
-    const rows = (await toolsetsResponse.json()) as Array<{
-      enabled?: boolean;
-      tools?: string[];
-    }>;
-    if (!Array.isArray(rows)) {
+    const payload = (await toolsetsResponse.json()) as
+      | HermesToolsetRow[]
+      | HermesToolsetEnvelope;
+    const rows = Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload?.data)
+        ? payload.data
+        : Array.isArray(payload?.toolsets)
+          ? payload.toolsets
+          : null;
+    if (!rows) {
       return {
         configured: true,
         available: false,
@@ -204,7 +221,14 @@ export async function getHermesStatus(): Promise<{
       };
     }
     const dangerous = new Set([
+      "browser",
       "terminal",
+      "file",
+      "code_execution",
+      "computer_use",
+      "cronjob",
+      "delegation",
+      "skills",
       "process",
       "read_terminal",
       "read_file",
@@ -220,7 +244,8 @@ export async function getHermesStatus(): Promise<{
     ]);
     const enabledTools = rows
       .filter((row) => row.enabled)
-      .flatMap((row) => row.tools ?? []);
+      .flatMap((row) => [row.name, ...(row.tools ?? [])])
+      .filter((name): name is string => Boolean(name));
     const unsafe = enabledTools.filter((name) => dangerous.has(name));
     if (unsafe.length > 0) {
       return {
