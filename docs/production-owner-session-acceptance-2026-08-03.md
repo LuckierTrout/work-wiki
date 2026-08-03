@@ -3,10 +3,9 @@
 ## Verdict
 
 The trusted-memory release is deployed and most owner workflows passed, but the
-release is **not fully accepted**. Structured-knowledge extraction fails with
-the current Ollama Cloud default, and the temporary accepted revision on
-`live-verification` still needs its prepared owner confirmation to restore the
-previous revision. Production also still uses Clerk development keys.
+release is **not fully accepted**. The owner-confirmed production rollback
+passed. Structured-knowledge extraction still fails with the current Ollama
+Cloud default, and production still uses Clerk development keys.
 
 Acceptance was run against:
 
@@ -39,6 +38,11 @@ merging the feature branch.
 - A proposal did not alter the live page before review.
 - Owner editing, review notes, rejection, acceptance, revision attribution, and
   the revision-history controls all worked.
+- The owner-confirmed rollback restored revision `1785785059024`
+  (`2026-08-03T19:24:19.024Z`, 4,471 bytes) on `live-verification`. The restored
+  page rendered its original sections and source figure, and History recorded
+  the displaced 1,530-byte temporary content at
+  `2026-08-03T19:59:36.325Z`, attributed to `@christianlee`.
 - The operation ledger recorded monitor and review receipts.
 
 ### Hermes chat
@@ -82,12 +86,7 @@ merging the feature branch.
    records were written. The extraction path needs a provider override, a more
    reliable structured-output strategy, or a deliberate production-default
    provider change before Phase C can be accepted.
-2. **The temporary accepted page revision is still live.** The correct prior
-   revision is `1785785059024` (`2026-08-03T19:24:19.024Z`, 4,471 bytes). The
-   History panel is open in the handed-off Chrome tab at the exact first
-   `Revert` control. The owner must confirm this public content edit before the
-   rollback can complete.
-3. **Clerk is using development keys in production.** The browser repeatedly
+2. **Clerk is using development keys in production.** The browser repeatedly
    reported the Clerk development-instance warning. Move `workwiki.app` to a
    Clerk production instance and production publishable/secret keys before
    treating identity as production-ready.
@@ -108,12 +107,9 @@ merging the feature branch.
 
 ## Closure order
 
-1. Confirm the prepared `live-verification` rollback and verify the restored
-   page plus its new revision receipt.
-2. Correct Structured Knowledge model selection or structured-output handling,
+1. Correct Structured Knowledge model selection or structured-output handling,
    redeploy, and rerun extraction against `yopedia-project-tracking`.
-3. Migrate Clerk to production keys and repeat signed-in and signed-out gates.
-4. Trigger one controlled ingest to verify the Action Extractor after-ingest
+2. Migrate Clerk to production keys and repeat signed-in and signed-out gates.
+3. Trigger one controlled ingest to verify the Action Extractor after-ingest
    path while ensuring every task remains proposed.
-5. Clean up the two acceptance monitors after explicit owner confirmation.
-
+4. Clean up the two acceptance monitors after explicit owner confirmation.

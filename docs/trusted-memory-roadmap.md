@@ -150,8 +150,9 @@ The production owner-session run on 2026-08-03 is documented in
 [`production-owner-session-acceptance-2026-08-03.md`](production-owner-session-acceptance-2026-08-03.md).
 Review, monitoring, Hermes chat, Agent Studio dry-run safety, owner access
 boundaries, queued backups, isolated restore verification, and the first
-golden-question retrieval evaluation passed. Structured Knowledge remains
-blocked by an unparseable Ollama Cloud structured response. The temporary
-accepted test revision also remains pending the owner's prepared public-content
-rollback confirmation. Production Clerk keys must replace the development
-instance before the identity boundary is considered production-ready.
+golden-question retrieval evaluation passed. The owner-confirmed rollback of
+the temporary accepted test revision also passed, including verification of the
+restored page and its new owner-attributed history receipt. Structured Knowledge
+remains blocked by an unparseable Ollama Cloud structured response. Production
+Clerk keys must replace the development instance before the identity boundary is
+considered production-ready.

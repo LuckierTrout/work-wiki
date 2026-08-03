@@ -21,9 +21,11 @@ The items below begin after the API-key checks pass.
 The 2026-08-03 owner-session run is recorded in
 [`docs/production-owner-session-acceptance-2026-08-03.md`](docs/production-owner-session-acceptance-2026-08-03.md).
 
-- [ ] Confirm the prepared rollback of the temporary accepted
+- [x] Confirm the prepared rollback of the temporary accepted
   `live-verification` revision, then verify the restored page and revision
-  receipt.
+  receipt. Owner-confirmed production verification passed on 2026-08-03; the
+  restored 4,471-byte revision and the new `@christianlee` history receipt were
+  both verified.
 - [ ] Fix Structured Knowledge extraction with the Ollama Cloud default or add
   a reliable feature-level provider override. The production attempt returned
   `No object generated: could not parse the response.`
@@ -98,7 +100,8 @@ Architecture and acceptance criteria are recorded in
   evidence, stale-base protection, approval, rejection, revision history, and
   rollback. **Deployed and production owner-session verified on 2026-08-03 for
   proposal isolation, owner editing, rejection, acceptance, and revision
-  history.** Final rollback confirmation remains open on the acceptance page.
+  history. Owner-confirmed rollback also passed and produced an attributed
+  revision receipt.**
 - [ ] Add claim-level evidence anchored to exact source excerpts, document
   sections, PDF pages, slides, spreadsheet ranges, email sections, and URL
   fragments where the source format provides them. **Implemented locally;** the
