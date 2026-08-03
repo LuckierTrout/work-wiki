@@ -43,18 +43,26 @@
     }
   ],
 
+  // Completion and final-failure receipts. The app-level allowlist controls
+  // recipients; the binding is restricted to Yopedia's workwiki.app sender.
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "allowed_sender_addresses": ["ingest@workwiki.app"]
+    }
+  ],
+
   // Public fallback URL for local testing and links in completion notifications.
   // Production task calls use the YOPEDIA service binding above.
   "vars": {
     "YOPEDIA_URL": "https://yopedia.christianlee-flightwall.workers.dev",
-    "YOPEDIA_SITE_URL": "https://yopedia.christianlee-flightwall.workers.dev"
+    "YOPEDIA_SITE_URL": "https://yopedia.christianlee-flightwall.workers.dev",
+    "YOPEDIA_EMAIL_FROM": "ingest@workwiki.app"
   }
 
   // Secret (set with `wrangler secret put --config workers/task-consumer/wrangler.jsonc`):
   //   YOPEDIA_SERVICE_TOKEN — the system write credential (same value as the main Worker's)
   //
-  // After a domain is added and Cloudflare Email Sending is enabled, add a
-  // `send_email` binding named EMAIL plus YOPEDIA_EMAIL_FROM to enable the
-  // optional "Ready" completion message. Until then, the inbound Worker sends
-  // the immediate accepted/rejected reply and Recent ingests carries status.
+  // Cloudflare Email Service must have workwiki.app enabled as a sending domain
+  // for the EMAIL binding above to deliver final receipts.
 }

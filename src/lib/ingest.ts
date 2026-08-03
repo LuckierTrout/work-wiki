@@ -128,6 +128,7 @@ import {
 import { contentHash, searchByVector, hasEmbeddingSupport } from "./embeddings";
 import { getStorage } from "./storage";
 import { logger } from "./logger";
+import { preserveDocumentSources } from "./document-sources";
 
 // ---------------------------------------------------------------------------
 // Ingest ledger — append-only JSONL record of each ingest operation
@@ -475,11 +476,14 @@ export async function ingestDocument(
   options?: Omit<IngestOptions, "sourceType"> & { title?: string; tags?: string[] },
 ): Promise<IngestResult> {
   const extracted = extractDocumentText(input);
-  return ingest(options?.title ?? extracted.title, extracted.text, {
+  const result = await ingest(options?.title ?? extracted.title, extracted.text, {
     ...options,
     sourceUrl: "upload",
     sourceType: extracted.format,
   });
+  const owner = options?.owner?.trim() || options?.author?.trim() || "system";
+  await preserveDocumentSources(result.primarySlug, owner, [{ ...input, extracted }]);
+  return result;
 }
 
 /**

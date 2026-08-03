@@ -2,6 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/owner", () => ({ isOwnerHandle: vi.fn() }));
+vi.mock("@/lib/agents", () => ({
+  getAgent: vi.fn(),
+  listAgentsForOwner: vi.fn(async () => []),
+}));
+vi.mock("@/lib/vault", () => ({
+  getVault: vi.fn(),
+  listVaults: vi.fn(async () => []),
+  vaultOwnedBy: vi.fn(),
+}));
 vi.mock("@/lib/email-ingest", async (original) => ({
   ...(await original<typeof import("@/lib/email-ingest")>()),
   loadEmailIngestConfig: vi.fn(),
@@ -14,11 +23,16 @@ import {
   loadEmailIngestConfig,
   saveEmailIngestConfig,
 } from "@/lib/email-ingest";
+import { getAgent } from "@/lib/agents";
+import { getVault, vaultOwnedBy } from "@/lib/vault";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedIsOwner = vi.mocked(isOwnerHandle);
 const mockedLoad = vi.mocked(loadEmailIngestConfig);
 const mockedSave = vi.mocked(saveEmailIngestConfig);
+const mockedGetAgent = vi.mocked(getAgent);
+const mockedGetVault = vi.mocked(getVault);
+const mockedVaultOwnedBy = vi.mocked(vaultOwnedBy);
 
 function request(body: Record<string, unknown>) {
   return new Request("http://localhost/api/email/settings", {
@@ -36,10 +50,14 @@ beforeEach(() => {
     enabled: false,
     inboundAddress: "",
     allowedSenders: [],
+    destinationVaultId: "",
+    destinationAgentId: "",
     updatedAt: null,
   });
   mockedSave.mockImplementation(async (input) => ({
     ...input,
+    destinationVaultId: input.destinationVaultId ?? "",
+    destinationAgentId: input.destinationAgentId ?? "",
     updatedAt: "2026-08-01T12:00:00.000Z",
   }));
 });
@@ -89,9 +107,11 @@ describe("/api/email/settings", () => {
     const { PUT } = await import("@/app/api/email/settings/route");
     const response = await PUT(
       request({
-        enabled: true,
-        inboundAddress: " Ingest@Example.com ",
-        allowedSenders: ["Owner@Example.com", "owner@example.com"],
+      enabled: true,
+      inboundAddress: " Ingest@Example.com ",
+      allowedSenders: ["Owner@Example.com", "owner@example.com"],
+      destinationVaultId: "",
+      destinationAgentId: "",
       }),
     );
     expect(response.status).toBe(200);
@@ -99,6 +119,27 @@ describe("/api/email/settings", () => {
       enabled: true,
       inboundAddress: " Ingest@Example.com ",
       allowedSenders: ["owner@example.com"],
+      destinationVaultId: "",
+      destinationAgentId: "",
     });
+  });
+
+  it("accepts only owner-controlled vault and agent destinations", async () => {
+    mockedGetVault.mockResolvedValueOnce({ id: "luckiertrout--work", owner: "LuckierTrout" } as never);
+    mockedVaultOwnedBy.mockReturnValueOnce(true);
+    mockedGetAgent.mockResolvedValueOnce({ id: "luckiertrout--yoyo", owner: "LuckierTrout" } as never);
+    const { PUT } = await import("@/app/api/email/settings/route");
+    const response = await PUT(request({
+      enabled: true,
+      inboundAddress: "ingest@example.com",
+      allowedSenders: ["owner@example.com"],
+      destinationVaultId: "luckiertrout--work",
+      destinationAgentId: "luckiertrout--yoyo",
+    }));
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith(expect.objectContaining({
+      destinationVaultId: "luckiertrout--work",
+      destinationAgentId: "luckiertrout--yoyo",
+    }));
   });
 });

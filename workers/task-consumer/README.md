@@ -21,6 +21,11 @@ gracefully off the Workers runtime.
 This worker has two triggers: the **queue consumer** (drains `yopedia-tasks`) and
 a **cron** (`scheduled()`, daily) that POSTs `/api/tasks/scan`.
 
+For inbound-email jobs, the consumer also sends a final **Ready** or **Could not
+import** receipt after the main app settles the job. The `EMAIL` binding is
+restricted to `ingest@workwiki.app`; Cloudflare Email Service must have that
+domain enabled for sending.
+
 ### Autonomous maintenance (Q2)
 
 The daily cron scans the **commons** (public pages only) for upkeep no human
@@ -124,6 +129,9 @@ pnpm exec wrangler queues create yopedia-tasks-dlq
 
 # Secret (same value as the main Worker's):
 pnpm exec wrangler secret put YOPEDIA_SERVICE_TOKEN --config workers/task-consumer/wrangler.jsonc
+
+# The versioned config already includes the EMAIL send binding and sender.
+# Confirm workwiki.app is enabled under Cloudflare Email Service before deploy.
 
 # First deploy (afterwards it auto-deploys via deploy-cloudflare.yml on push to main):
 pnpm exec wrangler deploy --config workers/task-consumer/wrangler.jsonc

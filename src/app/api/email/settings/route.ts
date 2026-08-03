@@ -10,6 +10,8 @@ import {
 } from "@/lib/email-ingest";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { getAgent, listAgentsForOwner } from "@/lib/agents";
+import { getVault, listVaults, vaultOwnedBy } from "@/lib/vault";
 
 async function requireOwner() {
   const principal = await getPrincipal();
@@ -17,10 +19,15 @@ async function requireOwner() {
 }
 
 export async function GET() {
-  if (!(await requireOwner())) {
+  const principal = await requireOwner();
+  if (!principal) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
   const config = await loadEmailIngestConfig();
+  const [vaults, agents] = await Promise.all([
+    listVaults(principal.handle),
+    listAgentsForOwner(principal.handle),
+  ]);
   const routingReady =
     config.inboundAddress.length > 0 &&
     process.env.YOPEDIA_EMAIL_ROUTING_READY === "1";
@@ -30,11 +37,14 @@ export async function GET() {
     routingReady,
     bodyIngestEnabled: true,
     attachmentIngestEnabled: true,
+    vaults: vaults.map(({ id, name }) => ({ id, name })),
+    agents: agents.map(({ id, name }) => ({ id, name })),
   });
 }
 
 export async function PUT(request: Request) {
-  if (!(await requireOwner())) {
+  const principal = await requireOwner();
+  if (!principal) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
@@ -68,6 +78,28 @@ export async function PUT(request: Request) {
       );
     }
     const allowedSenders = normalizeAllowedSenders(body.allowedSenders as string[]);
+    if (
+      body.destinationVaultId !== undefined &&
+      typeof body.destinationVaultId !== "string"
+    ) {
+      return NextResponse.json(
+        { error: "destinationVaultId must be a string" },
+        { status: 400 },
+      );
+    }
+    if (
+      body.destinationAgentId !== undefined &&
+      typeof body.destinationAgentId !== "string"
+    ) {
+      return NextResponse.json(
+        { error: "destinationAgentId must be a string" },
+        { status: 400 },
+      );
+    }
+    const destinationVaultId =
+      typeof body.destinationVaultId === "string" ? body.destinationVaultId.trim() : "";
+    const destinationAgentId =
+      typeof body.destinationAgentId === "string" ? body.destinationAgentId.trim() : "";
     if (allowedSenders.length > MAX_EMAIL_SENDERS) {
       return NextResponse.json(
         { error: `Add no more than ${MAX_EMAIL_SENDERS} approved senders` },
@@ -93,12 +125,36 @@ export async function PUT(request: Request) {
         { status: 400 },
       );
     }
+    if (destinationVaultId) {
+      const vault = await getVault(destinationVaultId);
+      if (!vault || !vaultOwnedBy(destinationVaultId, principal.handle)) {
+        return NextResponse.json(
+          { error: "Choose a vault owned by this Yopedia account" },
+          { status: 400 },
+        );
+      }
+    }
+    if (destinationAgentId) {
+      const agent = await getAgent(destinationAgentId).catch(() => null);
+      if (!agent || agent.owner?.toLowerCase() !== principal.handle.toLowerCase()) {
+        return NextResponse.json(
+          { error: "Choose an agent owned by this Yopedia account" },
+          { status: 400 },
+        );
+      }
+    }
 
     const config = await saveEmailIngestConfig({
       enabled: body.enabled,
       inboundAddress: body.inboundAddress,
       allowedSenders,
+      destinationVaultId,
+      destinationAgentId,
     });
+    const [vaults, agents] = await Promise.all([
+      listVaults(principal.handle),
+      listAgentsForOwner(principal.handle),
+    ]);
     return NextResponse.json({
       saved: true,
       ...config,
@@ -108,6 +164,8 @@ export async function PUT(request: Request) {
         process.env.YOPEDIA_EMAIL_ROUTING_READY === "1",
       bodyIngestEnabled: true,
       attachmentIngestEnabled: true,
+      vaults: vaults.map(({ id, name }) => ({ id, name })),
+      agents: agents.map(({ id, name }) => ({ id, name })),
     });
   } catch (error) {
     logger.error("email-ingest", "settings update failed", error);

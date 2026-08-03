@@ -6,9 +6,14 @@ import {
   parseCsv,
 } from "@/lib/document-extract";
 
-function office(filename: string, files: Record<string, string>) {
+function office(filename: string, files: Record<string, string | Uint8Array>) {
   const zipped = zipSync(
-    Object.fromEntries(Object.entries(files).map(([name, value]) => [name, strToU8(value)])),
+    Object.fromEntries(
+      Object.entries(files).map(([name, value]) => [
+        name,
+        typeof value === "string" ? strToU8(value) : value,
+      ]),
+    ),
   );
   return extractDocumentText({
     bytes: Uint8Array.from(zipped).buffer,
@@ -25,7 +30,7 @@ describe("document extraction", () => {
 
   it("extracts DOCX headings, paragraphs, tables, entities, and core title", () => {
     const result = office("fallback.docx", {
-      "docProps/core.xml": "<cp:coreProperties><dc:title>Quarterly Plan</dc:title></cp:coreProperties>",
+      "docProps/core.xml": "<cp:coreProperties><dc:title>Quarterly Plan</dc:title><dc:creator>Christian</dc:creator><dcterms:created>2026-08-01T12:00:00Z</dcterms:created></cp:coreProperties>",
       "word/document.xml": `<w:document><w:body>
         <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Overview &amp; goals</w:t></w:r></w:p>
         <w:p><w:r><w:t>First paragraph</w:t></w:r></w:p>
@@ -37,20 +42,48 @@ describe("document extraction", () => {
     expect(result.text).toContain("# Overview & goals");
     expect(result.text).toContain("| Owner | Task |");
     expect(result.text).toContain("| Chris | Ship |");
+    expect(result.text).toContain("Created: 2026-08-01T12:00:00Z");
+    expect(result.metadata).toMatchObject({ creator: "Christian" });
+  });
+
+  it("preserves DOCX embedded images with their relationship and context", () => {
+    const result = office("illustrated.docx", {
+      "word/document.xml": '<w:document><w:body><w:p><w:r><w:t>Diagram</w:t></w:r><w:r><w:drawing><wp:inline><wp:docPr name="Architecture" descr="System architecture"/><a:graphic><a:blip r:embed="rId7"/></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>',
+      "word/_rels/document.xml.rels": '<Relationships><Relationship Id="rId7" Target="media/diagram.png"/></Relationships>',
+      "word/media/diagram.png": new Uint8Array([137, 80, 78, 71]),
+    });
+    expect(result.assets).toHaveLength(1);
+    expect(result.assets[0]).toMatchObject({
+      filename: "diagram.png",
+      mediaType: "image/png",
+      alt: "System architecture",
+      context: "Paragraph 1",
+    });
+    expect(Array.from(new Uint8Array(result.assets[0].bytes))).toEqual([137, 80, 78, 71]);
+    expect(result.text).toContain("Embedded image: System architecture");
   });
 
   it("extracts PPTX slides in presentation order with linked speaker notes", () => {
     const result = office("deck.pptx", {
       "ppt/presentation.xml": '<p:presentation><p:sldIdLst><p:sldId r:id="rId2"/><p:sldId r:id="rId1"/></p:sldIdLst></p:presentation>',
       "ppt/_rels/presentation.xml.rels": '<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/><Relationship Id="rId2" Target="slides/slide2.xml"/></Relationships>',
-      "ppt/slides/slide2.xml": "<p:sld><a:p><a:r><a:t>Second slide</a:t></a:r></a:p></p:sld>",
+      "ppt/slides/slide2.xml": '<p:sld><p:cNvPr name="Photo" descr="Launch photo"/><a:p><a:r><a:t>Second slide</a:t></a:r></a:p><a:blip r:embed="image1"/></p:sld>',
       "ppt/slides/slide1.xml": "<p:sld><a:p><a:r><a:t>First slide</a:t></a:r></a:p></p:sld>",
-      "ppt/slides/_rels/slide2.xml.rels": '<Relationships><Relationship Id="notes" Target="../notesSlides/notesSlide1.xml"/></Relationships>',
+      "ppt/slides/_rels/slide2.xml.rels": '<Relationships><Relationship Id="notes" Target="../notesSlides/notesSlide1.xml"/><Relationship Id="image1" Target="../media/photo.jpg"/></Relationships>',
+      "ppt/media/photo.jpg": new Uint8Array([255, 216, 255]),
       "ppt/notesSlides/notesSlide1.xml": "<p:notes><a:p><a:r><a:t>Explain this</a:t></a:r></a:p></p:notes>",
     });
     expect(result.text.indexOf("Second slide")).toBeLessThan(result.text.indexOf("First slide"));
     expect(result.text).toContain("### Speaker notes");
     expect(result.text).toContain("Explain this");
+    expect(result.text).toContain("### Embedded images");
+    expect(result.assets).toEqual([
+      expect.objectContaining({
+        filename: "photo.jpg",
+        alt: "Launch photo",
+        context: "Slide 1",
+      }),
+    ]);
   });
 
   it("extracts XLSX shared strings, inline strings, values, and sheet names", () => {

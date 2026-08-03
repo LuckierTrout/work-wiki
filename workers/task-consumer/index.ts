@@ -34,6 +34,7 @@ interface Env {
 interface QueueMessage<T = unknown> {
   readonly id: string;
   readonly body: T;
+  readonly attempts: number;
   ack(): void;
   retry(): void;
 }
@@ -45,6 +46,8 @@ interface ScheduledEvent {
   readonly scheduledTime: number;
   readonly cron: string;
 }
+
+const MAX_DELIVERY_ATTEMPTS = 4;
 
 async function runTask(
   env: Env,
@@ -73,6 +76,14 @@ async function runTask(
       : await fetch(taskUrl, requestInit);
   } catch (err) {
     console.error(`task-consumer: fetch failed for ${message.id} — retry`, err);
+    if (message.attempts >= MAX_DELIVERY_ATTEMPTS) {
+      await notifyEmailReceipt(env, message.body, {
+        status: "failed",
+        detail: "Yopedia could not finish processing the message after several attempts.",
+      }).catch((error) =>
+        console.error(`task-consumer: final failure email failed for ${message.id}`, error),
+      );
+    }
     message.retry();
     return;
   }
@@ -81,7 +92,10 @@ async function runTask(
     const result = (await res.json().catch(() => null)) as
       | Record<string, unknown>
       | null;
-    await notifyEmailCompletion(env, message.body, result).catch((error) =>
+    await notifyEmailReceipt(env, message.body, {
+      status: "done",
+      result,
+    }).catch((error) =>
       console.error(`task-consumer: completion email failed for ${message.id}`, error),
     );
     message.ack();
@@ -91,12 +105,27 @@ async function runTask(
     // Permanently-bad task — don't retry it forever.
     const snip = (await res.text().catch(() => "")).slice(0, 200).replace(/\s+/g, " ");
     console.warn(`task-consumer: poison ${message.id} (${res.status}): ${snip}`);
+    await notifyEmailReceipt(env, message.body, {
+      status: "failed",
+      detail: snip || `Yopedia rejected the message (${res.status}).`,
+    }).catch((error) =>
+      console.error(`task-consumer: failure email failed for ${message.id}`, error),
+    );
     message.ack();
     return;
   }
   // Other 4xx (notably auth/rate-limit) and 5xx are operational/transient;
   // retry instead of silently dropping a valid task on configuration drift.
   console.warn(`task-consumer: transient ${message.id} (${res.status}) — retry`);
+  if (message.attempts >= MAX_DELIVERY_ATTEMPTS) {
+    const snip = (await res.text().catch(() => "")).slice(0, 200).replace(/\s+/g, " ");
+    await notifyEmailReceipt(env, message.body, {
+      status: "failed",
+      detail: snip || "Yopedia could not finish processing the message after several attempts.",
+    }).catch((error) =>
+      console.error(`task-consumer: final failure email failed for ${message.id}`, error),
+    );
+  }
   message.retry();
 }
 
@@ -127,15 +156,30 @@ function emailMetadata(body: unknown): {
   };
 }
 
-async function notifyEmailCompletion(
+async function notifyEmailReceipt(
   env: Env,
   body: unknown,
-  result: Record<string, unknown> | null,
+  receipt:
+    | { status: "done"; result: Record<string, unknown> | null }
+    | { status: "failed"; detail: string },
 ): Promise<void> {
   const email = emailMetadata(body);
   const from = env.YOPEDIA_EMAIL_FROM;
-  const slug = typeof result?.slug === "string" ? result.slug : "";
-  if (!email || !env.EMAIL || !from || !slug) return;
+  if (!email || !env.EMAIL || !from) return;
+
+  if (receipt.status === "failed") {
+    const detail = receipt.detail.replace(/[\r\n]+/g, " ").trim().slice(0, 300);
+    await env.EMAIL.send({
+      from,
+      to: email.from,
+      subject: `Could not import: ${email.subject}`,
+      text: `Yopedia could not finish processing your email.\n\n${detail || "Open Recent ingests in Settings for more detail."}`,
+    });
+    return;
+  }
+
+  const slug = typeof receipt.result?.slug === "string" ? receipt.result.slug : "";
+  if (!slug) return;
 
   const site = (env.YOPEDIA_SITE_URL || env.YOPEDIA_URL || "").replace(/\/+$/, "");
   const pageUrl = site ? `${site}/wiki/${encodeURIComponent(slug)}` : slug;

@@ -7,6 +7,9 @@ export type DocumentFormat = (typeof DOCUMENT_FORMATS)[number];
 
 const MAX_ARCHIVE_TEXT_BYTES = 12 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRY_BYTES = 6 * 1024 * 1024;
+const MAX_DOCUMENT_IMAGES = 50;
+const MAX_DOCUMENT_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_DOCUMENT_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024;
 const MAX_SHEETS = 100;
 const MAX_ROWS_PER_SHEET = 10_000;
 const MAX_COLUMNS_PER_SHEET = 256;
@@ -23,7 +26,33 @@ export interface ExtractedDocument {
   format: DocumentFormat;
   title: string;
   text: string;
+  metadata: {
+    creator?: string;
+    created?: string;
+    modified?: string;
+  };
+  assets: ExtractedDocumentAsset[];
 }
+
+export interface ExtractedDocumentAsset {
+  filename: string;
+  mediaType: string;
+  bytes: ArrayBuffer;
+  alt: string;
+  context: string;
+}
+
+const IMAGE_MEDIA_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  avif: "image/avif",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+};
 
 function extension(filename: string): string {
   const match = filename.trim().toLowerCase().match(/\.([a-z0-9]+)$/);
@@ -85,29 +114,52 @@ function fallbackTitle(filename: string, label: string): string {
   return filename.replace(/\.(docx|pptx|xlsx|csv)$/i, "").trim() || label;
 }
 
-function coreTitle(files: Record<string, Uint8Array>): string | null {
+function coreProperties(files: Record<string, Uint8Array>): {
+  title?: string;
+  creator?: string;
+  created?: string;
+  modified?: string;
+} {
   const core = files["docProps/core.xml"];
-  if (!core) return null;
-  return xmlText(new TextDecoder().decode(core), "dc:title")[0]?.slice(0, 200) ?? null;
+  if (!core) return {};
+  const xml = new TextDecoder().decode(core);
+  const value = (tag: string, max: number) => xmlText(xml, tag)[0]?.slice(0, max);
+  return {
+    ...(value("dc:title", 200) ? { title: value("dc:title", 200) } : {}),
+    ...(value("dc:creator", 200) ? { creator: value("dc:creator", 200) } : {}),
+    ...(value("dcterms:created", 64) ? { created: value("dcterms:created", 64) } : {}),
+    ...(value("dcterms:modified", 64) ? { modified: value("dcterms:modified", 64) } : {}),
+  };
 }
 
-function relevantArchiveEntry(format: Exclude<DocumentFormat, "csv">, name: string): boolean {
-  if (name === "docProps/core.xml") return true;
-  if (format === "docx") return name === "word/document.xml";
+function archiveEntryKind(
+  format: Exclude<DocumentFormat, "csv">,
+  name: string,
+): "xml" | "image" | null {
+  if (name === "docProps/core.xml") return "xml";
+  if (format === "docx") {
+    if (name === "word/document.xml" || name === "word/_rels/document.xml.rels") {
+      return "xml";
+    }
+    if (/^word\/media\/[^/]+$/i.test(name) && mediaTypeFor(name)) return "image";
+    return null;
+  }
   if (format === "pptx") {
-    return (
+    if (
       name === "ppt/presentation.xml" ||
       name === "ppt/_rels/presentation.xml.rels" ||
       /^ppt\/(slides\/slide\d+|notesSlides\/notesSlide\d+)\.xml$/i.test(name) ||
       /^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/i.test(name)
-    );
+    ) return "xml";
+    if (/^ppt\/media\/[^/]+$/i.test(name) && mediaTypeFor(name)) return "image";
+    return null;
   }
   return (
     name === "xl/workbook.xml" ||
     name === "xl/_rels/workbook.xml.rels" ||
     name === "xl/sharedStrings.xml" ||
     /^xl\/worksheets\/sheet\d+\.xml$/i.test(name)
-  );
+  ) ? "xml" : null;
 }
 
 function openOfficeArchive(
@@ -119,10 +171,25 @@ function openOfficeArchive(
     throw new ClientInputError(`The .${format} file is not a valid Office document.`);
   }
   let total = 0;
+  let imageTotal = 0;
+  let imageCount = 0;
   try {
     return unzipSync(input, {
       filter(file) {
-        if (!relevantArchiveEntry(format, file.name)) return false;
+        const kind = archiveEntryKind(format, file.name);
+        if (!kind) return false;
+        if (kind === "image") {
+          if (
+            imageCount >= MAX_DOCUMENT_IMAGES ||
+            file.originalSize > MAX_DOCUMENT_IMAGE_BYTES ||
+            imageTotal + file.originalSize > MAX_DOCUMENT_IMAGE_TOTAL_BYTES
+          ) {
+            return false;
+          }
+          imageCount += 1;
+          imageTotal += file.originalSize;
+          return true;
+        }
         if (file.originalSize > MAX_ARCHIVE_ENTRY_BYTES) {
           throw new ClientInputError(`The .${format} file contains an oversized XML part.`);
         }
@@ -137,6 +204,31 @@ function openOfficeArchive(
     if (error instanceof ClientInputError) throw error;
     throw new ClientInputError(`The .${format} file could not be opened.`);
   }
+}
+
+function mediaTypeFor(filename: string): string | null {
+  const ext = filename.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
+  return IMAGE_MEDIA_TYPES[ext] ?? null;
+}
+
+function assetFromArchive(
+  files: Record<string, Uint8Array>,
+  target: string,
+  alt: string,
+  context: string,
+): ExtractedDocumentAsset | null {
+  const bytes = files[target];
+  const mediaType = mediaTypeFor(target);
+  if (!bytes || !mediaType) return null;
+  const filename = target.split("/").pop() || "image";
+  const copied = bytes.slice().buffer as ArrayBuffer;
+  return {
+    filename,
+    mediaType,
+    bytes: copied,
+    alt: alt.trim().slice(0, 240) || filename,
+    context,
+  };
 }
 
 function docxParagraph(fragment: string): string {
@@ -162,16 +254,44 @@ function docxTable(fragment: string): string {
   return markdownTable(rows);
 }
 
-function extractDocx(files: Record<string, Uint8Array>): string {
+function extractDocx(files: Record<string, Uint8Array>): {
+  text: string;
+  assets: ExtractedDocumentAsset[];
+} {
   const document = files["word/document.xml"];
   if (!document) throw new ClientInputError("The DOCX file has no document body.");
   const xml = new TextDecoder().decode(document);
+  const relBytes = files["word/_rels/document.xml.rels"];
+  const relationships = relBytes
+    ? relationshipMap(new TextDecoder().decode(relBytes), "word/document.xml")
+    : new Map<string, string>();
   const parts: string[] = [];
+  const assets: ExtractedDocumentAsset[] = [];
+  const seenTargets = new Set<string>();
+  let blockNumber = 0;
   for (const block of xml.matchAll(/<w:(p|tbl)\b[^>]*>[\s\S]*?<\/w:\1>/gi)) {
+    blockNumber += 1;
     const value = block[1].toLowerCase() === "tbl" ? docxTable(block[0]) : docxParagraph(block[0]);
     if (value) parts.push(value);
+    const alt = decodeXml(
+      block[0].match(/<wp:docPr\b[^>]*(?:descr|title|name)=["']([^"']+)["']/i)?.[1] ?? "",
+    );
+    for (const image of block[0].matchAll(/<a:blip\b[^>]*r:embed=["']([^"']+)["'][^>]*\/?>(?:<\/a:blip>)?/gi)) {
+      const target = relationships.get(image[1]);
+      if (!target || seenTargets.has(target)) continue;
+      const asset = assetFromArchive(
+        files,
+        target,
+        alt,
+        block[1].toLowerCase() === "tbl" ? `Table near block ${blockNumber}` : `Paragraph ${blockNumber}`,
+      );
+      if (!asset) continue;
+      seenTargets.add(target);
+      assets.push(asset);
+      parts.push(`_[Embedded image: ${asset.alt}]_`);
+    }
   }
-  return parts.join("\n\n");
+  return { text: parts.join("\n\n"), assets };
 }
 
 function numberedFiles(files: Record<string, Uint8Array>, pattern: RegExp): [number, Uint8Array][] {
@@ -205,7 +325,10 @@ function relationshipMap(xml: string, sourceFile: string): Map<string, string> {
   return relationships;
 }
 
-function extractPptx(files: Record<string, Uint8Array>): string {
+function extractPptx(files: Record<string, Uint8Array>): {
+  text: string;
+  assets: ExtractedDocumentAsset[];
+} {
   const fallbackSlides = numberedFiles(files, /^ppt\/slides\/slide(\d+)\.xml$/i)
     .map(([number]) => ({ number, path: `ppt/slides/slide${number}.xml` }));
   let slides = fallbackSlides;
@@ -225,7 +348,9 @@ function extractPptx(files: Record<string, Uint8Array>): string {
     if (ordered.length) slides = ordered;
   }
   if (slides.length === 0) throw new ClientInputError("The PPTX file has no slides.");
-  return slides.map(({ number, path }) => {
+  const assets: ExtractedDocumentAsset[] = [];
+  const seenTargets = new Set<string>();
+  const text = slides.map(({ number, path }) => {
     const bytes = files[path];
     const xml = new TextDecoder().decode(bytes);
     const paragraphs = Array.from(xml.matchAll(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/gi))
@@ -234,23 +359,48 @@ function extractPptx(files: Record<string, Uint8Array>): string {
     const slideFilename = path.split("/").pop() ?? "";
     const relPath = `ppt/slides/_rels/${slideFilename}.rels`;
     const relBytes = files[relPath];
-    const notePath = relBytes
-      ? Array.from(
-          relationshipMap(new TextDecoder().decode(relBytes), path).values(),
-        ).find((target) => /^ppt\/notesSlides\/notesSlide\d+\.xml$/i.test(target))
-      : undefined;
+    const relationships = relBytes
+      ? relationshipMap(new TextDecoder().decode(relBytes), path)
+      : new Map<string, string>();
+    const notePath = Array.from(relationships.values()).find((target) =>
+      /^ppt\/notesSlides\/notesSlide\d+\.xml$/i.test(target),
+    );
     const noteBytes = notePath ? files[notePath] : undefined;
     const noteText = noteBytes
       ? xmlText(new TextDecoder().decode(noteBytes), "a:t").filter(
           (value) => value !== String(number),
         )
       : [];
+    const imageDescriptions = Array.from(
+      xml.matchAll(/<p:cNvPr\b([^>]*)\/?>(?:<\/p:cNvPr>)?/gi),
+    ).map((match) =>
+      decodeXml(attr(match[1], "descr") || attr(match[1], "title") || attr(match[1], "name")),
+    ).filter(Boolean);
+    const imageLines: string[] = [];
+    let imageIndex = 0;
+    for (const image of xml.matchAll(/<a:blip\b[^>]*r:embed=["']([^"']+)["'][^>]*\/?>(?:<\/a:blip>)?/gi)) {
+      const target = relationships.get(image[1]);
+      if (!target || seenTargets.has(target)) continue;
+      const asset = assetFromArchive(
+        files,
+        target,
+        imageDescriptions[imageIndex] || "",
+        `Slide ${number}`,
+      );
+      imageIndex += 1;
+      if (!asset) continue;
+      seenTargets.add(target);
+      assets.push(asset);
+      imageLines.push(`- ${asset.alt} (${asset.filename})`);
+    }
     return [
       `## Slide ${number}`,
       paragraphs.join("\n"),
+      imageLines.length ? `### Embedded images\n${imageLines.join("\n")}` : "",
       noteText.length ? `### Speaker notes\n${noteText.join("\n")}` : "",
     ].filter(Boolean).join("\n\n");
   }).join("\n\n");
+  return { text, assets };
 }
 
 function attr(fragment: string, name: string): string {
@@ -401,20 +551,41 @@ export function extractDocumentText(input: {
     const csv = new TextDecoder().decode(bytes).replace(/^\uFEFF/, "");
     const text = truncate(markdownTable(parseCsv(csv)));
     if (!text) throw new ClientInputError("The CSV file contains no rows.");
-    return { format, title: fallbackTitle(filename, "CSV document"), text };
+    return {
+      format,
+      title: fallbackTitle(filename, "CSV document"),
+      text,
+      metadata: {},
+      assets: [],
+    };
   }
 
   const files = openOfficeArchive(bytes, format);
+  const core = coreProperties(files);
   const extracted = format === "docx"
     ? extractDocx(files)
     : format === "pptx"
       ? extractPptx(files)
-      : extractXlsx(files);
-  const text = truncate(extracted);
+      : { text: extractXlsx(files), assets: [] };
+  const metadataLines = [
+    core.creator ? `- Creator: ${core.creator}` : "",
+    core.created ? `- Created: ${core.created}` : "",
+    core.modified ? `- Modified: ${core.modified}` : "",
+  ].filter(Boolean);
+  const text = truncate([
+    metadataLines.length ? `## Document metadata\n\n${metadataLines.join("\n")}` : "",
+    extracted.text,
+  ].filter(Boolean).join("\n\n"));
   if (!text) throw new ClientInputError(`The .${format} file contains no extractable text.`);
   return {
     format,
-    title: coreTitle(files) ?? fallbackTitle(filename, `${format.toUpperCase()} document`),
+    title: core.title ?? fallbackTitle(filename, `${format.toUpperCase()} document`),
     text,
+    metadata: {
+      ...(core.creator ? { creator: core.creator } : {}),
+      ...(core.created ? { created: core.created } : {}),
+      ...(core.modified ? { modified: core.modified } : {}),
+    },
+    assets: extracted.assets,
   };
 }

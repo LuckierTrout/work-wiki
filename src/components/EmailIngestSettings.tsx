@@ -10,6 +10,10 @@ interface EmailSettingsResponse {
   routingReady: boolean;
   bodyIngestEnabled: boolean;
   attachmentIngestEnabled: boolean;
+  destinationVaultId: string;
+  destinationAgentId: string;
+  vaults: Array<{ id: string; name: string }>;
+  agents: Array<{ id: string; name: string }>;
   updatedAt: string | null;
 }
 
@@ -20,6 +24,8 @@ export function EmailIngestSettings() {
   const [enabled, setEnabled] = useState(false);
   const [inboundAddress, setInboundAddress] = useState("");
   const [senders, setSenders] = useState("");
+  const [destinationVaultId, setDestinationVaultId] = useState("");
+  const [destinationAgentId, setDestinationAgentId] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -38,6 +44,8 @@ export function EmailIngestSettings() {
         setEnabled(data.enabled);
         setInboundAddress(data.inboundAddress);
         setSenders(data.allowedSenders.join("\n"));
+        setDestinationVaultId(data.destinationVaultId);
+        setDestinationAgentId(data.destinationAgentId);
       })
       .catch((error) => {
         if (!cancelled) {
@@ -68,7 +76,13 @@ export function EmailIngestSettings() {
       const response = await fetch("/api/email/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled, inboundAddress, allowedSenders: approvedSenders }),
+        body: JSON.stringify({
+          enabled,
+          inboundAddress,
+          allowedSenders: approvedSenders,
+          destinationVaultId,
+          destinationAgentId,
+        }),
       });
       const data = (await response.json()) as EmailSettingsResponse & { error?: string };
       if (!response.ok) throw new Error(data.error || "Couldn’t save email settings");
@@ -76,6 +90,8 @@ export function EmailIngestSettings() {
       setEnabled(data.enabled);
       setInboundAddress(data.inboundAddress);
       setSenders(data.allowedSenders.join("\n"));
+      setDestinationVaultId(data.destinationVaultId);
+      setDestinationAgentId(data.destinationAgentId);
       setFeedback({
         ok: true,
         message: data.routingReady
@@ -190,7 +206,57 @@ export function EmailIngestSettings() {
               <li>Body text and links are synthesized.</li>
               <li>Progress appears under Recent ingests.</li>
               <li>DOCX, PPTX, XLSX, and CSV attachments are included.</li>
+              <li>A final receipt reports success or failure.</li>
             </ul>
+          </div>
+        </div>
+
+        <div className="border-t border-dashed border-foreground/15 px-5 py-5">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <p className="receipt text-[10px] text-foreground/45">DELIVERY DESK</p>
+              <h3 className="mt-1 text-sm font-medium text-foreground">
+                File accepted mail where it belongs
+              </h3>
+            </div>
+            <p className="max-w-sm text-xs leading-5 text-foreground/45">
+              The owner workspace is the default. Choose an agent for scoped knowledge,
+              a vault for filing, or both.
+            </p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="text-sm text-foreground/75">
+              Knowledge owner
+              <select
+                value={destinationAgentId}
+                onChange={(event) => {
+                  setDestinationAgentId(event.target.value);
+                  setFeedback(null);
+                }}
+                className="mt-2 w-full rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none transition-colors focus:border-foreground/35"
+              >
+                <option value="">Owner workspace</option>
+                {(settings?.agents ?? []).map((agent) => (
+                  <option key={agent.id} value={agent.id}>{agent.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm text-foreground/75">
+              File in vault
+              <select
+                value={destinationVaultId}
+                onChange={(event) => {
+                  setDestinationVaultId(event.target.value);
+                  setFeedback(null);
+                }}
+                className="mt-2 w-full rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none transition-colors focus:border-foreground/35"
+              >
+                <option value="">No automatic filing</option>
+                {(settings?.vaults ?? []).map((vault) => (
+                  <option key={vault.id} value={vault.id}>{vault.name}</option>
+                ))}
+              </select>
+            </label>
           </div>
         </div>
 

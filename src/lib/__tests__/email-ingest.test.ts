@@ -35,6 +35,8 @@ describe("email ingest settings", () => {
       enabled: false,
       inboundAddress: "",
       allowedSenders: [],
+      destinationVaultId: "",
+      destinationAgentId: "",
       updatedAt: null,
     });
 
@@ -42,11 +44,15 @@ describe("email ingest settings", () => {
       enabled: true,
       inboundAddress: " Ingest@Example.com ",
       allowedSenders: ["Me@Example.com", "me@example.com", " other@example.com "],
+      destinationVaultId: "alice--projects",
+      destinationAgentId: "alice--yoyo",
     });
     expect(saved).toMatchObject({
       enabled: true,
       inboundAddress: "ingest@example.com",
       allowedSenders: ["me@example.com", "other@example.com"],
+      destinationVaultId: "alice--projects",
+      destinationAgentId: "alice--yoyo",
     });
     expect((await loadEmailIngestConfig()).updatedAt).toBeTruthy();
   });

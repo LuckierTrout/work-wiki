@@ -257,6 +257,7 @@ export default {
       jobId ? `Job: ${jobId}` : "",
       slug && site ? `Page: ${site}/wiki/${encodeURIComponent(slug)}` : "",
       !slug && site ? `Track it under Recent ingests: ${site}/ingest` : "",
+      !slug ? "Yopedia will send a final receipt when processing succeeds or fails." : "",
       supportedAttachments.length
         ? `${supportedAttachments.length} supported attachment${supportedAttachments.length === 1 ? " was" : "s were"} queued for ingestion.`
         : "",

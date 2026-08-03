@@ -18,6 +18,12 @@ import {
 } from "@/lib/email-ingest";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { addAgentLearningPage, getAgent } from "@/lib/agents";
+import {
+  preserveDocumentSources,
+  type DocumentSourceInput,
+} from "@/lib/document-sources";
+import { addToVault, getVault, vaultOwnedBy } from "@/lib/vault";
 
 const MAX_INLINE_CONTENT_CHARS = 96_000;
 const MAX_EMAIL_DOCUMENTS = 10;
@@ -138,6 +144,37 @@ export async function POST(request: Request) {
       );
     }
 
+    const destinationAgent = config.destinationAgentId
+      ? await getAgent(config.destinationAgentId).catch(() => null)
+      : null;
+    const validAgent =
+      destinationAgent?.owner?.toLowerCase() === principal.handle.toLowerCase()
+        ? destinationAgent
+        : null;
+    if (config.destinationAgentId && !validAgent) {
+      logger.warn(
+        "email-ingest",
+        `configured destination agent "${config.destinationAgentId}" is unavailable or not owned by @${principal.handle}; routing to the owner workspace`,
+      );
+    }
+    const configuredVault = config.destinationVaultId
+      ? await getVault(config.destinationVaultId)
+      : null;
+    const validVaultId =
+      configuredVault && vaultOwnedBy(config.destinationVaultId, principal.handle)
+        ? config.destinationVaultId
+        : "";
+    if (config.destinationVaultId && !validVaultId) {
+      logger.warn(
+        "email-ingest",
+        `configured destination vault "${config.destinationVaultId}" is unavailable or not owned by @${principal.handle}; skipping automatic filing`,
+      );
+    }
+
+    const contentOwner = validAgent?.id || principal.handle;
+    const contentAuthor = validAgent?.id || principal.handle;
+    const learningFor = validAgent?.id;
+
     const jobId = await emailJobId(messageId);
     const existing = await getIngestJob(jobId);
     if (existing) {
@@ -177,12 +214,14 @@ export async function POST(request: Request) {
     const task: Task = {
       kind: "ingest",
       title: subject,
-      owner: principal.handle,
-      author: principal.handle,
+      owner: contentOwner,
+      author: contentAuthor,
       triggeredBy: principal.handle,
       sourceType: "email",
       jobId,
       email,
+      ...(validAgent ? { pageType: "agent-knowledge", learningFor } : {}),
+      ...(validVaultId ? { vaultId: validVaultId } : {}),
       ...(stagedAttachments.length ? { attachments: stagedAttachments } : {}),
     };
     if (content.length <= MAX_INLINE_CONTENT_CHARS) {
@@ -194,6 +233,7 @@ export async function POST(request: Request) {
 
     const response = await enqueueOrInline(jobId, task, async () => {
       let combined = content;
+      const documentSources: DocumentSourceInput[] = [];
       for (const { file, bytes } of attachmentBytes) {
         const extracted = extractDocumentText({
           bytes,
@@ -201,13 +241,24 @@ export async function POST(request: Request) {
           contentType: file.type,
         });
         combined += `${combined.trim() ? "\n\n" : ""}# Attachment: ${file.name}\n\n${extracted.text}`;
+        documentSources.push({
+          bytes,
+          filename: file.name,
+          contentType: file.type,
+          extracted,
+        });
       }
-      return ingest(subject, combined, {
-        owner: principal.handle,
-        author: principal.handle,
+      const result = await ingest(subject, combined, {
+        owner: contentOwner,
+        author: contentAuthor,
         triggeredBy: principal.handle,
         sourceType: "email",
+        ...(validAgent ? { pageType: "agent-knowledge" as const } : {}),
       });
+      await preserveDocumentSources(result.primarySlug, contentOwner, documentSources);
+      if (learningFor) await addAgentLearningPage(learningFor, result.primarySlug);
+      if (validVaultId) await addToVault(validVaultId, result.primarySlug);
+      return result;
     });
     const responseBody = (await response.json()) as Record<string, unknown>;
     return NextResponse.json({

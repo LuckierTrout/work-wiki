@@ -3,6 +3,16 @@ import { NextResponse } from "next/server";
 
 vi.mock("@/lib/auth", () => ({ getServicePrincipal: vi.fn() }));
 vi.mock("@/lib/ingest", () => ({ ingest: vi.fn() }));
+vi.mock("@/lib/agents", () => ({
+  addAgentLearningPage: vi.fn(),
+  getAgent: vi.fn(),
+}));
+vi.mock("@/lib/document-sources", () => ({ preserveDocumentSources: vi.fn() }));
+vi.mock("@/lib/vault", () => ({
+  addToVault: vi.fn(),
+  getVault: vi.fn(),
+  vaultOwnedBy: vi.fn(),
+}));
 vi.mock("@/lib/ingest-async", () => ({ enqueueOrInline: vi.fn() }));
 vi.mock("@/lib/ingest-jobs", () => ({
   createIngestJob: vi.fn(),
@@ -21,12 +31,17 @@ import { getServicePrincipal } from "@/lib/auth";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { createIngestJob, getIngestJob } from "@/lib/ingest-jobs";
 import { loadEmailIngestConfig } from "@/lib/email-ingest";
+import { getAgent } from "@/lib/agents";
+import { getVault, vaultOwnedBy } from "@/lib/vault";
 
 const mockedPrincipal = vi.mocked(getServicePrincipal);
 const mockedEnqueue = vi.mocked(enqueueOrInline);
 const mockedCreateJob = vi.mocked(createIngestJob);
 const mockedGetJob = vi.mocked(getIngestJob);
 const mockedLoadConfig = vi.mocked(loadEmailIngestConfig);
+const mockedGetAgent = vi.mocked(getAgent);
+const mockedGetVault = vi.mocked(getVault);
+const mockedVaultOwnedBy = vi.mocked(vaultOwnedBy);
 
 function request(overrides: Record<string, unknown> = {}) {
   return new Request("http://localhost/api/email/ingest", {
@@ -65,6 +80,8 @@ beforeEach(() => {
     enabled: true,
     inboundAddress: "ingest@example.com",
     allowedSenders: ["owner@example.com"],
+    destinationVaultId: "",
+    destinationAgentId: "",
     updatedAt: null,
   });
   mockedGetJob.mockResolvedValue(null);
@@ -89,6 +106,8 @@ describe("POST /api/email/ingest", () => {
       enabled: false,
       inboundAddress: "ingest@example.com",
       allowedSenders: ["owner@example.com"],
+      destinationVaultId: "",
+      destinationAgentId: "",
       updatedAt: null,
     });
     expect((await POST(request())).status).toBe(403);
@@ -118,6 +137,41 @@ describe("POST /api/email/ingest", () => {
         sourceType: "email",
         owner: "LuckierTrout",
         email: expect.objectContaining({ messageId: "<message-1@example.com>" }),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("routes email to the configured owner-controlled agent and vault", async () => {
+    mockedLoadConfig.mockResolvedValueOnce({
+      enabled: true,
+      inboundAddress: "ingest@example.com",
+      allowedSenders: ["owner@example.com"],
+      destinationVaultId: "luckiertrout--work",
+      destinationAgentId: "luckiertrout--yoyo",
+      updatedAt: null,
+    });
+    mockedGetAgent.mockResolvedValueOnce({
+      id: "luckiertrout--yoyo",
+      owner: "LuckierTrout",
+    } as never);
+    mockedGetVault.mockResolvedValueOnce({ id: "luckiertrout--work" } as never);
+    mockedVaultOwnedBy.mockReturnValueOnce(true);
+    const { POST } = await import("@/app/api/email/ingest/route");
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect(mockedCreateJob).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "LuckierTrout" }),
+    );
+    expect(mockedEnqueue).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        owner: "luckiertrout--yoyo",
+        author: "luckiertrout--yoyo",
+        triggeredBy: "LuckierTrout",
+        pageType: "agent-knowledge",
+        learningFor: "luckiertrout--yoyo",
+        vaultId: "luckiertrout--work",
       }),
       expect.any(Function),
     );

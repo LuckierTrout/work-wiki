@@ -11,6 +11,10 @@ import { agentIdFor, addAgentLearningPage, DEFAULT_AGENT_NAME } from "@/lib/agen
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { addToVault } from "@/lib/vault";
+import {
+  preserveDocumentSources,
+  type DocumentSourceInput,
+} from "@/lib/document-sources";
 
 /**
  * POST /api/tasks/run — execute one agent task.
@@ -124,6 +128,7 @@ export async function POST(req: Request) {
     //  - source pdf/image with a url: the URL PDF/image path (not generic);
     //  - url: generic URL; content: pasted text.
     let result;
+    const documentSources: DocumentSourceInput[] = [];
     if (task.sourceType === "email" && task.attachments?.length) {
       let combined = task.content ?? "";
       if (task.staged) combined = await readStagedText(task.staged.key);
@@ -135,6 +140,12 @@ export async function POST(req: Request) {
           contentType: attachment.contentType,
         });
         combined += `${combined.trim() ? "\n\n" : ""}# Attachment: ${attachment.filename}\n\n${extracted.text}`;
+        documentSources.push({
+          bytes,
+          filename: attachment.filename,
+          contentType: attachment.contentType,
+          extracted,
+        });
       }
       result = await ingest(task.title?.trim() || "Emailed document", combined, opts);
     } else if (task.staged) {
@@ -170,6 +181,14 @@ export async function POST(req: Request) {
       result = await ingestUrl(task.url, opts);
     } else {
       result = await ingest(task.title?.trim() || "Untitled", task.content ?? "", opts);
+    }
+
+    if (documentSources.length > 0) {
+      await preserveDocumentSources(
+        result.primarySlug,
+        task.owner?.trim() || task.author?.trim() || "system",
+        documentSources,
+      );
     }
 
     if (task.jobId) {

@@ -26,6 +26,9 @@ vi.mock("@/lib/ingest-staging", () => ({
 vi.mock("@/lib/vault", () => ({
   addToVault: vi.fn(async () => {}),
 }));
+vi.mock("@/lib/document-sources", () => ({
+  preserveDocumentSources: vi.fn(async () => []),
+}));
 
 import { getServicePrincipal } from "@/lib/auth";
 import { reconcileFromTalk } from "@/lib/reconcile";
@@ -33,6 +36,7 @@ import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest } f
 import { fixLintIssue } from "@/lib/lint-fix";
 import { updateIngestJob } from "@/lib/ingest-jobs";
 import { readStagedBytes, readStagedText, deleteStaged } from "@/lib/ingest-staging";
+import { preserveDocumentSources } from "@/lib/document-sources";
 
 const mockedGetService = vi.mocked(getServicePrincipal);
 const mockedReconcile = vi.mocked(reconcileFromTalk);
@@ -47,6 +51,7 @@ const mockedUpdateJob = vi.mocked(updateIngestJob);
 const mockedReadStagedBytes = vi.mocked(readStagedBytes);
 const mockedReadStagedText = vi.mocked(readStagedText);
 const mockedDeleteStaged = vi.mocked(deleteStaged);
+const mockedPreserveDocuments = vi.mocked(preserveDocumentSources);
 
 import { addToVault } from "@/lib/vault";
 const mockedAddToVault = vi.mocked(addToVault);
@@ -337,6 +342,11 @@ describe("POST /api/tasks/run", () => {
       "Planning",
       expect.stringContaining("# Attachment: plan.csv"),
       expect.objectContaining({ sourceType: "email" }),
+    );
+    expect(mockedPreserveDocuments).toHaveBeenCalledWith(
+      "email-with-sheet",
+      "alice",
+      [expect.objectContaining({ filename: "plan.csv" })],
     );
     expect(mockedDeleteStaged).toHaveBeenCalledWith("raw/uploads/j/plan.csv");
   });

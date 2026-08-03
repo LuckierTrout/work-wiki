@@ -10,6 +10,8 @@ export interface EmailIngestConfig {
   enabled: boolean;
   inboundAddress: string;
   allowedSenders: string[];
+  destinationVaultId: string;
+  destinationAgentId: string;
   updatedAt: string | null;
 }
 
@@ -25,6 +27,8 @@ const DEFAULT_CONFIG: EmailIngestConfig = {
   enabled: false,
   inboundAddress: "",
   allowedSenders: [],
+  destinationVaultId: "",
+  destinationAgentId: "",
   updatedAt: null,
 };
 
@@ -70,6 +74,14 @@ export async function loadEmailIngestConfig(): Promise<EmailIngestConfig> {
           ),
         )
       : [],
+    destinationVaultId:
+      typeof stored.destinationVaultId === "string"
+        ? stored.destinationVaultId.trim()
+        : "",
+    destinationAgentId:
+      typeof stored.destinationAgentId === "string"
+        ? stored.destinationAgentId.trim()
+        : "",
     updatedAt:
       typeof stored.updatedAt === "string" ? stored.updatedAt : null,
   };
@@ -79,11 +91,15 @@ export async function saveEmailIngestConfig(input: {
   enabled: boolean;
   inboundAddress: string;
   allowedSenders: string[];
+  destinationVaultId?: string;
+  destinationAgentId?: string;
 }): Promise<EmailIngestConfig> {
   const config: EmailIngestConfig = {
     enabled: input.enabled,
     inboundAddress: normalizeEmailAddress(input.inboundAddress),
     allowedSenders: normalizeAllowedSenders(input.allowedSenders),
+    destinationVaultId: input.destinationVaultId?.trim() || "",
+    destinationAgentId: input.destinationAgentId?.trim() || "",
     updatedAt: new Date().toISOString(),
   };
   await getStorage().putIndex(EMAIL_CONFIG_INDEX_KEY, config);
