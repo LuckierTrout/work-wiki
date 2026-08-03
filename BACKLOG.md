@@ -43,7 +43,9 @@ The items below begin after the API-key checks pass.
 - [x] Add secure single-file DOCX, PPTX, XLSX, and CSV upload plus inbound-email
   attachment extraction through R2 staging and the asynchronous ingest queue.
 - [ ] Add single-file and bulk import with preview, destination selection,
-  progress, retry, errors, duplicate detection, and source provenance.
+  progress, retry, errors, duplicate detection, and source provenance. Local
+  implementation and browser validation are complete; production deployment
+  and owner acceptance remain.
 - [ ] Support Markdown, TXT, HTML, PDF, DOCX, PPTX, CSV, ZIP archives, and an
   Obsidian-vault/folder import. Preserve titles, dates, hierarchy, and links
   where the source format allows it. Evaluate Notion and other export adapters

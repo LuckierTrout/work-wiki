@@ -1,6 +1,7 @@
 "use client";
 
 import { Alert } from "@/components/Alert";
+import { BulkDocumentImport } from "@/components/BulkDocumentImport";
 import { IngestSuccess } from "@/components/IngestSuccess";
 import { IngestStepper } from "@/components/IngestStepper";
 import { IngestVaultPicker } from "@/components/IngestVaultPicker";
@@ -45,7 +46,6 @@ export default function IngestPage() {
     imageFile,
     pdfUrl,
     pdfFile,
-    documentFile,
     vaultId,
     loading,
     error,
@@ -58,12 +58,10 @@ export default function IngestPage() {
     setImageFile,
     setPdfUrl,
     setPdfFile,
-    setDocumentFile,
     setVaultId,
     handleSourceSubmit,
     handleImageIngest,
     handlePdfIngest,
-    handleDocumentIngest,
     reset,
   } = useIngest();
 
@@ -376,47 +374,7 @@ export default function IngestPage() {
 
           {/* Office documents and CSV */}
           {mode === "document" && (
-            <form onSubmit={handleDocumentIngest} className="space-y-5">
-              <div>
-                <label htmlFor="documentFile" className="block text-sm font-medium mb-2">
-                  Upload a document
-                </label>
-                <input
-                  id="documentFile"
-                  type="file"
-                  accept=".docx,.pptx,.xlsx,.csv,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
-                  onChange={(event) => setDocumentFile(event.target.files?.[0] ?? null)}
-                  className="block w-full text-sm text-foreground/70 file:mr-4 file:rounded-lg file:border-0 file:bg-foreground/10 file:px-4 file:py-2 file:text-sm file:font-medium"
-                />
-                <p className="mt-2 text-xs text-foreground/40">
-                  Supports Word (.docx), PowerPoint (.pptx), Excel (.xlsx), and CSV up to 10 MB.
-                </p>
-              </div>
-              <div>
-                <label htmlFor="documentTitle" className="block text-sm font-medium mb-2">
-                  Title <span className="text-foreground/40">(optional)</span>
-                </label>
-                <input
-                  id="documentTitle"
-                  type="text"
-                  value={title}
-                  onChange={(event) => setTitle(event.target.value)}
-                  placeholder="Defaults to the document title or filename"
-                  className="w-full rounded-lg border border-foreground/20 bg-transparent px-4 py-2.5 text-sm placeholder:text-foreground/40 focus:border-foreground/50 focus:outline-none transition-colors"
-                />
-              </div>
-              {documentFile && (
-                <p className="text-xs text-foreground/50">Selected: {documentFile.name}</p>
-              )}
-              {error && <Alert variant="error">{error}</Alert>}
-              <button
-                type="submit"
-                disabled={loading || !documentFile}
-                className="btn primary disabled:opacity-50"
-              >
-                {loading ? "Processing…" : "Ingest document"} <Icon.arrow width="16" height="16" />
-              </button>
-            </form>
+            <BulkDocumentImport vaultId={vaultId} />
           )}
 
           {/* What ingestion guarantees */}
