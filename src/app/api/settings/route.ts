@@ -67,6 +67,27 @@ export async function PUT(request: Request) {
       }
     }
 
+    // Validate the optional provider dedicated to schema-constrained Knowledge
+    // Atlas extraction. This selects a server-side credential; keys never pass
+    // through the settings API.
+    if (
+      body.structuredKnowledgeProvider !== undefined &&
+      body.structuredKnowledgeProvider !== null
+    ) {
+      if (
+        typeof body.structuredKnowledgeProvider !== "string" ||
+        !isValidProvider(body.structuredKnowledgeProvider)
+      ) {
+        const valid = PROVIDER_INFO.map((p) => p.value).join(", ");
+        return Response.json(
+          {
+            error: `Invalid structuredKnowledgeProvider: "${body.structuredKnowledgeProvider}". Must be one of: ${valid}`,
+          },
+          { status: 400 },
+        );
+      }
+    }
+
     // Validate embeddingProvider if provided
     if (body.embeddingProvider !== undefined && body.embeddingProvider !== null) {
       if (
@@ -87,6 +108,21 @@ export async function PUT(request: Request) {
       if (typeof body.model !== "string" || body.model.trim().length === 0) {
         return Response.json(
           { error: "Model must be a non-empty string" },
+          { status: 400 },
+        );
+      }
+    }
+
+    if (
+      body.structuredKnowledgeModel !== undefined &&
+      body.structuredKnowledgeModel !== null
+    ) {
+      if (
+        typeof body.structuredKnowledgeModel !== "string" ||
+        body.structuredKnowledgeModel.trim().length === 0
+      ) {
+        return Response.json(
+          { error: "Structured Knowledge model must be a non-empty string" },
           { status: 400 },
         );
       }
@@ -119,6 +155,26 @@ export async function PUT(request: Request) {
         delete updated.model;
       } else {
         updated.model = body.model;
+      }
+    }
+
+    if (body.structuredKnowledgeProvider !== undefined) {
+      if (body.structuredKnowledgeProvider === null) {
+        delete updated.structuredKnowledgeProvider;
+      } else {
+        updated.structuredKnowledgeProvider = body.structuredKnowledgeProvider;
+      }
+    }
+
+    if (body.structuredKnowledgeModel !== undefined) {
+      if (
+        body.structuredKnowledgeModel === null ||
+        body.structuredKnowledgeModel === ""
+      ) {
+        delete updated.structuredKnowledgeModel;
+      } else {
+        updated.structuredKnowledgeModel =
+          body.structuredKnowledgeModel.trim();
       }
     }
 

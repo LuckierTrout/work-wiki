@@ -459,6 +459,11 @@ describe("CLI command execution", () => {
       apiKeySource: "env",
       ollamaBaseUrl: null,
       ollamaBaseUrlSource: "default",
+      structuredKnowledgeProvider: "anthropic",
+      structuredKnowledgeProviderSource: "default",
+      structuredKnowledgeModel: "claude-sonnet-4-20250514",
+      structuredKnowledgeModelSource: "default",
+      structuredKnowledgeConfigured: true,
       readOnly: false,
     });
 

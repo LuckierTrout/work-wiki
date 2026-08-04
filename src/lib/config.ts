@@ -2,7 +2,7 @@ import type { ProviderInfo } from "./types";
 import { hasEmbeddingSupport } from "./embeddings";
 import { isEnoent } from "./errors";
 import { VALID_PROVIDERS, DEFAULT_MODELS } from "./providers";
-import type { EmbeddingProvider } from "./providers";
+import type { EmbeddingProvider, ProviderValue } from "./providers";
 import { logger } from "./logger";
 import { getDataDir } from "./paths";
 import { getStorage } from "./storage";
@@ -16,15 +16,13 @@ export type { ProviderValue } from "./providers";
 // ---------------------------------------------------------------------------
 
 export interface AppConfig {
-  provider?:
-    | "anthropic"
-    | "openai"
-    | "google"
-    | "deepseek"
-    | "ollama-cloud"
-    | "ollama";
+  provider?: ProviderValue;
   model?: string;
   ollamaBaseUrl?: string;
+  /** Optional workload-specific generation route for Knowledge Atlas
+   * extraction. Credentials remain server-side environment secrets. */
+  structuredKnowledgeProvider?: ProviderValue;
+  structuredKnowledgeModel?: string;
   embeddingModel?: string;
   /** Override the provider used for embeddings, independent of the LLM
    *  provider. Useful when the generation provider (e.g. deepseek) has no
@@ -49,7 +47,21 @@ export interface EffectiveSettings {
   apiKeySource: SettingSource;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
+  structuredKnowledgeProvider: ProviderValue | null;
+  structuredKnowledgeProviderSource: SettingSource;
+  structuredKnowledgeModel: string | null;
+  structuredKnowledgeModelSource: SettingSource;
+  structuredKnowledgeConfigured: boolean;
   readOnly: boolean;
+}
+
+export interface StructuredKnowledgeModelSettings {
+  provider: ProviderValue | null;
+  providerSource: SettingSource;
+  model: string | null;
+  modelSource: SettingSource;
+  configured: boolean;
+  usesPrimary: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +299,52 @@ export function getEffectiveProvider(): ProviderInfo {
 }
 
 /**
+ * Resolve the model used for schema-constrained Knowledge Atlas extraction.
+ *
+ * A saved workload override wins. When no override is saved, extraction
+ * inherits the primary provider and model exactly, preserving existing
+ * behavior while allowing owners to route this stricter workload separately.
+ */
+export function getStructuredKnowledgeModelSettings(): StructuredKnowledgeModelSettings {
+  const cfg = loadConfigSync();
+  const primary = getEffectiveProvider();
+  const primaryProvider =
+    typeof primary.provider === "string" && isValidProvider(primary.provider)
+      ? primary.provider
+      : null;
+  const provider = cfg.structuredKnowledgeProvider ?? primaryProvider;
+  const providerSource: SettingSource = cfg.structuredKnowledgeProvider
+    ? "config"
+    : provider
+      ? "default"
+      : "none";
+
+  let model: string | null;
+  let modelSource: SettingSource;
+  if (cfg.structuredKnowledgeModel) {
+    model = cfg.structuredKnowledgeModel;
+    modelSource = "config";
+  } else if (cfg.structuredKnowledgeProvider) {
+    model = DEFAULT_MODELS[cfg.structuredKnowledgeProvider] ?? null;
+    modelSource = model ? "default" : "none";
+  } else {
+    model = primary.model;
+    modelSource = model ? "default" : "none";
+  }
+
+  return {
+    provider,
+    providerSource,
+    model,
+    modelSource,
+    configured: providerIsConfigured(provider),
+    usesPrimary:
+      cfg.structuredKnowledgeProvider === undefined &&
+      cfg.structuredKnowledgeModel === undefined,
+  };
+}
+
+/**
  * Full effective settings with source annotations for the settings UI.
  */
 export function getEffectiveSettings(): EffectiveSettings {
@@ -368,6 +426,8 @@ export function getEffectiveSettings(): EffectiveSettings {
     embeddingModelSource = "none";
   }
 
+  const structuredKnowledge = getStructuredKnowledgeModelSettings();
+
   return {
     provider,
     providerSource,
@@ -381,6 +441,11 @@ export function getEffectiveSettings(): EffectiveSettings {
     apiKeySource,
     ollamaBaseUrl,
     ollamaBaseUrlSource,
+    structuredKnowledgeProvider: structuredKnowledge.provider,
+    structuredKnowledgeProviderSource: structuredKnowledge.providerSource,
+    structuredKnowledgeModel: structuredKnowledge.model,
+    structuredKnowledgeModelSource: structuredKnowledge.modelSource,
+    structuredKnowledgeConfigured: structuredKnowledge.configured,
     readOnly: isReadOnly(),
   };
 }

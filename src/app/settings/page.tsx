@@ -5,6 +5,7 @@ import { providerLabel } from "@/lib/providers";
 import { ProviderForm } from "@/components/ProviderForm";
 import { EmbeddingSettings } from "@/components/EmbeddingSettings";
 import { EmailIngestSettings } from "@/components/EmailIngestSettings";
+import { StructuredKnowledgeSettings } from "@/components/StructuredKnowledgeSettings";
 import { useSettings } from "@/hooks/useSettings";
 
 // ---------------------------------------------------------------------------
@@ -21,10 +22,14 @@ export default function SettingsPage() {
     model,
     ollamaBaseUrl,
     embeddingModel,
+    structuredKnowledgeProvider,
+    structuredKnowledgeModel,
     setProvider,
     setModel,
     setOllamaBaseUrl,
     setEmbeddingModel,
+    setStructuredKnowledgeProvider,
+    setStructuredKnowledgeModel,
     handleSave,
     handleTest,
     handleRebuildEmbeddings,
@@ -123,6 +128,18 @@ export default function SettingsPage() {
           setModel={setModel}
           ollamaBaseUrl={ollamaBaseUrl}
           setOllamaBaseUrl={setOllamaBaseUrl}
+          settings={settings}
+          onFieldChange={() => {
+            setSaveResult(null);
+            setTestResult(null);
+          }}
+        />
+
+        <StructuredKnowledgeSettings
+          provider={structuredKnowledgeProvider}
+          setProvider={setStructuredKnowledgeProvider}
+          model={structuredKnowledgeModel}
+          setModel={setStructuredKnowledgeModel}
           settings={settings}
           onFieldChange={() => {
             setSaveResult(null);

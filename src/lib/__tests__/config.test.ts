@@ -10,6 +10,7 @@ import {
   isReadOnly,
   getEffectiveProvider,
   getEffectiveSettings,
+  getStructuredKnowledgeModelSettings,
   getResolvedCredentials,
   getWikiDir,
   getRawDir,
@@ -121,6 +122,8 @@ describe("saveConfig / loadConfig round-trip", () => {
     const config: AppConfig = {
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
+      structuredKnowledgeProvider: "openai",
+      structuredKnowledgeModel: "gpt-4o",
       embeddingModel: "text-embedding-3-small",
     };
     await saveConfig(config);
@@ -335,6 +338,61 @@ describe("getEffectiveSettings", () => {
     const settings = getEffectiveSettings();
     expect(settings.modelSource).toBe("default");
     expect(settings.model).toBe("claude-sonnet-4-20250514");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured Knowledge workload routing
+// ---------------------------------------------------------------------------
+
+describe("getStructuredKnowledgeModelSettings", () => {
+  it("inherits the primary provider and model when no workload override exists", async () => {
+    await saveConfig({ provider: "ollama-cloud", model: "gpt-oss:120b" });
+    await loadConfig();
+    process.env.OLLAMA_API_KEY = "ollama-cloud-key";
+
+    expect(getStructuredKnowledgeModelSettings()).toEqual({
+      provider: "ollama-cloud",
+      providerSource: "default",
+      model: "gpt-oss:120b",
+      modelSource: "default",
+      configured: true,
+      usesPrimary: true,
+    });
+  });
+
+  it("routes extraction independently through its configured provider and model", async () => {
+    await saveConfig({
+      provider: "ollama-cloud",
+      model: "gpt-oss:120b",
+      structuredKnowledgeProvider: "openai",
+      structuredKnowledgeModel: "gpt-4o",
+    });
+    await loadConfig();
+    process.env.OLLAMA_API_KEY = "ollama-cloud-key";
+    process.env.OPENAI_API_KEY = "openai-key";
+
+    expect(getStructuredKnowledgeModelSettings()).toEqual({
+      provider: "openai",
+      providerSource: "config",
+      model: "gpt-4o",
+      modelSource: "config",
+      configured: true,
+      usesPrimary: false,
+    });
+  });
+
+  it("uses the workload provider default when only that provider is selected", async () => {
+    await saveConfig({
+      provider: "ollama-cloud",
+      structuredKnowledgeProvider: "openai",
+    });
+    await loadConfig();
+    process.env.OPENAI_API_KEY = "openai-key";
+
+    const settings = getStructuredKnowledgeModelSettings();
+    expect(settings.model).toBe("gpt-4o");
+    expect(settings.modelSource).toBe("default");
   });
 });
 

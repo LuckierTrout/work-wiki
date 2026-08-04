@@ -173,6 +173,12 @@ must also be created with 1,024 dimensions. Generation-provider keys remain
 independent and can be switched in Settings without changing the embedding
 model.
 
+Structured Knowledge extraction can also use its own provider and model from
+**Settings → Knowledge extraction**. When no workload override is saved, it
+inherits the primary generation route. The selection is non-secret config; the
+matching provider credential must still exist only as a server environment
+secret.
+
 ### Optional Hermes Agent backend
 
 Yopedia chat can use a separately hosted [Hermes Agent API server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server/) for orchestration while Yopedia remains responsible for authentication, retrieval scopes, source context, citation validation, and conversation storage. Set `HERMES_AGENT_URL` to the Hermes server root, store its `API_SERVER_KEY` as the `HERMES_API_KEY` Worker secret, and optionally set `HERMES_MODEL`. Configure a dedicated Hermes profile for the API server and disable host-mutating toolsets such as terminal, file, code execution, cron, delegation, and memory. Yopedia checks `/v1/toolsets` and refuses Hermes when those tools are enabled. If Hermes is unconfigured, unsafe, or temporarily unavailable, chat falls back to Yopedia's selected LLM provider.

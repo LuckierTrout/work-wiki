@@ -60,7 +60,10 @@ describe("integration outbox", () => {
     expect(first).toHaveLength(2);
     expect(replay.map((event) => event.id)).toEqual(first.map((event) => event.id));
     expect(await listOutboxEvents("alice")).toHaveLength(2);
-    expect(await listDueOutboxEvents(new Date("2026-08-04T00:00:00.000Z"))).toHaveLength(2);
+    const afterStaging = new Date(
+      Math.max(...first.map((event) => Date.parse(event.nextAttemptAt!))) + 1,
+    );
+    expect(await listDueOutboxEvents(afterStaging)).toHaveLength(2);
   });
 
   it("renders an iCalendar task and records a durable delivery receipt", async () => {

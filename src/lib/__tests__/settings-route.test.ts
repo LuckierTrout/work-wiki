@@ -57,6 +57,11 @@ beforeEach(() => {
     apiKeySource: "none",
     ollamaBaseUrl: null,
     ollamaBaseUrlSource: "none",
+    structuredKnowledgeProvider: null,
+    structuredKnowledgeProviderSource: "none",
+    structuredKnowledgeModel: null,
+    structuredKnowledgeModelSource: "none",
+    structuredKnowledgeConfigured: false,
     readOnly: false,
   });
   mockedEffectiveProvider.mockReturnValue({
@@ -91,6 +96,29 @@ describe("/api/settings", () => {
       model: "gpt-oss:120b",
     });
     expect(mockedLoad).toHaveBeenCalledTimes(2);
+  });
+
+  it("persists an independent Structured Knowledge provider and model", async () => {
+    mockedLoad.mockResolvedValue({
+      provider: "ollama-cloud",
+      model: "gpt-oss:120b",
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({
+        structuredKnowledgeProvider: "openai",
+        structuredKnowledgeModel: "gpt-4o",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({
+      provider: "ollama-cloud",
+      model: "gpt-oss:120b",
+      structuredKnowledgeProvider: "openai",
+      structuredKnowledgeModel: "gpt-4o",
+    });
   });
 
   it("honors the explicit deployment read-only switch", async () => {

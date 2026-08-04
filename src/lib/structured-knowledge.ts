@@ -1,11 +1,16 @@
-import { generateText, Output } from "ai";
+import { generateText, NoObjectGeneratedError, Output } from "ai";
 import { z } from "zod";
+import {
+  getStructuredKnowledgeModelSettings,
+  loadConfig,
+} from "./config";
 import { contentHash } from "./embeddings";
-import { isEnoent } from "./errors";
+import { getErrorMessage, isEnoent } from "./errors";
 import { buildEvidenceAnchor, buildClaimEvidence, getPageEvidence, savePageEvidence } from "./evidence";
 import { parseFrontmatter } from "./frontmatter";
-import { getConfiguredModel, hasLLMKey, retryWithBackoff } from "./llm";
+import { getConfiguredModel, retryWithBackoff } from "./llm";
 import { withFileLock } from "./lock";
+import { logger } from "./logger";
 import { getStorage } from "./storage";
 import { tenantForOwner, tenantWikiRelPath, validateSlug, validateTenant } from "./wiki";
 
@@ -86,9 +91,9 @@ const extractionSchema = z.object({
     kind: z.enum(["person", "organization", "project", "decision", "commitment", "risk", "event"]),
     name: z.string().min(1).max(240),
     summary: z.string().min(1).max(1_500),
-    status: z.string().max(120).optional(),
-    validFrom: z.string().max(40).optional(),
-    validTo: z.string().max(40).optional(),
+    status: z.string().max(120).nullable(),
+    validFrom: z.string().max(40).nullable(),
+    validTo: z.string().max(40).nullable(),
     evidenceExcerpt: z.string().min(1).max(2_000),
   })).max(100),
   relations: z.array(z.object({
@@ -97,8 +102,8 @@ const extractionSchema = z.object({
     toKind: z.enum(["person", "organization", "project", "decision", "commitment", "risk", "event"]),
     toName: z.string().min(1).max(240),
     type: z.string().min(1).max(120),
-    validFrom: z.string().max(40).optional(),
-    validTo: z.string().max(40).optional(),
+    validFrom: z.string().max(40).nullable(),
+    validTo: z.string().max(40).nullable(),
     evidenceExcerpt: z.string().min(1).max(2_000),
   })).max(200),
 });
@@ -233,22 +238,47 @@ export async function extractStructuredKnowledge(
   owner: string,
   slug: string,
 ): Promise<StructuredKnowledgeGraph> {
-  if (!hasLLMKey()) return readGraph(owner);
   validateSlug(slug);
   const content = await getStorage().readFile(tenantWikiRelPath(tenant(owner), `${slug}.md`));
   const page = parseFrontmatter(content);
   if (typeof page.data.owner !== "string" || tenant(page.data.owner) !== tenant(owner)) {
     throw new Error("Only the page owner may extract structured knowledge");
   }
-  const model = await getConfiguredModel();
-  const { output } = await retryWithBackoff(() => generateText({
-    model,
-    output: Output.object({ schema: extractionSchema }),
-    maxOutputTokens: 5_000,
-    system:
-      "Extract only explicit, useful knowledge objects and relationships from a private wiki page. Use people, organizations, projects, decisions, commitments, risks, and dated events. Preserve temporal language. Every item and relationship must include a short exact-or-close supporting excerpt from the page. Do not infer unsupported relationships.",
-    prompt: `Page: ${slug}\n\n${page.body.slice(0, 80_000)}`,
-  }));
+  await loadConfig();
+  const selection = getStructuredKnowledgeModelSettings();
+  if (!selection.provider || !selection.model || !selection.configured) {
+    throw new Error(
+      "Structured Knowledge needs a configured extraction provider. Choose one in Settings; credentials stay in server secrets.",
+    );
+  }
+  const model = await getConfiguredModel({
+    provider: selection.provider,
+    model: selection.model,
+  });
+  let output: z.infer<typeof extractionSchema>;
+  try {
+    ({ output } = await retryWithBackoff(() => generateText({
+      model,
+      output: Output.object({ schema: extractionSchema }),
+      maxOutputTokens: 5_000,
+      system:
+        "Extract only explicit, useful knowledge objects and relationships from a private wiki page. Use people, organizations, projects, decisions, commitments, risks, and dated events. Preserve temporal language. Every item and relationship must include a short exact-or-close supporting excerpt from the page. Do not infer unsupported relationships. Use null for optional status or date fields when the page does not state a value.",
+      prompt: `Page: ${slug}\n\n${page.body.slice(0, 80_000)}`,
+    })));
+  } catch (error) {
+    if (NoObjectGeneratedError.isInstance(error)) {
+      logger.warn("structured-knowledge", "model response failed schema validation", {
+        slug,
+        provider: selection.provider,
+        model: selection.model,
+        cause: getErrorMessage(error.cause, "unknown structured-output error"),
+      });
+      throw new Error(
+        `Structured Knowledge could not produce valid records with ${selection.provider}/${selection.model}. No records were written. Choose a different extraction model in Settings or try again.`,
+      );
+    }
+    throw error;
+  }
 
   const anchors = new Map<string, ReturnType<typeof buildEvidenceAnchor>>();
   const evidenceForExcerpt = (excerpt: string) => {
