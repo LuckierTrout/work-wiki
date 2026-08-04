@@ -83,6 +83,14 @@ export interface KnowledgeRelationInput {
   validTo?: string;
 }
 
+export interface StructuredKnowledgeUpsertOptions {
+  /** Replace this page's prior derived contribution instead of accumulating
+   * model wording variants across re-extraction runs. */
+  replaceSourceSlug?: string;
+  /** Evidence anchors previously generated from replaceSourceSlug. */
+  priorEvidenceIds?: readonly string[];
+}
+
 const MAX_RECORDS = 5_000;
 const MAX_RELATIONS = 10_000;
 
@@ -162,11 +170,36 @@ export async function upsertStructuredKnowledge(
   records: readonly KnowledgeRecordInput[],
   relations: readonly KnowledgeRelationInput[] = [],
   now: Date = new Date(),
+  options: StructuredKnowledgeUpsertOptions = {},
 ): Promise<StructuredKnowledgeGraph> {
   return withFileLock(graphLock(owner), async () => {
     const graph = await readGraph(owner);
     const timestamp = now.toISOString();
     const byId = new Map(graph.records.map((record) => [record.id, record]));
+    const relationMap = new Map(graph.relations.map((relation) => [relation.id, relation]));
+
+    if (options.replaceSourceSlug) {
+      validateSlug(options.replaceSourceSlug);
+      const priorEvidenceIds = new Set(options.priorEvidenceIds ?? []);
+      for (const record of byId.values()) {
+        if (!record.sourceSlugs.includes(options.replaceSourceSlug)) continue;
+        record.sourceSlugs = record.sourceSlugs.filter(
+          (sourceSlug) => sourceSlug !== options.replaceSourceSlug,
+        );
+        record.evidenceIds = record.evidenceIds.filter(
+          (evidenceId) => !priorEvidenceIds.has(evidenceId),
+        );
+      }
+      for (const relation of relationMap.values()) {
+        if (!relation.sourceSlugs.includes(options.replaceSourceSlug)) continue;
+        relation.sourceSlugs = relation.sourceSlugs.filter(
+          (sourceSlug) => sourceSlug !== options.replaceSourceSlug,
+        );
+        relation.evidenceIds = relation.evidenceIds.filter(
+          (evidenceId) => !priorEvidenceIds.has(evidenceId),
+        );
+      }
+    }
 
     for (const input of records) {
       validateSlug(input.sourceSlug);
@@ -191,7 +224,6 @@ export async function upsertStructuredKnowledge(
       });
     }
 
-    const relationMap = new Map(graph.relations.map((relation) => [relation.id, relation]));
     for (const input of relations) {
       validateSlug(input.sourceSlug);
       const fromId = recordId(input.fromKind, input.fromName);
@@ -216,8 +248,18 @@ export async function upsertStructuredKnowledge(
       });
     }
 
-    graph.records = [...byId.values()].slice(-MAX_RECORDS);
-    graph.relations = [...relationMap.values()].slice(-MAX_RELATIONS);
+    graph.records = [...byId.values()]
+      .filter((record) => record.sourceSlugs.length > 0)
+      .slice(-MAX_RECORDS);
+    const retainedRecordIds = new Set(graph.records.map((record) => record.id));
+    graph.relations = [...relationMap.values()]
+      .filter(
+        (relation) =>
+          relation.sourceSlugs.length > 0 &&
+          retainedRecordIds.has(relation.fromId) &&
+          retainedRecordIds.has(relation.toId),
+      )
+      .slice(-MAX_RELATIONS);
     graph.updatedAt = timestamp;
     await getStorage().writeFile(graphPath(owner), JSON.stringify(graph, null, 2));
     return graph;
@@ -315,6 +357,29 @@ export async function extractStructuredKnowledge(
   const existing = await getPageEvidence(owner, slug);
   const pageHash = contentHash(content);
   const canMerge = existing?.pageContentHash === pageHash;
+  const priorStructuredEvidenceIds = new Set(
+    existing
+      ? existing.evidence
+        .filter(
+          (anchor) =>
+            anchor.source.type === "wiki-ref" &&
+            anchor.source.url === `wiki:${slug}`,
+        )
+        .map((anchor) => anchor.id)
+      : [],
+  );
+  const retainedClaims = canMerge
+    ? existing.claims.filter(
+      (claim) =>
+        !claim.evidenceIds.some((evidenceId) =>
+          priorStructuredEvidenceIds.has(evidenceId)),
+    )
+    : [];
+  const retainedEvidence = canMerge
+    ? existing.evidence.filter(
+      (anchor) => !priorStructuredEvidenceIds.has(anchor.id),
+    )
+    : [];
   const evidence = [...anchors.values()];
   const claims = recordInputs.map((record) => buildClaimEvidence({
     claim: `${record.name}: ${record.summary}`,
@@ -324,8 +389,17 @@ export async function extractStructuredKnowledge(
   await savePageEvidence(owner, {
     pageSlug: slug,
     pageContentHash: pageHash,
-    claims: [...(canMerge ? existing.claims : []), ...claims],
-    evidence: [...(canMerge ? existing.evidence : []), ...evidence],
+    claims: [...retainedClaims, ...claims],
+    evidence: [...retainedEvidence, ...evidence],
   });
-  return upsertStructuredKnowledge(owner, recordInputs, relationInputs);
+  return upsertStructuredKnowledge(
+    owner,
+    recordInputs,
+    relationInputs,
+    new Date(),
+    {
+      replaceSourceSlug: slug,
+      priorEvidenceIds: [...priorStructuredEvidenceIds],
+    },
+  );
 }

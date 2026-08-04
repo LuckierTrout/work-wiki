@@ -110,6 +110,63 @@ describe("structured knowledge", () => {
     expect(await listKnowledgeRecords("alice", "decision")).toHaveLength(1);
   });
 
+  it("replaces one source contribution without deleting corroborating sources", async () => {
+    const records = [
+      {
+        kind: "project" as const,
+        name: "Apollo",
+        summary: "Launch project.",
+        sourceSlug: "source-a",
+        evidenceIds: ["ev_a"],
+      },
+      {
+        kind: "person" as const,
+        name: "Christian",
+        summary: "Project owner.",
+        sourceSlug: "source-a",
+        evidenceIds: ["ev_a"],
+      },
+    ];
+    const relations = [{
+      fromKind: "person" as const,
+      fromName: "Christian",
+      toKind: "project" as const,
+      toName: "Apollo",
+      type: "owns",
+      sourceSlug: "source-a",
+      evidenceIds: ["ev_a"],
+    }];
+    await upsertStructuredKnowledge("alice", records, relations);
+    await upsertStructuredKnowledge(
+      "alice",
+      records.map((record) => ({
+        ...record,
+        sourceSlug: "source-b",
+        evidenceIds: ["ev_b"],
+      })),
+      relations.map((relation) => ({
+        ...relation,
+        sourceSlug: "source-b",
+        evidenceIds: ["ev_b"],
+      })),
+    );
+
+    const graph = await upsertStructuredKnowledge(
+      "alice",
+      [],
+      [],
+      new Date(),
+      { replaceSourceSlug: "source-a", priorEvidenceIds: ["ev_a"] },
+    );
+
+    expect(graph.records).toHaveLength(2);
+    expect(graph.records[0].sourceSlugs).toEqual(["source-b"]);
+    expect(graph.records[0].evidenceIds).toEqual(["ev_b"]);
+    expect(graph.relations).toHaveLength(1);
+    expect(graph.relations[0].sourceSlugs).toEqual(["source-b"]);
+    expect(graph.relations[0].evidenceIds).toEqual(["ev_b"]);
+  });
+
   it("uses a dedicated provider, accepts nullable optional fields, and anchors evidence", async () => {
     process.env.OPENAI_API_KEY = "openai-test-key";
     await saveConfig({
@@ -174,6 +231,32 @@ describe("structured knowledge", () => {
     expect(evidence?.evidence.map((item) => item.excerpt)).toContain(
       "Apollo is the launch project.",
     );
+
+    const replacementOutput = {
+      records: generatedOutput.records.map((record) => ({ ...record })),
+      relations: [
+        {
+          fromKind: "decision",
+          fromName: "November launch",
+          toKind: "project",
+          toName: "Apollo",
+          type: "decision for",
+          validFrom: null,
+          validTo: null,
+          evidenceExcerpt: "Christian approved the November launch.",
+        },
+      ],
+    };
+    generateTextMock.mockResolvedValueOnce({ output: replacementOutput });
+
+    const rerun = await extractStructuredKnowledge("alice", "decision-log");
+
+    expect(rerun.records).toHaveLength(2);
+    expect(rerun.records.every((record) => record.evidenceIds.length === 1)).toBe(true);
+    expect(rerun.relations).toHaveLength(1);
+    expect(rerun.relations[0]).toMatchObject({ type: "decision for" });
+    const replacedEvidence = await getPageEvidence("alice", "decision-log");
+    expect(replacedEvidence?.claims).toHaveLength(2);
   });
 
   it("surfaces a safe structured-output error and writes nothing on parse failure", async () => {
