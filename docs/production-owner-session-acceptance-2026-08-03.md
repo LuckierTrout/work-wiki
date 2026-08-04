@@ -2,15 +2,15 @@
 
 ## Verdict
 
-The trusted-memory release is deployed and most owner workflows passed, but the
-release is **not fully accepted**. The owner-confirmed production rollback
-passed. Structured-knowledge extraction still fails with the current Ollama
-Cloud default, and production still uses Clerk development keys.
+The trusted-memory release is deployed and most owner workflows passed,
+including the owner-confirmed rollback and repeatable Structured Knowledge
+extraction. The release is **not fully accepted** only because production still
+uses Clerk development keys.
 
 Acceptance was run against:
 
-- Git commit: `8f6661b097666b1998f016c80edc5cf60841682e`
-- Main Worker version: `a37d7c32-9e8c-4185-92a1-8bb5003b05c2`
+- Git commit: `ae2ab6ae5a335e67d9a93132c2b143572babb230`
+- Main Worker version: `5f82c8d8-61e3-4ea6-932f-59ca59eb0ad8`
 - Task consumer version: `215edeab-31ec-41a5-b8dd-75b286cdc757`
 - Production origins: `https://workwiki.app` and `https://www.workwiki.app`
 
@@ -52,6 +52,19 @@ merging the feature branch.
   cited `yopedia-project-tracking`.
 - The conversation persisted in the thread list.
 
+### Structured Knowledge
+
+- The primary app route remained Ollama Cloud `gpt-oss:120b`, while Knowledge
+  extraction used its owner-configured OpenAI `gpt-4o` feature route.
+- Extracting `yopedia-project-tracking` produced six source-linked records and
+  four relationships in the Knowledge Atlas.
+- Every displayed record linked back to the source page and carried exactly one
+  citation after extraction.
+- A second extraction changed some model wording and relationship labels but
+  remained at six records, four relationships, and one citation per record.
+  Re-extraction now replaces the page's prior derived contribution instead of
+  accumulating model variants.
+
 ### Agent Studio and task safety
 
 - Created the useful owner agent `Action Extractor` rather than a disposable
@@ -80,13 +93,7 @@ merging the feature branch.
 
 ## Blocking findings
 
-1. **Structured Knowledge does not pass production extraction.** Extracting
-   `yopedia-project-tracking` while Ollama Cloud `gpt-oss:120b` is the app
-   default ended with `No object generated: could not parse the response.` No
-   records were written. The extraction path needs a provider override, a more
-   reliable structured-output strategy, or a deliberate production-default
-   provider change before Phase C can be accepted.
-2. **Clerk is using development keys in production.** The browser repeatedly
+1. **Clerk is using development keys in production.** The browser repeatedly
    reported the Clerk development-instance warning. Move `workwiki.app` to a
    Clerk production instance and production publishable/secret keys before
    treating identity as production-ready.
@@ -107,9 +114,7 @@ merging the feature branch.
 
 ## Closure order
 
-1. Correct Structured Knowledge model selection or structured-output handling,
-   redeploy, and rerun extraction against `yopedia-project-tracking`.
-2. Migrate Clerk to production keys and repeat signed-in and signed-out gates.
-3. Trigger one controlled ingest to verify the Action Extractor after-ingest
+1. Migrate Clerk to production keys and repeat signed-in and signed-out gates.
+2. Trigger one controlled ingest to verify the Action Extractor after-ingest
    path while ensuring every task remains proposed.
-4. Clean up the two acceptance monitors after explicit owner confirmation.
+3. Clean up the two acceptance monitors after explicit owner confirmation.

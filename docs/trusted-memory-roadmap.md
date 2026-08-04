@@ -153,6 +153,8 @@ boundaries, queued backups, isolated restore verification, and the first
 golden-question retrieval evaluation passed. The owner-confirmed rollback of
 the temporary accepted test revision also passed, including verification of the
 restored page and its new owner-attributed history receipt. Structured Knowledge
-remains blocked by an unparseable Ollama Cloud structured response. Production
+also passed through an owner-configured OpenAI `gpt-4o` feature route while the
+primary route remained Ollama Cloud. Consecutive extraction runs stayed stable
+at six records, four relationships, and one citation per record. Production
 Clerk keys must replace the development instance before the identity boundary is
 considered production-ready.

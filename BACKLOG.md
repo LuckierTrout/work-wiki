@@ -26,9 +26,11 @@ The 2026-08-03 owner-session run is recorded in
   receipt. Owner-confirmed production verification passed on 2026-08-03; the
   restored 4,471-byte revision and the new `@christianlee` history receipt were
   both verified.
-- [ ] Fix Structured Knowledge extraction with the Ollama Cloud default or add
-  a reliable feature-level provider override. The production attempt returned
-  `No object generated: could not parse the response.`
+- [x] Fix Structured Knowledge extraction with a reliable feature-level
+  provider override. Production acceptance passed on 2026-08-03 using OpenAI
+  `gpt-4o` while the primary route remained Ollama Cloud. Two consecutive
+  extractions remained stable at six records, four relationships, and one
+  citation per record.
 - [ ] Move `workwiki.app` from Clerk development keys to a Clerk production
   instance and repeat the owner and signed-out access gates.
 
@@ -112,11 +114,13 @@ Architecture and acceptance criteria are recorded in
   digests. **Production owner-session verification passed on 2026-08-03 for
   baseline creation, meaningful-change proposals, unsupported-content failure,
   pause, and resume.** Digest delivery remains a follow-up.
-- [ ] Add source-linked structured records for people, organizations, projects,
+- [x] Add source-linked structured records for people, organizations, projects,
   decisions, commitments, risks, events, and temporal relationships.
   **Deployed** with Atlas, filtered views, timeline, and relationship ledger.
-  Production extraction failed on 2026-08-03 because the Ollama Cloud response
-  could not be parsed into the required object, so Phase C remains blocked.
+  **Production extraction passed on 2026-08-03** through the owner-configured
+  OpenAI `gpt-4o` feature route. Repeat extraction replaces the source page's
+  prior derived contribution and remained stable at six records, four
+  relationships, and one citation per record.
 - [ ] Harden Agent Studio with scoped permissions, budgets, dry runs, approval
   policies, auditable activity, and rollback. Hermes remains optional
   orchestration, not the authorization or storage boundary. **Implemented

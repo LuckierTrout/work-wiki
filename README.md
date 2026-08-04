@@ -177,7 +177,9 @@ Structured Knowledge extraction can also use its own provider and model from
 **Settings → Knowledge extraction**. When no workload override is saved, it
 inherits the primary generation route. The selection is non-secret config; the
 matching provider credential must still exist only as a server environment
-secret.
+secret. Re-extracting a page replaces that page's prior derived records,
+relationships, and extraction evidence while preserving corroboration from
+other sources.
 
 ### Optional Hermes Agent backend
 
