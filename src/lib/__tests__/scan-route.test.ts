@@ -8,6 +8,7 @@ vi.mock("@/lib/maintenance", () => ({
   DEFAULT_MAINTENANCE_CAP: 10,
 }));
 vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn() }));
+vi.mock("@/lib/backups", () => ({ isOwnerBackupDue: vi.fn() }));
 vi.mock("@/lib/monitor-digests", () => ({
   createMonitorDigest: vi.fn(),
   listDueMonitorDigestOwners: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("@/lib/monitor-digests", () => ({
 import { getServicePrincipal } from "@/lib/auth";
 import { scanForMaintenance, rebuildDerivedIndexes, purgeStaleJobs } from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
+import { isOwnerBackupDue } from "@/lib/backups";
 import {
   createMonitorDigest,
   listDueMonitorDigestOwners,
@@ -30,6 +32,7 @@ const mockedScan = vi.mocked(scanForMaintenance);
 const mockedRebuild = vi.mocked(rebuildDerivedIndexes);
 const mockedPurge = vi.mocked(purgeStaleJobs);
 const mockedEnqueue = vi.mocked(enqueueTask);
+const mockedBackupDue = vi.mocked(isOwnerBackupDue);
 const mockedCreateDigest = vi.mocked(createMonitorDigest);
 const mockedDueDigestOwners = vi.mocked(listDueMonitorDigestOwners);
 const mockedPendingDigests = vi.mocked(listPendingMonitorDigestDeliveries);
@@ -50,15 +53,19 @@ async function scan(query = "") {
 }
 
 let savedFlag: string | undefined;
+let savedOwnerHandle: string | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
   savedFlag = process.env.AUTONOMOUS_MAINTENANCE;
+  savedOwnerHandle = process.env.NEXT_PUBLIC_OWNER_HANDLE;
   delete process.env.AUTONOMOUS_MAINTENANCE;
+  delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
   mockedGetService.mockReturnValue({ id: "service:yopedia", handle: "yopedia" });
   mockedScan.mockResolvedValue(SAMPLE);
   mockedRebuild.mockResolvedValue({});
   mockedPurge.mockResolvedValue(0);
   mockedEnqueue.mockResolvedValue(true);
+  mockedBackupDue.mockResolvedValue(false);
   mockedDueDigestOwners.mockResolvedValue([]);
   mockedPendingDigests.mockResolvedValue([]);
   mockedCreateDigest.mockResolvedValue(null);
@@ -67,6 +74,8 @@ beforeEach(() => {
 afterEach(() => {
   if (savedFlag === undefined) delete process.env.AUTONOMOUS_MAINTENANCE;
   else process.env.AUTONOMOUS_MAINTENANCE = savedFlag;
+  if (savedOwnerHandle === undefined) delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  else process.env.NEXT_PUBLIC_OWNER_HANDLE = savedOwnerHandle;
 });
 
 describe("POST /api/tasks/scan", () => {
@@ -76,7 +85,7 @@ describe("POST /api/tasks/scan", () => {
     expect(mockedScan).not.toHaveBeenCalled();
   });
 
-  it("dry-runs (enqueues nothing) when AUTONOMOUS_MAINTENANCE is off", async () => {
+  it("dry-runs maintenance tasks when AUTONOMOUS_MAINTENANCE is off", async () => {
     const res = await scan();
     const body = await res.json();
     expect(body).toMatchObject({ enabled: false, dry: true, found: 4, enqueued: 0 });
@@ -99,6 +108,42 @@ describe("POST /api/tasks/scan", () => {
     const body = await res.json();
     expect(body).toMatchObject({ enabled: true, dry: true, enqueued: 0 });
     expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("queues a due owner backup independently of maintenance edits", async () => {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = "christianlee";
+    mockedBackupDue.mockResolvedValue(true);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedBackupDue).toHaveBeenCalledWith("christianlee");
+    expect(mockedEnqueue).toHaveBeenCalledWith({
+      kind: "create-backup",
+      owner: "christianlee",
+    });
+    expect(body).toMatchObject({
+      backupOwnerConfigured: true,
+      backupDue: true,
+      backupEnqueued: true,
+    });
+  });
+
+  it("?dry=1 suppresses a due owner backup", async () => {
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = "christianlee";
+    mockedBackupDue.mockResolvedValue(true);
+
+    const res = await scan("?dry=1");
+    const body = await res.json();
+
+    expect(mockedBackupDue).toHaveBeenCalledWith("christianlee");
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+    expect(body).toMatchObject({
+      backupOwnerConfigured: true,
+      backupDue: true,
+      backupEnqueued: false,
+    });
   });
 
   it("honors a ?cap override", async () => {
