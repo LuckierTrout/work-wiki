@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert } from "@/components/Alert";
+import type { GraphifyJob } from "@/lib/graphify-jobs";
 import type {
   KnowledgeKind,
   KnowledgeRecord,
@@ -42,23 +43,120 @@ function recordDate(record: KnowledgeRecord): string | null {
 
 export function KnowledgeAtlas() {
   const [graph, setGraph] = useState<StructuredKnowledgeGraph | null>(null);
+  const [eligibleCount, setEligibleCount] = useState(0);
+  const [graphifyJob, setGraphifyJob] = useState<GraphifyJob | null>(null);
   const [view, setView] = useState<View>("all");
   const [query, setQuery] = useState("");
   const [extractSlug, setExtractSlug] = useState("");
   const [extracting, setExtracting] = useState(false);
+  const [queueingWiki, setQueueingWiki] = useState(false);
+  const [confirmWholeWiki, setConfirmWholeWiki] = useState(false);
+  const [graphifyNotice, setGraphifyNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const graphifyPollingKey =
+    graphifyJob &&
+    (graphifyJob.status === "queued" || graphifyJob.status === "processing")
+      ? `${graphifyJob.jobId}:${graphifyJob.updatedAt}`
+      : null;
 
-  async function load() {
+  const load = useCallback(async () => {
     setError(null);
     try {
-      const data = await request<{ graph: StructuredKnowledgeGraph }>("/api/knowledge");
-      setGraph(data.graph);
+      const [knowledge, graphify] = await Promise.all([
+        request<{ graph: StructuredKnowledgeGraph }>("/api/knowledge"),
+        request<{ eligibleCount: number; job: GraphifyJob | null }>(
+          "/api/knowledge/graphify",
+        ),
+      ]);
+      setGraph(knowledge.graph);
+      setEligibleCount(graphify.eligibleCount);
+      setGraphifyJob(graphify.job);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not load structured knowledge.");
     }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (!graphifyPollingKey) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const data = await request<{ eligibleCount: number; job: GraphifyJob | null }>(
+          "/api/knowledge/graphify",
+        );
+        if (cancelled) return;
+        setEligibleCount(data.eligibleCount);
+        setGraphifyJob(data.job);
+        if (
+          data.job &&
+          (data.job.status === "done" || data.job.status === "completed_with_errors")
+        ) {
+          const knowledge = await request<{ graph: StructuredKnowledgeGraph }>("/api/knowledge");
+          if (!cancelled) setGraph(knowledge.graph);
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : "Could not refresh Graphify progress.");
+        }
+      }
+    }, 2_500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [graphifyPollingKey]);
+
+  async function graphifyWholeWiki() {
+    setQueueingWiki(true);
+    setError(null);
+    setGraphifyNotice(null);
+    try {
+      const data = await request<{ job: GraphifyJob; enqueued: number; warning?: string }>(
+        "/api/knowledge/graphify",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "wiki" }),
+        },
+      );
+      setGraphifyJob(data.job);
+      setGraphifyNotice(
+        data.warning || `${data.enqueued} page${data.enqueued === 1 ? " is" : "s are"} queued for Graphify.`,
+      );
+      setConfirmWholeWiki(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not queue the wiki.");
+    } finally {
+      setQueueingWiki(false);
+    }
   }
 
-  useEffect(() => { void load(); }, []);
+  async function retryGraphify() {
+    if (!graphifyJob) return;
+    setQueueingWiki(true);
+    setError(null);
+    setGraphifyNotice(null);
+    try {
+      const data = await request<{ job: GraphifyJob; enqueued: number; warning?: string }>(
+        "/api/knowledge/graphify",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "retry", jobId: graphifyJob.jobId }),
+        },
+      );
+      setGraphifyJob(data.job);
+      setGraphifyNotice(
+        data.warning || `${data.enqueued} page${data.enqueued === 1 ? " is" : "s are"} queued again.`,
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not retry Graphify.");
+    } finally {
+      setQueueingWiki(false);
+    }
+  }
 
   async function extract(event: React.FormEvent) {
     event.preventDefault();
@@ -97,9 +195,17 @@ export function KnowledgeAtlas() {
     return result;
   }, {}) ?? {};
   const recordsById = new Map(graph?.records.map((record) => [record.id, record]) ?? []);
+  const graphifySettled = graphifyJob
+    ? graphifyJob.succeeded + graphifyJob.failed
+    : 0;
+  const graphifyProgress = graphifyJob?.total
+    ? Math.round((graphifySettled / graphifyJob.total) * 100)
+    : 0;
+  const graphifyActive = graphifyJob?.status === "queued" || graphifyJob?.status === "processing";
+  const graphifyRetryable = graphifyJob?.status === "completed_with_errors" || graphifyJob?.status === "stalled";
 
   return (
-    <main className="shell fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>knowledge atlas</p>
@@ -117,6 +223,86 @@ export function KnowledgeAtlas() {
       </div>
 
       {error && <div style={{ marginTop: 20 }}><Alert variant="error">{error}</Alert></div>}
+      {graphifyNotice && <div style={{ marginTop: 20 }}><Alert variant="success">{graphifyNotice}</Alert></div>}
+
+      <section
+        aria-labelledby="graphify-wiki-heading"
+        style={{
+          marginTop: 28,
+          padding: 20,
+          border: "1px solid var(--rule)",
+          borderRadius: 12,
+          background: "var(--paper-2)",
+        }}
+      >
+        <div className="spread" style={{ gap: 20, alignItems: "start", flexWrap: "wrap" }}>
+          <div style={{ maxWidth: "62ch" }}>
+            <p className="fmark">whole-wiki graphify</p>
+            <h2 id="graphify-wiki-heading" className="display" style={{ fontSize: 25, margin: "7px 0 0" }}>
+              Rebuild the atlas from every page you own.
+            </h2>
+            <p style={{ color: "var(--muted)", fontSize: 13.5, lineHeight: 1.55, margin: "7px 0 0" }}>
+              {eligibleCount} eligible page{eligibleCount === 1 ? "" : "s"}. Each page is processed in the background and replaces only its prior derived contribution. Your source pages are never changed.
+            </p>
+          </div>
+          {!confirmWholeWiki ? (
+            <button
+              type="button"
+              className="btn primary"
+              disabled={eligibleCount === 0 || queueingWiki || Boolean(graphifyActive)}
+              onClick={() => setConfirmWholeWiki(true)}
+            >
+              Graphify whole wiki
+            </button>
+          ) : (
+            <div style={{ minWidth: 250, maxWidth: 330 }}>
+              <p style={{ color: "var(--ink-2)", fontSize: 12.5, lineHeight: 1.45, margin: 0 }}>
+                This will make one model request per eligible page. Continue?
+              </p>
+              <div className="row" style={{ gap: 8, marginTop: 10, justifyContent: "end" }}>
+                <button type="button" className="btn ghost" disabled={queueingWiki} onClick={() => setConfirmWholeWiki(false)}>
+                  Cancel
+                </button>
+                <button type="button" className="btn primary" disabled={queueingWiki} onClick={() => void graphifyWholeWiki()}>
+                  {queueingWiki ? "Queueing…" : `Queue ${eligibleCount} pages`}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {graphifyJob && (
+          <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid var(--rule)" }}>
+            <div className="spread" style={{ gap: 12, flexWrap: "wrap" }}>
+              <span className="receipt" aria-live="polite" style={{ color: graphifyJob.failed ? "var(--rust)" : "var(--accent)", fontSize: 10.5 }}>
+                {graphifyJob.status.replaceAll("_", " ")} · {graphifyJob.succeeded} complete · {graphifyJob.failed} failed
+              </span>
+              {graphifyRetryable && (
+                <button type="button" className="btn ghost" disabled={queueingWiki} onClick={() => void retryGraphify()}>
+                  {queueingWiki ? "Queueing…" : "Retry unfinished pages"}
+                </button>
+              )}
+            </div>
+            <div
+              role="progressbar"
+              aria-label="Whole-wiki Graphify progress"
+              aria-valuemin={0}
+              aria-valuemax={graphifyJob.total}
+              aria-valuenow={graphifySettled}
+              style={{ height: 3, marginTop: 11, background: "var(--rule)", overflow: "hidden", borderRadius: 99 }}
+            >
+              <div style={{ width: `${graphifyProgress}%`, height: "100%", background: graphifyJob.failed ? "var(--rust)" : "var(--accent)", transition: "width 240ms ease" }} />
+            </div>
+            {graphifyJob.failed > 0 && (
+              <ul style={{ margin: "10px 0 0", paddingLeft: 18, color: "var(--muted)", fontSize: 12.5 }}>
+                {graphifyJob.items.filter((item) => item.status === "failed").slice(0, 3).map((item) => (
+                  <li key={item.slug}>{item.slug}: {item.error || "Graphify failed."}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </section>
 
       <div className="grid md:grid-cols-[minmax(0,1fr)_auto]" style={{ gap: 12, marginTop: 30, paddingBottom: 18, borderBottom: "1px solid var(--rule)" }}>
         <div className="row" role="tablist" aria-label="Knowledge view" style={{ gap: 6, flexWrap: "wrap" }}>
@@ -138,7 +324,7 @@ export function KnowledgeAtlas() {
         <div style={{ textAlign: "center", padding: "72px 20px", borderBottom: "1px solid var(--rule)" }}>
           <p className="display" style={{ fontSize: 27, margin: 0 }}>No records in this view.</p>
           <p style={{ color: "var(--muted)", margin: "8px auto 0", maxWidth: "50ch" }}>
-            Accepted revisions and new ingests are extracted automatically. You can also process an existing page below.
+            Accepted revisions and new ingests are graphified automatically. You can also process an existing page below.
           </p>
         </div>
       ) : (
@@ -188,11 +374,11 @@ export function KnowledgeAtlas() {
 
       <form onSubmit={extract} className="grid sm:grid-cols-[minmax(0,1fr)_auto]" style={{ gap: 10, marginTop: 36, paddingTop: 24, borderTop: "1px solid var(--rule)" }}>
         <label style={{ display: "grid", gap: 6, fontSize: 12, color: "var(--muted)" }}>
-          Extract an existing private page by slug
+          Graphify one existing page by slug
           <input value={extractSlug} onChange={(event) => setExtractSlug(event.target.value)} placeholder="meeting-notes" style={{ border: "1px solid var(--rule-strong)", borderRadius: 9, background: "var(--paper-2)", color: "var(--ink)", padding: "10px 12px", font: "inherit" }} />
         </label>
         <button className="btn primary" type="submit" disabled={extracting || !extractSlug.trim()} style={{ alignSelf: "end" }}>
-          {extracting ? "Extracting…" : "Extract structure"}
+          {extracting ? "Graphifying…" : "Graphify page"}
         </button>
       </form>
     </main>

@@ -61,6 +61,7 @@ async function runTask(
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
+      "X-Yopedia-Queue-Attempt": String(message.attempts),
     },
     body: JSON.stringify(message.body),
   };

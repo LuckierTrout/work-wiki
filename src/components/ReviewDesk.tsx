@@ -130,6 +130,7 @@ export function ReviewDesk() {
   const [editing, setEditing] = useState(false);
   const [proposedBody, setProposedBody] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const loadProposals = useCallback(async () => {
     setLoading(true);
@@ -139,9 +140,12 @@ export function ReviewDesk() {
         "/api/review/proposals",
       );
       setProposals(data.proposals);
+      const requestedId = new URLSearchParams(window.location.search).get("proposal");
       setSelectedId((current) =>
         current && data.proposals.some((proposal) => proposal.id === current)
           ? current
+          : requestedId && data.proposals.some((proposal) => proposal.id === requestedId)
+            ? requestedId
           : data.proposals.find((proposal) => proposal.status === "pending")?.id
             ?? data.proposals[0]?.id
             ?? null,
@@ -182,6 +186,7 @@ export function ReviewDesk() {
     if (!selectedId) return;
     setActing(action);
     setError(null);
+    setNotice(null);
     try {
       await request<{ proposal: MemoryChangeProposal }>(
         `/api/review/proposals/${selectedId}`,
@@ -197,6 +202,11 @@ export function ReviewDesk() {
         `/api/review/proposals/${selectedId}`,
       );
       setReview(refreshed.review);
+      setNotice(
+        action === "accept"
+          ? "Changes accepted. WorkWiki will graphify the updated page in the background."
+          : "Proposal rejected. The source page was not changed.",
+      );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The decision could not be saved.");
     } finally {
@@ -237,7 +247,7 @@ export function ReviewDesk() {
   const pendingCount = proposals.filter((proposal) => proposal.status === "pending").length;
 
   return (
-    <main className="shell fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>private review desk</p>
@@ -259,6 +269,7 @@ export function ReviewDesk() {
       </div>
 
       {error && <div style={{ marginTop: 20 }}><Alert variant="error">{error}</Alert></div>}
+      {notice && <div style={{ marginTop: 20 }}><Alert variant="success">{notice}</Alert></div>}
 
       <div
         className="row"
@@ -453,7 +464,7 @@ export function ReviewDesk() {
                         {acting === "reject" ? "Rejecting…" : "Reject"}
                       </button>
                       <button className="btn primary" type="button" disabled={acting !== null || review.isStale || editing} onClick={() => void decide("accept")}>
-                        {acting === "accept" ? "Applying…" : "Accept changes"}
+                        {acting === "accept" ? "Applying…" : "Accept & graphify"}
                       </button>
                     </div>
                   </div>

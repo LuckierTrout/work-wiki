@@ -97,7 +97,7 @@ export interface LintResult {
 /** A single provenance entry in the structured `sources[]` array. */
 export interface SourceEntry {
   /** Provenance type: how the source was acquired. */
-  type: "url" | "text" | "x-mention" | "wiki-ref" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "csv" | "md" | "txt" | "html" | "zip" | "youtube" | "email";
+  type: "url" | "text" | "x-mention" | "wiki-ref" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "csv" | "md" | "txt" | "html" | "zip" | "youtube" | "email" | "odt" | "ods" | "odp" | "epub" | "org" | "rtf" | "mobi";
   /** Source URL or "text-paste" for pasted content. */
   url: string;
   /** ISO date string of when the source was fetched/ingested. */
@@ -220,7 +220,13 @@ export interface AgentProfile {
   /** Explicit enable switch for automatic triggers. */
   enabled?: boolean;
   /** Capabilities the owner has granted to the agent runtime. */
-  allowedTools?: Array<"search-wiki" | "propose-tasks" | "propose-memory">;
+  allowedTools?: Array<
+    | "search-wiki"
+    | "propose-tasks"
+    | "propose-memory"
+    | "request-input"
+    | "run-sandbox"
+  >;
   /** All consequential writes remain proposals. Reserved for future narrowly
    *  scoped auto-approval rules without weakening the current default. */
   approvalPolicy?: "proposal-only" | "allow-low-risk";

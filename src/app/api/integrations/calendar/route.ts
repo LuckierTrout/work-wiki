@@ -17,7 +17,7 @@ export async function GET() {
   const body = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Yopedia//WorkWiki//EN",
+    "PRODID:-//WorkWiki//WorkWiki//EN",
     ...todos,
     "END:VCALENDAR",
     "",
@@ -25,7 +25,7 @@ export async function GET() {
   return new Response(body, {
     headers: {
       "Content-Type": "text/calendar; charset=utf-8",
-      "Content-Disposition": 'attachment; filename="yopedia-actions.ics"',
+      "Content-Disposition": 'attachment; filename="workwiki-actions.ics"',
       "Cache-Control": "private, no-store",
     },
   });

@@ -7,6 +7,11 @@ import { SiteChrome } from "@/components/SiteChrome";
 import { ClientProviders } from "@/components/ClientProviders";
 import { EnsureYoyo } from "@/components/EnsureYoyo";
 import { RegisterSW } from "@/components/RegisterSW";
+import { LocaleProvider } from "@/components/LocaleProvider";
+import { cookies } from "next/headers";
+import { INTERFACE_LOCALE_COOKIE, normalizeInterfaceLocale } from "@/lib/i18n";
+import { APP_NAME, APP_ORIGIN, APP_TITLE } from "@/lib/brand";
+import "katex/dist/katex.min.css";
 import "./globals.css";
 
 // Self-hosted via next/font (no runtime Google CDN calls). Exposed as CSS
@@ -31,21 +36,21 @@ const SITE_DESCRIPTION =
   "A shared second brain for humans and agents. Not RAG — it accumulates: sources become cited pages, contradictions reconcile, and lineage stays visible.";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://workwiki.app"),
+  metadataBase: new URL(APP_ORIGIN),
   title: {
-    default: "yopedia — a shared second brain for humans and agents",
-    template: "%s · yopedia",
+    default: APP_TITLE,
+    template: `%s · ${APP_NAME}`,
   },
   description: SITE_DESCRIPTION,
   openGraph: {
-    title: "yopedia — a shared second brain for humans and agents",
+    title: APP_TITLE,
     description: SITE_DESCRIPTION,
-    siteName: "yopedia",
+    siteName: APP_NAME,
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "yopedia — a shared second brain for humans and agents",
+    title: APP_TITLE,
     description: SITE_DESCRIPTION,
   },
 };
@@ -65,14 +70,15 @@ const themeScript = `
 })();
 `;
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const locale = normalizeInterfaceLocale((await cookies()).get(INTERFACE_LOCALE_COOKIE)?.value);
   return (
     <html
-      lang="en"
+      lang={locale}
       suppressHydrationWarning
       className={`${fontSans.variable} ${fontSerif.variable} ${fontMono.variable}`}
     >
@@ -83,15 +89,17 @@ export default function RootLayout({
         {/* `waitlistUrl` makes Clerk's sign-in modal route new sign-ups to our
             /waitlist page while the app is in waitlist (invite-only) sign-up
             mode — gating registration only; reading the commons stays public. */}
-        <ClerkProvider waitlistUrl="/waitlist">
-          <ClientProviders>
-            <EnsureYoyo />
-            <RegisterSW />
-            <SiteChrome nav={<NavHeader />} footer={<Footer />}>
-              {children}
-            </SiteChrome>
-          </ClientProviders>
-        </ClerkProvider>
+        <LocaleProvider initialLocale={locale}>
+          <ClerkProvider waitlistUrl="/waitlist">
+            <ClientProviders>
+              <EnsureYoyo />
+              <RegisterSW />
+              <SiteChrome nav={<NavHeader />} footer={<Footer />}>
+                {children}
+              </SiteChrome>
+            </ClientProviders>
+          </ClerkProvider>
+        </LocaleProvider>
       </body>
     </html>
   );

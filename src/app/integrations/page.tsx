@@ -13,7 +13,7 @@ export default async function IntegrationsPage() {
           Send approved work, once.
         </h1>
         <p style={{ color: "var(--ink-2)", fontSize: 18, maxWidth: "46ch", margin: "0 auto 28px" }}>
-          Accepted actions can leave Yopedia through a durable, retry-safe outbox. Nothing is sent before approval.
+          Accepted actions can leave WorkWiki through a durable, retry-safe outbox. Nothing is sent before approval.
         </p>
         <SignInButton mode="modal"><button className="btn primary">Sign in to manage integrations</button></SignInButton>
         <p style={{ marginTop: 14, fontSize: 13, color: "var(--faint)" }}>

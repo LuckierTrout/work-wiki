@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Alert } from "@/components/Alert";
+import { MonitorDigestPanel } from "@/components/MonitorDigestPanel";
 import type {
   SourceMonitor,
   SourceMonitorCadence,
@@ -124,7 +125,7 @@ export function SourceMonitorDesk() {
   const errors = monitors.filter((monitor) => monitor.state === "error").length;
 
   return (
-    <main className="shell fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>source watch</p>
@@ -132,7 +133,7 @@ export function SourceMonitorDesk() {
             Let sources come back to you.
           </h1>
           <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 0", maxWidth: "64ch" }}>
-            Monitor durable URLs. Yopedia filters minor noise and drafts a cited update only when the meaning changes.
+            Monitor durable URLs. WorkWiki filters minor noise and drafts a cited update only when the meaning changes.
           </p>
         </div>
         <div className="row" style={{ gap: 22 }}>
@@ -183,6 +184,8 @@ export function SourceMonitorDesk() {
 
       {error && <div style={{ marginTop: 18 }}><Alert variant="error">{error}</Alert></div>}
       {notice && <div style={{ marginTop: 18 }}><Alert variant="success">{notice} <Link href="/review" className="underline">Open Review</Link></Alert></div>}
+
+      <MonitorDigestPanel />
 
       <div style={{ marginTop: 34, borderTop: "1px solid var(--rule)" }}>
         {loading ? (

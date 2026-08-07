@@ -23,10 +23,18 @@ import {
 import { extractActionsFromPage } from "@/lib/action-extractor";
 import { runSpecializedAgent } from "@/lib/agent-runtime";
 import { runSourceMonitor } from "@/lib/source-monitors";
+import { deliverMonitorDigest } from "@/lib/monitor-digests";
 import { extractStructuredKnowledge } from "@/lib/structured-knowledge";
+import {
+  completeGraphifyPage,
+  failGraphifyPages,
+  startGraphifyPage,
+} from "@/lib/graphify-jobs";
 import { deliverOutboxEvent } from "@/lib/integration-outbox";
 import { createOwnerBackup, summarizeBackup, verifyOwnerBackup } from "@/lib/backups";
 import { recordOperationSafe } from "@/lib/operation-ledger";
+import { compileKnowledgePage } from "@/lib/knowledge-compilation";
+import { runResearchProject } from "@/lib/research-runtime";
 
 /**
  * POST /api/tasks/run — execute one agent task.
@@ -64,6 +72,11 @@ export async function POST(req: Request) {
     // Poison message — don't retry.
     return NextResponse.json({ error: "malformed task" }, { status: 400 });
   }
+
+  const queueAttempt = Number.parseInt(
+    req.headers.get("X-Yopedia-Queue-Attempt") ?? "1",
+    10,
+  );
 
   const stagedKeys = task.kind === "ingest"
     ? [task.staged?.key, ...(task.attachments?.map((attachment) => attachment.key) ?? [])]
@@ -160,8 +173,31 @@ export async function POST(req: Request) {
     }
 
     if (task.kind === "extract-knowledge") {
+      if (task.graphifyJobId) {
+        const started = await startGraphifyPage(
+          task.owner,
+          task.graphifyJobId,
+          task.slug,
+        );
+        if (!started.shouldRun) {
+          return NextResponse.json({ ok: true, replayed: true });
+        }
+      }
       const graph = await extractStructuredKnowledge(task.owner, task.slug);
+      if (task.graphifyJobId) {
+        await completeGraphifyPage(task.owner, task.graphifyJobId, task.slug);
+      }
+      await enqueueTask({
+        kind: "compile-knowledge",
+        slug: task.slug,
+        owner: task.owner,
+      });
       return NextResponse.json({ ok: true, records: graph.records.length, relations: graph.relations.length });
+    }
+
+    if (task.kind === "compile-knowledge") {
+      const compilation = await compileKnowledgePage(task.owner, task.slug);
+      return NextResponse.json({ ok: true, compilation });
     }
 
     if (task.kind === "run-agent") {
@@ -175,12 +211,22 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, activity });
     }
 
+    if (task.kind === "run-research") {
+      const project = await runResearchProject(task.owner, task.projectId);
+      return NextResponse.json({ ok: true, project });
+    }
+
     if (task.kind === "monitor-source") {
       const result = await runSourceMonitor(task.owner, task.monitorId);
       if (result.outcome === "failed") {
         throw new Error(result.error);
       }
       return NextResponse.json({ ok: true, ...result });
+    }
+
+    if (task.kind === "deliver-monitor-digest") {
+      const digest = await deliverMonitorDigest(task.owner, task.digestId);
+      return NextResponse.json({ ok: true, digest });
     }
 
     if (task.kind === "deliver-integration") {
@@ -217,7 +263,9 @@ export async function POST(req: Request) {
       ...(task.title && task.title.trim() ? { title: task.title.trim() } : {}),
     };
     // For a tracked async job, record progress so the UI can poll the outcome.
-    if (task.jobId) await updateIngestJob(task.jobId, { status: "processing" });
+    if (task.jobId) {
+      await updateIngestJob(task.jobId, { status: "processing", stage: "extracting" });
+    }
 
     // Route to the right ingest path:
     //  - staged: uploaded bytes/text in R2 (delete the blob after, best-effort);
@@ -243,23 +291,27 @@ export async function POST(req: Request) {
           extracted,
         });
       }
+      if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
       result = await ingest(task.title?.trim() || "Emailed document", combined, opts);
     } else if (task.staged) {
       const { key, kind, filename, contentType } = task.staged;
       if (kind === "pdf") {
         const bytes = await readStagedBytes(key);
+        if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
         result = await ingestPdf(
           { bytes, filename: filename || "document.pdf" },
           opts,
         );
       } else if (kind === "image") {
         const bytes = await readStagedBytes(key);
+        if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
         result = await ingestImage(
           { bytes, filename: filename || "image", contentType },
           opts,
         );
       } else if (kind === "document") {
         const bytes = await readStagedBytes(key);
+        if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
         result = await ingestDocument(
           {
             bytes,
@@ -274,15 +326,20 @@ export async function POST(req: Request) {
       } else {
         // kind === "text"
         const text = await readStagedText(key);
+        if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
         result = await ingest(task.title?.trim() || "Untitled", text, opts);
       }
     } else if (task.source === "pdf" && task.url) {
+      if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
       result = await ingestPdf({ pdfUrl: task.url }, opts);
     } else if (task.source === "image" && task.url) {
+      if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
       result = await ingestImage({ imageUrl: task.url }, opts);
     } else if (task.url) {
+      if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
       result = await ingestUrl(task.url, opts);
     } else {
+      if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
       result = await ingest(task.title?.trim() || "Untitled", task.content ?? "", opts);
     }
 
@@ -294,12 +351,7 @@ export async function POST(req: Request) {
       );
     }
 
-    if (task.jobId) {
-      await updateIngestJob(task.jobId, {
-        status: "done",
-        slug: result.primarySlug,
-      });
-    }
+    if (task.jobId) await updateIngestJob(task.jobId, { stage: "indexing", slug: result.primarySlug });
 
     // Agent-scoped ingest: attach the page to the agent's learnings. Fail-soft —
     // the job is already `done` and the page exists; we won't fail the ingest over
@@ -331,6 +383,7 @@ export async function POST(req: Request) {
     // inbox and after-ingest agents stay in the human tenant silo.
     const actionOwner = task.triggeredBy?.trim() || task.owner?.trim();
     if (actionOwner) {
+      if (task.jobId) await updateIngestJob(task.jobId, { stage: "deriving-knowledge" });
       try {
         await enqueueTask({
           kind: "extract-actions",
@@ -375,6 +428,14 @@ export async function POST(req: Request) {
       }
     }
 
+    if (task.jobId) {
+      await updateIngestJob(task.jobId, {
+        status: "done",
+        stage: "complete",
+        slug: result.primarySlug,
+      });
+    }
+
     // R2 has no TTL. Delete only after the ingest and tracked-job update both
     // succeed so a transient failure can be retried against the same source.
     await Promise.all(stagedKeys.map((key) => deleteStaged(key)));
@@ -405,6 +466,30 @@ export async function POST(req: Request) {
         logger.error(
           "tasks",
           `failed to record ingest job ${task.jobId} failure`,
+          writeErr,
+        );
+      }
+    }
+    const graphifyFailureIsTerminal =
+      /not found/i.test(message) ||
+      err instanceof ClientInputError ||
+      (Number.isFinite(queueAttempt) && queueAttempt >= 4);
+    if (
+      task.kind === "extract-knowledge" &&
+      task.graphifyJobId &&
+      graphifyFailureIsTerminal
+    ) {
+      try {
+        await failGraphifyPages(
+          task.owner,
+          task.graphifyJobId,
+          [task.slug],
+          message,
+        );
+      } catch (writeErr) {
+        logger.error(
+          "tasks",
+          `failed to record Graphify job ${task.graphifyJobId} failure`,
           writeErr,
         );
       }

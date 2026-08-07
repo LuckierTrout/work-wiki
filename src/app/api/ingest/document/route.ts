@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
     const format = detectDocumentFormat(file.name, file.type);
     if (!format) {
       return NextResponse.json(
-        { error: "Unsupported document type. Use Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP." },
+        { error: "Unsupported document type. Use Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI, Org, or RTF." },
         { status: 400 },
       );
     }

@@ -23,7 +23,7 @@ import { commonsPath } from "@/lib/links";
 import { rememberRecentJob } from "@/lib/recent-ingests";
 
 const ACCEPTED_DOCUMENTS =
-  ".md,.markdown,.txt,.html,.htm,.pdf,.docx,.pptx,.xlsx,.csv,.zip,text/markdown,text/plain,text/html,application/pdf,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv";
+  ".md,.markdown,.org,.txt,.rtf,.html,.htm,.pdf,.docx,.pptx,.xlsx,.odt,.ods,.odp,.epub,.mobi,.csv,.zip,text/markdown,text/plain,text/org,text/rtf,text/html,application/rtf,application/pdf,application/epub+zip,application/x-mobipocket-ebook,application/zip,application/vnd.oasis.opendocument.text,application/vnd.oasis.opendocument.spreadsheet,application/vnd.oasis.opendocument.presentation,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv";
 const MAX_POLL_ATTEMPTS = 100;
 
 type ImportStatus =
@@ -319,7 +319,7 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
           Import documents
         </h2>
         <p style={{ margin: "5px 0 0", color: "var(--muted)", fontSize: 13.5 }}>
-          Add one file or a working set. Each document becomes its own traceable page.
+          Add one file or a working set. Each document becomes its own traceable page and is graphified automatically after ingest.
         </p>
       </div>
 

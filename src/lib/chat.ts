@@ -3,12 +3,23 @@ import { isEnoent } from "./errors";
 import { callLLM, hasLLMKey } from "./llm";
 import { withFileLock } from "./lock";
 import {
+  buildNamesTermsGuidance,
+  expandQueryWithNamesTerms,
+} from "./names-terms";
+import {
   buildContext,
   buildQuerySystemPrompt,
   selectPagesForQuery,
 } from "./query";
 import { resolveScopeSlugs } from "./search";
 import { getStorage } from "./storage";
+import {
+  buildRawSourceContext,
+  extractRawCitedPageSlugs,
+  type RawSourceChunk,
+} from "./raw-source-search";
+import { UNTRUSTED_CONTENT_RULE } from "./untrusted";
+import { buildWorkspaceGuidance } from "./workspace-profile";
 import {
   isAgentScopedType,
   isArtifactType,
@@ -20,6 +31,27 @@ import type { Principal } from "./auth";
 
 export type ChatRole = "user" | "assistant";
 export type ChatBackend = "native" | "hermes";
+export type ChatRetrievalMode = "wiki" | "sources";
+export type ChatContextBudget = "compact" | "standard" | "expanded";
+
+export const CHAT_RETRIEVAL_MODES: readonly ChatRetrievalMode[] = [
+  "wiki",
+  "sources",
+];
+
+export function isChatRetrievalMode(value: unknown): value is ChatRetrievalMode {
+  return value === "wiki" || value === "sources";
+}
+
+export function isChatContextBudget(value: unknown): value is ChatContextBudget {
+  return value === "compact" || value === "standard" || value === "expanded";
+}
+
+const CHAT_CONTEXT_PAGE_LIMITS: Record<ChatContextBudget, number> = {
+  compact: 4,
+  standard: 8,
+  expanded: 12,
+};
 
 export interface ChatMessage {
   id: string;
@@ -34,6 +66,10 @@ export interface ChatConversation {
   id: string;
   title: string;
   scope?: string;
+  /** Optional at rest for conversations created before evidence modes existed. */
+  retrievalMode?: ChatRetrievalMode;
+  /** Optional at rest for conversations created before context controls existed. */
+  contextBudget?: ChatContextBudget;
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
@@ -58,7 +94,15 @@ async function readConversations(owner: string): Promise<ChatConversation[]> {
     const parsed = JSON.parse(
       await getStorage().readFile(conversationsPath(owner)),
     );
-    return Array.isArray(parsed) ? (parsed as ChatConversation[]) : [];
+    return Array.isArray(parsed)
+      ? (parsed as ChatConversation[]).map((conversation) => ({
+          ...conversation,
+          retrievalMode: conversation.retrievalMode === "sources" ? "sources" : "wiki",
+          contextBudget: isChatContextBudget(conversation.contextBudget)
+            ? conversation.contextBudget
+            : "standard",
+        }))
+      : [];
   } catch (error) {
     if (isEnoent(error)) return [];
     throw error;
@@ -99,7 +143,12 @@ export async function getChatConversation(
 
 export async function createChatConversation(
   owner: string,
-  input?: { title?: string; scope?: string },
+  input?: {
+    title?: string;
+    scope?: string;
+    retrievalMode?: ChatRetrievalMode;
+    contextBudget?: ChatContextBudget;
+  },
 ): Promise<ChatConversation> {
   return withFileLock(lockKey(owner), async () => {
     const conversations = await readConversations(owner);
@@ -108,6 +157,8 @@ export async function createChatConversation(
       id: crypto.randomUUID(),
       title: input?.title?.trim().slice(0, 120) || "New conversation",
       ...(input?.scope?.trim() ? { scope: input.scope.trim() } : {}),
+      retrievalMode: input?.retrievalMode ?? "wiki",
+      contextBudget: input?.contextBudget ?? "standard",
       messages: [],
       createdAt: now,
       updatedAt: now,
@@ -121,7 +172,12 @@ export async function createChatConversation(
 export async function updateChatConversation(
   owner: string,
   id: string,
-  patch: { title?: string; scope?: string | null },
+  patch: {
+    title?: string;
+    scope?: string | null;
+    retrievalMode?: ChatRetrievalMode;
+    contextBudget?: ChatContextBudget;
+  },
 ): Promise<ChatConversation | null> {
   return withFileLock(lockKey(owner), async () => {
     const conversations = await readConversations(owner);
@@ -135,6 +191,12 @@ export async function updateChatConversation(
     if (patch.scope !== undefined) {
       if (patch.scope?.trim()) conversation.scope = patch.scope.trim();
       else delete conversation.scope;
+    }
+    if (patch.retrievalMode !== undefined) {
+      conversation.retrievalMode = patch.retrievalMode;
+    }
+    if (patch.contextBudget !== undefined) {
+      conversation.contextBudget = patch.contextBudget;
     }
     conversation.updatedAt = new Date().toISOString();
     await writeConversations(owner, conversations);
@@ -332,21 +394,64 @@ async function generateChatAnswer(
   }
 
   const recent = conversation.messages.slice(-CONTEXT_MESSAGES);
-  const retrievalQuestion = [
+  const rawRetrievalQuestion = [
     ...recent.filter((message) => message.role === "user").map((message) => message.content),
     question,
   ].join("\n");
-  const selected = await selectPagesForQuery(
+  const retrievalQuestion = await expandQueryWithNamesTerms(
+    principal.handle,
+    rawRetrievalQuestion,
+  );
+  const selected = (await selectPagesForQuery(
     retrievalQuestion,
     entries,
     scopeSlugs,
+  )).slice(
+    0,
+    CHAT_CONTEXT_PAGE_LIMITS[conversation.contextBudget ?? "standard"],
   );
-  const { context } = await buildContext(selected);
-  let system = await buildQuerySystemPrompt(context, entries, selected, "prose");
-  system +=
-    "\n\nThis is a multi-turn conversation. Use prior turns only to understand the user's intent. " +
-    "Every factual claim about the user's knowledge must remain grounded in the supplied wiki context, " +
-    "and every answer must include markdown citations to the relevant wiki pages.";
+  let system: string;
+  let rawChunks: RawSourceChunk[] = [];
+  if (conversation.retrievalMode === "sources") {
+    const rawContext = await buildRawSourceContext(
+      selected,
+      entries,
+      retrievalQuestion,
+    );
+    if (!rawContext.context) {
+      throw new Error("No original source material is available in this scope.");
+    }
+    rawChunks = rawContext.chunks;
+    const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
+      buildWorkspaceGuidance(principal.handle),
+      buildNamesTermsGuidance(principal.handle),
+    ]);
+    system = [
+      "You are WorkWiki's source-grounded conversation assistant.",
+      "Answer using ONLY the ORIGINAL SOURCE EXCERPTS supplied below. The generated wiki pages were used only to locate these originals and are not evidence.",
+      "Every factual claim must be followed by the exact markdown citation printed as Required citation for the supporting excerpt. Preserve its label, line range, path, and source query parameter exactly.",
+      "Never cite a generated wiki page in this mode. Do not use outside knowledge to fill gaps. If the excerpts do not answer the question, say what is missing and stop.",
+      "Use prior turns only to understand the user's intent; prior assistant statements are not evidence.",
+      UNTRUSTED_CONTENT_RULE,
+      workspaceGuidance,
+      dictionaryGuidance,
+      "ORIGINAL SOURCE CONTEXT",
+      rawContext.context,
+    ].filter(Boolean).join("\n\n");
+  } else {
+    const { context } = await buildContext(selected);
+    system = await buildQuerySystemPrompt(
+      context,
+      entries,
+      selected,
+      "prose",
+      principal.handle,
+    );
+    system +=
+      "\n\nThis is a multi-turn conversation. Use prior turns only to understand the user's intent. " +
+      "Every factual claim about the user's knowledge must remain grounded in the supplied wiki context, " +
+      "and every answer must include markdown citations to the relevant wiki pages.";
+  }
 
   const userMessage: ChatMessage = {
     id: crypto.randomUUID(),
@@ -365,16 +470,18 @@ async function generateChatAnswer(
       backend = "hermes";
     } catch {
       if (!hasLLMKey()) throw new Error("Hermes is unavailable and no fallback LLM is configured.");
-      content = await callLLM(system, retrievalQuestion);
+      content = await callLLM(system, rawRetrievalQuestion);
     }
   } else {
     if (!hasLLMKey()) throw new Error("No LLM provider is configured.");
-    content = await callLLM(system, retrievalQuestion);
+    content = await callLLM(system, rawRetrievalQuestion);
   }
 
   return {
     content,
-    sources: extractCitedSlugs(content, entries.map((entry) => entry.slug)),
+    sources: conversation.retrievalMode === "sources"
+      ? extractRawCitedPageSlugs(content, rawChunks)
+      : extractCitedSlugs(content, entries.map((entry) => entry.slug)),
     backend,
   };
 }

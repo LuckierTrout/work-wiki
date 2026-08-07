@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { slugify } from "@/lib/slugify";
 import type { AgentProfile } from "@/lib/types";
@@ -71,6 +71,27 @@ function ErrorLine({ message }: { message: string }) {
   );
 }
 
+/**
+ * Render the same timestamp during SSR and the first client pass, then switch
+ * to the owner's local format once hydration has completed. This avoids the
+ * server/client timezone mismatch that otherwise triggers React error 418.
+ */
+function LocalDateTime({ value }: { value: string }) {
+  const [label, setLabel] = useState(() => {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? value
+      : date.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
+  });
+
+  useEffect(() => {
+    const date = new Date(value);
+    setLabel(Number.isNaN(date.getTime()) ? value : date.toLocaleString());
+  }, [value]);
+
+  return <time dateTime={value}>{label}</time>;
+}
+
 /** A single agent management card. */
 function AgentCard({
   handle,
@@ -96,6 +117,12 @@ function AgentCard({
   const [proposeMemory, setProposeMemory] = useState(
     (agent.allowedTools ?? []).includes("propose-memory"),
   );
+  const [requestInput, setRequestInput] = useState(
+    (agent.allowedTools ?? []).includes("request-input"),
+  );
+  const [runSandbox, setRunSandbox] = useState(
+    (agent.allowedTools ?? []).includes("run-sandbox"),
+  );
   const [approvalPolicy, setApprovalPolicy] = useState(
     agent.approvalPolicy ?? "proposal-only",
   );
@@ -112,7 +139,7 @@ function AgentCard({
     output: string;
     toolsUsed: string[];
     mode?: "execute" | "dry-run";
-    status?: "completed" | "failed";
+    status?: "completed" | "failed" | "awaiting-input";
     retrievedSlugs?: string[];
     proposedTaskIds?: string[];
     proposedMemoryIds?: string[];
@@ -121,6 +148,8 @@ function AgentCard({
     estimatedCostUsd?: number;
     durationMs?: number;
     error?: string;
+    workspaceId?: string;
+    interactionIds?: string[];
     createdAt: string;
   }>>([]);
   const [running, setRunning] = useState<"execute" | "dry-run" | null>(null);
@@ -145,6 +174,8 @@ function AgentCard({
             ...(searchWiki ? ["search-wiki"] : []),
             ...(proposeTasks ? ["propose-tasks"] : []),
             ...(proposeMemory ? ["propose-memory"] : []),
+            ...(requestInput ? ["request-input"] : []),
+            ...(runSandbox ? ["run-sandbox"] : []),
           ],
           approvalPolicy,
           maxSteps,
@@ -286,7 +317,7 @@ function AgentCard({
             )}
             {agent.lastRunAt && (
               <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>
-                last run {new Date(agent.lastRunAt).toLocaleString()}
+                last run <LocalDateTime value={agent.lastRunAt} />
               </span>
             )}
           </div>
@@ -385,6 +416,8 @@ function AgentCard({
               <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={searchWiki} onChange={(event) => setSearchWiki(event.target.checked)} />Search wiki</label>
               <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={proposeTasks} onChange={(event) => setProposeTasks(event.target.checked)} />Propose tasks</label>
               <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={proposeMemory} onChange={(event) => setProposeMemory(event.target.checked)} />Propose memory changes</label>
+              <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={requestInput} onChange={(event) => setRequestInput(event.target.checked)} />Request structured input</label>
+              <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={runSandbox} onChange={(event) => setRunSandbox(event.target.checked)} />Run isolated code</label>
             </div>
           </fieldset>
           <div className="grid sm:grid-cols-2" style={{ gap: 10 }}>
@@ -436,7 +469,7 @@ function AgentCard({
               <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                 <span className="receipt" style={{ fontSize: 9.5 }}>{entry.trigger}</span>
                 <span className="receipt" style={{ fontSize: 9.5, color: entry.status === "failed" ? "var(--rust)" : "var(--accent)" }}>{entry.mode ?? "execute"} · {entry.status ?? "completed"}</span>
-                <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>{new Date(entry.createdAt).toLocaleString()}</span>
+                <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}><LocalDateTime value={entry.createdAt} /></span>
                 {entry.toolsUsed.map((tool) => <span key={tool} className="receipt" style={{ fontSize: 9.5, color: "var(--accent)" }}>{tool}</span>)}
               </div>
               <p style={{ margin: "7px 0 0", fontSize: 13.5, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{entry.output}</p>
@@ -444,6 +477,8 @@ function AgentCard({
                 {entry.retrievedSlugs?.length ? <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>{entry.retrievedSlugs.length} pages retrieved</span> : null}
                 {entry.proposedTaskIds?.length ? <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>{entry.proposedTaskIds.length} task proposals</span> : null}
                 {entry.proposedMemoryIds?.length ? <Link href="/review" className="receipt" style={{ fontSize: 9.5, color: "var(--accent)" }}>{entry.proposedMemoryIds.length} memory proposals</Link> : null}
+                {entry.interactionIds?.length ? <a href="#agent-workspace" className="receipt" style={{ fontSize: 9.5, color: "var(--accent)" }}>input requested</a> : null}
+                {entry.workspaceId ? <a href="#agent-workspace" className="receipt" style={{ fontSize: 9.5, color: "var(--accent)" }}>run files</a> : null}
                 {entry.usage && <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>{entry.usage.totalTokens.toLocaleString()} tokens</span>}
                 {entry.estimatedCostUsd !== undefined && <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>${entry.estimatedCostUsd.toFixed(4)} est.</span>}
                 {entry.durationMs !== undefined && <span className="receipt" style={{ fontSize: 9.5, color: "var(--faint)" }}>{(entry.durationMs / 1000).toFixed(1)}s</span>}

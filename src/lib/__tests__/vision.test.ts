@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 vi.mock("../embeddings", () => ({ getWorkersAiBinding: vi.fn() }));
 vi.mock("../llm", () => ({ hasLLMKey: vi.fn(() => false), callVisionLLM: vi.fn() }));
@@ -6,6 +9,7 @@ vi.mock("../llm", () => ({ hasLLMKey: vi.fn(() => false), callVisionLLM: vi.fn()
 import { getWorkersAiBinding } from "../embeddings";
 import { hasLLMKey, callVisionLLM } from "../llm";
 import { describeImage } from "../vision";
+import { _resetStorage } from "../storage";
 
 const mockedBinding = vi.mocked(getWorkersAiBinding);
 const mockedHasLLMKey = vi.mocked(hasLLMKey);
@@ -95,5 +99,27 @@ describe("describeImage — Workers AI fallback", () => {
     expect(run.mock.calls[0][0]).toBe("@cf/custom/model");
     if (prev === undefined) delete process.env.VISION_MODEL;
     else process.env.VISION_MODEL = prev;
+  });
+
+  it("reuses an explicitly enabled content-addressed caption cache", async () => {
+    const previousDataDir = process.env.DATA_DIR;
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "vision-cache-"));
+    process.env.DATA_DIR = dataDir;
+    _resetStorage();
+    const run = vi.fn().mockResolvedValue({ description: "cached figure" });
+    bindingReturning(run);
+
+    try {
+      await expect(describeImage(bytes, { cache: true, mediaType: "image/png" }))
+        .resolves.toEqual({ text: "cached figure" });
+      await expect(describeImage(bytes, { cache: true, mediaType: "image/png" }))
+        .resolves.toEqual({ text: "cached figure" });
+      expect(run).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = previousDataDir;
+      _resetStorage();
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
   });
 });

@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
     const principal = await getPrincipal();
     if (!principal) {
       return NextResponse.json(
-        { error: "Sign in required to query yopedia." },
+        { error: "Sign in required to query WorkWiki." },
         { status: 401 },
       );
     }

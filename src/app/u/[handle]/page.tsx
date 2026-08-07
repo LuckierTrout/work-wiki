@@ -98,9 +98,9 @@ export default async function UserPage({
   return (
     <main
       style={{
-        maxWidth: 940,
+        maxWidth: 1180,
         margin: "0 auto",
-        padding: "56px 24px 88px",
+        padding: "56px 28px 88px",
       }}
     >
       <header style={{ marginBottom: 28 }}>

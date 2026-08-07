@@ -28,3 +28,15 @@ export function getRecentJobIds(): string[] {
     return [];
   }
 }
+
+/** Remove terminal job ids after the user clears them from Recent ingests. */
+export function forgetRecentJobs(jobIds: string[]): void {
+  if (typeof window === "undefined" || jobIds.length === 0) return;
+  try {
+    const forgotten = new Set(jobIds);
+    const remaining = getRecentJobIds().filter((id) => !forgotten.has(id));
+    window.localStorage.setItem(KEY, JSON.stringify(remaining));
+  } catch {
+    // localStorage unavailable — the server-side deletion still succeeded.
+  }
+}

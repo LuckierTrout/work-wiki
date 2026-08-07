@@ -3,6 +3,7 @@ import { withFileLock } from "./lock";
 import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
 import { stageAcceptedActionIntegrations } from "./integration-outbox";
+import { canonicalizeNamesTerm, listNamesTerms } from "./names-terms";
 
 export type ActionItemStatus =
   | "inbox"
@@ -96,6 +97,7 @@ export async function proposeActionItems(
 
   return withFileLock(lockKey(owner), async () => {
     const items = await readItems(owner);
+    const dictionary = await listNamesTerms(owner);
     const existing = new Set(items.map(dedupeKey));
     const created: ActionItem[] = [];
 
@@ -111,7 +113,13 @@ export async function proposeActionItems(
           ? { details: proposal.details.trim().slice(0, 2_000) }
           : {}),
         ...(proposal.assignee?.trim()
-          ? { assignee: proposal.assignee.trim().slice(0, 160) }
+          ? {
+              assignee: canonicalizeNamesTerm(
+                dictionary,
+                proposal.assignee.trim().slice(0, 160),
+                ["person", "organization"],
+              ),
+            }
           : {}),
         ...(proposal.dueDate?.trim() ? { dueDate: proposal.dueDate.trim() } : {}),
         priority: proposal.priority ?? "medium",
@@ -147,6 +155,7 @@ export async function updateActionItem(
 ): Promise<ActionItem | null> {
   return withFileLock(lockKey(owner), async () => {
     const items = await readItems(owner);
+    const dictionary = await listNamesTerms(owner);
     const item = items.find((candidate) => candidate.id === id);
     if (!item) return null;
 
@@ -160,7 +169,13 @@ export async function updateActionItem(
       else delete item.details;
     }
     if (patch.assignee !== undefined) {
-      if (patch.assignee.trim()) item.assignee = patch.assignee.trim().slice(0, 160);
+      if (patch.assignee.trim()) {
+        item.assignee = canonicalizeNamesTerm(
+          dictionary,
+          patch.assignee.trim().slice(0, 160),
+          ["person", "organization"],
+        );
+      }
       else delete item.assignee;
     }
     if (patch.dueDate !== undefined) {

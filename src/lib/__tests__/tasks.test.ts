@@ -8,7 +8,7 @@ vi.mock("@opennextjs/cloudflare", () => ({
   }),
 }));
 
-import { enqueueTask, parseTask } from "../tasks";
+import { enqueueTask, enqueueTasks, parseTask } from "../tasks";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 const mockGetCfContext = getCloudflareContext as ReturnType<typeof vi.fn>;
@@ -41,6 +41,31 @@ describe("enqueueTask", () => {
 
     expect(ok).toBe(true);
     expect(send).toHaveBeenCalledWith(task);
+  });
+});
+
+describe("enqueueTasks", () => {
+  it("reports an unavailable queue without claiming work was accepted", async () => {
+    await expect(enqueueTasks([
+      { kind: "extract-knowledge", slug: "notes", owner: "alice" },
+    ])).resolves.toEqual({ available: false, enqueued: 0 });
+  });
+
+  it("uses sendBatch and reports the accepted task count", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const sendBatch = vi.fn().mockResolvedValue(undefined);
+    mockGetCfContext.mockReturnValue({ env: { TASK_QUEUE: { send, sendBatch } } });
+    const tasks = [
+      { kind: "extract-knowledge" as const, slug: "notes", owner: "alice" },
+      { kind: "extract-knowledge" as const, slug: "decisions", owner: "alice" },
+    ];
+
+    await expect(enqueueTasks(tasks)).resolves.toEqual({
+      available: true,
+      enqueued: 2,
+    });
+    expect(sendBatch).toHaveBeenCalledWith(tasks.map((body) => ({ body })));
+    expect(send).not.toHaveBeenCalled();
   });
 });
 
@@ -77,6 +102,20 @@ describe("parseTask", () => {
     expect(parseTask({ kind: "monitor-source", monitorId: "mon_12345678", owner: "" })).toBeNull();
   });
 
+  it("accepts only owner-scoped monitor-digest delivery tasks", () => {
+    expect(parseTask({
+      kind: "deliver-monitor-digest",
+      digestId: "mdg_1234567890abcdef",
+      owner: "alice",
+    })).toEqual({
+      kind: "deliver-monitor-digest",
+      digestId: "mdg_1234567890abcdef",
+      owner: "alice",
+    });
+    expect(parseTask({ kind: "deliver-monitor-digest", digestId: "mdg_bad", owner: "alice" })).toBeNull();
+    expect(parseTask({ kind: "deliver-monitor-digest", digestId: "mdg_1234567890abcdef", owner: "" })).toBeNull();
+  });
+
   it("accepts owner-scoped structured-knowledge extraction tasks", () => {
     expect(parseTask({ kind: "extract-knowledge", slug: "notes", owner: "alice" })).toEqual({
       kind: "extract-knowledge",
@@ -84,6 +123,24 @@ describe("parseTask", () => {
       owner: "alice",
     });
     expect(parseTask({ kind: "extract-knowledge", slug: "", owner: "alice" })).toBeNull();
+    const graphifyJobId = "graphify_12345678-1234-1234-1234-123456789abc";
+    expect(parseTask({
+      kind: "extract-knowledge",
+      slug: "notes",
+      owner: "alice",
+      graphifyJobId,
+    })).toEqual({
+      kind: "extract-knowledge",
+      slug: "notes",
+      owner: "alice",
+      graphifyJobId,
+    });
+    expect(parseTask({
+      kind: "extract-knowledge",
+      slug: "notes",
+      owner: "alice",
+      graphifyJobId: "../../bad",
+    })).toBeNull();
   });
 
   it("accepts only valid integration-delivery tasks", () => {

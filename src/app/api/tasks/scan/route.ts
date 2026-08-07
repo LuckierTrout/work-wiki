@@ -11,6 +11,12 @@ import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { listDueScheduledAgents } from "@/lib/agent-runtime";
 import { listDueSourceMonitors } from "@/lib/source-monitors";
+import {
+  createMonitorDigest,
+  listDueMonitorDigestOwners,
+  listPendingMonitorDigestDeliveries,
+  markMonitorDigestQueued,
+} from "@/lib/monitor-digests";
 import { listDueOutboxEvents } from "@/lib/integration-outbox";
 import { isOwnerBackupDue } from "@/lib/backups";
 
@@ -90,6 +96,32 @@ export async function POST(req: Request) {
       }
     }
 
+    const digestNow = new Date();
+    const dueDigestOwners = await listDueMonitorDigestOwners(digestNow, 25);
+    let monitorDigestsGenerated = 0;
+    if (!forceDry) {
+      for (const owner of dueDigestOwners) {
+        if (await createMonitorDigest(owner, { now: digestNow })) {
+          monitorDigestsGenerated += 1;
+        }
+      }
+    }
+
+    const pendingDigests = await listPendingMonitorDigestDeliveries(digestNow, 50);
+    let monitorDigestDeliveriesEnqueued = 0;
+    if (!forceDry) {
+      for (const digest of pendingDigests) {
+        if (await enqueueTask({
+          kind: "deliver-monitor-digest",
+          digestId: digest.id,
+          owner: digest.owner,
+        })) {
+          await markMonitorDigestQueued(digest.owner, digest.id, digestNow);
+          monitorDigestDeliveriesEnqueued += 1;
+        }
+      }
+    }
+
     const dueOutbox = await listDueOutboxEvents(new Date(), 50);
     let outboxDeliveriesEnqueued = 0;
     if (!forceDry) {
@@ -127,6 +159,10 @@ export async function POST(req: Request) {
       scheduledAgentsEnqueued,
       sourceMonitorsDue: dueMonitors.length,
       sourceMonitorsEnqueued,
+      monitorDigestOwnersDue: dueDigestOwners.length,
+      monitorDigestsGenerated,
+      monitorDigestDeliveriesDue: pendingDigests.length,
+      monitorDigestDeliveriesEnqueued,
       outboxDue: dueOutbox.length,
       outboxDeliveriesEnqueued,
       backupOwnerConfigured: Boolean(backupOwner),

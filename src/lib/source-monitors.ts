@@ -6,6 +6,8 @@ import { parseFrontmatter, serializeFrontmatter } from "./frontmatter";
 import { getConfiguredModel } from "./llm";
 import { withFileLock } from "./lock";
 import { createMemoryChangeProposal } from "./memory-proposals";
+import { buildNamesTermsGuidance } from "./names-terms";
+import { buildWorkspaceGuidance } from "./workspace-profile";
 import { getStorage } from "./storage";
 import {
   buildClaimEvidence,
@@ -165,6 +167,16 @@ async function readOwnerIndex(owner: string): Promise<string[]> {
 async function readGlobalIndex(): Promise<SourceMonitorSummary[]> {
   const value = await getStorage().getIndex<SourceMonitorSummary[]>(INDEX_KEY);
   return Array.isArray(value) ? value : [];
+}
+
+/** Discover owners with monitor state without exposing individual monitor data. */
+export async function listSourceMonitorOwners(): Promise<string[]> {
+  const owners = new Map<string, string>();
+  for (const monitor of await readGlobalIndex()) {
+    const tenant = ownerTenant(monitor.owner);
+    if (!owners.has(tenant)) owners.set(tenant, monitor.owner);
+  }
+  return [...owners.values()].sort((a, b) => a.localeCompare(b));
 }
 
 async function persistMonitor(monitor: SourceMonitor): Promise<void> {
@@ -370,11 +382,17 @@ async function defaultDraftUpdate(input: {
 }): Promise<string> {
   const parsed = parseFrontmatter(input.currentContent);
   const model = await getConfiguredModel();
+  const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
+    buildWorkspaceGuidance(input.monitor.owner),
+    buildNamesTermsGuidance(input.monitor.owner),
+  ]);
   const { text } = await generateText({
     model,
     maxOutputTokens: 6_000,
     system:
-      "You revise a private knowledge page from a newly changed source. Return only the complete revised Markdown body, without YAML frontmatter or code fences. Preserve still-valid material, update only claims supported by the supplied source, identify unresolved conflicts plainly, and never invent facts.",
+      "You revise a private knowledge page from a newly changed source. Return only the complete revised Markdown body, without YAML frontmatter or code fences. Preserve still-valid material, update only claims supported by the supplied source, identify unresolved conflicts plainly, and never invent facts." +
+      (workspaceGuidance ? `\n\n${workspaceGuidance}` : "") +
+      (dictionaryGuidance ? `\n\n${dictionaryGuidance}` : ""),
     prompt:
       `Source URL: ${input.monitor.url}\nSource title: ${input.sourceTitle}\n\n` +
       `CURRENT PAGE BODY:\n${parsed.body.slice(0, 40_000)}\n\n` +
@@ -481,7 +499,7 @@ export async function runSourceMonitor(
         targetSlug: monitor.targetSlug,
         title: `Update ${monitor.name}`,
         summary: `A monitored source changed (${Math.round(score * 100)}% semantic token difference).`,
-        reason: `Yopedia detected a meaningful change at ${monitor.url}. Review the proposed revision against the stored excerpt before accepting it.`,
+        reason: `WorkWiki detected a meaningful change at ${monitor.url}. Review the proposed revision against the stored excerpt before accepting it.`,
         proposedContent,
         evidenceIds: [anchor.id],
         actor: `${owner}--source-monitor`,

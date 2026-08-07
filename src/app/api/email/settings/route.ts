@@ -129,7 +129,7 @@ export async function PUT(request: Request) {
       const vault = await getVault(destinationVaultId);
       if (!vault || !vaultOwnedBy(destinationVaultId, principal.handle)) {
         return NextResponse.json(
-          { error: "Choose a vault owned by this Yopedia account" },
+          { error: "Choose a vault owned by this WorkWiki account" },
           { status: 400 },
         );
       }
@@ -138,7 +138,7 @@ export async function PUT(request: Request) {
       const agent = await getAgent(destinationAgentId).catch(() => null);
       if (!agent || agent.owner?.toLowerCase() !== principal.handle.toLowerCase()) {
         return NextResponse.json(
-          { error: "Choose an agent owned by this Yopedia account" },
+          { error: "Choose an agent owned by this WorkWiki account" },
           { status: 400 },
         );
       }

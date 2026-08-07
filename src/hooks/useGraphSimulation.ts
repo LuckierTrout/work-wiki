@@ -133,8 +133,9 @@ export function useGraphSimulation(
 
           // Community detection
           const nodeIds = raw.nodes.map((n) => n.id);
-          const edgePairs: [string, string][] = (raw.edges ?? []).map(
-            (e: GraphEdge) => [e.source, e.target] as [string, string],
+          const edgePairs: [string, string, number?][] = (raw.edges ?? []).map(
+            (e: GraphEdge & { weight?: number }) =>
+              [e.source, e.target, e.weight] as [string, string, number?],
           );
           const { clusters, count } = detectCommunities({
             nodes: nodeIds,

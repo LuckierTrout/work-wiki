@@ -26,9 +26,16 @@ export async function POST(request: Request, { params }: RouteContext) {
     );
   } catch (error) {
     const message = getErrorMessage(error);
+    const status = /not found/i.test(message)
+      ? 404
+      : /cannot be empty/i.test(message)
+        ? 400
+        : /no original source material|no readable pages/i.test(message)
+          ? 422
+          : 500;
     return NextResponse.json(
       { error: message },
-      { status: /not found/i.test(message) ? 404 : /cannot be empty/i.test(message) ? 400 : 500 },
+      { status },
     );
   }
 }

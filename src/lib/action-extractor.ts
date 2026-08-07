@@ -2,7 +2,13 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import { proposeActionItems, type ActionItem } from "./action-items";
 import { getConfiguredModel, hasLLMKey, retryWithBackoff } from "./llm";
+import {
+  canonicalizeNamesTerm,
+  listNamesTerms,
+  renderNamesTermsGuidance,
+} from "./names-terms";
 import { readWikiPageWithFrontmatter } from "./wiki";
+import { buildWorkspaceGuidance } from "./workspace-profile";
 
 const actionExtractionSchema = z.object({
   actions: z.array(
@@ -32,6 +38,9 @@ export async function extractActionsFromPage(
   if (!page) throw new Error(`Page "${slug}" not found`);
 
   const model = await getConfiguredModel();
+  const dictionary = await listNamesTerms(owner);
+  const dictionaryGuidance = renderNamesTermsGuidance(dictionary);
+  const workspaceGuidance = await buildWorkspaceGuidance(owner);
   const { output } = await retryWithBackoff(() =>
     generateText({
       model,
@@ -41,7 +50,9 @@ export async function extractActionsFromPage(
         "Return only concrete tasks that someone is asked, expected, or committed to do. " +
         "Do not turn observations, aspirations, reference material, or generic advice into tasks. " +
         "Preserve named assignees and explicit dates. If a date is relative, leave it verbatim. " +
-        "The source excerpt must be a short exact-or-close passage supporting the task.",
+        "The source excerpt must be a short exact-or-close passage supporting the task." +
+        (workspaceGuidance ? `\n\n${workspaceGuidance}` : "") +
+        (dictionaryGuidance ? `\n\n${dictionaryGuidance}` : ""),
       prompt: `Source page: ${page.title} (${slug}.md)\n\n${page.content.slice(0, 80_000)}`,
       maxOutputTokens: 2_500,
     }),
@@ -51,6 +62,15 @@ export async function extractActionsFromPage(
     owner,
     output.actions.map((action) => ({
       ...action,
+      ...(action.assignee
+        ? {
+            assignee: canonicalizeNamesTerm(
+              dictionary,
+              action.assignee,
+              ["person", "organization"],
+            ),
+          }
+        : {}),
       sourceSlug: slug,
     })),
   );

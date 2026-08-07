@@ -32,6 +32,17 @@ vi.mock("@/lib/vault", () => ({
 vi.mock("@/lib/document-sources", () => ({
   preserveDocumentSources: vi.fn(async () => []),
 }));
+vi.mock("@/lib/structured-knowledge", () => ({
+  extractStructuredKnowledge: vi.fn(),
+}));
+vi.mock("@/lib/graphify-jobs", () => ({
+  completeGraphifyPage: vi.fn(async () => ({})),
+  failGraphifyPages: vi.fn(async () => ({})),
+  startGraphifyPage: vi.fn(async () => ({ job: {}, shouldRun: true })),
+}));
+vi.mock("@/lib/monitor-digests", () => ({
+  deliverMonitorDigest: vi.fn(),
+}));
 
 import { getServicePrincipal } from "@/lib/auth";
 import { reconcileFromTalk } from "@/lib/reconcile";
@@ -40,6 +51,13 @@ import { fixLintIssue } from "@/lib/lint-fix";
 import { getIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
 import { readStagedBytes, readStagedText, deleteStaged } from "@/lib/ingest-staging";
 import { preserveDocumentSources } from "@/lib/document-sources";
+import { extractStructuredKnowledge } from "@/lib/structured-knowledge";
+import {
+  completeGraphifyPage,
+  failGraphifyPages,
+  startGraphifyPage,
+} from "@/lib/graphify-jobs";
+import { deliverMonitorDigest } from "@/lib/monitor-digests";
 
 const mockedGetService = vi.mocked(getServicePrincipal);
 const mockedReconcile = vi.mocked(reconcileFromTalk);
@@ -56,6 +74,11 @@ const mockedReadStagedBytes = vi.mocked(readStagedBytes);
 const mockedReadStagedText = vi.mocked(readStagedText);
 const mockedDeleteStaged = vi.mocked(deleteStaged);
 const mockedPreserveDocuments = vi.mocked(preserveDocumentSources);
+const mockedExtractKnowledge = vi.mocked(extractStructuredKnowledge);
+const mockedCompleteGraphify = vi.mocked(completeGraphifyPage);
+const mockedFailGraphify = vi.mocked(failGraphifyPages);
+const mockedStartGraphify = vi.mocked(startGraphifyPage);
+const mockedDeliverMonitorDigest = vi.mocked(deliverMonitorDigest);
 
 import { addToVault } from "@/lib/vault";
 const mockedAddToVault = vi.mocked(addToVault);
@@ -63,12 +86,12 @@ const mockedAddToVault = vi.mocked(addToVault);
 import { addAgentLearningPage } from "@/lib/agents";
 const mockedAddLearning = vi.mocked(addAgentLearningPage);
 
-async function run(body: unknown) {
+async function run(body: unknown, headers?: Record<string, string>) {
   const { POST } = await import("@/app/api/tasks/run/route");
   return POST(
     new Request("http://localhost/api/tasks/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
     }),
   );
@@ -77,6 +100,22 @@ async function run(body: unknown) {
 beforeEach(() => {
   vi.clearAllMocks();
   mockedGetJob.mockResolvedValue(null);
+  mockedExtractKnowledge.mockReset();
+  mockedStartGraphify.mockReset();
+  mockedStartGraphify.mockResolvedValue({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    job: {} as any,
+    shouldRun: true,
+  });
+  mockedCompleteGraphify.mockReset();
+  mockedCompleteGraphify.mockResolvedValue({} as never);
+  mockedFailGraphify.mockReset();
+  mockedFailGraphify.mockResolvedValue({} as never);
+  mockedDeliverMonitorDigest.mockResolvedValue({
+    id: "mdg_1234567890abcdef",
+    owner: "alice",
+    email: { status: "sent", attempts: 1 },
+  } as never);
   // Default: authenticated as the service principal.
   mockedGetService.mockReturnValue({ id: "service:yopedia", handle: "yopedia" });
 });
@@ -93,6 +132,74 @@ describe("POST /api/tasks/run", () => {
     const res = await run({ kind: "bogus" });
     expect(res.status).toBe(400);
     expect(mockedReconcile).not.toHaveBeenCalled();
+  });
+
+  it("dispatches a persisted monitor digest for queued email delivery", async () => {
+    const res = await run({
+      kind: "deliver-monitor-digest",
+      digestId: "mdg_1234567890abcdef",
+      owner: "alice",
+    });
+    expect(res.status).toBe(200);
+    expect(mockedDeliverMonitorDigest).toHaveBeenCalledWith(
+      "alice",
+      "mdg_1234567890abcdef",
+    );
+  });
+
+  it("advances a tracked Graphify page and avoids replaying completed work", async () => {
+    const graphifyJobId = "graphify_12345678-1234-1234-1234-123456789abc";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedExtractKnowledge.mockResolvedValue({ records: [], relations: [] } as any);
+    const task = {
+      kind: "extract-knowledge",
+      slug: "notes",
+      owner: "alice",
+      graphifyJobId,
+    };
+
+    const completed = await run(task, { "X-Yopedia-Queue-Attempt": "1" });
+    expect(completed.status).toBe(200);
+    expect(mockedStartGraphify).toHaveBeenCalledWith("alice", graphifyJobId, "notes");
+    expect(mockedExtractKnowledge).toHaveBeenCalledWith("alice", "notes");
+    expect(mockedCompleteGraphify).toHaveBeenCalledWith("alice", graphifyJobId, "notes");
+
+    vi.clearAllMocks();
+    mockedGetService.mockReturnValue({ id: "service:yopedia", handle: "yopedia" });
+    mockedStartGraphify.mockResolvedValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      job: {} as any,
+      shouldRun: false,
+    });
+    const replay = await run(task, { "X-Yopedia-Queue-Attempt": "2" });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ replayed: true });
+    expect(mockedExtractKnowledge).not.toHaveBeenCalled();
+    expect(mockedCompleteGraphify).not.toHaveBeenCalled();
+  });
+
+  it("records a Graphify failure only on the final queue delivery", async () => {
+    const graphifyJobId = "graphify_12345678-1234-1234-1234-123456789abc";
+    mockedExtractKnowledge.mockRejectedValue(new Error("provider unavailable"));
+    const task = {
+      kind: "extract-knowledge",
+      slug: "notes",
+      owner: "alice",
+      graphifyJobId,
+    };
+
+    const transient = await run(task, { "X-Yopedia-Queue-Attempt": "1" });
+    expect(transient.status).toBe(500);
+    expect(mockedFailGraphify).not.toHaveBeenCalled();
+
+    const terminal = await run(task, { "X-Yopedia-Queue-Attempt": "4" });
+    expect(terminal.status).toBe(500);
+    expect(mockedFailGraphify).toHaveBeenCalledWith(
+      "alice",
+      graphifyJobId,
+      ["notes"],
+      "provider unavailable",
+    );
   });
 
   it("dispatches a reconcile task, attributing to the requester's yoyo", async () => {
@@ -476,9 +583,13 @@ describe("POST /api/tasks/run", () => {
       jobId: "job-1",
     });
     expect(res.status).toBe(200);
-    expect(mockedUpdateJob).toHaveBeenNthCalledWith(1, "job-1", { status: "processing" });
-    expect(mockedUpdateJob).toHaveBeenNthCalledWith(2, "job-1", {
+    expect(mockedUpdateJob).toHaveBeenNthCalledWith(1, "job-1", {
+      status: "processing",
+      stage: "extracting",
+    });
+    expect(mockedUpdateJob).toHaveBeenCalledWith("job-1", {
       status: "done",
+      stage: "complete",
       slug: "made",
     });
   });
@@ -492,8 +603,11 @@ describe("POST /api/tasks/run", () => {
       jobId: "job-2",
     });
     expect(res.status).toBe(500); // transient → retry
-    expect(mockedUpdateJob).toHaveBeenNthCalledWith(1, "job-2", { status: "processing" });
-    expect(mockedUpdateJob).toHaveBeenNthCalledWith(2, "job-2", {
+    expect(mockedUpdateJob).toHaveBeenNthCalledWith(1, "job-2", {
+      status: "processing",
+      stage: "extracting",
+    });
+    expect(mockedUpdateJob).toHaveBeenCalledWith("job-2", {
       status: "failed",
       error: "LLM timeout",
     });

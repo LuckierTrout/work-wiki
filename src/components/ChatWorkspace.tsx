@@ -1,10 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert } from "@/components/Alert";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
-import type { ChatConversation, ChatMessage } from "@/lib/chat";
+import type {
+  ChatConversation,
+  ChatContextBudget,
+  ChatMessage,
+  ChatRetrievalMode,
+} from "@/lib/chat";
 
 interface ScopeOption {
   value: string;
@@ -21,8 +26,10 @@ export function ChatWorkspace() {
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [active, setActive] = useState<ChatConversation | null>(null);
   const [scope, setScope] = useState("");
+  const [retrievalMode, setRetrievalMode] = useState<ChatRetrievalMode>("wiki");
+  const [contextBudget, setContextBudget] = useState<ChatContextBudget>("standard");
   const [scopeOptions, setScopeOptions] = useState<ScopeOption[]>([
-    { value: "", label: "Public knowledge" },
+    { value: "", label: "All knowledge" },
     { value: "mine", label: "My pages" },
   ]);
   const [draft, setDraft] = useState("");
@@ -43,7 +50,7 @@ export function ChatWorkspace() {
       if (cancelled) return;
       setConversations(conversationData.conversations);
       setScopeOptions([
-        { value: "", label: "Public knowledge" },
+        { value: "", label: "All knowledge" },
         { value: "mine", label: "My pages" },
         ...(vaultData.vaults ?? []).map((vault) => ({ value: `vault:${vault.id}`, label: `Vault · ${vault.name}` })),
         ...(agentData.agents ?? []).map((agent) => ({ value: `agent:${agent.id}`, label: `Agent · ${agent.name}` })),
@@ -67,6 +74,8 @@ export function ChatWorkspace() {
       );
       setActive(data.conversation);
       setScope(data.conversation.scope ?? "");
+      setRetrievalMode(data.conversation.retrievalMode ?? "wiki");
+      setContextBudget(data.conversation.contextBudget ?? "standard");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not open conversation.");
     }
@@ -77,7 +86,7 @@ export function ChatWorkspace() {
       await fetch("/api/chat/conversations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope }),
+        body: JSON.stringify({ scope, retrievalMode, contextBudget }),
       }),
     );
     setConversations((current) => [data.conversation, ...current]);
@@ -134,8 +143,59 @@ export function ChatWorkspace() {
         }),
       );
       setActive(data.conversation);
+      setConversations((current) => current.map((item) =>
+        item.id === data.conversation.id
+          ? { ...data.conversation, messages: [] }
+          : item,
+      ));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Scope could not be changed.");
+    }
+  }
+
+  async function changeRetrievalMode(value: ChatRetrievalMode) {
+    setRetrievalMode(value);
+    if (!active) return;
+    try {
+      const data = await json<{ conversation: ChatConversation }>(
+        await fetch(`/api/chat/conversations/${active.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ retrievalMode: value }),
+        }),
+      );
+      setActive(data.conversation);
+      setConversations((current) => current.map((item) =>
+        item.id === data.conversation.id
+          ? { ...data.conversation, messages: [] }
+          : item,
+      ));
+    } catch (reason) {
+      setRetrievalMode(active.retrievalMode ?? "wiki");
+      setError(reason instanceof Error ? reason.message : "Evidence mode could not be changed.");
+    }
+  }
+
+  async function changeContextBudget(value: ChatContextBudget) {
+    setContextBudget(value);
+    if (!active) return;
+    try {
+      const data = await json<{ conversation: ChatConversation }>(
+        await fetch(`/api/chat/conversations/${active.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contextBudget: value }),
+        }),
+      );
+      setActive(data.conversation);
+      setConversations((current) => current.map((item) =>
+        item.id === data.conversation.id
+          ? { ...data.conversation, messages: [] }
+          : item,
+      ));
+    } catch (reason) {
+      setContextBudget(active.contextBudget ?? "standard");
+      setError(reason instanceof Error ? reason.message : "Context size could not be changed.");
     }
   }
 
@@ -170,10 +230,8 @@ export function ChatWorkspace() {
     }
   }
 
-  const currentScopeLabel = useMemo(
-    () => scopeOptions.find((option) => option.value === scope)?.label ?? "Custom scope",
-    [scope, scopeOptions],
-  );
+  const currentScopeLabel =
+    scopeOptions.find((option) => option.value === scope)?.label ?? "Custom scope";
 
   return (
     <main className="shell fade" style={{ paddingTop: 46, paddingBottom: 88 }}>
@@ -190,7 +248,7 @@ export function ChatWorkspace() {
             )}
           </div>
         </div>
-        <button className="btn primary" type="button" onClick={() => { setActive(null); setScope(""); setDraft(""); }}>
+        <button className="btn primary" type="button" onClick={() => { setActive(null); setScope(""); setRetrievalMode("wiki"); setContextBudget("standard"); setDraft(""); }}>
           New conversation
         </button>
       </div>
@@ -225,7 +283,9 @@ export function ChatWorkspace() {
                   }}
                 >
                   <span style={{ display: "block", fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{conversation.title}</span>
-                  <span className="receipt" style={{ color: "var(--faint)", fontSize: 9.5 }}>{conversation.scope || "public"}</span>
+                  <span className="receipt" style={{ color: "var(--faint)", fontSize: 9.5 }}>
+                    {conversation.scope || "all knowledge"} · {conversation.retrievalMode === "sources" ? "originals" : "wiki"}
+                  </span>
                 </button>
               ))}
             </div>
@@ -233,13 +293,30 @@ export function ChatWorkspace() {
         </aside>
 
         <section style={{ minHeight: 590, border: "1px solid var(--rule)", borderRadius: 16, background: "var(--paper)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <div className="spread" style={{ padding: "12px 14px", borderBottom: "1px solid var(--rule)", gap: 12 }}>
-            <label className="row" style={{ gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
-              Search
-              <select value={scope} onChange={(event) => void changeScope(event.target.value)} disabled={sending} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
-                {scopeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
-            </label>
+          <div className="spread" style={{ padding: "12px 14px", borderBottom: "1px solid var(--rule)", gap: 12, flexWrap: "wrap" }}>
+            <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+              <label className="row" style={{ gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
+                Search
+                <select value={scope} onChange={(event) => void changeScope(event.target.value)} disabled={sending} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
+                  {scopeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+              <label className="row" style={{ gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
+                Evidence
+                <select value={retrievalMode} onChange={(event) => void changeRetrievalMode(event.target.value as ChatRetrievalMode)} disabled={sending} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
+                  <option value="wiki">Wiki pages</option>
+                  <option value="sources">Original sources only</option>
+                </select>
+              </label>
+              <label className="row" style={{ gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
+                Context
+                <select value={contextBudget} onChange={(event) => void changeContextBudget(event.target.value as ChatContextBudget)} disabled={sending} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
+                  <option value="compact">Compact · 4 pages</option>
+                  <option value="standard">Standard · 8 pages</option>
+                  <option value="expanded">Expanded · 12 pages</option>
+                </select>
+              </label>
+            </div>
             {active && <button className="btn ghost" type="button" onClick={() => void removeConversation()} style={{ color: "var(--rust)" }}>Delete</button>}
           </div>
 
@@ -247,14 +324,18 @@ export function ChatWorkspace() {
             {!active?.messages.length ? (
               <div style={{ maxWidth: 540, margin: "74px auto", textAlign: "center" }}>
                 <p className="display" style={{ fontSize: 27, margin: 0 }}>Start with what you need to know.</p>
-                <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>{currentScopeLabel} will be searched. Answers link back to the pages they use.</p>
+                <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>
+                  {currentScopeLabel} will be searched. {retrievalMode === "sources"
+                    ? "Answers use original snapshots only and cite exact source lines."
+                    : "Answers link back to the wiki pages they use."}
+                </p>
               </div>
             ) : (
               <div className="stack" style={{ gap: 22 }}>
                 {active.messages.map((message) => (
                   <article key={message.id} style={{ marginLeft: message.role === "user" ? "auto" : 0, maxWidth: message.role === "user" ? "78%" : "100%" }}>
                     <p className="receipt" style={{ fontSize: 9.5, color: "var(--faint)", margin: "0 0 6px" }}>
-                      {message.role === "user" ? "You" : message.backend === "hermes" ? "Yopedia · Hermes" : "Yopedia"}
+                      {message.role === "user" ? "You" : message.backend === "hermes" ? "WorkWiki · Hermes" : "WorkWiki"}
                     </p>
                     <div style={{ background: message.role === "user" ? "var(--paper-3)" : "transparent", border: message.role === "user" ? "1px solid var(--rule)" : 0, borderRadius: 14, padding: message.role === "user" ? "11px 14px" : 0 }}>
                       {message.role === "assistant" ? <MarkdownRenderer content={message.content} /> : <p style={{ margin: 0, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{message.content}</p>}
@@ -267,7 +348,11 @@ export function ChatWorkspace() {
                     )}
                   </article>
                 ))}
-                {sending && <p className="receipt" style={{ color: "var(--muted)" }}>Searching pages and composing…</p>}
+                {sending && (
+                  <p className="receipt" style={{ color: "var(--muted)" }}>
+                    {retrievalMode === "sources" ? "Reading original snapshots and composing…" : "Searching pages and composing…"}
+                  </p>
+                )}
               </div>
             )}
           </div>

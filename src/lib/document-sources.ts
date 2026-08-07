@@ -13,6 +13,8 @@ export interface DocumentSourceInput {
   bytes: ArrayBuffer;
   filename: string;
   contentType?: string;
+  /** Browser-supplied path from a directory upload (for example, `Q1/notes.docx`). */
+  relativePath?: string;
   extracted: ExtractedDocument;
 }
 
@@ -24,6 +26,8 @@ export interface StoredDocumentSource {
   size: number;
   originalKey: string;
   storedAt: string;
+  /** Original directory-upload path. Absent for single files and legacy records. */
+  relativePath?: string;
   assets: Array<{
     filename: string;
     mediaType: string;
@@ -54,6 +58,23 @@ async function sha256(bytes: ArrayBuffer): Promise<string> {
 
 function recordIndexKey(owner: string, slug: string): string {
   return `document-sources:${tenantForOwner(owner)}:${slug}`;
+}
+
+/**
+ * Read the preserved upload records for one owner-owned page. The index is
+ * deliberately owner-scoped: callers must already know whose source store they
+ * are allowed to inspect. Missing and legacy indexes are an ordinary empty
+ * state, while storage failures still surface to the route/page error boundary.
+ */
+export async function listDocumentSources(
+  slug: string,
+  owner: string,
+): Promise<StoredDocumentSource[]> {
+  validateSlug(slug);
+  const records = await getStorage().getIndex<StoredDocumentSource[]>(
+    recordIndexKey(owner, slug),
+  );
+  return Array.isArray(records) ? records : [];
 }
 
 function pageSummary(body: string, fallback: string): string {
@@ -157,6 +178,7 @@ export async function preserveDocumentSources(
       size: source.bytes.byteLength,
       originalKey,
       storedAt: new Date().toISOString(),
+      ...(source.relativePath ? { relativePath: source.relativePath } : {}),
       assets,
     });
   }

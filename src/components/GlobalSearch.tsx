@@ -70,8 +70,8 @@ export function GlobalSearch() {
             onChange={(e) => handleInputChange(e.target.value)}
             onFocus={handleInputFocus}
             onKeyDown={handleKeyDown}
-            placeholder="Search… ( / )"
-            className="w-40 lg:w-56 rounded-md border border-foreground/10 bg-foreground/5 py-1 pl-7 pr-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-foreground/30 focus:outline-none focus:ring-1 focus:ring-foreground/20 transition-colors"
+            placeholder="SEARCH THE WIKI"
+            className="h-9 w-[190px] rounded-full border border-rule bg-paper-2 py-1 pl-8 pr-3 font-mono text-[10px] tracking-[0.08em] text-ink placeholder:text-faint focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent transition-colors"
             aria-label="Search wiki pages"
             aria-expanded={showDropdown}
             aria-haspopup="listbox"

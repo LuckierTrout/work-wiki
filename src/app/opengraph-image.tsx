@@ -1,20 +1,19 @@
 import { ImageResponse } from "next/og";
+import { APP_NAME, APP_TITLE } from "@/lib/brand";
 
 // Rendered at build time and served as a static asset (no Workers runtime
 // dependency on next/og). Update copy here, not in a committed PNG.
 export const dynamic = "force-static";
 
-export const alt =
-  "yopedia — a shared second brain for humans and agents. Not RAG — it accumulates.";
+export const alt = `${APP_TITLE}. Not RAG — it accumulates.`;
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
-// The living-page mark (design 4c), dark-tile variant: lightened blue front
-// page (#8fa2ff) over a #635e51-ruled back page — inline so the OG image is
-// self-contained. Same construction as src/app/icon.svg, scaled up.
+// Inline so the social card remains self-contained.
 const MARK = `<svg width="88" height="88" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
-  <rect x="7" y="8" width="13" height="17" rx="2.5" transform="rotate(-6 13.5 16.5)" fill="none" stroke="#635e51" stroke-width="1.2"/>
-  <rect x="13" y="7" width="13" height="17" rx="2.5" transform="rotate(4 19.5 15.5)" fill="#8fa2ff"/>
+  <path d="M6.5 2.5h12l7 7v20h-19z" fill="#84aed6" stroke="#84aed6" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M18.5 2.5v7h7" fill="#17273a" stroke="#0f2235" stroke-width="1.25" stroke-linejoin="round"/>
+  <path d="m10 13 2.2 10 3.8-7.1 3.8 7.1L22 13" fill="none" stroke="#0f2235" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`;
 const MARK_URI = `data:image/svg+xml,${encodeURIComponent(MARK)}`;
 
@@ -36,7 +35,7 @@ export default function OpengraphImage() {
         <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
           <img src={MARK_URI} width={88} height={88} alt="" />
           <div style={{ fontSize: 44, fontWeight: 600, letterSpacing: -1.3 }}>
-            yopedia
+            {APP_NAME}
           </div>
         </div>
 
@@ -64,7 +63,7 @@ export default function OpengraphImage() {
 
         <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 24 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 14, height: 14, borderRadius: 7, background: "#8fa2ff" }} />
+            <div style={{ width: 14, height: 14, borderRadius: 7, background: "#84aed6" }} />
             <span style={{ color: "#c7c2b4" }}>humans</span>
           </div>
           <span style={{ color: "#635e51" }}>+</span>

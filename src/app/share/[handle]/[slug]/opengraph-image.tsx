@@ -5,12 +5,13 @@ import { readWikiPageWithFrontmatter, tenantForOwner } from "@/lib/wiki";
 import { canReadFrontmatter } from "@/lib/authz";
 import { str } from "@/lib/share-url";
 import { logger } from "@/lib/logger";
+import { APP_NAME, APP_ORIGIN } from "@/lib/brand";
 
 // Per-page OG card. Rendered at REQUEST time (a slug is created after build, so
 // it can't be force-static) — verified to run on the Worker runtime.
 export const dynamic = "force-dynamic";
 
-export const alt = "A yopedia page";
+export const alt = `A ${APP_NAME} page`;
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -19,18 +20,14 @@ export const contentType = "image/png";
 // header for this: it's client-controlled, so a spoofed Host would aim the font
 // subrequest at an arbitrary origin and feed those bytes to Satori. localhost is
 // allowed only so local `wrangler dev` can serve the font.
-const SITE_ORIGIN = "https://yopedia.yolog.dev";
+const SITE_ORIGIN = APP_ORIGIN;
 
 // The node-constellation mark, inline so the image is self-contained (mirrors
 // the root opengraph-image).
-const MARK = `<svg width="120" height="120" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-  <g stroke="#b8b2a4" stroke-width="1.4" stroke-linecap="round" opacity="0.6">
-    <line x1="5" y1="8" x2="12" y2="5"/><line x1="12" y1="5" x2="19" y2="10"/>
-    <line x1="12" y1="5" x2="13" y2="18"/><line x1="5" y1="8" x2="13" y2="18"/>
-    <line x1="13" y1="18" x2="19" y2="10"/>
-  </g>
-  <circle cx="5" cy="8" r="2" fill="#cfc8b8"/><circle cx="19" cy="10" r="2" fill="#cfc8b8"/>
-  <circle cx="13" cy="18" r="2" fill="#cfc8b8"/><circle cx="12" cy="5" r="2.7" fill="#4d6bfe"/>
+const MARK = `<svg width="120" height="120" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+  <path d="M6.5 2.5h12l7 7v20h-19z" fill="#1e3a5f" stroke="#1e3a5f" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M18.5 2.5v7h7" fill="#edf2f7" stroke="#fff" stroke-width="1.25" stroke-linejoin="round"/>
+  <path d="m10 13 2.2 10 3.8-7.1 3.8 7.1L22 13" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`;
 const MARK_URI = `data:image/svg+xml,${encodeURIComponent(MARK)}`;
 
@@ -95,7 +92,7 @@ export default async function ShareOgImage({
       handle.toLowerCase() === tenantForOwner(str(page.frontmatter.owner)),
   );
 
-  const title = showRealTitle ? page!.title || slug : "yopedia";
+  const title = showRealTitle ? page!.title || slug : APP_NAME;
   const kicker = showRealTitle
     ? `${typeLabel(str(page!.frontmatter.type))} · @${handle}`
     : "a shared second brain for humans and agents";
@@ -134,7 +131,7 @@ export default async function ShareOgImage({
       >
         <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
           <img src={MARK_URI} width={72} height={72} alt="" />
-          <div style={{ fontSize: 40, fontWeight: 700, letterSpacing: -1 }}>yopedia</div>
+          <div style={{ fontSize: 40, fontWeight: 700, letterSpacing: -1 }}>{APP_NAME}</div>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -154,9 +151,9 @@ export default async function ShareOgImage({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 24 }}>
-          <div style={{ width: 13, height: 13, borderRadius: 7, background: "#4d6bfe" }} />
-          <span style={{ color: "#756f62" }}>yopedia.yolog.dev</span>
-          <span style={{ marginLeft: "auto", color: "#a59e8d" }}>growing in public</span>
+          <div style={{ width: 13, height: 13, borderRadius: 7, background: "#1e3a5f" }} />
+          <span style={{ color: "#756f62" }}>workwiki.app</span>
+          <span style={{ marginLeft: "auto", color: "#a59e8d" }}>private by design</span>
         </div>
       </div>
     ),

@@ -20,6 +20,8 @@ import { ownerToTenant } from "./links";
 import { listCommonsPages } from "./commons";
 import { expandMineScope, resolveScope } from "./search";
 import type { Principal } from "./auth";
+import { parseSources } from "./sources";
+import { buildWeightedGraphEdges } from "./graph-relevance";
 
 export interface GraphNode {
   id: string;
@@ -28,11 +30,14 @@ export interface GraphNode {
   tenant: string;
   linkCount: number;
   tags: string[];
+  type?: string;
 }
 
 export interface GraphEdge {
   source: string;
   target: string;
+  weight: number;
+  signals: string[];
 }
 
 /**
@@ -70,7 +75,12 @@ export async function buildWikiGraph(
   const slugSet = new Set(pages.map((p) => p.slug));
 
   const nodes: GraphNode[] = [];
-  const edges: GraphEdge[] = [];
+  const evidenceNodes: Array<{
+    id: string;
+    directTargets: string[];
+    sourceUrls: string[];
+    type?: string;
+  }> = [];
 
   // First pass: build nodes (with tags) and collect edges
   for (const page of pages) {
@@ -82,25 +92,39 @@ export async function buildWikiGraph(
         ? [rawTags]
         : [];
 
+    const pageType = typeof wp?.frontmatter?.type === "string"
+      ? wp.frontmatter.type
+      : undefined;
     nodes.push({
       id: page.slug,
       label: wp?.title ?? page.title,
       tenant: ownerToTenant(page.owner),
       linkCount: 0, // computed below
       tags,
+      ...(pageType ? { type: pageType } : {}),
     });
 
-    if (!wp) continue;
-
-    const linkRe = /\[([^\]]*)\]\(([^)]+)\.md\)/g;
-    let match: RegExpExecArray | null;
-    while ((match = linkRe.exec(wp.body)) !== null) {
-      const target = match[2];
-      if (target !== page.slug && slugSet.has(target)) {
-        edges.push({ source: page.slug, target });
+    const directTargets: string[] = [];
+    if (wp) {
+      const linkRe = /\[([^\]]*)\]\(([^)]+)\.md\)/g;
+      let match: RegExpExecArray | null;
+      while ((match = linkRe.exec(wp.body)) !== null) {
+        const target = match[2];
+        if (target !== page.slug && slugSet.has(target)) directTargets.push(target);
       }
     }
+    evidenceNodes.push({
+      id: page.slug,
+      directTargets,
+      sourceUrls: wp
+        ? parseSources(wp.frontmatter.sources as string | string[] | undefined)
+            .map((source) => source.url)
+        : [],
+      ...(pageType ? { type: pageType } : {}),
+    });
   }
+
+  const edges: GraphEdge[] = buildWeightedGraphEdges(evidenceNodes);
 
   // Second pass: compute linkCount (inbound + outbound) per node
   const countMap = new Map<string, number>();

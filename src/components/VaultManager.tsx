@@ -55,7 +55,7 @@ function ErrorLine({ message }: { message: string }) {
   );
 }
 
-/** A visibility chip — public = accent, private = rust. */
+/** A visibility chip — commons-backed vaults stay inside this private deployment. */
 function VisibilityChip({ visibility }: { visibility: Vault["visibility"] }) {
   const isPublic = visibility === "public";
   return (
@@ -71,7 +71,7 @@ function VisibilityChip({ visibility }: { visibility: Vault["visibility"] }) {
         color: isPublic ? "var(--accent)" : "var(--rust)",
       }}
     >
-      {visibility}
+      {isPublic ? "workspace" : "private"}
     </span>
   );
 }
@@ -138,7 +138,7 @@ function CreateVault() {
             className="receipt"
             style={{ fontSize: 11.5, color: "var(--faint)" }}
           >
-            new vaults are public
+            new vaults stay inside your private workspace
           </span>
           {error && <ErrorLine message={error} />}
         </div>
@@ -236,8 +236,8 @@ function VaultCard({ vault }: { vault: Vault }) {
       </div>
 
       <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 16 }}>
-        <Link className="btn ghost" href={`/wiki?scope=vault:${vault.id}`}>
-          View
+        <Link className="btn primary" href={`/vault/${encodeURIComponent(vault.id)}`}>
+          Explore
         </Link>
         <button
           type="button"
@@ -287,7 +287,7 @@ function VaultCard({ vault }: { vault: Vault }) {
 
 /**
  * The owner's vault management surface on `/vault`: a create form plus a card
- * per vault with view / rename / delete. All actions hit the `/api/vaults`
+ * per vault with explore / rename / delete. All actions hit the `/api/vaults`
  * endpoints and refresh the server tree on success. (V1: created vaults are
  * public — no visibility selector yet.)
  */

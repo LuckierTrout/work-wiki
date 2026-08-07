@@ -66,10 +66,14 @@ export default function NewWikiPage() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
-      <h1 className="text-2xl font-bold mb-6">Create new wiki page</h1>
+    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
+      <p className="fmark" style={{ marginBottom: 16 }}>create knowledge</p>
+      <h1 className="display" style={{ fontSize: "clamp(36px,4.5vw,58px)", margin: 0 }}>Create a new wiki page</h1>
+      <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 32px", maxWidth: "64ch" }}>
+        Start from a useful template, add source-aware content, and publish with a revision receipt.
+      </p>
 
-      <form onSubmit={handleSubmit} className="space-y-5">
+      <form onSubmit={handleSubmit} className="max-w-4xl space-y-5 border-t border-rule pt-7">
         {/* Title */}
         <div>
           <label htmlFor="title" className="block text-sm font-medium mb-1">
@@ -135,14 +139,14 @@ export default function NewWikiPage() {
           <button
             type="submit"
             disabled={loading || !slug}
-            className="rounded-lg bg-foreground px-5 py-2 text-sm font-medium text-background hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+            className="btn primary disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? "Creating…" : "Create page"}
           </button>
           <button
             type="button"
             onClick={() => router.push("/wiki")}
-            className="rounded-lg border border-foreground/10 px-4 py-2 text-sm text-foreground/70 hover:border-foreground/30 hover:text-foreground transition-colors"
+            className="btn ghost"
           >
             Cancel
           </button>

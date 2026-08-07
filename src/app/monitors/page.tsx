@@ -13,7 +13,7 @@ export default async function MonitorsPage() {
           Keep important sources in view.
         </h1>
         <p style={{ color: "var(--ink-2)", fontSize: 18, maxWidth: "46ch", margin: "0 auto 28px" }}>
-          Yopedia watches for meaningful changes and sends every suggested memory update to you for review.
+          WorkWiki watches for meaningful changes and sends every suggested memory update to you for review.
         </p>
         <SignInButton mode="modal"><button className="btn primary">Sign in to manage sources</button></SignInButton>
         <p style={{ marginTop: 14, fontSize: 13, color: "var(--faint)" }}>

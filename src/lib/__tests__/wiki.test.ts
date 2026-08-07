@@ -889,9 +889,9 @@ describe("deleteWikiPage", () => {
 // ---------------------------------------------------------------------------
 describe("/api/wiki/graph route", () => {
   it("extracts edges across multiple pages without losing matches", async () => {
-    // Three pages, each linking to two others. With a per-loop regex, all
-    // 6 directed edges must be present. (A stale-`lastIndex` bug would
-    // intermittently drop edges depending on string lengths.)
+    // Three pages, each linking to two others. The weighted graph canonicalizes
+    // reciprocal references into three undirected edges. A stale-`lastIndex`
+    // bug would still intermittently drop a relationship.
     await writeWikiPage(
       "alpha",
       "# Alpha\n\nSee [Beta](beta.md) and [Gamma](gamma.md) for context.",
@@ -916,15 +916,15 @@ describe("/api/wiki/graph route", () => {
     );
     const data = (await res.json()) as {
       nodes: { id: string; label: string }[];
-      edges: { source: string; target: string }[];
+      edges: { source: string; target: string; weight: number; signals: string[] }[];
     };
 
     expect(data.nodes).toHaveLength(3);
     const slugs = data.nodes.map((n) => n.id).sort();
     expect(slugs).toEqual(["alpha", "beta", "gamma"]);
 
-    // All 6 directed edges should be present
-    expect(data.edges).toHaveLength(6);
+    // All three canonical relationships should be present and evidence-bearing.
+    expect(data.edges).toHaveLength(3);
     const edgeKeys = data.edges
       .map((e) => `${e.source}->${e.target}`)
       .sort();
@@ -932,12 +932,11 @@ describe("/api/wiki/graph route", () => {
       [
         "alpha->beta",
         "alpha->gamma",
-        "beta->alpha",
         "beta->gamma",
-        "gamma->alpha",
-        "gamma->beta",
       ].sort(),
     );
+    expect(data.edges.every((edge) => edge.weight >= 3)).toBe(true);
+    expect(data.edges.every((edge) => edge.signals.includes("direct link"))).toBe(true);
   });
 
   it("ignores links to slugs not in the wiki", async () => {

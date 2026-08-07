@@ -64,6 +64,15 @@
 	"ai": {
 		"binding": "AI"
 	},
+	// --- Sandbox: private Worker-to-Worker service binding. Deploy the sandbox
+	// worker first, then set YOPEDIA_SANDBOX_TOKEN as the same Wrangler secret on
+	// both workers. Local development can fall back to YOPEDIA_SANDBOX_URL. ---
+	"services": [
+		{
+			"binding": "YOPEDIA_SANDBOX",
+			"service": "yopedia-sandbox-runner"
+		}
+	],
 	// --- Queues: producer for the agent task queue (async maintenance + ingest).
 	// The consumer is a separate worker (workers/task-consumer/). enqueueTask()
 	// (src/lib/tasks.ts) sends here; it no-ops gracefully when this binding is
@@ -78,6 +87,15 @@
 			}
 		]
 	},
+	// --- Email: optional owner source-monitor digest delivery. Destinations must
+	// be verified in Cloudflare Email Routing; the address itself stays in the
+	// owner's private Yopedia settings rather than deployment configuration. ---
+	"send_email": [
+		{
+			"name": "MONITOR_DIGEST_EMAIL",
+			"allowed_sender_addresses": ["ingest@workwiki.app"]
+		}
+	],
 	// Public site-owner handle for runtime server gates (owner-only Lint). The
 	// authoritative copy for the client is the build-time inline (deploy
 	// workflow); this is runtime parity for server reads. Public, not a secret.
@@ -88,8 +106,15 @@
 	// See workers/task-consumer/README.md.
 	"vars": {
 		"NEXT_PUBLIC_OWNER_HANDLE": "christianlee",
+		"NEXT_PUBLIC_CLERK_SIGN_IN_URL": "/sign-in",
+		"NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL": "/",
+		// Stable Clerk production user id. Middleware fails closed when this is
+		// missing or does not match, so no other signed-in account can read the app.
+		"YOPEDIA_OWNER_USER_ID": "user_3HQlxnUOlZqWjrqgjtIrkKE4nFK",
 		"AUTONOMOUS_MAINTENANCE": "on",
 		"YOPEDIA_EMAIL_ROUTING_READY": "1",
+		"YOPEDIA_SITE_URL": "https://workwiki.app",
+		"YOPEDIA_MONITOR_EMAIL_FROM": "ingest@workwiki.app",
 		"EMBEDDING_PROVIDER": "workers-ai",
 		"EMBEDDING_MODEL": "@cf/baai/bge-m3"
 	}

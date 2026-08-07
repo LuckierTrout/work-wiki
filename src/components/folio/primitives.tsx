@@ -18,16 +18,23 @@ export function Confidence({
   withLabel?: boolean;
 }) {
   const n = Math.round(value * 5);
+  const percentage = Math.round(value * 100);
   return (
-    <span className="row" style={{ gap: 7 }}>
-      <span className="conf" title={`confidence ${value.toFixed(2)}`}>
+    <span
+      className="row"
+      style={{ gap: 7 }}
+      role="img"
+      aria-label={`Evidence confidence ${percentage}%`}
+      title={`Evidence confidence: ${percentage}%`}
+    >
+      <span className="conf" aria-hidden="true">
         {[0, 1, 2, 3, 4].map((i) => (
           <i key={i} className={i < n ? "on" : ""} />
         ))}
       </span>
       {withLabel && (
         <span className="receipt text-muted" style={{ fontSize: 11 }}>
-          {value.toFixed(2)}
+          {percentage}%
         </span>
       )}
     </span>
@@ -138,6 +145,13 @@ export function SrcChip({ type }: { type: SourceEntry["type"] }) {
     txt: "TXT",
     html: "HTML",
     zip: "ZIP",
+    odt: "ODT",
+    ods: "ODS",
+    odp: "ODP",
+    epub: "EPUB",
+    org: "ORG",
+    rtf: "RTF",
+    mobi: "MOBI",
     youtube: "YT",
     email: "MAIL",
   };

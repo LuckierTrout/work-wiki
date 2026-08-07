@@ -48,8 +48,29 @@ describe("owner action items", () => {
 
   it("supports approval, completion, filtering, and deletion", async () => {
     const [created] = await proposeActionItems("alice", [{ title: "Review draft" }]);
-    await updateActionItem("alice", created.id, { status: "accepted" });
+    const edited = await updateActionItem("alice", created.id, {
+      title: "Review final draft",
+      details: "Check the revised methodology section.",
+      assignee: "Christian",
+      dueDate: "next Friday",
+      priority: "high",
+      status: "accepted",
+    });
+    expect(edited).toMatchObject({
+      title: "Review final draft",
+      details: "Check the revised methodology section.",
+      assignee: "Christian",
+      dueDate: "next Friday",
+      priority: "high",
+      status: "accepted",
+    });
     expect(await listActionItems("alice", "accepted")).toHaveLength(1);
+    const cleared = await updateActionItem("alice", created.id, {
+      assignee: "",
+      dueDate: "",
+    });
+    expect(cleared?.assignee).toBeUndefined();
+    expect(cleared?.dueDate).toBeUndefined();
     const done = await updateActionItem("alice", created.id, { status: "done" });
     expect(done?.completedAt).toBeTruthy();
     expect(await deleteActionItem("alice", created.id)).toBe(true);

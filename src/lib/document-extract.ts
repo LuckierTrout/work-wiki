@@ -1,7 +1,8 @@
-import { unzipSync } from "fflate";
+import { unzipSync, zlibSync } from "fflate";
 import { MAX_CONTENT_LENGTH, MAX_DOCUMENT_SIZE } from "./constants";
 import { ClientInputError } from "./errors";
 import { extractTitle, htmlToMarkdown } from "./html-parse";
+import { describeImage } from "./vision";
 
 export const DOCUMENT_FORMATS = [
   "docx",
@@ -13,6 +14,13 @@ export const DOCUMENT_FORMATS = [
   "html",
   "pdf",
   "zip",
+  "odt",
+  "ods",
+  "odp",
+  "epub",
+  "org",
+  "rtf",
+  "mobi",
 ] as const;
 export type DocumentFormat = (typeof DOCUMENT_FORMATS)[number];
 type OfficeFormat = "docx" | "pptx" | "xlsx";
@@ -28,6 +36,8 @@ const MAX_COLUMNS_PER_SHEET = 256;
 const MAX_ZIP_ENTRIES = 500;
 const MAX_ZIP_ENTRY_BYTES = 10 * 1024 * 1024;
 const MAX_ZIP_TOTAL_BYTES = 30 * 1024 * 1024;
+const MAX_PDF_IMAGES = 8;
+const MAX_PDF_IMAGE_PIXELS = 12_000_000;
 
 const MIME_FORMATS: Record<string, DocumentFormat> = {
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
@@ -43,6 +53,14 @@ const MIME_FORMATS: Record<string, DocumentFormat> = {
   "application/pdf": "pdf",
   "application/zip": "zip",
   "application/x-zip-compressed": "zip",
+  "application/vnd.oasis.opendocument.text": "odt",
+  "application/vnd.oasis.opendocument.spreadsheet": "ods",
+  "application/vnd.oasis.opendocument.presentation": "odp",
+  "application/epub+zip": "epub",
+  "text/org": "org",
+  "application/rtf": "rtf",
+  "text/rtf": "rtf",
+  "application/x-mobipocket-ebook": "mobi",
 };
 
 export interface ExtractedDocument {
@@ -136,7 +154,247 @@ function truncate(text: string): string {
 }
 
 function fallbackTitle(filename: string, label: string): string {
-  return filename.replace(/\.(docx|pptx|xlsx|csv)$/i, "").trim() || label;
+  return filename.replace(/\.(docx|pptx|xlsx|csv|odt|ods|odp|epub|org|rtf|mobi)$/i, "").trim() || label;
+}
+
+function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
+  const result = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.length;
+  }
+  return result;
+}
+
+function uint32(value: number): Uint8Array {
+  return new Uint8Array([
+    (value >>> 24) & 255,
+    (value >>> 16) & 255,
+    (value >>> 8) & 255,
+    value & 255,
+  ]);
+}
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, data: Uint8Array): Uint8Array {
+  const typeBytes = new TextEncoder().encode(type);
+  const body = concatBytes([typeBytes, data]);
+  return concatBytes([uint32(data.length), body, uint32(crc32(body))]);
+}
+
+/** Encode raw unpdf pixels into a portable PNG without native canvas/sharp. */
+export function rawPixelsToPng(input: {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+  channels: 1 | 3 | 4;
+}): ArrayBuffer {
+  const { width, height, channels } = input;
+  if (width < 1 || height < 1 || width * height > MAX_PDF_IMAGE_PIXELS) {
+    throw new ClientInputError("PDF image dimensions are outside the safe limit.");
+  }
+  const rows = new Uint8Array(height * (1 + width * 4));
+  for (let y = 0; y < height; y += 1) {
+    const row = y * (1 + width * 4);
+    rows[row] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const source = (y * width + x) * channels;
+      const target = row + 1 + x * 4;
+      if (channels === 1) {
+        rows[target] = input.data[source];
+        rows[target + 1] = input.data[source];
+        rows[target + 2] = input.data[source];
+        rows[target + 3] = 255;
+      } else {
+        rows[target] = input.data[source];
+        rows[target + 1] = input.data[source + 1];
+        rows[target + 2] = input.data[source + 2];
+        rows[target + 3] = channels === 4 ? input.data[source + 3] : 255;
+      }
+    }
+  }
+  const ihdr = concatBytes([
+    uint32(width), uint32(height), new Uint8Array([8, 6, 0, 0, 0]),
+  ]);
+  const png = concatBytes([
+    new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlibSync(rows, { level: 6 })),
+    pngChunk("IEND", new Uint8Array()),
+  ]);
+  return png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength) as ArrayBuffer;
+}
+
+function rtfToText(rtf: string): string {
+  const cp1252 = [
+    "€", "\u0081", "‚", "ƒ", "„", "…", "†", "‡", "ˆ", "‰", "Š", "‹", "Œ", "\u008d", "Ž", "\u008f",
+    "\u0090", "‘", "’", "“", "”", "•", "–", "—", "˜", "™", "š", "›", "œ", "\u009d", "ž", "Ÿ",
+  ];
+  return rtf
+    .replace(/\\par[d]?\b/g, "\n")
+    .replace(/\\tab\b/g, "\t")
+    .replace(/\\'[0-9a-f]{2}/gi, (value) => {
+      const byte = Number.parseInt(value.slice(2), 16);
+      return byte >= 0x80 && byte <= 0x9f ? cp1252[byte - 0x80] : String.fromCharCode(byte);
+    })
+    .replace(/\\u(-?\d+)\??/g, (_match, value: string) =>
+      String.fromCharCode((Number.parseInt(value, 10) + 65536) % 65536))
+    .replace(/\\[a-z]+-?\d* ?/gi, "")
+    .replace(/[{}]/g, "")
+    .replace(/\\([{}\\])/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function palmDocDecompress(input: Uint8Array): Uint8Array {
+  const output: number[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const byte = input[index];
+    if (byte >= 1 && byte <= 8) {
+      for (let count = 0; count < byte && index + 1 < input.length; count += 1) output.push(input[++index]);
+    } else if (byte <= 0x7f) output.push(byte);
+    else if (byte <= 0xbf && index + 1 < input.length) {
+      const pair = (byte << 8) | input[++index];
+      const distance = (pair >> 3) & 0x7ff;
+      const length = (pair & 7) + 3;
+      for (let count = 0; count < length; count += 1) {
+        output.push(distance <= output.length ? output[output.length - distance] : 32);
+      }
+    } else {
+      output.push(32, byte ^ 0x80);
+    }
+  }
+  return new Uint8Array(output);
+}
+
+function extractMobi(bytes: ArrayBuffer): string {
+  const data = new Uint8Array(bytes);
+  if (data.length < 100) throw new ClientInputError("The MOBI file is too small or corrupt.");
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const recordCount = view.getUint16(76, false);
+  if (recordCount < 2 || 78 + recordCount * 8 > data.length) throw new ClientInputError("The MOBI record table is invalid.");
+  const offsets = Array.from({ length: recordCount }, (_, index) => view.getUint32(78 + index * 8, false));
+  const first = offsets[0];
+  if (first + 16 > data.length) throw new ClientInputError("The MOBI header is invalid.");
+  const compression = view.getUint16(first, false);
+  const textRecordCount = Math.min(view.getUint16(first + 8, false), recordCount - 1, 500);
+  const chunks: Uint8Array[] = [];
+  for (let index = 1; index <= textRecordCount; index += 1) {
+    const start = offsets[index];
+    const end = offsets[index + 1] ?? data.length;
+    if (start >= end || end > data.length) continue;
+    const record = data.slice(start, end);
+    chunks.push(compression === 2 ? palmDocDecompress(record) : record);
+  }
+  const decoded = new TextDecoder("windows-1252").decode(concatBytes(chunks)).replace(/\0/g, "").trim();
+  if (!decoded) throw new ClientInputError("The MOBI file contains no extractable text.");
+  return /<[a-z][\s\S]*>/i.test(decoded) ? htmlToMarkdown(decoded) : decoded;
+}
+
+function openDocumentText(files: Record<string, Uint8Array>, format: "odt" | "ods" | "odp"): string {
+  const content = files["content.xml"];
+  if (!content) throw new ClientInputError(`The ${format.toUpperCase()} file has no content.xml.`);
+  const xml = new TextDecoder().decode(content);
+  if (format === "odt") {
+    return Array.from(xml.matchAll(/<(text:h|text:p)\b([^>]*)>([\s\S]*?)<\/\1>/gi))
+      .map((match) => {
+        const text = decodeXml(match[3].replace(/<text:tab\b[^>]*\/?>(?:<\/text:tab>)?/gi, "\t").replace(/<[^>]+>/g, "")).trim();
+        const level = match[1].toLowerCase() === "text:h" ? Math.min(6, Math.max(1, Number(attr(match[2], "text:outline-level")) || 2)) : 0;
+        return text ? `${level ? `${"#".repeat(level)} ` : ""}${text}` : "";
+      }).filter(Boolean).join("\n\n");
+  }
+  if (format === "odp") {
+    return Array.from(xml.matchAll(/<draw:page\b([^>]*)>([\s\S]*?)<\/draw:page>/gi))
+      .map((match, index) => `## Slide ${index + 1}\n\n${decodeXml(match[2].replace(/<text:p\b[^>]*>/gi, "").replace(/<\/text:p>/gi, "\n").replace(/<[^>]+>/g, " ")).replace(/\s+\n/g, "\n").trim()}`)
+      .join("\n\n");
+  }
+  return Array.from(xml.matchAll(/<table:table\b([^>]*)>([\s\S]*?)<\/table:table>/gi))
+    .map((table, index) => {
+      const rows = Array.from(table[2].matchAll(/<table:table-row\b[^>]*>([\s\S]*?)<\/table:table-row>/gi))
+        .slice(0, MAX_ROWS_PER_SHEET)
+        .map((row) => Array.from(row[1].matchAll(/<table:table-cell\b[^>]*>([\s\S]*?)<\/table:table-cell>/gi))
+          .slice(0, MAX_COLUMNS_PER_SHEET)
+          .map((cell) => decodeXml(cell[1].replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim()));
+      return `## ${decodeXml(attr(table[1], "table:name")) || `Sheet ${index + 1}`}\n\n${markdownTable(rows)}`;
+    }).join("\n\n");
+}
+
+function extractEpub(files: Record<string, Uint8Array>): { title?: string; creator?: string; text: string } {
+  const packageEntry = Object.entries(files).find(([name]) => /\.opf$/i.test(name));
+  const opf = packageEntry ? new TextDecoder().decode(packageEntry[1]) : "";
+  const title = xmlText(opf, "dc:title")[0];
+  const creator = xmlText(opf, "dc:creator")[0];
+  const sections = Object.entries(files)
+    .filter(([name]) => /\.(?:xhtml|html|htm)$/i.test(name) && !/nav\.(?:xhtml|html)$/i.test(name))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(0, 300)
+    .map(([name, value]) => `## ${name}\n\n${htmlToMarkdown(new TextDecoder().decode(value))}`);
+  return { title, creator, text: sections.join("\n\n---\n\n") };
+}
+
+async function extractPdfDocument(input: {
+  bytes: ArrayBuffer;
+  filename: string;
+}): Promise<ExtractedDocument> {
+  const { pdfToText } = await import("./fetch");
+  const textLayer = truncate(await pdfToText(input.bytes));
+  const { extractImages, getDocumentProxy } = await import("unpdf");
+  const pdf = await getDocumentProxy(new Uint8Array(input.bytes));
+  const assets: ExtractedDocumentAsset[] = [];
+  const descriptions: string[] = [];
+  let pixels = 0;
+  try {
+    for (let page = 1; page <= pdf.numPages && assets.length < MAX_PDF_IMAGES; page += 1) {
+      let images: Awaited<ReturnType<typeof extractImages>> = [];
+      try { images = await extractImages(pdf, page); } catch { continue; }
+      for (const image of images) {
+        if (assets.length >= MAX_PDF_IMAGES) break;
+        const imagePixels = image.width * image.height;
+        if (image.width < 64 || image.height < 64 || pixels + imagePixels > MAX_PDF_IMAGE_PIXELS) continue;
+        pixels += imagePixels;
+        const bytes = rawPixelsToPng(image);
+        const vision = await describeImage(bytes, {
+          mediaType: "image/png",
+          prompt: "Transcribe all legible text in this PDF figure, then describe the chart, diagram, photograph, or visual evidence factually. Preserve uncertainty and do not infer values that are not visible.",
+          maxTokens: 700,
+          cache: true,
+        });
+        const alt = vision?.text.split("\n").find((line) => line.trim())?.slice(0, 180) || `PDF figure on page ${page}`;
+        assets.push({
+          filename: `page-${page}-image-${assets.length + 1}.png`,
+          mediaType: "image/png",
+          bytes,
+          alt,
+          context: `PDF page ${page}`,
+        });
+        if (vision?.text) descriptions.push(`### Figure on page ${page}\n\n${vision.text}`);
+      }
+    }
+  } finally {
+    await pdf.destroy().catch(() => undefined);
+  }
+  const text = truncate([
+    textLayer,
+    descriptions.length ? `## Visual evidence\n\n${descriptions.join("\n\n")}` : "",
+  ].filter(Boolean).join("\n\n"));
+  if (!text) throw new ClientInputError("PDF contains no extractable text or readable images.");
+  const firstLine = text.split("\n").find((line) => line.trim())?.trim();
+  return {
+    format: "pdf",
+    title: firstLine?.slice(0, 200) || fallbackTitle(input.filename, "PDF document"),
+    text,
+    metadata: {},
+    assets,
+  };
 }
 
 function coreProperties(files: Record<string, Uint8Array>): {
@@ -570,7 +828,7 @@ export function extractDocumentText(input: {
   const format = detectDocumentFormat(filename, contentType);
   if (!format) {
     throw new ClientInputError(
-      "Unsupported document type. Upload Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP.",
+      "Unsupported document type. Upload PDF, Word, PowerPoint, spreadsheet, OpenDocument, EPUB, MOBI, RTF, Org, Markdown, text, HTML, CSV, or ZIP files.",
     );
   }
 
@@ -578,9 +836,11 @@ export function extractDocumentText(input: {
     throw new ClientInputError(`.${format} extraction requires the asynchronous document pipeline.`);
   }
 
-  if (format === "md" || format === "txt" || format === "html") {
+  if (format === "md" || format === "txt" || format === "html" || format === "org" || format === "rtf") {
     const decoded = new TextDecoder().decode(bytes).replace(/^\uFEFF/, "");
-    const text = truncate(format === "html" ? htmlToMarkdown(decoded) : decoded);
+    const text = truncate(
+      format === "html" ? htmlToMarkdown(decoded) : format === "rtf" ? rtfToText(decoded) : decoded,
+    );
     if (!text) throw new ClientInputError(`The .${format} file contains no extractable text.`);
     return {
       format,
@@ -588,6 +848,16 @@ export function extractDocumentText(input: {
         (format === "html" ? extractTitle(decoded) : undefined) ??
         fallbackTitle(filename, `${format.toUpperCase()} document`),
       text,
+      metadata: {},
+      assets: [],
+    };
+  }
+
+  if (format === "mobi") {
+    return {
+      format,
+      title: fallbackTitle(filename, "MOBI ebook"),
+      text: truncate(extractMobi(bytes)),
       metadata: {},
       assets: [],
     };
@@ -602,6 +872,35 @@ export function extractDocumentText(input: {
       title: fallbackTitle(filename, "CSV document"),
       text,
       metadata: {},
+      assets: [],
+    };
+  }
+
+  if (format === "odt" || format === "ods" || format === "odp") {
+    const files = Object.fromEntries(safeArchiveEntries(bytes));
+    const text = truncate(openDocumentText(files, format));
+    if (!text) throw new ClientInputError(`The .${format} file contains no extractable text.`);
+    const metadata = files["meta.xml"] ? new TextDecoder().decode(files["meta.xml"]) : "";
+    const title = xmlText(metadata, "dc:title")[0];
+    const creator = xmlText(metadata, "meta:initial-creator")[0] ?? xmlText(metadata, "dc:creator")[0];
+    return {
+      format,
+      title: title ?? fallbackTitle(filename, `${format.toUpperCase()} document`),
+      text,
+      metadata: { ...(creator ? { creator } : {}) },
+      assets: [],
+    };
+  }
+
+  if (format === "epub") {
+    const extracted = extractEpub(Object.fromEntries(safeArchiveEntries(bytes)));
+    const text = truncate(extracted.text);
+    if (!text) throw new ClientInputError("The EPUB contains no extractable chapters.");
+    return {
+      format,
+      title: extracted.title ?? fallbackTitle(filename, "EPUB ebook"),
+      text,
+      metadata: { ...(extracted.creator ? { creator: extracted.creator } : {}) },
       assets: [],
     };
   }
@@ -678,21 +977,7 @@ export async function extractDocumentTextAsync(input: {
   const format = detectDocumentFormat(input.filename, input.contentType);
   if (format === "pdf") {
     if (input.bytes.byteLength === 0) throw new ClientInputError("The document is empty.");
-    const { pdfToText } = await import("./fetch");
-    const text = truncate(await pdfToText(input.bytes));
-    if (!text) {
-      throw new ClientInputError(
-        "PDF has no extractable text layer. Scanned/image-only PDFs are not supported yet.",
-      );
-    }
-    const firstLine = text.split("\n").find((line) => line.trim())?.trim();
-    return {
-      format,
-      title: firstLine?.slice(0, 200) || fallbackTitle(input.filename, "PDF document"),
-      text,
-      metadata: {},
-      assets: [],
-    };
+    return extractPdfDocument({ bytes: input.bytes, filename: input.filename });
   }
 
   if (format === "zip") {

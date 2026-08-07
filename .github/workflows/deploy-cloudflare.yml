@@ -27,7 +27,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -61,10 +61,26 @@ jobs:
           # time so the nav can gate owner-only tools (e.g. Lint). The server
           # gates read it too. Public (not a secret); override via the repo var.
           NEXT_PUBLIC_OWNER_HANDLE: ${{ vars.NEXT_PUBLIC_OWNER_HANDLE || 'christianlee' }}
+          # The owner-only deployment exposes one content-free authentication
+          # route so the owner can recover after a session expires.
+          NEXT_PUBLIC_CLERK_SIGN_IN_URL: /sign-in
+          NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL: /
           # Clerk's publishable key is public but must be present at build time
           # so Next.js can inline it into the browser bundle.
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
         run: pnpm build:cloudflare
+
+      # The main Worker has a private service binding to this container-backed
+      # worker, so deploy it first. Its YOPEDIA_SANDBOX_TOKEN secret is created
+      # once with Wrangler and is preserved across deployments.
+      - name: Install sandbox-runner dependencies
+        run: pnpm --dir workers/sandbox-runner install --frozen-lockfile
+
+      - name: Deploy sandbox-runner Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --dir workers/sandbox-runner exec wrangler deploy
 
       - name: Deploy Cloudflare Worker
         env:

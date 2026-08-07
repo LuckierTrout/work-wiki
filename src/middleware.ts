@@ -1,13 +1,14 @@
 import { clerkMiddleware } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 
 // HTTP methods that mutate state.
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-// Closes the unauthenticated-write hole at a single enforcement point:
-// any mutating request to /api/** requires a signed-in user. Reads (GET/HEAD)
-// stay public — yopedia is a public observer surface (see yopedia-concept.md).
-// Attribution (which user) is read per-route from `getPrincipal()`.
+// WorkWiki is a private, single-owner deployment. Every application page and
+// API request requires the configured Clerk owner session. The only exceptions
+// are Clerk's own proxy path (needed to establish a session) and machine write
+// routes that authenticate in-route with an existing bearer token.
 //
 // Exception: some routes authenticate IN-ROUTE with a token instead of a Clerk
 // session, so they're exempt from this gate (they still reject unauthenticated
@@ -29,12 +30,12 @@ const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 //   - /api/wiki                   — Clerk session OR the system service token
 //   - /api/wiki/<slug>            — Clerk session OR the system service token
 //   - /api/wiki/<slug>/revisions   — Clerk session OR the system service token
-//   - /api/mcp                    — remote MCP: Bearer agent/service token (reads need none)
+//   - /api/mcp                    — remote MCP: Bearer agent/service token
 // This is not a hole.
 const IN_ROUTE_AUTH_PATHS = new Set([
   "/api/agents/seed",
   // Remote (HTTP) MCP endpoint — authenticates in-route via a Bearer token
-  // (per-user agent token or the service token); reads work unauthenticated.
+  // (per-user agent token or the service token).
   "/api/mcp",
   "/api/ingest",
   "/api/ingest/batch",
@@ -43,6 +44,12 @@ const IN_ROUTE_AUTH_PATHS = new Set([
   "/api/ingest/pdf",
   "/api/ingest/reingest",
   "/api/ingest/x-mention",
+  // Local sync companion heartbeat: authenticated in-route by the owner
+  // service token. Browser reads/deletes still require the owner Clerk session.
+  "/api/sync/status",
+  // Full owner archive restore. The route resolves the fixed service principal
+  // before it reads or writes any tenant data.
+  "/api/archive/import",
   "/api/email/ingest",
   // Agent task-queue executor + maintenance scanner: authenticated in-route by
   // the service token (getServicePrincipal); the sole callers are the
@@ -84,6 +91,7 @@ const WIKI_REVISIONS_RE = /^\/api\/wiki\/[^/]+\/revisions$/;
 // Admin tenant delete: authenticated in-route by the service token, the site
 // owner, or the tenant's own owner (it 403s everyone else).
 const ADMIN_TENANT_RE = /^\/api\/admin\/tenant\/[^/]+$/;
+const MACHINE_READ_PATHS = new Set(["/api/archive/export"]);
 
 /**
  * Whether a path authenticates in-route (token, not a Clerk session) and is
@@ -102,22 +110,91 @@ export function authenticatesInRoute(pathname: string): boolean {
   );
 }
 
+const CLERK_PROXY_RE = /^\/__clerk(?:\/|$)/;
+const SIGN_IN_RE = /^\/sign-in(?:\/|$)/;
+
+/**
+ * Machine callers have no Clerk session. Only mutating routes that explicitly
+ * validate bearer credentials in their own handler may bypass the owner-session
+ * gate, and only when a bearer credential is actually present. The route still
+ * performs the cryptographic/token lookup and rejects invalid credentials.
+ */
+export function isBearerMachineWrite(
+  req: Pick<NextRequest, "method" | "headers" | "nextUrl">,
+): boolean {
+  return (
+    WRITE_METHODS.has(req.method) &&
+    authenticatesInRoute(req.nextUrl.pathname) &&
+    /^Bearer\s+\S+/i.test(req.headers.get("authorization") ?? "")
+  );
+}
+
+/** Owner-scoped machine reads used by the optional local backup companion. */
+export function isBearerMachineRead(
+  req: Pick<NextRequest, "method" | "headers" | "nextUrl">,
+): boolean {
+  return (
+    req.method === "GET" &&
+    MACHINE_READ_PATHS.has(req.nextUrl.pathname) &&
+    /^Bearer\s+\S+/i.test(req.headers.get("authorization") ?? "")
+  );
+}
+
+function privateResponse<T extends NextResponse>(response: T): T {
+  response.headers.set("Cache-Control", "private, no-store");
+  response.headers.set("Pragma", "no-cache");
+  response.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
+  return response;
+}
+
+function jsonError(message: string, status: number): NextResponse {
+  return privateResponse(NextResponse.json({ error: message }, { status }));
+}
+
 export default clerkMiddleware(async (auth, req) => {
   const { pathname } = req.nextUrl;
-  if (
-    WRITE_METHODS.has(req.method) &&
-    pathname.startsWith("/api/") &&
-    !authenticatesInRoute(pathname)
-  ) {
-    const { userId } = await auth();
-    if (!userId) {
-      return NextResponse.json(
-        { error: "Sign in required to write to yopedia." },
-        { status: 401 },
-      );
-    }
+
+  // The authentication surface and Clerk proxy are the only public app paths.
+  // They expose no WorkWiki content and are required to establish a session.
+  if (SIGN_IN_RE.test(pathname) || CLERK_PROXY_RE.test(pathname)) {
+    return privateResponse(NextResponse.next());
   }
-});
+
+  // Queue, cron, email, agent, and MCP callers authenticate inside the route.
+  // A missing bearer header never bypasses the private deployment boundary.
+  if (isBearerMachineWrite(req) || isBearerMachineRead(req)) {
+    return privateResponse(NextResponse.next());
+  }
+
+  const isApi = pathname.startsWith("/api/");
+  const { userId, redirectToSignIn } = await auth();
+
+  if (!userId) {
+    if (isApi) return jsonError("Authentication required.", 401);
+
+    // Browser navigation gets a real sign-in redirect (auth.protect intentionally
+    // hides content with a 404, which is not usable after the owner's session
+    // expires). Clerk preserves the original destination as the return URL.
+    return redirectToSignIn({ returnBackUrl: req.url });
+  }
+
+  // Stable Clerk id, not an editable username. Missing configuration fails
+  // closed so a bad deployment can never silently become "any signed-in user".
+  const ownerUserId = process.env.YOPEDIA_OWNER_USER_ID?.trim();
+  if (!ownerUserId) {
+    return isApi
+      ? jsonError("Private deployment is not configured.", 503)
+      : privateResponse(new NextResponse("Service unavailable", { status: 503 }));
+  }
+
+  if (userId !== ownerUserId) {
+    return isApi
+      ? jsonError("Owner access required.", 403)
+      : privateResponse(new NextResponse("Not Found", { status: 404 }));
+  }
+
+  return privateResponse(NextResponse.next());
+}, { signInUrl: "/sign-in" });
 
 export const config = {
   matcher: [

@@ -11,8 +11,15 @@ import { parseFrontmatter } from "./frontmatter";
 import { getConfiguredModel, retryWithBackoff } from "./llm";
 import { withFileLock } from "./lock";
 import { logger } from "./logger";
+import {
+  canonicalizeNamesTerm,
+  listNamesTerms,
+  renderNamesTermsGuidance,
+  type NamesTermKind,
+} from "./names-terms";
 import { getStorage } from "./storage";
 import { tenantForOwner, tenantWikiRelPath, validateSlug, validateTenant } from "./wiki";
+import { buildWorkspaceGuidance } from "./workspace-profile";
 
 export type KnowledgeKind =
   | "person"
@@ -297,6 +304,9 @@ export async function extractStructuredKnowledge(
     provider: selection.provider,
     model: selection.model,
   });
+  const dictionary = await listNamesTerms(owner);
+  const dictionaryGuidance = renderNamesTermsGuidance(dictionary);
+  const workspaceGuidance = await buildWorkspaceGuidance(owner);
   let output: z.infer<typeof extractionSchema>;
   try {
     ({ output } = await retryWithBackoff(() => generateText({
@@ -304,7 +314,9 @@ export async function extractStructuredKnowledge(
       output: Output.object({ schema: extractionSchema }),
       maxOutputTokens: 5_000,
       system:
-        "Extract only explicit, useful knowledge objects and relationships from a private wiki page. Use people, organizations, projects, decisions, commitments, risks, and dated events. Preserve temporal language. Every item and relationship must include a short exact-or-close supporting excerpt from the page. Do not infer unsupported relationships. Use null for optional status or date fields when the page does not state a value.",
+        "Extract only explicit, useful knowledge objects and relationships from a private wiki page. Use people, organizations, projects, decisions, commitments, risks, and dated events. Preserve temporal language. Every item and relationship must include a short exact-or-close supporting excerpt from the page. Do not infer unsupported relationships. Use null for optional status or date fields when the page does not state a value." +
+        (workspaceGuidance ? `\n\n${workspaceGuidance}` : "") +
+        (dictionaryGuidance ? `\n\n${dictionaryGuidance}` : ""),
       prompt: `Page: ${slug}\n\n${page.body.slice(0, 80_000)}`,
     })));
   } catch (error) {
@@ -332,9 +344,20 @@ export async function extractStructuredKnowledge(
     anchors.set(anchor.id, anchor);
     return anchor.id;
   };
+  const dictionaryKind = (kind: KnowledgeKind): NamesTermKind[] | undefined => {
+    if (kind === "person") return ["person"];
+    if (kind === "organization") return ["organization"];
+    if (kind === "project") return ["project"];
+    return undefined;
+  };
+  const canonicalRecordName = (kind: KnowledgeKind, name: string) => {
+    const kinds = dictionaryKind(kind);
+    return kinds ? canonicalizeNamesTerm(dictionary, name, kinds) : name;
+  };
+
   const recordInputs: KnowledgeRecordInput[] = output.records.map((record) => ({
     kind: record.kind,
-    name: record.name,
+    name: canonicalRecordName(record.kind, record.name),
     summary: record.summary,
     ...(record.status ? { status: record.status } : {}),
     ...(record.validFrom ? { validFrom: record.validFrom } : {}),
@@ -344,9 +367,9 @@ export async function extractStructuredKnowledge(
   }));
   const relationInputs: KnowledgeRelationInput[] = output.relations.map((relation) => ({
     fromKind: relation.fromKind,
-    fromName: relation.fromName,
+    fromName: canonicalRecordName(relation.fromKind, relation.fromName),
     toKind: relation.toKind,
-    toName: relation.toName,
+    toName: canonicalRecordName(relation.toKind, relation.toName),
     type: relation.type,
     sourceSlug: slug,
     ...(relation.validFrom ? { validFrom: relation.validFrom } : {}),

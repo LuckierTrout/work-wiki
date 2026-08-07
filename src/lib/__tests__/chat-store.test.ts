@@ -35,6 +35,8 @@ describe("owner chat conversations", () => {
     const conversation = await createChatConversation("alice", {
       title: "Launch plan",
       scope: "mine",
+      retrievalMode: "sources",
+      contextBudget: "compact",
     });
     expect(await getChatConversation("bob", conversation.id)).toBeNull();
     expect(await listChatConversations("alice")).toEqual([
@@ -43,10 +45,35 @@ describe("owner chat conversations", () => {
     const updated = await updateChatConversation("alice", conversation.id, {
       title: "Launch checklist",
       scope: null,
+      retrievalMode: "wiki",
+      contextBudget: "expanded",
     });
-    expect(updated).toMatchObject({ title: "Launch checklist" });
+    expect(updated).toMatchObject({
+      title: "Launch checklist",
+      retrievalMode: "wiki",
+      contextBudget: "expanded",
+    });
     expect(updated?.scope).toBeUndefined();
     expect(await deleteChatConversation("alice", conversation.id)).toBe(true);
     expect(await getChatConversation("alice", conversation.id)).toBeNull();
+  });
+
+  it("defaults legacy stored conversations to wiki evidence mode and a standard context budget", async () => {
+    const conversation = await createChatConversation("alice");
+    const storedPath = path.join(
+      tmpDir,
+      "tenants",
+      "alice",
+      "chat-conversations.json",
+    );
+    const stored = JSON.parse(await fs.readFile(storedPath, "utf8"));
+    delete stored[0].retrievalMode;
+    delete stored[0].contextBudget;
+    await fs.writeFile(storedPath, JSON.stringify(stored));
+
+    await expect(getChatConversation("alice", conversation.id)).resolves.toMatchObject({
+      retrievalMode: "wiki",
+      contextBudget: "standard",
+    });
   });
 });

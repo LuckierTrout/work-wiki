@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { preserveDocumentSources } from "@/lib/document-sources";
+import {
+  listDocumentSources,
+  preserveDocumentSources,
+} from "@/lib/document-sources";
 import { serializeFrontmatter } from "@/lib/frontmatter";
 import { _resetStorage, getStorage } from "@/lib/storage";
 import { readWikiPageWithFrontmatter, wikiRelPath } from "@/lib/wiki";
@@ -38,6 +41,7 @@ describe("document source preservation", () => {
       bytes: original,
       filename: "Quarterly Plan.docx",
       contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      relativePath: "Planning/Q1/Quarterly Plan.docx",
       extracted: {
         format: "docx",
         title: "Quarterly Plan",
@@ -54,6 +58,8 @@ describe("document source preservation", () => {
     }]);
 
     expect(result[0].originalKey).toMatch(/^raw\/originals\/alice\/source\//);
+    expect(result[0].relativePath).toBe("Planning/Q1/Quarterly Plan.docx");
+    expect(await listDocumentSources("source", "Alice")).toEqual(result);
     expect(new Uint8Array(await getStorage().readAsset(result[0].originalKey))).toEqual(
       new Uint8Array(original),
     );

@@ -127,7 +127,7 @@ export function EmailIngestSettings() {
             Email ingestion
           </h2>
           <p className="mt-2 max-w-xl text-sm leading-6 text-foreground/60">
-            Forward a note to Yopedia and it enters the same queue as a browser ingest.
+            Forward a note to WorkWiki and it enters the same queue as a browser ingest.
             Only approved senders are accepted.
           </p>
         </div>
@@ -165,7 +165,7 @@ export function EmailIngestSettings() {
               setFeedback(null);
             }}
             placeholder="ingest@yourdomain.com"
-            aria-label="Yopedia inbound email address"
+            aria-label="WorkWiki inbound email address"
             className="min-w-[240px] flex-1 bg-transparent font-mono text-sm text-foreground outline-none placeholder:text-foreground/30"
           />
           <button

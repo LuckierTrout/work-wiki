@@ -8,16 +8,32 @@ vi.mock("@/lib/maintenance", () => ({
   DEFAULT_MAINTENANCE_CAP: 10,
 }));
 vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn() }));
+vi.mock("@/lib/monitor-digests", () => ({
+  createMonitorDigest: vi.fn(),
+  listDueMonitorDigestOwners: vi.fn(),
+  listPendingMonitorDigestDeliveries: vi.fn(),
+  markMonitorDigestQueued: vi.fn(),
+}));
 
 import { getServicePrincipal } from "@/lib/auth";
 import { scanForMaintenance, rebuildDerivedIndexes, purgeStaleJobs } from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
+import {
+  createMonitorDigest,
+  listDueMonitorDigestOwners,
+  listPendingMonitorDigestDeliveries,
+  markMonitorDigestQueued,
+} from "@/lib/monitor-digests";
 
 const mockedGetService = vi.mocked(getServicePrincipal);
 const mockedScan = vi.mocked(scanForMaintenance);
 const mockedRebuild = vi.mocked(rebuildDerivedIndexes);
 const mockedPurge = vi.mocked(purgeStaleJobs);
 const mockedEnqueue = vi.mocked(enqueueTask);
+const mockedCreateDigest = vi.mocked(createMonitorDigest);
+const mockedDueDigestOwners = vi.mocked(listDueMonitorDigestOwners);
+const mockedPendingDigests = vi.mocked(listPendingMonitorDigestDeliveries);
+const mockedMarkDigestQueued = vi.mocked(markMonitorDigestQueued);
 
 const SAMPLE = [
   { kind: "maintain" as const, op: "staleness" as const, slug: "stale" },
@@ -43,6 +59,10 @@ beforeEach(() => {
   mockedRebuild.mockResolvedValue({});
   mockedPurge.mockResolvedValue(0);
   mockedEnqueue.mockResolvedValue(true);
+  mockedDueDigestOwners.mockResolvedValue([]);
+  mockedPendingDigests.mockResolvedValue([]);
+  mockedCreateDigest.mockResolvedValue(null);
+  mockedMarkDigestQueued.mockResolvedValue(null);
 });
 afterEach(() => {
   if (savedFlag === undefined) delete process.env.AUTONOMOUS_MAINTENANCE;
@@ -84,6 +104,35 @@ describe("POST /api/tasks/scan", () => {
   it("honors a ?cap override", async () => {
     await scan("?cap=3");
     expect(mockedScan).toHaveBeenCalledWith(3);
+  });
+
+  it("creates due monitor digests and queues pending email delivery", async () => {
+    mockedDueDigestOwners.mockResolvedValue(["alice"]);
+    mockedCreateDigest.mockResolvedValue({ id: "mdg_1234567890abcdef" } as never);
+    mockedPendingDigests.mockResolvedValue([{
+      id: "mdg_1234567890abcdef",
+      owner: "alice",
+      status: "pending",
+      nextAttemptAt: "2026-08-05T00:00:00.000Z",
+    }]);
+    const res = await scan();
+    const body = await res.json();
+    expect(body).toMatchObject({
+      monitorDigestOwnersDue: 1,
+      monitorDigestsGenerated: 1,
+      monitorDigestDeliveriesDue: 1,
+      monitorDigestDeliveriesEnqueued: 1,
+    });
+    expect(mockedEnqueue).toHaveBeenCalledWith({
+      kind: "deliver-monitor-digest",
+      digestId: "mdg_1234567890abcdef",
+      owner: "alice",
+    });
+    expect(mockedMarkDigestQueued).toHaveBeenCalledWith(
+      "alice",
+      "mdg_1234567890abcdef",
+      expect.any(Date),
+    );
   });
 
   it("self-heals the derived indexes every run (even in dry-run)", async () => {

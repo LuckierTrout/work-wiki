@@ -609,7 +609,13 @@ export interface UpdateAgentOptions {
   /** Automatic triggers only run when explicitly enabled. */
   enabled?: boolean;
   /** Tool grants for the bounded in-app runtime. */
-  allowedTools?: Array<"search-wiki" | "propose-tasks" | "propose-memory">;
+  allowedTools?: Array<
+    | "search-wiki"
+    | "propose-tasks"
+    | "propose-memory"
+    | "request-input"
+    | "run-sandbox"
+  >;
   /** Consequential-write approval policy. Current runtime always proposes. */
   approvalPolicy?: "proposal-only" | "allow-low-risk";
   /** Bounded run settings. */
@@ -690,7 +696,13 @@ export async function updateAgent(
   if (options.trigger !== undefined) existing.trigger = options.trigger;
   if (options.enabled !== undefined) existing.enabled = options.enabled;
   if (options.allowedTools !== undefined) {
-    const allowed = new Set(["search-wiki", "propose-tasks", "propose-memory"]);
+    const allowed = new Set([
+      "search-wiki",
+      "propose-tasks",
+      "propose-memory",
+      "request-input",
+      "run-sandbox",
+    ]);
     if (!options.allowedTools.every((value) => allowed.has(value))) {
       throw new Error("allowedTools contains an unsupported tool");
     }

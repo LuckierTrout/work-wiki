@@ -19,6 +19,15 @@ import {
 } from "./wiki";
 import type { AgentProfile } from "./types";
 import { recordOperationSafe } from "./operation-ledger";
+import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildAgentSkillGuidance } from "./agent-skills";
+import {
+  createAgentInteraction,
+  createAgentSandboxApproval,
+  recordAgentRunWorkspace,
+  type AgentInteractionField,
+} from "./agent-workspaces";
+import { logger } from "./logger";
 
 export type AgentRunTrigger = "manual" | "after-ingest" | "daily" | "weekly";
 
@@ -31,7 +40,7 @@ export interface AgentActivity {
   sourceSlug?: string;
   toolsUsed: string[];
   mode?: "execute" | "dry-run";
-  status?: "completed" | "failed";
+  status?: "completed" | "failed" | "awaiting-input";
   retrievedSlugs?: string[];
   proposedTaskIds?: string[];
   proposedMemoryIds?: string[];
@@ -43,6 +52,9 @@ export interface AgentActivity {
   estimatedCostUsd?: number;
   durationMs?: number;
   error?: string;
+  workspaceId?: string;
+  interactionIds?: string[];
+  sandboxApprovalIds?: string[];
   createdAt: string;
 }
 
@@ -88,12 +100,21 @@ export async function listAgentActivity(
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-function grantedTools(agent: AgentProfile): Array<"searchWiki" | "proposeTasks" | "proposeMemory"> {
+type RuntimeToolName =
+  | "searchWiki"
+  | "proposeTasks"
+  | "proposeMemory"
+  | "requestInput"
+  | "runSandbox";
+
+function grantedTools(agent: AgentProfile): RuntimeToolName[] {
   const grants = agent.allowedTools ?? ["search-wiki"];
-  const active: Array<"searchWiki" | "proposeTasks" | "proposeMemory"> = [];
+  const active: RuntimeToolName[] = [];
   if (grants.includes("search-wiki")) active.push("searchWiki");
   if (grants.includes("propose-tasks")) active.push("proposeTasks");
   if (grants.includes("propose-memory")) active.push("proposeMemory");
+  if (grants.includes("request-input")) active.push("requestInput");
+  if (grants.includes("run-sandbox")) active.push("runSandbox");
   return active;
 }
 
@@ -121,18 +142,24 @@ export async function runSpecializedAgent(input: {
   }
 
   const principal = { id: `agent-owner:${input.owner}`, handle: input.owner };
+  const runId = crypto.randomUUID();
   const startedAt = Date.now();
   const retrievedSlugs = new Set<string>();
   const proposedTaskIds: string[] = [];
   const proposedMemoryIds: string[] = [];
   const expectedChanges: string[] = [];
+  const interactionIds: string[] = [];
+  const sandboxApprovalIds: string[] = [];
+  const runArtifacts: Array<{ filename: string; content: string; mediaType?: string }> = [];
+  const workspaceGuidance = await buildWorkspaceGuidance(input.owner);
+  const skillGuidance = await buildAgentSkillGuidance(input.owner, agent.id);
   const model = await getConfiguredModel({
     ...(agent.provider ? { provider: agent.provider } : {}),
     ...(agent.model ? { model: agent.model } : {}),
   });
   const searchWiki = tool({
     description:
-      "Search the owner's readable Yopedia knowledge and return the most relevant cited page excerpts.",
+      "Search the owner's readable WorkWiki knowledge and return the most relevant cited page excerpts.",
     inputSchema: z.object({ query: z.string().min(1).max(2_000) }),
     execute: async ({ query }) => {
       const { scopeSlugs, error } = await resolveScopeSlugs(
@@ -214,16 +241,86 @@ export async function runSpecializedAgent(input: {
       return { proposalId: proposal.id, status: proposal.status };
     },
   });
+  const requestInput = tool({
+    description:
+      "Pause for structured owner input. Create one concise form only when a required fact or decision is missing, then stop the run and wait for the owner.",
+    inputSchema: z.object({
+      title: z.string().min(1).max(240),
+      description: z.string().max(1_000).optional(),
+      fields: z.array(z.object({
+        id: z.string().regex(/^[a-z0-9_-]{1,80}$/i),
+        label: z.string().min(1).max(160),
+        type: z.enum(["text", "textarea", "number", "date", "select", "checkbox"]),
+        required: z.boolean().optional(),
+        options: z.array(z.string().min(1).max(160)).max(30).optional(),
+        help: z.string().max(500).optional(),
+      })).min(1).max(20),
+    }),
+    execute: async ({ title, description, fields }) => {
+      if (input.dryRun) {
+        expectedChanges.push(`Input request: ${title}`);
+        return { dryRun: true, wouldPause: true };
+      }
+      const interaction = await createAgentInteraction({
+        owner: input.owner,
+        agentId: agent.id,
+        runId,
+        title,
+        description,
+        fields: fields as AgentInteractionField[],
+      });
+      interactionIds.push(interaction.id);
+      return { interactionId: interaction.id, status: interaction.status, instruction: "Stop and wait for the owner." };
+    },
+  });
+  const runSandbox = tool({
+    description:
+      "Request owner approval for one bounded command in the isolated Cloudflare Sandbox. Nothing executes until the owner approves the exact command docket. After requesting approval, stop the run and wait.",
+    inputSchema: z.object({
+      purpose: z.string().max(500).optional(),
+      command: z.string().min(1).max(4_000),
+      files: z.record(
+        z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$/),
+        z.string().max(200_000),
+      ).optional(),
+      outputFiles: z.array(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$/)).max(20).optional(),
+      timeoutMs: z.number().int().min(1_000).max(120_000).optional(),
+    }),
+    execute: async ({ purpose, command, files, outputFiles, timeoutMs }) => {
+      if (input.dryRun) {
+        expectedChanges.push(`Sandbox command: ${command.slice(0, 160)}`);
+        return { dryRun: true, wouldRequestApproval: command };
+      }
+      const approval = await createAgentSandboxApproval({
+        owner: input.owner,
+        agentId: agent.id,
+        runId,
+        purpose,
+        command,
+        files,
+        outputFiles,
+        timeoutMs,
+      });
+      sandboxApprovalIds.push(approval.id);
+      return {
+        approvalId: approval.id,
+        status: approval.status,
+        instruction: "Stop and wait for the owner to approve or reject this command.",
+      };
+    },
+  });
 
   const activeTools = grantedTools(agent);
   const runtime = new ToolLoopAgent({
     model,
     instructions:
       `${agent.instructions || agent.description}\n\n` +
-      "You operate only inside the owner's Yopedia account. Use searchWiki before making factual claims about their knowledge. " +
+      "You operate only inside the owner's WorkWiki account. Use searchWiki before making factual claims about their knowledge. " +
       "Use proposeTasks only for concrete actions supported by source material; proposals remain owner-controlled. " +
-      "Never claim that a task has been completed or sent to an external system.",
-    tools: { searchWiki, proposeTasks, proposeMemory },
+      "Never claim that a task has been completed or sent to an external system." +
+      (workspaceGuidance ? `\n\n${workspaceGuidance}` : "") +
+      (skillGuidance ? `\n\n${skillGuidance}` : ""),
+    tools: { searchWiki, proposeTasks, proposeMemory, requestInput, runSandbox },
     maxOutputTokens: agent.maxOutputTokens ?? 2_500,
     activeTools,
     stopWhen: stepCountIs(agent.maxSteps ?? 8),
@@ -242,7 +339,7 @@ export async function runSpecializedAgent(input: {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const activity: AgentActivity = {
-      id: crypto.randomUUID(),
+      id: runId,
       agentId: agent.id,
       trigger: input.trigger,
       prompt,
@@ -259,8 +356,25 @@ export async function runSpecializedAgent(input: {
       model: agent.model ?? "app-default",
       durationMs: Date.now() - startedAt,
       error: message.slice(0, 2_000),
+      interactionIds,
+      sandboxApprovalIds,
       createdAt: new Date().toISOString(),
     };
+    try {
+      const workspace = await recordAgentRunWorkspace({
+        owner: input.owner,
+        agentId: agent.id,
+        runId,
+        prompt,
+        output: activity.output,
+        status: "failed",
+        metadata: { error: activity.error, toolsUsed: activity.toolsUsed },
+        extraArtifacts: runArtifacts,
+      });
+      activity.workspaceId = workspace.id;
+    } catch (workspaceError) {
+      logger.warn("agent-runtime", "Could not persist failed-run workspace", workspaceError);
+    }
     await recordActivity(input.owner, activity);
     await recordOperationSafe(input.owner, {
       kind: "agent",
@@ -285,7 +399,7 @@ export async function runSpecializedAgent(input: {
   };
   const estimatedCost = estimatedCostUsd(usage);
   const activity: AgentActivity = {
-    id: crypto.randomUUID(),
+    id: runId,
     agentId: agent.id,
     trigger: input.trigger,
     prompt,
@@ -293,7 +407,7 @@ export async function runSpecializedAgent(input: {
     ...(input.sourceSlug ? { sourceSlug: input.sourceSlug } : {}),
     toolsUsed,
     mode: input.dryRun ? "dry-run" : "execute",
-    status: "completed",
+    status: interactionIds.length > 0 || sandboxApprovalIds.length > 0 ? "awaiting-input" : "completed",
     retrievedSlugs: [...retrievedSlugs],
     proposedTaskIds,
     proposedMemoryIds,
@@ -304,8 +418,33 @@ export async function runSpecializedAgent(input: {
     usage,
     ...(estimatedCost !== undefined ? { estimatedCostUsd: estimatedCost } : {}),
     durationMs: Date.now() - startedAt,
+    interactionIds,
+    sandboxApprovalIds,
     createdAt: new Date().toISOString(),
   };
+  try {
+    const workspace = await recordAgentRunWorkspace({
+      owner: input.owner,
+      agentId: agent.id,
+      runId,
+      prompt,
+      output: activity.output,
+      status: activity.status ?? "completed",
+      metadata: {
+        toolsUsed,
+        retrievedSlugs: [...retrievedSlugs],
+        proposedTaskIds,
+        proposedMemoryIds,
+        interactionIds,
+        sandboxApprovalIds,
+        usage,
+      },
+      extraArtifacts: runArtifacts,
+    });
+    activity.workspaceId = workspace.id;
+  } catch (workspaceError) {
+    logger.warn("agent-runtime", "Could not persist agent workspace", workspaceError);
+  }
   await recordActivity(input.owner, activity);
   await recordOperationSafe(input.owner, {
     kind: "agent",

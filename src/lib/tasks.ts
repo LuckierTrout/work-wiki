@@ -14,6 +14,7 @@
  */
 
 import { getCloudflareContext } from "@opennextjs/cloudflare";
+import type { Queue } from "@cloudflare/workers-types";
 import { logger } from "./logger";
 import type { EmailIngestMetadata } from "./email-ingest";
 
@@ -102,6 +103,15 @@ export type Task =
       kind: "extract-knowledge";
       slug: string;
       owner: string;
+      /** Whole-wiki Graphify job whose durable progress this page advances. */
+      graphifyJobId?: string;
+    }
+  | {
+      /** Run pass two: source contribution ledger + cross-page compilation.
+       *  Any proposed page change is routed to Review, never written directly. */
+      kind: "compile-knowledge";
+      slug: string;
+      owner: string;
     }
   | {
       /** Execute one owner-configured specialized agent. */
@@ -113,10 +123,23 @@ export type Task =
       prompt?: string;
     }
   | {
+      /** Execute a durable provider-backed deep-research project. */
+      kind: "run-research";
+      projectId: string;
+      owner: string;
+    }
+  | {
       /** Check an owner-configured source monitor and create a review proposal
        *  when the source changed meaningfully. Never writes the page directly. */
       kind: "monitor-source";
       monitorId: string;
+      owner: string;
+    }
+  | {
+      /** Deliver one persisted source-monitor digest through the owner's
+       *  configured email channel. The digest id is the idempotency key. */
+      kind: "deliver-monitor-digest";
+      digestId: string;
       owner: string;
     }
   | {
@@ -169,21 +192,18 @@ const MAINTAIN_FIX_TYPES = new Set<MaintainFixType>([
   "stale-page",
 ]);
 
-/** Minimal Cloudflare Queue producer binding — we only ever call `send`. */
-interface QueueBinding {
-  send(body: unknown): Promise<void>;
-}
-
 /**
  * Resolve the `TASK_QUEUE` producer binding (matches `queues.producers[].binding`
  * in wrangler.jsonc), or `null` when it isn't available
  * (off the Workers runtime, or the binding isn't bound). `getCloudflareContext`
  * throws outside the OpenNext request scope — expected in dev/tests.
  */
-function getTaskQueue(): QueueBinding | null {
-  let env: { TASK_QUEUE?: QueueBinding };
+function getTaskQueue(): Queue<Task> | null {
+  let env: { TASK_QUEUE?: Queue<Task> };
   try {
-    ({ env } = getCloudflareContext() as { env: { TASK_QUEUE?: QueueBinding } });
+    ({ env } = getCloudflareContext() as unknown as {
+      env: { TASK_QUEUE?: Queue<Task> };
+    });
   } catch {
     return null; // off-Workers — expected
   }
@@ -209,6 +229,42 @@ export async function enqueueTask(task: Task): Promise<boolean> {
   await queue.send(task);
   logger.info("tasks", `enqueued task "${task.kind}"`);
   return true;
+}
+
+export interface EnqueueTasksResult {
+  available: boolean;
+  enqueued: number;
+  error?: string;
+}
+
+/**
+ * Enqueue many small tasks with Cloudflare's native batch API. A result records
+ * exactly how many complete batches were accepted so callers can mark only the
+ * unsent tail as failed and offer a targeted retry.
+ */
+export async function enqueueTasks(tasks: readonly Task[]): Promise<EnqueueTasksResult> {
+  if (tasks.length === 0) return { available: true, enqueued: 0 };
+  const queue = getTaskQueue();
+  if (!queue) {
+    logger.warn("tasks", `TASK_QUEUE unavailable — skipped batch of ${tasks.length}`);
+    return { available: false, enqueued: 0 };
+  }
+
+  const batchSize = 100;
+  let enqueued = 0;
+  try {
+    for (let offset = 0; offset < tasks.length; offset += batchSize) {
+      const batch = tasks.slice(offset, offset + batchSize);
+      await queue.sendBatch(batch.map((body) => ({ body })));
+      enqueued += batch.length;
+    }
+    logger.info("tasks", `enqueued ${enqueued} task(s) in batch`);
+    return { available: true, enqueued };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Queue batch failed";
+    logger.error("tasks", `batch enqueue stopped after ${enqueued}/${tasks.length}`, error);
+    return { available: true, enqueued, error: message };
+  }
 }
 
 /**
@@ -418,7 +474,31 @@ export function parseTask(body: unknown): Task | null {
       ) {
         return null;
       }
-      return { kind: "extract-knowledge", slug: t.slug, owner: t.owner };
+      if (
+        t.graphifyJobId !== undefined &&
+        (typeof t.graphifyJobId !== "string" ||
+          !/^graphify_[a-f0-9-]{36}$/i.test(t.graphifyJobId))
+      ) {
+        return null;
+      }
+      return {
+        kind: "extract-knowledge",
+        slug: t.slug,
+        owner: t.owner,
+        ...(typeof t.graphifyJobId === "string"
+          ? { graphifyJobId: t.graphifyJobId }
+          : {}),
+      };
+    case "compile-knowledge":
+      if (
+        typeof t.slug !== "string" ||
+        t.slug.trim() === "" ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return { kind: "compile-knowledge", slug: t.slug, owner: t.owner };
     case "run-agent":
       if (
         typeof t.agentId !== "string" ||
@@ -444,6 +524,16 @@ export function parseTask(body: unknown): Task | null {
           ? { prompt: t.prompt.slice(0, 4_000) }
           : {}),
       };
+    case "run-research":
+      if (
+        typeof t.projectId !== "string" ||
+        !/^[a-f0-9-]{36}$/i.test(t.projectId) ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return { kind: "run-research", projectId: t.projectId, owner: t.owner };
     case "monitor-source":
       if (
         typeof t.monitorId !== "string" ||
@@ -456,6 +546,20 @@ export function parseTask(body: unknown): Task | null {
       return {
         kind: "monitor-source",
         monitorId: t.monitorId,
+        owner: t.owner,
+      };
+    case "deliver-monitor-digest":
+      if (
+        typeof t.digestId !== "string" ||
+        !/^mdg_[a-f0-9]{16}$/.test(t.digestId) ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return {
+        kind: "deliver-monitor-digest",
+        digestId: t.digestId,
         owner: t.owner,
       };
     case "deliver-integration":

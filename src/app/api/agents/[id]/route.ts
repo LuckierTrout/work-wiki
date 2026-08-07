@@ -192,7 +192,9 @@ export async function PUT(req: Request, { params }: RouteParams) {
           (value) =>
             value === "search-wiki" ||
             value === "propose-tasks" ||
-            value === "propose-memory",
+            value === "propose-memory" ||
+            value === "request-input" ||
+            value === "run-sandbox",
         ))
     ) {
       return NextResponse.json({ error: "Invalid allowedTools" }, { status: 400 });

@@ -5,9 +5,9 @@ import { profileHref } from "@/lib/links";
 
 /** Map trust score to a colored dot. */
 function trustDot(score: number): { color: string; label: string } {
-  if (score >= 0.7) return { color: "bg-green-500", label: "high" };
-  if (score >= 0.3) return { color: "bg-yellow-500", label: "medium" };
-  return { color: "bg-gray-400", label: "low" };
+  if (score >= 0.7) return { color: "bg-accent", label: "high" };
+  if (score >= 0.3) return { color: "bg-rust", label: "medium" };
+  return { color: "bg-faint", label: "low" };
 }
 
 /** Truncate an ISO date string to YYYY-MM-DD. */
@@ -19,19 +19,20 @@ export default async function ContributorsPage() {
   const contributors = await listContributors(await getPrincipal());
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
-      <div className="mb-8 flex items-center justify-between">
+    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
+      <div className="spread" style={{ gap: 24, alignItems: "end", marginBottom: 32 }}>
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Contributors</h1>
-          <p className="mt-1 text-sm text-foreground/60">
-            Everyone who has edited pages or participated in discussions.
+          <p className="fmark" style={{ marginBottom: 16 }}>people and agents</p>
+          <h1 className="display" style={{ fontSize: "clamp(36px,4.5vw,58px)", margin: 0 }}>Contributors</h1>
+          <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 0", maxWidth: "64ch" }}>
+            See who has added, reviewed, and maintained the knowledge in this commons.
           </p>
         </div>
         <Link
           href="/wiki"
-          className="text-sm text-foreground/60 hover:text-foreground transition-colors"
+          className="btn ghost"
         >
-          ← Back to wiki
+          Browse the wiki
         </Link>
       </div>
 
@@ -41,7 +42,7 @@ export default async function ContributorsPage() {
           contributor profiles.
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto border-t border-rule pt-6">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-foreground/10 text-left text-foreground/60">

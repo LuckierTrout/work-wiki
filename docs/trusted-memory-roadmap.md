@@ -138,8 +138,11 @@ reverted from page history.
 The local verification gate includes focused unit coverage, the complete test
 suite, lint, TypeScript, a production Next build, the OpenNext Cloudflare build,
 and a Wrangler dry-run. Owner-session browser acceptance and production rollout
-are deliberately separate gates. Source-monitor digest delivery and any named
-task/calendar SaaS adapter remain follow-up choices rather than implicit scope.
+are deliberately separate gates. Source-monitor digest delivery is implemented
+locally with owner-private history, cadence controls, manual generation, and
+optional queued email; production destination verification and acceptance remain.
+Any named task/calendar SaaS adapter remains a follow-up choice rather than
+implicit scope.
 The first backup implementation is an isolated, checksummed snapshot in the
 configured storage account; off-account disaster-recovery replication remains a
 separate hardening step.

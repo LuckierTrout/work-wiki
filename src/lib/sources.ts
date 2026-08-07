@@ -10,7 +10,10 @@ import type { SourceEntry } from "./types";
 import { normalizeUrl } from "./source-index";
 
 /** Valid provenance types. */
-const VALID_TYPES = new Set<SourceEntry["type"]>(["url", "text", "x-mention", "wiki-ref", "image", "pdf", "docx", "pptx", "xlsx", "csv", "youtube", "email"]);
+const VALID_TYPES = new Set<SourceEntry["type"]>([
+  "url", "text", "x-mention", "wiki-ref", "image", "pdf", "docx", "pptx", "xlsx", "csv",
+  "md", "txt", "html", "zip", "youtube", "email", "odt", "ods", "odp", "epub", "org", "rtf", "mobi",
+]);
 
 /**
  * Serialize a `SourceEntry[]` into a JSON string suitable for frontmatter.

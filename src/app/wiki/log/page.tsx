@@ -4,6 +4,12 @@ import { canReadEntry } from "@/lib/authz";
 import { getPrincipal } from "@/lib/auth";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 
+// The production log can contain private-page references, so authorization is
+// resolved for every request before those lines are rendered. Keep this route
+// dynamic even when a build-time filesystem has no log yet; otherwise Next can
+// classify it as static and fail when Clerk reads request cookies at runtime.
+export const dynamic = "force-dynamic";
+
 export default async function LogPage() {
   const raw = await readLog();
 
@@ -41,19 +47,25 @@ export default async function LogPage() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
-      <div className="mb-8 flex items-center justify-between">
-        <h1 className="text-3xl font-bold tracking-tight">Activity Log</h1>
+    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
+      <div className="spread" style={{ gap: 24, alignItems: "end", marginBottom: 32 }}>
+        <div>
+          <p className="fmark" style={{ marginBottom: 16 }}>the trail</p>
+          <h1 className="display" style={{ fontSize: "clamp(36px,4.5vw,58px)", margin: 0 }}>Activity log</h1>
+          <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 0", maxWidth: "64ch" }}>
+            A chronological receipt of new pages, reconciliations, revisions, and automation.
+          </p>
+        </div>
         <Link
           href="/wiki"
-          className="text-sm text-foreground/60 hover:text-foreground transition-colors"
+          className="btn ghost"
         >
-          ← Back to index
+          Browse the wiki
         </Link>
       </div>
 
       {logContent ? (
-        <article>
+        <article style={{ maxWidth: 900, borderTop: "1px solid var(--rule)", paddingTop: 28 }}>
           <MarkdownRenderer content={logContent} />
         </article>
       ) : (

@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "WorkWiki Clipper",
+  "version": "1.0.0",
+  "description": "Send the current page to your private WorkWiki ingest flow.",
+  "permissions": ["activeTab", "tabs", "contextMenus", "storage"],
+  "host_permissions": ["https://workwiki.app/*"],
+  "action": {
+    "default_title": "Save to WorkWiki",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  }
+}

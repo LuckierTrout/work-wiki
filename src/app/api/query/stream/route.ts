@@ -12,6 +12,7 @@ import {
 import { resolveScopeSlugs } from "@/lib/search";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { expandQueryWithNamesTerms } from "@/lib/names-terms";
 
 export async function POST(request: NextRequest) {
   try {
@@ -69,7 +70,7 @@ export async function POST(request: NextRequest) {
     const principal = await getPrincipal();
     if (!principal) {
       return NextResponse.json(
-        { error: "Sign in required to query yopedia." },
+        { error: "Sign in required to query WorkWiki." },
         { status: 401 },
       );
     }
@@ -117,7 +118,15 @@ export async function POST(request: NextRequest) {
     }
 
     // Select relevant pages and build context (same logic as query())
-    const selectedSlugs = await selectPagesForQuery(trimmedQuestion, entries, scopeSlugs);
+    const retrievalQuestion = await expandQueryWithNamesTerms(
+      principal.handle,
+      trimmedQuestion,
+    );
+    const selectedSlugs = await selectPagesForQuery(
+      retrievalQuestion,
+      entries,
+      scopeSlugs,
+    );
     const { context, slugs: loadedSlugs } =
       await buildContext(selectedSlugs);
 
@@ -127,6 +136,7 @@ export async function POST(request: NextRequest) {
       entries,
       selectedSlugs,
       queryFormat,
+      principal.handle,
     );
 
     // Stream the LLM response

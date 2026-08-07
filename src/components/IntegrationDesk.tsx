@@ -82,7 +82,7 @@ export function IntegrationDesk() {
   const failed = events.filter((event) => event.status === "failed").length;
 
   return (
-    <main className="shell fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>dispatch desk</p>
@@ -111,7 +111,7 @@ export function IntegrationDesk() {
           <p style={{ color: "var(--muted)", fontSize: 13.5, lineHeight: 1.55 }}>POST a provider-neutral event to your automation endpoint with an idempotency key.</p>
           <label style={{ display: "grid", gap: 6, color: "var(--muted)", fontSize: 12 }}>
             HTTPS endpoint
-            <input type="url" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://hooks.example.com/yopedia" style={inputStyle} />
+            <input type="url" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://hooks.example.com/workwiki" style={inputStyle} />
           </label>
           <p className="receipt" style={{ color: signingConfigured ? "var(--accent)" : "var(--rust)", fontSize: 9.5, margin: "11px 0 0" }}>
             {signingConfigured ? "HMAC SIGNING CONFIGURED" : "UNSIGNED UNTIL YOPEDIA_WEBHOOK_SIGNING_SECRET IS SET"}
