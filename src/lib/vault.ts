@@ -1,7 +1,7 @@
 /**
  * Per-user **named vaults** — personal *reference lenses* over the commons.
  *
- * In the commons-first model (see `yopedia-concept.md`) public content has one
+ * In the commons-first model (see `work-wiki-concept.md`) public content has one
  * home: the collective commons. A user's public vault is NOT separate storage —
  * it's a curated set of **references** to commons pages. "Curating" a page adds
  * its slug to a named vault; the page itself stays single and collective, so a

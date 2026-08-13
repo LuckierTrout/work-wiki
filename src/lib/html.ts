@@ -68,7 +68,7 @@ const SANDBOX_CSP =
  */
 // Folio color tokens, light + dark — factored out so the per-frame theme
 // override in `sandboxHead` can force the app's RESOLVED theme (matching
-// yopedia's in-app light/dark toggle, not just the OS `prefers-color-scheme`).
+// work-wiki's in-app light/dark toggle, not just the OS `prefers-color-scheme`).
 const LIGHT_VARS =
   "--paper:#fbfaf6;--paper-2:#f4f1e9;--ink:#1b1a16;--ink-2:#423f38;--muted:#756f62;--rule:#e2ddd0;--accent:#4d6bfe;--accent-soft:#e7ebff";
 const DARK_VARS =
@@ -264,7 +264,7 @@ function sandboxHead(
       ? `<script>${chartLibSource}</script>`
       : "";
   // Force the app's RESOLVED theme so the artifact's paper/ink matches the page
-  // around it — including yopedia's in-app dark TOGGLE, which the BASE_STYLE
+  // around it — including work-wiki's in-app dark TOGGLE, which the BASE_STYLE
   // `@media (prefers-color-scheme)` default can't see. Injected AFTER BASE_STYLE
   // so this `:root` wins over the media-query default at equal specificity.
   const themeOverride = theme

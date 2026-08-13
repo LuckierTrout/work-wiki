@@ -6,7 +6,7 @@ const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 // Closes the unauthenticated-write hole at a single enforcement point:
 // any mutating request to /api/** requires a signed-in user. Reads (GET/HEAD)
-// stay public — yopedia is a public observer surface (see yopedia-concept.md).
+// stay public — work-wiki is a public observer surface (see work-wiki-concept.md).
 // Attribution (which user) is read per-route from `getPrincipal()`.
 //
 // Exception: some routes authenticate IN-ROUTE with a token instead of a Clerk
@@ -108,7 +108,7 @@ export default clerkMiddleware(async (auth, req) => {
     const { userId } = await auth();
     if (!userId) {
       return NextResponse.json(
-        { error: "Sign in required to write to yopedia." },
+        { error: "Sign in required to write to work-wiki." },
         { status: 401 },
       );
     }

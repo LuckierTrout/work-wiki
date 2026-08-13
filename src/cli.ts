@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * CLI entry point for yopedia.
+ * CLI entry point for work-wiki.
  *
  * Usage:
  *   pnpm cli ingest <url>         Ingest a URL into the wiki
@@ -177,7 +177,7 @@ export function parseArgs(argv: string[]): ParsedCommand {
 // ---------------------------------------------------------------------------
 
 const HELP = `
-yopedia CLI
+work-wiki CLI
 
 Usage: pnpm cli <command> [args]
 

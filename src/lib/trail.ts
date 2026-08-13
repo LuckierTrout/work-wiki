@@ -209,7 +209,7 @@ export async function trailEventsForPages(
         for (const s of sources) {
           const ts = Date.parse(s.fetched);
           if (Number.isNaN(ts)) continue;
-          // Fold automation actors (system / lint-fix / yopedia) into the agent
+          // Fold automation actors (system / lint-fix / work-wiki) into the agent
           // so the trail reads as one yoyo, matching the (rebuilt) contributor index.
           const actor = normalizeActor(s.triggered_by || "system");
           evs.push({

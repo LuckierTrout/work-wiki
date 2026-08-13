@@ -101,11 +101,11 @@ wise; blocking on the spec would stall indefinitely.
 
 ## 2. Approach Evaluation
 
-Three approaches, evaluated against yopedia's existing architecture.
+Three approaches, evaluated against work-wiki's existing architecture.
 
 ### 2.1 LLM-evaluated triggers (agent-wiki style)
 
-**How it would work in yopedia:** User creates a trigger with an NL condition
+**How it would work in work-wiki:** User creates a trigger with an NL condition
 ("notify me when any page about climate science drops below confidence 0.5").
 On every page write/delete, the lifecycle pipeline (`runPageLifecycleOp`)
 evaluates all matching triggers via LLM.
@@ -117,16 +117,16 @@ evaluates all matching triggers via LLM.
 | **Latency** | Adds 1–5s per trigger evaluation to every write path |
 | **Reliability** | LLM matching is probabilistic; false negatives are possible |
 | **Complexity** | High — requires trigger storage, evaluation queue, fan-out |
-| **Fit with yopedia** | yopedia already has lint checks that detect the most valuable conditions deterministically; LLM evaluation adds cost without proportional value |
+| **Fit with work-wiki** | work-wiki already has lint checks that detect the most valuable conditions deterministically; LLM evaluation adds cost without proportional value |
 
 **Verdict:** Interesting for open-ended use cases, but over-engineered for
-yopedia's current stage. The conditions users actually want ("confidence
+work-wiki's current stage. The conditions users actually want ("confidence
 dropped", "page went stale", "contradiction found") are already detected by
 lint checks — deterministically, for free.
 
 ### 2.2 Structured rules (lint-based triggers)
 
-**How it would work in yopedia:** Triggers are structured rules that map to
+**How it would work in work-wiki:** Triggers are structured rules that map to
 existing lint check types and frontmatter fields. Instead of evaluating an NL
 condition via LLM, the system checks whether a page lifecycle event produces
 a lint issue that matches a trigger's rule.
@@ -138,7 +138,7 @@ a lint issue that matches a trigger's rule.
 | **Latency** | Negligible — lint checks are fast (except contradiction/missing-concept, which use LLM but are already budgeted) |
 | **Reliability** | Deterministic — same input always produces same result |
 | **Complexity** | Low — trigger is a filter over lint results + page events |
-| **Fit with yopedia** | Direct — yopedia has 14 lint check types, frontmatter fields, revision history, and talk pages. These already detect the conditions users care about. |
+| **Fit with work-wiki** | Direct — work-wiki has 14 lint check types, frontmatter fields, revision history, and talk pages. These already detect the conditions users care about. |
 
 **Verdict:** The right first step. Covers 80% of use cases at near-zero
 marginal cost by leveraging infrastructure that already exists.
@@ -156,7 +156,7 @@ enables LLM evaluation for triggers that can't be expressed structurally.
 | **Latency** | Negligible for structured; 1–5s for NL triggers |
 | **Reliability** | Deterministic for structured; probabilistic for NL |
 | **Complexity** | Medium — two evaluation paths, but NL path is optional |
-| **Fit with yopedia** | Good eventual target, but NL evaluation should be deferred |
+| **Fit with work-wiki** | Good eventual target, but NL evaluation should be deferred |
 
 **Verdict:** The right long-term architecture. Start with structured rules;
 add the NL path when a concrete use case demands it.
@@ -252,7 +252,7 @@ interface TriggerEvent {
 ### 3.3 Storage
 
 Triggers and events should be stored as JSON files on the filesystem,
-consistent with yopedia's storage model:
+consistent with work-wiki's storage model:
 
 | Artifact | Location | Format |
 |----------|----------|--------|
@@ -302,7 +302,7 @@ on the existing subscriptions mechanism.
 ```markdown
 ### Triggers (proposed — not yet implemented)
 
-Triggers turn yopedia from a pull-only knowledge base into an active signal
+Triggers turn work-wiki from a pull-only knowledge base into an active signal
 source. A trigger is a structured rule that fires when wiki content changes
 in a way that matches the rule's condition.
 
@@ -335,7 +335,7 @@ events in `wiki/.trigger-events/<YYYY-MM-DD>.jsonl`.
 
 ### 4.1 Current MCP capabilities
 
-yopedia's MCP server (`src/mcp.ts`) exposes 21 tools over stdio transport.
+work-wiki's MCP server (`src/mcp.ts`) exposes 21 tools over stdio transport.
 The `@modelcontextprotocol/sdk` package supports:
 
 - **Tool registration** (fully used)
@@ -352,7 +352,7 @@ client. The current spec defines a small set:
 - `notifications/tools/list_changed` — tool list changed
 - `notifications/prompts/list_changed` — prompt list changed
 
-If yopedia exposed wiki pages as MCP resources (`wiki://<slug>`), it could
+If work-wiki exposed wiki pages as MCP resources (`wiki://<slug>`), it could
 send `notifications/resources/updated` when a page changes. This is the
 **simplest possible MCP integration** and requires no spec extensions.
 
@@ -372,7 +372,7 @@ ships, it will likely define:
 - Event delivery semantics (at-least-once, ordering guarantees)
 - Subscription lifecycle management
 
-**Recommendation:** Design yopedia's trigger system with a clean internal
+**Recommendation:** Design work-wiki's trigger system with a clean internal
 interface so it can be adapted to the MCP Triggers & Events spec when it
 materializes. Don't block on the WG; don't build a proprietary protocol
 that conflicts with where MCP is heading.
@@ -396,7 +396,7 @@ that conflicts with where MCP is heading.
 
 ### Rationale
 
-1. **The building blocks already exist.** yopedia has 14 lint check types
+1. **The building blocks already exist.** work-wiki has 14 lint check types
    that detect the most valuable change conditions (stale, low-confidence,
    disputed, contradictions, broken links, etc.), a revision system that
    tracks who changed what, talk pages for discussions, and a unified
@@ -436,7 +436,7 @@ that conflicts with where MCP is heading.
 
 ## 6. Comparative Summary
 
-| Dimension | agent-wiki | agentmemory | beads | yopedia (proposed) |
+| Dimension | agent-wiki | agentmemory | beads | work-wiki (proposed) |
 |-----------|-----------|-------------|-------|-------------------|
 | **Trigger definition** | NL + scope path | Fixed SDK hooks | None | Structured rules + scope |
 | **LLM evaluation** | Yes (two-phase) | No | No | No (defer) |
@@ -446,7 +446,7 @@ that conflicts with where MCP is heading.
 | **MCP integration** | None | None | None | Native (resources + notifications) |
 | **User-definable** | Yes | No | No | Yes (structured conditions) |
 
-yopedia's advantage: lint checks already detect 14 condition types
+work-wiki's advantage: lint checks already detect 14 condition types
 deterministically. A trigger system built on top of lint is cheaper, more
 reliable, and more predictable than LLM-evaluated NL triggers — while
 covering the conditions that actually matter for a knowledge base (staleness,
@@ -454,4 +454,4 @@ confidence decay, contradictions, broken links, disputes).
 
 ---
 
-*Research conducted for yopedia issue #148. Evaluation only — no code changes.*
+*Research conducted for work-wiki issue #148. Evaluation only — no code changes.*

@@ -43,7 +43,7 @@ function StatCell({ label, value }: { label: string; value: string | number }) {
 }
 
 // Public profile: pages a given handle owns or has contributed to. Visible to
-// anyone (guests included) — yopedia is a public observer surface.
+// anyone (guests included) — work-wiki is a public observer surface.
 export default async function UserPage({
   params,
 }: {

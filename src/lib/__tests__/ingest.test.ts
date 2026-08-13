@@ -598,7 +598,7 @@ describe("ingest — YAML frontmatter", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ingest — Phase 1 (yopedia) frontmatter fields
+// ingest — Phase 1 (work-wiki) frontmatter fields
 // ---------------------------------------------------------------------------
 
 describe("ingest — Phase 1 frontmatter fields", () => {

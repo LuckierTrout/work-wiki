@@ -15,7 +15,7 @@
 - **MCP tools:** 31 (search_wiki, read_page, list_pages, create_page, update_page, update_metadata, delete_page, ingest_url, batch_ingest, ingest_text, ingest_x_mention, query_wiki, save_query_answer, agent_context, seed_agent, list_agents, update_agent, delete_agent, list_contributors, get_contributor, lint_wiki, fix_lint_issue, list_discussions, create_discussion, resolve_discussion, add_comment, reingest, ingest_history, dataview_query, list_revisions, read_revision)
 - **Lint checks:** 16 (orphan-page, stale-index, empty-page, missing-crossref, broken-link, contradiction, missing-concept-page, stale-page, low-confidence, unmigrated-page, duplicate-entity, uncited-claims, unresolved-discussions, disputed-page, supersedes-dangling, incomplete-coverage)
 
-### yopedia Phase Progress
+### work-wiki Phase Progress
 
 | Phase | Status | Description |
 |-------|--------|-------------|
@@ -29,7 +29,7 @@
 
 1. **No E2E browser tests** — Unit and integration tests are strong (2,054) but no Playwright/Cypress tests
 2. **Contributor trust score** — Simple `edits / (edits + reverts)` ratio; needs validation against real multi-user data
-3. **grow.sh still coupled to yoyo-evolve** — Downloads a tarball from a separate repo instead of using the yopedia API it already has
+3. **grow.sh still coupled to yoyo-evolve** — Downloads a tarball from a separate repo instead of using the work-wiki API it already has
 4. **GitHub Actions polling workflow** — Phase 3 X-mention polling (#21) blocked on deployment architecture
 
 ---

@@ -12,7 +12,7 @@
  *     low-confidence pages (below `LOW_CONFIDENCE_THRESHOLD`) that have a
  *     `source_url` — re-ingesting re-synthesizes and may raise confidence.
  *   - **fix** (deterministic, no LLM): backfill a legacy page missing all
- *     yopedia schema fields (`unmigrated-page`); clear a dangling `supersedes`
+ *     work-wiki schema fields (`unmigrated-page`); clear a dangling `supersedes`
  *     reference (`supersedes-dangling`); drop an index entry whose page file is
  *     gone (`stale-index`). These reuse the lint auto-fixes (`lint-fix.ts`).
  *
@@ -115,7 +115,7 @@ export async function scanForMaintenance(
     }
 
     // (2) Deterministic janitorial fixes (no LLM, safe): backfill a legacy page
-    //     missing ALL yopedia schema fields; clear a dangling `supersedes` ref.
+    //     missing ALL work-wiki schema fields; clear a dangling `supersedes` ref.
     if (
       !("confidence" in fm) &&
       !("authors" in fm) &&

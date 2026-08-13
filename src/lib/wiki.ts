@@ -59,7 +59,7 @@ export function rawRelPath(filename: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Per-tenant path helpers (tenant-silos groundwork — see yopedia-concept.md).
+// Per-tenant path helpers (tenant-silos groundwork — see work-wiki-concept.md).
 //
 // Additive and behavior-preserving: the legacy `wikiRelPath`/`rawRelPath`
 // above are unchanged, and nothing yet routes through these. Later phases
@@ -69,9 +69,9 @@ export function rawRelPath(filename: string): string {
 
 /**
  * Catch-all tenant for ownerless / seed content (re-exported from the pure
- * `links` module so client and server share one definition). yopedia is built
+ * `links` module so client and server share one definition). work-wiki is built
  * in public by yoyo, so unattributed/seed pages are the platform's own — they
- * belong to the `yopedia` tenant; "ownerless" never surfaces in a URL.
+ * belong to the `work-wiki` tenant; "ownerless" never surfaces in a URL.
  */
 export { DEFAULT_TENANT, ownerToTenant };
 

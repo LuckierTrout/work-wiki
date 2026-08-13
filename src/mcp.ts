@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * yopedia MCP server — exposes wiki tools over stdio transport.
+ * work-wiki MCP server — exposes wiki tools over stdio transport.
  *
  * Tools:
  *   search_wiki    — Search wiki pages by query string
@@ -1610,7 +1610,7 @@ export async function handleRevertRevision(args: {
 // MCP server setup
 // ---------------------------------------------------------------------------
 
-const SERVER_INSTRUCTIONS = `yopedia is a shared knowledge wiki for humans and agents. It accumulates durable, citable knowledge — not ephemeral RAG results. Every page has confidence scores, expiry dates, cited sources, and revision history. Contradictions are tracked and resolved through talk pages.
+const SERVER_INSTRUCTIONS = `work-wiki is a shared knowledge wiki for humans and agents. It accumulates durable, citable knowledge — not ephemeral RAG results. Every page has confidence scores, expiry dates, cited sources, and revision history. Contradictions are tracked and resolved through talk pages.
 
 ## Recommended workflow
 
@@ -1651,7 +1651,7 @@ export function createMcpServer(): McpServer {
 
   // search_wiki — Search wiki pages
   server.registerTool("search_wiki", {
-    description: "Search yopedia wiki pages by query string",
+    description: "Search work-wiki wiki pages by query string",
     inputSchema: {
       query: z.string().describe("Search query"),
       limit: z
@@ -1695,7 +1695,7 @@ export function createMcpServer(): McpServer {
 
   // read_page — Read a single wiki page
   server.registerTool("read_page", {
-    description: "Read a single yopedia wiki page by slug",
+    description: "Read a single work-wiki wiki page by slug",
     inputSchema: {
       slug: z.string().describe("Page slug (e.g. 'neural-networks')"),
     },
@@ -1732,7 +1732,7 @@ export function createMcpServer(): McpServer {
   // list_pages — List all wiki pages
   server.registerTool("list_pages", {
     description:
-      "List all yopedia wiki pages with optional sort and limit",
+      "List all work-wiki wiki pages with optional sort and limit",
     inputSchema: {
       sort: z
         .enum(["title", "updated", "confidence"])
@@ -1775,7 +1775,7 @@ export function createMcpServer(): McpServer {
 
   // create_page — Create a new wiki page
   server.registerTool("create_page", {
-    description: "Create a new yopedia wiki page with the given slug and markdown content",
+    description: "Create a new work-wiki wiki page with the given slug and markdown content",
     inputSchema: {
       slug: z.string().describe("URL-safe page slug (e.g. 'neural-networks')"),
       content: z.string().describe("Markdown body for the new page (include a # Heading for the title)"),
@@ -1815,7 +1815,7 @@ export function createMcpServer(): McpServer {
 
   // update_page — Update an existing wiki page
   server.registerTool("update_page", {
-    description: "Update an existing yopedia wiki page with new markdown content",
+    description: "Update an existing work-wiki wiki page with new markdown content",
     inputSchema: {
       slug: z.string().describe("Slug of the page to update"),
       content: z.string().describe("New markdown body for the page"),
@@ -1900,7 +1900,7 @@ export function createMcpServer(): McpServer {
 
   // delete_page — Delete a wiki page
   server.registerTool("delete_page", {
-    description: "Delete a yopedia wiki page by slug",
+    description: "Delete a work-wiki wiki page by slug",
     inputSchema: {
       slug: z.string().describe("Slug of the page to delete (e.g. 'neural-networks')"),
       author: z.string().optional().describe("Who is performing the deletion (for attribution)"),
@@ -2659,7 +2659,7 @@ export function createMcpServer(): McpServer {
   // lint_wiki — Run quality checks on the wiki
   server.registerTool("lint_wiki", {
     description:
-      "Run quality checks on the yopedia wiki. Returns an array of issues with type, severity, slug, and message. Optionally scope to specific check types or minimum severity.",
+      "Run quality checks on the work-wiki wiki. Returns an array of issues with type, severity, slug, and message. Optionally scope to specific check types or minimum severity.",
     inputSchema: {
       checks: z
         .array(z.enum(ALL_CHECK_TYPES))
@@ -3109,7 +3109,7 @@ export function createMcpServer(): McpServer {
   // dataview_query — Query wiki pages by frontmatter fields
   server.registerTool("dataview_query", {
     description:
-      "Query yopedia wiki pages by frontmatter fields with structured filters, sort, and limit. " +
+      "Query work-wiki wiki pages by frontmatter fields with structured filters, sort, and limit. " +
       "Supports operators: eq, neq, gt, lt, gte, lte, contains, exists.",
     inputSchema: {
       filters: z
@@ -3168,7 +3168,7 @@ export function createMcpServer(): McpServer {
   // list_revisions — List revision history for a page
   server.registerTool("list_revisions", {
     description:
-      "List revision history for a yopedia wiki page. Returns metadata for each revision " +
+      "List revision history for a work-wiki wiki page. Returns metadata for each revision " +
       "(timestamp, date, author, reason, sizeBytes) sorted newest first.",
     inputSchema: {
       slug: z
@@ -3208,7 +3208,7 @@ export function createMcpServer(): McpServer {
   // read_revision — Read a specific revision's content
   server.registerTool("read_revision", {
     description:
-      "Read the full content of a specific revision of a yopedia wiki page. " +
+      "Read the full content of a specific revision of a work-wiki wiki page. " +
       "Use list_revisions first to discover available timestamps.",
     inputSchema: {
       slug: z
@@ -3251,7 +3251,7 @@ export function createMcpServer(): McpServer {
   // revert_revision — Revert a wiki page to a previous revision
   server.registerTool("revert_revision", {
     description:
-      "Revert a yopedia wiki page to a previous revision. " +
+      "Revert a work-wiki wiki page to a previous revision. " +
       "Use list_revisions to discover available timestamps, then read_revision to preview. " +
       "The page content is replaced with the revision content and a new revision is saved.",
     inputSchema: {
@@ -3813,7 +3813,7 @@ async function main(): Promise<void> {
   const server = createMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("yopedia MCP server running on stdio");
+  console.error("work-wiki MCP server running on stdio");
 }
 
 // Only run main when executed directly (not imported for testing)

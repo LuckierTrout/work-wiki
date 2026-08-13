@@ -1,6 +1,6 @@
 /**
  * The public **commons** — a derived index of every PUBLIC page across all
- * tenants (tenant-silos groundwork; see yopedia-concept.md). In the per-tenant
+ * tenants (tenant-silos groundwork; see work-wiki-concept.md). In the per-tenant
  * model each page lives in its owner's silo and the commons is *not* separate
  * storage but this persisted index over the public ones.
  *

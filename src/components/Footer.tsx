@@ -24,7 +24,7 @@ const COLUMNS: { title: string; links: FLink[] }[] = [
   {
     title: "About",
     links: [
-      { href: "/about", label: "What is yopedia" },
+      { href: "/about", label: "What is work-wiki" },
       { href: "https://github.com/yologdev/yoyo", label: "Grown by yoyo", external: true },
       { href: "https://github.com/yologdev/yopedia", label: "Source", external: true },
     ],
@@ -79,7 +79,7 @@ export function Footer() {
                 className="display"
                 style={{ fontSize: 20, letterSpacing: "-0.03em", fontWeight: 600 }}
               >
-                yopedia
+                work-wiki
               </span>
             </span>
             <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--muted)" }}>
@@ -117,7 +117,7 @@ export function Footer() {
           <span className="inline-flex items-center" style={{ gap: 10 }}>
             <LivingPageMark size="footer" />
             <span style={{ fontSize: 13, color: "var(--muted)" }}>
-              yopedia — a wiki for the agent age
+              work-wiki — a wiki for the agent age
             </span>
           </span>
           <a

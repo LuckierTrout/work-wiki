@@ -363,7 +363,7 @@ export async function listContributors(
   return profiles.filter(isRealContributor);
 }
 
-/** Keep only real contributors. Automation actors (system/lint-fix/yopedia) are
+/** Keep only real contributors. Automation actors (system/lint-fix/work-wiki) are
  *  normally folded into the agent by {@link normalizeActor}, but a stale
  *  precomputed index may still carry their raw handles, so exclude them here too.
  *  An empty/whitespace handle is a real data defect (an edit attributed to a

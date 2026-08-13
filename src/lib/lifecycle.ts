@@ -498,7 +498,7 @@ async function runPageLifecycleOp(
                 parseSources(fm.sources as string | string[] | undefined),
               )
             : undefined;
-        // Fold automation actors (system / lint-fix / yopedia) into the agent so
+        // Fold automation actors (system / lint-fix / work-wiki) into the agent so
         // the incrementally-pushed event matches the scan/index normalization.
         const actor = normalizeActor(op.author);
         const owner = typeof fm.owner === "string" ? fm.owner : undefined;

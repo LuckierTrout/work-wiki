@@ -29,7 +29,7 @@ const MERMAID_THEME: MermaidConfig = {
   // foreignObject renders inside the sandboxed iframe.
   flowchart: { htmlLabels: true, padding: 10 },
   // Concrete hex (the SVG is standalone — CSS vars aren't available inside it),
-  // matching the yopedia/yoyo palette (accent #4d6bfe on warm paper).
+  // matching the work-wiki/yoyo palette (accent #4d6bfe on warm paper).
   themeVariables: {
     primaryColor: "#e7ebff",
     primaryBorderColor: "#4d6bfe",

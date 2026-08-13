@@ -298,7 +298,7 @@ describe("POST /api/ingest/x-mention — service token auth", () => {
       }, "valid-service-token"),
     );
     expect(res.status).toBe(200);
-    // Clerk principal wins — author/owner should be "alice", not "yopedia"
+    // Clerk principal wins — author/owner should be "alice", not "work-wiki"
     expect(mockedIngestXMention).toHaveBeenCalledWith(
       "https://x.com/user/status/123",
       "@someone",

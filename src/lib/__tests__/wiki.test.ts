@@ -1022,7 +1022,7 @@ describe("/api/wiki/routes route", () => {
     const { GET } = await import("../../app/api/wiki/routes/route");
     const map = (await (await GET()).json()) as Record<string, string>;
 
-    // Owner→tenant (lowercased), ownerless→yopedia; another user's private page
+    // Owner→tenant (lowercased), ownerless→work-wiki; another user's private page
     // is absent (readability-gated) so its slug can't leak.
     expect(map).toEqual({ pub: "alice", seed: "yopedia" });
   });

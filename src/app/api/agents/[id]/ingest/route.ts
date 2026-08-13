@@ -43,7 +43,7 @@ function deriveSourceType(url: string): "x-mention" | "url" | "text" {
  * can ingest as the agent. Two credentials are accepted:
  *   - the **agent's own token** — self-scoping; can only ingest into the agent
  *     whose id it carries (mismatch → 403). Used by e.g. openclaw.
- *   - the **system token** — yopedia's trusted automation (e.g. the
+ *   - the **system token** — work-wiki's trusted automation (e.g. the
  *     @yoyoevolve X-mention loop). It can target any agent, but the agent must
  *     EXIST (404 otherwise), which is how "only ingest for a registered user"
  *     is enforced — a mention from a non-user hits a 404 and is skipped.
@@ -100,7 +100,7 @@ export async function POST(req: Request, { params }: RouteParams) {
       } catch (err) {
         // A malformed id is "not a user" (404). A real storage error must
         // surface as 500 — never masquerade as "not registered", which would
-        // make an outage look like nobody who mentioned us is a yopedia user.
+        // make an outage look like nobody who mentioned us is a work-wiki user.
         if (err instanceof Error && err.message.includes("Invalid agent ID")) {
           agentRecord = null;
         } else {

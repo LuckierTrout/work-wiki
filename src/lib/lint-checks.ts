@@ -678,12 +678,12 @@ export async function checkLowConfidence(): Promise<LintIssue[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Unmigrated-page check — flags pages missing ALL core yopedia metadata.
+// Unmigrated-page check — flags pages missing ALL core work-wiki metadata.
 // ---------------------------------------------------------------------------
 
 /**
  * Check for unmigrated pages — pages ingested before Phase 1 that lack ALL
- * three core yopedia fields (confidence, authors, expiry). A page that has
+ * three core work-wiki fields (confidence, authors, expiry). A page that has
  * at least one of these fields is considered partially migrated and not flagged.
  */
 export async function checkUnmigratedPages(): Promise<LintIssue[]> {
@@ -707,7 +707,7 @@ export async function checkUnmigratedPages(): Promise<LintIssue[]> {
       issues.push({
         type: "unmigrated-page",
         slug: entry.slug,
-        message: `Page lacks yopedia metadata — run auto-fix to migrate`,
+        message: `Page lacks work-wiki metadata — run auto-fix to migrate`,
         severity: "info",
         suggestion: `Auto-fix will add default confidence (0.5), expiry (90 days), and authors ([system])`,
       });

@@ -19,7 +19,7 @@ export interface DeleteTenantResult {
  * Hard-delete a tenant's entire content: every page it OWNS — flat file, the
  * per-page silo mirror, revisions, discussion, embeddings, and commons entry
  * (all via {@link deleteWikiPage}) — plus the tenant's silo folder. Owner is
- * matched by TENANT, so ownerless/seed pages belong to "yopedia". Pages the
+ * matched by TENANT, so ownerless/seed pages belong to "work-wiki". Pages the
  * handle only CONTRIBUTED to (owned by another tenant) are never touched.
  *
  * Best-effort: a per-page failure is collected in `errors` and the rest proceed,

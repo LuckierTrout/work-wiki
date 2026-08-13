@@ -4,7 +4,7 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ===========================================================================
-   yopedia — "Folio"
+   work-wiki — "Folio"
    A living commons: knowledge as a continuously-revised reference work.
    Editorial · minimal · evidence-rich. Light & dark, equally weighted.
 
@@ -597,7 +597,7 @@ body {
   color: var(--accent);
 }
 
-/* ---- Save-to-yopedia guide (/save with no ?url) ----------------------- */
+/* ---- Save-to-work-wiki guide (/save with no ?url) ----------------------- */
 /* Refined editorial "field guide": big light numerals, a draggable bookmarklet
    specimen, a two-up magazine pair with a column rule, staggered load. */
 .sg-title {

@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>work-wiki — Todos (Candidates)</title>
+<style>
+/*
+  Spine: DESIGN.md Brand & Style, Colors, Components (icon-rail, todo-card, badge-count, button-primary, button-destructive, tree-panel, activity-row)
+  EXPERIENCE.md IA Todos; Component Patterns todo-card; State Todos empty vs pending; Flow 1 climax, Flow 5
+*/
+:root {
+  --surface: #FFFFFF;
+  --subtle: #FAFAFA;
+  --rail: #FAFAFA;
+  --fg: #171717;
+  --muted: #737373;
+  --border: #E5E5E5;
+  --primary: #171717;
+  --on-primary: #FFFFFF;
+  --live: #16A34A;
+  --danger: #DC2626;
+  --badge: #171717;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--fg);
+  background: #E8E8E8;
+  padding: 24px;
+}
+.browser {
+  width: 1440px;
+  height: 900px;
+  margin: 0 auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.chrome {
+  height: 36px;
+  background: var(--subtle);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  flex-shrink: 0;
+}
+.dot { width: 10px; height: 10px; border-radius: 9999px; background: #D4D4D4; }
+.url {
+  flex: 1;
+  height: 22px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.shell { flex: 1; display: flex; min-height: 0; }
+.rail {
+  width: 48px;
+  background: var(--rail);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0;
+  gap: 4px;
+}
+.rail .spacer { flex: 1; }
+.icon {
+  width: 32px; height: 32px;
+  border: 0; background: transparent;
+  border-radius: 6px;
+  color: var(--fg);
+  display: grid; place-items: center;
+  position: relative;
+}
+.icon.active { background: #E5E5E5; }
+.icon svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.badge {
+  position: absolute; top: -2px; right: -2px;
+  min-width: 14px; height: 14px; padding: 0 3px;
+  background: var(--badge); color: var(--on-primary);
+  border-radius: 9999px; font-size: 9px; font-weight: 600;
+  display: grid; place-items: center;
+}
+.status { width: 8px; height: 8px; border-radius: 9999px; background: var(--live); margin: 6px 0; }
+.tree {
+  width: 280px;
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  background: var(--surface);
+  min-width: 200px;
+}
+.tabs { display: flex; border-bottom: 1px solid var(--border); }
+.tabs span {
+  flex: 1; text-align: center; padding: 8px;
+  color: var(--muted);
+}
+.tabs span.on { color: var(--fg); font-weight: 600; border-bottom: 2px solid var(--fg); }
+.tree-head { padding: 10px 12px; font-weight: 600; border-bottom: 1px solid var(--border); }
+.tree-body { flex: 1; overflow: auto; padding: 8px 12px; color: var(--muted); }
+.tree-body .grp { color: var(--fg); font-weight: 600; margin: 8px 0 4px; }
+.tree-body li { list-style: none; padding: 2px 0 2px 12px; }
+.queue {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px 10px;
+  font-size: 12px;
+}
+.queue h4 { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+.queue .meta { color: var(--muted); display: flex; justify-content: space-between; margin-bottom: 6px; }
+.qrow { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; color: var(--muted); }
+.qrow b { color: var(--fg); font-weight: 400; }
+.canvas { flex: 1; display: flex; flex-direction: column; min-width: 320px; background: var(--surface); }
+.bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+}
+.bar h1 { font-size: 18px; font-weight: 600; margin-right: 8px; }
+.seg { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg span { padding: 4px 10px; color: var(--muted); }
+.seg span.on { background: var(--subtle); color: var(--fg); font-weight: 600; }
+.btn {
+  border: 1px solid var(--border); background: transparent;
+  border-radius: 6px; padding: 5px 10px; font: inherit; color: var(--fg);
+}
+.btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+.btn.danger { color: var(--danger); border-color: transparent; }
+.cards { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.card {
+  border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px;
+  background: var(--surface);
+}
+.card h2 { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.card p { color: var(--fg); margin-bottom: 8px; }
+.meta-row { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.path {
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+  margin-right: 10px;
+}
+.actions { display: flex; gap: 8px; }
+.caption { text-align: center; color: #737373; font-size: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="browser">
+  <div class="chrome">
+    <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <div class="url">work-wiki.local / todos</div>
+  </div>
+  <div class="shell">
+    <nav class="rail" aria-label="Modes">
+      <button class="icon" title="Wiki" aria-label="Wiki"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></button>
+      <button class="icon" title="Chat" aria-label="Chat"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+      <button class="icon" title="Sources" aria-label="Sources"><svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg></button>
+      <button class="icon" title="Search" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg></button>
+      <button class="icon" title="Graph" aria-label="Graph"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 7l8 0M7 8l4 8M17 8l-4 8"/></svg></button>
+      <button class="icon" title="Lint" aria-label="Lint"><svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="1"/><path d="M9 8h6M9 12h6M9 16h4"/></svg></button>
+      <button class="icon active" title="Todos" aria-current="page" aria-label="Todos, 3 todo candidates">
+        <svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="m4 6 1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg>
+        <span class="badge">3</span>
+      </button>
+      <button class="icon" title="Review" aria-label="Review, 62 pending reviews">
+        <svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+        <span class="badge">62</span>
+      </button>
+      <button class="icon" title="Deep Research" aria-label="Deep Research"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></button>
+      <button class="icon" title="Skills" aria-label="Skills"><svg viewBox="0 0 24 24"><path d="M12 3l1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5L12 3z"/></svg></button>
+      <span class="spacer"></span>
+      <span class="status" title="Sidecar running" aria-label="Sidecar running"></span>
+      <button class="icon" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/></svg></button>
+      <button class="icon" title="Collapse left column" aria-label="Collapse left column"><svg viewBox="0 0 24 24"><path d="M15 6 9 12l6 6"/></svg></button>
+    </nav>
+    <aside class="tree">
+      <div class="tabs"><span>Knowledge</span><span class="on">Files</span></div>
+      <div class="tree-head">work-wiki</div>
+      <div class="tree-body">
+        <div class="grp">raw/</div>
+        <ul><li>assets</li><li>sources</li></ul>
+        <div class="grp">wiki/</div>
+        <ul>
+          <li>meetings</li>
+          <li>concepts</li>
+          <li>entities</li>
+          <li>projects</li>
+        </ul>
+      </div>
+      <div class="queue">
+        <h4>Queue: 1/600</h4>
+        <div class="meta"><span>Ingest Queue</span><span>Resume · Cancel all</span></div>
+        <div class="qrow"><b>2025-12-10_12-10-planning.md</b><span>Generation</span></div>
+      </div>
+    </aside>
+    <main class="canvas">
+      <div class="bar">
+        <h1>Todos</h1>
+        <div class="seg" role="tablist" aria-label="Todo lists">
+          <span class="on" role="tab" aria-selected="true">Candidates</span>
+          <span role="tab" aria-selected="false">Open</span>
+          <span role="tab" aria-selected="false">Done</span>
+        </div>
+        <span style="flex:1"></span>
+        <button class="btn">Approve selected</button>
+        <button class="btn danger">Reject selected</button>
+      </div>
+      <div class="cards">
+        <article class="card">
+          <h2>Send Chevron measurement resourcing options to Jen</h2>
+          <p>Jen asked for a written options set before the next C&amp;E staffing call. Transcript names Friday as the implied due.</p>
+          <div class="meta-row">Due Fri · speaker Jen · Plaud meeting</div>
+          <div class="meta-row">
+            <span class="path">raw/sources/2025-12-10_12-10-meeting-chevron-measurement-resourcing.md</span>
+            <span class="path">wiki/meetings/12-10-meeting-chevron-measurement-resourcing.md</span>
+          </div>
+          <div class="actions">
+            <button class="btn primary">Approve</button>
+            <button class="btn danger">Reject</button>
+          </div>
+        </article>
+        <article class="card">
+          <h2>Confirm campaign taxonomy join keys with Adverity</h2>
+          <p>The meeting left identifiers unresolved across Sprinklr, Adverity, and Marketo. No calendar date was stated.</p>
+          <div class="meta-row">No due · Plaud meeting</div>
+          <div class="meta-row">
+            <span class="path">wiki/concepts/campaign-taxonomy-and-tagging.md</span>
+            <span class="path">wiki/meetings/12-01-meeting-ai-copilot-workshop.md</span>
+          </div>
+          <div class="actions">
+            <button class="btn primary">Approve</button>
+            <button class="btn danger">Reject</button>
+          </div>
+        </article>
+        <article class="card">
+          <h2>Name an owner for AI agent governance</h2>
+          <p>Governance page has criteria but no owner. Proposed due next week from the summary action list.</p>
+          <div class="meta-row">Due next week · Plaud meeting</div>
+          <div class="meta-row">
+            <span class="path">wiki/concepts/ai-agent-governance.md</span>
+          </div>
+          <div class="actions">
+            <button class="btn primary">Approve</button>
+            <button class="btn danger">Reject</button>
+          </div>
+        </article>
+      </div>
+    </main>
+  </div>
+</div>
+<p class="caption">Canonical: Todos → Candidates after a Plaud ingest. Nothing auto-approved. Empty copy (not shown): “No candidates. Meeting ingest will propose them.”</p>
+</body>
+</html>

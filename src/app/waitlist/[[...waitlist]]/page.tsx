@@ -2,12 +2,12 @@ import type { Metadata } from "next";
 import { Waitlist } from "@clerk/nextjs";
 
 export const metadata: Metadata = {
-  // The layout title template appends " · yopedia".
+  // The layout title template appends " · work-wiki".
   title: "Join the waitlist",
 };
 
 /**
- * `/waitlist` — the public landing for new visitors while yopedia is invite-only.
+ * `/waitlist` — the public landing for new visitors while work-wiki is invite-only.
  *
  * Registration is gated in Clerk (waitlist sign-up mode, set in the Clerk
  * dashboard), so a brand-new visitor can't create an account directly: they
@@ -43,7 +43,7 @@ export default function WaitlistPage() {
             lineHeight: 1.55,
           }}
         >
-          yopedia is invite-only for now. Leave your email and we&rsquo;ll let
+          work-wiki is invite-only for now. Leave your email and we&rsquo;ll let
           you in as we open up. Browsing the commons stays open to everyone.
         </p>
         <div className="flex justify-center">

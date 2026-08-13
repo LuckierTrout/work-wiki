@@ -52,11 +52,11 @@ yoyo updates this document so future sessions inherit the convention. See
 - Pages should not be edited by humans. The LLM owns the wiki layer; humans
   curate sources and ask questions.
 
-### Yopedia frontmatter fields
+### Work-wiki frontmatter fields
 
 In addition to the base fields (`type`, `source_url`, `tags`, `created`,
-`updated`, `source_count`), every wiki page carries yopedia metadata fields.
-These were added in Phase 1 of the yopedia pivot.
+`updated`, `source_count`), every wiki page carries work-wiki metadata fields.
+These were added in Phase 1 of the work-wiki pivot.
 
 | Field | Type | Default | Set when | Consumed by |
 |-------|------|---------|----------|-------------|
@@ -235,9 +235,9 @@ sidecar and appear with `author: undefined` in the API — backward compatible.
 
 ## Agent registry (Phase 4)
 
-Agents are registered entities in yopedia whose identity, learnings, and social
-wisdom are stored as wiki pages. This is how yopedia "eats its own cooking" —
-agents are yopedia citizens with proper attribution and provenance.
+Agents are registered entities in work-wiki whose identity, learnings, and social
+wisdom are stored as wiki pages. This is how work-wiki "eats its own cooking" —
+agents are work-wiki citizens with proper attribution and provenance.
 
 **Location:** `agents/<id>.json` — under the data directory (configured via
 `DATA_DIR`). Each agent gets a JSON profile file, mirroring the `discuss/`
@@ -282,7 +282,7 @@ side effects.
   remove wiki pages (body: `{ name?, description?, addPages?, removePages? }`)
 - `GET /api/agents/:id/context` — get the agent's full context (identity +
   learnings + social wisdom concatenated from wiki pages), designed for
-  bootstrapping an agent's system prompt from yopedia
+  bootstrapping an agent's system prompt from work-wiki
 
 **Context endpoint response (`GET /api/agents/:id/context`):**
 
@@ -589,7 +589,7 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
   frontmatter and no inline citation markers in the body, meaning its claims
   are unsupported. No auto-fix — requires ingesting a source URL for the
   topic or adding inline citations manually.
-- **`unmigrated-page`** (info) — page is missing all three core yopedia
+- **`unmigrated-page`** (info) — page is missing all three core work-wiki
   frontmatter fields (`confidence`, `expiry`, `authors`), indicating it
   predates the schema migration. Auto-fix: add sensible defaults
   (confidence 0.5, expiry 90 days out, authors `["system"]`, etc.).
@@ -653,7 +653,7 @@ sessions should pick from this list:
   The `broken-link` fix removes broken links from the source page.
   The `stale-page` fix bumps the expiry date forward by 90 days and
   refreshes `valid_from` to today.
-  The `unmigrated-page` fix adds sensible yopedia defaults (confidence 0.5,
+  The `unmigrated-page` fix adds sensible work-wiki defaults (confidence 0.5,
   expiry 90 days out, authors `["system"]`).
   The seven exceptions without auto-fix are: `low-confidence` (requires
   ingesting additional sources), `duplicate-entity` (requires human judgment
@@ -672,7 +672,7 @@ sessions should pick from this list:
   cross-references) from TOCTOU races within a single Next.js server process
   via `withFileLock()` in `src/lib/lock.ts`. This does NOT protect against
   multiple server processes (which would require OS-level lockfiles).
-- The wiki page view displays yopedia metadata fields (`confidence`,
+- The wiki page view displays work-wiki metadata fields (`confidence`,
   `expiry`, `valid_from`, `authors`, `contributors`, `disputed`, `aliases`,
   `supersedes`, `sources`) when present. Confidence is color-coded
   (green/yellow/red), temporal validity shows as "Verified May 2026 ·
@@ -691,17 +691,17 @@ Phase 3 (X ingestion loop) library and API work is complete — `ingestXMention(
 and `POST /api/ingest/x-mention` are implemented, along with the MCP tool
 `ingest_x_mention`. The remaining piece is the GitHub Actions polling workflow (#21),
 which is blocked on deployment architecture.
-Phase 4 (agent identity as yopedia pages) is **substantially complete** — the agent
+Phase 4 (agent identity as work-wiki pages) is **substantially complete** — the agent
 registry, context API, `seedAgent()` utility, `agent-identity` page type, scoped
 search, MCP tools (`seed-agent`, `list-agents`, `update-agent`, `delete-agent`,
 `agent-context`), and contributor profiles are implemented. Remaining Phase 4 work:
-migrating yoyo's actual identity content into yopedia pages and `grow.sh` integration.
-The schema will continue to evolve toward the full yopedia model defined in
-[`yopedia-concept.md`](yopedia-concept.md). See YOYO.md for the phased roadmap.
+migrating yoyo's actual identity content into work-wiki pages and `grow.sh` integration.
+The schema will continue to evolve toward the full work-wiki model defined in
+[`work-wiki-concept.md`](work-wiki-concept.md). See YOYO.md for the phased roadmap.
 Next up: Phase 5 (agent surface research).
 
 **Provenance depth (evaluated in #140):** Three primitives proposed by external
-agent-wiki builders were evaluated against yopedia's architecture:
+agent-wiki builders were evaluated against work-wiki's architecture:
 
 - **Hybrid raw anchors (claim-level citation)** — WATCH. Requires new claims
   data model, LLM ingest prompt restructuring, and offset tracking. The
@@ -718,7 +718,7 @@ agent-wiki builders were evaluated against yopedia's architecture:
 
 Three independent agent-wiki builders (OmegaWiki, SwarmVault, and
 [@kiluazen](https://github.com/kiluazen)) converged on three v0 schema choices
-that yopedia hadn't shipped. Issue #139 reported the convergence with a
+that work-wiki hadn't shipped. Issue #139 reported the convergence with a
 [reference gist](https://gist.github.com/kiluazen/727948f9517eacd665d21199e8318da1)
 containing field-level schemas. Each primitive was evaluated for adopt/watch/ignore.
 
@@ -832,7 +832,7 @@ above for the full description.
 
 **Trigger/notification system:** A research evaluation of trigger patterns for
 wiki change events is documented in [`DESIGN-triggers.md`](DESIGN-triggers.md).
-The recommendation is "watch" — yopedia's 15 lint check types already detect
+The recommendation is "watch" — work-wiki's 15 lint check types already detect
 the most valuable change conditions deterministically; a structured trigger
 schema is proposed for when demand or the MCP Triggers & Events WG spec
 materializes. The preparatory step (exposing wiki pages as MCP resources with

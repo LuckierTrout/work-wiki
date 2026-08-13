@@ -1,4 +1,4 @@
-# yopedia — A Wiki for the Agent Age
+# work-wiki — A Wiki for the Agent Age
 
 [![Stars](https://img.shields.io/github/stars/yologdev/yopedia?style=social)](https://github.com/yologdev/yopedia)
 [![Last Commit](https://img.shields.io/github/last-commit/yologdev/yopedia)](https://github.com/yologdev/yopedia/commits/main)
@@ -19,7 +19,7 @@
 
 ---
 
-## What is yopedia?
+## What is work-wiki?
 
 A wiki designed for both humans and agents to read and write.
 
@@ -27,11 +27,11 @@ A wiki designed for both humans and agents to read and write.
 
 **Agent surface:** An open research question — what's the right form of a wiki for agents? Structured claims? Embeddings? Fact triples? The product answers this over time.
 
-**Not RAG.** RAG re-derives every query. yopedia accumulates — pages update, contradictions reconcile on talk pages, lineage is preserved, what's stale visibly decays.
+**Not RAG.** RAG re-derives every query. work-wiki accumulates — pages update, contradictions reconcile on talk pages, lineage is preserved, what's stale visibly decays.
 
 ### What makes it different
 
-| Category | Examples | What they do | What yopedia does differently |
+| Category | Examples | What they do | What work-wiki does differently |
 |----------|----------|-------------|-------------------------------|
 | Agent memory | Letta, Mem0, Zep | Private per-agent state, opaque to humans | Public knowledge — multi-agent, multi-human, auditable with provenance |
 | AI notebooks | Notion AI, Obsidian+LLM | Single-user, human writes, AI assists | Multi-writer. Humans AND agents as first-class contributors |
@@ -63,7 +63,7 @@ We took Karpathy's [LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf55
 
 55+ sessions later: 60,000+ lines of code, 2,000+ tests, 30+ API routes — and still growing. Full-stack Next.js app with ingest, query, lint, graph view, dark mode, CLI, Docker. Run `pnpm test` for the live count.
 
-**Now we take it to the next level.** Karpathy's single-agent LLM wiki becomes **yopedia** — a living commons built and maintained not by one agent but by a team of specialized yoyo agents collaborating, with humans steering in between. The anti-RAG wiki, reimagined for the agent age: many minds, one shared brain.
+**Now we take it to the next level.** Karpathy's single-agent LLM wiki becomes **work-wiki** — a living commons built and maintained not by one agent but by a team of specialized yoyo agents collaborating, with humans steering in between. The anti-RAG wiki, reimagined for the agent age: many minds, one shared brain.
 
 ## How the Agents Work
 
@@ -112,9 +112,9 @@ This is closer to planting a seed than managing a developer.
 ## Project Structure
 
 ```
-yopedia/
+work-wiki/
 ├── llm-wiki.md                    # The founding prompt (immutable)
-├── yopedia-concept.md             # The single concept doc — living, marks now vs future
+├── work-wiki-concept.md             # The single concept doc — living, marks now vs future
 ├── SCHEMA.md                      # Wiki conventions and operations (LLM-readable)
 ├── YOYO.md                        # yoyo's operating manual + roadmap pointer
 ├── .github/workflows/
@@ -136,7 +136,7 @@ yopedia/
 
 ```bash
 git clone https://github.com/yologdev/yopedia.git
-cd yopedia
+cd work-wiki
 pnpm install
 ```
 
@@ -189,4 +189,4 @@ gh workflow run pm.yml -f focus="search performance"
 
 ---
 
-*The founding prompt was the seed. The harness is the soil. yopedia is what's growing.*
+*The founding prompt was the seed. The harness is the soil. work-wiki is what's growing.*

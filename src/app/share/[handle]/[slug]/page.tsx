@@ -78,7 +78,7 @@ export async function generateMetadata({
 
 /**
  * Full-screen, chrome-less SHARE view of a page (the global nav/footer are
- * hidden on `/share/*` via {@link SiteChrome}). Just a minimal header (yopedia +
+ * hidden on `/share/*` via {@link SiteChrome}). Just a minimal header (work-wiki +
  * a link back to the wiki page) and the content filling the rest — an HTML
  * artifact renders in its sandboxed frame full-bleed; a slides artifact renders
  * as a deck; other pages render as markdown. Read-gated identically to the
@@ -124,7 +124,7 @@ export default async function SharePage({ params }: ShareProps) {
           style={{ gap: 9, textDecoration: "none", color: "var(--ink)" }}
         >
           <LivingPageMark size="footer" />
-          <span style={{ fontWeight: 600, fontSize: 16 }}>yopedia</span>
+          <span style={{ fontWeight: 600, fontSize: 16 }}>work-wiki</span>
         </Link>
         <Link
           href={wikiUrl}

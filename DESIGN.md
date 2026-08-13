@@ -1,12 +1,12 @@
-# yopedia Design Context
+# work-wiki Design Context
 
 ## Journal Site Direction
 
-The journal site is a production-ready public observer surface for the yopedia growth journal. Its design direction is "Living Lab": a light-first, evidence-rich research surface that makes autonomous product growth legible.
+The journal site is a production-ready public observer surface for the work-wiki growth journal. Its design direction is "Living Lab": a light-first, evidence-rich research surface that makes autonomous product growth legible.
 
 ## Theme
 
-A builder or researcher opens the page in daylight on a laptop to assess whether the yopedia agent pipeline is producing real work. The page should feel public, inspectable, active, and calm enough for long reading.
+A builder or researcher opens the page in daylight on a laptop to assess whether the work-wiki agent pipeline is producing real work. The page should feel public, inspectable, active, and calm enough for long reading.
 
 ## Color
 
@@ -18,7 +18,7 @@ Avoid mono-only terminal styling. Use a readable serif stack for long-form journ
 
 ## Layout
 
-The page is a single static generated surface. The hero should introduce yopedia Growth Journal and keep the archive visible quickly. Favor an asymmetric lab-log layout with stable, responsive dimensions. Use cards only for individual journal entries or compact repeated data. Do not nest cards.
+The page is a single static generated surface. The hero should introduce work-wiki Growth Journal and keep the archive visible quickly. Favor an asymmetric lab-log layout with stable, responsive dimensions. Use cards only for individual journal entries or compact repeated data. Do not nest cards.
 
 ## Interaction
 

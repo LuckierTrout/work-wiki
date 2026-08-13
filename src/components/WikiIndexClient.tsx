@@ -43,7 +43,7 @@ export function WikiIndexClient({ pages, discussionStats }: WikiIndexClientProps
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "yopedia-vault.zip";
+      a.download = "work-wiki-vault.zip";
       document.body.appendChild(a);
       a.click();
       a.remove();

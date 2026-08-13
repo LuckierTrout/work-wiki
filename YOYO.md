@@ -1,8 +1,8 @@
-# yopedia — A Wiki for the Agent Age
+# work-wiki — A Wiki for the Agent Age
 
 ## What This Is
 
-yopedia is a shared second brain for humans and agents. One knowledge substrate,
+work-wiki is a shared second brain for humans and agents. One knowledge substrate,
 two surfaces over it. Evolved from the [LLM Wiki pattern](llm-wiki.md) —
 Karpathy's idea for building persistent knowledge bases using LLMs.
 
@@ -10,11 +10,11 @@ This project was bootstrapped from a single founding prompt and grown entirely b
 [yoyo](https://github.com/yologdev/yoyo), a self-evolving coding agent. Every
 commit after the baseline tag was made by yoyo. The experiment proved that an
 agent can grow a product from one prompt — 55 sessions, 33,600 lines, 1,242
-tests, all four founding pillars complete. Now yopedia is the destination.
+tests, all four founding pillars complete. Now work-wiki is the destination.
 
 ## The Vision
 
-The full north star lives in **[`yopedia-concept.md`](yopedia-concept.md)** — read it
+The full north star lives in **[`work-wiki-concept.md`](work-wiki-concept.md)** — read it
 there; don't duplicate it here. In one line: a **collective second brain** for humans
 and agents — one **commons** co-built by people and their agents (**agents maintain,
 humans discuss**), personal **vaults** as a lens on top (public by reference, private
@@ -42,7 +42,7 @@ are built and deployed:
 
 ## What's next
 
-The full picture is the **Roadmap** in [`yopedia-concept.md`](yopedia-concept.md).
+The full picture is the **Roadmap** in [`work-wiki-concept.md`](work-wiki-concept.md).
 Near-term threads (commons-first):
 
 - **Flat retirement** — remove legacy flat-path writes and fallback reads (#869,
@@ -53,7 +53,7 @@ Near-term threads (commons-first):
 
 ## Autonomous Growth Loop
 
-yopedia is a long-running agent-grown system, not a fixed-scope app. A phase
+work-wiki is a long-running agent-grown system, not a fixed-scope app. A phase
 can finish, but the product should keep compounding: more sources become wiki
 knowledge, more questions become durable pages, more lint findings become
 maintenance work, and more agent usage teaches us what the agent-facing surface
@@ -68,7 +68,7 @@ The operating model comes from two ancestors:
   improvement, and records what happened. Empty hands are allowed, but only
   after looking seriously for the next leverage point.
 
-For yopedia, self-growth from observed gaps and research is higher priority than
+For work-wiki, self-growth from observed gaps and research is higher priority than
 waiting for reactive human feedback. Human issues matter, but the agent team
 should not need a human complaint before improving the wiki loop, the agent
 loop, or the product's ability to compound knowledge.
@@ -101,18 +101,18 @@ not enough reason to stop; the question is whether the wiki is still learning.
 
 ### Research Doctrine
 
-Research should keep yopedia ahead, not turn it into a clone of adjacent tools.
+Research should keep work-wiki ahead, not turn it into a clone of adjacent tools.
 The motto is simple but effective: use external signal to find the smallest
-reasonable move that improves yopedia's advantage.
+reasonable move that improves work-wiki's advantage.
 
 Competitors, launches, stars, and blog posts are evidence only. A good research
-entry explains the market movement, why it matters to yopedia, the recommended
+entry explains the market movement, why it matters to work-wiki, the recommended
 move, and whether to adopt now, watch, or ignore. Avoid long feature diffs. Do
 not file issues because another project has a feature; file only when the
 feature reveals a real workflow, demand signal, technical direction, failure
-mode, or gap in yopedia's compounding loop.
+mode, or gap in work-wiki's compounding loop.
 
-For yopedia, especially prize signals about:
+For work-wiki, especially prize signals about:
 - Agent-readable knowledge surfaces and MCP-style interoperability
 - Trust, provenance, contradiction handling, and claim lifecycle
 - Multi-writer workflows for humans and agents sharing one wiki
@@ -127,8 +127,8 @@ These are questions the product answers over time, not assumptions to fix now:
 - How does trust accrue across humans and agents using the same metrics fairly?
 - How do contradictions resolve when one side is human experience and the other
   is agent research?
-- How does yopedia stay coherent as it scales past one community?
-- What does federation across separate yopedia instances look like?
+- How does work-wiki stay coherent as it scales past one community?
+- What does federation across separate work-wiki instances look like?
 
 ## Tech Stack
 
@@ -158,7 +158,7 @@ pnpm test         # vitest
 
 ```
 llm-wiki.md          # founding prompt — spiritual ancestor (immutable)
-yopedia-concept.md   # the single concept / north star (living doc — keep current)
+work-wiki-concept.md   # the single concept / north star (living doc — keep current)
 YOYO.md              # this file — yoyo's operating manual
 SCHEMA.md            # wiki conventions and frontmatter operations
 src/

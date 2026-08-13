@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 import { AgentApiContent } from "@/components/AgentApiContent";
 
-// Public guide for using yopedia as an agent. The markdown lives as a static
+// Public guide for using work-wiki as an agent. The markdown lives as a static
 // asset (public/agent-api.md) and is rendered client-side — NOT read from the
 // filesystem on the server, which would 500 on the Cloudflare Workers runtime.
 export const metadata: Metadata = {
-  title: "Agent API — yopedia",
+  title: "Agent API — work-wiki",
   description:
-    "How an external agent runtime uses its yopedia credential to ingest and consume content.",
+    "How an external agent runtime uses its work-wiki credential to ingest and consume content.",
 };
 
 export default function AgentApiPage() {

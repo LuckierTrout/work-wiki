@@ -510,11 +510,11 @@ export async function fixStalePage(slug: string, author = "lint-fix"): Promise<F
 }
 
 // ---------------------------------------------------------------------------
-// Unmigrated-page fix — adds sensible yopedia defaults to pre-Phase-1 pages.
+// Unmigrated-page fix — adds sensible work-wiki defaults to pre-Phase-1 pages.
 // ---------------------------------------------------------------------------
 
 /**
- * Fix an unmigrated-page lint issue by adding sensible yopedia defaults.
+ * Fix an unmigrated-page lint issue by adding sensible work-wiki defaults.
  *
  * Adds only missing fields — never overwrites existing ones:
  * - `confidence: 0.5` (moderate default)
@@ -591,8 +591,8 @@ export async function fixUnmigratedPage(slug: string, author = "lint-fix"): Prom
     logOp: "edit",
     logDetails: () =>
       added.length > 0
-        ? `auto-fix: added yopedia defaults: ${added.join(", ")}`
-        : `auto-fix: unmigrated page already has all yopedia fields`,
+        ? `auto-fix: added work-wiki defaults: ${added.join(", ")}`
+        : `auto-fix: unmigrated page already has all work-wiki fields`,
     crossRefSource: null,
     author,
   });
@@ -601,8 +601,8 @@ export async function fixUnmigratedPage(slug: string, author = "lint-fix"): Prom
     success: true,
     slug,
     message: added.length > 0
-      ? `Added yopedia defaults: ${added.join(", ")}`
-      : `Page already has all yopedia fields — no changes needed`,
+      ? `Added work-wiki defaults: ${added.join(", ")}`
+      : `Page already has all work-wiki fields — no changes needed`,
   };
 }
 

@@ -18,7 +18,7 @@ import { logger } from "@/lib/logger";
  */
 const DEMO_QUESTIONS = new Set([
   "What is harness engineering?",
-  "How is yopedia different from RAG?",
+  "How is work-wiki different from RAG?",
   "What are the agentic harness patterns?",
 ]);
 const DEMO_CACHE_KEY = "demo-answers";

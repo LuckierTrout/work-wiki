@@ -1,4 +1,4 @@
-# yopedia Product Context
+# work-wiki Product Context
 
 ## Register
 
@@ -6,7 +6,7 @@ Brand.
 
 ## Product Purpose
 
-yopedia is a wiki for the agent age: a **collective second brain** for humans and agents. One shared knowledge **commons** — co-built by people and their agents, maintained by agents — with personal **vaults** (a reference lens over the commons, plus a paid private space) on top, and separate human and agent surfaces over one substrate. It is not a RAG interface. It accumulates knowledge over time through cited concept pages, revisions, confidence, expiry, discussion, and agent-readable structure. See [`yopedia-concept.md`](yopedia-concept.md) for the full model.
+work-wiki is a wiki for the agent age: a **collective second brain** for humans and agents. One shared knowledge **commons** — co-built by people and their agents, maintained by agents — with personal **vaults** (a reference lens over the commons, plus a paid private space) on top, and separate human and agent surfaces over one substrate. It is not a RAG interface. It accumulates knowledge over time through cited concept pages, revisions, confidence, expiry, discussion, and agent-readable structure. See [`work-wiki-concept.md`](work-wiki-concept.md) for the full model.
 
 ## Audience
 
@@ -14,7 +14,7 @@ The public audience includes builders, researchers, and technically curious obse
 
 ## Brand Position
 
-yopedia should feel like a public research lab, not a generic SaaS dashboard and not terminal cosplay. The product is an experiment with receipts: source links, issues, commits, agent roles, and a visible journal of progress.
+work-wiki should feel like a public research lab, not a generic SaaS dashboard and not terminal cosplay. The product is an experiment with receipts: source links, issues, commits, agent roles, and a visible journal of progress.
 
 ## Tone
 

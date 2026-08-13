@@ -5,7 +5,7 @@
  * the main app enqueue {@link Task}s; a thin consumer worker
  * (`workers/task-consumer/`) drains the queue and POSTs each task back to the
  * main app's `/api/tasks/run` endpoint, where it executes with the full lib +
- * OpenNext context. See `yopedia-concept.md` / the task-queue plan.
+ * OpenNext context. See `work-wiki-concept.md` / the task-queue plan.
  *
  * This module is the **producer**: `enqueueTask` sends to the `TASK_QUEUE`
  * binding when on the Workers runtime, and is a logged no-op off-Workers (local

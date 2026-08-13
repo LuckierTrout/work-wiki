@@ -90,7 +90,7 @@ describe("migrateToTenants — live", () => {
     expect(r.totalPages).toBe(3);
     expect(r.errors).toEqual([]);
 
-    // Pages copied into their owner's silo (ownerless → yopedia).
+    // Pages copied into their owner's silo (ownerless → work-wiki).
     expect(await exists("tenants/alice/wiki/pub.md")).toBe(true);
     expect(await exists("tenants/bob/wiki/priv.md")).toBe(true);
     expect(await exists("tenants/yopedia/wiki/seed.md")).toBe(true);

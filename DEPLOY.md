@@ -14,7 +14,7 @@ Run the LLM Wiki as a Docker container with a single command.
 
    ```sh
    git clone https://github.com/yologdev/yopedia.git
-   cd yopedia
+   cd work-wiki
    ```
 
 2. **Create a `.env` file** with your API key

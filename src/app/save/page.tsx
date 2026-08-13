@@ -4,8 +4,8 @@ import { SaveGuide } from "@/components/SaveGuide";
 import { resolveSharedUrl } from "@/lib/share-target";
 
 export const metadata: Metadata = {
-  title: "Save to yopedia",
-  description: "Send any link to yopedia for ingesting — bookmarklet, share sheet, or shortcut.",
+  title: "Save to work-wiki",
+  description: "Send any link to work-wiki for ingesting — bookmarklet, share sheet, or shortcut.",
   // The capture action shouldn't be indexed; the guide (no ?url) is fine but low value.
   robots: { index: false, follow: false },
 };

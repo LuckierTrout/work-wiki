@@ -1,6 +1,6 @@
 /**
  * Stateless JSON-RPC dispatch for the REMOTE (HTTP) MCP endpoint at
- * `/api/mcp`. yopedia's MCP server is otherwise stdio-only; this exposes the
+ * `/api/mcp`. work-wiki's MCP server is otherwise stdio-only; this exposes the
  * same tools to external agents (Claude Desktop/Code, Cursor, OpenClaw) over
  * HTTP so they can read and ingest into a DEPLOYED instance.
  *
@@ -164,7 +164,7 @@ function attributed(
 export const MCP_TOOLS: ToolDef[] = [
   {
     name: "search_wiki",
-    description: "Search yopedia wiki pages by query string (public commons).",
+    description: "Search work-wiki wiki pages by query string (public commons).",
     inputSchema: schema(
       {
         query: str("Search query"),
@@ -951,7 +951,7 @@ export const MCP_TOOLS: ToolDef[] = [
   {
     name: "dataview_query",
     description:
-      "Query yopedia wiki pages by frontmatter fields with structured filters, sort, and limit. " +
+      "Query work-wiki wiki pages by frontmatter fields with structured filters, sort, and limit. " +
       "Supports operators: eq, neq, gt, lt, gte, lte, contains, exists.",
     inputSchema: schema({
       filters: {
@@ -1151,7 +1151,7 @@ export async function dispatchMcp(
         return ok(
           id,
           toolResult(
-            "Authentication required: this tool writes to your content. Send Authorization: Bearer <your yopedia token>.",
+            "Authentication required: this tool writes to your content. Send Authorization: Bearer <your work-wiki token>.",
             true,
           ),
         );

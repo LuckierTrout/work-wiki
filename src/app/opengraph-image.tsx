@@ -5,7 +5,7 @@ import { ImageResponse } from "next/og";
 export const dynamic = "force-static";
 
 export const alt =
-  "yopedia — a shared second brain for humans and agents. Not RAG — it accumulates.";
+  "work-wiki — a shared second brain for humans and agents. Not RAG — it accumulates.";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -36,7 +36,7 @@ export default function OpengraphImage() {
         <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
           <img src={MARK_URI} width={88} height={88} alt="" />
           <div style={{ fontSize: 44, fontWeight: 600, letterSpacing: -1.3 }}>
-            yopedia
+            work-wiki
           </div>
         </div>
 
