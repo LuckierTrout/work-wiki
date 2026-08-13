@@ -3,7 +3,10 @@ node_modules/
 *.tsbuildinfo
 .open-next/
 .wrangler/
-.claude/
+.claude/*
+!.claude/skills
+.gemini/
+.github/copilot/
 .env
 .env.local
 /raw/
