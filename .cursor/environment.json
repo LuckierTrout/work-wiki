@@ -1,0 +1,3 @@
+{
+  "install": "corepack enable\ncorepack prepare pnpm@9 --activate\npnpm install --frozen-lockfile"
+}
