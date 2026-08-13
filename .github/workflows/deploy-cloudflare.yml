@@ -1,5 +1,9 @@
 name: Deploy Cloudflare Worker
 
+# Inert on forks unless repo variable ENABLE_CLOUDFLARE_DEPLOY=true.
+# This fork's wrangler.jsonc still binds yopedia KV/R2 IDs; do not opt in
+# until resources in wrangler.jsonc belong to this Cloudflare account.
+
 on:
   workflow_dispatch:
   push:
@@ -28,6 +32,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    if: ${{ !github.event.repository.fork || vars.ENABLE_CLOUDFLARE_DEPLOY == 'true' }}
 
     steps:
       - name: Checkout

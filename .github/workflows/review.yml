@@ -1,5 +1,7 @@
 name: yoyo Review
 
+# Inert on forks unless repo variable ENABLE_YOYO=true and secret APP_ID is set.
+
 on:
   pull_request:
     types: [opened, synchronize]
@@ -20,6 +22,8 @@ jobs:
 
     # Only review yoyo's own PRs from this repo (not forks)
     if: >
+      (!github.event.repository.fork || vars.ENABLE_YOYO == 'true') &&
+      secrets.APP_ID != '' &&
       startsWith(github.event.pull_request.head.ref, 'yoyo/') &&
       github.event.pull_request.head.repo.full_name == github.repository
 

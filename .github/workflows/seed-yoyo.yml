@@ -1,5 +1,9 @@
 name: Seed yoyo
 
+# Inert on forks unless repo variable ENABLE_YOYO=true and
+# secret YOPEDIA_SERVICE_TOKEN is set. Default target URL is still the
+# upstream Worker — do not opt in until YOPEDIA_URL points at this fork.
+
 # Keeps the work-wiki "yoyo" agent in sync with the canonical identity in
 # yologdev/yoyo-evolve. Assembles yoyo's identity / learnings / social pages
 # from that repo and POSTs them to /api/agents/seed.
@@ -29,6 +33,7 @@ jobs:
   seed:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    if: ${{ (!github.event.repository.fork || vars.ENABLE_YOYO == 'true') && secrets.YOPEDIA_SERVICE_TOKEN != '' }}
     steps:
       - name: Check out yoyo-evolve identity (public repo)
         uses: actions/checkout@v6

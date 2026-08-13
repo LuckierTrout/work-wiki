@@ -20,7 +20,7 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 ## Running and verifying
 
 - Fresh clone: `pnpm install` fails with ERR_PNPM_IGNORED_BUILDS until `pnpm approve-builds` is run once per machine (esbuild, sharp, onnxruntime-node, protobufjs).
-- The yoyo agent workflows and `deploy-cloudflare.yml` under `.github/workflows/` are inert on this fork — triggered runs skip and the deploy workflow is not registered. Production deploys are manual (`wrangler`). Do not expect a push to main to deploy anything.
+- The yoyo agent workflows and GitHub deploy workflows under `.github/workflows/` are inert on this fork: jobs skip unless you opt in with a repo variable (`ENABLE_YOYO`, `ENABLE_CLOUDFLARE_DEPLOY`, `ENABLE_GITHUB_PAGES`) and the matching secrets. Production deploys are manual (`wrangler`). Do not expect a push to main to deploy anything.
 
 ## Known pitfalls
 

@@ -1,5 +1,7 @@
 name: yoyo Build
 
+# Inert on forks unless repo variable ENABLE_YOYO=true and secret APP_ID is set.
+
 on:
   issues:
     types: [labeled]
@@ -22,8 +24,10 @@ jobs:
     timeout-minutes: 60
 
     if: >
-      github.event_name != 'issues' ||
-      github.event.label.name == 'ready'
+      (!github.event.repository.fork || vars.ENABLE_YOYO == 'true') &&
+      secrets.APP_ID != '' &&
+      (github.event_name != 'issues' ||
+      github.event.label.name == 'ready')
 
     steps:
       - name: Generate bot token

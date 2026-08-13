@@ -1,5 +1,7 @@
 name: Cloudflare Infra Setup
 
+# Inert on forks unless repo variable ENABLE_CLOUDFLARE_DEPLOY=true.
+
 on:
   workflow_dispatch:
 
@@ -10,6 +12,7 @@ jobs:
   provision:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    if: ${{ !github.event.repository.fork || vars.ENABLE_CLOUDFLARE_DEPLOY == 'true' }}
 
     steps:
       - name: Checkout

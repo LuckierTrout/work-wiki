@@ -1,5 +1,7 @@
 name: Hello World
 
+# Inert on forks unless repo variable ENABLE_YOYO=true and secret APP_ID is set.
+
 on:
   workflow_dispatch:
 
@@ -7,6 +9,7 @@ jobs:
   hello:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    if: ${{ (!github.event.repository.fork || vars.ENABLE_YOYO == 'true') && secrets.APP_ID != '' }}
 
     steps:
       - name: Generate bot token
