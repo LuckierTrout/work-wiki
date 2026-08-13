@@ -1,0 +1,17 @@
+{
+  "name": "yopedia",
+  "install": "export COREPACK_ENABLE_DOWNLOAD_PROMPT=0 && corepack prepare pnpm@9.15.9 --activate && pnpm install --frozen-lockfile",
+  "terminals": [
+    {
+      "name": "dev",
+      "command": "export COREPACK_ENABLE_DOWNLOAD_PROMPT=0 && pnpm dev",
+      "description": "Next.js dev server (Turbopack) on http://localhost:3000. Reads are public; wiki content lives on the local filesystem under ./wiki and ./raw. Set ANTHROPIC_API_KEY (or another provider key) and Clerk keys in .env.local for ingest/generation and authenticated writes."
+    }
+  ],
+  "ports": [
+    {
+      "name": "web",
+      "port": 3000
+    }
+  ]
+}
