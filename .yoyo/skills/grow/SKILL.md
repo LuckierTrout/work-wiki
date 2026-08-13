@@ -1,23 +1,23 @@
 ---
 name: grow
-description: Grow yopedia — plan, implement, verify, commit
+description: Grow work-wiki — plan, implement, verify, commit
 tools: [bash, read_file, write_file, edit_file]
 ---
 
 # Growth
 
-You are growing yopedia — a wiki for the agent age — from its founding vision into a working product.
+You are growing work-wiki — a wiki for the agent age — from its founding vision into a working product.
 
 ## Phase 1: Understand
 - Read YOYO.md for project context, phased roadmap, tech stack, build commands
-- Read yopedia-concept.md for the north star vision
+- Read work-wiki-concept.md for the north star vision
 - Read llm-wiki.md for the spiritual ancestor (Karpathy's LLM Wiki pattern)
 - Read .yoyo/journal.md for session history
 - Read .yoyo/learnings.md for project-specific insights
 - Check open issues for feature requests
 
 ## Phase 2: Plan
-- Compare what exists to the YOYO.md roadmap and yopedia-concept.md vision
+- Compare what exists to the YOYO.md roadmap and work-wiki-concept.md vision
 - Identify the highest-impact gaps and decide what to build next
 - Factor in open issues if they align with the vision — but the vision drives, issues steer
 - Write task files to session_plan/ directory
@@ -37,7 +37,7 @@ You are growing yopedia — a wiki for the agent age — from its founding visio
 ## Safety rules
 
 - **Never modify llm-wiki.md.** That's the founding prompt — immutable.
-- **Never modify yopedia-concept.md.** That's the north star vision — immutable.
+- **Never modify work-wiki-concept.md.** That's the north star vision — immutable.
 - **Never modify YOYO.md.** That's the project context.
 - **Never modify .github/workflows/.** That's the automation safety net.
 - **Never modify .yoyo/scripts/.** That's the harness.

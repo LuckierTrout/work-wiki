@@ -1,5 +1,5 @@
 /**
- * yopedia logomark — "the living page": a blue page with its earlier
+ * work-wiki logomark — "the living page": a blue page with its earlier
  * revisions stacked behind it. Pages that accumulate — the anti-RAG story.
  * One mark owns every slot (nav, footer, favicon, hero); yoyo stays in the
  * product (rail tender, empty states), out of the brand.
@@ -150,11 +150,11 @@ interface LogoProps {
   className?: string;
   /** Which mark construction to pair with the wordmark. */
   size?: MarkSize;
-  /** Hide the "yopedia" wordmark, showing only the mark. */
+  /** Hide the "work-wiki" wordmark, showing only the mark. */
   markOnly?: boolean;
 }
 
-/** Living-page mark + "yopedia" wordmark, for the nav and footer. */
+/** Living-page mark + "work-wiki" wordmark, for the nav and footer. */
 export function Logo({ className, size = "nav", markOnly = false }: LogoProps) {
   return (
     <span className={`inline-flex items-center gap-2.5 ${className ?? ""}`}>
@@ -164,7 +164,7 @@ export function Logo({ className, size = "nav", markOnly = false }: LogoProps) {
           className="display text-ink"
           style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.03em" }}
         >
-          yopedia
+          work-wiki
         </span>
       )}
     </span>

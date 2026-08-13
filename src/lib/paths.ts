@@ -19,7 +19,7 @@ export function getRawDir(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Per-tenant directories (tenant-silos groundwork — see yopedia-concept.md).
+// Per-tenant directories (tenant-silos groundwork — see work-wiki-concept.md).
 // Every tenant's content will live under `tenants/<tenant>/…`. These helpers
 // are additive: nothing reads/writes these paths yet (later phases do). The
 // tenant is the owner handle.

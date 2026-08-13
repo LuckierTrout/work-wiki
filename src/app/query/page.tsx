@@ -16,7 +16,7 @@ import { logger } from "@/lib/logger";
 
 const EXAMPLES = [
   "What is harness engineering?",
-  "How is yopedia different from RAG?",
+  "How is work-wiki different from RAG?",
   "What are the agentic harness patterns?",
 ];
 

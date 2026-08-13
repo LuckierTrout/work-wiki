@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>work-wiki — Create Wiki</title>
+<style>
+/*
+  Spine: DESIGN.md Elevation (one overlay), confirm-dialog, button-primary
+  EXPERIENCE.md IA Create Wiki; confirm-dialog; Flow 7 (FR-38)
+*/
+:root {
+  --surface: #FFFFFF;
+  --subtle: #FAFAFA;
+  --rail: #FAFAFA;
+  --fg: #171717;
+  --muted: #737373;
+  --border: #E5E5E5;
+  --primary: #171717;
+  --on-primary: #FFFFFF;
+  --live: #16A34A;
+  --overlay: #17171766;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--fg);
+  background: #E8E8E8;
+  padding: 24px;
+}
+.browser {
+  width: 1440px; height: 900px; margin: 0 auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; display: flex; flex-direction: column;
+  position: relative;
+}
+.chrome {
+  height: 36px; background: var(--subtle); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px; padding: 0 12px; flex-shrink: 0;
+}
+.dot { width: 10px; height: 10px; border-radius: 9999px; background: #D4D4D4; }
+.url {
+  flex: 1; height: 22px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 4px; color: var(--muted); display: flex; align-items: center;
+  padding: 0 10px; font-size: 12px;
+}
+.shell { flex: 1; display: flex; min-height: 0; }
+.rail {
+  width: 48px; background: var(--rail); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 4px;
+}
+.rail .spacer { flex: 1; }
+.icon {
+  width: 32px; height: 32px; border: 0; background: transparent; border-radius: 6px;
+  color: var(--fg); display: grid; place-items: center;
+}
+.icon.active { background: #E5E5E5; }
+.icon svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.status { width: 8px; height: 8px; border-radius: 9999px; background: var(--live); margin: 6px 0; }
+.tree {
+  width: 280px; border-right: 1px solid var(--border); display: flex; flex-direction: column;
+}
+.tabs { display: flex; border-bottom: 1px solid var(--border); }
+.tabs span { flex: 1; text-align: center; padding: 8px; color: var(--muted); }
+.tabs span.on { color: var(--fg); font-weight: 600; border-bottom: 2px solid var(--fg); }
+.tree-head { padding: 10px 12px; font-weight: 600; border-bottom: 1px solid var(--border); color: var(--muted); }
+.tree-body { flex: 1; padding: 24px 16px; color: var(--muted); }
+.canvas { flex: 1; display: grid; place-items: center; color: var(--muted); }
+.overlay {
+  position: absolute; inset: 36px 0 0 0;
+  background: var(--overlay);
+  display: grid; place-items: center;
+}
+.dialog {
+  width: 560px; background: var(--surface); border-radius: 8px;
+  border: 1px solid var(--border); padding: 20px 22px 18px;
+}
+.dialog h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+.dialog .sub { color: var(--muted); margin-bottom: 14px; }
+.tpl {
+  border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px;
+}
+.tpl.selected { border-color: var(--fg); background: var(--subtle); }
+.tpl h2 { font-size: 13px; font-weight: 600; }
+.tpl p { color: var(--muted); margin-top: 2px; }
+.row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.btn {
+  border: 1px solid var(--border); background: transparent; border-radius: 6px;
+  padding: 6px 12px; font: inherit; color: var(--fg);
+}
+.btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+.caption { text-align: center; color: #737373; font-size: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="browser">
+  <div class="chrome">
+    <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <div class="url">work-wiki.local / new</div>
+  </div>
+  <div class="shell">
+    <nav class="rail" aria-label="Modes">
+      <button class="icon active" title="Wiki" aria-current="page" aria-label="Wiki"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></button>
+      <button class="icon" title="Chat" aria-label="Chat"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+      <button class="icon" title="Sources" aria-label="Sources"><svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg></button>
+      <button class="icon" title="Search" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg></button>
+      <button class="icon" title="Graph" aria-label="Graph"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 7h8M7 8l4 8M17 8l-4 8"/></svg></button>
+      <button class="icon" title="Lint" aria-label="Lint"><svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="1"/><path d="M9 8h6M9 12h6M9 16h4"/></svg></button>
+      <button class="icon" title="Todos" aria-label="Todos"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="m4 6 1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg></button>
+      <button class="icon" title="Review" aria-label="Review"><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></button>
+      <button class="icon" title="Deep Research" aria-label="Deep Research"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></button>
+      <button class="icon" title="Skills" aria-label="Skills"><svg viewBox="0 0 24 24"><path d="M12 3l1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5L12 3z"/></svg></button>
+      <span class="spacer"></span>
+      <span class="status" title="Sidecar running"></span>
+      <button class="icon" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/></svg></button>
+    </nav>
+    <aside class="tree">
+      <div class="tabs"><span class="on">Knowledge</span><span>Files</span></div>
+      <div class="tree-head">New Wiki</div>
+      <div class="tree-body">No wiki yet.</div>
+    </aside>
+    <main class="canvas">Select a file to preview.</main>
+  </div>
+  <div class="overlay" role="dialog" aria-modal="true" aria-labelledby="cw-title">
+    <div class="dialog">
+      <h1 id="cw-title">Create Wiki</h1>
+      <p class="sub">Pick one Scenario Template. This writes purpose.md and Schema. There is no blank wiki.</p>
+      <div class="tpl"><h2>Research</h2><p>Literature and sources compiled into cited Pages.</p></div>
+      <div class="tpl"><h2>Reading</h2><p>Books and papers; notes fold into concepts.</p></div>
+      <div class="tpl"><h2>Personal Growth</h2><p>Private notes. Not a job wiki.</p></div>
+      <div class="tpl selected" aria-current="true"><h2>Business</h2><p>Meetings, entities, decisions, stakeholders. Job default.</p></div>
+      <div class="tpl"><h2>General</h2><p>Unopinionated Schema. Edit purpose after create.</p></div>
+      <div class="row">
+        <button class="btn">Cancel</button>
+        <button class="btn primary">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="caption">First run / New Wiki. Five names only. Business selected. Overlay is one level — no stacked dialogs.</p>
+</body>
+</html>

@@ -1,7 +1,7 @@
 /**
  * Site owner identity.
  *
- * yopedia is a single-owner deployment: the owner is the human who runs the
+ * work-wiki is a single-owner deployment: the owner is the human who runs the
  * site (the deployer's X/Twitter handle). Owner-only surfaces — e.g. the Lint
  * health-check admin tool — are gated on this. Defined by the public
  * `NEXT_PUBLIC_OWNER_HANDLE` env var so the SAME value is available client-side

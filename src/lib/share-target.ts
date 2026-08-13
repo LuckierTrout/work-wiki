@@ -1,5 +1,5 @@
 // Capture surfaces — the shared logic behind the three no-extension ways to send
-// a URL to yopedia for ingesting: a desktop bookmarklet, the PWA Web Share Target
+// a URL to work-wiki for ingesting: a desktop bookmarklet, the PWA Web Share Target
 // (Android), and an iOS Shortcut. All three land on `/save`, which fires the
 // existing authed `POST /api/ingest`. These helpers are pure so they're testable
 // in isolation (the surfaces themselves are a page + a manifest).
@@ -24,10 +24,10 @@ export function resolveSharedUrl(
 
 /**
  * Build the desktop bookmarklet for a given site origin. Clicking it on any page
- * opens yopedia's `/save` in a small popup, passing the current tab's URL + title.
- * The popup loads on yopedia's OWN origin, so the user's existing session cookie
+ * opens work-wiki's `/save` in a small popup, passing the current tab's URL + title.
+ * The popup loads on work-wiki's OWN origin, so the user's existing session cookie
  * authenticates the save — no token, no CORS. Generated from the live origin so it
- * always points at wherever yopedia is served (e.g. yopedia.yolog.dev).
+ * always points at wherever work-wiki is served (e.g. yopedia.yolog.dev).
  */
 /**
  * Display host for a URL — the hostname without a leading `www.`, or the raw
@@ -48,6 +48,6 @@ export function buildBookmarklet(origin: string): string {
     "javascript:(function(){window.open('" +
     base +
     "/save?url='+encodeURIComponent(location.href)+'&title='+encodeURIComponent(document.title)," +
-    "'yopedia-save','width=440,height=620,noopener=no');})();"
+    "'work-wiki-save','width=440,height=620,noopener=no');})();"
   );
 }

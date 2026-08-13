@@ -348,7 +348,7 @@ export async function query(
  *
  * The optional `sources` parameter accepts an array of wiki page slugs cited
  * in the answer. These are stored as `wiki-ref` provenance entries in the
- * page's frontmatter, fulfilling yopedia's provenance contract.
+ * page's frontmatter, fulfilling work-wiki's provenance contract.
  *
  * Returns the slug of the newly created wiki page.
  */

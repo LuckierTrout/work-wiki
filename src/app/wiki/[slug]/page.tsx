@@ -50,7 +50,7 @@ export async function generateMetadata({
       : undefined;
   const url = commonsPath(slug);
   return {
-    title: page.title, // layout template appends " · yopedia"
+    title: page.title, // layout template appends " · work-wiki"
     ...(description ? { description } : {}),
     alternates: { canonical: url },
     openGraph: {

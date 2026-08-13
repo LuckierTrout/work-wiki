@@ -1,8 +1,8 @@
 /**
- * yopedia agent task-queue consumer.
+ * work-wiki agent task-queue consumer.
  *
  * A thin dispatcher: drains the `yopedia-tasks` Cloudflare Queue and POSTs each
- * message to the main yopedia app's `/api/tasks/run` endpoint with the system
+ * message to the main work-wiki app's `/api/tasks/run` endpoint with the system
  * token. The actual work (reconcile / ingest) runs in the main app, which has
  * the full `src/lib` + OpenNext request context. This worker imports NO `src/lib`
  * code — that would transitively pull Clerk/Next and the OpenNext context a

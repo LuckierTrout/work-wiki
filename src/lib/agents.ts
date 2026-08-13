@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Agent registry — Phase 4 agent identity as yopedia pages (data layer)
+// Agent registry — Phase 4 agent identity as work-wiki pages (data layer)
 // ---------------------------------------------------------------------------
 //
 // Each registered agent gets a JSON file at `agents/<id>.json` under the data
@@ -83,7 +83,7 @@ function validateProfile(profile: AgentProfile): void {
 // ---------------------------------------------------------------------------
 //
 // Every owner can have their own "yoyo", so the stored id encodes both:
-//   id = slugify("<owner>-<name>")   e.g. "yopedia-yoyo", "alice-yoyo"
+//   id = slugify("<owner>-<name>")   e.g. "work-wiki-yoyo", "alice-yoyo"
 // This keeps a flat agents/<id>.json registry (and the existing id-based API
 // and `agent:<id>` search scope) working unchanged — the id is just composite.
 
@@ -892,7 +892,7 @@ export async function seedAgent(options: SeedAgentOptions): Promise<AgentProfile
     }
   }
 
-  // Composite id so each owner can have their own "<name>" (e.g. "yopedia-yoyo").
+  // Composite id so each owner can have their own "<name>" (e.g. "work-wiki-yoyo").
   // Unowned/legacy seeds keep the bare id for back-compat.
   const storedId = options.owner
     ? agentIdFor(options.owner, options.id)
@@ -933,7 +933,7 @@ export async function seedAgent(options: SeedAgentOptions): Promise<AgentProfile
 export interface ForkAgentOptions {
   /** The owner (principal handle) of the new fork. */
   owner: string;
-  /** The id of the template to fork from (e.g. the base "yopedia-yoyo"). */
+  /** The id of the template to fork from (e.g. the base "work-wiki-yoyo"). */
   templateId: string;
   /** Short name for the fork; defaults to {@link DEFAULT_AGENT_NAME}. */
   name?: string;

@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>work-wiki — color themes</title>
+<style>
+/*
+  Color theme options for work-wiki chrome. Graph type colors are NOT in these palettes.
+  Light only (v1). Pick a register; hex is in each .theme comment.
+
+  A Nashsu as-sampled
+    surface #FFFFFF / rail #FAFAFA / fg #171717 / muted #737373 / border #E5E5E5
+    primary #171717 / live #16A34A / warning #D97706 / warn-bg #FFF7ED / danger #DC2626
+
+  B Warm paper
+    surface #F7F4EE / rail #F1EDE4 / fg #1C1917 / muted #78716C / border #E7E0D6
+    primary #1C1917 / live #3F6F4A / warning #B45309 / warn-bg #FFF7ED / danger #B91C1C
+
+  C Cool slate
+    surface #F4F6F8 / rail #ECEFF2 / fg #1B2430 / muted #5B6B7C / border #D8DEE6
+    primary #1B2430 / live #0F766E / warning #C2410C / warn-bg #FFF7ED / danger #BE123C
+
+  D Ink green (colored primary)
+    surface #FAFAF7 / rail #F3F3EE / fg #141414 / muted #6B6B6B / border #E4E4DE
+    primary #1A3A2A / on-primary #F7F7F2 / live #1A3A2A / warning #A16207 / warn-bg #FEFCE8 / danger #9F1239
+
+  E High-contrast print
+    surface #FFFFFF / rail #F4F4F4 / fg #0A0A0A / muted #525252 / border #D4D4D4
+    primary #0A0A0A / live #15803D / warning #A16207 / warn-bg #FFFBEB / danger #DC2626
+
+  F Brass instrument
+    surface #FFFCF8 / rail #F8F1E7 / fg #2A2118 / muted #7A6A58 / border #E8DCC8
+    primary #2A2118 / live #8A6A2A / warning #C2410C / warn-bg #FFF7ED / danger #9F1239
+*/
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #E8E8E8;
+  color: #171717;
+  padding: 28px 32px 48px;
+}
+h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+.lede { color: #737373; margin-bottom: 20px; max-width: 72ch; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.theme { border: 1px solid #D4D4D4; border-radius: 8px; overflow: hidden; background: #fff; }
+.head { padding: 12px 14px 8px; border-bottom: 1px solid #E5E5E5; background: #FAFAFA; }
+.head h2 { font-size: 14px; font-weight: 600; }
+.head p { color: #737373; margin-top: 2px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; border-bottom: 1px solid #E5E5E5; }
+.chip { display: flex; align-items: center; gap: 6px; font: 11px/1.3 ui-monospace, Menlo, monospace; color: #525252; }
+.sw { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #D4D4D4; }
+.snippet { display: flex; height: 220px; }
+.rail { width: 36px; display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 6px; border-right: 1px solid; }
+.rail i { width: 22px; height: 22px; border-radius: 5px; display: block; }
+.rail i.on { outline: 1px solid; }
+.dot { width: 7px; height: 7px; border-radius: 99px; margin-top: auto; }
+.pane { flex: 1; display: flex; flex-direction: column; padding: 10px 12px; min-width: 0; }
+.pane h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+.card { border: 1px solid; border-radius: 6px; padding: 8px 10px; font-size: 12px; }
+.card strong { display: block; margin-bottom: 2px; }
+.card .muted { margin: 4px 0 8px; }
+.row { display: flex; gap: 6px; }
+.btn { border: 0; border-radius: 6px; padding: 4px 8px; font: inherit; }
+.ghost { background: transparent; border: 1px solid; }
+.warn { margin-top: 8px; border: 1px solid; border-radius: 6px; padding: 6px 8px; font-size: 11px; }
+.save { margin-top: auto; display: flex; justify-content: space-between; align-items: center; padding-top: 8px; font-size: 11px; }
+</style>
+</head>
+<body>
+<h1>work-wiki color themes</h1>
+<p class="lede">Same Workbench density. Graph node colors stay categorical and out of chrome. Light only. Pick a letter — mix later if you want paper surfaces with a different button.</p>
+<div class="grid">
+
+<section class="theme" style="--s:#FFFFFF;--r:#FAFAFA;--fg:#171717;--mu:#737373;--bd:#E5E5E5;--p:#171717;--op:#FFFFFF;--lv:#16A34A;--w:#D97706;--wb:#FFF7ED;--d:#DC2626">
+  <div class="head"><h2>A — Nashsu as sampled</h2><p>Cool default gray. Black buttons. What the mocks use now.</p></div>
+  <div class="chips">
+    <span class="chip"><i class="sw" style="background:#FFFFFF"></i>surface</span>
+    <span class="chip"><i class="sw" style="background:#FAFAFA"></i>rail</span>
+    <span class="chip"><i class="sw" style="background:#171717"></i>fg / primary</span>
+    <span class="chip"><i class="sw" style="background:#737373"></i>muted</span>
+    <span class="chip"><i class="sw" style="background:#16A34A"></i>live</span>
+    <span class="chip"><i class="sw" style="background:#DC2626"></i>danger</span>
+  </div>
+  <div class="snippet">
+    <div class="rail" style="background:var(--r);border-color:var(--bd)">
+      <i style="background:#E5E5E5;outline-color:var(--fg)" class="on"></i>
+      <i style="background:transparent"></i><i style="background:transparent"></i>
+      <span class="dot" style="background:var(--lv)"></span>
+    </div>
+    <div class="pane" style="background:var(--s);color:var(--fg)">
+      <h3>Todos</h3>
+      <div class="card" style="border-color:var(--bd)">
+        <strong>Send resourcing options to Jen</strong>
+        <div class="muted" style="color:var(--mu)">Due Fri · Plaud meeting</div>
+        <div class="row">
+          <button class="btn" style="background:var(--p);color:var(--op)">Approve</button>
+          <button class="ghost btn" style="color:var(--d);border-color:transparent">Reject</button>
+        </div>
+      </div>
+      <div class="warn" style="background:var(--wb);border-color:var(--w);color:var(--fg)">Arrival always queues Ingest. No folder-watch.</div>
+      <div class="save" style="color:var(--mu)"><span>Changes apply after saving</span><button class="btn" style="background:var(--p);color:var(--op)">Save</button></div>
+    </div>
+  </div>
+</section>
+
+<section class="theme" style="--s:#F7F4EE;--r:#F1EDE4;--fg:#1C1917;--mu:#78716C;--bd:#E7E0D6;--p:#1C1917;--op:#F7F4EE;--lv:#3F6F4A;--w:#B45309;--wb:#FFF7ED;--d:#B91C1C">
+  <div class="head"><h2>B — Warm paper</h2><p>Archival, less “Tailwind gray.” Still a lab, not a magazine.</p></div>
+  <div class="chips">
+    <span class="chip"><i class="sw" style="background:#F7F4EE"></i>surface</span>
+    <span class="chip"><i class="sw" style="background:#F1EDE4"></i>rail</span>
+    <span class="chip"><i class="sw" style="background:#1C1917"></i>fg / primary</span>
+    <span class="chip"><i class="sw" style="background:#78716C"></i>muted</span>
+    <span class="chip"><i class="sw" style="background:#3F6F4A"></i>live</span>
+    <span class="chip"><i class="sw" style="background:#B91C1C"></i>danger</span>
+  </div>
+  <div class="snippet">
+    <div class="rail" style="background:var(--r);border-color:var(--bd)">
+      <i style="background:#E7E0D6;outline-color:var(--fg)" class="on"></i>
+      <i></i><i></i>
+      <span class="dot" style="background:var(--lv)"></span>
+    </div>
+    <div class="pane" style="background:var(--s);color:var(--fg)">
+      <h3>Todos</h3>
+      <div class="card" style="border-color:var(--bd);background:#FFFcf8">
+        <strong>Send resourcing options to Jen</strong>
+        <div class="muted" style="color:var(--mu)">Due Fri · Plaud meeting</div>
+        <div class="row">
+          <button class="btn" style="background:var(--p);color:var(--op)">Approve</button>
+          <button class="ghost btn" style="color:var(--d);border-color:transparent">Reject</button>
+        </div>
+      </div>
+      <div class="warn" style="background:var(--wb);border-color:var(--w);color:var(--fg)">Arrival always queues Ingest. No folder-watch.</div>
+      <div class="save" style="color:var(--mu)"><span>Changes apply after saving</span><button class="btn" style="background:var(--p);color:var(--op)">Save</button></div>
+    </div>
+  </div>
+</section>
+
+<section class="theme" style="--s:#F4F6F8;--r:#ECEFF2;--fg:#1B2430;--mu:#5B6B7C;--bd:#D8DEE6;--p:#1B2430;--op:#F4F6F8;--lv:#0F766E;--w:#C2410C;--wb:#FFF7ED;--d:#BE123C">
+  <div class="head"><h2>C — Cool slate</h2><p>Steel instrument. Teal only on the live dot. Not a metric dashboard.</p></div>
+  <div class="chips">
+    <span class="chip"><i class="sw" style="background:#F4F6F8"></i>surface</span>
+    <span class="chip"><i class="sw" style="background:#ECEFF2"></i>rail</span>
+    <span class="chip"><i class="sw" style="background:#1B2430"></i>fg / primary</span>
+    <span class="chip"><i class="sw" style="background:#5B6B7C"></i>muted</span>
+    <span class="chip"><i class="sw" style="background:#0F766E"></i>live</span>
+    <span class="chip"><i class="sw" style="background:#BE123C"></i>danger</span>
+  </div>
+  <div class="snippet">
+    <div class="rail" style="background:var(--r);border-color:var(--bd)">
+      <i style="background:#D8DEE6;outline-color:var(--fg)" class="on"></i>
+      <i></i><i></i>
+      <span class="dot" style="background:var(--lv)"></span>
+    </div>
+    <div class="pane" style="background:var(--s);color:var(--fg)">
+      <h3>Todos</h3>
+      <div class="card" style="border-color:var(--bd);background:#FFFFFF">
+        <strong>Send resourcing options to Jen</strong>
+        <div class="muted" style="color:var(--mu)">Due Fri · Plaud meeting</div>
+        <div class="row">
+          <button class="btn" style="background:var(--p);color:var(--op)">Approve</button>
+          <button class="ghost btn" style="color:var(--d);border-color:transparent">Reject</button>
+        </div>
+      </div>
+      <div class="warn" style="background:var(--wb);border-color:var(--w);color:var(--fg)">Arrival always queues Ingest. No folder-watch.</div>
+      <div class="save" style="color:var(--mu)"><span>Changes apply after saving</span><button class="btn" style="background:var(--p);color:var(--op)">Save</button></div>
+    </div>
+  </div>
+</section>
+
+<section class="theme" style="--s:#FAFAF7;--r:#F3F3EE;--fg:#141414;--mu:#6B6B6B;--bd:#E4E4DE;--p:#1A3A2A;--op:#F7F7F2;--lv:#1A3A2A;--w:#A16207;--wb:#FEFCE8;--d:#9F1239">
+  <div class="head"><h2>D — Ink green</h2><p>One brand hue: forest on primary buttons. Status dot matches. Leaves black-button nashsu.</p></div>
+  <div class="chips">
+    <span class="chip"><i class="sw" style="background:#FAFAF7"></i>surface</span>
+    <span class="chip"><i class="sw" style="background:#F3F3EE"></i>rail</span>
+    <span class="chip"><i class="sw" style="background:#141414"></i>fg</span>
+    <span class="chip"><i class="sw" style="background:#1A3A2A"></i>primary / live</span>
+    <span class="chip"><i class="sw" style="background:#6B6B6B"></i>muted</span>
+    <span class="chip"><i class="sw" style="background:#9F1239"></i>danger</span>
+  </div>
+  <div class="snippet">
+    <div class="rail" style="background:var(--r);border-color:var(--bd)">
+      <i style="background:#E4E4DE;outline-color:var(--fg)" class="on"></i>
+      <i></i><i></i>
+      <span class="dot" style="background:var(--lv)"></span>
+    </div>
+    <div class="pane" style="background:var(--s);color:var(--fg)">
+      <h3>Todos</h3>
+      <div class="card" style="border-color:var(--bd);background:#FFFFFF">
+        <strong>Send resourcing options to Jen</strong>
+        <div class="muted" style="color:var(--mu)">Due Fri · Plaud meeting</div>
+        <div class="row">
+          <button class="btn" style="background:var(--p);color:var(--op)">Approve</button>
+          <button class="ghost btn" style="color:var(--d);border-color:transparent">Reject</button>
+        </div>
+      </div>
+      <div class="warn" style="background:var(--wb);border-color:var(--w);color:var(--fg)">Arrival always queues Ingest. No folder-watch.</div>
+      <div class="save" style="color:var(--mu)"><span>Changes apply after saving</span><button class="btn" style="background:var(--p);color:var(--op)">Save</button></div>
+    </div>
+  </div>
+</section>
+
+<section class="theme" style="--s:#FFFFFF;--r:#F4F4F4;--fg:#0A0A0A;--mu:#525252;--bd:#D4D4D4;--p:#0A0A0A;--op:#FFFFFF;--lv:#15803D;--w:#A16207;--wb:#FFFBEB;--d:#DC2626">
+  <div class="head"><h2>E — High-contrast print</h2><p>Same gray family, less wash. Inkier type, harder edges.</p></div>
+  <div class="chips">
+    <span class="chip"><i class="sw" style="background:#FFFFFF"></i>surface</span>
+    <span class="chip"><i class="sw" style="background:#F4F4F4"></i>rail</span>
+    <span class="chip"><i class="sw" style="background:#0A0A0A"></i>fg / primary</span>
+    <span class="chip"><i class="sw" style="background:#525252"></i>muted</span>
+    <span class="chip"><i class="sw" style="background:#15803D"></i>live</span>
+    <span class="chip"><i class="sw" style="background:#DC2626"></i>danger</span>
+  </div>
+  <div class="snippet">
+    <div class="rail" style="background:var(--r);border-color:var(--bd)">
+      <i style="background:#E5E5E5;outline-color:var(--fg)" class="on"></i>
+      <i></i><i></i>
+      <span class="dot" style="background:var(--lv)"></span>
+    </div>
+    <div class="pane" style="background:var(--s);color:var(--fg)">
+      <h3>Todos</h3>
+      <div class="card" style="border-color:var(--bd)">
+        <strong>Send resourcing options to Jen</strong>
+        <div class="muted" style="color:var(--mu)">Due Fri · Plaud meeting</div>
+        <div class="row">
+          <button class="btn" style="background:var(--p);color:var(--op)">Approve</button>
+          <button class="ghost btn" style="color:var(--d);border-color:transparent">Reject</button>
+        </div>
+      </div>
+      <div class="warn" style="background:var(--wb);border-color:var(--w);color:var(--fg)">Arrival always queues Ingest. No folder-watch.</div>
+      <div class="save" style="color:var(--mu)"><span>Changes apply after saving</span><button class="btn" style="background:var(--p);color:var(--op)">Save</button></div>
+    </div>
+  </div>
+</section>
+
+<section class="theme" style="--s:#FFFCF8;--r:#F8F1E7;--fg:#2A2118;--mu:#7A6A58;--bd:#E8DCC8;--p:#2A2118;--op:#FFFCF8;--lv:#8A6A2A;--w:#C2410C;--wb:#FFF7ED;--d:#9F1239">
+  <div class="head"><h2>F — Brass instrument</h2><p>Warmest. Brass only on the live dot. Easy to overdo — reject if it feels boutique.</p></div>
+  <div class="chips">
+    <span class="chip"><i class="sw" style="background:#FFFCF8"></i>surface</span>
+    <span class="chip"><i class="sw" style="background:#F8F1E7"></i>rail</span>
+    <span class="chip"><i class="sw" style="background:#2A2118"></i>fg / primary</span>
+    <span class="chip"><i class="sw" style="background:#7A6A58"></i>muted</span>
+    <span class="chip"><i class="sw" style="background:#8A6A2A"></i>live</span>
+    <span class="chip"><i class="sw" style="background:#9F1239"></i>danger</span>
+  </div>
+  <div class="snippet">
+    <div class="rail" style="background:var(--r);border-color:var(--bd)">
+      <i style="background:#E8DCC8;outline-color:var(--fg)" class="on"></i>
+      <i></i><i></i>
+      <span class="dot" style="background:var(--lv)"></span>
+    </div>
+    <div class="pane" style="background:var(--s);color:var(--fg)">
+      <h3>Todos</h3>
+      <div class="card" style="border-color:var(--bd);background:#FFFEFB">
+        <strong>Send resourcing options to Jen</strong>
+        <div class="muted" style="color:var(--mu)">Due Fri · Plaud meeting</div>
+        <div class="row">
+          <button class="btn" style="background:var(--p);color:var(--op)">Approve</button>
+          <button class="ghost btn" style="color:var(--d);border-color:transparent">Reject</button>
+        </div>
+      </div>
+      <div class="warn" style="background:var(--wb);border-color:var(--w);color:var(--fg)">Arrival always queues Ingest. No folder-watch.</div>
+      <div class="save" style="color:var(--mu)"><span>Changes apply after saving</span><button class="btn" style="background:var(--p);color:var(--op)">Save</button></div>
+    </div>
+  </div>
+</section>
+
+</div>
+</body>
+</html>

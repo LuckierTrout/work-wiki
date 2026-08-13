@@ -1,8 +1,8 @@
 import type { MetadataRoute } from "next";
 
 /**
- * PWA manifest. Beyond making yopedia installable, its real job is the **Web
- * Share Target**: once installed (Android Chrome especially), yopedia appears in
+ * PWA manifest. Beyond making work-wiki installable, its real job is the **Web
+ * Share Target**: once installed (Android Chrome especially), work-wiki appears in
  * the OS share sheet, and sharing a link does `GET /save?url=&title=&text=` →
  * the capture page ingests it. iOS Safari doesn't support share_target (the
  * /save guide documents an Apple Shortcut for that case).
@@ -13,9 +13,9 @@ import type { MetadataRoute } from "next";
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "yopedia — a shared second brain for humans and agents",
-    short_name: "yopedia",
-    description: "Save any link to yopedia for ingesting into the commons.",
+    name: "work-wiki — a shared second brain for humans and agents",
+    short_name: "work-wiki",
+    description: "Save any link to work-wiki for ingesting into the commons.",
     start_url: "/",
     display: "standalone",
     background_color: "#0a0a0b",

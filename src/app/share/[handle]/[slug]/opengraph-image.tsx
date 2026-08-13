@@ -10,7 +10,7 @@ import { logger } from "@/lib/logger";
 // it can't be force-static) — verified to run on the Worker runtime.
 export const dynamic = "force-dynamic";
 
-export const alt = "A yopedia page";
+export const alt = "A work-wiki page";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -95,7 +95,7 @@ export default async function ShareOgImage({
       handle.toLowerCase() === tenantForOwner(str(page.frontmatter.owner)),
   );
 
-  const title = showRealTitle ? page!.title || slug : "yopedia";
+  const title = showRealTitle ? page!.title || slug : "work-wiki";
   const kicker = showRealTitle
     ? `${typeLabel(str(page!.frontmatter.type))} · @${handle}`
     : "a shared second brain for humans and agents";
@@ -134,7 +134,7 @@ export default async function ShareOgImage({
       >
         <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
           <img src={MARK_URI} width={72} height={72} alt="" />
-          <div style={{ fontSize: 40, fontWeight: 700, letterSpacing: -1 }}>yopedia</div>
+          <div style={{ fontSize: 40, fontWeight: 700, letterSpacing: -1 }}>work-wiki</div>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>

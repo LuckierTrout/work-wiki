@@ -108,7 +108,7 @@ export default async function Home() {
             animationDelay: ".1s",
           }}
         >
-          Not retrieval. yopedia{" "}
+          Not retrieval. work-wiki{" "}
           <em style={{ fontStyle: "normal", fontWeight: 600 }}>accumulates</em> —
           sources become cited pages, contradictions reconcile, confidence and
           staleness stay visible, and lineage is kept.

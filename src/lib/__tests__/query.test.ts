@@ -982,7 +982,7 @@ describe("saveAnswerToWiki", () => {
     expect(parsed!.frontmatter.tags).toEqual(["query-answer"]);
     expect(parsed!.frontmatter.created).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(parsed!.frontmatter.updated).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    // yopedia Phase 1 metadata — #106
+    // work-wiki Phase 1 metadata — #106
     expect(parsed!.frontmatter.confidence).toBe(0.5);
     expect(parsed!.frontmatter.expiry).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(parsed!.frontmatter.authors).toEqual(["system"]);

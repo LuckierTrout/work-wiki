@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
     const expanded = expandMineScope(scopeParam, principal);
 
     let pages = await listReadableWikiPages(principal);
-    let vaultName = "yopedia";
+    let vaultName = "work-wiki";
     if (expanded) {
       const resolved = await resolveScope(expanded);
       const scopeSet = new Set(resolved?.slugs ?? []);
@@ -92,7 +92,7 @@ export async function GET(req: NextRequest) {
     const fileBase = `${vaultName}-vault.zip`;
     const asciiName =
       `${vaultName.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "")}` ||
-      "yopedia";
+      "work-wiki";
     return new Response(zipped.buffer as ArrayBuffer, {
       headers: {
         "Content-Type": "application/zip",

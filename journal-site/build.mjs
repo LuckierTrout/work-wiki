@@ -595,15 +595,15 @@ function renderHtml(entries) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>yopedia Growth Journal</title>
-    <meta name="description" content="A public archive of the agent sessions growing yopedia.">
+    <title>work-wiki Growth Journal</title>
+    <meta name="description" content="A public archive of the agent sessions growing work-wiki.">
     <link rel="stylesheet" href="./assets/site.css">
   </head>
   <body>
     <main class="journal-shell" id="top">
       <header class="hero">
         <nav class="topline" aria-label="Project links">
-          <strong>yopedia Growth Journal</strong>
+          <strong>work-wiki Growth Journal</strong>
           <span></span>
           <a href="${repoUrl}">GitHub</a>
           <a href="${repoUrl}/blob/main/.yoyo/journal.md">Source Journal</a>
@@ -614,7 +614,7 @@ function renderHtml(entries) {
             <p class="eyebrow">Public lab log</p>
             <h1>Watch a wiki grow itself.</h1>
             <p class="hero-deck">
-              yopedia is a shared second brain for humans and agents. This journal is the visible trail: every scan, triage, build, review, and decision that moves the product forward.
+              work-wiki is a shared second brain for humans and agents. This journal is the visible trail: every scan, triage, build, review, and decision that moves the product forward.
             </p>
             <div class="hero-actions">
               <a href="#archive">Browse the archive</a>
@@ -707,7 +707,7 @@ function renderHtml(entries) {
 
     <footer class="site-footer">
       <p>Generated from <code>.yoyo/journal.md</code></p>
-      <a href="${repoUrl}">Back to yopedia</a>
+      <a href="${repoUrl}">Back to work-wiki</a>
     </footer>
 
     <a class="to-top" href="#top" aria-label="Go to top">Top</a>

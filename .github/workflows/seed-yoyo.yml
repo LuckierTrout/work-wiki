@@ -1,6 +1,6 @@
 name: Seed yoyo
 
-# Keeps the yopedia "yoyo" agent in sync with the canonical identity in
+# Keeps the work-wiki "yoyo" agent in sync with the canonical identity in
 # yologdev/yoyo-evolve. Assembles yoyo's identity / learnings / social pages
 # from that repo and POSTs them to /api/agents/seed.
 #
@@ -82,7 +82,7 @@ jobs:
           EOF
           node build-seed.mjs
 
-      - name: Seed yopedia
+      - name: Seed work-wiki
         env:
           YOPEDIA_SERVICE_TOKEN: ${{ secrets.YOPEDIA_SERVICE_TOKEN }}
           YOPEDIA_URL: ${{ vars.YOPEDIA_URL || 'https://yopedia.yuanhao-li.workers.dev' }}

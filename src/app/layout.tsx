@@ -33,19 +33,19 @@ const SITE_DESCRIPTION =
 export const metadata: Metadata = {
   metadataBase: new URL("https://yopedia.yolog.dev"),
   title: {
-    default: "yopedia — a shared second brain for humans and agents",
-    template: "%s · yopedia",
+    default: "work-wiki — a shared second brain for humans and agents",
+    template: "%s · work-wiki",
   },
   description: SITE_DESCRIPTION,
   openGraph: {
-    title: "yopedia — a shared second brain for humans and agents",
+    title: "work-wiki — a shared second brain for humans and agents",
     description: SITE_DESCRIPTION,
-    siteName: "yopedia",
+    siteName: "work-wiki",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "yopedia — a shared second brain for humans and agents",
+    title: "work-wiki — a shared second brain for humans and agents",
     description: SITE_DESCRIPTION,
   },
 };

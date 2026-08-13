@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>work-wiki — type pairings</title>
+<style>
+/*
+  System fonts only (offline mock). Webfonts (IBM Plex, Source Serif 4, Geist) can be named after a pick.
+
+  1 SF everywhere — current
+    ui: -apple-system / ui-sans-serif 13px
+    title: same 18px 600
+    preview: same 15px
+    mono: ui-monospace 12px
+
+  2 Avenir Next chrome
+    ui: "Avenir Next", "Segoe UI", sans-serif 13px
+    title: Avenir Next 18px 600
+    preview: Avenir Next 15px
+    mono: ui-monospace
+
+  3 SF chrome, New York titles
+    ui: -apple-system 13px
+    title: "New York", "Iowan Old Style", Georgia 20px 600
+    preview: -apple-system 15px
+    Risk: magazine if titles get large. Keep 20px max.
+
+  4 SF chrome, Georgia preview (reading wiki)
+    ui: -apple-system 13px
+    title: -apple-system 18px 600
+    preview: Georgia, "Iowan Old Style", serif 16px / 1.65
+    Chrome stays sans; Pages read as documents.
+
+  5 Avenir Next + Georgia preview
+    ui: "Avenir Next" 13px
+    title: "Avenir Next" 18px 600
+    preview: Georgia 16px / 1.65
+
+  6 Lab readout — SF + SF Mono titles
+    ui: -apple-system 13px
+    title: ui-monospace 16px 600
+    preview: -apple-system 15px
+    Risk: fake-terminal. Easy reject.
+*/
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #E8E8E8; color: #171717; padding: 28px 32px 48px;
+}
+h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+.lede { color: #737373; margin-bottom: 20px; max-width: 72ch; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.card { background: #fff; border: 1px solid #D4D4D4; border-radius: 8px; overflow: hidden; }
+.head { padding: 12px 14px; border-bottom: 1px solid #E5E5E5; background: #FAFAFA; }
+.head h2 { font-size: 14px; font-weight: 600; }
+.head p { color: #737373; margin-top: 2px; }
+.meta { font: 11px/1.4 ui-monospace, Menlo, monospace; color: #525252; padding: 8px 14px; border-bottom: 1px solid #E5E5E5; }
+.sn { display: flex; min-height: 210px; }
+.rail { width: 36px; background: #FAFAFA; border-right: 1px solid #E5E5E5; }
+.col { flex: 1; padding: 12px 14px; border-right: 1px solid #E5E5E5; }
+.col:last-child { border-right: 0; }
+.ui-title { font-weight: 600; margin-bottom: 8px; }
+.row { color: #737373; padding: 2px 0; }
+.row.on { color: #171717; font-weight: 600; background: #FAFAFA; margin: 0 -8px; padding: 2px 8px; }
+.preview h3 { margin-bottom: 6px; }
+.preview p { color: #171717; }
+.path { color: #737373; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>work-wiki type pairings</h1>
+<p class="lede">Same gray chrome as the current mocks so you judge type, not paint. These use fonts already on the Mac. If you want IBM Plex, Geist, or Source Serif, name it — this page cannot load webfonts offline.</p>
+<div class="grid">
+
+<section class="card" style="--ui:ui-sans-serif, system-ui, -apple-system, sans-serif; --title:ui-sans-serif, system-ui, -apple-system, sans-serif; --preview:ui-sans-serif, system-ui, -apple-system, sans-serif; --mono:ui-monospace, Menlo, monospace">
+  <div class="head"><h2>1 — System UI (current)</h2><p>SF on Apple, Segoe on Windows. Invisible. Also generic.</p></div>
+  <div class="meta">ui 13 / title 18 / preview 15 / mono 12 — all sans</div>
+  <div class="sn">
+    <div class="rail"></div>
+    <div class="col" style="font-family:var(--ui);font-size:13px">
+      <div class="ui-title" style="font-family:var(--title);font-size:18px">Todos</div>
+      <div class="row">Knowledge</div>
+      <div class="row on">Meetings</div>
+      <div class="row">Entities</div>
+    </div>
+    <div class="col preview" style="font-family:var(--preview);font-size:15px;line-height:1.6">
+      <h3 style="font-family:var(--title);font-size:18px;font-weight:600">12-10 Meeting</h3>
+      <p>Jen asked for a written options set before the next C&amp;E staffing call. No model was approved in the room.</p>
+      <div class="path" style="font-family:var(--mono);font-size:12px">wiki/meetings/12-10-meeting.md</div>
+    </div>
+  </div>
+</section>
+
+<section class="card" style="--ui:'Avenir Next', 'Segoe UI', sans-serif; --title:'Avenir Next', 'Segoe UI', sans-serif; --preview:'Avenir Next', 'Segoe UI', sans-serif; --mono:ui-monospace, Menlo, monospace">
+  <div class="head"><h2>2 — Avenir Next</h2><p>Geometric, still a tool. More “chosen” than SF without going display.</p></div>
+  <div class="meta">Avenir Next 13 / 18 / 15 · mono paths</div>
+  <div class="sn">
+    <div class="rail"></div>
+    <div class="col" style="font-family:var(--ui);font-size:13px">
+      <div class="ui-title" style="font-family:var(--title);font-size:18px">Todos</div>
+      <div class="row">Knowledge</div>
+      <div class="row on">Meetings</div>
+      <div class="row">Entities</div>
+    </div>
+    <div class="col preview" style="font-family:var(--preview);font-size:15px;line-height:1.6">
+      <h3 style="font-family:var(--title);font-size:18px;font-weight:600">12-10 Meeting</h3>
+      <p>Jen asked for a written options set before the next C&amp;E staffing call. No model was approved in the room.</p>
+      <div class="path" style="font-family:var(--mono);font-size:12px">wiki/meetings/12-10-meeting.md</div>
+    </div>
+  </div>
+</section>
+
+<section class="card" style="--ui:ui-sans-serif, system-ui, -apple-system, sans-serif; --title:'New York', 'Iowan Old Style', Georgia, serif; --preview:ui-sans-serif, system-ui, -apple-system, sans-serif; --mono:ui-monospace, Menlo, monospace">
+  <div class="head"><h2>3 — SF chrome, New York titles</h2><p>Serif only on surface titles (Todos, Review). Easy to feel magazine if it grows.</p></div>
+  <div class="meta">SF 13 · New York 20 titles · SF preview 15</div>
+  <div class="sn">
+    <div class="rail"></div>
+    <div class="col" style="font-family:var(--ui);font-size:13px">
+      <div class="ui-title" style="font-family:var(--title);font-size:20px;font-weight:600">Todos</div>
+      <div class="row">Knowledge</div>
+      <div class="row on">Meetings</div>
+      <div class="row">Entities</div>
+    </div>
+    <div class="col preview" style="font-family:var(--preview);font-size:15px;line-height:1.6">
+      <h3 style="font-family:var(--title);font-size:20px;font-weight:600">12-10 Meeting</h3>
+      <p>Jen asked for a written options set before the next C&amp;E staffing call. No model was approved in the room.</p>
+      <div class="path" style="font-family:var(--mono);font-size:12px">wiki/meetings/12-10-meeting.md</div>
+    </div>
+  </div>
+</section>
+
+<section class="card" style="--ui:ui-sans-serif, system-ui, -apple-system, sans-serif; --title:ui-sans-serif, system-ui, -apple-system, sans-serif; --preview:Georgia, 'Iowan Old Style', serif; --mono:ui-monospace, Menlo, monospace">
+  <div class="head"><h2>4 — SF chrome, Georgia preview</h2><p>Chrome stays a tool. Pages read as documents. Closest to “wiki you actually read.”</p></div>
+  <div class="meta">SF 13 / 18 · Georgia preview 16 / 1.65</div>
+  <div class="sn">
+    <div class="rail"></div>
+    <div class="col" style="font-family:var(--ui);font-size:13px">
+      <div class="ui-title" style="font-family:var(--title);font-size:18px;font-weight:600">Todos</div>
+      <div class="row">Knowledge</div>
+      <div class="row on">Meetings</div>
+      <div class="row">Entities</div>
+    </div>
+    <div class="col preview" style="font-family:var(--preview);font-size:16px;line-height:1.65">
+      <h3 style="font-family:var(--title);font-size:18px;font-weight:600">12-10 Meeting</h3>
+      <p>Jen asked for a written options set before the next C&amp;E staffing call. No model was approved in the room.</p>
+      <div class="path" style="font-family:var(--mono);font-size:12px">wiki/meetings/12-10-meeting.md</div>
+    </div>
+  </div>
+</section>
+
+<section class="card" style="--ui:'Avenir Next', 'Segoe UI', sans-serif; --title:'Avenir Next', 'Segoe UI', sans-serif; --preview:Georgia, 'Iowan Old Style', serif; --mono:ui-monospace, Menlo, monospace">
+  <div class="head"><h2>5 — Avenir Next + Georgia preview</h2><p>Chosen chrome plus readable Pages. Mix with a warm palette if you want paper.</p></div>
+  <div class="meta">Avenir Next 13 / 18 · Georgia preview 16</div>
+  <div class="sn">
+    <div class="rail"></div>
+    <div class="col" style="font-family:var(--ui);font-size:13px">
+      <div class="ui-title" style="font-family:var(--title);font-size:18px;font-weight:600">Todos</div>
+      <div class="row">Knowledge</div>
+      <div class="row on">Meetings</div>
+      <div class="row">Entities</div>
+    </div>
+    <div class="col preview" style="font-family:var(--preview);font-size:16px;line-height:1.65">
+      <h3 style="font-family:var(--title);font-size:18px;font-weight:600">12-10 Meeting</h3>
+      <p>Jen asked for a written options set before the next C&amp;E staffing call. No model was approved in the room.</p>
+      <div class="path" style="font-family:var(--mono);font-size:12px">wiki/meetings/12-10-meeting.md</div>
+    </div>
+  </div>
+</section>
+
+<section class="card" style="--ui:ui-sans-serif, system-ui, -apple-system, sans-serif; --title:ui-monospace, Menlo, monospace; --preview:ui-sans-serif, system-ui, -apple-system, sans-serif; --mono:ui-monospace, Menlo, monospace">
+  <div class="head"><h2>6 — Lab readout (mono titles)</h2><p>Mono on titles only. Reject if it reads as a fake terminal — that is a stated anti-pattern.</p></div>
+  <div class="meta">SF 13 · SF Mono titles 16 · SF preview 15</div>
+  <div class="sn">
+    <div class="rail"></div>
+    <div class="col" style="font-family:var(--ui);font-size:13px">
+      <div class="ui-title" style="font-family:var(--title);font-size:16px;font-weight:600">Todos</div>
+      <div class="row">Knowledge</div>
+      <div class="row on">Meetings</div>
+      <div class="row">Entities</div>
+    </div>
+    <div class="col preview" style="font-family:var(--preview);font-size:15px;line-height:1.6">
+      <h3 style="font-family:var(--title);font-size:16px;font-weight:600">12-10 Meeting</h3>
+      <p>Jen asked for a written options set before the next C&amp;E staffing call. No model was approved in the room.</p>
+      <div class="path" style="font-family:var(--mono);font-size:12px">wiki/meetings/12-10-meeting.md</div>
+    </div>
+  </div>
+</section>
+
+</div>
+</body>
+</html>

@@ -725,7 +725,7 @@ export async function fuzzySearchWikiContent(
 export async function slugsForOwner(handle: string): Promise<string[]> {
   // Compare by TENANT, not raw handle: owner matching is case-insensitive and,
   // crucially, ownerless/seed pages (no `owner` field → DEFAULT_TENANT) belong
-  // to the `yopedia` silo. So `/u/yopedia` and `owner:yopedia` include them.
+  // to the `work-wiki` silo. So `/u/work-wiki` and `owner:work-wiki` include them.
   const wantTenant = tenantForOwner(handle);
 
   // Fast path: read the precomputed owner→slugs index (O(1)). Falls through to
@@ -758,7 +758,7 @@ export async function slugsForOwner(handle: string): Promise<string[]> {
 
 /**
  * Expand the client-facing `"mine"` scope to the concrete `owner:<handle>` of
- * the signed-in principal (the Mine|All lens — see [[yopedia-tenant-silos]]).
+ * the signed-in principal (the Mine|All lens — see [[work-wiki-tenant-silos]]).
  * Signed-out callers asking for "mine" fall through to the unscoped commons.
  * Any other scope string passes through unchanged. Pure — called at the route
  * boundary before `query()`/`fuzzySearchWikiContent`/the graph route.

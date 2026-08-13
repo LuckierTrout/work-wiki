@@ -1,5 +1,5 @@
-// Minimal service worker. Its ONLY purpose is to make yopedia an installable PWA,
-// which is what unlocks the Web Share Target (sharing a link to yopedia from the
+// Minimal service worker. Its ONLY purpose is to make work-wiki an installable PWA,
+// which is what unlocks the Web Share Target (sharing a link to work-wiki from the
 // OS share sheet). It deliberately does NOT cache or intercept anything: the
 // fetch handler never calls respondWith(), so every request goes to the network
 // normally — it can't serve stale content or break the app.

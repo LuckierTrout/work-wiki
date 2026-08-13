@@ -521,7 +521,7 @@ describe("POST /api/ingest — service token auth", () => {
       }, "valid-service-token"),
     );
     expect(res.status).toBe(200);
-    // Clerk principal wins — author/owner should be "alice", not "yopedia"
+    // Clerk principal wins — author/owner should be "alice", not "work-wiki"
     expect(mockedIngestUrl).toHaveBeenCalledWith(
       "https://example.com/page",
       expect.objectContaining({ author: "alice", owner: "alice" }),

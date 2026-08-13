@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The look — 13 Aug 2026</title>
+  <style>
+    :root {
+      --paper: #ececec;
+      --ink: #111;
+      --mute: #6a6a6a;
+      --line: #cfcfcf;
+      --warm: #f7f6f3;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--paper); color: var(--ink); }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 15px;
+      line-height: 1.45;
+      min-height: 100vh;
+    }
+    .stage {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 48px 28px 80px;
+    }
+    header {
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 28px;
+      margin-bottom: 36px;
+    }
+    .kicker {
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--mute);
+    }
+    h1 {
+      font-family: Georgia, "Times New Roman", serif;
+      font-weight: 400;
+      font-size: 42px;
+      letter-spacing: -0.02em;
+      margin: 10px 0 8px;
+    }
+    .lede { color: var(--mute); max-width: 38em; }
+    .table {
+      position: relative;
+      background: var(--warm);
+      border: 1px solid var(--line);
+      border-radius: 2px;
+      padding: 28px 24px 20px;
+      margin: 28px 0 40px;
+    }
+    .table svg.grain {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0.35;
+      pointer-events: none;
+    }
+    .seats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px 28px;
+      position: relative;
+    }
+    .seat {
+      padding: 4px 0 12px;
+      border-bottom: 1px solid var(--line);
+      animation: sit 0.7s ease both;
+    }
+    .seat:nth-child(1) { animation-delay: 0.05s; }
+    .seat:nth-child(2) { animation-delay: 0.12s; }
+    .seat:nth-child(3) { animation-delay: 0.18s; }
+    .seat:nth-child(4) { animation-delay: 0.24s; }
+    .seat:nth-child(5) { animation-delay: 0.30s; }
+    .seat:nth-child(6) { animation-delay: 0.36s; }
+    @keyframes sit {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: none; }
+    }
+    .who { font-weight: 600; font-size: 14px; }
+    .who span { font-weight: 400; color: var(--mute); }
+    .line {
+      margin: 6px 0 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 17px;
+      font-style: italic;
+    }
+    .epics {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin: 8px 0 36px;
+    }
+    .epic {
+      background: #fff;
+      border: 1px solid var(--line);
+      padding: 12px 12px 14px;
+      min-height: 88px;
+    }
+    .epic b { display: block; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--mute); margin-bottom: 6px; }
+    .epic span { font-family: Georgia, serif; font-size: 16px; }
+    .verdict {
+      border-left: 2px solid var(--ink);
+      padding: 4px 0 4px 16px;
+      max-width: 40em;
+    }
+    footer {
+      margin-top: 48px;
+      color: var(--mute);
+      font-size: 12px;
+    }
+    @media (max-width: 700px) {
+      .seats, .epics { grid-template-columns: 1fr 1fr; }
+      h1 { font-size: 32px; }
+    }
+    @media (max-width: 480px) {
+      .epics { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <header>
+      <div class="kicker">work-wiki · party · 13 August 2026</div>
+      <h1>The look</h1>
+      <p class="lede">Christian asked the room to look at eight epics. John asked him to pick a fight. He did not. They looked anyway.</p>
+    </header>
+
+    <div class="table">
+      <svg class="grain" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+        <filter id="n">
+          <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="13"/>
+          <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.07 0"/>
+        </filter>
+        <rect width="100%" height="100%" filter="url(#n)"/>
+      </svg>
+      <div class="seats">
+        <div class="seat">
+          <div class="who">📊 Mary <span>Business Analyst</span></div>
+          <p class="line">“Nothing orphaned. Completeness is not the same as the right knife — but the knife is fine.”</p>
+        </div>
+        <div class="seat">
+          <div class="who">📋 John <span>Product Manager</span></div>
+          <p class="line">“Size is not the job. Sit down, put stuff in, ask, leave the meeting with tasks.”</p>
+        </div>
+        <div class="seat">
+          <div class="who">🎨 Sally <span>UX Designer</span></div>
+          <p class="line">“I’d rather write the empty Chat state than split the epic.”</p>
+        </div>
+        <div class="seat">
+          <div class="who">🏗️ Winston <span>System Architect</span></div>
+          <p class="line">“Don’t make Deep Research wait on Conversations. Extract stays out of two.”</p>
+        </div>
+        <div class="seat">
+          <div class="who">💻 Amelia <span>Senior Software Engineer</span></div>
+          <p class="line">“One and two are fat. That’s a story file. I’ll complain there.”</p>
+        </div>
+        <div class="seat">
+          <div class="who">🧪 Murat <span>Test Architect</span></div>
+          <p class="line">“Epic 2 is where the pager lives. Test that like production.”</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="kicker" style="margin-bottom:12px">What they left on the table</div>
+    <div class="epics">
+      <div class="epic"><b>1</b><span>Private Workbench</span></div>
+      <div class="epic"><b>2</b><span>Sources compile</span></div>
+      <div class="epic"><b>3</b><span>Ask the wiki</span></div>
+      <div class="epic"><b>4</b><span>Meeting Todos</span></div>
+      <div class="epic"><b>5</b><span>See the wiki’s shape</span></div>
+      <div class="epic"><b>6</b><span>Deep Research</span></div>
+      <div class="epic"><b>7</b><span>Any document in</span></div>
+      <div class="epic"><b>8</b><span>Agents at the door</span></div>
+    </div>
+
+    <div class="verdict">
+      Eight stand. No recut. Chat-icon, Graph order, and Epic 7’s grab bag stay story-level unless someone reopens them. Todos stay their own Tuesday. Office extract does not sneak into compile.
+    </div>
+
+    <footer>Keepsake of an installed-agents party. The room remembers; it does not recut.</footer>
+  </div>
+</body>
+</html>

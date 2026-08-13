@@ -41,7 +41,7 @@ function ago(iso: string): string {
  * Recent ingest activity. The durable list comes from the SERVER ledger
  * (`/api/ingest/history`, scoped to pages the caller can read) so it survives
  * across domains/devices and includes EVERY ingest path — the form, the queue,
- * MCP, and the "Save to yopedia" bookmarklet/share (which don't touch this
+ * MCP, and the "Save to work-wiki" bookmarklet/share (which don't touch this
  * browser's localStorage). On top of that, jobs this browser just submitted are
  * polled by id for live status (incl. failures) until they land in the ledger.
  * Refreshes on tab focus so a bookmarklet save made in a popup appears on return.

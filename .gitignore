@@ -22,3 +22,10 @@ generate_video.py
 .yoyo/scripts/__pycache__/
 journal-site/dist/
 .dev.vars
+.bmad-loop/runs/
+.bmad-loop/cache/
+.bmad-loop/policy.toml
+_bmad/render/
+.DS_Store
+**/__pycache__/
+.cursor/hooks/state/

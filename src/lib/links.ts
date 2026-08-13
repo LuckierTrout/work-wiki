@@ -56,9 +56,9 @@ export function hasLinkTo(content: string, targetSlug: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Catch-all tenant for ownerless / seed content. yopedia is built in public by
+ * Catch-all tenant for ownerless / seed content. work-wiki is built in public by
  * yoyo, so unattributed/seed pages are the platform's own — they belong to the
- * `yopedia` tenant. Defined here (a pure module) so both client and server
+ * `work-wiki` tenant. Defined here (a pure module) so both client and server
  * resolve owner→tenant identically; `wiki.ts` re-exports it.
  */
 export const DEFAULT_TENANT = "yopedia";

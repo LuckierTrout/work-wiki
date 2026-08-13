@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>work-wiki — Settings · Intake</title>
+<style>
+/*
+  Spine: DESIGN.md save-bar, warning-callout, settings-nav, button-primary
+  EXPERIENCE.md IA Settings; Intake & Settings; Interaction banned OS folder-watch
+  Replaces imports/01-settings-source-watch.png
+*/
+:root {
+  --surface: #FFFFFF;
+  --subtle: #FAFAFA;
+  --rail: #FAFAFA;
+  --fg: #171717;
+  --muted: #737373;
+  --border: #E5E5E5;
+  --primary: #171717;
+  --on-primary: #FFFFFF;
+  --live: #16A34A;
+  --warn: #D97706;
+  --warn-bg: #FFF7ED;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--fg); background: #E8E8E8; padding: 24px;
+}
+.browser {
+  width: 1440px; height: 900px; margin: 0 auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; display: flex; flex-direction: column;
+}
+.chrome {
+  height: 36px; background: var(--subtle); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px; padding: 0 12px; flex-shrink: 0;
+}
+.dot { width: 10px; height: 10px; border-radius: 9999px; background: #D4D4D4; }
+.url {
+  flex: 1; height: 22px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 4px; color: var(--muted); display: flex; align-items: center;
+  padding: 0 10px; font-size: 12px;
+}
+.shell { flex: 1; display: flex; min-height: 0; }
+.rail {
+  width: 48px; background: var(--rail); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 4px;
+}
+.rail .spacer { flex: 1; }
+.icon {
+  width: 32px; height: 32px; border: 0; background: transparent; border-radius: 6px;
+  color: var(--fg); display: grid; place-items: center;
+}
+.icon.active { background: #E5E5E5; }
+.icon svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.status { width: 8px; height: 8px; border-radius: 9999px; background: var(--live); margin: 6px 0; }
+.snav {
+  width: 220px; border-right: 1px solid var(--border); background: var(--surface);
+  padding: 12px 0; overflow: auto;
+}
+.snav h2 {
+  font-size: 11px; letter-spacing: 0.06em; color: var(--muted);
+  padding: 0 14px 8px; font-weight: 600;
+}
+.snav a {
+  display: block; padding: 6px 14px; color: var(--fg); text-decoration: none;
+}
+.snav a.on { background: var(--subtle); font-weight: 600; }
+.main {
+  flex: 1; display: flex; flex-direction: column; min-width: 0;
+}
+.scroll { flex: 1; overflow: auto; padding: 20px 28px 24px; }
+.scroll h1 { font-size: 18px; font-weight: 600; }
+.sub { color: var(--muted); margin: 4px 0 16px; }
+.card {
+  border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; margin-bottom: 12px;
+}
+.card h3 { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+label.row { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0; }
+label.row span { color: var(--muted); }
+.field { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+input[type="text"], input[type="number"] {
+  border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px;
+  font: inherit; color: var(--fg); background: var(--surface);
+}
+input[type="text"] { width: 320px; }
+.mono { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.callout {
+  background: var(--warn-bg); border: 1px solid var(--warn); border-radius: 6px;
+  padding: 10px 12px; margin: 8px 0 0; color: var(--fg);
+}
+.pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.pill {
+  border: 1px solid var(--border); border-radius: 9999px; padding: 2px 8px; font-size: 12px;
+}
+.pill.on { background: var(--subtle); font-weight: 600; }
+.save {
+  border-top: 1px solid var(--border); padding: 10px 28px;
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--surface);
+}
+.save span { color: var(--muted); }
+.btn {
+  border: 1px solid var(--border); background: transparent; border-radius: 6px;
+  padding: 6px 12px; font: inherit; color: var(--fg);
+}
+.btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+.caption { text-align: center; color: #737373; font-size: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="browser">
+  <div class="chrome">
+    <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <div class="url">work-wiki.local / settings/intake</div>
+  </div>
+  <div class="shell">
+    <nav class="rail" aria-label="Modes">
+      <button class="icon" title="Wiki" aria-label="Wiki"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></button>
+      <button class="icon" title="Chat" aria-label="Chat"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+      <button class="icon" title="Sources" aria-label="Sources"><svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg></button>
+      <button class="icon" title="Search" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg></button>
+      <button class="icon" title="Graph" aria-label="Graph"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 7h8M7 8l4 8M17 8l-4 8"/></svg></button>
+      <button class="icon" title="Lint" aria-label="Lint"><svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="1"/><path d="M9 8h6M9 12h6M9 16h4"/></svg></button>
+      <button class="icon" title="Todos" aria-label="Todos"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="m4 6 1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg></button>
+      <button class="icon" title="Review" aria-label="Review"><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></button>
+      <button class="icon" title="Deep Research" aria-label="Deep Research"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></button>
+      <button class="icon" title="Skills" aria-label="Skills"><svg viewBox="0 0 24 24"><path d="M12 3l1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5L12 3z"/></svg></button>
+      <span class="spacer"></span>
+      <span class="status" title="Sidecar running"></span>
+      <button class="icon active" title="Settings" aria-current="page" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/></svg></button>
+    </nav>
+    <nav class="snav" aria-label="Settings">
+      <h2>SETTINGS</h2>
+      <a href="#">General</a>
+      <a href="#">LLM Models</a>
+      <a href="#">Embeddings</a>
+      <a href="#">Image Captioning</a>
+      <a href="#">External Information Sources</a>
+      <a href="#">Network</a>
+      <a class="on" href="#" aria-current="page">Intake</a>
+      <a href="#">Scheduled Import</a>
+      <a href="#">MinerU PDF</a>
+      <a href="#">API + MCP</a>
+      <a href="#">Output</a>
+      <a href="#">Interface</a>
+      <a href="#">Maintenance</a>
+      <a href="#">Changelog</a>
+      <a href="#">About</a>
+    </nav>
+    <div class="main">
+      <div class="scroll">
+        <h1>Intake</h1>
+        <p class="sub">Sources arrive by upload, folder import, email, Plaud, Capture, or API — then auto-queue two-step Ingest. There is no OS folder-watch.</p>
+
+        <div class="card">
+          <h3>Inbound email</h3>
+          <p class="sub" style="margin:0 0 8px">v1 is an address you control, not a connected mailbox.</p>
+          <div class="field">
+            <input class="mono" type="text" value="intake@wiki.example" readonly aria-label="Inbound email address">
+            <button class="btn">Copy</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Plaud</h3>
+          <label class="row"><input type="checkbox" checked disabled> <span>Upload transcript + summary (P0). Arrival auto-queues Ingest.</span></label>
+          <label class="row"><input type="checkbox"> <span>OAuth list/pull (P1). Auth failure fails closed.</span></label>
+        </div>
+
+        <div class="card">
+          <h3>Capture</h3>
+          <p class="sub" style="margin:0 0 8px">Bookmarklet / share / in-app URL. No Clip server. Capture without a session fails closed.</p>
+          <button class="btn">Copy bookmarklet</button>
+        </div>
+
+        <div class="card">
+          <h3>Parsers</h3>
+          <label class="row">Concurrent document parsers
+            <input type="number" value="5" min="1" max="16" aria-label="Concurrent document parsers" style="width:64px;margin-left:8px">
+          </label>
+          <p class="sub" style="margin:0">Parse imported documents before sequential Wiki Generation. Ingest LLM stays serial.</p>
+          <label class="row"><input type="checkbox"> <span>Keep parsed Markdown under raw/parsed.</span></label>
+        </div>
+
+        <div class="card">
+          <h3>Allowed file types</h3>
+          <p class="sub" style="margin:0">Documents on by default. Media and binaries stay off unless selected.</p>
+          <div class="pills">
+            <span class="pill on">.md</span><span class="pill on">.txt</span><span class="pill on">.pdf</span>
+            <span class="pill on">.docx</span><span class="pill on">.pptx</span><span class="pill on">.xlsx</span>
+            <span class="pill">.epub</span><span class="pill">.mobi</span>
+          </div>
+        </div>
+
+        <div class="callout">Arrival always queues Ingest. Unchanged SHA256 is skipped. There is no “watch this folder” toggle.</div>
+      </div>
+      <div class="save">
+        <span>Changes apply after saving</span>
+        <button class="btn primary">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="caption">Intake replaces nashsu Source Watch. No OS watch, no Open project folder, no 0.0.0.0 bind.</p>
+</body>
+</html>

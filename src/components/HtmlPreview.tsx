@@ -43,7 +43,7 @@ export function HtmlPreview({
   // scroll-hidden frame instead of auto-height; see the iframe below.
   const appStyle = usesViewportUnits(html) || deck;
 
-  // Match the artifact's paper/ink to the page's RESOLVED theme (yopedia toggles
+  // Match the artifact's paper/ink to the page's RESOLVED theme (work-wiki toggles
   // a `dark`/`light` class on <html> via localStorage; the sandboxed iframe can't
   // read that, so we read it here and bake it into the srcDoc). Re-render when the
   // user flips the toggle so the artifact follows.

@@ -35,7 +35,7 @@ export async function generateMetadata({
   const slug = decodeSlug(encodedSlug);
   const page = await readWikiPageWithFrontmatter(slug);
   if (!page || !canReadFrontmatter(page.frontmatter, await getPrincipal())) {
-    // The layout's title template appends " · yopedia".
+    // The layout's title template appends " · work-wiki".
     return { title: "Page not found" };
   }
   const tenant = tenantForOwner(
@@ -61,7 +61,7 @@ export async function generateMetadata({
   });
   const url = inCommons ? commonsPath(slug) : pagePath(tenant, slug);
   return {
-    title: page.title, // layout template appends " · yopedia"
+    title: page.title, // layout template appends " · work-wiki"
     ...(description ? { description } : {}),
     alternates: { canonical: url },
     openGraph: {
