@@ -22,6 +22,13 @@ if ! command -v claude >/dev/null 2>&1; then
   curl -fsSL https://claude.ai/install.sh | bash
 fi
 
+# Google shut off Gemini CLI "Login with Google" for individuals (free / AI Pro /
+# Ultra) on 18 Jun 2026. The replacement is Antigravity CLI (`agy`). Keep
+# @google/gemini-cli for Gemini Code Assist Standard/Enterprise and paid API keys.
+if ! command -v agy >/dev/null 2>&1; then
+  curl -fsSL https://antigravity.google/cli/install.sh | bash
+fi
+
 mkdir -p "${HOME}/.local"
 npm config set prefix "${HOME}/.local"
 npm install -g @openai/codex @google/gemini-cli @github/copilot
@@ -37,20 +44,15 @@ if [ ! -L .claude/skills ]; then
 fi
 
 if command -v bmad-loop >/dev/null 2>&1; then
-  bmad-loop init --project "$ROOT" --cli claude --cli codex --cli gemini --cli copilot
+  bmad-loop init --project "$ROOT" --cli claude --cli codex --cli gemini --cli copilot --cli antigravity
 fi
 
-# init bakes absolute paths into tracked Codex hooks; rewrite to a git-root
-# lookup so the file stays portable and the worktree stays clean.
+# init bakes absolute paths into tracked Codex / Antigravity hooks; rewrite to a
+# git-root lookup so the files stay portable and the worktree stays clean.
 python3 - <<'PY'
 import json
 from pathlib import Path
 
-path = Path(".codex/hooks.json")
-if not path.exists():
-    raise SystemExit(0)
-
-data = json.loads(path.read_text())
 template = (
     'python3 "$(git rev-parse --show-toplevel)/.bmad-loop/bmad_loop_hook.py" {event}'
 )
@@ -69,8 +71,13 @@ def rewrite(obj):
             rewrite(value)
 
 
-rewrite(data)
-path.write_text(json.dumps(data, indent=2) + "\n")
+for rel in (".codex/hooks.json", ".agents/hooks.json"):
+    path = Path(rel)
+    if not path.exists():
+        continue
+    data = json.loads(path.read_text())
+    rewrite(data)
+    path.write_text(json.dumps(data, indent=2) + "\n")
 PY
 
 echo "Agent tools:"
@@ -80,3 +87,4 @@ command -v claude && claude --version
 command -v codex && codex --version
 command -v gemini && gemini --version
 command -v copilot && copilot --version
+command -v agy && agy --version
