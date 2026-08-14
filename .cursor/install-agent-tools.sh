@@ -80,6 +80,43 @@ for rel in (".codex/hooks.json", ".agents/hooks.json"):
     path.write_text(json.dumps(data, indent=2) + "\n")
 PY
 
+# Cloud Agent VMs sleep; bmad-loop's session cap is wall-clock, so a 90-minute
+# default expires across a nap even if Claude is still mid-story. Seed longer
+# budgets + auto-rollback. policy.toml is gitignored (machine-local).
+python3 - <<'PY'
+import json
+import re
+from pathlib import Path
+
+policy = Path(".bmad-loop/policy.toml")
+if policy.exists():
+    text = policy.read_text()
+    replacements = {
+        r"^(session_timeout_min\s*=\s*)\d+": r"\g<1>720",
+        r"^(max_tokens_per_story\s*=\s*)\d+": r"\g<1>8000000",
+        r"^(max_tokens_per_session\s*=\s*)\d+": r"\g<1>8000000",
+        r"^(rollback_on_failure\s*=\s*)(?:true|false)": r"\g<1>true",
+    }
+    for pattern, repl in replacements.items():
+        text, n = re.subn(pattern, repl, text, count=1, flags=re.M)
+        if n != 1:
+            raise SystemExit(f"install-agent-tools: failed to set {pattern}")
+    policy.write_text(text)
+
+settings_path = Path.home() / ".claude" / "settings.json"
+settings_path.parent.mkdir(parents=True, exist_ok=True)
+settings = {}
+if settings_path.exists():
+    try:
+        loaded = json.loads(settings_path.read_text() or "{}")
+        if isinstance(loaded, dict):
+            settings = loaded
+    except json.JSONDecodeError:
+        settings = {}
+settings["skipDangerousModePermissionPrompt"] = True
+settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+PY
+
 echo "Agent tools:"
 command -v uv && uv --version
 command -v bmad-loop && bmad-loop --version
