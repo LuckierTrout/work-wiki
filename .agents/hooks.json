@@ -1,0 +1,11 @@
+{
+  "bmad-loop": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 \"$(git rev-parse --show-toplevel)/.bmad-loop/bmad_loop_hook.py\" Stop",
+        "timeout": 60
+      }
+    ]
+  }
+}
