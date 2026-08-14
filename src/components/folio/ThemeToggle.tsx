@@ -35,8 +35,8 @@ export function ThemeToggle() {
   if (!mounted) {
     return (
       <span
-        className="btn ghost"
-        style={{ width: 36, height: 36, padding: 8, borderRadius: "50%" }}
+        className="btn"
+        style={{ width: 36, height: 36, padding: 8, borderRadius: "50%", borderColor: "var(--rule)" }}
         aria-hidden
       />
     );
@@ -45,10 +45,10 @@ export function ThemeToggle() {
   return (
     <button
       onClick={flip}
-      className="btn ghost"
+      className="btn"
       aria-label="Toggle theme"
       title={dark ? "Switch to light" : "Switch to dark"}
-      style={{ padding: 8, borderRadius: "50%", width: 36, height: 36 }}
+      style={{ padding: 8, borderRadius: "50%", width: 36, height: 36, borderColor: "var(--rule)" }}
     >
       {dark ? <Icon.sun width="17" height="17" /> : <Icon.moon width="17" height="17" />}
     </button>

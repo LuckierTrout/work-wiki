@@ -61,16 +61,17 @@ export default async function AgentProfilePage({
   const canManage = !!principal && agent.owner === principal.handle;
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
-      <div className="mb-6">
+    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
+      <div style={{ maxWidth: 1000, marginBottom: 28 }}>
         <Link
           href={`/u/${handle}`}
           className="text-sm text-foreground/50 hover:text-foreground"
         >
           ← @{handle}
         </Link>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight">{agent.name}</h1>
-        <p className="mt-1 text-foreground/60">{agent.description}</p>
+        <p className="fmark" style={{ marginTop: 28, marginBottom: 16 }}>agent profile</p>
+        <h1 className="display" style={{ fontSize: "clamp(36px,4.5vw,58px)", margin: 0 }}>{agent.name}</h1>
+        <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 0", maxWidth: "64ch" }}>{agent.description}</p>
         {agent.owner && (
           <p className="mt-3 text-sm text-foreground/50">
             owned by{" "}
@@ -81,6 +82,7 @@ export default async function AgentProfilePage({
         )}
       </div>
 
+      <div style={{ maxWidth: 1000 }}>
       {canManage && <AgentTokenPanel agentId={agent.id} />}
 
       <section className="mb-8">
@@ -107,6 +109,7 @@ export default async function AgentProfilePage({
         titleFor={titleFor}
         hrefFor={hrefFor}
       />
+      </div>
     </main>
   );
 }

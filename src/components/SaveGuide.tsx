@@ -4,11 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { buildBookmarklet } from "@/lib/share-target";
 
 /**
- * The "how to use Save to work-wiki" page (rendered at /save with no ?url). Walks a
+ * The "how to use Save to yopedia" page (rendered at /save with no ?url). Walks a
  * visitor through the three no-extension capture surfaces — desktop bookmarklet,
  * PWA share target (Android), and iOS — as a numbered editorial field guide. The
  * bookmarklet is generated from the live origin so it always points at wherever
- * work-wiki is served.
+ * yopedia is served.
  */
 export function SaveGuide() {
   const linkRef = useRef<HTMLAnchorElement>(null);
@@ -40,9 +40,9 @@ export function SaveGuide() {
     <div>
       <header className="rise sg-d1">
         <p className="fmark">Capture · no extension</p>
-        <h1 className="display sg-title">Save to work-wiki</h1>
+        <h1 className="display sg-title">Save to WorkWiki</h1>
         <p className="sg-lede">
-          Send any page you’re reading to work-wiki in one click — it fetches the
+          Send any page you’re reading to WorkWiki in one click — it fetches the
           link and ingests it into the commons. No extension to install; pick the
           method for your device.
         </p>
@@ -83,7 +83,7 @@ export function SaveGuide() {
               >
                 <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z" />
               </svg>
-              Save to work-wiki
+              Save to WorkWiki
             </a>
             <span className="sg-draghint">↑ drag me to the bookmarks bar</span>
           </div>
@@ -119,16 +119,16 @@ export function SaveGuide() {
           <p className="fmark">Android · install &amp; share</p>
           <ol className="sg-steps">
             <li>
-              Open work-wiki in Chrome → menu (⋮) → <strong>Install app</strong> (or
+              Open WorkWiki in Chrome → menu (⋮) → <strong>Install app</strong> (or
               “Add to Home screen”).
             </li>
             <li>
               In any app, tap <strong>Share</strong> → choose{" "}
-              <strong>work-wiki</strong>. The link is saved.
+              <strong>WorkWiki</strong>. The link is saved.
             </li>
           </ol>
           <p className="sg-note">
-            Uses the Web Share Target — work-wiki registers as a share destination
+            Uses the Web Share Target — WorkWiki registers as a share destination
             once installed.
           </p>
         </section>

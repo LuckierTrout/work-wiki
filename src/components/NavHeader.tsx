@@ -7,8 +7,10 @@ import { Show, SignInButton, UserButton, useUser } from "@clerk/nextjs";
 import { GlobalSearch } from "./GlobalSearch";
 import { ThemeToggle } from "./folio/ThemeToggle";
 import { Avatar } from "./folio/primitives";
-import { LivingPageMark } from "./Logo";
+import { WorkWikiMark } from "./Logo";
+import { APP_NAME } from "@/lib/brand";
 import { isOwnerHandle } from "@/lib/owner";
+import { LocaleSwitcher } from "./LocaleSwitcher";
 
 // Primary actions — the only links in the bar. Secondary/exploration links
 // (Graph, Log, Contributors) live in the footer per the Folio design; owner
@@ -16,15 +18,30 @@ import { isOwnerHandle } from "@/lib/owner";
 const primaryLinks = [
   { href: "/wiki", label: "Browse" },
   { href: "/query", label: "Ask" },
+  { href: "/chat", label: "Chat" },
   { href: "/ingest", label: "Ingest" },
   { href: "/save", label: "Save" },
+  { href: "/tasks", label: "To-do" },
 ];
+
+const workspaceLinks = [
+  { href: "/studio", label: "Studio" },
+  { href: "/vault", label: "Vaults" },
+  { href: "/agents", label: "Agents" },
+  { href: "/review", label: "Review" },
+  { href: "/monitors", label: "Sources" },
+  { href: "/knowledge", label: "Knowledge" },
+  { href: "/integrations", label: "Integrations" },
+  { href: "/system", label: "System" },
+] as const;
 
 /** Which primary link should read as "active" for the current path. */
 function getActiveHref(pathname: string): string | null {
   if (pathname === "/query" || pathname.startsWith("/query/")) return "/query";
+  if (pathname === "/chat" || pathname.startsWith("/chat/")) return "/chat";
   if (pathname === "/ingest" || pathname.startsWith("/ingest/")) return "/ingest";
   if (pathname === "/save" || pathname.startsWith("/save/")) return "/save";
+  if (pathname === "/tasks" || pathname.startsWith("/tasks/")) return "/tasks";
   // Browse owns the commons + article reading surfaces.
   if (
     pathname === "/wiki" ||
@@ -62,35 +79,35 @@ export function NavHeader() {
       className="sticky top-0 z-50"
       style={{
         background: scrolled
-          ? "color-mix(in srgb, var(--paper) 82%, transparent)"
+          ? "color-mix(in srgb, var(--paper) 90%, transparent)"
           : "var(--paper)",
         backdropFilter: scrolled ? "saturate(1.8) blur(12px)" : undefined,
         WebkitBackdropFilter: scrolled ? "saturate(1.8) blur(12px)" : undefined,
-        borderBottom: `1px solid ${scrolled ? "var(--rule)" : "transparent"}`,
+        borderBottom: "1px solid var(--rule)",
         transition: "background .2s, border-color .2s",
       }}
     >
       <nav
         aria-label="Main navigation"
-        className="mx-auto flex h-16 items-center justify-between gap-4"
-        style={{ maxWidth: "var(--maxw)", paddingInline: 28 }}
+        className="flex h-14 w-full items-center justify-between gap-4 md:h-16"
+        style={{ paddingInline: "clamp(18px, 3.75vw, 54px)" }}
       >
         {/* Brand + primary links */}
-        <div className="flex items-center" style={{ gap: 22 }}>
+        <div className="flex items-center" style={{ gap: 36 }}>
           <Link
             href="/"
             className="flex items-center gap-2.5 text-ink hover:opacity-90 transition-opacity"
           >
-            <LivingPageMark size="nav" />
+            <WorkWikiMark />
             <span
               className="display"
-              style={{ fontSize: 22, letterSpacing: "-0.03em", fontWeight: 600 }}
+              style={{ fontSize: 21, letterSpacing: "-0.026em", fontWeight: 650 }}
             >
-              work-wiki
+              {APP_NAME}
             </span>
           </Link>
 
-          <ul className="hidden items-center gap-1 md:flex">
+          <ul className="hidden items-center gap-1 xl:flex">
             {primaryLinks.map(({ href, label }) => {
               const isActive = href === activeHref;
               return (
@@ -100,7 +117,7 @@ export function NavHeader() {
                     className="transition-colors"
                     style={{
                       display: "inline-block",
-                      padding: "7px 13px",
+                      padding: "8px 12px",
                       borderRadius: 999,
                       fontSize: 14,
                       letterSpacing: "-0.01em",
@@ -118,43 +135,50 @@ export function NavHeader() {
         </div>
 
         {/* Search + theme + auth */}
-        <div className="flex items-center" style={{ gap: 10 }}>
-          <div className="hidden md:block">
+        <div className="flex items-center" style={{ gap: 12 }}>
+          <div className="hidden xl:block">
             <GlobalSearch />
           </div>
           <ThemeToggle />
+          <LocaleSwitcher />
 
           <Show when="signed-out">
             {/* Invite-only: new visitors join the waitlist (the primary action);
                 approved/returning members sign in. Clerk's sign-in modal also
                 cross-links to /waitlist via `waitlistUrl`. Hidden below md — the
                 hamburger menu carries auth on narrow widths. */}
-            <Link
-              href="/waitlist"
-              className="btn primary hidden md:inline-flex"
-              style={{ marginLeft: 2 }}
-            >
-              Join waitlist
-            </Link>
-            <SignInButton mode="modal">
-              <button
-                className="btn ghost hidden md:inline-flex"
+            <span className="hidden xl:inline-flex">
+              <Link
+                href="/waitlist"
+                className="btn primary"
                 style={{ marginLeft: 2 }}
               >
-                Sign in
-              </button>
-            </SignInButton>
+                Join waitlist
+              </Link>
+            </span>
+            <span className="hidden xl:inline-flex">
+              <SignInButton mode="modal">
+                <button className="btn ghost" style={{ marginLeft: 2 }}>
+                  Sign in
+                </button>
+              </SignInButton>
+            </span>
           </Show>
           <Show when="signed-in">
             <span
-              className="hidden items-center md:inline-flex"
+              className="hidden items-center xl:inline-flex"
               style={{ marginLeft: 2 }}
             >
               <UserButton>
                 {
                   <UserButton.MenuItems>
                     <UserButton.Link
-                      label="Vault"
+                      label="Knowledge Studio"
+                      labelIcon={<span aria-hidden>◈</span>}
+                      href="/studio"
+                    />
+                    <UserButton.Link
+                      label="Vaults"
                       labelIcon={<span aria-hidden>🗄️</span>}
                       href="/vault"
                     />
@@ -163,19 +187,44 @@ export function NavHeader() {
                       labelIcon={<span aria-hidden>🤖</span>}
                       href="/agents"
                     />
+                    <UserButton.Link
+                      label="Review"
+                      labelIcon={<span aria-hidden>◫</span>}
+                      href="/review"
+                    />
+                    <UserButton.Link
+                      label="Sources"
+                      labelIcon={<span aria-hidden>◎</span>}
+                      href="/monitors"
+                    />
+                    <UserButton.Link
+                      label="Knowledge"
+                      labelIcon={<span aria-hidden>◇</span>}
+                      href="/knowledge"
+                    />
+                    <UserButton.Link
+                      label="Integrations"
+                      labelIcon={<span aria-hidden>↗</span>}
+                      href="/integrations"
+                    />
+                    <UserButton.Link
+                      label="System"
+                      labelIcon={<span aria-hidden>◉</span>}
+                      href="/system"
+                    />
                     {isOwner && (
-                      <>
-                        <UserButton.Link
-                          label="Lint"
-                          labelIcon={<span aria-hidden>✓</span>}
-                          href="/lint"
-                        />
-                        <UserButton.Link
-                          label="Settings"
-                          labelIcon={<span aria-hidden>⚙️</span>}
-                          href="/settings"
-                        />
-                      </>
+                      <UserButton.Link
+                        label="Settings"
+                        labelIcon={<span aria-hidden>⚙️</span>}
+                        href="/settings"
+                      />
+                    )}
+                    {isOwner && (
+                      <UserButton.Link
+                        label="Wiki Health"
+                        labelIcon={<span aria-hidden>✓</span>}
+                        href="/lint"
+                      />
                     )}
                   </UserButton.MenuItems>
                 }
@@ -183,38 +232,42 @@ export function NavHeader() {
             </span>
           </Show>
 
-          {/* Hamburger (mobile only) */}
-          <button
-            type="button"
-            className="btn ghost md:hidden"
-            style={{ padding: 8, borderRadius: 10, width: 38, height: 38 }}
-            onClick={() => setMobileOpen((prev) => !prev)}
-            aria-label="Toggle navigation menu"
-            aria-expanded={mobileOpen}
-          >
-            <svg
-              width="20"
-              height="20"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              viewBox="0 0 24 24"
+          {/* Hamburger (mobile only). Keep the responsive display class on a
+              wrapper: `.btn` sets display after Tailwind's utilities and would
+              otherwise override `md:hidden` at desktop widths. */}
+          <span className="xl:hidden">
+            <button
+              type="button"
+              className="btn ghost"
+              style={{ padding: 8, borderRadius: 10, width: 38, height: 38 }}
+              onClick={() => setMobileOpen((prev) => !prev)}
+              aria-label="Toggle navigation menu"
+              aria-expanded={mobileOpen}
             >
-              {mobileOpen ? (
-                <path d="M6 18 18 6M6 6l12 12" />
-              ) : (
-                <path d="M4 7h16M4 12h16M4 17h16" />
-              )}
-            </svg>
-          </button>
+              <svg
+                width="20"
+                height="20"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                viewBox="0 0 24 24"
+              >
+                {mobileOpen ? (
+                  <path d="M6 18 18 6M6 6l12 12" />
+                ) : (
+                  <path d="M4 7h16M4 12h16M4 17h16" />
+                )}
+              </svg>
+            </button>
+          </span>
         </div>
       </nav>
 
       {/* Mobile dropdown menu */}
       {mobileOpen && (
         <div
-          className="md:hidden"
+          className="xl:hidden"
           style={{
             background: "var(--paper)",
             borderTop: "1px solid var(--rule)",
@@ -246,6 +299,66 @@ export function NavHeader() {
               </Link>
             );
           })}
+          <Show when="signed-in">
+            <p
+              className="receipt"
+              style={{ margin: "8px 24px 4px", color: "var(--faint)", fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase" }}
+            >
+              Workspace
+            </p>
+            {workspaceLinks.map(({ href, label }) => {
+              const isActive = pathname === href || pathname.startsWith(`${href}/`);
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  onClick={() => setMobileOpen(false)}
+                  className="block transition-colors"
+                  style={{
+                    paddingInline: 24,
+                    paddingBlock: 9,
+                    fontSize: 15,
+                    color: isActive ? "var(--ink)" : "var(--muted)",
+                    background: isActive ? "var(--paper-2)" : "transparent",
+                  }}
+                >
+                  {label}
+                </Link>
+              );
+            })}
+            {isOwner && (
+              <Link
+                href="/settings"
+                onClick={() => setMobileOpen(false)}
+                className="block transition-colors"
+                style={{
+                  paddingInline: 24,
+                  paddingBlock: 9,
+                  fontSize: 15,
+                  color: pathname.startsWith("/settings") ? "var(--ink)" : "var(--muted)",
+                  background: pathname.startsWith("/settings") ? "var(--paper-2)" : "transparent",
+                }}
+              >
+                Settings
+              </Link>
+            )}
+            {isOwner && (
+              <Link
+                href="/lint"
+                onClick={() => setMobileOpen(false)}
+                className="block transition-colors"
+                style={{
+                  paddingInline: 24,
+                  paddingBlock: 9,
+                  fontSize: 15,
+                  color: pathname.startsWith("/lint") ? "var(--ink)" : "var(--muted)",
+                  background: pathname.startsWith("/lint") ? "var(--paper-2)" : "transparent",
+                }}
+              >
+                Wiki Health
+              </Link>
+            )}
+          </Show>
           <div
             style={{
               margin: "8px 24px",

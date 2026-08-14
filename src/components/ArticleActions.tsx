@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
+import { useState } from "react";
 import { rawPath } from "@/lib/links";
 import { isOwnerHandle } from "@/lib/owner";
 import { ReingestButton } from "@/components/ReingestButton";
@@ -34,6 +35,7 @@ interface ArticleActionsProps {
  *
  *   - View raw        — when a raw source exists.
  *   - Reingest        — owner/contributor, when a source URL exists.
+ *   - Graphify page   — page owner only; refreshes derived private knowledge.
  *   - Delete          — site owner/admin on a commons page; page owner on a
  *                       non-commons (private/artifact/agent) page.
  *   - Save to vault    — signed-in non-owner/contributor on a commons page.
@@ -55,6 +57,10 @@ export function ArticleActions({
   hasSourceUrl,
 }: ArticleActionsProps) {
   const { isLoaded, isSignedIn, user } = useUser();
+  const [graphifyState, setGraphifyState] = useState<
+    "idle" | "working" | "done" | "failed"
+  >("idle");
+  const [graphifyError, setGraphifyError] = useState<string | null>(null);
   // Resolve the viewer's handle the SAME way the server does (auth.ts
   // resolveHandle): prefer the Clerk username, else the username on the X/Twitter
   // external account (Twitter-SSO users often have no Clerk username set).
@@ -84,6 +90,26 @@ export function ArticleActions({
   // a curation gap for the most engaged users).
   const canCurate = isLoaded && !!isSignedIn && isCuratable;
 
+  async function graphifyPage() {
+    setGraphifyState("working");
+    setGraphifyError(null);
+    try {
+      const response = await fetch("/api/knowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug }),
+      });
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) {
+        throw new Error(body.error || `Graphify failed (${response.status}).`);
+      }
+      setGraphifyState("done");
+    } catch (error) {
+      setGraphifyState("failed");
+      setGraphifyError(error instanceof Error ? error.message : "Graphify failed.");
+    }
+  }
+
   return (
     <div className="mt-12 border-t border-rule pt-6 flex flex-wrap items-center gap-3">
       {hasRawSource && (
@@ -92,8 +118,32 @@ export function ArticleActions({
         </Link>
       )}
       {hasSourceUrl && ownsOrContributes && <ReingestButton slug={slug} />}
+      {isOwner && (
+        <button
+          type="button"
+          className="btn"
+          disabled={graphifyState === "working"}
+          onClick={() => void graphifyPage()}
+        >
+          {graphifyState === "working"
+            ? "Graphifying…"
+            : graphifyState === "done"
+              ? "Graphified"
+              : "Graphify page"}
+        </button>
+      )}
+      {graphifyState === "done" && (
+        <Link href="/knowledge" className="btn ghost">
+          Open atlas
+        </Link>
+      )}
       {canCurate && <SaveToVaultButton slug={slug} />}
       {canDelete && <DeletePageButton slug={slug} />}
+      {graphifyError && (
+        <p role="alert" style={{ width: "100%", margin: 0, color: "var(--rust)", fontSize: 12.5 }}>
+          {graphifyError}
+        </p>
+      )}
     </div>
   );
 }

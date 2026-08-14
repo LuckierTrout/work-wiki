@@ -14,6 +14,7 @@ import { logger } from "./logger";
 import { parseSources } from "./sources";
 import { wrapUntrusted } from "./untrusted";
 import type { IndexEntry } from "./types";
+import { buildWeightedGraphEdges, expandGraphSeeds } from "./graph-relevance";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -430,5 +431,50 @@ export async function selectPagesForQuery(
     return effective.slice(0, MAX_CONTEXT_PAGES).map((e) => e.slug);
   }
 
-  return selected;
+  // Reserve up to two context slots for strong one/two-hop graph neighbors.
+  // Candidate pages are still restricted to `effective`, the already-readable
+  // and already-scoped set, so graph expansion cannot cross an auth boundary.
+  try {
+    const pages = await Promise.all(
+      effective.map(async (entry) => ({
+        entry,
+        page: await readWikiPageWithFrontmatter(entry.slug),
+      })),
+    );
+    const allowed = new Set(effective.map((entry) => entry.slug));
+    const evidence = pages.map(({ entry, page }) => {
+      const directTargets: string[] = [];
+      if (page) {
+        for (const match of page.body.matchAll(/\[([^\]]*)\]\(([^)]+)\.md\)/g)) {
+          if (match[2] !== entry.slug && allowed.has(match[2])) directTargets.push(match[2]);
+        }
+      }
+      return {
+        id: entry.slug,
+        directTargets,
+        sourceUrls: page
+          ? parseSources(page.frontmatter.sources as string | string[] | undefined)
+              .map((source) => source.url)
+          : [],
+        ...(typeof page?.frontmatter.type === "string"
+          ? { type: page.frontmatter.type }
+          : {}),
+      };
+    });
+    const seedLimit = Math.max(1, MAX_CONTEXT_PAGES - 2);
+    const expanded = expandGraphSeeds(
+      selected.slice(0, seedLimit),
+      buildWeightedGraphEdges(evidence),
+      allowed,
+      MAX_CONTEXT_PAGES,
+    );
+    for (const slug of selected) {
+      if (expanded.length >= MAX_CONTEXT_PAGES) break;
+      if (!expanded.includes(slug)) expanded.push(slug);
+    }
+    return expanded;
+  } catch (error) {
+    logger.warn("query", "graph retrieval expansion failed; using ranked search", error);
+    return selected;
+  }
 }

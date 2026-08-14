@@ -90,22 +90,28 @@ export default async function EditWikiPage({ params }: EditPageProps) {
   };
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
+    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
       <Link
         href={pagePath(pageTenant, slug)}
         className="text-sm text-foreground/60 hover:text-foreground transition-colors"
       >
         ← Back to page
       </Link>
-      <h1 className="mt-6 text-3xl font-bold tracking-tight">
-        Editing: {page.title}
+      <p className="fmark" style={{ marginTop: 28, marginBottom: 16 }}>edit with attribution</p>
+      <h1 className="display" style={{ fontSize: "clamp(36px,4.5vw,58px)", margin: 0 }}>
+        Edit {page.title}
       </h1>
-      <WikiEditor
-        slug={slug}
-        tenant={pageTenant}
-        initialContent={page.body}
-        initialMetadata={initialMetadata}
-      />
+      <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 30px", maxWidth: "64ch" }}>
+        Revise the page while preserving citations, ownership, and an attributable revision receipt.
+      </p>
+      <section style={{ maxWidth: 1000, borderTop: "1px solid var(--rule)", paddingTop: 28 }}>
+        <WikiEditor
+          slug={slug}
+          tenant={pageTenant}
+          initialContent={page.body}
+          initialMetadata={initialMetadata}
+        />
+      </section>
     </main>
   );
 }

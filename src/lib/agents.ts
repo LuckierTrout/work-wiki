@@ -600,6 +600,31 @@ export interface UpdateAgentOptions {
   /** Vault id to file this agent's remote-MCP ingests into (must be a vault the
    *  agent's owner owns). Pass `""`/`null` to clear. */
   defaultVault?: string | null;
+  /** Specialized-agent operating instructions. Empty clears. */
+  instructions?: string | null;
+  /** Read scope used by the search tool. Empty clears to general readable pages. */
+  knowledgeScope?: string | null;
+  /** Automatic trigger cadence. */
+  trigger?: "manual" | "after-ingest" | "daily" | "weekly";
+  /** Automatic triggers only run when explicitly enabled. */
+  enabled?: boolean;
+  /** Tool grants for the bounded in-app runtime. */
+  allowedTools?: Array<
+    | "search-wiki"
+    | "propose-tasks"
+    | "propose-memory"
+    | "request-input"
+    | "run-sandbox"
+  >;
+  /** Consequential-write approval policy. Current runtime always proposes. */
+  approvalPolicy?: "proposal-only" | "allow-low-risk";
+  /** Bounded run settings. */
+  maxSteps?: number;
+  maxOutputTokens?: number;
+  timeoutMs?: number;
+  /** Provider/model override. Empty provider clears both and uses the app default. */
+  provider?: "anthropic" | "openai" | "google" | "deepseek" | "ollama-cloud" | "ollama" | null;
+  model?: string | null;
 }
 
 /**
@@ -657,6 +682,76 @@ export async function updateAgent(
       }
       existing.defaultVault = options.defaultVault;
     }
+  }
+  if (options.instructions !== undefined) {
+    if (options.instructions?.trim()) {
+      existing.instructions = options.instructions.trim().slice(0, 8_000);
+    } else delete existing.instructions;
+  }
+  if (options.knowledgeScope !== undefined) {
+    if (options.knowledgeScope?.trim()) {
+      existing.knowledgeScope = options.knowledgeScope.trim().slice(0, 240);
+    } else delete existing.knowledgeScope;
+  }
+  if (options.trigger !== undefined) existing.trigger = options.trigger;
+  if (options.enabled !== undefined) existing.enabled = options.enabled;
+  if (options.allowedTools !== undefined) {
+    const allowed = new Set([
+      "search-wiki",
+      "propose-tasks",
+      "propose-memory",
+      "request-input",
+      "run-sandbox",
+    ]);
+    if (!options.allowedTools.every((value) => allowed.has(value))) {
+      throw new Error("allowedTools contains an unsupported tool");
+    }
+    existing.allowedTools = [...new Set(options.allowedTools)];
+  }
+  if (options.approvalPolicy !== undefined) {
+    if (options.approvalPolicy !== "proposal-only" && options.approvalPolicy !== "allow-low-risk") {
+      throw new Error("Unsupported agent approval policy");
+    }
+    existing.approvalPolicy = options.approvalPolicy;
+  }
+  if (options.maxSteps !== undefined) {
+    if (!Number.isInteger(options.maxSteps) || options.maxSteps < 1 || options.maxSteps > 12) {
+      throw new Error("maxSteps must be an integer from 1 to 12");
+    }
+    existing.maxSteps = options.maxSteps;
+  }
+  if (options.maxOutputTokens !== undefined) {
+    if (!Number.isInteger(options.maxOutputTokens) || options.maxOutputTokens < 256 || options.maxOutputTokens > 16_000) {
+      throw new Error("maxOutputTokens must be an integer from 256 to 16000");
+    }
+    existing.maxOutputTokens = options.maxOutputTokens;
+  }
+  if (options.timeoutMs !== undefined) {
+    if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 5_000 || options.timeoutMs > 300_000) {
+      throw new Error("timeoutMs must be an integer from 5000 to 300000");
+    }
+    existing.timeoutMs = options.timeoutMs;
+  }
+  if (options.provider !== undefined) {
+    if (!options.provider) {
+      delete existing.provider;
+      delete existing.model;
+    } else {
+      const providers = new Set([
+        "anthropic",
+        "openai",
+        "google",
+        "deepseek",
+        "ollama-cloud",
+        "ollama",
+      ]);
+      if (!providers.has(options.provider)) throw new Error("Unsupported agent provider");
+      existing.provider = options.provider;
+    }
+  }
+  if (options.model !== undefined) {
+    if (options.model?.trim()) existing.model = options.model.trim().slice(0, 240);
+    else delete existing.model;
   }
 
   // Remove pages from lists (before adding, so add-then-remove of same slug

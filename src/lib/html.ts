@@ -70,9 +70,9 @@ const SANDBOX_CSP =
 // override in `sandboxHead` can force the app's RESOLVED theme (matching
 // work-wiki's in-app light/dark toggle, not just the OS `prefers-color-scheme`).
 const LIGHT_VARS =
-  "--paper:#fbfaf6;--paper-2:#f4f1e9;--ink:#1b1a16;--ink-2:#423f38;--muted:#756f62;--rule:#e2ddd0;--accent:#4d6bfe;--accent-soft:#e7ebff";
+  "--paper:#fbfaf6;--paper-2:#f4f1e9;--ink:#1b1a16;--ink-2:#423f38;--muted:#756f62;--rule:#e2ddd0;--accent:#1e3a5f;--accent-soft:#edf2f7";
 const DARK_VARS =
-  "--paper:#14130f;--paper-2:#1c1b16;--ink:#efebdf;--ink-2:#c7c2b4;--muted:#948e7f;--rule:#2b281f;--accent:#90a4ff;--accent-soft:#20233a";
+  "--paper:#14130f;--paper-2:#1c1b16;--ink:#efebdf;--ink-2:#c7c2b4;--muted:#948e7f;--rule:#2b281f;--accent:#84aed6;--accent-soft:#17273a";
 
 const BASE_STYLE = `<style>
 :root{color-scheme:light dark;${LIGHT_VARS};--radius:12px;--measure:50rem;--head:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,ui-serif,serif}

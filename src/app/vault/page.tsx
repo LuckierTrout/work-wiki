@@ -7,7 +7,7 @@ import { VaultManager } from "@/components/VaultManager";
 /**
  * `/vault` — the signed-in user's vault management surface: a list of their
  * named vaults (each a curated reference lens over the commons) with create /
- * rename / delete / view. Agents live on the top-level `/agents`. Signed-out
+ * rename / delete / explore. Agents live on the top-level `/agents`. Signed-out
  * visitors see a sign-in prompt plus a waitlist link — no data is fetched or leaked.
  */
 export default async function VaultPage() {
@@ -61,7 +61,7 @@ export default async function VaultPage() {
   return (
     <div className="fade">
       {/* Header */}
-      <section className="shell" style={{ paddingTop: 56 }}>
+      <section className="shell paper-route" style={{ paddingTop: 56 }}>
         <p className="fmark" style={{ marginBottom: 18 }}>
           your vaults
         </p>
@@ -98,14 +98,14 @@ export default async function VaultPage() {
             maxWidth: "56ch",
           }}
         >
-          Each vault is a curated set of live references into the commons — save
-          pages to a vault, then browse, query, and graph through that lens.
+          Each vault is a curated set of live references into the commons. Open
+          one to search folders, filter file types, and read documents in place.
         </p>
       </section>
 
       {/* Vaults */}
       <section
-        className="shell"
+        className="shell paper-route"
         style={{
           marginTop: 44,
           paddingTop: 26,

@@ -1,170 +1,90 @@
-/**
- * work-wiki logomark — "the living page": a blue page with its earlier
- * revisions stacked behind it. Pages that accumulate — the anti-RAG story.
- * One mark owns every slot (nav, footer, favicon, hero); yoyo stays in the
- * product (rail tender, empty states), out of the brand.
- *
- * Spec: design handoff `Browse Redesign` section 4c. Colors ride the Folio
- * tokens so the mark adapts to dark mode (`--paper` / `--faint` / `--accent`).
- */
+import { APP_NAME } from "@/lib/brand";
 
 type MarkSize = "nav" | "footer" | "full";
 
-interface LivingPageMarkProps {
+interface WorkWikiMarkProps {
   className?: string;
-  /** Which construction to render: 2-page nav (29×27), 2-page footer
-   *  (20×17), or the 3-page full lockup (58×56) for hero/marketing. */
   size?: MarkSize;
 }
 
-/** Shared absolutely-positioned page. */
-function Page({
-  left,
-  top,
-  width,
-  height,
-  radius,
-  rotate,
-  background,
-  border,
-  children,
-}: {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-  radius: number;
-  rotate: number;
-  background: string;
-  border?: string;
-  children?: React.ReactNode;
-}) {
-  return (
-    <span
-      style={{
-        position: "absolute",
-        left,
-        top,
-        width,
-        height,
-        border,
-        borderRadius: radius,
-        transform: `rotate(${rotate}deg)`,
-        background,
-        boxSizing: "border-box",
-        display: children ? "flex" : undefined,
-        flexDirection: children ? "column" : undefined,
-        gap: children ? 4 : undefined,
-        padding: children ? "9px 7px" : undefined,
-      }}
-    >
-      {children}
-    </span>
-  );
-}
+const MARK_DIMENSIONS: Record<MarkSize, { width: number; height: number }> = {
+  nav: { width: 29, height: 31 },
+  footer: { width: 20, height: 22 },
+  full: { width: 58, height: 62 },
+};
 
-export function LivingPageMark({ className, size = "nav" }: LivingPageMarkProps) {
-  if (size === "full") {
-    // 3 stacked pages with text-line bars on the front page (hero/marketing).
-    return (
-      <span
-        className={className}
-        aria-hidden
-        style={{ position: "relative", width: 58, height: 56, display: "inline-block" }}
-      >
-        <Page
-          left={2}
-          top={6}
-          width={34}
-          height={44}
-          radius={6}
-          rotate={-9}
-          background="var(--paper-2)"
-          border="1.5px solid var(--rule-strong)"
-        />
-        <Page
-          left={12}
-          top={4}
-          width={34}
-          height={44}
-          radius={6}
-          rotate={-2}
-          background="var(--paper)"
-          border="1.5px solid var(--faint)"
-        />
-        <Page left={22} top={3} width={34} height={44} radius={6} rotate={5} background="var(--accent)">
-          <span style={{ height: 3, borderRadius: 2, background: "rgba(251,250,246,.9)", width: "70%" }} />
-          <span style={{ height: 3, borderRadius: 2, background: "rgba(251,250,246,.55)", width: "100%" }} />
-          <span style={{ height: 3, borderRadius: 2, background: "rgba(251,250,246,.55)", width: "85%" }} />
-        </Page>
-      </span>
-    );
-  }
+/**
+ * WorkWiki's document mark: a folded page and an open W. It keeps the original
+ * living-page idea, but makes the product initial legible at every brand size.
+ */
+export function WorkWikiMark({ className, size = "nav" }: WorkWikiMarkProps) {
+  const { width, height } = MARK_DIMENSIONS[size];
 
-  if (size === "footer") {
-    // 2 pages at 11×13 (the quiet sign-off size).
-    return (
-      <span
-        className={className}
-        aria-hidden
-        style={{ position: "relative", width: 20, height: 17, display: "inline-block" }}
-      >
-        <Page
-          left={0}
-          top={2}
-          width={11}
-          height={13}
-          radius={2}
-          rotate={-6}
-          background="var(--paper)"
-          border="1px solid var(--faint)"
-        />
-        <Page left={6} top={1} width={11} height={13} radius={2} rotate={4} background="var(--accent)" />
-      </span>
-    );
-  }
-
-  // Nav: 2 pages at 17×21, left of the wordmark.
   return (
     <span
       className={className}
       aria-hidden
-      style={{ position: "relative", width: 29, height: 27, display: "inline-block" }}
+      style={{
+        width,
+        height,
+        flex: "0 0 auto",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
     >
-      <Page
-        left={1}
-        top={4}
-        width={17}
-        height={21}
-        radius={3}
-        rotate={-6}
-        background="var(--paper)"
-        border="1.2px solid var(--faint)"
-      />
-      <Page left={9} top={3} width={17} height={21} radius={3} rotate={4} background="var(--accent)" />
+      <svg
+        width={width}
+        height={height}
+        viewBox="0 0 28 30"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M4.25 1.25h12.5l7 7v20.5H4.25z"
+          fill="var(--accent)"
+          stroke="var(--accent)"
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M16.75 1.25v7h7"
+          fill="var(--accent-soft)"
+          stroke="var(--on-accent)"
+          strokeWidth="1.25"
+          strokeLinejoin="round"
+        />
+        <path
+          d="m7.75 12 2.45 10 3.8-7.15L17.8 22l2.45-10"
+          stroke="var(--on-accent)"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
     </span>
   );
 }
 
-interface LogoProps {
-  className?: string;
-  /** Which mark construction to pair with the wordmark. */
-  size?: MarkSize;
-  /** Hide the "work-wiki" wordmark, showing only the mark. */
+/** Retained as the shared mark export for existing page and footer surfaces. */
+export function LivingPageMark(props: WorkWikiMarkProps) {
+  return <WorkWikiMark {...props} />;
+}
+
+interface LogoProps extends WorkWikiMarkProps {
   markOnly?: boolean;
 }
 
-/** Living-page mark + "work-wiki" wordmark, for the nav and footer. */
 export function Logo({ className, size = "nav", markOnly = false }: LogoProps) {
   return (
     <span className={`inline-flex items-center gap-2.5 ${className ?? ""}`}>
-      <LivingPageMark size={size} />
+      <WorkWikiMark size={size} />
       {!markOnly && (
         <span
           className="display text-ink"
-          style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.03em" }}
+          style={{ fontSize: 22, fontWeight: 650, letterSpacing: "-0.035em" }}
         >
-          work-wiki
+          {APP_NAME}
         </span>
       )}
     </span>

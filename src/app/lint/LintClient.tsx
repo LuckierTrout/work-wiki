@@ -26,7 +26,7 @@ export function LintClient() {
   } = useLint();
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-16">
+    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
       <div className="mb-8">
         <Link
           href="/"
@@ -36,8 +36,9 @@ export function LintClient() {
         </Link>
       </div>
 
-      <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Wiki Health Check</h1>
-      <p className="mt-2 text-foreground/60">
+      <p className="fmark" style={{ marginBottom: 16 }}>owner quality controls</p>
+      <h1 className="display" style={{ fontSize: "clamp(36px,4.5vw,58px)", margin: 0 }}>Wiki health check</h1>
+      <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 0", maxWidth: "64ch" }}>
         Run the linter to find orphan pages, missing cross-references, stale
         index entries, and other issues in your wiki.
       </p>

@@ -2,7 +2,7 @@ import type { ProviderInfo } from "./types";
 import { hasEmbeddingSupport } from "./embeddings";
 import { isEnoent } from "./errors";
 import { VALID_PROVIDERS, DEFAULT_MODELS } from "./providers";
-import type { EmbeddingProvider } from "./providers";
+import type { EmbeddingProvider, ProviderValue } from "./providers";
 import { logger } from "./logger";
 import { getDataDir } from "./paths";
 import { getStorage } from "./storage";
@@ -16,9 +16,13 @@ export type { ProviderValue } from "./providers";
 // ---------------------------------------------------------------------------
 
 export interface AppConfig {
-  provider?: "anthropic" | "openai" | "google" | "deepseek" | "ollama";
+  provider?: ProviderValue;
   model?: string;
   ollamaBaseUrl?: string;
+  /** Optional workload-specific generation route for Knowledge Atlas
+   * extraction. Credentials remain server-side environment secrets. */
+  structuredKnowledgeProvider?: ProviderValue;
+  structuredKnowledgeModel?: string;
   embeddingModel?: string;
   /** Override the provider used for embeddings, independent of the LLM
    *  provider. Useful when the generation provider (e.g. deepseek) has no
@@ -43,7 +47,21 @@ export interface EffectiveSettings {
   apiKeySource: SettingSource;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
+  structuredKnowledgeProvider: ProviderValue | null;
+  structuredKnowledgeProviderSource: SettingSource;
+  structuredKnowledgeModel: string | null;
+  structuredKnowledgeModelSource: SettingSource;
+  structuredKnowledgeConfigured: boolean;
   readOnly: boolean;
+}
+
+export interface StructuredKnowledgeModelSettings {
+  provider: ProviderValue | null;
+  providerSource: SettingSource;
+  model: string | null;
+  modelSource: SettingSource;
+  configured: boolean;
+  usesPrimary: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,28 +71,13 @@ export interface EffectiveSettings {
 /**
  * Returns `true` when the instance should reject settings writes.
  *
- * True when:
- *   1. `YOPEDIA_READONLY=1` environment variable is set, **or**
- *   2. `STORAGE_PROVIDER=cloudflare-r2` env var is set, **or**
- *   3. Cloudflare Workers runtime is detected (globalThis.caches.default)
- *
- * This protects public cloud deployments from unauthenticated config changes.
+ * True only when `YOPEDIA_READONLY=1` is explicitly set. Cloud deployments
+ * can safely persist non-secret provider preferences because every settings
+ * write is independently owner-gated by the API route. Provider credentials
+ * remain environment secrets and are never accepted by the settings API.
  */
 export function isReadOnly(): boolean {
-  if (process.env.YOPEDIA_READONLY === "1") return true;
-  if (process.env.STORAGE_PROVIDER === "cloudflare-r2") return true;
-
-  // Cloudflare Workers runtime detection (mirrors storage/index.ts logic)
-  if (
-    typeof globalThis !== "undefined" &&
-    typeof (globalThis as Record<string, unknown>).caches === "object" &&
-    (globalThis as Record<string, unknown>).caches !== null &&
-    typeof ((globalThis as Record<string, unknown>).caches as Record<string, unknown>).default === "object"
-  ) {
-    return true;
-  }
-
-  return false;
+  return process.env.YOPEDIA_READONLY === "1";
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +174,7 @@ const CACHE_TTL_MS = 5_000;
  * The cache is populated by `loadConfig()` and `saveConfig()`. If neither
  * has been called yet, this returns `{}` (same as "file doesn't exist").
  * This is safe because:
- *   - LLM calls use env vars as the primary config source
+ *   - LLM calls await `loadConfig()` before resolving the active provider
  *   - The config file is optional — `{}` is the documented default
  *   - The app's startup sequence calls `loadConfig()` before any LLM call
  */
@@ -196,8 +199,8 @@ export function _resetConfigCache(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Detect the active provider from env vars alone (same logic as the original
- * `getProviderInfo()` in llm.ts).
+ * Detect a fallback provider from env vars alone. This is used only when the
+ * owner has not saved a provider selection yet.
  *
  * Exported so that `embeddings.ts` and `llm.ts` can reuse it rather than
  * duplicating the env-var sniffing logic.
@@ -218,22 +221,50 @@ export function detectEnvProvider(): {
   if (process.env.DEEPSEEK_API_KEY) {
     return { provider: "deepseek", apiKey: process.env.DEEPSEEK_API_KEY };
   }
+  if (process.env.OLLAMA_API_KEY) {
+    return { provider: "ollama-cloud", apiKey: process.env.OLLAMA_API_KEY };
+  }
   if (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_MODEL) {
     return { provider: "ollama", apiKey: null };
   }
   return { provider: null, apiKey: null };
 }
 
+/** Return the server-side credential for a specific provider. */
+export function apiKeyForProvider(provider: string | null): string | null {
+  switch (provider) {
+    case "anthropic":
+      return process.env.ANTHROPIC_API_KEY ?? null;
+    case "openai":
+      return process.env.OPENAI_API_KEY ?? null;
+    case "google":
+      return process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? null;
+    case "deepseek":
+      return process.env.DEEPSEEK_API_KEY ?? null;
+    case "ollama-cloud":
+      return process.env.OLLAMA_API_KEY ?? null;
+    default:
+      return null;
+  }
+}
+
+function providerIsConfigured(provider: string | null): boolean {
+  return provider === "ollama" || apiKeyForProvider(provider) !== null;
+}
+
 /**
- * Merge config file + env vars to produce the effective provider.
- * Priority: env vars > config file > defaults.
+ * Merge the owner's saved selection with server credentials.
+ * Priority: saved provider selection > env auto-detection fallback.
+ *
+ * Environment variables provide credentials, not preference. This allows an
+ * installation to keep several provider keys and switch between them in the
+ * Settings UI without whichever secret is checked first taking over.
  */
 export function getEffectiveProvider(): ProviderInfo {
   const cfg = loadConfigSync();
   const env = detectEnvProvider();
 
-  // Resolve provider: env wins, then config
-  const provider = env.provider ?? cfg.provider ?? null;
+  const provider = cfg.provider ?? env.provider ?? null;
   if (!provider) {
     return {
       configured: false,
@@ -250,17 +281,66 @@ export function getEffectiveProvider(): ProviderInfo {
     model = modelOverride;
   } else if (cfg.model) {
     model = cfg.model;
-  } else if (provider === "ollama" && process.env.OLLAMA_MODEL) {
+  } else if (
+    (provider === "ollama" || provider === "ollama-cloud") &&
+    process.env.OLLAMA_MODEL
+  ) {
     model = process.env.OLLAMA_MODEL;
   } else {
     model = DEFAULT_MODELS[provider] ?? provider;
   }
 
   return {
-    configured: true,
+    configured: providerIsConfigured(provider),
     provider,
     model,
     embeddingSupport: hasEmbeddingSupport(),
+  };
+}
+
+/**
+ * Resolve the model used for schema-constrained Knowledge Atlas extraction.
+ *
+ * A saved workload override wins. When no override is saved, extraction
+ * inherits the primary provider and model exactly, preserving existing
+ * behavior while allowing owners to route this stricter workload separately.
+ */
+export function getStructuredKnowledgeModelSettings(): StructuredKnowledgeModelSettings {
+  const cfg = loadConfigSync();
+  const primary = getEffectiveProvider();
+  const primaryProvider =
+    typeof primary.provider === "string" && isValidProvider(primary.provider)
+      ? primary.provider
+      : null;
+  const provider = cfg.structuredKnowledgeProvider ?? primaryProvider;
+  const providerSource: SettingSource = cfg.structuredKnowledgeProvider
+    ? "config"
+    : provider
+      ? "default"
+      : "none";
+
+  let model: string | null;
+  let modelSource: SettingSource;
+  if (cfg.structuredKnowledgeModel) {
+    model = cfg.structuredKnowledgeModel;
+    modelSource = "config";
+  } else if (cfg.structuredKnowledgeProvider) {
+    model = DEFAULT_MODELS[cfg.structuredKnowledgeProvider] ?? null;
+    modelSource = model ? "default" : "none";
+  } else {
+    model = primary.model;
+    modelSource = model ? "default" : "none";
+  }
+
+  return {
+    provider,
+    providerSource,
+    model,
+    modelSource,
+    configured: providerIsConfigured(provider),
+    usesPrimary:
+      cfg.structuredKnowledgeProvider === undefined &&
+      cfg.structuredKnowledgeModel === undefined,
   };
 }
 
@@ -274,19 +354,19 @@ export function getEffectiveSettings(): EffectiveSettings {
   // Provider
   let provider: string | null;
   let providerSource: SettingSource;
-  if (env.provider) {
-    provider = env.provider;
-    providerSource = "env";
-  } else if (cfg.provider) {
+  if (cfg.provider) {
     provider = cfg.provider;
     providerSource = "config";
+  } else if (env.provider) {
+    provider = env.provider;
+    providerSource = "env";
   } else {
     provider = null;
     providerSource = "none";
   }
 
   // API key — env only
-  const envApiKey = env.apiKey;
+  const envApiKey = apiKeyForProvider(provider);
   const apiKeySource: SettingSource = envApiKey ? "env" : "none";
 
   // Model
@@ -300,7 +380,10 @@ export function getEffectiveSettings(): EffectiveSettings {
     model = cfg.model;
     modelSource = "config";
   } else if (provider) {
-    if (provider === "ollama" && process.env.OLLAMA_MODEL) {
+    if (
+      (provider === "ollama" || provider === "ollama-cloud") &&
+      process.env.OLLAMA_MODEL
+    ) {
       model = process.env.OLLAMA_MODEL;
       modelSource = "env";
     } else {
@@ -315,7 +398,10 @@ export function getEffectiveSettings(): EffectiveSettings {
   // Ollama base URL
   let ollamaBaseUrl: string | null;
   let ollamaBaseUrlSource: SettingSource;
-  if (process.env.OLLAMA_BASE_URL) {
+  if (provider === "ollama-cloud") {
+    ollamaBaseUrl = "https://ollama.com/api";
+    ollamaBaseUrlSource = "default";
+  } else if (process.env.OLLAMA_BASE_URL) {
     ollamaBaseUrl = process.env.OLLAMA_BASE_URL;
     ollamaBaseUrlSource = "env";
   } else if (cfg.ollamaBaseUrl) {
@@ -340,12 +426,14 @@ export function getEffectiveSettings(): EffectiveSettings {
     embeddingModelSource = "none";
   }
 
+  const structuredKnowledge = getStructuredKnowledgeModelSettings();
+
   return {
     provider,
     providerSource,
     model,
     modelSource,
-    configured: provider !== null,
+    configured: providerIsConfigured(provider),
     embeddingSupport: hasEmbeddingSupport(),
     embeddingModel,
     embeddingModelSource,
@@ -353,6 +441,11 @@ export function getEffectiveSettings(): EffectiveSettings {
     apiKeySource,
     ollamaBaseUrl,
     ollamaBaseUrlSource,
+    structuredKnowledgeProvider: structuredKnowledge.provider,
+    structuredKnowledgeProviderSource: structuredKnowledge.providerSource,
+    structuredKnowledgeModel: structuredKnowledge.model,
+    structuredKnowledgeModelSource: structuredKnowledge.modelSource,
+    structuredKnowledgeConfigured: structuredKnowledge.configured,
     readOnly: isReadOnly(),
   };
 }
@@ -370,30 +463,20 @@ export interface ResolvedCredentials {
 
 /**
  * Return the fully-resolved credentials for constructing an LLM model.
- * This merges env > config > defaults, intended for use from `getModel()`.
+ * The saved provider selection chooses which environment credential to use;
+ * env auto-detection remains the fallback when no preference has been saved.
  */
 export function getResolvedCredentials(): ResolvedCredentials {
   const cfg = loadConfigSync();
   const env = detectEnvProvider();
 
-  const provider = env.provider ?? cfg.provider ?? null;
+  const provider = cfg.provider ?? env.provider ?? null;
   if (!provider) {
     return { provider: null, apiKey: null, model: null, ollamaBaseUrl: null };
   }
 
-  // API key: env only
-  let apiKey: string | null;
-  if (provider === "anthropic") {
-    apiKey = process.env.ANTHROPIC_API_KEY ?? null;
-  } else if (provider === "openai") {
-    apiKey = process.env.OPENAI_API_KEY ?? null;
-  } else if (provider === "google") {
-    apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? null;
-  } else if (provider === "deepseek") {
-    apiKey = process.env.DEEPSEEK_API_KEY ?? null;
-  } else {
-    apiKey = null; // ollama is keyless
-  }
+  // API keys remain server-side environment secrets.
+  const apiKey = apiKeyForProvider(provider);
 
   // Model
   const modelOverride = process.env.LLM_MODEL;
@@ -402,14 +485,20 @@ export function getResolvedCredentials(): ResolvedCredentials {
     model = modelOverride;
   } else if (cfg.model) {
     model = cfg.model;
-  } else if (provider === "ollama" && process.env.OLLAMA_MODEL) {
+  } else if (
+    (provider === "ollama" || provider === "ollama-cloud") &&
+    process.env.OLLAMA_MODEL
+  ) {
     model = process.env.OLLAMA_MODEL;
   } else {
     model = DEFAULT_MODELS[provider] ?? provider;
   }
 
   // Ollama base URL
-  const ollamaBaseUrl = process.env.OLLAMA_BASE_URL ?? cfg.ollamaBaseUrl ?? null;
+  const ollamaBaseUrl =
+    provider === "ollama-cloud"
+      ? "https://ollama.com/api"
+      : process.env.OLLAMA_BASE_URL ?? cfg.ollamaBaseUrl ?? null;
 
   return { provider, apiKey, model, ollamaBaseUrl };
 }

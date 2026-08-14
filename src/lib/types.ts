@@ -61,6 +61,8 @@ export interface IngestResult {
 export interface QueryResult {
   answer: string; // Markdown-formatted answer with citations
   sources: string[]; // slugs of wiki pages used as sources
+  /** Readable pages placed in model context. Used by owner-only retrieval evaluations. */
+  retrievedSources?: string[];
 }
 
 /** A single issue found by the lint operation. */
@@ -95,7 +97,7 @@ export interface LintResult {
 /** A single provenance entry in the structured `sources[]` array. */
 export interface SourceEntry {
   /** Provenance type: how the source was acquired. */
-  type: "url" | "text" | "x-mention" | "wiki-ref" | "image" | "pdf" | "youtube";
+  type: "url" | "text" | "x-mention" | "wiki-ref" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "csv" | "md" | "txt" | "html" | "zip" | "youtube" | "email" | "odt" | "ods" | "odp" | "epub" | "org" | "rtf" | "mobi";
   /** Source URL or "text-paste" for pasted content. */
   url: string;
   /** ISO date string of when the source was fetched/ingested. */
@@ -209,6 +211,34 @@ export interface AgentProfile {
    *  connecting agent via the MCP `initialize` instructions and the write-tool
    *  descriptions in `tools/list`. */
   defaultVault?: string;
+  /** Owner-authored operating instructions for this specialized agent. */
+  instructions?: string;
+  /** Optional search scope (`mine`, `vault:<id>`, `agent:<id>`, or general). */
+  knowledgeScope?: string;
+  /** When this agent is eligible to run. Manual is the safe default. */
+  trigger?: "manual" | "after-ingest" | "daily" | "weekly";
+  /** Explicit enable switch for automatic triggers. */
+  enabled?: boolean;
+  /** Capabilities the owner has granted to the agent runtime. */
+  allowedTools?: Array<
+    | "search-wiki"
+    | "propose-tasks"
+    | "propose-memory"
+    | "request-input"
+    | "run-sandbox"
+  >;
+  /** All consequential writes remain proposals. Reserved for future narrowly
+   *  scoped auto-approval rules without weakening the current default. */
+  approvalPolicy?: "proposal-only" | "allow-low-risk";
+  /** Bounded runtime budget. */
+  maxSteps?: number;
+  maxOutputTokens?: number;
+  timeoutMs?: number;
+  /** Optional provider/model override; credentials remain server-side secrets. */
+  provider?: "anthropic" | "openai" | "google" | "deepseek" | "ollama-cloud" | "ollama";
+  model?: string;
+  /** Last completed run, used to determine whether scheduled work is due. */
+  lastRunAt?: string;
   /** ISO date of when the agent was registered */
   registered: string;
   /** ISO date of last context update */
@@ -221,7 +251,7 @@ export interface AgentProfile {
 export interface ProviderInfo {
   /** true if any provider key / config is set */
   configured: boolean;
-  /** "anthropic" | "openai" | "google" | "ollama" | null */
+  /** Provider identifier, or null when no provider is selected. */
   provider: string | null;
   /** resolved model name (including LLM_MODEL override) */
   model: string | null;

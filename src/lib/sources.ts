@@ -10,7 +10,10 @@ import type { SourceEntry } from "./types";
 import { normalizeUrl } from "./source-index";
 
 /** Valid provenance types. */
-const VALID_TYPES = new Set<SourceEntry["type"]>(["url", "text", "x-mention", "wiki-ref", "image", "pdf", "youtube"]);
+const VALID_TYPES = new Set<SourceEntry["type"]>([
+  "url", "text", "x-mention", "wiki-ref", "image", "pdf", "docx", "pptx", "xlsx", "csv",
+  "md", "txt", "html", "zip", "youtube", "email", "odt", "ods", "odp", "epub", "org", "rtf", "mobi",
+]);
 
 /**
  * Serialize a `SourceEntry[]` into a JSON string suitable for frontmatter.
@@ -98,6 +101,7 @@ export function dedupeSourcesForDisplay(sources: SourceEntry[]): SourceEntry[] {
  */
 export function sourceLabel(s: SourceEntry): string {
   if (!s.url || s.url === "text-paste") return "pasted text";
+  if (s.url === "email") return "email";
   try {
     return new URL(s.url).hostname.replace(/^www\./, "");
   } catch {

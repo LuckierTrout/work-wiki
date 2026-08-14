@@ -141,12 +141,12 @@ KV_SEARCH_ID="$KV_RESULT_ID"
 
 # ---------- 3. Vectorize Index ----------
 
-info "Creating Vectorize index: yopedia-embeddings ..."
-if $WRANGLER vectorize create yopedia-embeddings --dimensions 1536 --metric cosine 2>&1 | tee /tmp/yopedia-vec.log; then
-  ok "Vectorize index 'yopedia-embeddings' created."
+info "Creating Vectorize index: yopedia-embeddings-bge-m3 ..."
+if $WRANGLER vectorize create yopedia-embeddings-bge-m3 --dimensions 1024 --metric cosine 2>&1 | tee /tmp/yopedia-vec.log; then
+  ok "Vectorize index 'yopedia-embeddings-bge-m3' created."
 else
   if grep -qi "already exists" /tmp/yopedia-vec.log; then
-    ok "Vectorize index 'yopedia-embeddings' already exists — skipping."
+    ok "Vectorize index 'yopedia-embeddings-bge-m3' already exists — skipping."
   else
     fail "Failed to create Vectorize index. See output above."
   fi
@@ -205,8 +205,16 @@ id = "$SEARCH_ID"
 
 # --- Vectorize: Semantic search embeddings ---
 [[vectorize]]
-binding = "VECTORIZE"
-index_name = "yopedia-embeddings"
+binding = "YOPEDIA_VECTORIZE"
+index_name = "yopedia-embeddings-bge-m3"
+
+# --- Workers AI: 1,024-dimension bge-m3 embeddings ---
+[ai]
+binding = "AI"
+
+[vars]
+EMBEDDING_PROVIDER = "workers-ai"
+EMBEDDING_MODEL = "@cf/baai/bge-m3"
 EOF
 
 ok "wrangler.toml written to $WRANGLER_TOML"
@@ -228,7 +236,7 @@ echo ""
 echo "  R2 bucket:       yopedia-raw"
 echo "  KV (config):     YOPEDIA_CONFIG  → $CONFIG_ID"
 echo "  KV (search):     YOPEDIA_SEARCH  → $SEARCH_ID"
-echo "  Vectorize:       yopedia-embeddings (1536d, cosine)"
+echo "  Vectorize:       yopedia-embeddings-bge-m3 (1024d, cosine)"
 echo "  Pages project:   yopedia"
 echo ""
 echo "  wrangler.toml:   $WRANGLER_TOML"

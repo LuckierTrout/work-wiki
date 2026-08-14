@@ -1,6 +1,6 @@
 /**
  * A small teal chip marking an *agent* actor, set apart from human
- * contributors (indigo). Makes "humans AND agents" legible without folding
+ * contributors (navy). Makes "humans AND agents" legible without folding
  * agents into the human contributor list.
  */
 export function AgentBadge({ className }: { className?: string }) {

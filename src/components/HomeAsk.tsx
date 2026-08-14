@@ -9,11 +9,17 @@ import { QueryResultPanel } from "./QueryResultPanel";
 import { Alert } from "./Alert";
 import { Icon } from "./folio/icons";
 
-const EXAMPLES = [
+const DEFAULT_EXAMPLES = [
   "What is harness engineering?",
-  "How is work-wiki different from RAG?",
+  "How is WorkWiki different from RAG?",
   "What are the agentic harness patterns?",
 ];
+
+interface HomeAskProps {
+  examples?: readonly string[];
+  placeholder?: string;
+  helperText?: string;
+}
 
 // One free taste per browser: after a signed-out visitor sees one demo answer,
 // the next interaction prompts sign-in.
@@ -25,7 +31,11 @@ const DEMO_USED_KEY = "yopedia_demo_used";
  * a sample shows a cached, pre-computed answer (a "taste" — no LLM cost, served
  * from /api/query/demo); the next question enforces sign-in.
  */
-export function HomeAsk() {
+export function HomeAsk({
+  examples = DEFAULT_EXAMPLES,
+  placeholder = "Consult the commons — ask, and get an answer cited to the pages it stands on…",
+  helperText = "Answers query the wiki live and cite their sources. ⌘↵ to ask.",
+}: HomeAskProps = {}) {
   const router = useRouter();
   const { isSignedIn } = useUser();
   const { openSignIn } = useClerk();
@@ -160,7 +170,7 @@ export function HomeAsk() {
                   e.currentTarget.form?.requestSubmit();
                 }
               }}
-              placeholder="Consult the commons — ask, and get an answer cited to the pages it stands on…"
+              placeholder={placeholder}
               rows={2}
               disabled={!isSignedIn}
               style={{
@@ -185,33 +195,36 @@ export function HomeAsk() {
               borderTop: "1px solid var(--rule)",
               gap: 12,
               flexWrap: "wrap",
+              justifyContent: examples.length === 0 ? "flex-end" : undefined,
             }}
           >
-            <div
-              className="row"
-              style={{ gap: 8, flexWrap: "wrap", flex: "1 1 320px", minWidth: 0 }}
-            >
-              {EXAMPLES.map((q) => (
-                <button
-                  type="button"
-                  key={q}
-                  onClick={() => onChip(q)}
-                  disabled={guestBusy}
-                  className="receipt folio-chip disabled:opacity-50"
-                  style={{
-                    fontSize: 11.5,
-                    color: "var(--muted)",
-                    background: "transparent",
-                    whiteSpace: "nowrap",
-                    border: "1px solid var(--rule)",
-                    borderRadius: 999,
-                    padding: "5px 11px",
-                  }}
-                >
-                  {q}
-                </button>
-              ))}
-            </div>
+            {examples.length > 0 ? (
+              <div
+                className="row"
+                style={{ gap: 8, flexWrap: "wrap", flex: "1 1 320px", minWidth: 0 }}
+              >
+                {examples.map((q) => (
+                  <button
+                    type="button"
+                    key={q}
+                    onClick={() => onChip(q)}
+                    disabled={guestBusy}
+                    className="receipt folio-chip disabled:opacity-50"
+                    style={{
+                      fontSize: 11.5,
+                      color: "var(--muted)",
+                      background: "transparent",
+                      whiteSpace: "nowrap",
+                      border: "1px solid var(--rule)",
+                      borderRadius: 999,
+                      padding: "5px 11px",
+                    }}
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             {isSignedIn ? (
               <button
                 type="submit"
@@ -233,7 +246,7 @@ export function HomeAsk() {
           className="receipt"
           style={{ fontSize: 11.5, color: "var(--faint)", margin: "10px 2px 0" }}
         >
-          Answers query the wiki live and cite their sources. ⌘↵ to ask.
+          {helperText}
         </p>
       </form>
 

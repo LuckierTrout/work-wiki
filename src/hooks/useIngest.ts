@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { rememberRecentJob } from "@/lib/recent-ingests";
 
-export type Mode = "url" | "pdf" | "xpost" | "youtube" | "text" | "image" | "batch";
+export type Mode = "url" | "pdf" | "document" | "xpost" | "youtube" | "text" | "image" | "batch";
 /** All ingests are async now: submit → `queued` (poll the job) → `success`. */
 export type Stage = "form" | "queued" | "success";
 

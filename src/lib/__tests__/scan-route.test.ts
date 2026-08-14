@@ -8,16 +8,35 @@ vi.mock("@/lib/maintenance", () => ({
   DEFAULT_MAINTENANCE_CAP: 10,
 }));
 vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn() }));
+vi.mock("@/lib/backups", () => ({ isOwnerBackupDue: vi.fn() }));
+vi.mock("@/lib/monitor-digests", () => ({
+  createMonitorDigest: vi.fn(),
+  listDueMonitorDigestOwners: vi.fn(),
+  listPendingMonitorDigestDeliveries: vi.fn(),
+  markMonitorDigestQueued: vi.fn(),
+}));
 
 import { getServicePrincipal } from "@/lib/auth";
 import { scanForMaintenance, rebuildDerivedIndexes, purgeStaleJobs } from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
+import { isOwnerBackupDue } from "@/lib/backups";
+import {
+  createMonitorDigest,
+  listDueMonitorDigestOwners,
+  listPendingMonitorDigestDeliveries,
+  markMonitorDigestQueued,
+} from "@/lib/monitor-digests";
 
 const mockedGetService = vi.mocked(getServicePrincipal);
 const mockedScan = vi.mocked(scanForMaintenance);
 const mockedRebuild = vi.mocked(rebuildDerivedIndexes);
 const mockedPurge = vi.mocked(purgeStaleJobs);
 const mockedEnqueue = vi.mocked(enqueueTask);
+const mockedBackupDue = vi.mocked(isOwnerBackupDue);
+const mockedCreateDigest = vi.mocked(createMonitorDigest);
+const mockedDueDigestOwners = vi.mocked(listDueMonitorDigestOwners);
+const mockedPendingDigests = vi.mocked(listPendingMonitorDigestDeliveries);
+const mockedMarkDigestQueued = vi.mocked(markMonitorDigestQueued);
 
 const SAMPLE = [
   { kind: "maintain" as const, op: "staleness" as const, slug: "stale" },
@@ -34,19 +53,29 @@ async function scan(query = "") {
 }
 
 let savedFlag: string | undefined;
+let savedOwnerHandle: string | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
   savedFlag = process.env.AUTONOMOUS_MAINTENANCE;
+  savedOwnerHandle = process.env.NEXT_PUBLIC_OWNER_HANDLE;
   delete process.env.AUTONOMOUS_MAINTENANCE;
+  delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
   mockedGetService.mockReturnValue({ id: "service:yopedia", handle: "yopedia" });
   mockedScan.mockResolvedValue(SAMPLE);
   mockedRebuild.mockResolvedValue({});
   mockedPurge.mockResolvedValue(0);
   mockedEnqueue.mockResolvedValue(true);
+  mockedBackupDue.mockResolvedValue(false);
+  mockedDueDigestOwners.mockResolvedValue([]);
+  mockedPendingDigests.mockResolvedValue([]);
+  mockedCreateDigest.mockResolvedValue(null);
+  mockedMarkDigestQueued.mockResolvedValue(null);
 });
 afterEach(() => {
   if (savedFlag === undefined) delete process.env.AUTONOMOUS_MAINTENANCE;
   else process.env.AUTONOMOUS_MAINTENANCE = savedFlag;
+  if (savedOwnerHandle === undefined) delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  else process.env.NEXT_PUBLIC_OWNER_HANDLE = savedOwnerHandle;
 });
 
 describe("POST /api/tasks/scan", () => {
@@ -56,7 +85,7 @@ describe("POST /api/tasks/scan", () => {
     expect(mockedScan).not.toHaveBeenCalled();
   });
 
-  it("dry-runs (enqueues nothing) when AUTONOMOUS_MAINTENANCE is off", async () => {
+  it("dry-runs maintenance tasks when AUTONOMOUS_MAINTENANCE is off", async () => {
     const res = await scan();
     const body = await res.json();
     expect(body).toMatchObject({ enabled: false, dry: true, found: 4, enqueued: 0 });
@@ -81,9 +110,74 @@ describe("POST /api/tasks/scan", () => {
     expect(mockedEnqueue).not.toHaveBeenCalled();
   });
 
+  it("queues a due owner backup independently of maintenance edits", async () => {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = "christianlee";
+    mockedBackupDue.mockResolvedValue(true);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedBackupDue).toHaveBeenCalledWith("christianlee");
+    expect(mockedEnqueue).toHaveBeenCalledWith({
+      kind: "create-backup",
+      owner: "christianlee",
+    });
+    expect(body).toMatchObject({
+      backupOwnerConfigured: true,
+      backupDue: true,
+      backupEnqueued: true,
+    });
+  });
+
+  it("?dry=1 suppresses a due owner backup", async () => {
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = "christianlee";
+    mockedBackupDue.mockResolvedValue(true);
+
+    const res = await scan("?dry=1");
+    const body = await res.json();
+
+    expect(mockedBackupDue).toHaveBeenCalledWith("christianlee");
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+    expect(body).toMatchObject({
+      backupOwnerConfigured: true,
+      backupDue: true,
+      backupEnqueued: false,
+    });
+  });
+
   it("honors a ?cap override", async () => {
     await scan("?cap=3");
     expect(mockedScan).toHaveBeenCalledWith(3);
+  });
+
+  it("creates due monitor digests and queues pending email delivery", async () => {
+    mockedDueDigestOwners.mockResolvedValue(["alice"]);
+    mockedCreateDigest.mockResolvedValue({ id: "mdg_1234567890abcdef" } as never);
+    mockedPendingDigests.mockResolvedValue([{
+      id: "mdg_1234567890abcdef",
+      owner: "alice",
+      status: "pending",
+      nextAttemptAt: "2026-08-05T00:00:00.000Z",
+    }]);
+    const res = await scan();
+    const body = await res.json();
+    expect(body).toMatchObject({
+      monitorDigestOwnersDue: 1,
+      monitorDigestsGenerated: 1,
+      monitorDigestDeliveriesDue: 1,
+      monitorDigestDeliveriesEnqueued: 1,
+    });
+    expect(mockedEnqueue).toHaveBeenCalledWith({
+      kind: "deliver-monitor-digest",
+      digestId: "mdg_1234567890abcdef",
+      owner: "alice",
+    });
+    expect(mockedMarkDigestQueued).toHaveBeenCalledWith(
+      "alice",
+      "mdg_1234567890abcdef",
+      expect.any(Date),
+    );
   });
 
   it("self-heals the derived indexes every run (even in dry-run)", async () => {

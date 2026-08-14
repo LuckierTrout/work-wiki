@@ -24,17 +24,16 @@ import { logger } from "@/lib/logger";
  *     route, which scopes writes to agent-knowledge — here the human is driving
  *     their own client, so their writes are their own pages.
  *   - the **service token** → the configured service principal.
- *   - **no token** → reads still work (public commons); write tools return an
- *     auth-required tool error.
+ *   - **no token** → rejected. WorkWiki is a private deployment, so reads and
+ *     writes both require a valid agent or service credential.
  *
  * Middleware-exempt (authenticates in-route via the token, not a Clerk session).
  */
 
-/** `kind:"ok"` carries the caller (null = unauthenticated reads); `unauthorized`
- *  means a token was presented but is invalid → 401. Literal discriminant so the
- *  three outcomes are compiler-checked, not a structural `in` probe. */
+/** `kind:"ok"` carries the authenticated caller; `unauthorized` means the
+ * credential is missing or invalid → 401. */
 type AuthResult =
-  | { kind: "ok"; principal: Principal | null; targetVault: TargetVault | null }
+  | { kind: "ok"; principal: Principal; targetVault: TargetVault | null }
   | { kind: "unauthorized" };
 
 /** Resolve an agent's configured `defaultVault` to a usable target — only if it
@@ -49,15 +48,15 @@ async function resolveTargetVault(
   return vault ? { id: vault.id, name: vault.name } : null;
 }
 
-/** Resolve the calling principal from a Bearer token. A per-user agent token
+/** Resolve the calling principal from a required Bearer token. A per-user agent token
  *  resolves to its human OWNER (handle), so writes attribute to and are
  *  authorized as that user; the service token resolves to the trusted service
- *  principal; no token → unauthenticated (reads only). */
+ *  principal. */
 async function resolvePrincipal(req: Request): Promise<AuthResult> {
   const bearer = req.headers
     .get("authorization")
     ?.match(/^Bearer\s+(.+)$/i)?.[1];
-  if (!bearer) return { kind: "ok", principal: null, targetVault: null };
+  if (!bearer) return { kind: "unauthorized" };
 
   const agentId = await verifyAgentToken(bearer);
   if (agentId) {
@@ -96,11 +95,8 @@ export async function POST(req: Request) {
     }
     const { principal, targetVault } = auth;
 
-    // Cost guard. Key by the authenticated principal when present, else the
-    // client IP — anonymous reads still reach query_wiki, which hits the LLM.
-    const rlKey = principal
-      ? `p:${principal.handle}`
-      : `ip:${req.headers.get("cf-connecting-ip") ?? req.headers.get("x-forwarded-for") ?? "unknown"}`;
+    // Cost guard. Every remote MCP request is authenticated in private mode.
+    const rlKey = `p:${principal.handle}`;
     const rl = await enforceRateLimit("mcp", rlKey);
     if (!rl.allowed) {
       return NextResponse.json(

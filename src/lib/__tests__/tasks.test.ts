@@ -8,7 +8,7 @@ vi.mock("@opennextjs/cloudflare", () => ({
   }),
 }));
 
-import { enqueueTask, parseTask } from "../tasks";
+import { enqueueTask, enqueueTasks, parseTask } from "../tasks";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 const mockGetCfContext = getCloudflareContext as ReturnType<typeof vi.fn>;
@@ -44,7 +44,119 @@ describe("enqueueTask", () => {
   });
 });
 
+describe("enqueueTasks", () => {
+  it("reports an unavailable queue without claiming work was accepted", async () => {
+    await expect(enqueueTasks([
+      { kind: "extract-knowledge", slug: "notes", owner: "alice" },
+    ])).resolves.toEqual({ available: false, enqueued: 0 });
+  });
+
+  it("uses sendBatch and reports the accepted task count", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const sendBatch = vi.fn().mockResolvedValue(undefined);
+    mockGetCfContext.mockReturnValue({ env: { TASK_QUEUE: { send, sendBatch } } });
+    const tasks = [
+      { kind: "extract-knowledge" as const, slug: "notes", owner: "alice" },
+      { kind: "extract-knowledge" as const, slug: "decisions", owner: "alice" },
+    ];
+
+    await expect(enqueueTasks(tasks)).resolves.toEqual({
+      available: true,
+      enqueued: 2,
+    });
+    expect(sendBatch).toHaveBeenCalledWith(tasks.map((body) => ({ body })));
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
 describe("parseTask", () => {
+  it("accepts action-extraction and specialized-agent tasks", () => {
+    expect(parseTask({ kind: "extract-actions", slug: "notes", owner: "alice" })).toEqual({
+      kind: "extract-actions",
+      slug: "notes",
+      owner: "alice",
+    });
+    expect(parseTask({
+      kind: "run-agent",
+      agentId: "alice--scout",
+      owner: "alice",
+      trigger: "after-ingest",
+      sourceSlug: "notes",
+    })).toEqual({
+      kind: "run-agent",
+      agentId: "alice--scout",
+      owner: "alice",
+      trigger: "after-ingest",
+      sourceSlug: "notes",
+    });
+    expect(parseTask({ kind: "run-agent", agentId: "a", owner: "alice", trigger: "hourly" })).toBeNull();
+  });
+
+  it("accepts only owner-scoped source-monitor tasks", () => {
+    expect(parseTask({
+      kind: "monitor-source",
+      monitorId: "mon_12345678",
+      owner: "alice",
+    })).toEqual({ kind: "monitor-source", monitorId: "mon_12345678", owner: "alice" });
+    expect(parseTask({ kind: "monitor-source", monitorId: "bad", owner: "alice" })).toBeNull();
+    expect(parseTask({ kind: "monitor-source", monitorId: "mon_12345678", owner: "" })).toBeNull();
+  });
+
+  it("accepts only owner-scoped monitor-digest delivery tasks", () => {
+    expect(parseTask({
+      kind: "deliver-monitor-digest",
+      digestId: "mdg_1234567890abcdef",
+      owner: "alice",
+    })).toEqual({
+      kind: "deliver-monitor-digest",
+      digestId: "mdg_1234567890abcdef",
+      owner: "alice",
+    });
+    expect(parseTask({ kind: "deliver-monitor-digest", digestId: "mdg_bad", owner: "alice" })).toBeNull();
+    expect(parseTask({ kind: "deliver-monitor-digest", digestId: "mdg_1234567890abcdef", owner: "" })).toBeNull();
+  });
+
+  it("accepts owner-scoped structured-knowledge extraction tasks", () => {
+    expect(parseTask({ kind: "extract-knowledge", slug: "notes", owner: "alice" })).toEqual({
+      kind: "extract-knowledge",
+      slug: "notes",
+      owner: "alice",
+    });
+    expect(parseTask({ kind: "extract-knowledge", slug: "", owner: "alice" })).toBeNull();
+    const graphifyJobId = "graphify_12345678-1234-1234-1234-123456789abc";
+    expect(parseTask({
+      kind: "extract-knowledge",
+      slug: "notes",
+      owner: "alice",
+      graphifyJobId,
+    })).toEqual({
+      kind: "extract-knowledge",
+      slug: "notes",
+      owner: "alice",
+      graphifyJobId,
+    });
+    expect(parseTask({
+      kind: "extract-knowledge",
+      slug: "notes",
+      owner: "alice",
+      graphifyJobId: "../../bad",
+    })).toBeNull();
+  });
+
+  it("accepts only valid integration-delivery tasks", () => {
+    expect(parseTask({ kind: "deliver-integration", outboxId: "out_1234567890abcdef", owner: "alice" })).toEqual({
+      kind: "deliver-integration",
+      outboxId: "out_1234567890abcdef",
+      owner: "alice",
+    });
+    expect(parseTask({ kind: "deliver-integration", outboxId: "out_bad", owner: "alice" })).toBeNull();
+  });
+
+  it("accepts owner-scoped backup tasks", () => {
+    expect(parseTask({ kind: "create-backup", owner: "alice" })).toEqual({ kind: "create-backup", owner: "alice" });
+    expect(parseTask({ kind: "create-backup", owner: "" })).toBeNull();
+  });
+
   it("accepts a well-formed reconcile task", () => {
     expect(
       parseTask({ kind: "reconcile", slug: "p", threadIndex: 3, requestedBy: "alice" }),
@@ -132,6 +244,55 @@ describe("parseTask", () => {
     expect(bad).not.toHaveProperty("triggeredBy");
     expect(bad).not.toHaveProperty("sourceUrl");
     expect(bad).not.toHaveProperty("learningFor");
+  });
+
+  it("preserves complete email metadata and rejects incoherent email tasks", () => {
+    const email = {
+      from: "alice@example.com",
+      to: "ingest@example.com",
+      subject: "Quarterly notes",
+      messageId: "<mail-1@example.com>",
+      attachmentNames: ["deck.pptx"],
+    };
+    expect(
+      parseTask({
+        kind: "ingest",
+        content: "Notes",
+        sourceType: "email",
+        email,
+      }),
+    ).toMatchObject({ sourceType: "email", email });
+    expect(
+      parseTask({ kind: "ingest", content: "Notes", sourceType: "email" }),
+    ).toBeNull();
+    expect(
+      parseTask({ kind: "ingest", content: "Notes", sourceType: "text", email }),
+    ).toBeNull();
+  });
+
+  it("accepts staged email attachments and rejects them on non-email tasks", () => {
+    const email = {
+      from: "alice@example.com",
+      to: "ingest@example.com",
+      subject: "Spreadsheet",
+      messageId: "<sheet@example.com>",
+      attachmentNames: ["sheet.xlsx"],
+    };
+    expect(parseTask({
+      kind: "ingest",
+      sourceType: "email",
+      email,
+      attachments: [{ key: "raw/uploads/j/sheet.xlsx", filename: "sheet.xlsx" }],
+    })).toMatchObject({
+      sourceType: "email",
+      attachments: [{ key: "raw/uploads/j/sheet.xlsx", filename: "sheet.xlsx" }],
+    });
+    expect(parseTask({
+      kind: "ingest",
+      content: "x",
+      sourceType: "text",
+      attachments: [{ key: "raw/uploads/j/sheet.xlsx", filename: "sheet.xlsx" }],
+    })).toBeNull();
   });
 
   it("rejects a malformed staged descriptor", () => {

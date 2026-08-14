@@ -39,6 +39,10 @@ vi.mock("@/lib/query", () => ({
   buildQuerySystemPrompt: vi.fn(() => "system"),
 }));
 
+vi.mock("@/lib/names-terms", () => ({
+  expandQueryWithNamesTerms: vi.fn(async (_owner: string, question: string) => question),
+}));
+
 import { listReadableWikiPages } from "@/lib/wiki";
 import { resolveScopeSlugs } from "@/lib/search";
 import { selectPagesForQuery } from "@/lib/query";

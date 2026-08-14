@@ -10,6 +10,7 @@ import {
   isReadOnly,
   getEffectiveProvider,
   getEffectiveSettings,
+  getStructuredKnowledgeModelSettings,
   getResolvedCredentials,
   getWikiDir,
   getRawDir,
@@ -36,6 +37,7 @@ const ENV_KEYS = [
   "OPENAI_API_KEY",
   "GOOGLE_GENERATIVE_AI_API_KEY",
   "DEEPSEEK_API_KEY",
+  "OLLAMA_API_KEY",
   "OLLAMA_BASE_URL",
   "OLLAMA_MODEL",
   "LLM_MODEL",
@@ -59,6 +61,7 @@ beforeEach(async () => {
   delete process.env.OPENAI_API_KEY;
   delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   delete process.env.DEEPSEEK_API_KEY;
+  delete process.env.OLLAMA_API_KEY;
   delete process.env.OLLAMA_BASE_URL;
   delete process.env.OLLAMA_MODEL;
   delete process.env.LLM_MODEL;
@@ -119,6 +122,8 @@ describe("saveConfig / loadConfig round-trip", () => {
     const config: AppConfig = {
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
+      structuredKnowledgeProvider: "openai",
+      structuredKnowledgeModel: "gpt-4o",
       embeddingModel: "text-embedding-3-small",
     };
     await saveConfig(config);
@@ -193,6 +198,7 @@ describe("isValidProvider", () => {
     expect(isValidProvider("anthropic")).toBe(true);
     expect(isValidProvider("openai")).toBe(true);
     expect(isValidProvider("google")).toBe(true);
+    expect(isValidProvider("ollama-cloud")).toBe(true);
     expect(isValidProvider("ollama")).toBe(true);
   });
 
@@ -204,7 +210,7 @@ describe("isValidProvider", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Merge priority: env vars > config file > defaults
+// Merge priority: saved provider selection > env auto-detection fallback
 // ---------------------------------------------------------------------------
 
 describe("getEffectiveProvider — merge priority", () => {
@@ -214,24 +220,41 @@ describe("getEffectiveProvider — merge priority", () => {
     expect(info.provider).toBeNull();
   });
 
-  it("uses config file when env vars are absent", async () => {
+  it("uses config selection but remains unconfigured without credentials", async () => {
     await saveConfig({ provider: "openai", model: "gpt-4o-mini" });
     // Prime the sync cache so loadConfigSync returns data
     await loadConfig();
 
     const info = getEffectiveProvider();
-    expect(info.configured).toBe(true);
+    expect(info.configured).toBe(false);
     expect(info.provider).toBe("openai");
     expect(info.model).toBe("gpt-4o-mini");
   });
 
-  it("env var provider wins over config file provider", async () => {
+  it("saved provider selection wins when another provider key also exists", async () => {
     await saveConfig({ provider: "openai" });
     await loadConfig();
     process.env.ANTHROPIC_API_KEY = "sk-ant-env-key";
+    process.env.OPENAI_API_KEY = "sk-openai-env-key";
 
     const info = getEffectiveProvider();
-    expect(info.provider).toBe("anthropic");
+    expect(info.provider).toBe("openai");
+    expect(info.configured).toBe(true);
+  });
+
+  it("supports selecting Google while several provider credentials coexist", async () => {
+    await saveConfig({ provider: "google", model: "gemini-2.0-flash" });
+    await loadConfig();
+    process.env.ANTHROPIC_API_KEY = "sk-ant-env-key";
+    process.env.OPENAI_API_KEY = "sk-openai-env-key";
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-env-key";
+
+    const info = getEffectiveProvider();
+    expect(info).toMatchObject({
+      provider: "google",
+      model: "gemini-2.0-flash",
+      configured: true,
+    });
   });
 
   it("LLM_MODEL env var wins over config file model", async () => {
@@ -276,6 +299,31 @@ describe("getEffectiveSettings", () => {
     expect(settings.apiKeySource).toBe("env");
   });
 
+  it("reports the saved provider and its matching key with multiple keys present", async () => {
+    await saveConfig({ provider: "google", model: "gemini-2.0-flash" });
+    await loadConfig();
+    process.env.ANTHROPIC_API_KEY = "sk-ant-env-key-1234567890";
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-env-key";
+
+    const settings = getEffectiveSettings();
+    expect(settings.provider).toBe("google");
+    expect(settings.providerSource).toBe("config");
+    expect(settings.apiKeySource).toBe("env");
+    expect(settings.hasApiKey).toBe(true);
+    expect(settings.configured).toBe(true);
+  });
+
+  it("detects Ollama Cloud from OLLAMA_API_KEY", () => {
+    process.env.OLLAMA_API_KEY = "ollama-test-key";
+
+    const settings = getEffectiveSettings();
+    expect(settings.provider).toBe("ollama-cloud");
+    expect(settings.providerSource).toBe("env");
+    expect(settings.model).toBe("gpt-oss:120b");
+    expect(settings.hasApiKey).toBe(true);
+    expect(settings.ollamaBaseUrl).toBe("https://ollama.com/api");
+  });
+
   it("reports source as 'none' when nothing is set", () => {
     const settings = getEffectiveSettings();
     expect(settings.providerSource).toBe("none");
@@ -290,6 +338,61 @@ describe("getEffectiveSettings", () => {
     const settings = getEffectiveSettings();
     expect(settings.modelSource).toBe("default");
     expect(settings.model).toBe("claude-sonnet-4-20250514");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured Knowledge workload routing
+// ---------------------------------------------------------------------------
+
+describe("getStructuredKnowledgeModelSettings", () => {
+  it("inherits the primary provider and model when no workload override exists", async () => {
+    await saveConfig({ provider: "ollama-cloud", model: "gpt-oss:120b" });
+    await loadConfig();
+    process.env.OLLAMA_API_KEY = "ollama-cloud-key";
+
+    expect(getStructuredKnowledgeModelSettings()).toEqual({
+      provider: "ollama-cloud",
+      providerSource: "default",
+      model: "gpt-oss:120b",
+      modelSource: "default",
+      configured: true,
+      usesPrimary: true,
+    });
+  });
+
+  it("routes extraction independently through its configured provider and model", async () => {
+    await saveConfig({
+      provider: "ollama-cloud",
+      model: "gpt-oss:120b",
+      structuredKnowledgeProvider: "openai",
+      structuredKnowledgeModel: "gpt-4o",
+    });
+    await loadConfig();
+    process.env.OLLAMA_API_KEY = "ollama-cloud-key";
+    process.env.OPENAI_API_KEY = "openai-key";
+
+    expect(getStructuredKnowledgeModelSettings()).toEqual({
+      provider: "openai",
+      providerSource: "config",
+      model: "gpt-4o",
+      modelSource: "config",
+      configured: true,
+      usesPrimary: false,
+    });
+  });
+
+  it("uses the workload provider default when only that provider is selected", async () => {
+    await saveConfig({
+      provider: "ollama-cloud",
+      structuredKnowledgeProvider: "openai",
+    });
+    await loadConfig();
+    process.env.OPENAI_API_KEY = "openai-key";
+
+    const settings = getStructuredKnowledgeModelSettings();
+    expect(settings.model).toBe("gpt-4o");
+    expect(settings.modelSource).toBe("default");
   });
 });
 
@@ -324,6 +427,20 @@ describe("getResolvedCredentials", () => {
     expect(creds.apiKey).toBe("sk-env-key");
   });
 
+  it("uses the credential matching the saved provider when multiple keys exist", async () => {
+    await saveConfig({ provider: "openai", model: "gpt-4o-mini" });
+    await loadConfig();
+    process.env.ANTHROPIC_API_KEY = "sk-ant-env-key";
+    process.env.OPENAI_API_KEY = "sk-openai-env-key";
+
+    const creds = getResolvedCredentials();
+    expect(creds).toMatchObject({
+      provider: "openai",
+      apiKey: "sk-openai-env-key",
+      model: "gpt-4o-mini",
+    });
+  });
+
   it("resolves ollama base url from config", async () => {
     await saveConfig({ provider: "ollama", ollamaBaseUrl: "http://myhost:11434/api" });
     await loadConfig();
@@ -332,6 +449,18 @@ describe("getResolvedCredentials", () => {
     expect(creds.provider).toBe("ollama");
     expect(creds.ollamaBaseUrl).toBe("http://myhost:11434/api");
     expect(creds.apiKey).toBeNull();
+  });
+
+  it("resolves Ollama Cloud credentials from the server secret", () => {
+    process.env.OLLAMA_API_KEY = "ollama-cloud-key";
+
+    const creds = getResolvedCredentials();
+    expect(creds).toMatchObject({
+      provider: "ollama-cloud",
+      apiKey: "ollama-cloud-key",
+      model: "gpt-oss:120b",
+      ollamaBaseUrl: "https://ollama.com/api",
+    });
   });
 
   it("detects deepseek from DEEPSEEK_API_KEY with its default model", () => {
@@ -452,9 +581,9 @@ describe("isReadOnly", () => {
     expect(isReadOnly()).toBe(false);
   });
 
-  it("returns true when STORAGE_PROVIDER=cloudflare-r2", () => {
+  it("does not become read-only merely because storage is Cloudflare R2", () => {
     process.env.STORAGE_PROVIDER = "cloudflare-r2";
-    expect(isReadOnly()).toBe(true);
+    expect(isReadOnly()).toBe(false);
   });
 
   it("returns false when STORAGE_PROVIDER=fs", () => {

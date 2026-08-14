@@ -143,7 +143,7 @@ pnpm install
 Create `.env.local` with one LLM provider key (see the table below for all options):
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...   # the default provider
+OPENAI_API_KEY=sk-...          # example; any supported provider works
 # LLM_MODEL=...                 # optional: override the default model
 ```
 
@@ -153,16 +153,59 @@ pnpm dev        # http://localhost:3000
 
 ### Supported LLM providers
 
-The app auto-detects a provider from environment variables. Priority (first match
-wins): **Anthropic -> OpenAI -> Google -> Ollama**. Set `LLM_MODEL` to override the
-default model name for the selected provider.
+API keys are server credentials; choose the active provider in **Settings**.
+When no preference has ever been saved, the app auto-detects the first available
+credential for backwards compatibility. Set `LLM_MODEL` to force a model name
+for the selected provider.
 
 | Provider | Env var | Default model | Notes |
 |---|---|---|---|
 | Anthropic | `ANTHROPIC_API_KEY=sk-ant-...` | `claude-sonnet-4-20250514` | `@ai-sdk/anthropic` |
 | OpenAI | `OPENAI_API_KEY=sk-...` | `gpt-4o` | `@ai-sdk/openai` |
 | Google | `GOOGLE_GENERATIVE_AI_API_KEY=...` | `gemini-2.0-flash` | `@ai-sdk/google` (Gemini) |
+| DeepSeek | `DEEPSEEK_API_KEY=...` | `deepseek-v4-flash` | OpenAI-compatible generation API; embeddings use a separate provider |
+| Ollama Cloud | `OLLAMA_API_KEY=...` | `gpt-oss:120b` | Hosted API at `https://ollama.com/api`; store the key as a server secret |
 | Ollama | `OLLAMA_BASE_URL=http://localhost:11434/api` and/or `OLLAMA_MODEL=llama3.2` | `llama3.2` | `ollama-ai-provider-v2`; runs against a local Ollama server, no API key needed |
+
+Cloudflare deployments use the `AI` binding with `@cf/baai/bge-m3` for
+embeddings. BGE-M3 produces 1,024-dimensional vectors, so its Vectorize index
+must also be created with 1,024 dimensions. Generation-provider keys remain
+independent and can be switched in Settings without changing the embedding
+model.
+
+Structured Knowledge extraction can also use its own provider and model from
+**Settings → Knowledge extraction**. When no workload override is saved, it
+inherits the primary generation route. The selection is non-secret config; the
+matching provider credential must still exist only as a server environment
+secret. Re-extracting a page replaces that page's prior derived records,
+relationships, and extraction evidence while preserving corroboration from
+other sources.
+
+### Optional Hermes Agent backend
+
+Yopedia chat can use a separately hosted [Hermes Agent API server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server/) for orchestration while Yopedia remains responsible for authentication, retrieval scopes, source context, citation validation, and conversation storage. Set `HERMES_AGENT_URL` to the Hermes server root, store its `API_SERVER_KEY` as the `HERMES_API_KEY` Worker secret, and optionally set `HERMES_MODEL`. Configure a dedicated Hermes profile for the API server and disable host-mutating toolsets such as terminal, file, code execution, cron, delegation, and memory. Yopedia checks `/v1/toolsets` and refuses Hermes when those tools are enabled. If Hermes is unconfigured, unsafe, or temporarily unavailable, chat falls back to Yopedia's selected LLM provider.
+
+### Trusted memory and operations
+
+Signed-in users have owner-scoped workspaces for reviewable memory proposals,
+claim evidence, monitored sources, structured knowledge, integrations, and
+system health. Automated research and agents create proposals; they do not edit
+the durable page until the owner accepts in **Review**. Accepted changes use the
+normal revision lifecycle, so they remain revertible from the page history.
+
+The **System** workspace provides retrieval/privacy evaluation cases, operation
+receipts, token usage, and checksummed tenant backups. Production backup requests
+are queued, and each backup is restored into a disposable isolated prefix before
+it is marked verified. The scheduled scanner also creates a daily backup for
+`NEXT_PUBLIC_OWNER_HANDLE`.
+
+Webhook delivery is optional and idempotent. Configure an HTTPS URL in
+**Integrations** and set `YOPEDIA_WEBHOOK_SIGNING_SECRET` as a Worker secret to
+add an HMAC SHA-256 signature. `LLM_INPUT_COST_PER_MILLION` and
+`LLM_OUTPUT_COST_PER_MILLION` may be configured as Worker vars to add approximate
+USD cost to Agent Studio receipts; token usage is recorded even when those rates
+are unset. Queue depth and dead-letter messages remain visible in Cloudflare,
+while Yopedia surfaces durable task outcomes, retries, and delivery receipts.
 
 ## Watch It Grow
 

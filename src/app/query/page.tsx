@@ -16,7 +16,7 @@ import { logger } from "@/lib/logger";
 
 const EXAMPLES = [
   "What is harness engineering?",
-  "How is work-wiki different from RAG?",
+  "How is WorkWiki different from RAG?",
   "What are the agentic harness patterns?",
 ];
 
@@ -276,7 +276,7 @@ export default function QueryPage() {
             style={{ gap: 6, flexWrap: "wrap" }}
           >
             {[
-              { scope: undefined as string | undefined, label: "Public", active: !activeVaultId },
+              { scope: undefined as string | undefined, label: "All knowledge", active: !activeVaultId },
               ...myVaults.map((v) => ({
                 scope: `vault:${v.id}` as string | undefined,
                 label: v.name,

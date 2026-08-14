@@ -20,6 +20,11 @@ import {
   type CorpusStats,
 } from "./bm25";
 import { extractCitedSlugs } from "./citations";
+import {
+  buildNamesTermsGuidance,
+  expandQueryWithNamesTerms,
+} from "./names-terms";
+import { buildWorkspaceGuidance } from "./workspace-profile";
 import { UNTRUSTED_CONTENT_RULE, wrapUntrusted } from "./untrusted";
 import type { QueryResult } from "./types";
 import type { QueryFormat } from "./query-format";
@@ -176,6 +181,7 @@ export async function buildQuerySystemPrompt(
   entries: { slug: string; title: string; summary: string }[],
   selectedSlugs: string[],
   format: QueryFormat = "prose",
+  owner?: string,
 ): Promise<string> {
   // List the OTHER pages (those not loaded in full) so the LLM knows what else
   // exists. On a large wiki this would be O(pages) of prompt tokens every query,
@@ -213,6 +219,15 @@ export async function buildQuerySystemPrompt(
   const conventions = await loadPageConventions();
   if (conventions) {
     systemPrompt += `\n\nThe wiki you are querying follows these conventions (from SCHEMA.md):\n\n${conventions}`;
+  }
+
+  if (owner) {
+    const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
+      buildWorkspaceGuidance(owner),
+      buildNamesTermsGuidance(owner),
+    ]);
+    if (workspaceGuidance) systemPrompt += `\n\n${workspaceGuidance}`;
+    if (dictionaryGuidance) systemPrompt += `\n\n${dictionaryGuidance}`;
   }
 
   // Append format-specific instructions. Prose is the default and adds
@@ -288,7 +303,14 @@ export async function query(
     }
 
     // Determine which pages to load
-    const selectedSlugs = await selectPagesForQuery(question, entries, scopeSlugs);
+    const retrievalQuestion = principal
+      ? await expandQueryWithNamesTerms(principal.handle, question)
+      : question;
+    const selectedSlugs = await selectPagesForQuery(
+      retrievalQuestion,
+      entries,
+      scopeSlugs,
+    );
 
     const { context } = await buildContext(selectedSlugs);
 
@@ -299,6 +321,7 @@ export async function query(
       return {
         answer: `**No API key configured.** Set an API key (\`ANTHROPIC_API_KEY\`, \`OPENAI_API_KEY\`, etc.) to enable querying.\n\nYour wiki currently contains these pages:\n${pageList}`,
         sources: [],
+        retrievedSources: selectedSlugs,
       };
     }
 
@@ -307,6 +330,7 @@ export async function query(
       entries,
       selectedSlugs,
       format,
+      principal?.handle,
     );
 
     const raw = await callLLM(systemPrompt, question, {
@@ -329,7 +353,7 @@ export async function query(
     const allSlugs = entries.map((e) => e.slug);
     const sources = extractCitedSlugs(answer, allSlugs);
 
-    return { answer, sources };
+    return { answer, sources, retrievedSources: selectedSlugs };
   });
 }
 

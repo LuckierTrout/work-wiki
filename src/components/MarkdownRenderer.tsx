@@ -1,7 +1,9 @@
 import Link from "next/link";
-import type { ReactNode } from "react";
+import React, { type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import { slugify } from "@/lib/slugify";
 import { resolveSlugPath, type SlugTenantMap } from "@/lib/links";
 import { Mermaid } from "@/components/Mermaid";
@@ -153,7 +155,8 @@ export function MarkdownRenderer({
       }`}
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
         urlTransform={urlTransform}
         components={{
           // Stable heading IDs so an in-page Table of Contents can anchor to

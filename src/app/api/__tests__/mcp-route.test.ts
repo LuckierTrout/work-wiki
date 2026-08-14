@@ -55,15 +55,16 @@ beforeEach(() => {
 });
 
 describe("POST /api/mcp — auth resolution", () => {
-  it("allows unauthenticated reads (no token → tools/list 200)", async () => {
+  it("rejects unauthenticated reads (no token → 401)", async () => {
     const res = await POST(post({ id: 1, method: "tools/list" }));
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.result.tools.length).toBeGreaterThan(0);
+    expect(res.status).toBe(401);
   });
 
   it("maintenance_scan appears in the tool list", async () => {
-    const res = await POST(post({ id: 1, method: "tools/list" }));
+    mockedService.mockReturnValue({ id: "service:sys", handle: "sys" });
+    const res = await POST(
+      post({ id: 1, method: "tools/list" }, auth("service-tok")),
+    );
     expect(res.status).toBe(200);
     const body = await res.json();
     const toolNames = body.result.tools.map((t: { name: string }) => t.name);
@@ -130,28 +131,28 @@ describe("POST /api/mcp — write attribution", () => {
     expect(mockedCreate.mock.calls[0][0].owner).toBe("sys");
   });
 
-  it("a write with no token returns an auth-required isError (handler not called)", async () => {
+  it("a write with no token is rejected before dispatch", async () => {
     const res = await POST(
       post({ id: 1, method: "tools/call", params: { name: "create_page", arguments: { slug: "p", content: "# P" } } }),
     );
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.result.isError).toBe(true);
+    expect(res.status).toBe(401);
     expect(mockedCreate).not.toHaveBeenCalled();
   });
 });
 
 describe("POST /api/mcp — transport", () => {
   it("rejects an oversized batch with -32600/400", async () => {
+    mockedService.mockReturnValue({ id: "service:sys", handle: "sys" });
     const batch = Array.from({ length: 21 }, (_, i) => ({ id: i, method: "ping" }));
-    const res = await POST(post(batch));
+    const res = await POST(post(batch, auth("service-tok")));
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe(-32600);
   });
 
   it("accepts a batch at the cap and returns an array of responses", async () => {
+    mockedService.mockReturnValue({ id: "service:sys", handle: "sys" });
     const batch = Array.from({ length: 20 }, (_, i) => ({ id: i, method: "ping" }));
-    const res = await POST(post(batch));
+    const res = await POST(post(batch, auth("service-tok")));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(Array.isArray(body)).toBe(true);
@@ -159,12 +160,16 @@ describe("POST /api/mcp — transport", () => {
   });
 
   it("a batch of only notifications → 202 no body", async () => {
-    const res = await POST(post([{ method: "notifications/initialized" }]));
+    mockedService.mockReturnValue({ id: "service:sys", handle: "sys" });
+    const res = await POST(
+      post([{ method: "notifications/initialized" }], auth("service-tok")),
+    );
     expect(res.status).toBe(202);
   });
 
   it("malformed JSON body → -32700/400", async () => {
-    const res = await POST(post("{not json"));
+    mockedService.mockReturnValue({ id: "service:sys", handle: "sys" });
+    const res = await POST(post("{not json", auth("service-tok")));
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe(-32700);
   });
@@ -176,8 +181,11 @@ describe("POST /api/mcp — transport", () => {
   });
 
   it("returns 429 when the rate limit is exceeded", async () => {
+    mockedService.mockReturnValue({ id: "service:sys", handle: "sys" });
     mockedRateLimit.mockResolvedValue({ allowed: false, remaining: 0 });
-    const res = await POST(post({ id: 1, method: "ping" }));
+    const res = await POST(
+      post({ id: 1, method: "ping" }, auth("service-tok")),
+    );
     expect(res.status).toBe(429);
     expect((await res.json()).error.code).toBe(-32000);
   });

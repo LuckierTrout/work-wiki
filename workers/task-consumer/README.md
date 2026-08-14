@@ -21,6 +21,11 @@ gracefully off the Workers runtime.
 This worker has two triggers: the **queue consumer** (drains `yopedia-tasks`) and
 a **cron** (`scheduled()`, daily) that POSTs `/api/tasks/scan`.
 
+For inbound-email jobs, the consumer also sends a final **Ready** or **Could not
+import** receipt after the main app settles the job. The `EMAIL` binding is
+restricted to `ingest@workwiki.app`; Cloudflare Email Service must have that
+domain enabled for sending.
+
 ### Autonomous maintenance (Q2)
 
 The daily cron scans the **commons** (public pages only) for upkeep no human
@@ -106,13 +111,14 @@ it as a secret. The cron keeps running but reverts to harmless dry-runs.
 
 **Ack/retry** maps onto Cloudflare Queues:
 - `2xx` → ack (done).
-- `4xx` → poison (malformed / not-found) → ack + drop (don't retry forever).
-- `5xx` / network → retry (CF redelivers; → dead-letter queue after `max_retries`).
+- `400`, `404`, or `422` → poison (malformed / not-found) → ack + drop.
+- Other `4xx`, `5xx`, or network failures → retry (then DLQ after max retries).
 
 > **Same-zone fetch note:** the `/api/tasks/run` call targets the main yopedia
-> Worker on the same account. A plain same-zone Worker→Worker `fetch()` is blocked
-> (**error 1042**), so this Worker sets the **`global_fetch_strictly_public`**
-> compatibility flag.
+> Worker through the `YOPEDIA` service binding. The forwarded Request keeps the
+> configured public origin because the app's middleware is host-aware. The
+> **`global_fetch_strictly_public`** compatibility flag supports the public-URL
+> fallback when the service binding is unavailable.
 
 ## One-time setup (operator)
 
@@ -123,6 +129,9 @@ pnpm exec wrangler queues create yopedia-tasks-dlq
 
 # Secret (same value as the main Worker's):
 pnpm exec wrangler secret put YOPEDIA_SERVICE_TOKEN --config workers/task-consumer/wrangler.jsonc
+
+# The versioned config already includes the EMAIL send binding and sender.
+# Confirm workwiki.app is enabled under Cloudflare Email Service before deploy.
 
 # First deploy (afterwards it auto-deploys via deploy-cloudflare.yml on push to main):
 pnpm exec wrangler deploy --config workers/task-consumer/wrangler.jsonc

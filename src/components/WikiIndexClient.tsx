@@ -43,7 +43,7 @@ export function WikiIndexClient({ pages, discussionStats }: WikiIndexClientProps
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "work-wiki-vault.zip";
+      a.download = "workwiki-vault.zip";
       document.body.appendChild(a);
       a.click();
       a.remove();

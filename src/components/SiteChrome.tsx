@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
+import { MobileNavigationDock } from "@/components/MobileNavigationDock";
 
 /**
  * Wraps the app's global chrome (nav + footer) so it can be hidden on
@@ -20,7 +21,9 @@ export function SiteChrome({
   children: ReactNode;
 }) {
   const pathname = usePathname();
-  const bare = pathname?.startsWith("/share") ?? false;
+  const bare = Boolean(
+    pathname?.startsWith("/share") || pathname?.startsWith("/sign-in"),
+  );
 
   if (bare) {
     return (
@@ -40,6 +43,7 @@ export function SiteChrome({
         {children}
       </main>
       {footer}
+      <MobileNavigationDock />
     </>
   );
 }

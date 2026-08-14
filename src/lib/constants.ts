@@ -18,6 +18,9 @@ export const MAX_RESPONSE_SIZE = 5 * 1024 * 1024;
  */
 export const MAX_PDF_SIZE = 20 * 1024 * 1024;
 
+/** Maximum uploaded document/archive size (10 MB compressed). */
+export const MAX_DOCUMENT_SIZE = 10 * 1024 * 1024;
+
 /** Maximum extracted text content length passed downstream (100 K chars). */
 export const MAX_CONTENT_LENGTH = 100_000;
 

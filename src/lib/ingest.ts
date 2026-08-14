@@ -12,10 +12,11 @@ import {
 import { buildCorpusStats, bm25Score, tokenize } from "./bm25";
 import { ensureReconciliationThread } from "./talk";
 import { callLLM, hasLLMKey } from "./llm";
-import { fetchUrlContent, fetchImageBytes, storeImageBytes, pdfToText } from "./fetch";
+import { fetchUrlContent, fetchImageBytes, storeImageBytes } from "./fetch";
 import { describeImage } from "./vision";
 import { isYouTubeUrl, fetchYouTubeContent } from "./youtube";
 import { isXPostUrl, fetchXPostContent, isXArticleTeaser } from "./x-post";
+import { extractDocumentTextAsync } from "./document-extract";
 import type { IngestResult, SourceEntry } from "./types";
 import {
   serializeSources,
@@ -23,6 +24,12 @@ import {
   buildSourceEntry,
 } from "./sources";
 import { normalizeUrl } from "./source-index";
+import {
+  buildNamesTermsGuidance,
+  canonicalizeNamesTerm,
+  listNamesTerms,
+} from "./names-terms";
+import { buildWorkspaceGuidance } from "./workspace-profile";
 
 /**
  * Merge a provenance entry into a sources list. A real source URL supersedes a
@@ -67,10 +74,26 @@ export function mergeSourceEntry(sources: SourceEntry[], entry: SourceEntry): So
  */
 const SOURCE_TYPE_WEIGHT: Record<SourceEntry["type"], number> = {
   pdf: 0.68,
+  docx: 0.68,
+  pptx: 0.65,
+  xlsx: 0.65,
+  csv: 0.62,
+  md: 0.62,
+  txt: 0.55,
+  html: 0.6,
+  zip: 0.6,
+  odt: 0.65,
+  ods: 0.62,
+  odp: 0.62,
+  epub: 0.62,
+  org: 0.62,
+  rtf: 0.58,
+  mobi: 0.58,
   "wiki-ref": 0.65,
   url: 0.6,
   youtube: 0.55,
   image: 0.5,
+  email: 0.5,
   text: 0.5,
   "x-mention": 0.5,
 };
@@ -105,7 +128,6 @@ import {
   INGEST_MAX_OUTPUT_TOKENS,
   INGEST_MAP_MAX_OUTPUT_TOKENS,
   INGEST_MAP_CONCURRENCY,
-  MAX_CONTENT_LENGTH,
   MAX_PDF_SIZE,
   MAX_AUTO_TAGS,
   TAG_VOCAB_LIMIT,
@@ -122,6 +144,7 @@ import {
 import { contentHash, searchByVector, hasEmbeddingSupport } from "./embeddings";
 import { getStorage } from "./storage";
 import { logger } from "./logger";
+import { preserveDocumentSources } from "./document-sources";
 
 // ---------------------------------------------------------------------------
 // Ingest ledger — append-only JSONL record of each ingest operation
@@ -436,31 +459,47 @@ export async function ingestPdf(
     );
   }
 
-  // Layout-aware extraction (preserves line/paragraph structure) — shared with
-  // the URL PDF path so the raw stays readable and synthesis gets better input.
-  const trimmed = (await pdfToText(bytes)).trim();
-  if (!trimmed) {
-    throw new ClientInputError(
-      "PDF has no extractable text layer. Scanned/image-only PDFs are not supported yet.",
-    );
-  }
-  const content =
-    trimmed.length > MAX_CONTENT_LENGTH
-      ? trimmed.slice(0, MAX_CONTENT_LENGTH)
-      : trimmed;
-
-  // Derive title from first line or filename.
-  const firstLine =
-    trimmed.split("\n").find((l) => l.trim().length > 0)?.trim() ?? "";
-  const derivedTitle =
-    firstLine.length > 200 ? firstLine.slice(0, 200) : firstLine;
-  const title =
-    options?.title || derivedTitle || filename.replace(/\.pdf$/i, "") || "PDF Document";
-
-  return ingest(title, content, {
+  // The shared document extractor preserves layout, extracts embedded images,
+  // and asks vision to transcribe/describe useful PDF figures. This also lets
+  // image-only PDFs succeed when their figures contain readable evidence.
+  const extracted = await extractDocumentTextAsync({
+    bytes,
+    filename,
+    contentType: "application/pdf",
+  });
+  const result = await ingest(options?.title ?? extracted.title, extracted.text, {
     ...options,
     sourceType: "pdf",
   });
+  const owner = options?.owner?.trim() || options?.author?.trim() || "system";
+  await preserveDocumentSources(result.primarySlug, owner, [{
+    bytes,
+    filename,
+    contentType: "application/pdf",
+    extracted,
+  }]);
+  return result;
+}
+
+/** Extract and ingest an uploaded document, note, PDF, or safe archive. */
+export async function ingestDocument(
+  input: {
+    bytes: ArrayBuffer;
+    filename: string;
+    contentType?: string;
+    relativePath?: string;
+  },
+  options?: Omit<IngestOptions, "sourceType"> & { title?: string; tags?: string[] },
+): Promise<IngestResult> {
+  const extracted = await extractDocumentTextAsync(input);
+  const result = await ingest(options?.title ?? extracted.title, extracted.text, {
+    ...options,
+    sourceUrl: "upload",
+    sourceType: extracted.format,
+  });
+  const owner = options?.owner?.trim() || options?.author?.trim() || "system";
+  await preserveDocumentSources(result.primarySlug, owner, [{ ...input, extracted }]);
+  return result;
 }
 
 /**
@@ -1118,9 +1157,19 @@ export function parseDisputedMarker(raw: string): {
 export async function reconcilePage(
   existingBody: string,
   newBody: string,
+  owner?: string,
 ): Promise<{ body: string; disputed: boolean }> {
   const user = `# Current page\n\n${existingBody}\n\n# Newly ingested article (same concept)\n\n${newBody}`;
-  const out = await callLLM(RECONCILE_SYSTEM_PROMPT, user, {
+  const [workspaceGuidance, dictionaryGuidance] = owner
+    ? await Promise.all([
+        buildWorkspaceGuidance(owner),
+        buildNamesTermsGuidance(owner),
+      ])
+    : ["", ""];
+  const systemPrompt = RECONCILE_SYSTEM_PROMPT +
+    (workspaceGuidance ? `\n\n${workspaceGuidance}` : "") +
+    (dictionaryGuidance ? `\n\n${dictionaryGuidance}` : "");
+  const out = await callLLM(systemPrompt, user, {
     maxOutputTokens: INGEST_MAX_OUTPUT_TOKENS,
   });
   if (!out || out.trim() === "") {
@@ -1165,7 +1214,7 @@ export async function collectTagVocabulary(
   }
 }
 
-export async function buildIngestSystemPrompt(): Promise<string> {
+export async function buildIngestSystemPrompt(owner?: string): Promise<string> {
   const conventions = await loadPageConventions();
   const vocab = await collectTagVocabulary();
 
@@ -1184,6 +1233,14 @@ Follow these conventions when generating the page.`;
 
 Tags already used across this wiki (PREFER reusing an existing tag when it fits; only coin a new one when none apply):
 ${vocab.join(", ")}`;
+  }
+  if (owner) {
+    const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
+      buildWorkspaceGuidance(owner),
+      buildNamesTermsGuidance(owner),
+    ]);
+    if (workspaceGuidance) prompt += `\n\n${workspaceGuidance}`;
+    if (dictionaryGuidance) prompt += `\n\n${dictionaryGuidance}`;
   }
   return prompt;
 }
@@ -1204,7 +1261,7 @@ export interface IngestOptions {
    * default `"url"` / `"text"` heuristic when building the `sources[]` entry.
    * Used by `ingestXMention()` to set `"x-mention"` provenance.
    */
-  sourceType?: "url" | "text" | "x-mention" | "image" | "pdf" | "youtube";
+  sourceType?: "url" | "text" | "x-mention" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "csv" | "md" | "txt" | "html" | "zip" | "youtube" | "email" | "odt" | "ods" | "odp" | "epub" | "org" | "rtf" | "mobi";
   /**
    * Who triggered the ingest (user handle or agent ID). Defaults to `"system"`.
    * Passed through to the `triggered_by` field on the `SourceEntry`.
@@ -1390,12 +1447,16 @@ async function attachIngestTrigger(
  * Returns the raw synthesized body (still carrying the leading CONCEPT marker on
  * the LLM path); the caller strips that marker.
  */
-async function synthesizeBody(title: string, content: string): Promise<string> {
+async function synthesizeBody(
+  title: string,
+  content: string,
+  owner?: string,
+): Promise<string> {
   if (!hasLLMKey()) {
     // Derived title so a title-less paste doesn't emit an empty `# ` H1.
     return generateFallbackPage(title, content);
   }
-  const systemPrompt = await buildIngestSystemPrompt();
+  const systemPrompt = await buildIngestSystemPrompt(owner);
   const chunks = chunkText(content, MAX_LLM_INPUT_CHARS);
   // Larger output budget so the ## Details section can preserve substantive
   // source content instead of being truncated.
@@ -1445,7 +1506,19 @@ async function synthesizeBody(title: string, content: string): Promise<string> {
     // reducing nothing into a hallucinated page.
     throw new Error("synthesis produced no content from the source");
   }
-  return callLLM(REDUCE_SYSTEM_PROMPT, notes, llmOptions);
+  const [workspaceGuidance, dictionaryGuidance] = owner
+    ? await Promise.all([
+        buildWorkspaceGuidance(owner),
+        buildNamesTermsGuidance(owner),
+      ])
+    : ["", ""];
+  return callLLM(
+    REDUCE_SYSTEM_PROMPT +
+      (workspaceGuidance ? `\n\n${workspaceGuidance}` : "") +
+      (dictionaryGuidance ? `\n\n${dictionaryGuidance}` : ""),
+    notes,
+    llmOptions,
+  );
 }
 
 /**
@@ -1506,7 +1579,9 @@ export async function ingest(
     const dupSlug = await resolveContentHash(hash);
     if (dupSlug) {
       const result = await attachIngestTrigger(dupSlug, {
-        url: options?.sourceUrl ?? "text-paste",
+        url:
+          options?.sourceUrl ??
+          (options?.sourceType === "email" ? "email" : "text-paste"),
         type: options?.sourceType ?? (options?.sourceUrl ? "url" : "text"),
         triggeredBy: options?.triggeredBy,
         actorOwner: owner,
@@ -1525,7 +1600,7 @@ export async function ingest(
     // text and the body is clean prose (no inline images, no `## Figures`
     // gallery, no re-hosting).
     const cleanContent = stripImageMarkdown(content);
-    wikiContent = await synthesizeBody(effectiveTitle, cleanContent);
+    wikiContent = await synthesizeBody(effectiveTitle, cleanContent, owner);
   }
 
   // Pull the leading `CONCEPT:` / `ALIASES:` header lines the synthesis prompt
@@ -1533,11 +1608,15 @@ export async function ingest(
   // Absent for the fallback page / a prebuilt image body / test mocks →
   // concept "" and no aliases.
   const {
-    concept,
+    concept: extractedConcept,
     aliases: conceptSynonyms,
     tags: conceptTags,
     body: conceptStrippedBody,
   } = parseConceptMarker(wikiContent);
+  const dictionary = await listNamesTerms(owner);
+  const concept = extractedConcept
+    ? canonicalizeNamesTerm(dictionary, extractedConcept)
+    : extractedConcept;
   wikiContent = conceptStrippedBody;
 
   // Converge onto the content-derived concept slug so re-ingests of the same
@@ -1665,9 +1744,12 @@ export async function ingest(
   // content instead, since they share the "text-paste" placeholder url.
   const sourceType = options?.sourceType
     ?? (options?.sourceUrl ? "url" : "text");
-  const sourceUrl = options?.sourceUrl ?? "text-paste";
+  const sourceUrl =
+    options?.sourceUrl ?? (sourceType === "email" ? "email" : "text-paste");
   const rawId = contentHash(
-    sourceUrl !== "text-paste" && sourceUrl !== "upload" ? sourceUrl : content,
+    sourceUrl !== "text-paste" && sourceUrl !== "upload" && sourceUrl !== "email"
+      ? sourceUrl
+      : content,
   );
   await saveRawSourceFor(slug, rawId, content);
   const sourceEntry = buildSourceEntry(sourceUrl, sourceType, options?.triggeredBy, rawId);
@@ -1807,7 +1889,7 @@ export async function ingest(
       // Reconcile against the frontmatter-STRIPPED body (existing.content still
       // carries the YAML block; existing.body is the markdown) so page metadata
       // never bleeds into the merged prose.
-      const reconciled = await reconcilePage(existing.body, wikiContent);
+      const reconciled = await reconcilePage(existing.body, wikiContent, owner);
       wikiContent = reconciled.body;
       // Only escalate — never clear a disputed flag preserved from the existing
       // page above.

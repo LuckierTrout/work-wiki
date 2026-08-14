@@ -4,6 +4,10 @@ import Link from "next/link";
 import { providerLabel } from "@/lib/providers";
 import { ProviderForm } from "@/components/ProviderForm";
 import { EmbeddingSettings } from "@/components/EmbeddingSettings";
+import { EmailIngestSettings } from "@/components/EmailIngestSettings";
+import { StructuredKnowledgeSettings } from "@/components/StructuredKnowledgeSettings";
+import { NamesTermsSettings } from "@/components/NamesTermsSettings";
+import { WorkspacePurposeSettings } from "@/components/WorkspacePurposeSettings";
 import { useSettings } from "@/hooks/useSettings";
 
 // ---------------------------------------------------------------------------
@@ -20,10 +24,14 @@ export default function SettingsPage() {
     model,
     ollamaBaseUrl,
     embeddingModel,
+    structuredKnowledgeProvider,
+    structuredKnowledgeModel,
     setProvider,
     setModel,
     setOllamaBaseUrl,
     setEmbeddingModel,
+    setStructuredKnowledgeProvider,
+    setStructuredKnowledgeModel,
     handleSave,
     handleTest,
     handleRebuildEmbeddings,
@@ -43,7 +51,7 @@ export default function SettingsPage() {
 
   if (loadError) {
     return (
-      <main className="mx-auto max-w-3xl px-6 py-12">
+      <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
         <Link
           href="/"
           className="text-sm text-foreground/50 hover:text-foreground/80 transition-colors"
@@ -61,18 +69,11 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
-      <Link
-        href="/"
-        className="text-sm text-foreground/50 hover:text-foreground/80 transition-colors"
-      >
-        ← Home
-      </Link>
-      <h1 className="mt-4 text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
-        Settings
-      </h1>
-      <p className="mt-2 text-foreground/60">
-        View your LLM provider status and model preferences.
+    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
+      <p className="fmark" style={{ marginBottom: 16 }}>owner configuration</p>
+      <h1 className="display" style={{ fontSize: "clamp(36px,4.5vw,58px)", margin: 0 }}>Settings</h1>
+      <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 0", maxWidth: "64ch" }}>
+        Manage the intelligence and delivery routes behind WorkWiki.
       </p>
 
       {/* ---- Status indicator ---- */}
@@ -107,13 +108,13 @@ export default function SettingsPage() {
       {/* ---- Read-only banner ---- */}
       {readOnly && (
         <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-50 p-4 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-400">
-          <strong>Read-only mode</strong> — Settings cannot be changed in this
-          cloud deployment. Configure via environment variables instead.
+          <strong>Read-only mode</strong> — This deployment has explicitly
+          disabled settings changes.
         </div>
       )}
 
       {/* ---- Form ---- */}
-      <fieldset disabled={readOnly} className="disabled:opacity-60">
+      <fieldset disabled={readOnly} className="max-w-4xl disabled:opacity-60">
       <form onSubmit={handleSave} className="mt-8 space-y-6">
         <ProviderForm
           provider={provider}
@@ -129,10 +130,24 @@ export default function SettingsPage() {
           }}
         />
 
+        <StructuredKnowledgeSettings
+          provider={structuredKnowledgeProvider}
+          setProvider={setStructuredKnowledgeProvider}
+          model={structuredKnowledgeModel}
+          setModel={setStructuredKnowledgeModel}
+          settings={settings}
+          onFieldChange={() => {
+            setSaveResult(null);
+            setTestResult(null);
+          }}
+        />
+
         {/* Embedding Model */}
         <EmbeddingSettings
           embeddingModel={embeddingModel}
           setEmbeddingModel={setEmbeddingModel}
+          effectiveModel={settings?.embeddingModel ?? null}
+          modelSource={settings?.embeddingModelSource ?? "none"}
           rebuilding={rebuilding}
           onRebuild={handleRebuildEmbeddings}
           rebuildResult={rebuildResult}
@@ -184,6 +199,12 @@ export default function SettingsPage() {
         )}
       </form>
       </fieldset>
+
+      <div className="max-w-4xl">
+        <WorkspacePurposeSettings />
+        <NamesTermsSettings />
+        <EmailIngestSettings />
+      </div>
     </main>
   );
 }

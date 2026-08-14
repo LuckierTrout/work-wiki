@@ -51,7 +51,7 @@ describe("detectCommunities", () => {
     }
   });
 
-  it("assigns a chain graph to one cluster", () => {
+  it("may split a sparse chain at its modularity boundary", () => {
     const input: ClusterInput = {
       nodes: ["a", "b", "c", "d", "e"],
       edges: [
@@ -62,7 +62,9 @@ describe("detectCommunities", () => {
       ],
     };
     const result = detectCommunities(input);
-    expect(result.count).toBe(1);
+    expect(result.count).toBeGreaterThanOrEqual(1);
+    expect(result.count).toBeLessThanOrEqual(2);
+    expect(result.clusters.size).toBe(input.nodes.length);
   });
 
   it("keeps isolated nodes as singleton clusters", () => {

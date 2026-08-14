@@ -8,6 +8,8 @@ import {
   updateIngestJob,
   effectiveStatus,
   purgeStaleIngestJobs,
+  listIngestJobs,
+  deleteIngestJob,
   INGEST_JOB_STALE_MS,
   INGEST_JOB_GC_TTL_MS,
 } from "../ingest-jobs";
@@ -68,6 +70,70 @@ describe("ingest-jobs", () => {
 
   it("rejects a path-traversing job id", async () => {
     await expect(getIngestJob("../secrets")).rejects.toThrow(/invalid ingest job id/);
+  });
+
+  it("lists only one owner's email jobs, newest first", async () => {
+    await createIngestJob({
+      jobId: "email-a",
+      owner: "alice",
+      source: "email",
+      title: "First",
+      email: {
+        from: "alice@example.com",
+        to: "ingest@example.com",
+        subject: "First",
+        messageId: "<a@example.com>",
+        attachmentNames: [],
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await createIngestJob({
+      jobId: "email-b",
+      owner: "alice",
+      source: "email",
+      title: "Second",
+      email: {
+        from: "alice@example.com",
+        to: "ingest@example.com",
+        subject: "Second",
+        messageId: "<b@example.com>",
+        attachmentNames: ["notes.pdf"],
+      },
+    });
+    await createIngestJob({ jobId: "web", owner: "alice", title: "Browser" });
+    await createIngestJob({
+      jobId: "email-other",
+      owner: "bob",
+      source: "email",
+      title: "Private sender detail",
+    });
+
+    const jobs = await listIngestJobs({ owner: "alice", source: "email" });
+    expect(jobs.map((job) => job.jobId)).toEqual(["email-b", "email-a"]);
+    expect(jobs[0].email?.attachmentNames).toEqual(["notes.pdf"]);
+  });
+
+  it("deletes an owned terminal job", async () => {
+    await createIngestJob({ jobId: "terminal", owner: "alice", title: "Done" });
+    await updateIngestJob("terminal", { status: "done", slug: "done-page" });
+
+    expect(await deleteIngestJob("terminal", "alice")).toBe(true);
+    expect(await getIngestJob("terminal")).toBeNull();
+  });
+
+  it("does not delete another owner's job", async () => {
+    await createIngestJob({ jobId: "private", owner: "alice", title: "Private" });
+    await updateIngestJob("private", { status: "failed", error: "bad input" });
+
+    expect(await deleteIngestJob("private", "bob")).toBe(false);
+    expect(await getIngestJob("private")).not.toBeNull();
+  });
+
+  it("protects queued and processing jobs from deletion", async () => {
+    await createIngestJob({ jobId: "active", owner: "alice", title: "Active" });
+
+    await expect(deleteIngestJob("active", "alice")).rejects.toThrow(/cannot be deleted/i);
+    expect(await getIngestJob("active")).not.toBeNull();
   });
 });
 

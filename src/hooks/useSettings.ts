@@ -21,6 +21,11 @@ export interface EffectiveSettings {
   hasApiKey: boolean;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
+  structuredKnowledgeProvider: string | null;
+  structuredKnowledgeProviderSource: SettingSource;
+  structuredKnowledgeModel: string | null;
+  structuredKnowledgeModelSource: SettingSource;
+  structuredKnowledgeConfigured: boolean;
   readOnly: boolean;
 }
 
@@ -51,11 +56,15 @@ export interface UseSettingsReturn {
   model: string;
   ollamaBaseUrl: string;
   embeddingModel: string;
+  structuredKnowledgeProvider: string;
+  structuredKnowledgeModel: string;
   // Form setters
   setProvider: (v: string) => void;
   setModel: (v: string) => void;
   setOllamaBaseUrl: (v: string) => void;
   setEmbeddingModel: (v: string) => void;
+  setStructuredKnowledgeProvider: (v: string) => void;
+  setStructuredKnowledgeModel: (v: string) => void;
   // Actions
   handleSave: (e: React.FormEvent) => Promise<void>;
   handleTest: () => Promise<void>;
@@ -86,6 +95,9 @@ export function useSettings(): UseSettingsReturn {
   const [model, setModel] = useState("");
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState("");
   const [embeddingModel, setEmbeddingModel] = useState("");
+  const [structuredKnowledgeProvider, setStructuredKnowledgeProvider] =
+    useState("");
+  const [structuredKnowledgeModel, setStructuredKnowledgeModel] = useState("");
 
   // UI state
   const [saving, setSaving] = useState(false);
@@ -126,6 +138,22 @@ export function useSettings(): UseSettingsReturn {
         setEmbeddingModel(data.embeddingModel);
       } else {
         setEmbeddingModel("");
+      }
+      if (
+        data.structuredKnowledgeProviderSource === "config" &&
+        data.structuredKnowledgeProvider
+      ) {
+        setStructuredKnowledgeProvider(data.structuredKnowledgeProvider);
+      } else {
+        setStructuredKnowledgeProvider("");
+      }
+      if (
+        data.structuredKnowledgeModelSource === "config" &&
+        data.structuredKnowledgeModel
+      ) {
+        setStructuredKnowledgeModel(data.structuredKnowledgeModel);
+      } else {
+        setStructuredKnowledgeModel("");
       }
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Unknown error");
@@ -181,6 +209,11 @@ export function useSettings(): UseSettingsReturn {
         body.embeddingModel = embeddingModel.trim();
       }
 
+      // Workload-specific routing is explicit: empty values clear the override
+      // and return Structured Knowledge to the primary provider/model.
+      body.structuredKnowledgeProvider = structuredKnowledgeProvider || null;
+      body.structuredKnowledgeModel = structuredKnowledgeModel.trim() || null;
+
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -216,22 +249,17 @@ export function useSettings(): UseSettingsReturn {
     setTestResult(null);
 
     try {
-      const res = await fetch("/api/status");
-      if (!res.ok) throw new Error("Status endpoint returned an error");
-      const data: ProviderStatus = await res.json();
+      const res = await fetch("/api/settings/test", { method: "POST" });
+      const data = (await res.json()) as ProviderStatus & { error?: string };
+      if (!res.ok) {
+        throw new Error(data.error ?? "Provider connection failed");
+      }
       setStatus(data);
 
-      if (data.configured) {
-        setTestResult({
-          ok: true,
-          message: `Connected to ${providerLabel(data.provider ?? "anthropic")} (${data.model})${data.embeddingSupport ? " — embeddings supported" : ""}`,
-        });
-      } else {
-        setTestResult({
-          ok: false,
-          message: "No provider configured. Save your settings first.",
-        });
-      }
+      setTestResult({
+        ok: true,
+        message: `Live connection succeeded: ${providerLabel(data.provider ?? "anthropic")} (${data.model})${data.embeddingSupport ? " — embeddings supported" : ""}`,
+      });
     } catch (err) {
       setTestResult({
         ok: false,
@@ -289,11 +317,15 @@ export function useSettings(): UseSettingsReturn {
     model,
     ollamaBaseUrl,
     embeddingModel,
+    structuredKnowledgeProvider,
+    structuredKnowledgeModel,
     // Form setters
     setProvider,
     setModel,
     setOllamaBaseUrl,
     setEmbeddingModel,
+    setStructuredKnowledgeProvider,
+    setStructuredKnowledgeModel,
     // Actions
     handleSave,
     handleTest,

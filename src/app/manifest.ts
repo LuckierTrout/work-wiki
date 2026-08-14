@@ -1,8 +1,9 @@
 import type { MetadataRoute } from "next";
+import { APP_NAME, APP_TITLE } from "@/lib/brand";
 
 /**
- * PWA manifest. Beyond making work-wiki installable, its real job is the **Web
- * Share Target**: once installed (Android Chrome especially), work-wiki appears in
+ * PWA manifest. Beyond making WorkWiki installable, its real job is the **Web
+ * Share Target**: once installed (Android Chrome especially), WorkWiki appears in
  * the OS share sheet, and sharing a link does `GET /save?url=&title=&text=` →
  * the capture page ingests it. iOS Safari doesn't support share_target (the
  * /save guide documents an Apple Shortcut for that case).
@@ -13,9 +14,9 @@ import type { MetadataRoute } from "next";
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "work-wiki — a shared second brain for humans and agents",
-    short_name: "work-wiki",
-    description: "Save any link to work-wiki for ingesting into the commons.",
+    name: APP_TITLE,
+    short_name: APP_NAME,
+    description: `Save any link to ${APP_NAME} for ingesting into your workspace.`,
     start_url: "/",
     display: "standalone",
     background_color: "#0a0a0b",

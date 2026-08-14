@@ -1,6 +1,7 @@
 "use client";
 
 import { Alert } from "@/components/Alert";
+import { BulkDocumentImport } from "@/components/BulkDocumentImport";
 import { IngestSuccess } from "@/components/IngestSuccess";
 import { IngestStepper } from "@/components/IngestStepper";
 import { IngestVaultPicker } from "@/components/IngestVaultPicker";
@@ -11,6 +12,7 @@ import { useIngest, isUrlMode, type Mode } from "@/hooks/useIngest";
 const TABS: { mode: Mode; label: string }[] = [
   { mode: "url", label: "URL" },
   { mode: "pdf", label: "PDF" },
+  { mode: "document", label: "Files / folder" },
   { mode: "xpost", label: "X post" },
   { mode: "youtube", label: "YouTube" },
   { mode: "text", label: "Paste text" },
@@ -102,7 +104,7 @@ export default function IngestPage() {
           fontStyle: "italic",
         }}
       >
-        Drop a link, PDF, or post. yoyo synthesizes it into a cited page — and
+        Drop a link, document, spreadsheet, PDF, or post. yoyo synthesizes it into a cited page — and
         merges it if the source already lives in the commons.
       </p>
 
@@ -368,6 +370,11 @@ export default function IngestPage() {
                 {loading ? "Processing…" : "Ingest PDF"}
               </button>
             </form>
+          )}
+
+          {/* Documents, notes, archives, and folders */}
+          {mode === "document" && (
+            <BulkDocumentImport vaultId={vaultId} />
           )}
 
           {/* What ingestion guarantees */}

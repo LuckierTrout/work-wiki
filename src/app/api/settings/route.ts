@@ -14,12 +14,23 @@ import {
   isEmbeddingProvider,
 } from "@/lib/providers";
 import { getErrorMessage } from "@/lib/errors";
+import { getPrincipal } from "@/lib/auth";
+import { isOwnerHandle } from "@/lib/owner";
+
+async function requireOwner() {
+  const principal = await getPrincipal();
+  return principal && isOwnerHandle(principal.handle) ? principal : null;
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/settings — return effective settings with source annotations
 // ---------------------------------------------------------------------------
 
 export async function GET() {
+  if (!(await requireOwner())) {
+    return Response.json({ error: "Not found" }, { status: 404 });
+  }
+  await loadConfig();
   const settings = getEffectiveSettings();
   return Response.json(settings);
 }
@@ -29,10 +40,15 @@ export async function GET() {
 // ---------------------------------------------------------------------------
 
 export async function PUT(request: Request) {
-  // Block writes in read-only mode (cloud deployments)
+  if (!(await requireOwner())) {
+    return Response.json({ error: "Not found" }, { status: 404 });
+  }
+
+  // Optional deployment-wide kill switch. Cloud storage itself is writable;
+  // credentials still remain server secrets and never pass through this API.
   if (isReadOnly()) {
     return Response.json(
-      { error: "Settings are read-only in this deployment. Configure via environment variables instead." },
+      { error: "Settings are read-only in this deployment." },
       { status: 403 },
     );
   }
@@ -46,6 +62,27 @@ export async function PUT(request: Request) {
         const valid = PROVIDER_INFO.map((p) => p.value).join(", ");
         return Response.json(
           { error: `Invalid provider: "${body.provider}". Must be one of: ${valid}` },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Validate the optional provider dedicated to schema-constrained Knowledge
+    // Atlas extraction. This selects a server-side credential; keys never pass
+    // through the settings API.
+    if (
+      body.structuredKnowledgeProvider !== undefined &&
+      body.structuredKnowledgeProvider !== null
+    ) {
+      if (
+        typeof body.structuredKnowledgeProvider !== "string" ||
+        !isValidProvider(body.structuredKnowledgeProvider)
+      ) {
+        const valid = PROVIDER_INFO.map((p) => p.value).join(", ");
+        return Response.json(
+          {
+            error: `Invalid structuredKnowledgeProvider: "${body.structuredKnowledgeProvider}". Must be one of: ${valid}`,
+          },
           { status: 400 },
         );
       }
@@ -71,6 +108,21 @@ export async function PUT(request: Request) {
       if (typeof body.model !== "string" || body.model.trim().length === 0) {
         return Response.json(
           { error: "Model must be a non-empty string" },
+          { status: 400 },
+        );
+      }
+    }
+
+    if (
+      body.structuredKnowledgeModel !== undefined &&
+      body.structuredKnowledgeModel !== null
+    ) {
+      if (
+        typeof body.structuredKnowledgeModel !== "string" ||
+        body.structuredKnowledgeModel.trim().length === 0
+      ) {
+        return Response.json(
+          { error: "Structured Knowledge model must be a non-empty string" },
           { status: 400 },
         );
       }
@@ -106,6 +158,26 @@ export async function PUT(request: Request) {
       }
     }
 
+    if (body.structuredKnowledgeProvider !== undefined) {
+      if (body.structuredKnowledgeProvider === null) {
+        delete updated.structuredKnowledgeProvider;
+      } else {
+        updated.structuredKnowledgeProvider = body.structuredKnowledgeProvider;
+      }
+    }
+
+    if (body.structuredKnowledgeModel !== undefined) {
+      if (
+        body.structuredKnowledgeModel === null ||
+        body.structuredKnowledgeModel === ""
+      ) {
+        delete updated.structuredKnowledgeModel;
+      } else {
+        updated.structuredKnowledgeModel =
+          body.structuredKnowledgeModel.trim();
+      }
+    }
+
     if (body.ollamaBaseUrl !== undefined) {
       if (body.ollamaBaseUrl === null || body.ollamaBaseUrl === "") {
         delete updated.ollamaBaseUrl;
@@ -132,8 +204,10 @@ export async function PUT(request: Request) {
 
     await saveConfig(updated);
 
-    // Reset the sync cache so the next read picks up the new config
+    // Re-prime the sync cache so the response and any immediate LLM request use
+    // the newly selected provider rather than falling back to env detection.
     _resetConfigCache();
+    await loadConfig();
 
     // Return updated effective settings
     const effective = getEffectiveProvider();

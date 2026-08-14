@@ -4,8 +4,8 @@ import { SaveGuide } from "@/components/SaveGuide";
 import { resolveSharedUrl } from "@/lib/share-target";
 
 export const metadata: Metadata = {
-  title: "Save to work-wiki",
-  description: "Send any link to work-wiki for ingesting — bookmarklet, share sheet, or shortcut.",
+  title: "Save to WorkWiki",
+  description: "Send any link to WorkWiki for ingesting — bookmarklet, share sheet, or shortcut.",
   // The capture action shouldn't be indexed; the guide (no ?url) is fine but low value.
   robots: { index: false, follow: false },
 };
@@ -26,10 +26,11 @@ export default async function SavePage({
   const sp = await searchParams;
   const url = resolveSharedUrl(first(sp.url), first(sp.text));
   const title = first(sp.title);
+  const tags = first(sp.tags);
 
   return (
     <main style={{ maxWidth: 720, margin: "0 auto", padding: "56px 24px 88px" }}>
-      {url ? <SaveCapture url={url} title={title} /> : <SaveGuide />}
+      {url ? <SaveCapture url={url} title={title} initialTags={tags} /> : <SaveGuide />}
     </main>
   );
 }

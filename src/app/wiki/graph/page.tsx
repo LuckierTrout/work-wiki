@@ -10,11 +10,10 @@ export default function GraphPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const router = useRouter();
 
-  // Public + your-vaults lens (consistent with /wiki and /query). Default scope
-  // = undefined (the public commons). A `?scope=owner:<h>` / `agent:<id>`
-  // deep-link pins the graph to that scope.
+  // Owner knowledge + vault lenses. The deployment is private, so the default
+  // is always the signed-in owner's full readable graph.
   const { isLoaded, isSignedIn } = useUser();
-  const [scope, setScope] = useState<string | undefined>(undefined);
+  const [scope, setScope] = useState<string | undefined>("mine");
 
   // The signed-in user's vaults, for the lens selector (fetched on mount).
   const [myVaults, setMyVaults] = useState<{ id: string; name: string }[]>([]);
@@ -33,7 +32,7 @@ export default function GraphPage() {
   }, [isSignedIn]);
 
   // Initial scope once, on first Clerk load: a `?scope=` deep-link wins, else
-  // default = undefined (the public commons). Reads location directly (not
+  // default = mine. Reads location directly (not
   // useSearchParams) to avoid a client-side-rendering bailout of the page.
   const didInit = useRef(false);
   useEffect(() => {
@@ -41,7 +40,7 @@ export default function GraphPage() {
     didInit.current = true;
     const deepLink =
       new URLSearchParams(window.location.search).get("scope") || undefined;
-    if (deepLink) setScope(deepLink);
+    setScope(deepLink || "mine");
   }, [isLoaded]);
 
   const scopedHandle = scope?.startsWith("owner:")
@@ -87,7 +86,7 @@ export default function GraphPage() {
       </span>
       <button
         type="button"
-        onClick={() => setScope(undefined)}
+        onClick={() => setScope("mine")}
         style={{ color: "var(--muted)", background: "transparent", border: 0, cursor: "pointer" }}
         aria-label="Clear scope and show the full commons graph"
       >
@@ -102,7 +101,7 @@ export default function GraphPage() {
       style={{ gap: 6, flexWrap: "wrap" }}
     >
       {[
-        { scope: undefined as string | undefined, label: "Public", active: !activeVaultId },
+        { scope: "mine" as string | undefined, label: "All knowledge", active: !activeVaultId },
         ...myVaults.map((v) => ({
           scope: `vault:${v.id}` as string | undefined,
           label: v.name,

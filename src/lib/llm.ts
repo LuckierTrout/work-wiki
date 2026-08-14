@@ -7,8 +7,12 @@ import {
   getEffectiveProvider,
   getResolvedCredentials,
   detectEnvProvider,
+  loadConfig,
   loadConfigSync,
+  apiKeyForProvider,
+  DEFAULT_MODELS,
 } from "./config";
+import type { ProviderValue } from "./config";
 import { getErrorMessage } from "./errors";
 import { logger } from "./logger";
 import {
@@ -170,6 +174,7 @@ export async function retryWithBackoff<T>(
  *   - OpenAI:    OPENAI_API_KEY
  *   - Google:    GOOGLE_GENERATIVE_AI_API_KEY
  *   - DeepSeek:  DEEPSEEK_API_KEY (OpenAI-compatible endpoint)
+ *   - Ollama Cloud: OLLAMA_API_KEY
  *   - Ollama:    OLLAMA_BASE_URL or OLLAMA_MODEL (Ollama is typically keyless;
  *                presence of either env var signals intent to use a local
  *                Ollama server)
@@ -225,7 +230,7 @@ function getModel() {
   if (!creds.provider) {
     throw new Error(
       "No LLM API key found. Set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, " +
-        "GOOGLE_GENERATIVE_AI_API_KEY, DEEPSEEK_API_KEY, or " +
+        "GOOGLE_GENERATIVE_AI_API_KEY, DEEPSEEK_API_KEY, OLLAMA_API_KEY, or " +
         "OLLAMA_BASE_URL / OLLAMA_MODEL in your environment, or configure a " +
         "provider in Settings.",
     );
@@ -266,6 +271,19 @@ function getModel() {
         : createOllama();
       return ollama(model);
     }
+    case "ollama-cloud": {
+      if (!creds.apiKey) {
+        throw new Error(
+          "Ollama Cloud requires OLLAMA_API_KEY to be configured as a server secret.",
+        );
+      }
+      const ollama = createOllama({
+        baseURL: creds.ollamaBaseUrl ?? "https://ollama.com/api",
+        headers: { Authorization: `Bearer ${creds.apiKey}` },
+        compatibility: "strict",
+      });
+      return ollama(model);
+    }
     default:
       throw new Error(`Unsupported provider: ${creds.provider}`);
   }
@@ -275,6 +293,50 @@ function getModel() {
 // Public API
 // ---------------------------------------------------------------------------
 
+/** Resolve the active AI SDK model for server-side agents and structured jobs. */
+export async function getConfiguredModel(options?: {
+  provider?: ProviderValue;
+  model?: string;
+}) {
+  await loadConfig();
+  if (options?.provider) {
+    const provider = options.provider;
+    const apiKey = apiKeyForProvider(provider);
+    if (provider !== "ollama" && !apiKey) {
+      throw new Error(`The ${provider} provider is not configured on this server.`);
+    }
+    const model =
+      options.model?.trim() ||
+      ((provider === "ollama" || provider === "ollama-cloud")
+        ? process.env.OLLAMA_MODEL
+        : undefined) ||
+      DEFAULT_MODELS[provider];
+    switch (provider) {
+      case "anthropic":
+        return createAnthropic({ apiKey: apiKey! })(model);
+      case "openai":
+        return createOpenAI({ apiKey: apiKey! })(model);
+      case "google":
+        return createGoogleGenerativeAI({ apiKey: apiKey! })(model);
+      case "deepseek":
+        return createOpenAI({ apiKey: apiKey!, baseURL: DEEPSEEK_BASE_URL }).chat(model);
+      case "ollama":
+        return createOllama({
+          ...(process.env.OLLAMA_BASE_URL
+            ? { baseURL: process.env.OLLAMA_BASE_URL }
+            : {}),
+        })(model);
+      case "ollama-cloud":
+        return createOllama({
+          baseURL: "https://ollama.com/api",
+          headers: { Authorization: `Bearer ${apiKey}` },
+          compatibility: "strict",
+        })(model);
+    }
+  }
+  return getModel();
+}
+
 /**
  * Call the configured LLM provider and return the assistant's text response.
  *
@@ -282,8 +344,8 @@ function getModel() {
  * exponential backoff. See {@link retryWithBackoff} for details.
  *
  * Requires at least one supported provider env var to be set:
- * ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, or
- * OLLAMA_BASE_URL / OLLAMA_MODEL.
+ * ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY,
+ * OLLAMA_API_KEY, or OLLAMA_BASE_URL / OLLAMA_MODEL.
  *
  * @param options.maxOutputTokens — optional cap on output tokens (default 4096).
  */
@@ -292,6 +354,7 @@ export async function callLLM(
   userMessage: string,
   options?: { maxOutputTokens?: number },
 ): Promise<string> {
+  await loadConfig();
   const model = getModel();
 
   const { text } = await retryWithBackoff(() =>
@@ -323,6 +386,7 @@ export async function callVisionLLM(
   image: ArrayBuffer | Uint8Array,
   options?: { maxOutputTokens?: number; mediaType?: string },
 ): Promise<string> {
+  await loadConfig();
   const model = getModel();
   const bytes = image instanceof Uint8Array ? image : new Uint8Array(image);
 
@@ -371,11 +435,12 @@ export async function callVisionLLM(
  *
  * @param options.maxOutputTokens — optional cap on output tokens (default 4096).
  */
-export function callLLMStream(
+export async function callLLMStream(
   systemPrompt: string,
   userMessage: string,
   options?: { maxOutputTokens?: number },
 ) {
+  await loadConfig();
   const model = getModel();
 
   return streamText({

@@ -32,3 +32,6 @@ _bmad/render/
 .DS_Store
 **/__pycache__/
 .cursor/hooks/state/
+
+# clerk configuration (can include secrets)
+/.clerk/

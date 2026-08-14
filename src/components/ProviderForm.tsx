@@ -4,7 +4,7 @@
 // ProviderForm — provider / model / Ollama URL fields
 // ---------------------------------------------------------------------------
 
-import { PROVIDER_INFO, DEFAULT_MODELS, providerLabel } from "@/lib/providers";
+import { PROVIDER_INFO, DEFAULT_MODELS } from "@/lib/providers";
 import { SourceBadge } from "@/components/SourceBadge";
 
 // ---------------------------------------------------------------------------
@@ -63,9 +63,11 @@ export function ProviderForm({
 }: ProviderFormProps) {
   // The provider to use for conditional field display:
   // if form has a selection, use that; otherwise fall back to effective settings
-  const effectiveProvider =
-    provider || (settings?.providerSource === "env" ? settings.provider : null);
+  const effectiveProvider = provider || settings?.provider || null;
   const showOllamaUrl = effectiveProvider === "ollama";
+  const showOllamaCloud = effectiveProvider === "ollama-cloud";
+  const selectedProviderHasKey =
+    settings?.provider === effectiveProvider && settings.hasApiKey;
 
   return (
     <>
@@ -78,32 +80,28 @@ export function ProviderForm({
           Provider
           {settings && <SourceBadge source={settings.providerSource} />}
         </label>
-        {settings?.providerSource === "env" ? (
-          <div className="mt-1.5 rounded-md border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/60">
-            {providerLabel(settings.provider!)}
-          </div>
-        ) : (
-          <select
-            id="provider"
-            value={provider}
-            onChange={(e) => {
-              setProvider(e.target.value);
-              onFieldChange?.();
-            }}
-            className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20"
-          >
-            {PROVIDER_OPTIONS.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        )}
+        <select
+          id="provider"
+          value={provider}
+          onChange={(e) => {
+            setProvider(e.target.value);
+            onFieldChange?.();
+          }}
+          className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20"
+        >
+          {PROVIDER_OPTIONS.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+            </option>
+          ))}
+        </select>
         {settings && (
           <p className="mt-2 text-xs text-foreground/40">
-            {settings.hasApiKey
+            {selectedProviderHasKey
               ? "✓ API key configured on server"
-              : "⚠ No API key — set via server environment variables"}
+              : settings.provider === effectiveProvider
+                ? "⚠ No API key — set via server environment variables"
+                : "Save this selection to check its server credential"}
           </p>
         )}
       </div>
@@ -166,6 +164,17 @@ export function ProviderForm({
               className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20 font-mono"
             />
           )}
+        </div>
+      )}
+
+      {showOllamaCloud && (
+        <div className="rounded-md border border-foreground/10 bg-foreground/[0.03] px-3 py-3 text-sm text-foreground/60">
+          <p className="font-medium text-foreground/80">Ollama Cloud</p>
+          <p className="mt-1">
+            Models run at <span className="font-mono">ollama.com</span>. The
+            API key stays encrypted as a Cloudflare Worker secret and is never
+            returned to this page.
+          </p>
         </div>
       )}
     </>

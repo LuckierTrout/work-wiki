@@ -129,9 +129,16 @@ const mockGetCfContext = getCloudflareContext as ReturnType<typeof vi.fn>;
 
 /** Build a mock Workers AI binding whose run() returns the given vectors. */
 function mockWorkersAi(vectors: number[][]) {
-  const run = vi.fn().mockResolvedValue({ shape: [vectors.length], data: vectors });
+  const run = vi
+    .fn()
+    .mockResolvedValue({ shape: [vectors.length, vectors[0]?.length ?? 0], data: vectors });
   mockGetCfContext.mockReturnValue({ env: { AI: { run } } });
   return run;
+}
+
+/** Build a valid 1,024-dimension bge-m3/bge-large test vector. */
+function workersVector(...head: number[]): number[] {
+  return [...head, ...Array(Math.max(0, 1024 - head.length)).fill(0)];
 }
 
 // ---------------------------------------------------------------------------
@@ -1154,11 +1161,12 @@ describe("Workers AI embeddings (bge-m3)", () => {
   });
 
   it("embedText calls the binding with @cf/baai/bge-m3 and returns the vector", async () => {
-    const run = mockWorkersAi([[0.1, 0.2, 0.3]]);
+    const run = mockWorkersAi([workersVector(0.1, 0.2, 0.3)]);
 
     const vec = await embedText("你好世界");
 
-    expect(vec).toEqual([0.1, 0.2, 0.3]);
+    expect(vec).toHaveLength(1024);
+    expect(vec?.slice(0, 3)).toEqual([0.1, 0.2, 0.3]);
     // CLS pooling is requested for higher-quality bge-m3 embeddings.
     expect(run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
       text: ["你好世界"],
@@ -1170,16 +1178,17 @@ describe("Workers AI embeddings (bge-m3)", () => {
 
   it("embedTexts batches all inputs in a single binding call", async () => {
     const run = mockWorkersAi([
-      [0.1, 0.2],
-      [0.3, 0.4],
+      workersVector(0.1, 0.2),
+      workersVector(0.3, 0.4),
     ]);
 
     const vecs = await embedTexts(["a", "b"]);
 
-    expect(vecs).toEqual([
-      [0.1, 0.2],
-      [0.3, 0.4],
-    ]);
+    expect(vecs).toHaveLength(2);
+    expect(vecs?.[0]).toHaveLength(1024);
+    expect(vecs?.[1]).toHaveLength(1024);
+    expect(vecs?.[0].slice(0, 2)).toEqual([0.1, 0.2]);
+    expect(vecs?.[1].slice(0, 2)).toEqual([0.3, 0.4]);
     expect(run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
       text: ["a", "b"],
       pooling: "cls",
@@ -1192,6 +1201,7 @@ describe("Workers AI embeddings (bge-m3)", () => {
     process.env.OPENAI_API_KEY = "sk-openai";
     // ...but the explicit override forces Workers AI.
     process.env.EMBEDDING_PROVIDER = "workers-ai";
+    mockWorkersAi([workersVector(0.1)]);
 
     expect(getEmbeddingModelName()).toBe("@cf/baai/bge-m3");
   });
@@ -1199,7 +1209,7 @@ describe("Workers AI embeddings (bge-m3)", () => {
   it("honors a workers-ai EMBEDDING_MODEL override (must be a @cf/ id)", async () => {
     process.env.EMBEDDING_PROVIDER = "workers-ai";
     process.env.EMBEDDING_MODEL = "@cf/baai/bge-large-en-v1.5";
-    const run = mockWorkersAi([[0.5]]);
+    const run = mockWorkersAi([workersVector(0.5)]);
 
     await embedText("hi");
 
@@ -1214,7 +1224,7 @@ describe("Workers AI embeddings (bge-m3)", () => {
     // ai.run() — it would be an invalid Workers AI model id.
     process.env.EMBEDDING_PROVIDER = "workers-ai";
     process.env.EMBEDDING_MODEL = "text-embedding-3-small";
-    const run = mockWorkersAi([[0.5]]);
+    const run = mockWorkersAi([workersVector(0.5)]);
 
     expect(getEmbeddingModelName()).toBe("@cf/baai/bge-m3");
     await embedText("hi");
@@ -1245,6 +1255,14 @@ describe("Workers AI embeddings (bge-m3)", () => {
     });
     expect(await embedText("hi")).toBeNull();
   });
+
+  it("rejects bge-m3 vectors whose width does not match the 1,024-dimension index", async () => {
+    mockWorkersAi([Array(1536).fill(0.1)]);
+
+    await expect(embedText("dimension guard")).rejects.toThrow(
+      "expected 1024, received 1536",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1252,6 +1270,23 @@ describe("Workers AI embeddings (bge-m3)", () => {
 // ---------------------------------------------------------------------------
 
 describe("embedding/LLM provider decoupling", () => {
+  it("keeps the saved embedding-capable provider when multiple API keys exist", () => {
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-key";
+    mockLoadConfigSync.mockReturnValue({ provider: "google" });
+
+    expect(getEmbeddingModelName()).toBe("gemini-embedding-001");
+  });
+
+  it("finds an embedding provider when the saved generation provider cannot embed", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant";
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-key";
+    mockLoadConfigSync.mockReturnValue({ provider: "ollama-cloud" });
+
+    expect(getEmbeddingModelName()).toBe("text-embedding-3-small");
+  });
+
   it("uses the embedding provider's own key when the LLM provider differs", () => {
     // LLM generation on deepseek (no embeddings), embeddings on openai.
     process.env.DEEPSEEK_API_KEY = "sk-deepseek";

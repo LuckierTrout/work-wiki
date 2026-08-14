@@ -3,6 +3,7 @@ import { SignInButton } from "@clerk/nextjs";
 import { getPrincipal } from "@/lib/auth";
 import { listAgentsForOwner } from "@/lib/agents";
 import { AgentManager } from "@/components/AgentManager";
+import { AgentWorkspaceDesk } from "@/components/AgentWorkspaceDesk";
 
 /**
  * `/agents` — the signed-in user's agent management surface: list their agents
@@ -62,7 +63,7 @@ export default async function AgentsPage() {
   return (
     <div className="fade">
       {/* Header */}
-      <section className="shell" style={{ paddingTop: 56 }}>
+      <section className="shell paper-route" style={{ paddingTop: 56 }}>
         <p className="fmark" style={{ marginBottom: 18 }}>
           your agents
         </p>
@@ -87,7 +88,7 @@ export default async function AgentsPage() {
 
       {/* Agents */}
       <section
-        className="shell"
+        className="shell paper-route"
         style={{
           marginTop: 44,
           paddingTop: 26,
@@ -95,6 +96,7 @@ export default async function AgentsPage() {
         }}
       >
         <AgentManager handle={handle} agents={agents} />
+        <AgentWorkspaceDesk />
       </section>
     </div>
   );

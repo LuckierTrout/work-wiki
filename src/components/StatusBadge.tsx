@@ -76,6 +76,8 @@ export function StatusBadge() {
             <li>ANTHROPIC_API_KEY</li>
             <li>OPENAI_API_KEY</li>
             <li>GOOGLE_GENERATIVE_AI_API_KEY</li>
+            <li>DEEPSEEK_API_KEY</li>
+            <li>OLLAMA_API_KEY</li>
             <li>OLLAMA_BASE_URL / OLLAMA_MODEL</li>
           </ul>
           <p className="mt-2 text-foreground/50">

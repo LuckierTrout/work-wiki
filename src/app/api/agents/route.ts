@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { listAgents, registerAgent, getAgent, agentIdFor } from "@/lib/agents";
+import {
+  listAgents,
+  listAgentsForOwner,
+  registerAgent,
+  getAgent,
+  agentIdFor,
+} from "@/lib/agents";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
 import type { AgentProfile } from "@/lib/types";
@@ -9,9 +15,19 @@ import type { AgentProfile } from "@/lib/types";
  *
  * Returns all registered agents sorted by ID.
  */
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    const agents = await listAgents();
+    const mine = new URL(req.url).searchParams.get("mine") === "1";
+    const principal = mine ? await getPrincipal() : null;
+    if (mine && !principal) {
+      return NextResponse.json(
+        { error: "Sign in required to list your agents." },
+        { status: 401 },
+      );
+    }
+    const agents = principal
+      ? await listAgentsForOwner(principal.handle)
+      : await listAgents();
     return NextResponse.json({ agents });
   } catch (err) {
     const message = getErrorMessage(err);

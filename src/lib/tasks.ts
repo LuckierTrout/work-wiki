@@ -14,7 +14,9 @@
  */
 
 import { getCloudflareContext } from "@opennextjs/cloudflare";
+import type { Queue } from "@cloudflare/workers-types";
 import { logger } from "./logger";
+import type { EmailIngestMetadata } from "./email-ingest";
 
 /**
  * A unit of asynchronous agent work. Discriminated by `kind` so the executor
@@ -54,10 +56,19 @@ export type Task =
        *  ingest path. */
       staged?: {
         key: string;
-        kind: "pdf" | "image" | "text";
+        kind: "pdf" | "image" | "text" | "document";
         filename?: string;
         contentType?: string;
+        /** Browser folder / Obsidian-vault relative path. */
+        relativePath?: string;
       };
+      /** Supported email attachments staged separately in R2. They may coexist
+       *  with an inline/staged email body and are folded into the same page. */
+      attachments?: Array<{
+        key: string;
+        filename: string;
+        contentType?: string;
+      }>;
       /** Optional vault to auto-file the resulting page into (fail-soft). */
       vaultId?: string;
       /** Agent ingests: the page `type` (scoped knowledge/identity), so the page
@@ -73,10 +84,74 @@ export type Task =
        *  x-mention/url/text); when absent the pipeline derives it. Intentionally a
        *  SUBSET of `IngestOptions["sourceType"]` — image/pdf/youtube are set
        *  internally by the ingest functions, never carried over the queue. */
-      sourceType?: "x-mention" | "url" | "text";
+      sourceType?: "x-mention" | "url" | "text" | "email";
+      /** Inbound-email metadata used for owner-only activity and completion
+       *  notifications. Attachment bytes are referenced through staged keys. */
+      email?: EmailIngestMetadata;
       /** Agent id to attach the resulting page to as one of its learning pages
        *  (agent-scoped ingests). */
       learningFor?: string;
+    }
+  | {
+      /** Extract owner-only action proposals from a newly ingested page. */
+      kind: "extract-actions";
+      slug: string;
+      owner: string;
+    }
+  | {
+      /** Derive source-linked structured records from an accepted page revision. */
+      kind: "extract-knowledge";
+      slug: string;
+      owner: string;
+      /** Whole-wiki Graphify job whose durable progress this page advances. */
+      graphifyJobId?: string;
+    }
+  | {
+      /** Run pass two: source contribution ledger + cross-page compilation.
+       *  Any proposed page change is routed to Review, never written directly. */
+      kind: "compile-knowledge";
+      slug: string;
+      owner: string;
+    }
+  | {
+      /** Execute one owner-configured specialized agent. */
+      kind: "run-agent";
+      agentId: string;
+      owner: string;
+      trigger: "manual" | "after-ingest" | "daily" | "weekly";
+      sourceSlug?: string;
+      prompt?: string;
+    }
+  | {
+      /** Execute a durable provider-backed deep-research project. */
+      kind: "run-research";
+      projectId: string;
+      owner: string;
+    }
+  | {
+      /** Check an owner-configured source monitor and create a review proposal
+       *  when the source changed meaningfully. Never writes the page directly. */
+      kind: "monitor-source";
+      monitorId: string;
+      owner: string;
+    }
+  | {
+      /** Deliver one persisted source-monitor digest through the owner's
+       *  configured email channel. The digest id is the idempotency key. */
+      kind: "deliver-monitor-digest";
+      digestId: string;
+      owner: string;
+    }
+  | {
+      /** Deliver one durable, idempotent integration-outbox event. */
+      kind: "deliver-integration";
+      outboxId: string;
+      owner: string;
+    }
+  | {
+      /** Snapshot one tenant and verify it through an isolated restore prefix. */
+      kind: "create-backup";
+      owner: string;
     }
   | {
       /** Autonomous maintenance, enqueued by the scan cron (Q2). `reconcile` a
@@ -117,21 +192,18 @@ const MAINTAIN_FIX_TYPES = new Set<MaintainFixType>([
   "stale-page",
 ]);
 
-/** Minimal Cloudflare Queue producer binding — we only ever call `send`. */
-interface QueueBinding {
-  send(body: unknown): Promise<void>;
-}
-
 /**
  * Resolve the `TASK_QUEUE` producer binding (matches `queues.producers[].binding`
  * in wrangler.jsonc), or `null` when it isn't available
  * (off the Workers runtime, or the binding isn't bound). `getCloudflareContext`
  * throws outside the OpenNext request scope — expected in dev/tests.
  */
-function getTaskQueue(): QueueBinding | null {
-  let env: { TASK_QUEUE?: QueueBinding };
+function getTaskQueue(): Queue<Task> | null {
+  let env: { TASK_QUEUE?: Queue<Task> };
   try {
-    ({ env } = getCloudflareContext() as { env: { TASK_QUEUE?: QueueBinding } });
+    ({ env } = getCloudflareContext() as unknown as {
+      env: { TASK_QUEUE?: Queue<Task> };
+    });
   } catch {
     return null; // off-Workers — expected
   }
@@ -157,6 +229,42 @@ export async function enqueueTask(task: Task): Promise<boolean> {
   await queue.send(task);
   logger.info("tasks", `enqueued task "${task.kind}"`);
   return true;
+}
+
+export interface EnqueueTasksResult {
+  available: boolean;
+  enqueued: number;
+  error?: string;
+}
+
+/**
+ * Enqueue many small tasks with Cloudflare's native batch API. A result records
+ * exactly how many complete batches were accepted so callers can mark only the
+ * unsent tail as failed and offer a targeted retry.
+ */
+export async function enqueueTasks(tasks: readonly Task[]): Promise<EnqueueTasksResult> {
+  if (tasks.length === 0) return { available: true, enqueued: 0 };
+  const queue = getTaskQueue();
+  if (!queue) {
+    logger.warn("tasks", `TASK_QUEUE unavailable — skipped batch of ${tasks.length}`);
+    return { available: false, enqueued: 0 };
+  }
+
+  const batchSize = 100;
+  let enqueued = 0;
+  try {
+    for (let offset = 0; offset < tasks.length; offset += batchSize) {
+      const batch = tasks.slice(offset, offset + batchSize);
+      await queue.sendBatch(batch.map((body) => ({ body })));
+      enqueued += batch.length;
+    }
+    logger.info("tasks", `enqueued ${enqueued} task(s) in batch`);
+    return { available: true, enqueued };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Queue batch failed";
+    logger.error("tasks", `batch enqueue stopped after ${enqueued}/${tasks.length}`, error);
+    return { available: true, enqueued, error: message };
+  }
 }
 
 /**
@@ -188,14 +296,21 @@ export function parseTask(body: unknown): Task | null {
       let staged: Extract<Task, { kind: "ingest" }>["staged"];
       if (t.staged && typeof t.staged === "object") {
         const s = t.staged as Record<string, unknown>;
-        const kindOk = s.kind === "pdf" || s.kind === "image" || s.kind === "text";
+        const kindOk =
+          s.kind === "pdf" ||
+          s.kind === "image" ||
+          s.kind === "text" ||
+          s.kind === "document";
         if (typeof s.key === "string" && s.key.trim() !== "" && kindOk) {
           staged = {
             key: s.key,
-            kind: s.kind as "pdf" | "image" | "text",
+            kind: s.kind as "pdf" | "image" | "text" | "document",
             ...(typeof s.filename === "string" ? { filename: s.filename } : {}),
             ...(typeof s.contentType === "string"
               ? { contentType: s.contentType }
+              : {}),
+            ...(typeof s.relativePath === "string" && s.relativePath.trim()
+              ? { relativePath: s.relativePath.slice(0, 1_000) }
               : {}),
           };
         }
@@ -204,7 +319,30 @@ export function parseTask(body: unknown): Task | null {
       // ingestPdf/ingestImage rather than ingestUrl.
       const source =
         t.source === "pdf" || t.source === "image" ? t.source : undefined;
-      if (!hasUrl && !hasContent && !staged) return null; // need a source
+      let attachments: Extract<Task, { kind: "ingest" }>["attachments"];
+      if (t.attachments !== undefined) {
+        if (!Array.isArray(t.attachments) || t.attachments.length > 10) return null;
+        attachments = [];
+        for (const value of t.attachments) {
+          if (!value || typeof value !== "object") return null;
+          const attachment = value as Record<string, unknown>;
+          if (
+            typeof attachment.key !== "string" ||
+            attachment.key.trim() === "" ||
+            typeof attachment.filename !== "string" ||
+            attachment.filename.trim() === ""
+          ) return null;
+          attachments.push({
+            key: attachment.key,
+            filename: attachment.filename,
+            ...(typeof attachment.contentType === "string"
+              ? { contentType: attachment.contentType }
+              : {}),
+          });
+        }
+        if (attachments.length === 0) attachments = undefined;
+      }
+      if (!hasUrl && !hasContent && !staged && !attachments) return null; // need a source
       // Reject incoherent combinations so the consumer's branch-order precedence
       // is an ENFORCED invariant, not a silent "first match wins". `staged` is
       // exclusive (it's its own source); `source` only qualifies a `url`.
@@ -214,6 +352,37 @@ export function parseTask(body: unknown): Task | null {
         Array.isArray(t.tags) && t.tags.every((x) => typeof x === "string")
           ? (t.tags as string[])
           : undefined;
+      let email: EmailIngestMetadata | undefined;
+      if (t.email && typeof t.email === "object") {
+        const e = t.email as Record<string, unknown>;
+        if (
+          typeof e.from !== "string" ||
+          typeof e.to !== "string" ||
+          typeof e.subject !== "string" ||
+          typeof e.messageId !== "string" ||
+          !Array.isArray(e.attachmentNames) ||
+          !e.attachmentNames.every((name) => typeof name === "string")
+        ) {
+          return null;
+        }
+        email = {
+          from: e.from,
+          to: e.to,
+          subject: e.subject,
+          messageId: e.messageId,
+          attachmentNames: e.attachmentNames as string[],
+        };
+      }
+      const sourceType =
+        t.sourceType === "x-mention" ||
+        t.sourceType === "url" ||
+        t.sourceType === "text" ||
+        t.sourceType === "email"
+          ? t.sourceType
+          : undefined;
+      if ((sourceType === "email") !== Boolean(email)) return null;
+      if (attachments && sourceType !== "email") return null;
+      if (attachments && staged && staged.kind !== "text") return null;
       return {
         kind: "ingest",
         ...(hasUrl ? { url: t.url as string } : {}),
@@ -225,6 +394,7 @@ export function parseTask(body: unknown): Task | null {
         ...(typeof t.jobId === "string" ? { jobId: t.jobId } : {}),
         ...(source ? { source } : {}),
         ...(staged ? { staged } : {}),
+        ...(attachments ? { attachments } : {}),
         ...(typeof t.vaultId === "string" && t.vaultId.trim() !== ""
           ? { vaultId: t.vaultId }
           : {}),
@@ -237,11 +407,8 @@ export function parseTask(body: unknown): Task | null {
         ...(typeof t.sourceUrl === "string" && t.sourceUrl.trim() !== ""
           ? { sourceUrl: t.sourceUrl }
           : {}),
-        ...(t.sourceType === "x-mention" ||
-        t.sourceType === "url" ||
-        t.sourceType === "text"
-          ? { sourceType: t.sourceType }
-          : {}),
+        ...(sourceType ? { sourceType } : {}),
+        ...(email ? { email } : {}),
         ...(typeof t.learningFor === "string" && t.learningFor.trim() !== ""
           ? { learningFor: t.learningFor }
           : {}),
@@ -284,6 +451,130 @@ export function parseTask(body: unknown): Task | null {
       }
       return null;
     }
+    case "extract-actions":
+      if (
+        typeof t.slug !== "string" ||
+        t.slug.trim() === "" ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return {
+        kind: "extract-actions",
+        slug: t.slug,
+        owner: t.owner,
+      };
+    case "extract-knowledge":
+      if (
+        typeof t.slug !== "string" ||
+        t.slug.trim() === "" ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      if (
+        t.graphifyJobId !== undefined &&
+        (typeof t.graphifyJobId !== "string" ||
+          !/^graphify_[a-f0-9-]{36}$/i.test(t.graphifyJobId))
+      ) {
+        return null;
+      }
+      return {
+        kind: "extract-knowledge",
+        slug: t.slug,
+        owner: t.owner,
+        ...(typeof t.graphifyJobId === "string"
+          ? { graphifyJobId: t.graphifyJobId }
+          : {}),
+      };
+    case "compile-knowledge":
+      if (
+        typeof t.slug !== "string" ||
+        t.slug.trim() === "" ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return { kind: "compile-knowledge", slug: t.slug, owner: t.owner };
+    case "run-agent":
+      if (
+        typeof t.agentId !== "string" ||
+        t.agentId.trim() === "" ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === "" ||
+        (t.trigger !== "manual" &&
+          t.trigger !== "after-ingest" &&
+          t.trigger !== "daily" &&
+          t.trigger !== "weekly")
+      ) {
+        return null;
+      }
+      return {
+        kind: "run-agent",
+        agentId: t.agentId,
+        owner: t.owner,
+        trigger: t.trigger,
+        ...(typeof t.sourceSlug === "string" && t.sourceSlug.trim()
+          ? { sourceSlug: t.sourceSlug }
+          : {}),
+        ...(typeof t.prompt === "string" && t.prompt.trim()
+          ? { prompt: t.prompt.slice(0, 4_000) }
+          : {}),
+      };
+    case "run-research":
+      if (
+        typeof t.projectId !== "string" ||
+        !/^[a-f0-9-]{36}$/i.test(t.projectId) ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return { kind: "run-research", projectId: t.projectId, owner: t.owner };
+    case "monitor-source":
+      if (
+        typeof t.monitorId !== "string" ||
+        !/^mon_[a-z0-9-]{8,80}$/i.test(t.monitorId) ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return {
+        kind: "monitor-source",
+        monitorId: t.monitorId,
+        owner: t.owner,
+      };
+    case "deliver-monitor-digest":
+      if (
+        typeof t.digestId !== "string" ||
+        !/^mdg_[a-f0-9]{16}$/.test(t.digestId) ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return {
+        kind: "deliver-monitor-digest",
+        digestId: t.digestId,
+        owner: t.owner,
+      };
+    case "deliver-integration":
+      if (
+        typeof t.outboxId !== "string" ||
+        !/^out_[a-f0-9]{16,128}$/i.test(t.outboxId) ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return { kind: "deliver-integration", outboxId: t.outboxId, owner: t.owner };
+    case "create-backup":
+      if (typeof t.owner !== "string" || t.owner.trim() === "") return null;
+      return { kind: "create-backup", owner: t.owner };
     default:
       return null;
   }
