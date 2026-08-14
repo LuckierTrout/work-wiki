@@ -58,8 +58,9 @@ describe("POST /api/query/save", () => {
       undefined,
       undefined,
     );
-    // A markdown save is a public commons page → /wiki/<slug>.
-    expect((await res.json()).url).toBe("/wiki/test-page");
+    // Every save resolves to the owner-scoped page URL; an ownerless save
+    // addresses it through the default tenant (the commons URL is retired).
+    expect((await res.json()).url).toBe("/u/yopedia/test-page");
   });
 
   it("calls saveAnswerToWiki without sources when sources is omitted", async () => {

@@ -13,8 +13,8 @@ export default function GraphError({
     <PageError
       title="Graph error"
       description="Something went wrong loading the wiki graph."
-      backHref="/wiki"
-      backLabel="← Back to wiki"
+      backHref="/"
+      backLabel="← Home"
       error={error}
       reset={reset}
     />

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { pagePath } from "@/lib/links";
+import { pagePath, slugPath } from "@/lib/links";
 
 type SlugTenants = Record<string, string>;
 
@@ -29,9 +29,9 @@ function load(): Promise<SlugTenants> {
 
 /**
  * Resolve a target slug to its canonical `/u/<tenant>/<slug>` href on the
- * client. Falls back to the legacy `/wiki/<slug>` (which 308-redirects to
- * canonical) while the map is loading or for an unknown slug — so links always
- * work, just with one redirect hop in the fallback case.
+ * client. Falls back to the default tenant (which 308-redirects to canonical)
+ * while the map is loading or for an unknown slug — so links always work, just
+ * with one redirect hop in the fallback case.
  */
 export function useSlugTenants() {
   const [map, setMap] = useState<SlugTenants>(cache ?? {});
@@ -45,6 +45,6 @@ export function useSlugTenants() {
     };
   }, []);
   const hrefForSlug = (slug: string): string =>
-    map[slug] ? pagePath(map[slug], slug) : `/wiki/${slug}`;
+    map[slug] ? pagePath(map[slug], slug) : slugPath(slug);
   return { hrefForSlug };
 }

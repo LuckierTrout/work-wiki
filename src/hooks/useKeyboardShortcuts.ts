@@ -42,7 +42,6 @@ export const SHORTCUTS: ShortcutDef[] = [
   { keys: ["g", "i"], description: "Go to Ingest", route: "/ingest" },
   { keys: ["g", "q"], description: "Go to Query", route: "/query" },
   { keys: ["g", "l"], description: "Go to Lint", route: "/lint" },
-  { keys: ["g", "b"], description: "Go to Browse (Wiki)", route: "/wiki" },
   { keys: ["g", "g"], description: "Go to Graph", route: "/wiki/graph" },
   { keys: ["g", "s"], description: "Go to Settings", route: "/settings" },
   { keys: ["?"], description: "Toggle keyboard shortcuts help" },

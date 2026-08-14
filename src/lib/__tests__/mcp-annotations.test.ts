@@ -26,8 +26,45 @@ describe("MCP tool annotations", () => {
   const server = createMcpServer();
   const tools = getRegisteredTools(server);
 
-  it("registers exactly 49 tools", () => {
-    expect(Object.keys(tools)).toHaveLength(49);
+  // 43 after publish_to_commons and the five discussion tools were retired
+  // with the commons and with talk (AD-21).
+  it("registers exactly 43 tools", () => {
+    expect(Object.keys(tools)).toHaveLength(43);
+  });
+
+  // The retirement removed six tools but left the count hand-written in two
+  // places, where it silently went stale. Both are read by agent integrators —
+  // `public/agent-api.md` is served at `/agent-api` — so pin them to the real
+  // registration count rather than to another hand-written number.
+  it.each([
+    ["public/agent-api.md", "public/agent-api.md"],
+    ["src/lib/mcp-http.ts", "src/lib/mcp-http.ts"],
+  ])("%s documents the real tool count", async (_label, relative) => {
+    const { readFile } = await import("fs/promises");
+    const path = await import("path");
+    const text = await readFile(
+      path.resolve(__dirname, "../../..", relative),
+      "utf8",
+    );
+    // Strip JSDoc gutters and collapse wrapping so a count that wraps onto the
+    // next comment line ("All 43\n * tools are exposed") is still seen.
+    const flat = text.replace(/^\s*\*\s?/gm, "").replace(/\s+/g, " ");
+    const documented = [...flat.matchAll(/\b(\d+) tools\b/g)].map((m) => m[1]);
+    expect(documented.length).toBeGreaterThan(0);
+    for (const count of documented) {
+      expect(Number(count)).toBe(Object.keys(tools).length);
+    }
+  });
+
+  it.each([
+    "publish_to_commons",
+    "list_discussions",
+    "read_discussion",
+    "create_discussion",
+    "add_comment",
+    "resolve_discussion",
+  ])("no longer exposes %s", (retired) => {
+    expect(Object.keys(tools)).not.toContain(retired);
   });
 
   it("every tool has explicit destructiveHint and idempotentHint", () => {
@@ -78,9 +115,6 @@ describe("MCP tool annotations", () => {
     "seed_agent",
     "update_agent",
     "fix_lint_issue",
-    "create_discussion",
-    "resolve_discussion",
-    "add_comment",
     "reconcile_page",
     "reingest",
     "revert_revision",
@@ -102,8 +136,6 @@ describe("MCP tool annotations", () => {
     "agent_context",
     "list_agents",
     "lint_wiki",
-    "list_discussions",
-    "read_discussion",
     "dataview_query",
     "list_revisions",
     "read_revision",

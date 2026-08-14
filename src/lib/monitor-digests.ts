@@ -581,8 +581,8 @@ export function renderMonitorDigestEmail(
   const baseUrl = trimSiteUrl(siteUrl) || "https://workwiki.app";
   const attention = digest.counts.proposals + digest.counts.failures;
   const subject = attention > 0
-    ? `WorkWiki source digest: ${attention} item${attention === 1 ? "" : "s"} need attention`
-    : `WorkWiki source digest: ${digest.counts.checks} source check${digest.counts.checks === 1 ? "" : "s"}`;
+    ? `work-wiki source digest: ${attention} item${attention === 1 ? "" : "s"} need attention`
+    : `work-wiki source digest: ${digest.counts.checks} source check${digest.counts.checks === 1 ? "" : "s"}`;
   const summary = [
     `${digest.counts.checks} checks`,
     `${digest.counts.proposals} proposed updates`,
@@ -594,7 +594,7 @@ export function renderMonitorDigestEmail(
         `- ${entry.monitorName}: ${entry.kind} — ${entry.detail}${entry.targetSlug ? ` (${baseUrl}/u/${encodeURIComponent(digest.owner)}/${encodeURIComponent(entry.targetSlug)})` : ""}`
       ).join("\n")
     : "No sources need attention in this digest.";
-  const text = `Your WorkWiki source-monitor digest\n\n${summary}\n\n${textEntries}\n\nOpen source watch: ${baseUrl}/monitors\nOpen Review: ${baseUrl}/review`;
+  const text = `Your work-wiki source-monitor digest\n\n${summary}\n\n${textEntries}\n\nOpen source watch: ${baseUrl}/monitors\nOpen Review: ${baseUrl}/review`;
   const htmlEntries = digest.entries.length > 0
     ? `<ul>${digest.entries.map((entry) => {
         const pageUrl = entry.targetSlug
@@ -603,7 +603,7 @@ export function renderMonitorDigestEmail(
         return `<li><strong>${escapeHtml(entry.monitorName)}</strong>: ${escapeHtml(entry.kind)} — ${escapeHtml(entry.detail)}${pageUrl ? ` <a href="${escapeHtml(pageUrl)}">Open page</a>` : ""}</li>`;
       }).join("")}</ul>`
     : "<p>No sources need attention in this digest.</p>";
-  const html = `<h1>Your WorkWiki source-monitor digest</h1><p>${escapeHtml(summary)}</p>${htmlEntries}<p><a href="${escapeHtml(`${baseUrl}/monitors`)}">Open source watch</a> · <a href="${escapeHtml(`${baseUrl}/review`)}">Open Review</a></p>`;
+  const html = `<h1>Your work-wiki source-monitor digest</h1><p>${escapeHtml(summary)}</p>${htmlEntries}<p><a href="${escapeHtml(`${baseUrl}/monitors`)}">Open source watch</a> · <a href="${escapeHtml(`${baseUrl}/review`)}">Open Review</a></p>`;
   return { subject, text, html };
 }
 

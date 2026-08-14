@@ -5,13 +5,11 @@ import {
   hasLinkTo,
   DEFAULT_TENANT,
   ownerToTenant,
-  commonsPath,
   pagePath,
+  slugPath,
   editPath,
   rawPath,
-  sharePath,
   resolveSlugPath,
-  profileHref,
 } from "../links";
 
 describe("escapeRegex", () => {
@@ -148,27 +146,16 @@ describe("canonical URL builders", () => {
     );
   });
 
-  it("builds the global commons path /wiki/<slug>", () => {
-    expect(commonsPath("transformers")).toBe("/wiki/transformers");
-    expect(commonsPath("retrieval-augmented-generation")).toBe(
-      "/wiki/retrieval-augmented-generation",
-    );
-  });
-
-  it("builds the full-screen share path /share/<tenant>/<slug>", () => {
-    expect(sharePath("yuanhao", "billionaire-math")).toBe(
-      "/share/yuanhao/billionaire-math",
+  // The retired commons form `/wiki/<slug>`, the retired `/share/` form, and
+  // the retired public-profile builder are all gone: an owner-less call site
+  // addresses a page through the default tenant, which 308s to canonical.
+  it("builds a slug-only page path through the default tenant", () => {
+    expect(slugPath("transformers")).toBe("/u/yopedia/transformers");
+    expect(slugPath("retrieval-augmented-generation")).toBe(
+      "/u/yopedia/retrieval-augmented-generation",
     );
     // Raw slug (incl. Unicode), like pagePath — the route + browser encode it.
-    expect(sharePath("yuanhao", "math-解释")).toBe("/share/yuanhao/math-解释");
-  });
-
-  it("builds the profile URL /u/<handle>, percent-encoding unsafe handles", () => {
-    expect(profileHref("yuanhao")).toBe("/u/yuanhao");
-    expect(profileHref("alice--yoyo")).toBe("/u/alice--yoyo");
-    // Spaces / slashes are encoded so the URL stays routable.
-    expect(profileHref("Jean Luc")).toBe("/u/Jean%20Luc");
-    expect(profileHref("a/b")).toBe("/u/a%2Fb");
+    expect(slugPath("math-解释")).toBe("/u/yopedia/math-解释");
   });
 });
 
@@ -187,25 +174,21 @@ describe("resolveSlugPath", () => {
     );
   });
 
-  it("resolves a PUBLIC commons target to the global /wiki/<slug>", () => {
-    const commons = new Set(["foo"]);
-    // `foo` is in the commons set → global URL, regardless of its tenant in the map.
-    expect(resolveSlugPath("foo", map, "yuanhao", commons)).toBe("/wiki/foo");
-    // `bar` is NOT in the commons set → still owner-scoped.
-    expect(resolveSlugPath("bar", map, "yuanhao", commons)).toBe("/u/bob/bar");
+  it("never emits an empty tenant segment", () => {
+    // `/u//<slug>` matches no route — a call site that lost its tenant must
+    // still produce a link the owner route can 308 onto the real handle.
+    expect(resolveSlugPath("ghost", map, "")).toBe("/u/yopedia/ghost");
+    expect(resolveSlugPath("ghost", undefined, "   ")).toBe("/u/yopedia/ghost");
+    expect(pagePath("", "ghost")).toBe("/u/yopedia/ghost");
+    // The edit and raw URLs live at the same route family and are built from
+    // the same caller-supplied tenant, so they get the same floor.
+    expect(editPath("", "ghost")).toBe("/u/yopedia/ghost/edit");
+    expect(rawPath("   ", "ghost")).toBe("/u/yopedia/raw/ghost");
   });
 
-  it("keeps non-commons targets owner-scoped even with a commons set provided", () => {
-    const commons = new Set<string>();
-    expect(resolveSlugPath("foo", map, "yuanhao", commons)).toBe("/u/alice/foo");
-    // A dangling commons target still resolves global (existence in the set wins
-    // over the slug→tenant lookup).
-    expect(resolveSlugPath("ghost", map, "yopedia", new Set(["ghost"]))).toBe(
-      "/wiki/ghost",
-    );
-  });
-
-  it("ignores the commons set when undefined (prior behavior preserved)", () => {
-    expect(resolveSlugPath("foo", map, "yuanhao", undefined)).toBe("/u/alice/foo");
+  it("never emits the retired global /wiki/<slug> form", () => {
+    for (const slug of ["foo", "bar", "ghost"]) {
+      expect(resolveSlugPath(slug, map, "yuanhao")).not.toContain("/wiki/");
+    }
   });
 });

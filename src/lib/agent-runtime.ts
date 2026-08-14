@@ -159,7 +159,7 @@ export async function runSpecializedAgent(input: {
   });
   const searchWiki = tool({
     description:
-      "Search the owner's readable WorkWiki knowledge and return the most relevant cited page excerpts.",
+      "Search the owner's readable work-wiki knowledge and return the most relevant cited page excerpts.",
     inputSchema: z.object({ query: z.string().min(1).max(2_000) }),
     execute: async ({ query }) => {
       const { scopeSlugs, error } = await resolveScopeSlugs(
@@ -315,7 +315,7 @@ export async function runSpecializedAgent(input: {
     model,
     instructions:
       `${agent.instructions || agent.description}\n\n` +
-      "You operate only inside the owner's WorkWiki account. Use searchWiki before making factual claims about their knowledge. " +
+      "You operate only inside the owner's work-wiki account. Use searchWiki before making factual claims about their knowledge. " +
       "Use proposeTasks only for concrete actions supported by source material; proposals remain owner-controlled. " +
       "Never claim that a task has been completed or sent to an external system." +
       (workspaceGuidance ? `\n\n${workspaceGuidance}` : "") +

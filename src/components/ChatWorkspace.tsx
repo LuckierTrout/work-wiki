@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { slugPath } from "@/lib/links";
 import { useEffect, useState } from "react";
 import { Alert } from "@/components/Alert";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
@@ -255,7 +256,7 @@ export function ChatWorkspace() {
 
       {error && <div style={{ marginBottom: 16 }}><Alert variant="error">{error}</Alert></div>}
       {savedMessage && (
-        <div style={{ marginBottom: 16 }}><Alert variant="success">Saved as <Link href={`/wiki/${savedMessage}`}>{savedMessage}</Link>.</Alert></div>
+        <div style={{ marginBottom: 16 }}><Alert variant="success">Saved as <Link href={slugPath(savedMessage)}>{savedMessage}</Link>.</Alert></div>
       )}
 
       <div className="grid lg:grid-cols-[260px_minmax(0,1fr)]" style={{ gap: 18, alignItems: "stretch" }}>
@@ -335,14 +336,14 @@ export function ChatWorkspace() {
                 {active.messages.map((message) => (
                   <article key={message.id} style={{ marginLeft: message.role === "user" ? "auto" : 0, maxWidth: message.role === "user" ? "78%" : "100%" }}>
                     <p className="receipt" style={{ fontSize: 9.5, color: "var(--faint)", margin: "0 0 6px" }}>
-                      {message.role === "user" ? "You" : message.backend === "hermes" ? "WorkWiki · Hermes" : "WorkWiki"}
+                      {message.role === "user" ? "You" : message.backend === "hermes" ? "work-wiki · Hermes" : "work-wiki"}
                     </p>
                     <div style={{ background: message.role === "user" ? "var(--paper-3)" : "transparent", border: message.role === "user" ? "1px solid var(--rule)" : 0, borderRadius: 14, padding: message.role === "user" ? "11px 14px" : 0 }}>
                       {message.role === "assistant" ? <MarkdownRenderer content={message.content} /> : <p style={{ margin: 0, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{message.content}</p>}
                     </div>
                     {message.role === "assistant" && (
                       <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                        {message.sources.map((source) => <Link key={source} href={`/wiki/${source}`} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>{source}</Link>)}
+                        {message.sources.map((source) => <Link key={source} href={slugPath(source)} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>{source}</Link>)}
                         <button type="button" className="btn ghost" onClick={() => void saveAnswer(message)} style={{ fontSize: 11, padding: "5px 8px" }}>Save to wiki</button>
                       </div>
                     )}

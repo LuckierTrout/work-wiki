@@ -181,7 +181,7 @@ function VaultCard({ vault }: { vault: Vault }) {
   async function remove() {
     if (
       !window.confirm(
-        `Delete vault "${vault.name}"? The referenced commons pages are untouched.`,
+        `Delete vault "${vault.name}"? The referenced pages are untouched.`,
       )
     )
       return;
@@ -298,7 +298,7 @@ export function VaultManager({ vaults }: VaultManagerProps) {
       {vaults.length === 0 ? (
         <p style={{ margin: 0, color: "var(--muted)", fontSize: 14.5 }}>
           No vaults yet. Create one above to start curating a reference lens over
-          the commons.
+          your wiki.
         </p>
       ) : (
         vaults.map((v) => <VaultCard key={v.id} vault={v} />)

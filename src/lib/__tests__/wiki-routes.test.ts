@@ -772,54 +772,42 @@ describe("realm-aware ACL — discussion and revision-revert routes", () => {
 
   // --- Discussion: create thread ---
 
-  async function postDiscuss(slug: string) {
+  async function postDiscuss(_slug: string) {
     const { POST } = await import("@/app/api/wiki/[slug]/discuss/route");
-    return POST(
-      new Request(`http://localhost/api/wiki/${slug}/discuss`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: "Question", body: "Is this right?" }),
-      }),
-      { params: Promise.resolve({ slug }) },
-    );
+    return POST();
   }
 
-  it("cloaks a non-owner creating a discussion on a private page (POST discuss 404)", async () => {
+  // Talk is retired (AD-21): the realm ACL no longer applies here because the
+  // route never runs — every caller, on every page, gets the same 404.
+  it("404s a non-owner creating a discussion on a private page", async () => {
     await seed("alice-priv-disc", { owner: "alice", visibility: "private" });
     const res = await postDiscuss("alice-priv-disc");
     expect(res.status).toBe(404);
   });
 
-  it("allows the owner to create a discussion on their private page", async () => {
+  it("404s the owner creating a discussion on their private page", async () => {
     await seed("alice-own-disc", { owner: "alice", visibility: "private" });
     mockedGetPrincipal.mockResolvedValueOnce({ id: "u_alice", handle: "alice" });
     const res = await postDiscuss("alice-own-disc");
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(404);
   });
 
-  it("allows any signed-in user to create a discussion on a public page", async () => {
+  it("404s a signed-in user creating a discussion on a public page", async () => {
     await seed("pub-disc", { owner: "alice", visibility: "public" });
     const res = await postDiscuss("pub-disc");
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(404);
   });
 
   // --- Discussion: resolve/reopen thread ---
 
-  async function patchDiscuss(slug: string) {
+  async function patchDiscuss(_slug: string) {
     const { PATCH } = await import(
       "@/app/api/wiki/[slug]/discuss/[threadIndex]/route"
     );
-    return PATCH(
-      new Request(`http://localhost/api/wiki/${slug}/discuss/0`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "resolved" }),
-      }),
-      { params: Promise.resolve({ slug, threadIndex: "0" }) },
-    );
+    return PATCH();
   }
 
-  it("cloaks a non-owner resolving a discussion on a private page (PATCH discuss 404)", async () => {
+  it("404s resolving a discussion — talk is retired", async () => {
     await seed("alice-priv-resolve", { owner: "alice", visibility: "private" });
     const res = await patchDiscuss("alice-priv-resolve");
     expect(res.status).toBe(404);
@@ -827,21 +815,14 @@ describe("realm-aware ACL — discussion and revision-revert routes", () => {
 
   // --- Discussion: add comment ---
 
-  async function postComment(slug: string) {
+  async function postComment(_slug: string) {
     const { POST } = await import(
       "@/app/api/wiki/[slug]/discuss/[threadIndex]/comments/route"
     );
-    return POST(
-      new Request(`http://localhost/api/wiki/${slug}/discuss/0/comments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: "Nice page!" }),
-      }),
-      { params: Promise.resolve({ slug, threadIndex: "0" }) },
-    );
+    return POST();
   }
 
-  it("cloaks a non-owner commenting on a private page (POST comment 404)", async () => {
+  it("404s commenting on a discussion — talk is retired", async () => {
     await seed("alice-priv-comment", { owner: "alice", visibility: "private" });
     const res = await postComment("alice-priv-comment");
     expect(res.status).toBe(404);

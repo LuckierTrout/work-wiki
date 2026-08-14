@@ -92,8 +92,14 @@ describe("canSetPrivate", () => {
   it("denies anonymous principals without touching Clerk", async () => {
     expect(await canSetPrivate(null)).toBe(false);
   });
-  it("denies service/token principals", async () => {
-    expect(await canSetPrivate({ id: "service:ci", handle: "ci" })).toBe(false);
+  // Billing retired with the commons: private is the default posture, so any
+  // authenticated principal — service/token principals included — qualifies,
+  // and no Clerk plan lookup happens.
+  it("allows service/token principals (no plan gate)", async () => {
+    expect(await canSetPrivate({ id: "service:ci", handle: "ci" })).toBe(true);
+  });
+  it("allows a human principal", async () => {
+    expect(await canSetPrivate({ id: "u_alice", handle: "alice" })).toBe(true);
   });
 });
 

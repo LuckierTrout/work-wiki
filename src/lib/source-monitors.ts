@@ -499,7 +499,7 @@ export async function runSourceMonitor(
         targetSlug: monitor.targetSlug,
         title: `Update ${monitor.name}`,
         summary: `A monitored source changed (${Math.round(score * 100)}% semantic token difference).`,
-        reason: `WorkWiki detected a meaningful change at ${monitor.url}. Review the proposed revision against the stored excerpt before accepting it.`,
+        reason: `work-wiki detected a meaningful change at ${monitor.url}. Review the proposed revision against the stored excerpt before accepting it.`,
         proposedContent,
         evidenceIds: [anchor.id],
         actor: `${owner}--source-monitor`,

@@ -24,7 +24,7 @@ import { logger } from "@/lib/logger";
  *     route, which scopes writes to agent-knowledge — here the human is driving
  *     their own client, so their writes are their own pages.
  *   - the **service token** → the configured service principal.
- *   - **no token** → rejected. WorkWiki is a private deployment, so reads and
+ *   - **no token** → rejected. work-wiki is a private deployment, so reads and
  *     writes both require a valid agent or service credential.
  *
  * Middleware-exempt (authenticates in-route via the token, not a Clerk session).

@@ -4,8 +4,8 @@ import { slugify } from "@/lib/slugify";
 import type { Frontmatter } from "@/lib/frontmatter";
 import type { WikiPage } from "@/lib/types";
 import { findBacklinks, findSimilarPages, buildSlugTenantMap } from "@/lib/wiki";
-import { resolveSlugPath, profileHref } from "@/lib/links";
-import { getCommonsSlugSet, belongsInCommons, isVaultEligible } from "@/lib/commons";
+import { resolveSlugPath } from "@/lib/links";
+import { belongsInCommons, isVaultEligible } from "@/lib/commons";
 import type { Principal } from "@/lib/auth";
 import { parseSources, dedupeSourcesForDisplay, sourceLabel } from "@/lib/sources";
 import { stripLeadingH1 } from "@/lib/markdown";
@@ -16,10 +16,8 @@ import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { HtmlPreview } from "@/components/HtmlPreview";
 import { isHtmlDeck } from "@/lib/html";
 import { SlidePreview } from "@/components/SlidePreview";
-import { SharePageButton } from "@/components/SharePageButton";
 import { ArticleActions } from "@/components/ArticleActions";
 import { RevisionHistory } from "@/components/RevisionHistory";
-import { DiscussionPanel } from "@/components/DiscussionPanel";
 import { contentHash } from "@/lib/embeddings";
 import type { EvidenceLocation, PageEvidenceBundle } from "@/lib/evidence";
 
@@ -115,17 +113,9 @@ interface ArticleViewProps {
   pageTenant: string;
   /**
    * The reader identity — used ONLY to filter backlinks to readable pages.
-   * Pass `null` from the public commons route (public backlinks only); pass the
-   * real principal from the auth-gated private route.
+   * Always the real principal now: the owner-scoped route is the only reader.
    */
   principal: Principal | null;
-  /**
-   * Whether an open discussion thread actually exists — so the `disputed` banner
-   * only claims "a reconciliation is open" when true. Computed by both read
-   * routes (`/wiki/<slug>`, `/u/<handle>/<slug>`); optional with a safe `false`
-   * default so a caller that hasn't computed it can't make the banner over-claim.
-   */
-  hasOpenReconciliation?: boolean;
   /** Owner-only, claim-level provenance. Public pages omit this private bundle. */
   evidenceBundle?: PageEvidenceBundle | null;
 }
@@ -146,23 +136,19 @@ function evidenceLocationLabel(location: EvidenceLocation): string {
  * The shared READ rendering for a wiki page (Folio redesign). Deliberately
  * principal-light: the only per-viewer branch is the backlink readability
  * filter (`findBacklinks(slug, principal)`). The action bar self-gates client-
- * side via {@link ArticleActions}, so the server render is context-free and
- * cacheable when `principal` is `null` (the public commons route).
+ * side via {@link ArticleActions}.
  */
 export async function ArticleView({
   page,
   slug,
   pageTenant,
   principal,
-  hasOpenReconciliation = false,
   evidenceBundle = null,
 }: ArticleViewProps) {
-  // Slug→tenant map + commons slug set so in-content links and backlinks resolve
-  // to each target's canonical URL: PUBLIC targets to the global `/wiki/<slug>`,
-  // others to the owner-scoped `/u/<tenant>/<slug>` (falling back to this page's
-  // tenant for dangling targets).
+  // Slug→tenant map so in-content links and backlinks resolve to each target's
+  // canonical owner-scoped URL `/u/<tenant>/<slug>` (falling back to this page's
+  // tenant for dangling targets). There is no public `/wiki/<slug>` form left.
   const slugTenants = await buildSlugTenantMap();
-  const commonsSlugs = await getCommonsSlugSet();
 
   const backlinks = await findBacklinks(slug, principal);
   // Semantic "Related pages" — exclude any page already listed under "what
@@ -262,11 +248,7 @@ export async function ArticleView({
             return (
               <span key={id} className="row" style={{ gap: 6 }}>
                 <Avatar id={id} agent={agent} size={22} />
-                <Mark
-                  id={id}
-                  agent={agent}
-                  href={agent ? undefined : profileHref(id)}
-                />
+                <Mark id={id} agent={agent} />
               </span>
             );
           })}
@@ -309,18 +291,9 @@ export async function ArticleView({
           className="row receipt"
           style={{ gap: 8, fontSize: 12, color: "var(--muted)" }}
         >
-          {/* Commons pages live under the commons; owner-scoped pages (html
-              artifacts, private, agent) live under their owner's profile, so
-              don't mislabel those as "commons". */}
-          {isCommonsPage ? (
-            <Link href="/wiki" style={{ color: "var(--muted)" }}>
-              commons
-            </Link>
-          ) : (
-            <Link href={`/u/${pageTenant}`} style={{ color: "var(--muted)" }}>
-              @{pageTenant}
-            </Link>
-          )}
+          {/* The public commons index and the public profile are both retired,
+              so the owner segment is a label, not a link. */}
+          <span style={{ color: "var(--muted)" }}>@{pageTenant}</span>
           <span style={{ color: "var(--faint)" }}>/</span>
           <span style={{ color: "var(--ink-2)" }}>{slug}</span>
         </div>
@@ -334,15 +307,13 @@ export async function ArticleView({
             style={{ gap: 10, marginBottom: 18, flexWrap: "wrap" }}
           >
             {tags.map((t) => (
-              <Link
+              <span
                 key={t}
-                href={`/wiki?tag=${encodeURIComponent(t)}`}
                 className="receipt"
-                style={{ fontSize: 11.5, color: "var(--accent)", textDecoration: "none" }}
-                title={`Browse all pages tagged #${t}`}
+                style={{ fontSize: 11.5, color: "var(--accent)" }}
               >
                 #{t}
-              </Link>
+              </span>
             ))}
           </div>
         )}
@@ -417,11 +388,7 @@ export async function ArticleView({
             <span className="fresh warn" style={{ marginTop: 6 }} />
             <span>
               This page is <strong>disputed</strong> and low-confidence — its
-              sources disagree.
-              {hasOpenReconciliation
-                ? " A reconciliation is open on the discussion."
-                : ""}{" "}
-              Read with care.
+              sources disagree. Read with care.
             </span>
           </div>
         )}
@@ -461,7 +428,6 @@ export async function ArticleView({
                 headingIds={toc.map((t) => t.id)}
                 tenant={pageTenant}
                 slugTenants={slugTenants}
-                commonsSlugs={commonsSlugs}
               />
             )}
           </article>
@@ -479,7 +445,6 @@ export async function ArticleView({
                         bl.slug,
                         slugTenants,
                         pageTenant,
-                        commonsSlugs,
                       )}
                       className="text-sm"
                       style={{ color: "var(--accent)" }}
@@ -505,7 +470,6 @@ export async function ArticleView({
                         r.slug,
                         slugTenants,
                         pageTenant,
-                        commonsSlugs,
                       )}
                       className="text-sm"
                       style={{ color: "var(--accent)" }}
@@ -518,7 +482,6 @@ export async function ArticleView({
             </section>
           )}
 
-          <DiscussionPanel slug={slug} pageOwner={pageOwner} />
           <RevisionHistory slug={slug} />
 
           <ArticleActions
@@ -658,7 +621,6 @@ export async function ArticleView({
           >
             <Icon.spark width="15" height="15" /> Ask about this page
           </Link>
-          <SharePageButton path={`/share/${pageTenant}/${slug}`} />
 
           <div className="rule" style={{ margin: "24px 0" }} />
           <TableOfContents items={toc} />

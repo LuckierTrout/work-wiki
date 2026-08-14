@@ -56,11 +56,8 @@ export default async function LogPage() {
             A chronological receipt of new pages, reconciliations, revisions, and automation.
           </p>
         </div>
-        <Link
-          href="/wiki"
-          className="btn ghost"
-        >
-          Browse the wiki
+        <Link href="/query" className="btn ghost">
+          Ask the wiki
         </Link>
       </div>
 

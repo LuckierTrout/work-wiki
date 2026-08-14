@@ -29,7 +29,7 @@ export function DeletePageButton({ slug }: DeletePageButtonProps) {
         };
         throw new Error(body.error ?? `delete failed (${res.status})`);
       }
-      router.push("/wiki");
+      router.push("/");
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "unknown error");

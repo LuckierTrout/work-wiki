@@ -86,11 +86,11 @@ export default async function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body className="min-h-screen antialiased flex flex-col">
-        {/* `waitlistUrl` makes Clerk's sign-in modal route new sign-ups to our
-            /waitlist page while the app is in waitlist (invite-only) sign-up
-            mode — gating registration only; reading the commons stays public. */}
+        {/* No `waitlistUrl`: /waitlist is retired. This deployment is
+            owner-only — there is no self-serve sign-up to route anywhere, and
+            no public read path behind it. */}
         <LocaleProvider initialLocale={locale}>
-          <ClerkProvider waitlistUrl="/waitlist">
+          <ClerkProvider>
             <ClientProviders>
               <EnsureYoyo />
               <RegisterSW />

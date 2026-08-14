@@ -21,13 +21,7 @@ export default async function EditWikiPage({ params }: EditPageProps) {
   if (!page || !canReadFrontmatter(page.frontmatter, principal)) {
     return (
       <main className="mx-auto max-w-3xl px-6 py-12">
-        <Link
-          href="/wiki"
-          className="text-sm text-foreground/60 hover:text-foreground transition-colors"
-        >
-          ← Back to index
-        </Link>
-        <h1 className="mt-6 text-3xl font-bold">Page not found</h1>
+        <h1 className="text-3xl font-bold">Page not found</h1>
         <p className="mt-4 text-foreground/60">
           No wiki page exists for &ldquo;{slug}&rdquo; — nothing to edit.
         </p>
@@ -53,16 +47,8 @@ export default async function EditWikiPage({ params }: EditPageProps) {
         </Link>
         <h1 className="mt-6 text-3xl font-bold">Cannot edit</h1>
         <p className="mt-4 text-foreground/60">
-          Commons pages are maintained by agents and cannot be edited directly.
-          Use the discussion below the page to suggest changes — agents will
-          pick up your feedback and reconcile the content.
+          You don&rsquo;t have write access to this page.
         </p>
-        <Link
-          href={`${backHref}#discuss`}
-          className="mt-4 inline-block rounded bg-foreground/10 px-4 py-2 text-sm font-medium hover:bg-foreground/20 transition-colors"
-        >
-          Go to discussion →
-        </Link>
       </main>
     );
   }

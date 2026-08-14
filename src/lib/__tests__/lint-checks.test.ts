@@ -710,7 +710,7 @@ describe("checkUnmigratedPages", () => {
     expect(issues[0].type).toBe("unmigrated-page");
     expect(issues[0].slug).toBe("old-page");
     expect(issues[0].severity).toBe("info");
-    expect(issues[0].message).toContain("yopedia metadata");
+    expect(issues[0].message).toContain("work-wiki metadata");
     expect(issues[0].suggestion).toBeDefined();
   });
 

@@ -27,11 +27,6 @@
  *   delete_agent   — Delete an agent profile
  *   lint_wiki      — Run quality checks on the wiki
  *   fix_lint_issue — Auto-fix a lint issue found by lint_wiki
- *   list_discussions   — List discussion threads for a wiki page
- *   read_discussion    — Read a single discussion thread with full comment bodies
- *   create_discussion  — Start a new discussion thread
- *   add_comment        — Add a comment to a discussion thread
- *   resolve_discussion — Resolve a discussion thread
  *   reconcile_page     — Reconcile a page from a discussion thread (LLM-driven)
  *   reingest           — Re-ingest a wiki page from its original source URL
  *   ingest_history     — View ingest ledger entries for provenance auditing
@@ -89,7 +84,6 @@ import type { DeletePageResult } from "./lib/lifecycle";
 import { resolveScope, type ContentSearchResult } from "./lib/search";
 import { lint, ALL_CHECK_TYPES } from "./lib/lint";
 import { fixLintIssue, type FixResult } from "./lib/lint-fix";
-import { listThreads, getThread, createThread, resolveThread, addComment } from "./lib/talk";
 import { queryByFrontmatter, validateQuery, type DataviewFilter, type DataviewQuery, type DataviewResult } from "./lib/dataview";
 import { listRevisions, readRevision, readRevisionMeta, type Revision } from "./lib/revisions";
 import { vaultIdFor, getVault, findVaultByName, createVault, renameVault, deleteVault, addToVault, removeFromVault, listVaults, vaultSlugs } from "./lib/vault";
@@ -100,9 +94,7 @@ import { buildWikiGraph, type GraphNode, type GraphEdge } from "./lib/graph-buil
 import { mergePages, type MergePagesResult } from "./lib/merge";
 import { scanForMaintenance } from "./lib/maintenance";
 import { getTrail, type TrailEvent } from "./lib/trail";
-import { publishToCommons } from "./lib/publish";
 import { logger } from "./lib/logger";
-import type { TalkThread, TalkComment } from "./lib/types";
 
 // ---------------------------------------------------------------------------
 // Tool handler logic — exported for direct testing without transport
@@ -997,20 +989,6 @@ export async function handleDeleteAgent(args: {
   return { deleted: true, agent_id: args.agent_id };
 }
 
-export async function handlePublishToCommons(args: {
-  slug: string;
-  agentId: string;
-}): Promise<{ published: true; slug: string; owner: string; agent: string; previousType: string }> {
-  const result = await publishToCommons(args.slug, args.agentId);
-  return {
-    published: true,
-    slug: result.slug,
-    owner: result.owner,
-    agent: result.agent,
-    previousType: result.previousType,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Contributor handlers
 // ---------------------------------------------------------------------------
@@ -1261,139 +1239,6 @@ export async function handleFixLintIssue(args: {
 // Discussion (talk page) handlers
 // ---------------------------------------------------------------------------
 
-export async function handleListDiscussions(args: {
-  pageSlug: string;
-}): Promise<{
-  pageSlug: string;
-  threads: {
-    index: number;
-    title: string;
-    status: string;
-    author: string;
-    commentCount: number;
-    created: string;
-    updated: string;
-  }[];
-}> {
-  const threads = await listThreads(args.pageSlug);
-  return {
-    pageSlug: args.pageSlug,
-    threads: threads.map((t, i) => ({
-      index: i,
-      title: t.title,
-      status: t.status,
-      author: t.comments[0]?.author ?? "unknown",
-      commentCount: t.comments.length,
-      created: t.created,
-      updated: t.updated,
-    })),
-  };
-}
-
-export async function handleReadDiscussion(args: {
-  pageSlug: string;
-  threadIndex: number;
-}): Promise<{
-  pageSlug: string;
-  threadIndex: number;
-  title: string;
-  status: string;
-  created: string;
-  updated: string;
-  comments: { id: string; author: string; created: string; body: string; parentId: string | null }[];
-}> {
-  if (!args.pageSlug) {
-    throw new Error("pageSlug is required");
-  }
-  if (typeof args.threadIndex !== "number" || !Number.isInteger(args.threadIndex) || args.threadIndex < 0) {
-    throw new Error("threadIndex must be a non-negative integer");
-  }
-  const thread = await getThread(args.pageSlug, args.threadIndex);
-  if (!thread) {
-    throw new Error(`thread not found: index ${args.threadIndex} on page ${args.pageSlug}`);
-  }
-  return {
-    pageSlug: args.pageSlug,
-    threadIndex: args.threadIndex,
-    title: thread.title,
-    status: thread.status,
-    created: thread.created,
-    updated: thread.updated,
-    comments: thread.comments.map((c) => ({
-      id: c.id,
-      author: c.author,
-      created: c.created,
-      body: c.body,
-      parentId: c.parentId,
-    })),
-  };
-}
-
-export async function handleCreateDiscussion(args: {
-  pageSlug: string;
-  title: string;
-  body: string;
-  author: string;
-}): Promise<TalkThread> {
-  if (!args.pageSlug) {
-    throw new Error("pageSlug is required");
-  }
-  if (!args.title || !args.title.trim()) {
-    throw new Error("title must be a non-empty string");
-  }
-  if (!args.body || !args.body.trim()) {
-    throw new Error("body must be a non-empty string");
-  }
-  if (!args.author || !args.author.trim()) {
-    throw new Error("author must be a non-empty string");
-  }
-  return createThread(args.pageSlug, args.title.trim(), args.author.trim(), args.body.trim());
-}
-
-export async function handleResolveDiscussion(args: {
-  pageSlug: string;
-  threadIndex: number;
-  resolution: "open" | "resolved" | "wontfix";
-}): Promise<TalkThread> {
-  if (!args.pageSlug) {
-    throw new Error("pageSlug is required");
-  }
-  if (args.threadIndex === undefined || args.threadIndex === null) {
-    throw new Error("threadIndex is required");
-  }
-  if (!args.resolution) {
-    throw new Error("resolution is required");
-  }
-  if (args.resolution !== "open" && args.resolution !== "resolved" && args.resolution !== "wontfix") {
-    throw new Error(
-      `Invalid resolution: "${args.resolution}". Must be "open", "resolved", or "wontfix"`,
-    );
-  }
-  return resolveThread(args.pageSlug, args.threadIndex, args.resolution);
-}
-
-export async function handleAddComment(args: {
-  pageSlug: string;
-  threadIndex: number;
-  content: string;
-  author: string;
-  parentId?: string | undefined;
-}): Promise<TalkComment> {
-  if (!args.pageSlug) {
-    throw new Error("pageSlug is required");
-  }
-  if (args.threadIndex === undefined || args.threadIndex === null) {
-    throw new Error("threadIndex is required");
-  }
-  if (!args.content || !args.content.trim()) {
-    throw new Error("content must be a non-empty string");
-  }
-  if (!args.author || !args.author.trim()) {
-    throw new Error("author must be a non-empty string");
-  }
-  return addComment(args.pageSlug, args.threadIndex, args.author.trim(), args.content.trim(), args.parentId);
-}
-
 // ---------------------------------------------------------------------------
 // Reconcile page handler
 // ---------------------------------------------------------------------------
@@ -1610,7 +1455,7 @@ export async function handleRevertRevision(args: {
 // MCP server setup
 // ---------------------------------------------------------------------------
 
-const SERVER_INSTRUCTIONS = `work-wiki is a shared knowledge wiki for humans and agents. It accumulates durable, citable knowledge — not ephemeral RAG results. Every page has confidence scores, expiry dates, cited sources, and revision history. Contradictions are tracked and resolved through talk pages.
+const SERVER_INSTRUCTIONS = `work-wiki is a shared knowledge wiki for humans and agents. It accumulates durable, citable knowledge — not ephemeral RAG results. Every page has confidence scores, expiry dates, cited sources, and revision history. Contradictions are flagged on the page itself (the \`disputed\` flag and \`lint_wiki\`) and resolved by revising the page — talk pages are retired.
 
 ## Recommended workflow
 
@@ -1625,7 +1470,6 @@ const SERVER_INSTRUCTIONS = `work-wiki is a shared knowledge wiki for humans and
 - **Confidence** (0–1): every page declares how well-supported its claims are. Low-confidence pages need more sources.
 - **Expiry** (ISO date): pages go stale. Check expiry and reingest or update when needed.
 - **Sources**: every page tracks its sources with type, URL, and fetch date. Prefer cited claims over unsourced ones.
-- **Talk pages**: use \`list_discussions\`, \`create_discussion\`, and \`add_comment\` to discuss disputes or propose changes. Resolve threads with \`resolve_discussion\`.
 - **Revisions**: all edits are tracked. Use \`list_revisions\` and \`read_revision\` to review history.
 - **Lint**: use \`lint_wiki\` to find quality issues (orphans, broken links, stale pages, contradictions). Use \`fix_lint_issue\` to auto-fix them.
 
@@ -2614,48 +2458,6 @@ export function createMcpServer(): McpServer {
     }
   });
 
-  // publish_to_commons — Promote an agent page to the public commons
-  server.registerTool("publish_to_commons", {
-    description:
-      "Publish an agent-knowledge page to the public commons. The page's type is " +
-      "cleared (making it a normal wiki page), ownership transfers to the agent's " +
-      "human owner, and the agent is preserved in contributors[]. The page then " +
-      "participates in normal concept resolution and appears in public browse/search. " +
-      "This is a one-way promotion — the page cannot be unpublished back to agent-knowledge.",
-    inputSchema: {
-      slug: z.string().describe("Slug of the agent-knowledge page to publish"),
-      agentId: z.string().describe("ID of the agent that owns the page (e.g. alice--yoyo)"),
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handlePublishToCommons(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
   // lint_wiki — Run quality checks on the wiki
   server.registerTool("lint_wiki", {
     description:
@@ -2748,230 +2550,10 @@ export function createMcpServer(): McpServer {
     }
   });
 
-  // list_discussions — List discussion threads for a wiki page
-  server.registerTool("list_discussions", {
-    description:
-      "List all discussion threads for a wiki page, including status, author, and comment count",
-    inputSchema: {
-      pageSlug: z
-        .string()
-        .describe("Slug of the wiki page to list discussions for"),
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleListDiscussions(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
-  // read_discussion — Read a single discussion thread with full comment bodies
-  server.registerTool("read_discussion", {
-    description:
-      "Read a single discussion thread for a wiki page, including full comment bodies. " +
-      "Use list_discussions first to discover thread indices.",
-    inputSchema: {
-      pageSlug: z
-        .string()
-        .describe("Slug of the wiki page the discussion belongs to"),
-      threadIndex: z
-        .number()
-        .describe("Zero-based index of the thread (from list_discussions)"),
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleReadDiscussion(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
-  // create_discussion — Start a new discussion thread on a wiki page
-  server.registerTool("create_discussion", {
-    description:
-      "Create a new discussion thread on a wiki page for editorial discussion",
-    inputSchema: {
-      pageSlug: z
-        .string()
-        .describe("Slug of the wiki page to discuss"),
-      title: z.string().describe("Title of the discussion thread"),
-      body: z
-        .string()
-        .describe("Body of the first comment (markdown supported)"),
-      author: z
-        .string()
-        .describe("Author handle (agent ID or user handle)"),
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleCreateDiscussion(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
-  // resolve_discussion — Resolve a discussion thread
-  server.registerTool("resolve_discussion", {
-    description:
-      "Resolve a discussion thread on a wiki page (mark as resolved or wontfix)",
-    inputSchema: {
-      pageSlug: z
-        .string()
-        .describe("Slug of the wiki page the discussion belongs to"),
-      threadIndex: z
-        .number()
-        .describe("Zero-based index of the thread to resolve"),
-      resolution: z
-        .enum(["open", "resolved", "wontfix"])
-        .describe('Resolution status: "open" (reopen), "resolved", or "wontfix"'),
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleResolveDiscussion(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
-  // add_comment — Add a comment to a discussion thread
-  server.registerTool("add_comment", {
-    description:
-      "Add a comment to an existing discussion thread on a wiki page",
-    inputSchema: {
-      pageSlug: z
-        .string()
-        .describe("Slug of the wiki page the discussion belongs to"),
-      threadIndex: z
-        .number()
-        .describe("Zero-based index of the thread to comment on"),
-      content: z
-        .string()
-        .describe("Comment body (markdown supported)"),
-      author: z
-        .string()
-        .describe("Author handle (agent ID or user handle) — required for governance attribution"),
-      parentId: z
-        .string()
-        .optional()
-        .describe("ID of parent comment for threaded replies (omit for top-level)"),
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleAddComment(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
+  // Discussion tools (list_discussions, read_discussion, create_discussion,
+  // resolve_discussion, add_comment) are RETIRED with talk (AD-21): the REST
+  // handlers 404 and the UI panel is gone, so an agent thread would land on a
+  // surface nothing can display. `src/lib/talk.ts` stays on disk.
 
   // reconcile_page — Reconcile a wiki page from a discussion thread
   server.registerTool("reconcile_page", {

@@ -2,7 +2,7 @@ import { APP_NAME } from "@/lib/brand";
 
 type MarkSize = "nav" | "footer" | "full";
 
-interface WorkWikiMarkProps {
+interface AppMarkProps {
   className?: string;
   size?: MarkSize;
 }
@@ -14,10 +14,10 @@ const MARK_DIMENSIONS: Record<MarkSize, { width: number; height: number }> = {
 };
 
 /**
- * WorkWiki's document mark: a folded page and an open W. It keeps the original
+ * work-wiki's document mark: a folded page and an open W. It keeps the original
  * living-page idea, but makes the product initial legible at every brand size.
  */
-export function WorkWikiMark({ className, size = "nav" }: WorkWikiMarkProps) {
+export function AppMark({ className, size = "nav" }: AppMarkProps) {
   const { width, height } = MARK_DIMENSIONS[size];
 
   return (
@@ -67,18 +67,18 @@ export function WorkWikiMark({ className, size = "nav" }: WorkWikiMarkProps) {
 }
 
 /** Retained as the shared mark export for existing page and footer surfaces. */
-export function LivingPageMark(props: WorkWikiMarkProps) {
-  return <WorkWikiMark {...props} />;
+export function LivingPageMark(props: AppMarkProps) {
+  return <AppMark {...props} />;
 }
 
-interface LogoProps extends WorkWikiMarkProps {
+interface LogoProps extends AppMarkProps {
   markOnly?: boolean;
 }
 
 export function Logo({ className, size = "nav", markOnly = false }: LogoProps) {
   return (
     <span className={`inline-flex items-center gap-2.5 ${className ?? ""}`}>
-      <WorkWikiMark size={size} />
+      <AppMark size={size} />
       {!markOnly && (
         <span
           className="display text-ink"

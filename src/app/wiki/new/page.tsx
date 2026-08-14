@@ -145,7 +145,7 @@ export default function NewWikiPage() {
           </button>
           <button
             type="button"
-            onClick={() => router.push("/wiki")}
+            onClick={() => router.push("/")}
             className="btn ghost"
           >
             Cancel

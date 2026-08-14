@@ -226,28 +226,13 @@ export function canWriteFrontmatter(
 }
 
 /**
- * True when the principal is entitled to create private (paid) content.
+ * Whether `principal` may set a page to `visibility: private`.
  *
- * Reads Clerk `publicMetadata.plan === "pro"`. No Clerk Billing checkout is
- * wired in this codebase yet; provisioning the plan (dashboard or a billing
- * webhook that sets `publicMetadata.plan`) is owner-side config. Fail-closed:
- * service/token principals and any Clerk error yield `false`.
+ * Billing is retired with the commons: private is the app's default posture,
+ * not a paid upgrade, so any authenticated principal qualifies. No Clerk plan
+ * lookup happens here. Page ownership is still enforced separately by
+ * `patch-metadata.ts` (a non-owner gets `NOT_OWNER`).
  */
-export async function hasPaidPlan(principal: Principal): Promise<boolean> {
-  if (principal.id.startsWith("service:")) return false;
-  try {
-    const { currentUser } = await import("@clerk/nextjs/server");
-    const user = await currentUser();
-    if (!user) return false;
-    const meta = user.publicMetadata as Record<string, unknown> | undefined;
-    return meta?.plan === "pro";
-  } catch {
-    return false;
-  }
-}
-
-/** Whether `principal` may set a page to `visibility: private`. */
 export async function canSetPrivate(principal: Principal | null): Promise<boolean> {
-  if (!principal) return false;
-  return hasPaidPlan(principal);
+  return principal !== null;
 }

@@ -3,14 +3,12 @@ import { HomeAsk } from "@/components/HomeAsk";
 import { Icon } from "@/components/folio/icons";
 import { formatRelativeTime } from "@/lib/format";
 import type { HomeDashboardSnapshot } from "@/lib/home-dashboard";
-import { commonsPath, ownerToTenant, pagePath } from "@/lib/links";
+import { ownerToTenant, pagePath } from "@/lib/links";
 import type { ActionItem } from "@/lib/action-items";
 import type { IndexEntry } from "@/lib/types";
 
 function documentHref(page: IndexEntry): string {
-  return page.visibility === "private"
-    ? pagePath(ownerToTenant(page.owner), page.slug)
-    : commonsPath(page.slug);
+  return pagePath(ownerToTenant(page.owner), page.slug);
 }
 
 function documentKind(page: IndexEntry): string {
@@ -163,8 +161,8 @@ export function HomeDashboard({
             <WidgetHeading
               label="continue reading"
               title="Recent documents"
-              href="/wiki"
-              linkLabel="Browse all"
+              href="/query"
+              linkLabel="Ask the wiki"
             />
             {recentDocuments.length === 0 ? (
               <div className="dashboard-empty">
@@ -307,22 +305,19 @@ export function HomeDashboard({
             {topics.length > 0 && (
               <div className="dashboard-topics" aria-label="Top topics">
                 {topics.map((topic) => (
-                  <Link
-                    key={topic.label.toLocaleLowerCase()}
-                    href={`/wiki?tag=${encodeURIComponent(topic.label)}`}
-                  >
+                  <span key={topic.label.toLocaleLowerCase()}>
                     <span>{topic.label}</span>
                     <span className="receipt">{topic.count}</span>
-                  </Link>
+                  </span>
                 ))}
               </div>
             )}
             <nav className="dashboard-explore-links" aria-label="Explore your wiki">
-              <Link href="/wiki">
+              <Link href="/query">
                 <Icon.search width="18" height="18" aria-hidden />
                 <span>
-                  <strong>Browse knowledge</strong>
-                  <small>Search and filter every readable page</small>
+                  <strong>Ask your wiki</strong>
+                  <small>Get a cited answer from every readable page</small>
                 </span>
               </Link>
               <Link href="/wiki/graph">

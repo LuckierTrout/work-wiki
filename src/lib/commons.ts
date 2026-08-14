@@ -4,9 +4,12 @@
  * model each page lives in its owner's silo and the commons is *not* separate
  * storage but this persisted index over the public ones.
  *
- * Phase-1a: the index is *maintained* on the write/delete path but not yet read
- * by any surface (reads still use the flat wiki index) — additive and
- * behavior-preserving. A later phase switches the commons read surfaces over.
+ * RETIRED (AD-21): the commons product surface is gone. `syncCommonsForPage` is
+ * a no-op, so the persisted index is no longer refreshed on the write path, and
+ * `listCommonsPages` always derives from the live wiki index rather than reading
+ * it. The module and its storage helpers stay on disk for the callers that later
+ * epics still need (`belongsInCommons`, `listCommonsPages`); any stored index
+ * left over from before the retirement is inert.
  */
 
 import { getStorage } from "./storage";
@@ -100,31 +103,20 @@ export async function getCommonsSlugSet(): Promise<Set<string>> {
 }
 
 /**
- * The public commons as {@link IndexEntry}[] — the source of truth for the
- * public listing surfaces (homepage, `/wiki` "All", graph). Reads the derived
- * commons index when populated; FALLS BACK to deriving it from the flat wiki
- * index (public, non-agent) when the commons is empty — so this stays correct
- * and behavior-preserving before/independent of the migration. `owner` is the
- * stored original-case handle when present, else the (lowercased) tenant — so
- * the index path matches the fallback's display case (the commons is all-public;
- * visibility is implicitly public).
+ * The public, non-agent page set as {@link IndexEntry}[] — what the surviving
+ * readers (`/wiki/graph`, `/wiki/log`, unscoped MCP `wiki_graph`, `browse.ts`,
+ * `search.ts`) list.
+ *
+ * ALWAYS derived live from the flat wiki index. It used to prefer the stored
+ * commons index and fall back to a scan only when that was empty, but
+ * {@link syncCommonsForPage} is now a no-op (AD-21) while
+ * {@link removeCommonsEntryBySlug} still runs on delete — so a populated
+ * production index would freeze at its last synced state and then monotonically
+ * shrink, and every reader above would serve a stale page set forever. Deriving
+ * is O(index) and always current; the stored index survives only as data other
+ * code may still repair or migrate.
  */
 export async function listCommonsPages(): Promise<IndexEntry[]> {
-  const idx = await getCommonsIndex();
-  if (idx.length > 0) {
-    return idx.map((e) => ({
-      slug: e.slug,
-      title: e.title,
-      summary: e.summary,
-      ...(e.tags ? { tags: e.tags } : {}),
-      ...(e.updated ? { updated: e.updated } : {}),
-      ...(e.sourceCount !== undefined ? { sourceCount: e.sourceCount } : {}),
-      ...(e.confidence !== undefined ? { confidence: e.confidence } : {}),
-      ...(e.type ? { type: e.type } : {}),
-      owner: e.owner ?? e.tenant,
-    }));
-  }
-  // Fallback: derive the public, non-agent set from the flat index.
   return (await listWikiPages()).filter((p) => belongsInCommons(p));
 }
 
@@ -173,13 +165,16 @@ export async function removeCommonsEntryBySlug(slug: string): Promise<void> {
 }
 
 /**
- * Sync one page into/out of the commons after a write. Fail-soft: a commons
- * error must never break the underlying page write. `tenant` defaults to the
- * page owner (or {@link DEFAULT_TENANT} when ownerless).
+ * Sync one page into/out of the commons after a write.
+ *
+ * RETIRED (AD-21): the commons is no longer a product surface, so this performs
+ * no storage I/O — it neither reads nor writes the commons index. The signature
+ * and the `lifecycle.ts` call site are deliberately unchanged so the write
+ * path's shape stays stable for Epic 2; it resolves and never throws.
  */
 export async function syncCommonsForPage(
-  slug: string,
-  meta: {
+  _slug: string,
+  _meta: {
     owner?: string;
     visibility?: string;
     type?: string;
@@ -191,23 +186,7 @@ export async function syncCommonsForPage(
     confidence?: number;
   },
 ): Promise<void> {
-  const tenant = tenantForOwner(meta.owner);
-  if (belongsInCommons(meta)) {
-    await upsertCommonsEntry({
-      tenant,
-      owner: meta.owner?.trim() || undefined,
-      slug,
-      title: meta.title,
-      summary: meta.summary,
-      tags: meta.tags,
-      updated: meta.updated,
-      sourceCount: meta.sourceCount,
-      confidence: meta.confidence,
-      type: meta.type,
-    });
-  } else {
-    await removeCommonsEntry(tenant, slug);
-  }
+  // Intentionally does nothing.
 }
 
 /**

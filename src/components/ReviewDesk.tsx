@@ -204,7 +204,7 @@ export function ReviewDesk() {
       setReview(refreshed.review);
       setNotice(
         action === "accept"
-          ? "Changes accepted. WorkWiki will graphify the updated page in the background."
+          ? "Changes accepted. work-wiki will graphify the updated page in the background."
           : "Proposal rejected. The source page was not changed.",
       );
     } catch (reason) {

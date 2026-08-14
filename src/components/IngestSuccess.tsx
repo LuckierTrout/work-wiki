@@ -44,10 +44,10 @@ export function IngestSuccess({ slug, relatedUpdated, onReset }: IngestSuccessPr
           )}
           <div className="flex gap-4 mt-2">
             <Link
-              href="/wiki"
+              href="/"
               className="text-sm text-foreground/60 hover:text-foreground transition-colors"
             >
-              Back to wiki
+              Back to home
             </Link>
             <button
               onClick={onReset}

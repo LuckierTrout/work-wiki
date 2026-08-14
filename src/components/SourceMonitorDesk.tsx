@@ -133,7 +133,7 @@ export function SourceMonitorDesk() {
             Let sources come back to you.
           </h1>
           <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 0", maxWidth: "64ch" }}>
-            Monitor durable URLs. WorkWiki filters minor noise and drafts a cited update only when the meaning changes.
+            Monitor durable URLs. work-wiki filters minor noise and drafts a cited update only when the meaning changes.
           </p>
         </div>
         <div className="row" style={{ gap: 22 }}>

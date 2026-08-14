@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { saveAnswerToWiki } from "@/lib/query";
 import { getPrincipal } from "@/lib/auth";
-import { commonsPath, pagePath, ownerToTenant } from "@/lib/links";
+import { slugPath, pagePath, ownerToTenant } from "@/lib/links";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 
@@ -77,13 +77,12 @@ export async function POST(request: NextRequest) {
       owner,  // author — same as owner for web saves
     );
 
-    // Return the CANONICAL url so the client links correctly. An owned artifact
-    // (html/slides) lives at `/u/<tenant>/<slug>` and 404s at the commons
-    // `/wiki/<slug>`. A markdown save is a public commons page.
-    const url =
-      isArtifact && owner
-        ? pagePath(ownerToTenant(owner), result.slug)
-        : commonsPath(result.slug);
+    // Return the CANONICAL url so the client links correctly — always the
+    // owner-scoped `/u/<tenant>/<slug>` (the commons URL is retired). An
+    // ownerless save falls back to the default tenant, which 308s to canonical.
+    const url = owner
+      ? pagePath(ownerToTenant(owner), result.slug)
+      : slugPath(result.slug);
 
     return NextResponse.json({ slug: result.slug, url, success: true });
   } catch (error) {

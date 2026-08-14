@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { forgetRecentJobs, getRecentJobIds } from "@/lib/recent-ingests";
-import { commonsPath } from "@/lib/links";
+import { slugPath } from "@/lib/links";
 import { hostOf } from "@/lib/share-target";
 
 /** A still-running (or failed) job submitted from THIS browser (live status). */
@@ -483,7 +483,7 @@ export function RecentIngests() {
                   {failed ? "failed" : done ? ago(job.createdAt) : job.status === "processing" ? "working…" : "queued"}
                 </span>
                 {done && job.slug ? (
-                  <Link href={commonsPath(job.slug)} style={{ color: "var(--accent)", fontSize: 13.5 }}>
+                  <Link href={slugPath(job.slug)} style={{ color: "var(--accent)", fontSize: 13.5 }}>
                     {job.email?.subject || job.title || job.slug}
                   </Link>
                 ) : (
@@ -564,7 +564,7 @@ export function RecentIngests() {
               {ago(e.finished_at)}
             </span>
             {e.primary_slug ? (
-              <Link href={commonsPath(e.primary_slug)} style={{ color: "var(--accent)", fontSize: 13.5 }}>
+              <Link href={slugPath(e.primary_slug)} style={{ color: "var(--accent)", fontSize: 13.5 }}>
                 {e.primary_slug}
               </Link>
             ) : (

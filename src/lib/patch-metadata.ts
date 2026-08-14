@@ -105,15 +105,11 @@ export async function patchMetadata(
     throw err;
   }
 
-  // Making a page private is a paid, owner-only action — enforced here, the
-  // single shared write path for both REST and MCP.
+  // Making a page private is an owner-only action — enforced here, the single
+  // shared write path for both REST and MCP. It is NOT a paid action: billing
+  // retired with the commons, so there is no plan check.
   if ("visibility" in metadata && metadata.visibility === "private") {
-    const { canSetPrivate, canReadPage } = await import("./authz");
-    if (!(await canSetPrivate(principal))) {
-      const err = new Error("Setting a page private requires a paid plan.");
-      (err as NodeJS.ErrnoException).code = "PLAN_REQUIRED";
-      throw err;
-    }
+    const { canReadPage } = await import("./authz");
     const owner =
       typeof existing.frontmatter.owner === "string"
         ? existing.frontmatter.owner

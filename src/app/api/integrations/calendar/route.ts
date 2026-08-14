@@ -17,7 +17,7 @@ export async function GET() {
   const body = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//WorkWiki//WorkWiki//EN",
+    "PRODID:-//work-wiki//work-wiki//EN",
     ...todos,
     "END:VCALENDAR",
     "",

@@ -8,6 +8,7 @@ import { EmailIngestSettings } from "@/components/EmailIngestSettings";
 import { StructuredKnowledgeSettings } from "@/components/StructuredKnowledgeSettings";
 import { NamesTermsSettings } from "@/components/NamesTermsSettings";
 import { WorkspacePurposeSettings } from "@/components/WorkspacePurposeSettings";
+import { VaultExportButton } from "@/components/VaultExportButton";
 import { useSettings } from "@/hooks/useSettings";
 
 // ---------------------------------------------------------------------------
@@ -73,7 +74,7 @@ export default function SettingsPage() {
       <p className="fmark" style={{ marginBottom: 16 }}>owner configuration</p>
       <h1 className="display" style={{ fontSize: "clamp(36px,4.5vw,58px)", margin: 0 }}>Settings</h1>
       <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 0", maxWidth: "64ch" }}>
-        Manage the intelligence and delivery routes behind WorkWiki.
+        Manage the intelligence and delivery routes behind work-wiki.
       </p>
 
       {/* ---- Status indicator ---- */}
@@ -204,6 +205,16 @@ export default function SettingsPage() {
         <WorkspacePurposeSettings />
         <NamesTermsSettings />
         <EmailIngestSettings />
+
+        {/* ---- Your data ---- */}
+        <section className="mt-10">
+          <h2 className="text-lg font-semibold text-foreground">Your data</h2>
+          <p style={{ color: "var(--ink-2)", fontSize: 14, margin: "6px 0 12px", maxWidth: "60ch" }}>
+            Download every page you can read as an Obsidian-compatible vault —
+            markdown with wikilinks, frontmatter, and bundled images.
+          </p>
+          <VaultExportButton />
+        </section>
       </div>
     </main>
   );

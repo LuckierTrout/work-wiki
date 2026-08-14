@@ -70,7 +70,7 @@ export async function POST(request: NextRequest) {
     const principal = await getPrincipal();
     if (!principal) {
       return NextResponse.json(
-        { error: "Sign in required to query WorkWiki." },
+        { error: "Sign in required to query work-wiki." },
         { status: 401 },
       );
     }

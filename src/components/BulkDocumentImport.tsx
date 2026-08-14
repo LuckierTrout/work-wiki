@@ -19,7 +19,7 @@ import {
   selectBulkDocuments,
 } from "@/lib/bulk-document-import";
 import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
-import { commonsPath } from "@/lib/links";
+import { slugPath } from "@/lib/links";
 import { rememberRecentJob } from "@/lib/recent-ingests";
 
 const ACCEPTED_DOCUMENTS =
@@ -528,7 +528,7 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
                       </span>
                       {item.status === "done" && item.slug && (
                         <Link
-                          href={commonsPath(item.slug)}
+                          href={slugPath(item.slug)}
                           style={{ fontSize: 11.5, color: "var(--accent)" }}
                         >
                           Open page →

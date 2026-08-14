@@ -2,21 +2,15 @@
 
 import Link from "next/link";
 
-import { commonsPath, pagePath, ownerToTenant } from "@/lib/links";
+import { pagePath, ownerToTenant } from "@/lib/links";
 import type { DataviewResultRow } from "./DataviewFilterRow";
 
 /**
- * Resolve a dataview result row to its canonical URL. PUBLIC commons pages live
- * at the global `/wiki/<slug>`; private/agent pages (which a principal-scoped
- * query can surface for the owner) have no global URL and stay owner-scoped.
+ * Resolve a dataview result row to its canonical owner-scoped URL. The public
+ * commons URL is retired, so every row resolves to `/u/<tenant>/<slug>`.
  */
 function rowHref(row: DataviewResultRow): string {
   const fm = row.frontmatter;
-  const visibility = typeof fm.visibility === "string" ? fm.visibility : undefined;
-  const type = typeof fm.type === "string" ? fm.type : undefined;
-  if (visibility !== "private" && !type?.startsWith("agent-")) {
-    return commonsPath(row.slug);
-  }
   const owner = typeof fm.owner === "string" ? fm.owner : undefined;
   return pagePath(ownerToTenant(owner), row.slug);
 }

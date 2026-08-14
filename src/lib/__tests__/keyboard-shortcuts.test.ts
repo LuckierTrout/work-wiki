@@ -88,10 +88,9 @@ describe("matchShortcut", () => {
     expect(match!.route).toBe("/lint");
   });
 
-  it("matches g then b → /wiki", () => {
+  it("no longer matches g then b — the commons browse index is retired", () => {
     const { match } = matchShortcut(["g"], "b");
-    expect(match).not.toBeNull();
-    expect(match!.route).toBe("/wiki");
+    expect(match).toBeNull();
   });
 
   it("matches g then g → /wiki/graph", () => {
@@ -140,12 +139,12 @@ describe("matchShortcut", () => {
 
 describe("SHORTCUTS", () => {
   it("has expected number of shortcuts", () => {
-    expect(SHORTCUTS.length).toBeGreaterThanOrEqual(7);
+    expect(SHORTCUTS.length).toBeGreaterThanOrEqual(6);
   });
 
   it("all navigation shortcuts have a route", () => {
     const navShortcuts = SHORTCUTS.filter((s) => s.description.startsWith("Go to"));
-    expect(navShortcuts.length).toBe(6);
+    expect(navShortcuts.length).toBe(5);
     for (const s of navShortcuts) {
       expect(s.route).toBeTruthy();
     }
@@ -200,7 +199,6 @@ describe("route mapping", () => {
     "g i": "/ingest",
     "g q": "/query",
     "g l": "/lint",
-    "g b": "/wiki",
     "g g": "/wiki/graph",
     "g s": "/settings",
   };

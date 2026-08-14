@@ -5,7 +5,7 @@ import type { NextRequest } from "next/server";
 // HTTP methods that mutate state.
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-// WorkWiki is a private, single-owner deployment. Every application page and
+// work-wiki is a private, single-owner deployment. Every application page and
 // API request requires the configured Clerk owner session. The only exceptions
 // are Clerk's own proxy path (needed to establish a session) and machine write
 // routes that authenticate in-route with an existing bearer token.
@@ -155,7 +155,7 @@ export default clerkMiddleware(async (auth, req) => {
   const { pathname } = req.nextUrl;
 
   // The authentication surface and Clerk proxy are the only public app paths.
-  // They expose no WorkWiki content and are required to establish a session.
+  // They expose no work-wiki content and are required to establish a session.
   if (SIGN_IN_RE.test(pathname) || CLERK_PROXY_RE.test(pathname)) {
     return privateResponse(NextResponse.next());
   }

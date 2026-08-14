@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { slugPath } from "@/lib/links";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { WorkspacePurposeSettings } from "@/components/WorkspacePurposeSettings";
 import { LocalSyncPanel } from "@/components/LocalSyncPanel";
@@ -395,7 +396,7 @@ function CompilePanel({ jobs, proposals, contributions, onEvidence }: { jobs: In
               eyebrow: contribution.sourceType,
               title: contribution.pageSlug,
               body: contribution.sourceUrl,
-              href: `/wiki/${encodeURIComponent(contribution.pageSlug)}`,
+              href: slugPath(contribution.pageSlug),
               hrefLabel: "Open compiled page",
               signals: [`${contribution.structuredRecordIds.length} records`, `${contribution.structuredRelationIds.length} relations`, shortDate(contribution.observedAt)],
             })}>

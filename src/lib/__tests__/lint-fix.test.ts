@@ -984,7 +984,7 @@ describe("fixLintIssue", () => {
 
     expect(result.success).toBe(true);
     expect(result.slug).toBe("old-page");
-    expect(result.message).toContain("yopedia defaults");
+    expect(result.message).toContain("work-wiki defaults");
     expect(mockedWriteWikiPageWithSideEffects).toHaveBeenCalledOnce();
   });
 });

@@ -110,11 +110,11 @@ async function reply(
 }
 
 function safeError(value: unknown): string {
-  if (!value || typeof value !== "object") return "Yopedia could not accept this email.";
+  if (!value || typeof value !== "object") return "work-wiki could not accept this email.";
   const error = (value as Record<string, unknown>).error;
   return typeof error === "string" && error.trim()
     ? error.replace(/[\r\n]+/g, " ").slice(0, 300)
-    : "Yopedia could not accept this email.";
+    : "work-wiki could not accept this email.";
 }
 
 export default {
@@ -123,7 +123,7 @@ export default {
       | EmailIngestConfig
       | null;
     if (!config?.enabled) {
-      message.setReject("Email ingestion is not enabled for this Yopedia.");
+      message.setReject("Email ingestion is not enabled for this work-wiki.");
       return;
     }
 
@@ -133,11 +133,11 @@ export default {
       ? config.allowedSenders.map(normalizeAddress)
       : [];
     if (!allowed.includes(from)) {
-      message.setReject("This sender is not approved for Yopedia ingestion.");
+      message.setReject("This sender is not approved for work-wiki ingestion.");
       return;
     }
     if (config.inboundAddress && normalizeAddress(config.inboundAddress) !== to) {
-      message.setReject("This address is not configured for Yopedia ingestion.");
+      message.setReject("This address is not configured for work-wiki ingestion.");
       return;
     }
 
@@ -148,7 +148,7 @@ export default {
       await reply(
         message,
         headerSubject,
-        "Yopedia did not process this message because it is larger than 10 MB.",
+        "work-wiki did not process this message because it is larger than 10 MB.",
       );
       return;
     }
@@ -159,7 +159,7 @@ export default {
       await reply(
         message,
         headerSubject,
-        "Yopedia could not queue this email because the ingest service is not configured.",
+        "work-wiki could not queue this email because the ingest service is not configured.",
       );
       return;
     }
@@ -172,7 +172,7 @@ export default {
       await reply(
         message,
         headerSubject,
-        "Yopedia could not read this email. Send a new message with a plain-text or HTML body.",
+        "work-wiki could not read this email. Send a new message with a plain-text or HTML body.",
       );
       return;
     }
@@ -186,7 +186,7 @@ export default {
       await reply(
         message,
         subject,
-        "Yopedia could not process this message because it has no Message-ID. Please resend it from a standard email client.",
+        "work-wiki could not process this message because it has no Message-ID. Please resend it from a standard email client.",
       );
       return;
     }
@@ -198,8 +198,8 @@ export default {
         message,
         subject,
         parsed.attachments.length
-          ? "Yopedia found no email text or supported document attachment. Supported attachments: Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, and ZIP."
-          : "Yopedia found no email text to ingest.",
+          ? "work-wiki found no email text or supported document attachment. Supported attachments: Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, and ZIP."
+          : "work-wiki found no email text to ingest.",
       );
       return;
     }
@@ -225,7 +225,7 @@ export default {
       for (const name of attachmentNames) form.append("attachmentName", name);
       for (const [index, attachment] of supportedAttachments.entries()) {
         const filename = attachment.filename || `attachment-${index + 1}`;
-        const bytes = typeof attachment.content === "string"
+        const source = typeof attachment.content === "string"
           ? new TextEncoder().encode(attachment.content)
           : attachment.content instanceof ArrayBuffer
             ? new Uint8Array(attachment.content)
@@ -234,6 +234,10 @@ export default {
                 attachment.content.byteOffset,
                 attachment.content.byteLength,
               );
+        // Copy into a view whose buffer is definitely an ArrayBuffer: a view
+        // over a SharedArrayBuffer is not a valid BlobPart.
+        const bytes = new Uint8Array(source.byteLength);
+        bytes.set(source);
         form.append(
           "attachments",
           new Blob([bytes], { type: attachment.mimeType || "application/octet-stream" }),
@@ -254,7 +258,7 @@ export default {
       await reply(
         message,
         subject,
-        "Yopedia could not queue this email. Please try again in a few minutes.",
+        "work-wiki could not queue this email. Please try again in a few minutes.",
       );
       return;
     }
@@ -272,11 +276,14 @@ export default {
     const jobId = typeof result?.jobId === "string" ? result.jobId : "";
     const slug = typeof result?.slug === "string" ? result.slug : "";
     const lines = [
-      slug ? "Yopedia has already processed this email." : "Yopedia received your email and queued it for processing.",
+      slug ? "work-wiki has already processed this email." : "work-wiki received your email and queued it for processing.",
       jobId ? `Job: ${jobId}` : "",
-      slug && site ? `Page: ${site}/wiki/${encodeURIComponent(slug)}` : "",
+      // `/wiki/<slug>` is retired (404); the owner-scoped form via the default
+      // tenant 308s to the page's real tenant. Inlined — workers cannot import
+      // `src/lib`.
+      slug && site ? `Page: ${site}/u/yopedia/${encodeURIComponent(slug)}` : "",
       !slug && site ? `Track it under Recent ingests: ${site}/ingest` : "",
-      !slug ? "Yopedia will send a final receipt when processing succeeds or fails." : "",
+      !slug ? "work-wiki will send a final receipt when processing succeeds or fails." : "",
       supportedAttachments.length
         ? `${supportedAttachments.length} supported attachment${supportedAttachments.length === 1 ? " was" : "s were"} queued for ingestion.`
         : "",

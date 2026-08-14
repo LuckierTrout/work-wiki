@@ -36,10 +36,10 @@ export function HomeGraph({ height = 340 }: { height?: number }) {
         className="block w-full"
         style={{ height, backgroundColor: canvasBg }}
         role="img"
-        aria-label="Knowledge graph of interlinked wiki pages. Visit the wiki index for a text list."
+        aria-label="Knowledge graph of interlinked wiki pages. Open the graph page for an accessible listing."
         tabIndex={0}
       >
-        Knowledge graph — see the wiki index for an accessible page listing.
+        Knowledge graph — open the graph page for an accessible page listing.
       </canvas>
       <Link
         href="/wiki/graph"

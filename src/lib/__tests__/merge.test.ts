@@ -20,7 +20,6 @@ import {
 } from "../wiki";
 import { serializeSources } from "../sources";
 import { extractSummary } from "../ingest";
-import { commonsPath } from "../links";
 import { resetSourceIndex } from "../source-index";
 import { resetAliasIndex, resolveAlias } from "../alias-index";
 import { rebuildBacklinkIndex } from "../backlink-index";
@@ -145,12 +144,11 @@ describe("mergePages", () => {
     expect(into!.frontmatter.created).toBe("2026-01-15");
     expect(into!.frontmatter.confidence as number).toBeGreaterThan(0.6);
 
-    // The absorbed slug now resolves to the survivor (alias + redirect).
+    // The absorbed slug still resolves to the survivor via the alias index.
+    // The commons redirect it used to feed is retired, so it forwards nowhere.
     resetAliasIndex();
     expect(await resolveAlias("harness-ai-agents")).toBe("agent-harness");
-    expect(await commonsRedirectForMissing("harness-ai-agents")).toBe(
-      commonsPath("agent-harness"),
-    );
+    expect(await commonsRedirectForMissing("harness-ai-agents")).toBeNull();
   });
 
   it("re-points internal backlinks from the absorbed slug to the survivor BEFORE deleting", async () => {

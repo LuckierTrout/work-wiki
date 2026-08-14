@@ -1,4 +1,3 @@
-import Link from "next/link";
 import type { Metadata } from "next";
 import { permanentRedirect } from "next/navigation";
 import { decodeSlug } from "@/lib/slugify";
@@ -6,12 +5,10 @@ import {
   readWikiPageWithFrontmatter,
   tenantForOwner,
 } from "@/lib/wiki";
-import { pagePath, commonsPath } from "@/lib/links";
+import { pagePath } from "@/lib/links";
 import { getPrincipal } from "@/lib/auth";
 import { canReadFrontmatter } from "@/lib/authz";
-import { belongsInCommons } from "@/lib/commons";
 import { ArticleView } from "@/components/ArticleView";
-import { hasOpenThread } from "@/lib/talk";
 import { getPageEvidence } from "@/lib/evidence";
 
 interface WikiPageProps {
@@ -19,15 +16,9 @@ interface WikiPageProps {
 }
 
 /**
- * Per-page Open Graph / Twitter metadata for the owner-scoped (private/owned)
- * URL. Private pages the viewer can't read get a neutral title so existence
- * isn't leaked.
- *
- * For PUBLIC commons pages the canonical + OG url point at the GLOBAL
- * `/wiki/<slug>`: the page-body `permanentRedirect` does NOT produce a true HTTP
- * redirect on OpenNext-Cloudflare (the public page renders at 200 here), so
- * pointing the canonical at the commons URL avoids duplicate-content/SEO issues.
- * Private/owned pages stay canonical at `/u/<tenant>/<slug>`.
+ * Per-page Open Graph / Twitter metadata for the owner-scoped page URL — the
+ * only page URL there is now that the commons is retired. Pages the viewer
+ * can't read get a neutral title so existence isn't leaked.
  */
 export async function generateMetadata({
   params,
@@ -48,19 +39,7 @@ export async function generateMetadata({
     typeof page.frontmatter.summary === "string"
       ? page.frontmatter.summary
       : undefined;
-  // Public commons pages are canonical at the global `/wiki/<slug>` (see the
-  // function doc): point canonical + OG url there. Private pages canonical here.
-  const inCommons = belongsInCommons({
-    visibility:
-      typeof page.frontmatter.visibility === "string"
-        ? page.frontmatter.visibility
-        : undefined,
-    type:
-      typeof page.frontmatter.type === "string"
-        ? page.frontmatter.type
-        : undefined,
-  });
-  const url = inCommons ? commonsPath(slug) : pagePath(tenant, slug);
+  const url = pagePath(tenant, slug);
   return {
     title: page.title, // layout template appends " · work-wiki"
     ...(description ? { description } : {}),
@@ -80,10 +59,9 @@ export async function generateMetadata({
 }
 
 /**
- * The owner-scoped page route — now PRIVATE-ONLY. A PUBLIC commons page is
- * canonical at the global `/wiki/<slug>` (rendered context-free/cacheable with
- * no principal), so this route 308-redirects public pages there and only ever
- * RENDERS private/owned pages — behind a read-authorization check.
+ * The owner-scoped page route — the ONLY page-view surface. The public commons
+ * URL `/wiki/<slug>` is retired, so every readable page (public or private)
+ * renders here, behind a read-authorization check.
  */
 export default async function WikiPageView({ params }: WikiPageProps) {
   const { handle: encodedHandle, slug: encodedSlug } = await params;
@@ -96,13 +74,7 @@ export default async function WikiPageView({ params }: WikiPageProps) {
   if (!page || !canReadFrontmatter(page.frontmatter, principal)) {
     return (
       <main className="mx-auto max-w-3xl px-6 py-12">
-        <Link
-          href="/wiki"
-          className="text-sm text-foreground/60 hover:text-foreground transition-colors"
-        >
-          ← Back to index
-        </Link>
-        <h1 className="mt-6 text-3xl font-bold">Page not found</h1>
+        <h1 className="text-3xl font-bold">Page not found</h1>
         <p className="mt-4 text-foreground/60">
           No wiki page exists for &ldquo;{slug}&rdquo;.
         </p>
@@ -123,30 +95,11 @@ export default async function WikiPageView({ params }: WikiPageProps) {
     permanentRedirect(pagePath(pageTenant, slug));
   }
 
-  // PUBLIC commons pages live at the global, context-free `/wiki/<slug>` URL.
-  // Send them there (308) so the owner-scoped form only ever renders the
-  // private/owned pages below.
-  if (
-    belongsInCommons({
-      visibility:
-        typeof page.frontmatter.visibility === "string"
-          ? page.frontmatter.visibility
-          : undefined,
-      type:
-        typeof page.frontmatter.type === "string"
-          ? page.frontmatter.type
-          : undefined,
-    })
-  ) {
-    permanentRedirect(commonsPath(slug));
-  }
-
-  // Private, readable page → render with the real principal (so its backlinks
-  // include the viewer's own private pages).
-  // Only let the `disputed` banner claim "a reconciliation is open" when one is.
-  // (hasOpenThread is fail-soft — a discuss-read error can't break the render.)
-  const hasOpenReconciliation =
-    page.frontmatter.disputed === true && (await hasOpenThread(slug));
+  // Readable page → render with the real principal (so its backlinks include
+  // the viewer's own private pages).
+  // The `disputed` banner no longer reports whether a reconciliation is open:
+  // talk is retired with the commons (AD-21), so no surface can open, show, or
+  // close a thread, and a reader told one exists has nowhere to act on it.
   const evidenceBundle = principal && tenantForOwner(principal.handle) === pageTenant
     ? await getPageEvidence(principal.handle, slug)
     : null;
@@ -156,7 +109,6 @@ export default async function WikiPageView({ params }: WikiPageProps) {
       slug={slug}
       pageTenant={pageTenant}
       principal={principal}
-      hasOpenReconciliation={hasOpenReconciliation}
       evidenceBundle={evidenceBundle}
     />
   );

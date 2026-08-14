@@ -44,7 +44,7 @@ afterEach(async () => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function seedPage(slug: string): Promise<void> {
+async function seedPage(slug: string, owner?: string): Promise<void> {
   const content = serializeFrontmatter(
     {
       title: "Test Page",
@@ -53,6 +53,7 @@ async function seedPage(slug: string): Promise<void> {
       confidence: 0.5,
       visibility: "public",
       authors: ["tester"],
+      ...(owner ? { owner } : {}),
     },
     "# Test Page\n\nSome content.\n",
   );
@@ -64,19 +65,28 @@ async function seedPage(slug: string): Promise<void> {
 // ===========================================================================
 
 describe("patchMetadata — visibility guard", () => {
-  it("rejects setting visibility: private without a paid plan (PLAN_REQUIRED)", async () => {
-    await seedPage("guarded-page");
+  it("lets the owner set visibility: private with no plan (billing is retired)", async () => {
+    await seedPage("guarded-page", "alice");
+    const result = await patchMetadata({
+      slug: "guarded-page",
+      metadata: { visibility: "private" },
+      principal: { id: "u_alice", handle: "alice" },
+    });
+    expect(result.updated).toBe(true);
+  });
+
+  it("still rejects a NON-owner setting visibility: private (NOT_OWNER)", async () => {
+    await seedPage("someone-elses-page", "alice");
     try {
-      // No principal → not entitled → the paid gate fires before the owner check.
       await patchMetadata({
-        slug: "guarded-page",
+        slug: "someone-elses-page",
         metadata: { visibility: "private" },
+        principal: { id: "u_bob", handle: "bob" },
       });
       expect.unreachable("should have thrown");
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
-      expect(e.code).toBe("PLAN_REQUIRED");
-      expect(e.message.toLowerCase()).toContain("paid plan");
+      expect(e.code).toBe("NOT_OWNER");
     }
   });
 

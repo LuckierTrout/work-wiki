@@ -151,7 +151,7 @@ export function WorkspacePurposeSettings() {
             Workspace Purpose
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-foreground/60">
-            Tell WorkWiki what this memory is for, which questions matter, and what
+            Tell work-wiki what this memory is for, which questions matter, and what
             belongs outside its scope. The profile guides generated work; source
             evidence and citations still win.
           </p>
@@ -263,7 +263,7 @@ export function WorkspacePurposeSettings() {
                 maxLength={8_000}
                 rows={4}
                 onChange={(event) => setProfile({ ...profile, pageConventions: event.target.value })}
-                placeholder="How should WorkWiki organize, qualify, and connect generated knowledge?"
+                placeholder="How should work-wiki organize, qualify, and connect generated knowledge?"
                 className="mt-1.5 block w-full resize-y rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm leading-6 text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
               />
             </label>

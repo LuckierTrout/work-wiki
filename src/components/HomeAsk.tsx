@@ -1,17 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser, useClerk, SignInButton } from "@clerk/nextjs";
 import { useStreamingQuery } from "@/hooks/useStreamingQuery";
-import { QueryResultPanel } from "./QueryResultPanel";
-import { Alert } from "./Alert";
 import { Icon } from "./folio/icons";
 
 const DEFAULT_EXAMPLES = [
   "What is harness engineering?",
-  "How is WorkWiki different from RAG?",
+  "How is work-wiki different from RAG?",
   "What are the agentic harness patterns?",
 ];
 
@@ -21,25 +17,25 @@ interface HomeAskProps {
   helperText?: string;
 }
 
-// One free taste per browser: after a signed-out visitor sees one demo answer,
-// the next interaction prompts sign-in.
-const DEMO_USED_KEY = "yopedia_demo_used";
-
 /**
- * The homepage hero / launcher. Signed-in: submitting (or clicking a sample)
- * navigates to /query?q=… which auto-runs the answer there. Signed-OUT: clicking
- * a sample shows a cached, pre-computed answer (a "taste" — no LLM cost, served
- * from /api/query/demo); the next question enforces sign-in.
+ * The homepage hero / launcher. Submitting (or clicking a sample) navigates to
+ * /query?q=… which auto-runs the answer there.
+ *
+ * The signed-out "taste" demo is gone with the commons: `/api/query/demo` was
+ * the app's only unauthenticated route and now 404s, and middleware redirects
+ * an anonymous visitor to /sign-in before this component ever renders. A
+ * signed-out render is therefore only a transient pre-hydration state, and it
+ * offers sign-in rather than a preview answer.
  */
 export function HomeAsk({
   examples = DEFAULT_EXAMPLES,
-  placeholder = "Consult the commons — ask, and get an answer cited to the pages it stands on…",
+  placeholder = "Ask your wiki — get an answer cited to the pages it stands on…",
   helperText = "Answers query the wiki live and cite their sources. ⌘↵ to ask.",
 }: HomeAskProps = {}) {
   const router = useRouter();
   const { isSignedIn } = useUser();
   const { openSignIn } = useClerk();
-  // Only the question input is used here; signed-in asks run on /query, not inline.
+  // Only the question input is used here; asks run on /query, not inline.
   const { question, setQuestion } = useStreamingQuery();
 
   /** Hand the question off to /query, which reads ?q= and auto-runs it. */
@@ -48,87 +44,13 @@ export function HomeAsk({
     if (trimmed) router.push(`/query?q=${encodeURIComponent(trimmed)}`);
   }
 
-  // Signed-out demo state.
-  const [demo, setDemo] = useState<{ answer: string; sources: string[] } | null>(
-    null,
-  );
-  const [demoStreaming, setDemoStreaming] = useState(false);
-  const [demoLoading, setDemoLoading] = useState(false);
-  const [demoError, setDemoError] = useState<string | null>(null);
-  const [demoQuestion, setDemoQuestion] = useState("");
-  const revealRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(
-    () => () => {
-      if (revealRef.current) clearInterval(revealRef.current);
-    },
-    [],
-  );
-
-  function demoUsed(): boolean {
-    try {
-      return localStorage.getItem(DEMO_USED_KEY) === "1";
-    } catch {
-      return false;
-    }
-  }
-
-  async function runDemo(q: string) {
-    if (revealRef.current) clearInterval(revealRef.current);
-    setDemoQuestion(q);
-    setDemoError(null);
-    setDemo(null);
-    setDemoStreaming(false);
-    setDemoLoading(true);
-    try {
-      const res = await fetch(`/api/query/demo?q=${encodeURIComponent(q)}`);
-      const data = await res.json();
-      if (!res.ok) {
-        setDemoError(data.error ?? "Demo unavailable right now.");
-        setDemoLoading(false);
-        return;
-      }
-      try {
-        localStorage.setItem(DEMO_USED_KEY, "1");
-      } catch {
-        /* private mode — fine, just no persistence */
-      }
-      const full: string = data.answer ?? "";
-      const sources: string[] = Array.isArray(data.sources) ? data.sources : [];
-      // Simulate a live stream by revealing the cached answer progressively.
-      setDemoLoading(false);
-      setDemoStreaming(true);
-      setDemo({ answer: "", sources });
-      let i = 0;
-      const step = Math.max(2, Math.ceil(full.length / 110));
-      revealRef.current = setInterval(() => {
-        i = Math.min(full.length, i + step);
-        setDemo({ answer: full.slice(0, i), sources });
-        if (i >= full.length) {
-          if (revealRef.current) clearInterval(revealRef.current);
-          setDemoStreaming(false);
-        }
-      }, 16);
-    } catch {
-      setDemoError("Failed to load the demo answer.");
-      setDemoLoading(false);
-    }
-  }
-
   function onChip(q: string) {
     if (isSignedIn) {
       goToQuery(q);
       return;
     }
-    // Signed-out: one free demo, then enforce sign-in.
-    if (demoUsed()) {
-      openSignIn();
-      return;
-    }
-    runDemo(q);
+    openSignIn();
   }
-
-  const guestBusy = demoLoading || demoStreaming;
 
   return (
     <div>
@@ -162,7 +84,7 @@ export function HomeAsk({
               <Icon.spark width="22" height="22" />
             </span>
             <textarea
-              value={isSignedIn ? question : demoQuestion}
+              value={isSignedIn ? question : ""}
               onChange={(e) => setQuestion(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -173,6 +95,7 @@ export function HomeAsk({
               placeholder={placeholder}
               rows={2}
               disabled={!isSignedIn}
+              aria-label="Ask your wiki a question"
               style={{
                 flex: 1,
                 border: 0,
@@ -208,8 +131,7 @@ export function HomeAsk({
                     type="button"
                     key={q}
                     onClick={() => onChip(q)}
-                    disabled={guestBusy}
-                    className="receipt folio-chip disabled:opacity-50"
+                    className="receipt folio-chip"
                     style={{
                       fontSize: 11.5,
                       color: "var(--muted)",
@@ -249,49 +171,6 @@ export function HomeAsk({
           {helperText}
         </p>
       </form>
-
-      {!isSignedIn && !demo && !demoLoading && !demoError && (
-        <p className="mt-2 text-xs text-muted">
-          Try a sample question for a taste —{" "}
-          <Link href="/waitlist" className="underline hover:text-foreground">
-            join the waitlist
-          </Link>{" "}
-          to ask your own.
-        </p>
-      )}
-
-      {demoError && (
-        <div className="mt-4">
-          <Alert variant="error">{demoError}</Alert>
-        </div>
-      )}
-
-      {!isSignedIn && demoLoading && (
-        <p className="mt-4 text-sm text-muted">Thinking…</p>
-      )}
-
-      {/* Signed-out demo result (read-only — no save) */}
-      {!isSignedIn && demo && (
-        <div className="mt-6">
-          <QueryResultPanel
-            result={demo}
-            streaming={demoStreaming}
-            question={demoQuestion}
-            currentHistoryId={null}
-            readOnly
-          />
-          {!demoStreaming && (
-            // The demo is the new-visitor funnel; invite-only means the next
-            // step is the waitlist, not a sign-in they can't complete yet.
-            <Link
-              href="/waitlist"
-              className="mt-4 inline-block rounded-lg bg-accent px-5 py-2 text-sm font-medium text-accent-foreground hover:bg-accent-hover transition-colors"
-            >
-              Join the waitlist to ask your own →
-            </Link>
-          )}
-        </div>
-      )}
     </div>
   );
 }

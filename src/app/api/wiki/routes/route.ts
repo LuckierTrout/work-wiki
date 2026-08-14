@@ -7,8 +7,9 @@ import { getPrincipal } from "@/lib/auth";
  * components (search, query sources, lint, batch, ingest) build canonical
  * `/u/<tenant>/<slug>` links without threading `owner` through every payload.
  * Readability-gated: a private page only appears in its owner's map, so this
- * never leaks another user's private slugs. Unknown slugs fall back to the
- * legacy `/wiki/<slug>` route (which 308-redirects) on the client.
+ * never leaks another user's private slugs. An unknown slug falls back on the
+ * client to the default tenant's `/u/` URL (see `slugPath`), which 308s to the
+ * page's real tenant — the retired `/wiki/<slug>` form is never emitted.
  */
 export async function GET() {
   const pages = await listReadableWikiPages(await getPrincipal());

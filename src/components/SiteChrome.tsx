@@ -2,14 +2,15 @@
 
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
-import { MobileNavigationDock } from "@/components/MobileNavigationDock";
 
 /**
  * Wraps the app's global chrome (nav + footer) so it can be hidden on
- * chrome-less routes. `/share/*` renders bare — just the page content — for a
- * clean, embeddable, shareable view (the share page supplies its own minimal
- * header). The nav/footer are passed in as nodes (rendered on the server) so a
- * client component can conditionally render them without importing them.
+ * chrome-less routes — today only `/sign-in`, which supplies its own layout.
+ * The nav/footer are passed in as nodes (rendered on the server) so a client
+ * component can conditionally render them without importing them.
+ *
+ * There is deliberately no device-specific alternate navigation: every viewport
+ * gets the same information architecture (Epic 1, AC3).
  */
 export function SiteChrome({
   nav,
@@ -21,9 +22,7 @@ export function SiteChrome({
   children: ReactNode;
 }) {
   const pathname = usePathname();
-  const bare = Boolean(
-    pathname?.startsWith("/share") || pathname?.startsWith("/sign-in"),
-  );
+  const bare = Boolean(pathname?.startsWith("/sign-in"));
 
   if (bare) {
     return (
@@ -43,7 +42,6 @@ export function SiteChrome({
         {children}
       </main>
       {footer}
-      <MobileNavigationDock />
     </>
   );
 }

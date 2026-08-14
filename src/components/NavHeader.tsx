@@ -7,16 +7,15 @@ import { Show, SignInButton, UserButton, useUser } from "@clerk/nextjs";
 import { GlobalSearch } from "./GlobalSearch";
 import { ThemeToggle } from "./folio/ThemeToggle";
 import { Avatar } from "./folio/primitives";
-import { WorkWikiMark } from "./Logo";
+import { AppMark } from "./Logo";
 import { APP_NAME } from "@/lib/brand";
 import { isOwnerHandle } from "@/lib/owner";
 import { LocaleSwitcher } from "./LocaleSwitcher";
 
 // Primary actions — the only links in the bar. Secondary/exploration links
-// (Graph, Log, Contributors) live in the footer per the Folio design; owner
-// admin (Lint, Settings) lives in the user menu.
+// (Graph, Log) live in the footer per the Folio design; owner admin (Lint,
+// Settings) lives in the user menu.
 const primaryLinks = [
-  { href: "/wiki", label: "Browse" },
   { href: "/query", label: "Ask" },
   { href: "/chat", label: "Chat" },
   { href: "/ingest", label: "Ingest" },
@@ -42,13 +41,6 @@ function getActiveHref(pathname: string): string | null {
   if (pathname === "/ingest" || pathname.startsWith("/ingest/")) return "/ingest";
   if (pathname === "/save" || pathname.startsWith("/save/")) return "/save";
   if (pathname === "/tasks" || pathname.startsWith("/tasks/")) return "/tasks";
-  // Browse owns the commons + article reading surfaces.
-  if (
-    pathname === "/wiki" ||
-    pathname.startsWith("/wiki/") ||
-    pathname.startsWith("/u/")
-  )
-    return "/wiki";
   return null;
 }
 
@@ -98,7 +90,7 @@ export function NavHeader() {
             href="/"
             className="flex items-center gap-2.5 text-ink hover:opacity-90 transition-opacity"
           >
-            <WorkWikiMark />
+            <AppMark />
             <span
               className="display"
               style={{ fontSize: 21, letterSpacing: "-0.026em", fontWeight: 650 }}
@@ -143,19 +135,9 @@ export function NavHeader() {
           <LocaleSwitcher />
 
           <Show when="signed-out">
-            {/* Invite-only: new visitors join the waitlist (the primary action);
-                approved/returning members sign in. Clerk's sign-in modal also
-                cross-links to /waitlist via `waitlistUrl`. Hidden below md — the
-                hamburger menu carries auth on narrow widths. */}
-            <span className="hidden xl:inline-flex">
-              <Link
-                href="/waitlist"
-                className="btn primary"
-                style={{ marginLeft: 2 }}
-              >
-                Join waitlist
-              </Link>
-            </span>
+            {/* Owner-only deployment: signing in is the only entry point (the
+                waitlist is retired). Hidden below xl — the hamburger menu
+                carries auth on narrow widths. */}
             <span className="hidden xl:inline-flex">
               <SignInButton mode="modal">
                 <button className="btn ghost" style={{ marginLeft: 2 }}>
@@ -371,9 +353,6 @@ export function NavHeader() {
           >
             <Show when="signed-out">
               <span className="inline-flex items-center gap-2">
-                <Link href="/waitlist" className="btn primary">
-                  Join waitlist
-                </Link>
                 <SignInButton mode="modal">
                   <button className="btn ghost">Sign in</button>
                 </SignInButton>

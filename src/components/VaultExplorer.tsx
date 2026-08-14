@@ -11,7 +11,7 @@ import {
   useState,
 } from "react";
 import { Icon } from "@/components/folio/icons";
-import { commonsPath } from "@/lib/links";
+import { slugPath } from "@/lib/links";
 import type { Vault } from "@/lib/vault";
 import type { VaultExplorerEntry } from "@/lib/vault-explorer";
 import {
@@ -542,7 +542,7 @@ export function VaultExplorer({
                 <h2>{selectedEntry.title}</h2>
                 {selectedEntry.summary ? <p>{selectedEntry.summary}</p> : null}
                 <div className="vault-preview-actions">
-                  <Link className="btn primary" href={commonsPath(selectedEntry.slug)}>
+                  <Link className="btn primary" href={slugPath(selectedEntry.slug)}>
                     Open full page <Icon.arrow width="14" height="14" aria-hidden="true" />
                   </Link>
                   {originalHref ? (
