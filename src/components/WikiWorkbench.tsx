@@ -15,11 +15,11 @@ import type { WikiRecord } from "@/lib/wikis";
 /**
  * The Wiki surface on the owner's landing page.
  *
- * Story 1.2's minimal honest stand-in: it lands the owner somewhere real after
- * Create Wiki without building Story 1.3's icon rail or Story 1.4's trees, and
- * is expected to be replaced wholesale by 1.3's shell. The seeded file names
- * are inert text on purpose — opening one into a rendered Preview is Story 1.5,
- * so the preview region always reads its empty sentence here.
+ * Story 1.2's minimal honest stand-in, now mounted as Story 1.3's Wiki-mode
+ * canvas: it lands the owner somewhere real after Create Wiki without building
+ * Story 1.4's trees. The seeded file names are inert text on purpose — opening
+ * one into a rendered Preview is Story 1.5, so the preview region always reads
+ * its empty sentence here.
  */
 
 export interface WikiWorkbenchProps {
@@ -149,8 +149,8 @@ export function WikiWorkbench({
   }
 
   return (
-    <section className="shell py-8" aria-labelledby="wiki-workbench-heading">
-      {/* h2, not h1: HomeDashboard below owns the page's single h1. */}
+    <section className="wb-canvas-pad" aria-labelledby="wiki-workbench-heading">
+      {/* h2, not h1: the Workbench shell's product title owns the page's h1. */}
       <h2
         ref={headingRef}
         id="wiki-workbench-heading"
