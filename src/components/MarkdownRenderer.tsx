@@ -1,10 +1,11 @@
 import Link from "next/link";
 import React, { type ReactNode } from "react";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { slugify } from "@/lib/slugify";
+import { urlTransform } from "@/lib/markdown-url";
 import { resolveSlugPath, slugPath, type SlugTenantMap } from "@/lib/links";
 import { Mermaid } from "@/components/Mermaid";
 
@@ -95,17 +96,13 @@ function stripFrontmatter(content: string): string {
  * untouched so images that weren't downloaded still render.
  */
 /**
- * react-markdown's default `urlTransform` strips `data:` URIs (an XSS guard),
- * which would blank out our baked yoyo-illustration images (stored inline as
- * `data:image/jpeg;base64,…`). Allow **raster** image data URIs through —
- * jpeg/png/gif/webp can't carry script — while still deferring everything else
- * (including the dangerous `data:image/svg+xml` and `data:text/html`) to the
- * default sanitizer.
+ * The data-URI policy now lives in `@/lib/markdown-url` so the Workbench
+ * Preview can share it without dragging KaTeX and the Mermaid client boundary
+ * into its chunk. Re-exported from here UNCHANGED because
+ * `src/components/__tests__/markdown-url-transform.test.ts` imports it from
+ * this path and is frozen.
  */
-export function urlTransform(url: string): string {
-  if (/^data:image\/(?:png|jpe?g|gif|webp)[;,]/i.test(url)) return url;
-  return defaultUrlTransform(url);
-}
+export { urlTransform };
 
 function resolveImageSrc(src: string): string {
   if (

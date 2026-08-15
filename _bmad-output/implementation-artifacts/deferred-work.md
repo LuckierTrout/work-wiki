@@ -277,3 +277,67 @@ source_spec: `spec-1-4-knowledge-tree-and-file-tree.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
+
+### DW-36: Changing the tree selection while the confirm-gated editor is open discards the owner's unsaved markdown with no warning.
+origin: spec-deferred 3c0e066248f5
+location: src/components/workbench/PreviewColumn.tsx, src/components/workbench/Workbench.tsx
+source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
+severity: medium
+reason: The fetch effect calls `setEditing(false)` unconditionally on every `selection` change, and Cancel discards without a prompt. The story went to real lengths to guarantee the opposite for the failure it owns — a rejected save keeps the text — but the likelier loss path, one stray click on a tree row, has no dirty check at all. Guarding it means intercepting a selection change the SHELL owns, not the Preview: `selection` lives in `Workbench.tsx:86` and its reset effect's deps (`[mode, currentWikiId, treeTab]`) are pinned verbatim by `workbench-left-column.test.ts:86-88`, so a pending-selection handshake would have to be threaded through the component that cannot grow that dependency. The intent asks for a confirm before EDITING, not before leaving; deciding what a second gate looks like belongs with Story 1.6, which owns durable selection, or with whichever story gives the editor a lifecycle of its own.
+status: open
+
+### DW-37: `PUT /api/wiki/[slug]` has no `isReadOnly()` gate, and this story's `Edit` affordance is the first surface to offer it to a human.
+origin: spec-deferred 28559db804f6
+location: src/app/api/wiki/[slug]/route.ts
+source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
+severity: low
+reason: Every other mutating route consults `isReadOnly()` and answers 403 — `api/wikis/route.ts`, `api/wikis/current`, `api/wikis/[id]/template`, `api/workspace-profile`. The page write route never has. On a read-only deployment the Preview therefore offers `Edit`, opens the dialog, and the save SUCCEEDS, because gating `editable` in the preview route would only hide a door that is still unlocked. The fix belongs at the write route, where it also covers the MCP and agent callers, not at the affordance that happens to have surfaced it.
+status: open
+
+### DW-38: The page write path has no lost-update guard, so a save can silently overwrite a page rewritten since the Preview read it.
+origin: spec-deferred 0f0288cf1313
+location: src/lib/lifecycle.ts, src/app/api/wiki/[slug]/route.ts
+source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
+severity: low
+reason: `savePreviewBody` PUTs `{ content }` with no `updated`, ETag or `If-Match`, and `writeWikiPageWithSideEffects` takes it. The storage provider already exposes `readFileWithEtag` and `writeFileIfMatch` (`src/lib/storage/types.ts:196,205`) and nothing in the kernel write path uses them. Not reachable in Epic 1 — one operator, no ingest — but Epic 2 gives the same pages a second writer, and Epic 8's loopback API a third, so whichever of those lands first is where the guard has a real reason to exist rather than a hypothetical one.
+status: open
+
+### DW-39: Story 1.2's canvas card keeps saying `Select a file to preview.` while a Preview column is docked beside it showing exactly that file.
+origin: spec-deferred 6624dcbc2fe7
+location: src/components/WikiWorkbench.tsx:254
+source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
+severity: low
+reason: The sentence is an unconditional element of `WikiWorkbench.tsx:254`, rendered on the Wiki canvas at every moment, and this story's first acceptance criterion is satisfied by not disturbing it. Once the fourth column docks, one viewport carries a rendered page and a sentence saying nothing is selected. Retiring or conditioning that sentence means editing a file whose in-file occurrence counts `create-wiki-ui.test.ts:118-209` asserts — the same freeze that produced `spec-1-4` deferred entry 4, and the same owner: whichever story rebuilds the Wiki canvas.
+status: open
+
+### DW-40: A read under `raw/` inherits `resolveRoot`'s fallback to the SHARED flat root, so an owner whose raw silo is empty reads the legacy tree's bytes.
+origin: spec-deferred 8926f334b742
+location: src/lib/workbench-files.ts (resolveWorkbenchFile, resolveRoot)
+source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
+severity: medium
+reason: `resolveWorkbenchFile` gates only `root === "wiki"`; `raw/…` goes straight to `resolveRoot(silo, flat)`, which falls back to the shared `RAW_DIR` when the caller's silo lists empty. That is not a deviation — the intent ties the file gate to what `listWorkbenchFilePaths` would emit, and the listing walks `raw/` with `allowEveryLeaf` through the same `resolveRoot` — so read and listing agree exactly, as required. What changed is the stakes: Story 1.4 disclosed those FILENAMES, and this story serves their contents. Narrowing it here is not available: the intent requires `resolveRoot` to have "exactly one definition", and a read gate narrower than the listing would show rows that refuse to open (the sibling entry below). The real fix is retiring the flat root, or giving `raw/` a per-owner gate — both belong with whichever story completes the silo migration, since `src/lib/silo.ts` already calls the flat tree transitional.
+status: open
+
+### DW-41: The Files tab lists `wiki/` leaves that are not pages, and the Preview now answers every one of them with `This file couldn’t be loaded.`
+origin: spec-deferred 8ab03831be26
+location: src/lib/workbench-files.ts (wikiLeafFilter vs readableWikiLeaf)
+source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
+severity: low
+reason: `wikiLeafFilter` passes every name not ending in `.md`, so `wiki/notes.txt` and `wiki/dump.json` are rows the owner can see and click. The read gate `readableWikiLeaf` refuses them — deliberately, and for a reason the previous review pass recorded at length ("two filters, two reasons — do not re-unify them"), because `resolveRoot`'s flat fallback means those bytes need not be the caller's. The consequence is a visible row that cannot open, which reads as a broken Preview rather than as a gate. The coherent fix is at the LISTING — stop showing a leaf the Preview will refuse — which means editing the filter the previous pass froze on security grounds and re-deciding what the Files tab is for. That is a Story 1.4 surface decision, not a patch to this story's reader.
+status: open
+
+### DW-42: `editable` is every page the READ gate admits, but the write ACL is narrower, so a readable-but-unwritable page offers `Edit` and fails at Save.
+origin: spec-deferred e4b29f3d45f4
+location: src/app/api/workbench/preview/route.ts
+source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
+severity: low
+reason: The route sets `editable: true` for any slug in `readableSlugsFromKnowledge(...)`, which is `canReadPage`'s set — everything not `private`. `canWritePage` (`src/lib/authz.ts:190-197`) refuses `writeKind: "body"` for a page where `belongsInCommons(meta)` holds, to any principal that is not the service principal or an admin. So the read set is strictly larger than the body-write set, and for such a principal the Preview shows `Edit`, opens the dialog, seeds the editor and only then relays the write route's 403. Not reachable in Epic 1 — the one operator is an admin through `isOwnerHandle` — and narrowing it is not this story's call either: the intent defines `editable` as "a compiled Page is the one thing this story makes editable", with no clause about write ACLs. Deriving the affordance from `canWritePage` belongs with whichever story introduces a second principal.
+status: open
+
+### DW-43: Follow-up review still recommended for 1-5-view-first-preview-with-gfm-and-wikilinks after the damping cap was spent
+origin: review-budget-followup
+location: n/a
+source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
+status: open

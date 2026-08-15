@@ -20,6 +20,7 @@ import {
   DEFAULT_TREE_TAB,
   isSameSelection,
   shouldDockPreview,
+  wikilinkSelection,
   type TreeSelection,
   type TreeTabId,
 } from "@/lib/workbench-tree";
@@ -167,6 +168,27 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   const selectRow = useCallback((next: TreeSelection) => {
     setSelection((current) => (isSameSelection(current, next) ? null : next));
   }, []);
+
+  // Following a `[[wikilink]]` in the Preview. Deliberately NOT `selectRow`:
+  // that one toggles, so a link pointing at the page already showing would
+  // undock the column instead of staying on it. Which row it lands on depends on
+  // the tab, which is `wikilinkSelection`'s whole job — and it never changes the
+  // tab itself, because the reset effect above would clear the selection this
+  // just made. No route change: the shell owns selection, and always has.
+  const openPage = useCallback(
+    (slug: string) => {
+      setSelection((current) => {
+        const next = wikilinkSelection(treeTab, files, slug);
+        // Returning the SAME object makes React bail out. Without this, a link
+        // pointing at the row already showing hands the Preview a new object,
+        // and its fetch effect is keyed on selection IDENTITY — so the body it
+        // already has is torn down, `Loading…` flashes, and the same bytes are
+        // fetched again. `isSameSelection` is the shell's one equality rule.
+        return isSameSelection(current, next) ? current : next;
+      });
+    },
+    [treeTab, files],
+  );
 
   // Esc closes the sheet — on the BUBBLE phase, deliberately. `useDialogA11y`
   // takes Esc on capture and stops propagation, so an open ConfirmDialog wins
@@ -340,7 +362,12 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       {/* After the canvas in the DOM, so the tab order stays rail → left column
           → canvas → Preview without a single `tabindex` (EXPERIENCE.md:165). */}
       {previewOpen && (
-        <PreviewColumn selection={selection} knowledge={knowledge} files={files} />
+        <PreviewColumn
+          selection={selection}
+          knowledge={knowledge}
+          files={files}
+          onOpenPage={openPage}
+        />
       )}
 
       {/* Announces the surface the rail just switched to (accessibility floor).

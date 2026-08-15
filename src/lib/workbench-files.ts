@@ -31,6 +31,7 @@
  * page: an unreadable `raw/` must not cost the owner their Knowledge tree.
  */
 
+import { isEnoent } from "./errors";
 import { logger } from "./logger";
 import { getStorage } from "./storage";
 import {
@@ -41,7 +42,7 @@ import {
   wikiRelPath,
 } from "./wiki";
 import { WIKI_ARTIFACT_FILES } from "./wiki-scenarios";
-import { wikiArtifactPath } from "./wikis";
+import { readWikiArtifact, wikiArtifactPath } from "./wikis";
 import { WORKBENCH_FILE_LIMIT, WORKBENCH_FILE_MAX_DEPTH } from "./workbench-tree";
 
 // One definition of each cap, declared in the client-safe module because the
@@ -313,4 +314,204 @@ export async function listWorkbenchFilePaths(
   );
 
   return { paths, truncated: budget.truncated };
+}
+
+// ---------------------------------------------------------------------------
+// Reading one file back (Story 1.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * May the bytes of `wiki/<name>` be READ?
+ *
+ * Deliberately NOT {@link wikiLeafFilter}, whose first line is
+ * `if (!name.endsWith(".md")) return true` — that is right for the LISTING,
+ * where a non-page leaf under the wiki root is not a page and so is not the
+ * thing the page gate governs. It is wrong for a read: `resolveRoot` falls back
+ * to the SHARED flat `wiki/` root when the caller's silo is empty, so
+ * `wiki/scratch.txt`, `wiki/dump.json` or `wiki/notes.markdown` would hand back
+ * bytes that need not be the caller's. Story 1.4 disclosed such FILENAMES; this
+ * would disclose their contents.
+ *
+ * So the read gate is the narrow one: a `.md` leaf (case-insensitively, because
+ * a filesystem may not be) whose slug is in the readable set. Everything else
+ * under the root is refused, including the generated `index.md`, which has no
+ * slug and so never survives this test either.
+ *
+ * The name→slug half is {@link wikiLeafSlug}, exported because the preview route
+ * has to answer the same question to decide whether a `wiki/` file selection is
+ * the editable Page reached from the other tab. Two expressions of one rule is
+ * exactly how `wiki/alpha.MD` was once gated in and then served with no slug.
+ */
+export function wikiLeafSlug(name: string): string | null {
+  // Case-INSENSITIVE on the extension, exact on the slug: a filesystem need not
+  // be case-sensitive, so `alpha.MD` is the same file as `alpha.md`, while the
+  // slug itself is what the gate is about and is matched as written.
+  if (!name.toLowerCase().endsWith(".md")) return null;
+  const slug = name.slice(0, -".md".length);
+  return slug.length > 0 ? slug : null;
+}
+
+function readableWikiLeaf(name: string, readableSlugs: ReadonlySet<string>): boolean {
+  const slug = wikiLeafSlug(name);
+  return slug !== null && readableSlugs.has(slug);
+}
+
+/**
+ * Is this string shaped like a path the walk above could have emitted?
+ *
+ * Checked BEFORE anything touches storage, and by shape rather than by
+ * canonicalisation: `..`, an absolute path, a backslash and an empty segment are
+ * all rejected outright instead of normalised into something that looks safe.
+ * A leading dot is rejected for the same reason `visible()` filters it — the
+ * walk never shows a dotfile, so a read of one is not a read of a listed path.
+ */
+function isListablePath(displayPath: string): boolean {
+  if (typeof displayPath !== "string" || displayPath.length === 0) return false;
+  if (displayPath.includes("\\") || displayPath.includes("\0")) return false;
+  if (displayPath.startsWith("/")) return false;
+  const segments = displayPath.split("/");
+  if (segments.length > WORKBENCH_FILE_MAX_DEPTH) return false;
+  return segments.every((segment) => segment.length > 0 && !segment.startsWith("."));
+}
+
+function isArtifactFile(name: string): name is (typeof WIKI_ARTIFACT_FILES)[number] {
+  return (WIKI_ARTIFACT_FILES as readonly string[]).includes(name);
+}
+
+/** One storage read, degrading a missing or unreadable key to null. */
+async function readSafely(key: string): Promise<string | null> {
+  try {
+    return await getStorage().readFile(key);
+  } catch (error) {
+    if (!isEnoent(error)) {
+      logger.error("workbench-files", `readFile failed for "${key}"`, error);
+    }
+    return null;
+  }
+}
+
+/**
+ * What a display path resolves to, once it has passed validation and the gate.
+ *
+ * Two shapes because the two live in different places: a seeded artifact is
+ * addressed by `readWikiArtifact` (the Always clause names that function, and
+ * it is the one definition of the `tenants/<t>/wikis/<id>/` layout), while a
+ * `wiki/` or `raw/` leaf is an ordinary storage key under a silo-first root.
+ */
+type ResolvedWorkbenchFile =
+  | { kind: "artifact"; file: (typeof WIKI_ARTIFACT_FILES)[number] }
+  | { kind: "key"; key: string };
+
+/**
+ * Validate, gate, and resolve a DISPLAY path — the path the Files tab prints,
+ * which is not the storage key that holds the bytes (`spec-1-4` deferred
+ * entry 2).
+ *
+ * This is the resolver that gap asked for, and it lives beside the walk that
+ * produced the path so the two share one definition of every rule:
+ *
+ *   - `purpose.md` / `schema.md` are shown at the tree ROOT but physically live
+ *     at `tenants/<t>/wikis/<id>/<file>`, so they resolve through
+ *     `readWikiArtifact` — and without a current Wiki they resolve to nothing.
+ *   - `wiki/<name>.md` passes {@link readableWikiLeaf} first — the read gate,
+ *     narrower than the listing's for the reason that function documents.
+ *   - `raw/…` and `wiki/…` both resolve their root through {@link resolveRoot},
+ *     so silo-first has exactly one definition — including that a FAILED silo
+ *     listing keeps the silo selected instead of widening to the flat tree.
+ *
+ * Every rejection is the same `null`. Callers answer one indistinguishable 404
+ * for all of them, so "gated out" and "absent" must not be tellable apart from
+ * here either.
+ */
+async function resolveWorkbenchFile(
+  owner: string,
+  wikiId: string | null,
+  displayPath: string,
+  options: WorkbenchFileOptions,
+): Promise<ResolvedWorkbenchFile | null> {
+  if (!isListablePath(displayPath)) return null;
+  const segments = displayPath.split("/");
+
+  // A seeded artifact — the only thing in the tree that is genuinely per-Wiki.
+  if (segments.length === 1) {
+    if (!wikiId || !isArtifactFile(segments[0])) return null;
+    return { kind: "artifact", file: segments[0] };
+  }
+
+  const [root, ...rest] = segments;
+  if (root !== "wiki" && root !== "raw") return null;
+
+  // The gate, applied before the root is even resolved: a leaf under the wiki
+  // root is readable only when it is a `.md` whose slug survived
+  // `listReadableWikiPages`.
+  if (root === "wiki") {
+    if (rest.length !== 1 || !readableWikiLeaf(rest[0], options.readableSlugs)) return null;
+  }
+
+  let silo: string | null = null;
+  try {
+    const tenant = tenantForOwner(owner);
+    silo = root === "wiki" ? tenantWikiRelPath(tenant, "") : tenantRawRelPath(tenant, "");
+  } catch (error) {
+    logger.error("workbench-files", "could not resolve the owner's silo", error);
+  }
+  const flat = root === "wiki" ? wikiRelPath("") : rawRelPath("");
+  const { prefix } = await resolveRoot(silo, flat);
+  return { kind: "key", key: `${prefix}/${rest.join("/")}` };
+}
+
+/**
+ * Read the bytes behind a display path, or null for anything refused, absent or
+ * unreadable — see {@link resolveWorkbenchFile} for the rules.
+ */
+export async function readWorkbenchFile(
+  owner: string,
+  wikiId: string | null,
+  displayPath: string,
+  options: WorkbenchFileOptions,
+): Promise<{ content: string } | null> {
+  const resolved = await resolveWorkbenchFile(owner, wikiId, displayPath, options);
+  if (!resolved) return null;
+  if (resolved.kind === "artifact") {
+    try {
+      const content = await readWikiArtifact(owner, wikiId!, resolved.file);
+      return content === null ? null : { content };
+    } catch (error) {
+      logger.error("workbench-files", `artifact read failed for "${displayPath}"`, error);
+      return null;
+    }
+  }
+  const content = await readSafely(resolved.key);
+  return content === null ? null : { content };
+}
+
+/**
+ * Does a display path name a file the caller may read — WITHOUT buffering it?
+ *
+ * For a format the Preview cannot render (a PDF, an image, an extensionless
+ * blob) the answer is a sentence, not bytes. Reading the file first and then
+ * discarding it would pull an arbitrarily large object through the Worker to
+ * decide something its NAME already decided. The path still goes through the
+ * same validation and the same gate, so an unsupported format outside the
+ * caller's reach is still refused rather than described.
+ */
+export async function workbenchFileExists(
+  owner: string,
+  wikiId: string | null,
+  displayPath: string,
+  options: WorkbenchFileOptions,
+): Promise<boolean> {
+  const resolved = await resolveWorkbenchFile(owner, wikiId, displayPath, options);
+  if (!resolved) return false;
+  try {
+    // Artifacts are always `.md`, so this branch is not reachable from the
+    // unsupported path today; it is here so the function is total.
+    if (resolved.kind === "artifact") {
+      return (await readWikiArtifact(owner, wikiId!, resolved.file)) !== null;
+    }
+    return await getStorage().fileExists(resolved.key);
+  } catch (error) {
+    logger.error("workbench-files", `existence check failed for "${displayPath}"`, error);
+    return false;
+  }
 }

@@ -154,6 +154,32 @@ export function shouldDockPreview(
   return mode === "wiki" && selection !== null;
 }
 
+/**
+ * What following a `[[wikilink]]` should select (Story 1.5).
+ *
+ * The link names a PAGE, but the tree showing is whichever tab the owner left
+ * open — so on the Files tab the equivalent row is `wiki/<slug>.md`, and picking
+ * the page instead would leave `aria-current` on a row that tab does not render.
+ * Switching the tab for them is not the alternative it looks like: the shell's
+ * reset effect undocks the Preview whenever `treeTab` changes, so the jump would
+ * clear the selection it just made.
+ *
+ * The file form is used only when that node actually exists — a page whose file
+ * the walk did not list (truncated, gated, or a legacy flat-tree page) still
+ * resolves to a page selection rather than to a row nobody can point at.
+ */
+export function wikilinkSelection(
+  tab: TreeTabId,
+  files: readonly FileNode[],
+  slug: string,
+): TreeSelection {
+  if (tab === "files") {
+    const path = `wiki/${slug}.md`;
+    if (findFileNode(files, path)) return { kind: "file", path };
+  }
+  return { kind: "page", slug };
+}
+
 // ---------------------------------------------------------------------------
 // Knowledge tree
 // ---------------------------------------------------------------------------

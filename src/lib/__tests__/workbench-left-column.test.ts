@@ -6,9 +6,10 @@
  * here (DW-24). So this follows the `single-ia.test.ts` / `workbench-chrome.
  * test.ts` convention and reads the sources as text. What it really pins is
  * that nobody turns the tree into routing, drops the tablist semantics, inlines
- * a sentence next to the shared module, leaks Story 1.5's markdown surface into
- * the Preview dock, reintroduces "Open project folder", or lands the docked
- * grid variants ahead of the rules they have to outrank.
+ * a sentence next to the shared module, turns the Preview into a navigating or
+ * always-editable surface (or lets its reading face leak into chrome),
+ * reintroduces "Open project folder", or lands the docked grid variants ahead
+ * of the rules they have to outrank.
  */
 import { describe, expect, it } from "vitest";
 import { readFile, readdir } from "node:fs/promises";
@@ -23,6 +24,12 @@ import {
   TREE_TABS,
   TREE_UNAVAILABLE_COPY,
 } from "../workbench-tree";
+import {
+  PREVIEW_EMPTY_COPY,
+  PREVIEW_FAILED_COPY,
+  PREVIEW_UNSUPPORTED_COPY,
+  WIKILINK_MISSING_COPY,
+} from "../workbench-preview";
 
 const SRC = path.resolve(__dirname, "../..");
 const WORKBENCH = path.join(SRC, "components/workbench");
@@ -243,16 +250,200 @@ describe("WikiSwitcher", () => {
   });
 });
 
-describe("PreviewColumn ships the header and the frontmatter, and nothing of Story 1.5's", () => {
-  it("renders no markdown, no book face, and no edit affordance", async () => {
+describe("PreviewColumn is view-first over a rendered body", () => {
+  it("keeps the header and the frontmatter strip, and renders the body beneath", async () => {
+    const source = await read("PreviewColumn.tsx");
+    expect(source).toContain('className="wb-preview-fm"');
+    expect(source).toContain("Preview");
+    // The whole GFM/wikilink surface is one file, and this is the only place it
+    // is mounted — the column itself parses no markdown.
+    expect(source).toContain("<PreviewBody");
+    expect(source).not.toMatch(/react-markdown|remark|\bmarked\b|renderMarkdown/);
+    // The truncation sentence is ABOVE the body. Below it, the only way to
+    // learn the page was cut off is to scroll to an end that is not there —
+    // and it is also why the `Edit` control is absent, which is visible at once.
+    const note = source.indexOf("{state.payload.truncated && (");
+    const body = source.indexOf('<div className="wb-preview-body">');
+    expect(note).toBeGreaterThan(-1);
+    expect(note).toBeLessThan(body);
+    // WHICH of the five states is showing is decided by an executed function,
+    // not by four conditions spelled in JSX where only a grep can reach them:
+    // inverting the empty test there rendered `This file is empty.` for every
+    // readable file with the whole suite green. `workbench-preview.test.ts` runs
+    // all five branches; what is left here is that the column asks.
+    expect(source).toContain("previewBodyState({ loading, failed, payload })");
+    expect(source).not.toContain("payload.body.trim().length === 0");
+    expect(source).not.toContain('payload.format === "unsupported"');
+  });
+
+  it("fetches the bytes abortably, keyed on the selection", async () => {
+    const source = await read("PreviewColumn.tsx");
+    // The URL is built by the shared module, so the route and its one caller
+    // cannot drift on a parameter name — and the stale/failed DECISION is made
+    // by `fetchPreview`, which `workbench-preview.test.ts` executes against a
+    // stubbed fetch. What is left to pin here is only the wiring.
+    expect(source).toContain("fetchPreview(previewRequestUrl(selection), controller.signal)");
+    expect(source).toContain("new AbortController()");
+    expect(source).toMatch(/controller\.abort\(\)/);
+    // The deadline aborts with a REASON, so `fetchPreview` can tell a hung
+    // request from a superseded pick. Without it a hang is silently classified
+    // as stale and the column shows `Loading…` for the rest of the session.
+    expect(source).toContain("controller.abort(PREVIEW_TIMEOUT_REASON)");
+    // A pick that lost the race writes nothing: one branch, and it returns.
+    expect(source).toContain('if (result.status === "stale") return;');
+    // And every OTHER outcome settles the column. Without this line a completed
+    // read leaves `Loading…` on screen for the rest of that selection, which is
+    // indistinguishable from the hang the deadline exists to end.
+    expect(source).toContain("setLoading(false)");
+    expect(source).toMatch(/\}, \[selection\]\)/);
+    // No second copy of the decision: the component must not re-derive it.
+    expect(source).not.toContain("response.ok");
+  });
+
+  it("puts the editor behind the confirm dialog and nowhere else", async () => {
+    const source = await read("PreviewColumn.tsx");
+    expect(source).toContain('from "@/components/ConfirmDialog"');
+    expect(source).toContain("<ConfirmDialog");
+    // `setEditing(true)` appears exactly once, in the confirm handler — a second
+    // call site would be an edit path that skips the gate.
+    expect(source.match(/setEditing\(true\)/g) ?? []).toHaveLength(1);
+    expect(source).toContain("onConfirm={startEditing}");
+    // Raw markdown only: no rich-text affordance, no editor library.
+    expect(source).toContain("<textarea");
+    expect(source).not.toMatch(/contentEditable|execCommand|toolbar|Wysiwyg|WYSIWYG/i);
+    // The write goes through the one existing page route, so
+    // `writeWikiPageWithSideEffects` fires — no second markdown writer. The URL
+    // and the PUT live in `workbench-preview` (executed there); what this pins
+    // is that the column reaches the write path only through that function and
+    // never spells a request of its own.
+    expect(source).toContain("savePreviewBody(slug, draft");
+    // Call sites, not the docblock that explains the route: the column issues
+    // no request of its own at all now — both go through `workbench-preview`,
+    // where a stubbed fetch executes them.
+    expect(source).not.toMatch(/\bfetch\(/);
+    expect(source).not.toContain('method: "PUT"');
+    // A failed save keeps the owner's text and says so inline.
+    expect(source).toContain("setSaveError(result.message)");
+    expect(source).toContain('role="alert"');
+    expect(source).toContain("setSaving(false)");
+    // A save that lands after the owner picked another row must not stamp this
+    // draft onto that row's payload, nor pull focus off what they just clicked.
+    expect(source).toContain("if (payloadRef.current?.slug !== slug) return;");
+    // The draft is keyed to the page it was SEEDED from, not to whatever the
+    // column happens to be showing when Save is pressed. Reading `payload?.slug`
+    // there would write page A's text under page B's slug the moment the editor
+    // outlived a selection change.
+    expect(source).toContain("const slug = editingSlugRef.current;");
+    expect(source).not.toContain("const slug = payload?.slug;");
+    // And a pick closes the editor, so the two can only disagree if this is
+    // deleted — which is why the check above exists as well as this line.
+    const fetchEffect = source.slice(
+      source.indexOf("const controller = new AbortController()"),
+      source.indexOf("}, [selection])"),
+    );
+    expect(fetchEffect).toContain("setEditing(false)");
+    expect(fetchEffect).toContain("editingSlugRef.current = null");
+    // Disabling the focused textarea moves focus to `<body>` for the length of
+    // the save, dropping the caret and, on failure, the owner's place in it.
+    // `lastIndexOf`: the module docblock names `<textarea>` too, and the
+    // element itself is the last occurrence.
+    const opens = source.lastIndexOf("<textarea");
+    const textarea = source.slice(opens, source.indexOf("/>", opens));
+    expect(textarea).toContain("readOnly={saving}");
+    expect(textarea).not.toContain("disabled={saving}");
+    // An empty body is a 400 whose message is a developer string in no Copy
+    // table, one keystroke away. The control refuses instead of the server.
+    expect(source).toContain("draft.trim().length === 0");
+    // Both edit conditions live in one executed function — dropping the
+    // truncation half means saving a prefix over the whole page.
+    expect(source).toContain("canEditPreview(payload)");
+    expect(source).not.toContain("payload?.truncated === false");
+    // Every request has a deadline; `finally` cannot rescue one that never
+    // settles, which would strand the busy flag with no error to explain it.
+    expect(source).toContain("AbortSignal.timeout(REQUEST_TIMEOUT_MS)");
+  });
+
+  it("carries no book face, no rival renderer, and no navigation", async () => {
     const source = await read("PreviewColumn.tsx");
     expect(source.replaceAll("sans-serif", "")).not.toContain("serif");
     expect(source).not.toContain("Georgia");
-    expect(source).not.toMatch(/react-markdown|remark|rehype|\bmarked\b|renderMarkdown/);
-    // No control at all yet: the confirm-gated escape hatch is Story 1.5's.
-    expect(source).not.toContain("<button");
-    expect(source).toContain('className="wb-preview-fm"');
-    expect(source).toContain("Preview");
+    // Epic 7 Story 7.8 owns math and diagrams, and the article renderer wires
+    // KaTeX unconditionally — none of it belongs in the Workbench chunk.
+    expect(source).not.toMatch(/rehype|remark-math|Mermaid|MarkdownRenderer/);
+    expect(source).not.toMatch(/from "next\/link"/);
+    expect(source).not.toContain("router.push(");
+  });
+});
+
+describe("PreviewBody", () => {
+  it("renders GFM and wikilinks, and nothing else", async () => {
+    const source = await read("PreviewBody.tsx");
+    expect(source).toContain("remarkPlugins={[remarkGfm, remarkWikilinks]}");
+    // No html-stage plugins at all: that is where KaTeX and raw HTML would come
+    // in, and both are out of scope for this epic.
+    expect(source).not.toContain("rehypePlugins");
+    expect(source).not.toMatch(/rehype|remark-math|Mermaid|MarkdownRenderer/);
+    expect(source).not.toMatch(/from "next\/link"/);
+    // A wikilink re-points the selection; it never emits a page URL.
+    expect(source).toContain('className="wb-wikilink"');
+    expect(source).toContain("onOpenPage(slug)");
+    // `[text](slug.md)` is the form the kernel writes; as a live anchor it
+    // navigates the browser out of the shell to a URL that does not exist.
+    expect(source).toContain("markdownLinkTarget(href)");
+    expect(source).toContain("<button");
+    expect(source).not.toContain("/u/");
+    // Tables scroll inside their own box rather than widening the shell.
+    expect(source).toContain('className="wb-preview-table"');
+  });
+
+  it("sources every sentence from the shared module", async () => {
+    const source = await read("PreviewBody.tsx");
+    expect(source).toContain("@/lib/workbench-preview");
+    for (const sentence of [
+      WIKILINK_MISSING_COPY,
+      PREVIEW_EMPTY_COPY,
+      PREVIEW_FAILED_COPY,
+      PREVIEW_UNSUPPORTED_COPY,
+    ]) {
+      // A sentence typed here is a second definition of copy the handoff fixes.
+      expect(source).not.toContain(sentence);
+    }
+    expect(source).toContain("WIKILINK_MISSING_COPY");
+    // A missing link is announced, not merely styled.
+    expect(source).toContain('className="wb-sr-only"');
+  });
+
+  it("keeps the app's data-URI policy and lets exactly one scheme past it", async () => {
+    const source = await read("PreviewBody.tsx");
+    expect(source).toContain('from "@/lib/markdown-url"');
+    expect(source).toContain("WIKILINK_HREF_PREFIX");
+    expect(source).toContain("urlTransform(url)");
+  });
+
+  it("carries no book face — the reading face is a token in CSS", async () => {
+    const source = await read("PreviewBody.tsx");
+    expect(source.replaceAll("sans-serif", "")).not.toContain("serif");
+    expect(source).not.toContain("Georgia");
+  });
+});
+
+describe("the shell follows a wikilink without clearing the selection", () => {
+  it("adds a non-toggling open, and does not touch the frozen reset deps", async () => {
+    const source = await read("Workbench.tsx");
+    // `selectRow` toggles; a link pointing at the row already showing must not
+    // undock the column instead of staying on it.
+    expect(source).toContain("wikilinkSelection(treeTab, files, slug)");
+    expect(source).toContain("onOpenPage={openPage}");
+    // Following a link to the row already showing is a no-op: the Preview's
+    // fetch effect is keyed on selection IDENTITY, so a fresh-but-equal object
+    // tears down the body and refetches bytes the column already has.
+    expect(source).toContain("isSameSelection(current, next) ? current : next");
+    // The reset effect's deps stay exactly what Story 1.4 froze — a wikilink
+    // jump that changed the tab would clear the selection it just made.
+    expect(source).toMatch(
+      /setSelection\(null\);\s*\n\s*\}, \[mode, currentWikiId, treeTab\]\)/,
+    );
+    expect(source).not.toMatch(/\buseRouter\(/);
   });
 });
 
@@ -350,6 +541,55 @@ describe("globals.css docks the Preview as a fourth column", () => {
       const block = css.slice(start, next === -1 ? undefined : next);
       expect(block).toContain('[data-preview="true"]');
     }
+  });
+
+  it("declares the reading face once, in the token block, and reads it nowhere else", async () => {
+    const css = await globals();
+    // `workbench-chrome.test.ts` bans the literal in every rule AFTER the token
+    // block and in every file under `src/components/workbench`. The token block
+    // is the one remaining place, and declaring it beside `--wb-font` and
+    // `--wb-font-mono` is what keeps chrome sans without editing an assertion.
+    const start = css.indexOf(".wb-shell {");
+    expect(start).toBeGreaterThan(-1);
+    const tokens = css.slice(start, start + css.slice(start).indexOf("\n}"));
+    expect(tokens).toContain("--wb-font-read:");
+    expect(tokens).toContain("Georgia");
+    // Exactly once in the whole stylesheet, and that once is the declaration.
+    expect(css.match(/Georgia/g) ?? []).toHaveLength(1);
+
+    // …and every READER of the token is a `.wb-preview-body` rule, so the face
+    // cannot reach the header, the frontmatter strip, the trees or the canvas.
+    const readers = css
+      .split("}")
+      .filter((rule) => rule.includes("var(--wb-font-read)"));
+    expect(readers.length).toBeGreaterThan(0);
+    for (const rule of readers) {
+      expect(rule.slice(0, rule.indexOf("{"))).toContain(".wb-preview-body");
+    }
+    // The mono rule still wins inside a code fence: the body's descendant
+    // carve-out is an allowlist, and these four are absent from it.
+    const carve = readers.find((rule) => rule.includes(":where("));
+    expect(carve).toBeTruthy();
+    for (const tag of ["code", "pre", "kbd", "samp"]) {
+      expect(carve).not.toMatch(new RegExp(`[\\s(]${tag}[,)]`));
+    }
+  });
+
+  it("paints every link in the body from a token, including the live one", async () => {
+    const css = await globals();
+    // The two non-navigating states were styled from `--wb-*`; a real `<a>` —
+    // the external link the Preview does follow, in a new tab — was left to the
+    // user agent, so it alone rendered in browser blue and visited purple. Every
+    // colour in the shell comes from a token or from nowhere.
+    const rules = css
+      .split("}")
+      .filter((rule) => /\.wb-preview-body\s+(?::where\(a\)|\.wb-wikilink|\.wb-preview-deadlink)/.test(rule));
+    expect(rules.length).toBeGreaterThanOrEqual(3);
+    for (const rule of rules) {
+      if (!rule.includes("color:")) continue;
+      expect(rule).toMatch(/color:\s*var\(--wb-/);
+    }
+    expect(css).toMatch(/\.wb-preview-body :where\(a\) \{[^}]*color: var\(--wb-/);
   });
 
   it("indents the tree from a token, not from a number in the component", async () => {

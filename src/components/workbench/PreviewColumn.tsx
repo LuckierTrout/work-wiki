@@ -1,27 +1,57 @@
 "use client";
 
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import {
+  PREVIEW_CANCEL_COPY,
+  PREVIEW_EDIT_CONFIRM_BODY,
+  PREVIEW_EDIT_CONFIRM_LABEL,
+  PREVIEW_EDIT_CONFIRM_TITLE,
+  PREVIEW_EDIT_COPY,
+  PREVIEW_EMPTY_COPY,
+  PREVIEW_FAILED_COPY,
+  PREVIEW_LOADING_COPY,
+  PREVIEW_SAVE_COPY,
+  PREVIEW_SAVE_FAILED_COPY,
+  PREVIEW_SAVING_COPY,
+  PREVIEW_TRUNCATED_COPY,
+  PREVIEW_TIMEOUT_REASON,
+  PREVIEW_UNSUPPORTED_COPY,
+  canEditPreview,
+  fetchPreview,
+  previewBodyState,
+  previewRequestUrl,
+  savePreviewBody,
+  type PreviewPayload,
+} from "@/lib/workbench-preview";
 import {
   findFileNode,
   findKnowledgePage,
+  readableSlugsFromKnowledge,
   type FileNode,
   type KnowledgeGroup,
   type TreeSelection,
 } from "@/lib/workbench-tree";
+import { PreviewBody } from "./PreviewBody";
 
 /**
- * The docked Preview column — header and frontmatter strip only.
+ * The docked Preview column: header, frontmatter strip, and the body.
  *
- * `mockups/chat-cited.html:194-208` splits Preview into three parts: `header`,
- * `.fm`, and `.body`. UX-DR2 draws the type line at exactly the same seam — the
- * chrome face for the header and frontmatter, the book face for the body. This
- * story ships the two halves it already has the data for (the page index and
- * the file path) and leaves `.body` to Story 1.5, which owns GFM, wikilinks,
- * the reading face and the confirm-gated markdown escape hatch. That way
- * "selecting a row docks the Preview column" is observably true without this
- * story rendering a line of markdown or inventing placeholder copy 1.5 would
- * delete.
+ * `mockups/chat-cited.html:194-208` splits Preview into `header`, `.fm` and
+ * `.body`, and UX-DR2 draws the type line at exactly the same seam — chrome face
+ * above, reading face below. Story 1.4 shipped the two halves it had the data
+ * for; this story fills `.body` from a route, because nothing in the shell could
+ * fetch a file's bytes at all until now.
  *
- * The field names below are the page's own frontmatter keys, not authored
+ * VIEW-FIRST. The body renders; it does not edit. `Edit` opens
+ * {@link ConfirmDialog}, and only a confirm swaps the body for a raw-markdown
+ * `<textarea>` that saves through `PUT /api/wiki/[slug]` — i.e. through
+ * `writeWikiPageWithSideEffects`, the one write path. There is no rich-text
+ * mode, no formatting bar, no autosave, and no way to reach the editor around
+ * the dialog.
+ *
+ * The field names in the strip are the page's own frontmatter keys, not authored
  * labels — the same convention the mockup's `.fm` block uses.
  */
 
@@ -29,54 +59,354 @@ export interface PreviewColumnProps {
   selection: TreeSelection | null;
   knowledge: readonly KnowledgeGroup[];
   files: readonly FileNode[];
+  /**
+   * Follow a resolved `[[wikilink]]`: re-point the shell's selection at a page.
+   * Not navigation — see the module docblock on why this is a button.
+   */
+  onOpenPage: (slug: string) => void;
 }
 
-export function PreviewColumn({ selection, knowledge, files }: PreviewColumnProps) {
+/**
+ * A request that never settles would leave a busy flag true for the rest of the
+ * session with no error to explain it. `finally` cannot rescue a promise that
+ * never resolves, so the deadline is the rescue — the idiom `WikiSwitcher`
+ * already uses for the same reason.
+ */
+const REQUEST_TIMEOUT_MS = 15_000;
+
+export function PreviewColumn({
+  selection,
+  knowledge,
+  files,
+  onOpenPage,
+}: PreviewColumnProps) {
+  // No selection, no column — the shell already decides this with
+  // `shouldDockPreview`, and this keeps the component honest on its own. The
+  // hooks all live in `PreviewPane` so none of them sits behind this branch.
   if (!selection) return null;
-
-  if (selection.kind === "page") {
-    const page = findKnowledgePage(knowledge, selection.slug);
-    // A selection can outlive its page (a refresh that dropped it). The slug is
-    // still a true statement about what the owner picked, so it stands in for
-    // the title rather than blanking the column.
-    const name = page?.title ?? selection.slug;
-    return (
-      <Frame name={name}>
-        {/* No `title:` row — the header above already carries it, and printing
-            it twice one line apart reads as two different fields. */}
-        <p className="wb-preview-fm-row">
-          <code className="wb-preview-path">wiki/{selection.slug}.md</code>
-        </p>
-        {page?.type && <p className="wb-preview-fm-row">type: {page.type}</p>}
-        {page?.updated && <p className="wb-preview-fm-row">updated: {page.updated}</p>}
-        {typeof page?.sourceCount === "number" && (
-          <p className="wb-preview-fm-row">sources: {page.sourceCount}</p>
-        )}
-      </Frame>
-    );
-  }
-
-  const node = findFileNode(files, selection.path);
-  // `||`, not `??`: `"a/b/".split("/").at(-1)` is the empty string, not
-  // `undefined`, so a nullish fallback would leave the header blank.
-  const name = node?.name || selection.path.split("/").filter(Boolean).at(-1) || selection.path;
   return (
-    <Frame name={name}>
-      <p className="wb-preview-fm-row">
-        <code className="wb-preview-path">{selection.path}</code>
-      </p>
-    </Frame>
+    <PreviewPane
+      selection={selection}
+      knowledge={knowledge}
+      files={files}
+      onOpenPage={onOpenPage}
+    />
   );
 }
 
-function Frame({ name, children }: { name: string; children: React.ReactNode }) {
+function PreviewPane({
+  selection,
+  knowledge,
+  files,
+  onOpenPage,
+}: PreviewColumnProps & { selection: TreeSelection }) {
+  const router = useRouter();
+  const [payload, setPayload] = useState<PreviewPayload | null>(null);
+  // What is on screen RIGHT NOW, readable from an async callback that closed
+  // over an older render. Assigned during render, the `useDialogA11y` idiom.
+  const payloadRef = useRef<PreviewPayload | null>(null);
+  payloadRef.current = payload;
+  const [failed, setFailed] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const editRef = useRef<HTMLButtonElement>(null);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  // The slug the open editor was SEEDED from. Captured when the editor opens
+  // rather than read off `payload` when Save is pressed, because those two
+  // differ exactly when a pick landed while the editor was open — and reading
+  // the current payload there would write page A's draft under page B's slug.
+  // The selection effect closes the editor, so this should never disagree; it
+  // is a ref precisely so that "should" is not the only thing holding.
+  const editingSlugRef = useRef<string | null>(null);
+  // Armed only when the owner LEAVES the editor themselves. A selection change
+  // also closes the editor, and pulling focus back to `Edit` there would steal
+  // it from the tree row they just clicked.
+  const restoreEditFocus = useRef(false);
+  const editorId = useId();
+
+  // Wikilinks resolve against the same set the Knowledge tab renders, so a link
+  // is actionable exactly when the row it would select is visible.
+  const readableSlugs = useMemo(() => readableSlugsFromKnowledge(knowledge), [knowledge]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    // The deadline is armed here rather than through `AbortSignal.timeout` so
+    // one controller carries both reasons to stop: the owner picking another
+    // row, and the request taking too long. They are NOT the same outcome — a
+    // superseded pick is silent because another answer is coming, while a
+    // deadline means nothing else is, so it must clear `loading` and say so.
+    // `fetchPreview` tells them apart by the reason passed here.
+    const deadline = setTimeout(
+      () => controller.abort(PREVIEW_TIMEOUT_REASON),
+      REQUEST_TIMEOUT_MS,
+    );
+    setLoading(true);
+    setFailed(false);
+    setPayload(null);
+    // A pick abandons an open editor: the column is about to show another
+    // file's bytes, and a textarea holding this one's draft over that one's
+    // header is the state `save`'s slug check also refuses.
+    setEditing(false);
+    editingSlugRef.current = null;
+    setConfirmOpen(false);
+    setSaveError(null);
+
+    // One branch per outcome, and no decision of its own: whether a response is
+    // stale (the owner picked another row mid-flight) or failed is decided by
+    // `fetchPreview`, which the node suite executes with a stubbed fetch. Left
+    // inline here it could only ever be grepped for.
+    void fetchPreview(previewRequestUrl(selection), controller.signal).then((result) => {
+      if (result.status === "stale") return;
+      if (result.status === "ok") setPayload(result.payload);
+      else setFailed(true);
+      setLoading(false);
+    });
+
+    return () => {
+      clearTimeout(deadline);
+      controller.abort();
+    };
+  }, [selection]);
+
+  // Confirming the dialog unmounts the `Edit` button that opened it, so
+  // `useDialogA11y`'s restore has nothing to return focus to. The caret belongs
+  // in the editor anyway; leaving is the mirror image. Parent effects run after
+  // the dialog's own cleanup, so this is the last word on focus either way.
+  useEffect(() => {
+    if (editing) {
+      editorRef.current?.focus();
+      return;
+    }
+    if (restoreEditFocus.current) {
+      restoreEditFocus.current = false;
+      editRef.current?.focus();
+    }
+  }, [editing]);
+
+  const startEditing = useCallback(() => {
+    if (!payload) return;
+    // The editor is seeded with the SAME string the body rendered, which is the
+    // same string `PUT` expects — the route stripped the YAML block before it
+    // ever reached the browser, and the owner never sees or edits it.
+    setDraft(payload.body);
+    editingSlugRef.current = payload.slug ?? null;
+    setSaveError(null);
+    setConfirmOpen(false);
+    setEditing(true);
+  }, [payload]);
+
+  const save = useCallback(async () => {
+    const slug = editingSlugRef.current;
+    if (!slug || saving) return;
+    // The column must still be showing the page this draft came from. It always
+    // is — the selection effect closes the editor — and the check is here so
+    // that a change to the effect cannot turn the editor into a cross-page
+    // overwrite without something refusing.
+    if (payloadRef.current?.slug !== slug) return;
+    setSaving(true);
+    setSaveError(null);
+    // The request, the write route and the "server's sentence, else the Copy
+    // table's" rule all live in `workbench-preview`, where a stubbed fetch can
+    // run them. `savePreviewBody` RESOLVES on a rejected save rather than
+    // throwing, because the only correct response is to keep the editor open.
+    const result = await savePreviewBody(slug, draft, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      fallback: PREVIEW_SAVE_FAILED_COPY,
+    });
+    // Busy flag first, on every exit path including the superseded one below.
+    setSaving(false);
+    // The owner may have picked another row while this was in flight. The
+    // column is showing that row now, so stamping this draft onto its payload
+    // would put page A's text under page B's header — and the focus restore
+    // would pull focus off whatever they just clicked. The write is done and
+    // `router.refresh()` is not needed: this selection is no longer rendered.
+    if (payloadRef.current?.slug !== slug) return;
+    if (result.status === "ok") {
+      // Back to view-first showing what was saved. The body is the text that
+      // just went over the wire, so no second read is needed to be truthful.
+      setPayload((current) => (current ? { ...current, body: draft } : current));
+      restoreEditFocus.current = true;
+      setEditing(false);
+      // The trees carry the page's title and `updated`, both of which this write
+      // may have changed. Story 1.7 replaces this with the `dataVersion` signal.
+      router.refresh();
+    } else {
+      // The editor stays open holding the owner's text — a failed save must
+      // never be the thing that loses it.
+      setSaveError(result.message);
+    }
+  }, [draft, router, saving]);
+
+  const page = selection.kind === "page" ? findKnowledgePage(knowledge, selection.slug) : null;
+  const node = selection.kind === "file" ? findFileNode(files, selection.path) : null;
+  const name =
+    selection.kind === "page"
+      ? // A selection can outlive its page (a refresh that dropped it). The slug
+        // is still a true statement about what the owner picked.
+        (page?.title ?? selection.slug)
+      : // `||`, not `??`: `"a/b/".split("/").at(-1)` is the empty string, not
+        // `undefined`, so a nullish fallback would leave the header blank.
+        node?.name || selection.path.split("/").filter(Boolean).at(-1) || selection.path;
+
+  // Both conditions live in one executed function — see `canEditPreview`. Left
+  // inline, dropping the truncation half kept the whole suite green.
+  const canEdit = canEditPreview(payload);
+
+  function body() {
+    // WHICH state this is, decided by an executed function rather than by four
+    // conditions spelled inline — see `previewBodyState`. Left here, inverting
+    // the empty test showed `This file is empty.` for every readable file with
+    // the whole suite green, because a source scan is all a node suite can do
+    // to a component. This function only maps a state to its element.
+    const state = previewBodyState({ loading, failed, payload });
+    if (state.kind === "loading") {
+      return <p className="wb-preview-note">{PREVIEW_LOADING_COPY}</p>;
+    }
+    if (state.kind === "failed") {
+      return (
+        <p className="wb-preview-note" role="alert">
+          {PREVIEW_FAILED_COPY}
+        </p>
+      );
+    }
+    if (state.kind === "unsupported") {
+      return <p className="wb-preview-note">{PREVIEW_UNSUPPORTED_COPY}</p>;
+    }
+    if (state.kind === "empty") {
+      return <p className="wb-preview-note">{PREVIEW_EMPTY_COPY}</p>;
+    }
+    return (
+      <>
+        {/* ABOVE the body, not after it: below 200,000 characters of prose the
+            sentence is only reachable by scrolling to the end of a page whose
+            end is exactly what was cut off — and it is also the explanation for
+            the `Edit` control being absent, which is visible from the top. */}
+        {state.payload.truncated && (
+          <p className="wb-preview-note">{PREVIEW_TRUNCATED_COPY}</p>
+        )}
+        <div className="wb-preview-body">
+          <PreviewBody
+            format={state.payload.format}
+            content={state.payload.body}
+            readableSlugs={readableSlugs}
+            onOpenPage={onOpenPage}
+          />
+        </div>
+      </>
+    );
+  }
+
   return (
     <aside className="wb-preview" aria-label="Preview" data-no-localize>
       <header className="wb-preview-head">
         <strong className="wb-preview-title">Preview</strong>
         <span className="wb-preview-name">{name}</span>
+        {canEdit && !editing && (
+          <button
+            type="button"
+            ref={editRef}
+            className="wb-preview-edit"
+            onClick={() => setConfirmOpen(true)}
+          >
+            {PREVIEW_EDIT_COPY}
+          </button>
+        )}
       </header>
-      <div className="wb-preview-fm">{children}</div>
+
+      <div className="wb-preview-fm">
+        {selection.kind === "page" ? (
+          <>
+            {/* No `title:` row — the header above already carries it, and
+                printing it twice one line apart reads as two different fields. */}
+            <p className="wb-preview-fm-row">
+              <code className="wb-preview-path">wiki/{selection.slug}.md</code>
+            </p>
+            {page?.type && <p className="wb-preview-fm-row">type: {page.type}</p>}
+            {page?.updated && <p className="wb-preview-fm-row">updated: {page.updated}</p>}
+            {typeof page?.sourceCount === "number" && (
+              <p className="wb-preview-fm-row">sources: {page.sourceCount}</p>
+            )}
+          </>
+        ) : (
+          <p className="wb-preview-fm-row">
+            <code className="wb-preview-path">{selection.path}</code>
+          </p>
+        )}
+      </div>
+
+      {editing ? (
+        <div className="wb-preview-editor">
+          {/* Raw markdown, and only raw markdown: no formatting controls of any
+              kind, and no YAML — the block never left the server. */}
+          <label className="wb-sr-only" htmlFor={editorId}>
+            {name}
+          </label>
+          <textarea
+            id={editorId}
+            ref={editorRef}
+            className="wb-preview-textarea"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            spellCheck={false}
+            // `readOnly`, not `disabled`: disabling the element that currently
+            // has focus moves focus to `<body>`, so a slow save would drop the
+            // caret and, on failure, hand the owner back an editor they are no
+            // longer in. The two buttons below still disable — losing focus on
+            // a button the owner just pressed costs nothing.
+            readOnly={saving}
+            aria-busy={saving}
+          />
+          {saveError && (
+            <p role="alert" className="wb-preview-error">
+              {saveError}
+            </p>
+          )}
+          <div className="wb-preview-actions">
+            <button
+              type="button"
+              className="wb-preview-action"
+              onClick={() => {
+                restoreEditFocus.current = true;
+                setEditing(false);
+                setSaveError(null);
+              }}
+              disabled={saving}
+            >
+              {PREVIEW_CANCEL_COPY}
+            </button>
+            <button
+              type="button"
+              className="wb-preview-action wb-preview-action--primary"
+              onClick={() => void save()}
+              // An empty body is a 400 from the write route, whose message is a
+              // developer string in no Copy table and one keystroke away. The
+              // control says so instead of the server having to.
+              disabled={saving || draft.trim().length === 0}
+            >
+              {saving ? PREVIEW_SAVING_COPY : PREVIEW_SAVE_COPY}
+            </button>
+          </div>
+        </div>
+      ) : (
+        body()
+      )}
+
+      {/* The one overlay level (UX-DR17). Esc and Cancel both leave view-first
+          with nothing written; only Confirm opens the editor. */}
+      <ConfirmDialog
+        open={confirmOpen}
+        title={PREVIEW_EDIT_CONFIRM_TITLE}
+        body={PREVIEW_EDIT_CONFIRM_BODY}
+        confirmLabel={PREVIEW_EDIT_CONFIRM_LABEL}
+        cancelLabel={PREVIEW_CANCEL_COPY}
+        onConfirm={startEditing}
+        onCancel={() => setConfirmOpen(false)}
+        fallbackFocusRef={editRef}
+      />
     </aside>
   );
 }
