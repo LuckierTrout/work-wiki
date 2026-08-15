@@ -37,7 +37,7 @@ story_location: /workspace/_bmad-output/implementation-artifacts
 development_status:
   epic-1: backlog
   1-1-sign-in-privately-and-retire-commons: done
-  1-2-create-a-wiki-from-a-scenario-template: backlog
+  1-2-create-a-wiki-from-a-scenario-template: done
   1-3-nashsu-icon-rail-and-workbench-chrome: backlog
   1-4-knowledge-tree-and-file-tree: backlog
   1-5-view-first-preview-with-gfm-and-wikilinks: backlog

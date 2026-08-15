@@ -1,53 +1,32 @@
-import path from "path";
-import { getStorage } from "./storage";
-import { getDataDir } from "./paths";
-import { isEnoent } from "./errors";
-import { logger } from "./logger";
+import {
+  PAGE_CONVENTIONS_HEADING,
+  extractSection,
+  readSchemaFile,
+  rootSchemaPath,
+  sectionBody,
+} from "./schema-source";
+import { readActiveWikiSchema } from "./wikis";
 
 /**
- * Extract a `## <heading>` section from SCHEMA.md content.
+ * Load the "Page conventions" section from the active Schema.
  *
- * Returns the text from the heading up to (but not including) the next
- * `## ` heading. Returns empty string if the heading can't be found.
- */
-function extractSection(schema: string, heading: string): string {
-  const startIdx = schema.indexOf(heading);
-  if (startIdx === -1) return "";
-  const afterStart = schema.slice(startIdx);
-  const nextHeadingMatch = afterStart.slice(heading.length).match(/\n## /);
-  const section = nextHeadingMatch
-    ? afterStart.slice(0, heading.length + nextHeadingMatch.index!)
-    : afterStart;
-  return section.trim();
-}
-
-/**
- * Read SCHEMA.md via the storage provider.
+ * With no explicit path this prefers the ACTIVE WIKI's seeded `schema.md`
+ * (Story 1.2 / AD-10: the Schema a Scenario Template seeds must be the Schema
+ * that executes — one loader, no forked copy of the conventions in code). A
+ * seeded `schema.md` embeds the engine's own conventions before the scenario's,
+ * so nothing the ingest, chat, and lint prompts rely on is lost by activating a
+ * Wiki — see `readEnginePageConventions` in `schema-source.ts`.
  *
- * Returns the full file content, or empty string if SCHEMA.md is missing.
- * Accepts an optional `schemaPath` override for tests; defaults to
- * `<cwd>/SCHEMA.md`.
- */
-async function readSchema(schemaPath?: string): Promise<string> {
-  try {
-    const resolved = schemaPath ?? `${process.cwd()}/SCHEMA.md`;
-    const rel = path.relative(getDataDir(), resolved);
-    return await getStorage().readFile(rel);
-  } catch (err) {
-    if (!isEnoent(err)) {
-      logger.warn("schema", "read SCHEMA.md failed:", err);
-    }
-    return "";
-  }
-}
-
-/**
- * Load the "Page conventions" section from `SCHEMA.md`.
+ * Falls back to the repo-root `SCHEMA.md` when there is no owner, no Wiki, an
+ * unreadable Wiki file, OR when the Wiki's file yields an EMPTY conventions
+ * section — a hand-emptied `schema.md` must not silently strip the prompt.
  *
- * SCHEMA.md is the single source of truth for how wiki pages should be
- * structured. Loading it at runtime means the prompt evolves with the doc —
- * no code change needed to tweak conventions. The schema IS the source of
- * truth — change the doc, change ingest behavior on the next call.
+ * Note what this means for the repo-root file: it is the source of truth only
+ * while no Wiki is active. A seeded `schema.md` embeds a SNAPSHOT of the root
+ * conventions taken at seed time, so once a Wiki exists, editing `SCHEMA.md`
+ * changes {@link loadPageTemplates} on the next call but NOT the conventions
+ * this returns — re-applying the Wiki's Scenario Template re-seeds them. The
+ * Wiki's own `schema.md` is the doc to edit (Story 1.8).
  *
  * Extracts from the `## Page conventions` heading up to (but not including)
  * the next `## ` heading. Returns empty string if SCHEMA.md is missing or
@@ -60,9 +39,19 @@ async function readSchema(schemaPath?: string): Promise<string> {
 export async function loadPageConventions(
   schemaPath?: string,
 ): Promise<string> {
-  const schema = await readSchema(schemaPath);
+  if (!schemaPath) {
+    const active = await readActiveWikiSchema();
+    if (active) {
+      const section = extractSection(active, PAGE_CONVENTIONS_HEADING);
+      // A heading with no body is worse than useless: it would hand the
+      // prompt an empty contract. Check the BODY, not the section, because
+      // the section always contains at least the heading line itself.
+      if (sectionBody(section)) return section;
+    }
+  }
+  const schema = await readSchemaFile(schemaPath ?? rootSchemaPath());
   if (!schema) return "";
-  return extractSection(schema, "## Page conventions");
+  return extractSection(schema, PAGE_CONVENTIONS_HEADING);
 }
 
 /**
@@ -76,13 +65,18 @@ export async function loadPageConventions(
  * Returns empty string if SCHEMA.md is missing or the section can't be
  * found, so callers degrade gracefully.
  *
+ * Unlike {@link loadPageConventions} this ALWAYS reads the repo-root
+ * `SCHEMA.md`: page templates are the wiki engine's own output shapes, a
+ * different concept from a Wiki's Scenario Template, and a seeded `schema.md`
+ * carries no `## Page templates` section.
+ *
  * Accepts an optional `schemaPath` override for tests; defaults to
  * `<cwd>/SCHEMA.md`.
  */
 export async function loadPageTemplates(
   schemaPath?: string,
 ): Promise<string> {
-  const schema = await readSchema(schemaPath);
+  const schema = await readSchemaFile(schemaPath ?? rootSchemaPath());
   if (!schema) return "";
   return extractSection(schema, "## Page templates");
 }

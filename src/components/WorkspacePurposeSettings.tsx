@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { WorkspaceProfile } from "@/lib/workspace-profile";
+import { SCENARIO_LABELS } from "@/lib/wiki-scenarios";
 import {
   EMPTY_WORKSPACE_PROFILE,
   WORKSPACE_SCENARIO_TEMPLATES,
@@ -10,15 +11,6 @@ import {
 } from "@/lib/workspace-profile-schema";
 
 type Feedback = { ok: boolean; message: string } | null;
-
-const SCENARIO_LABELS: Record<WorkspaceScenario, string> = {
-  general: "General knowledge",
-  research: "Research",
-  reading: "Reading",
-  "personal-growth": "Personal growth",
-  business: "Business",
-  custom: "Custom",
-};
 
 function listText(values: readonly string[]): string {
   return values.join("\n");
@@ -101,7 +93,9 @@ export function WorkspacePurposeSettings() {
     placeProfile(selectedTemplate, savedAt);
     setFeedback({
       ok: true,
-      message: `${selectedTemplate.name} template loaded as a draft. Review it, then save when it reflects your workspace.`,
+      // The shared label map, not the template's own `name` — otherwise the
+      // <select> and this message show two different names for one scenario.
+      message: `${SCENARIO_LABELS[selectedTemplate.scenario]} template loaded as a draft. Review it, then save when it reflects your workspace.`,
     });
   }
 
