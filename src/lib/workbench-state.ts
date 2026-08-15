@@ -1,6 +1,7 @@
 /**
  * Browser-local memory of the Workbench's layout state: which mode was last
- * active and whether the left column was collapsed (FR-8).
+ * active, whether the left column was collapsed, and which tree tab was
+ * showing (FR-8).
  *
  * These are per-browser view preferences, not owner data, so they live in
  * localStorage rather than the kernel store. The keys keep the `yopedia`
@@ -17,9 +18,15 @@ import {
   isWorkbenchModeId,
   type WorkbenchModeId,
 } from "@/lib/workbench-modes";
+import {
+  DEFAULT_TREE_TAB,
+  isTreeTabId,
+  type TreeTabId,
+} from "@/lib/workbench-tree";
 
 export const WORKBENCH_MODE_KEY = "yopedia_workbench_mode";
 export const WORKBENCH_COLLAPSED_KEY = "yopedia_workbench_left_collapsed";
+export const WORKBENCH_TREE_TAB_KEY = "yopedia_workbench_tree_tab";
 
 /** The only stored value that means "collapsed"; everything else is expanded. */
 const COLLAPSED_TRUE = "1";
@@ -61,5 +68,28 @@ export function writeStoredCollapsed(collapsed: boolean): void {
     window.localStorage.setItem(WORKBENCH_COLLAPSED_KEY, collapsed ? COLLAPSED_TRUE : "0");
   } catch {
     // Non-critical: the column stays collapsed for this session.
+  }
+}
+
+export function readStoredTreeTab(): TreeTabId {
+  if (typeof window === "undefined") return DEFAULT_TREE_TAB;
+  try {
+    const raw = window.localStorage.getItem(WORKBENCH_TREE_TAB_KEY);
+    // Same rule as the mode above: a tab id from an older build (or a
+    // hand-edited value) must not select a panel that no longer exists — the
+    // tablist would render with nothing selected.
+    return isTreeTabId(raw) ? raw : DEFAULT_TREE_TAB;
+  } catch {
+    return DEFAULT_TREE_TAB;
+  }
+}
+
+export function writeStoredTreeTab(tab: TreeTabId): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(WORKBENCH_TREE_TAB_KEY, tab);
+  } catch {
+    // Non-critical: the tab still switches for this session; only the restore
+    // on reload is lost.
   }
 }

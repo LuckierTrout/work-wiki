@@ -11,15 +11,28 @@ import {
 import {
   readStoredCollapsed,
   readStoredMode,
+  readStoredTreeTab,
   writeStoredCollapsed,
   writeStoredMode,
+  writeStoredTreeTab,
 } from "@/lib/workbench-state";
+import {
+  DEFAULT_TREE_TAB,
+  isSameSelection,
+  shouldDockPreview,
+  type TreeSelection,
+  type TreeTabId,
+} from "@/lib/workbench-tree";
 import { IconRail } from "./IconRail";
 import { ModeCanvas } from "./ModeCanvas";
+import { PreviewColumn } from "./PreviewColumn";
+import { TreePanel } from "./TreePanel";
+import { WikiSwitcher } from "./WikiSwitcher";
+import { useWorkbenchData } from "./WorkbenchData";
 
 /**
- * The Workbench shell — rail, left column, canvas — and the container Stories
- * 1.4 through 1.7 build inside.
+ * The Workbench shell — rail, left column, canvas, and the Preview column that
+ * docks beside them — and the container Stories 1.5 through 1.7 build inside.
  *
  * Switching modes is `setMode` on ONE mounted shell: never `router.push`, never
  * a `<Link>`. Routing per mode would unmount everything above the mode panel,
@@ -28,8 +41,9 @@ import { ModeCanvas } from "./ModeCanvas";
  * surface yet; honouring it structurally now is what lets Story 3.2 lift a
  * draft into this state without a rewrite.
  *
- * DOM order is rail → left column → canvas, so the tab order the accessibility
- * floor specifies falls out of the markup instead of `tabindex` juggling.
+ * DOM order is rail → left column → canvas → Preview, so the tab order the
+ * accessibility floor specifies falls out of the markup instead of `tabindex`
+ * juggling.
  */
 
 export interface WorkbenchProps {
@@ -50,9 +64,26 @@ const RAIL_ID = "wb-mode-rail";
 const LEFT_ID = "wb-left-column";
 
 export function Workbench({ children, todoCount = 0, reviewCount = 0 }: WorkbenchProps) {
+  // The left column's working set is server-loaded in `page.tsx` and handed
+  // across the server/client boundary by `WorkbenchDataProvider`.
+  const {
+    wikis,
+    currentWikiId,
+    registryUnavailable,
+    knowledge,
+    knowledgeUnavailable,
+    files,
+    filesUnavailable,
+    filesTruncated,
+  } = useWorkbenchData();
   const [mode, setModeState] = useState<WorkbenchModeId>(DEFAULT_WORKBENCH_MODE);
   const [collapsed, setCollapsed] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [treeTab, setTreeTab] = useState<TreeTabId>(DEFAULT_TREE_TAB);
+  // Which tree row is showing in the Preview column. The shell owns it — not
+  // the tree — so Story 1.6 has one place to restore it from and the Preview
+  // dock is decided by the same component that owns the grid.
+  const [selection, setSelection] = useState<TreeSelection | null>(null);
   // Stored layout state exists only in the browser. Rendering it during SSR
   // would hydrate a different tree than the server sent, so the first paint is
   // always the default and the restore lands in an effect.
@@ -74,8 +105,18 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   useEffect(() => {
     setModeState(readStoredMode());
     setCollapsed(readStoredCollapsed());
+    setTreeTab(readStoredTreeTab());
     setMounted(true);
   }, []);
+
+  // Leaving Wiki mode, switching Wikis, or switching tabs undocks the Preview:
+  // in each case the selection names a row in a tree that is no longer the one
+  // on screen, so the docked column would describe something the owner cannot
+  // point at and nothing visible would carry `aria-current`. Undocking is a
+  // layout change only — no route change, exactly like a mode switch.
+  useEffect(() => {
+    setSelection(null);
+  }, [mode, currentWikiId, treeTab]);
 
   // Mirrors `sheetOpen` for the callbacks below. A state updater must be pure,
   // so "was it open?" is read from here rather than from inside `setSheetOpen`.
@@ -112,6 +153,20 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     setCollapsed(next);
     writeStoredCollapsed(next);
   }, [collapsed]);
+
+  // Same rule as the collapse toggle: the storage write is outside any state
+  // updater, because React invokes updaters twice under StrictMode.
+  const selectTreeTab = useCallback((next: TreeTabId) => {
+    setTreeTab(next);
+    writeStoredTreeTab(next);
+  }, []);
+
+  // Picking the row that is already picked deselects it. Without this the only
+  // ways to undock the Preview are leaving Wiki mode, switching tabs, or
+  // switching Wikis — none of which the owner would reach for to close a panel.
+  const selectRow = useCallback((next: TreeSelection) => {
+    setSelection((current) => (isSameSelection(current, next) ? null : next));
+  }, []);
 
   // Esc closes the sheet — on the BUBBLE phase, deliberately. `useDialogA11y`
   // takes Esc on capture and stops propagation, so an open ConfirmDialog wins
@@ -194,12 +249,18 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     }
   }, [sheetOpen]);
 
+  // The dock rule is a pure function in `workbench-tree`, not a condition typed
+  // here: it is the story's headline behaviour, and inlined in JSX it could only
+  // ever be grepped for, never executed by a test.
+  const previewOpen = shouldDockPreview(mode, selection);
+
   return (
     <div
       className="wb-shell"
       data-collapsed={collapsed ? "true" : "false"}
       data-sheet-open={sheetOpen ? "true" : "false"}
       data-mounted={mounted ? "true" : "false"}
+      data-preview={previewOpen ? "true" : "false"}
     >
       <button
         type="button"
@@ -230,16 +291,38 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
         <div className="wb-backdrop" onClick={closeSheet} aria-hidden="true" />
       )}
 
-      {/* Story 1.4 fills this column with the Knowledge | Files tabs, the tree,
-          the Wiki switcher and New Wiki. Here it is the header plus the label
-          of whatever the rail has selected. */}
+      {/* Header (product title, Wiki switcher, New Wiki), then the tabs and the
+          tree — but the trees describe the Wiki surface, so every other mode
+          keeps the muted label it has had since Story 1.3 rather than showing a
+          Knowledge tree next to, say, the Lint canvas. */}
       <aside className="wb-left" id={LEFT_ID} aria-label={`${surface.label} panel`}>
         <div className="wb-left-head">
           <h1 className="wb-title">{APP_NAME}</h1>
+          <WikiSwitcher
+            wikis={wikis}
+            currentWikiId={currentWikiId}
+            unavailable={registryUnavailable}
+          />
         </div>
-        <p className="wb-left-surface" data-no-localize>
-          {surface.label}
-        </p>
+        {mode === "wiki" ? (
+          <TreePanel
+            tab={treeTab}
+            onTabChange={selectTreeTab}
+            knowledge={knowledge}
+            files={files}
+            truncated={filesTruncated}
+            hasWiki={currentWikiId !== null}
+            unavailable={registryUnavailable}
+            knowledgeUnavailable={knowledgeUnavailable}
+            filesUnavailable={filesUnavailable}
+            selection={selection}
+            onSelect={selectRow}
+          />
+        ) : (
+          <p className="wb-left-surface" data-no-localize>
+            {surface.label}
+          </p>
+        )}
       </aside>
 
       {/* A collapsed column is `display: none`, which takes the h1 above out of
@@ -253,6 +336,12 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       <ModeCanvas mode={mode} sidecar={sidecar} headingId={headingId}>
         {children}
       </ModeCanvas>
+
+      {/* After the canvas in the DOM, so the tab order stays rail → left column
+          → canvas → Preview without a single `tabindex` (EXPERIENCE.md:165). */}
+      {previewOpen && (
+        <PreviewColumn selection={selection} knowledge={knowledge} files={files} />
+      )}
 
       {/* Announces the surface the rail just switched to (accessibility floor).
           Polite, so it never interrupts an in-progress announcement — and empty

@@ -1,0 +1,316 @@
+/**
+ * The Files tab's data source (Story 1.4): a bounded listing of what the kernel
+ * actually has on disk for the current Wiki.
+ *
+ * SERVER ONLY — it reaches the storage provider, so it is imported from
+ * `src/app/page.tsx` and never from a client component. The result is a flat
+ * list of paths; `buildFileTree` in the client-safe `workbench-tree` module
+ * does the nesting, so every ordering rule stays testable without storage.
+ *
+ * READ GATE. `listReadableWikiPages` is the only page-visibility filter there
+ * is, and the Knowledge tab goes through it. A file listing that walked `wiki/`
+ * raw would put the FILENAME of every page that filter excludes — agent-scoped
+ * pages, another owner's private page in the legacy flat tree — into the same
+ * column. So the caller passes the slug set that survived the filter, and a
+ * `.md` under the wiki root appears only if its slug is in that set. The set is
+ * a required argument, not an option: omitting it must not be spellable.
+ *
+ * Three deliberate limits, all of them because `StorageProvider.listFiles` is
+ * single-level in both providers and there is no recursive helper to add one to
+ * (adding one would change the storage contract for every caller):
+ *
+ *   - The walk is breadth-first and depth-capped, so a pathological `raw/`
+ *     nesting cannot fan out into thousands of R2 LIST calls on a page render.
+ *   - It is node-capped, PER ROOT, and says so in the UI rather than silently
+ *     truncating. Per root because a single cap spent entirely on `raw/` would
+ *     leave `wiki/` rendering as an empty silo rather than as a truncated one.
+ *   - It never `stat()`s a file. The listing carries no size or mtime and the
+ *     tree renders neither, so a per-file round trip would buy nothing.
+ *
+ * A rejected listing degrades that subtree to empty instead of failing the
+ * page: an unreadable `raw/` must not cost the owner their Knowledge tree.
+ */
+
+import { logger } from "./logger";
+import { getStorage } from "./storage";
+import {
+  rawRelPath,
+  tenantForOwner,
+  tenantRawRelPath,
+  tenantWikiRelPath,
+  wikiRelPath,
+} from "./wiki";
+import { WIKI_ARTIFACT_FILES } from "./wiki-scenarios";
+import { wikiArtifactPath } from "./wikis";
+import { WORKBENCH_FILE_LIMIT, WORKBENCH_FILE_MAX_DEPTH } from "./workbench-tree";
+
+// One definition of each cap, declared in the client-safe module because the
+// truncation sentence is derived from the node limit. Re-exported here so
+// server callers keep a single import.
+export { WORKBENCH_FILE_LIMIT, WORKBENCH_FILE_MAX_DEPTH };
+
+export interface WorkbenchFileListing {
+  /** Tree-root-relative paths; a trailing `/` marks a directory. */
+  paths: string[];
+  /** True when a cap (node or depth) stopped the walk short. */
+  truncated: boolean;
+}
+
+export interface WorkbenchFileOptions {
+  /**
+   * The slugs `listReadableWikiPages(principal)` returned. A `.md` leaf under
+   * the wiki root is listed only when its slug is in here — see READ GATE.
+   */
+  readableSlugs: ReadonlySet<string>;
+  /** Overridable only so the caps themselves are cheap to test. */
+  limit?: number;
+  maxDepth?: number;
+}
+
+interface Budget {
+  remaining: number;
+  truncated: boolean;
+  maxDepth: number;
+}
+
+interface QueueItem {
+  /** Storage-relative prefix passed to `listFiles`. */
+  storage: string;
+  /** Path as the tree shows it. */
+  display: string;
+  depth: number;
+}
+
+interface Listing {
+  name: string;
+  isDirectory: boolean;
+}
+
+/** Decides whether one leaf may be listed. Directories are never filtered. */
+type LeafFilter = (name: string) => boolean;
+
+/**
+ * The directory holding this Wiki's seeded artifacts, derived from the one
+ * exported path helper rather than re-spelling `tenants/<t>/wikis/<id>` here.
+ * Re-spelling it would be a second definition of a layout `wikis.ts` owns.
+ */
+function wikiArtifactDir(owner: string, wikiId: string): string {
+  const sample = wikiArtifactPath(owner, wikiId, WIKI_ARTIFACT_FILES[0]);
+  return sample.slice(0, sample.lastIndexOf("/"));
+}
+
+/**
+ * One prefix listing, reporting WHETHER it failed as well as what it found.
+ *
+ * Both providers already answer ENOENT with an empty list, so `failed` is a
+ * real error — unreadable, not absent. Callers that only render the result can
+ * ignore the flag (the I/O matrix asks for an empty branch there); `resolveRoot`
+ * cannot, because for it "empty" is a decision input.
+ */
+async function listSafely(prefix: string): Promise<{ entries: Listing[]; failed: boolean }> {
+  try {
+    return { entries: await getStorage().listFiles(prefix), failed: false };
+  } catch (error) {
+    // Degrade this branch, not the page: the other root and the Knowledge tab
+    // are unaffected by one unreadable prefix.
+    logger.error("workbench-files", `listFiles failed for "${prefix}"`, error);
+    return { entries: [], failed: true };
+  }
+}
+
+function visible(entries: Listing[]): Listing[] {
+  // Dotfiles are storage bookkeeping, not the owner's files: `.indexes`,
+  // `.revisions` and friends would otherwise dominate the tree.
+  return entries.filter((entry) => !entry.name.startsWith("."));
+}
+
+/**
+ * Pick which physical root backs a display root.
+ *
+ * `src/lib/silo.ts` documents `tenants/<tenant>/…` as the PRIMARY location for
+ * an owner's pages, with the flat tree a transitional redundant copy. So the
+ * silo is tried first and the flat root is used only when the silo has nothing
+ * — which is what a pre-migration workspace looks like. The first listing is
+ * kept and reused as the walk's level-1 seed, so preferring the silo costs no
+ * extra round trip in the common case.
+ *
+ * A FAILED silo listing is not an empty one. Both providers answer a missing
+ * prefix with an empty list, so a rejection here means unreadable — and falling
+ * back on it would answer a transient error by widening what the tab shows to
+ * the shared transitional tree, which is the opposite of degrading. The silo
+ * stays selected and renders as the empty branch the I/O matrix asks for.
+ */
+async function resolveRoot(
+  siloPrefix: string | null,
+  flatPrefix: string,
+): Promise<{ prefix: string; entries: Listing[] }> {
+  if (siloPrefix) {
+    const silo = await listSafely(siloPrefix);
+    if (silo.failed) return { prefix: siloPrefix, entries: [] };
+    const entries = visible(silo.entries);
+    if (entries.length > 0) return { prefix: siloPrefix, entries };
+  }
+  return { prefix: flatPrefix, entries: visible((await listSafely(flatPrefix)).entries) };
+}
+
+/** Breadth-first walk of one root, appending display paths into `out`. */
+async function walkRoot(
+  root: { prefix: string; entries: Listing[] },
+  displayRoot: string,
+  out: string[],
+  budget: Budget,
+  allowLeaf: LeafFilter,
+): Promise<void> {
+  if (budget.remaining <= 0) {
+    budget.truncated = true;
+    return;
+  }
+  // The root itself is a node, so an empty `raw/` is still visibly present —
+  // "no sources yet" and "the silo is missing" are different facts.
+  out.push(`${displayRoot}/`);
+  budget.remaining -= 1;
+
+  const seeded = new Map<string, Listing[]>([[root.prefix, root.entries]]);
+  const queue: QueueItem[] = [{ storage: root.prefix, display: displayRoot, depth: 1 }];
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+    const seed = seeded.get(node.storage);
+    const entries = seed ?? visible((await listSafely(node.storage)).entries);
+    if (node.depth >= budget.maxDepth) {
+      // Descending would produce level `maxDepth + 1`. Only claim truncation if
+      // something down there would actually have been SHOWN — a directory whose
+      // only contents are filtered-out leaves is omitting nothing.
+      if (entries.some((e) => e.isDirectory || allowLeaf(e.name))) budget.truncated = true;
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory && !allowLeaf(entry.name)) continue;
+      if (budget.remaining <= 0) {
+        budget.truncated = true;
+        return;
+      }
+      const display = `${node.display}/${entry.name}`;
+      out.push(entry.isDirectory ? `${display}/` : display);
+      budget.remaining -= 1;
+      if (entry.isDirectory) {
+        queue.push({
+          storage: `${node.storage}/${entry.name}`,
+          display,
+          depth: node.depth + 1,
+        });
+      }
+    }
+  }
+}
+
+/** `wiki/<slug>.md` is a page; everything else under the root is not. */
+function wikiLeafFilter(readableSlugs: ReadonlySet<string>): LeafFilter {
+  return (name) => {
+    if (!name.endsWith(".md")) return true;
+    // `index.md` is the generated index, not a page — it has no slug and so
+    // never survives this test, which is correct: it is not the owner's writing.
+    return readableSlugs.has(name.slice(0, -".md".length));
+  };
+}
+
+/** Everything visible passes; `raw/` holds sources, not pages. */
+const allowEveryLeaf: LeafFilter = () => true;
+
+/**
+ * Every path the Files tab shows for `wikiId`, as the owner's storage has them.
+ *
+ * The tree's own order is `buildFileTree`'s (directories before files, each
+ * alphabetically), so the rendered root reads `raw/`, `wiki/`, `purpose.md`,
+ * `schema.md`. The two seeded artifacts are emitted first here only so they
+ * cannot be squeezed out by a large silo, and they are shown at the tree root
+ * even though they physically live under `tenants/<t>/wikis/<id>/`: they are
+ * what is per-Wiki, and burying them three synthetic levels deep would make the
+ * one thing that changes on a Wiki switch the hardest thing to find.
+ *
+ * `wiki/` and `raw/` are the owner's single silo — Pages and Sources are not
+ * partitioned per Wiki (`src/lib/wikis.ts:16-17`), so both roots are the same
+ * under either Wiki. That is a storage fact, not a rendering choice.
+ */
+export async function listWorkbenchFilePaths(
+  owner: string,
+  wikiId: string | null,
+  options: WorkbenchFileOptions,
+): Promise<WorkbenchFileListing> {
+  const budget: Budget = {
+    remaining: options.limit ?? WORKBENCH_FILE_LIMIT,
+    truncated: false,
+    maxDepth: options.maxDepth ?? WORKBENCH_FILE_MAX_DEPTH,
+  };
+  const paths: string[] = [];
+
+  if (wikiId) {
+    // One listing, not one `fileExists` per artifact: the tab must not claim a
+    // file the template never wrote, and this costs a single round trip.
+    let dir: string | null = null;
+    try {
+      dir = wikiArtifactDir(owner, wikiId);
+    } catch (error) {
+      // An unparseable owner or id is the caller's bug, not a reason to 500 the
+      // Workbench — the rest of the tree is still real.
+      logger.error("workbench-files", "could not resolve the wiki artifact dir", error);
+    }
+    if (dir) {
+      const { entries } = await listSafely(dir);
+      const present = new Set(entries.filter((e) => !e.isDirectory).map((e) => e.name));
+      for (const file of WIKI_ARTIFACT_FILES) {
+        if (!present.has(file)) continue;
+        if (budget.remaining <= 0) {
+          budget.truncated = true;
+          break;
+        }
+        paths.push(file);
+        budget.remaining -= 1;
+      }
+    }
+  }
+
+  // The tenant silo is primary; the flat roots — the same ones
+  // `listRawSources()` and `listWikiPages()` read — are the transitional
+  // fallback, so the tab cannot drift from what the kernel addresses either way.
+  let siloRaw: string | null = null;
+  let siloWiki: string | null = null;
+  try {
+    const tenant = tenantForOwner(owner);
+    siloRaw = tenantRawRelPath(tenant, "");
+    siloWiki = tenantWikiRelPath(tenant, "");
+  } catch (error) {
+    // A tenant that will not validate leaves only the flat roots. Still a real
+    // tree, still gated by `readableSlugs`.
+    logger.error("workbench-files", "could not resolve the owner's silo", error);
+  }
+
+  // `raw/` is walked first under HALF the remaining budget, then `wiki/` gets
+  // everything left (never less than that half). Without the split, one large
+  // silo would spend the whole cap and the other would render as an empty
+  // directory — indistinguishable from a missing one.
+  const rawShare = Math.max(1, Math.floor(budget.remaining / 2));
+  const rawBudget: Budget = {
+    remaining: rawShare,
+    truncated: false,
+    maxDepth: budget.maxDepth,
+  };
+  await walkRoot(
+    await resolveRoot(siloRaw, rawRelPath("")),
+    "raw",
+    paths,
+    rawBudget,
+    allowEveryLeaf,
+  );
+  budget.remaining -= rawShare - rawBudget.remaining;
+  budget.truncated = budget.truncated || rawBudget.truncated;
+
+  await walkRoot(
+    await resolveRoot(siloWiki, wikiRelPath("")),
+    "wiki",
+    paths,
+    budget,
+    wikiLeafFilter(options.readableSlugs),
+  );
+
+  return { paths, truncated: budget.truncated };
+}
