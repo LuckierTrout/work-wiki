@@ -471,6 +471,7 @@ source_spec: `spec-1-8-edit-schema.md`
 severity: low
 reason: PRD FR-34 reads "Christian can view/edit purpose and Schema from Settings or Wiki tree", and the UX run names both files. This story's acceptance covers Schema alone, so the exclusion is correct here — but it is now an asserted invariant (`expect(EDITABLE_ARTIFACT_FILES).not.toContain( "purpose.md")`), so a later story must edit a test to open it. Opening it also needs an answer to what `purpose.md` must contain to be valid (the Schema's `hasPageConventions` has no analogue) and to how it reconciles with the tenant-global workspace profile (DW-14, DW-21), which is why it was not simply widened here.
 status: open
+decision: 2026-08-16 Wait for DW-14
 
 ### DW-59: An overwritten Schema has no recovery path — the artifact write takes no revision snapshot, while the page write it is modelled on does.
 origin: spec-deferred 3d268db29649
