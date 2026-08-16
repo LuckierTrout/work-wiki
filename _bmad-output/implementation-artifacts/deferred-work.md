@@ -54,6 +54,7 @@ source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: low
 reason: `src/lib/authz.ts` still denies `body` and `delete` writes on any public non-agent page to non-admin principals, justified in-comment by humans steering through metadata patches and talk threads. The edit page's copy is now a bare "You don't have write access to this page" with nowhere to go.
 status: open
+decision: 2026-08-16 Keep, re-document — Keep the deny (it still usefully stops future non-admin principals from overwriting curated public pages), rewrite its stale rationale comment, and give the edit page's denial copy an accurate explanation.
 
 ### DW-8: The contributor capability is retired at every page and REST surface but still ships as two MCP tools.
 origin: spec-deferred b763192224b5

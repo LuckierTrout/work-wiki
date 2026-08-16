@@ -7,5 +7,14 @@
     "key": "1",
     "label": "Retire zh-CN",
     "resolution": ""
+  },
+  "DW-7": {
+    "answered_at": "2026-08-16",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Keep the deny (it still usefully stops future non-admin principals from overwriting curated public pages), rewrite its stale rationale comment, and give the edit page's denial copy an accurate explanation.",
+    "key": "1",
+    "label": "Keep, re-document",
+    "resolution": ""
   }
 }
