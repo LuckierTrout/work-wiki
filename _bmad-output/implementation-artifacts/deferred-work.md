@@ -124,7 +124,8 @@ location: src/lib/wikis.ts
 source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: medium
 reason: A grep of `src/` finds no consumer of the seeded `purpose.md`; only `schema.md` became executable, via `loadPageConventions()`. The template's purpose text does reach prompts through the workspace profile, so nothing is lost today, but PRD FR-76 lists `purpose.md` in the file-tree contract and prd.md:558/564 puts it in the Chat system-prompt allocation. Story 1.4 (trees) and Epic 3 (Chat) are where the file itself acquires readers.
-status: open
+status: done 2026-08-16
+resolution: already resolved: purpose.md now has a runtime reader: src/lib/workbench-files.ts:261 lists it in the Files tree, resolveWorkbenchFile's artifact branch (src/lib/workbench-files.ts:436-438) maps it through readWikiArtifact (src/lib/workbench-files.ts:477), and /api/workbench/preview serves its bytes (src/app/api/workbench/preview/route.ts:167-171). The Chat system-prompt consumption the entry also cites remains Epic 3's and is covered by that epic's own scope.
 
 ### DW-17: Wiki artifacts sit at `tenants/<t>/wikis/<id>/`, not at the project root beside `wiki/` and `raw/sources/` as FR-76's file contract describes.
 origin: spec-deferred b01b1e432d01
@@ -244,7 +245,8 @@ location: src/lib/workbench-files.ts, src/components/workbench/PreviewColumn.tsx
 source_spec: `spec-1-4-knowledge-tree-and-file-tree.md`
 severity: medium
 reason: The I/O matrix fixes those two artifacts at the root of the file tree, but they physically live at `tenants/<t>/wikis/<id>/<file>` (`wikiArtifactPath`). `listWorkbenchFilePaths` emits them as bare names, and `PreviewColumn` prints the selection path verbatim, so a reader is shown `purpose.md` where storage holds a three-segment key. Nothing reads the printed path in this story, but Story 1.5 has to fetch bytes from a selection — it will need either a real storage path on the node or a resolver that maps root artifacts back to `wikiArtifactPath`.
-status: open
+status: done 2026-08-16
+resolution: already resolved: The resolver the entry said Story 1.5 would need was built: resolveWorkbenchFile (src/lib/workbench-files.ts:426-461, whose header comment names this deferred entry) maps root artifact names back to wikiArtifactPath via readWikiArtifact (src/lib/workbench-files.ts:475-483), consumed by src/app/api/workbench/preview/route.ts:165-174. The root-level display path is the I/O matrix's deliberate abstraction and nothing consumes the printed string.
 
 ### DW-32: The read gate covers `wiki/` leaves only; `raw/` filenames are listed unfiltered, and they are derived from page slugs.
 origin: spec-deferred 5a6b330e4ac8
