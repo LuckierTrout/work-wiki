@@ -31,6 +31,17 @@ export interface IconRailProps {
   leftColumnId: string;
   mode: WorkbenchModeId;
   onSelect: (mode: WorkbenchModeId) => void;
+  /**
+   * Story 1.9: Settings is a surface on this shell, not a route — and it
+   * TOGGLES, because the control below marks itself current while it is showing.
+   */
+  onToggleSettings: () => void;
+  /**
+   * Settings is showing. Exactly one rail control is ever `aria-current`, so a
+   * mode's own active state is suppressed while this is true — the mode is still
+   * what the shell will return to, but it is not what is on screen.
+   */
+  settingsActive: boolean;
   collapsed: boolean;
   onToggleCollapsed: () => void;
   sidecar: SidecarStatus;
@@ -53,6 +64,8 @@ export const IconRail = forwardRef<HTMLElement, IconRailProps>(function IconRail
     leftColumnId,
     mode,
     onSelect,
+    onToggleSettings,
+    settingsActive,
     collapsed,
     onToggleCollapsed,
     sidecar,
@@ -87,7 +100,10 @@ export const IconRail = forwardRef<HTMLElement, IconRailProps>(function IconRail
         const showBadge = Boolean(noun) && count > 0;
         const label =
           showBadge && noun ? badgeAccessibleName(item.label, count, noun) : item.label;
-        const active = item.id === mode;
+        // While Settings is open the mode is remembered but not SHOWING, so no
+        // mode carries `aria-current` — two current controls would describe two
+        // surfaces the owner cannot both be looking at.
+        const active = !settingsActive && item.id === mode;
         return (
           <button
             key={item.id}
@@ -121,11 +137,23 @@ export const IconRail = forwardRef<HTMLElement, IconRailProps>(function IconRail
         <span className="wb-sr-only">{sidecarLabel}</span>
       </span>
 
-      {/* Settings is still a route with the site chrome around it (Story 1.9
-          brings it inside the shell), so this is a real link, not a mode. */}
-      <a className="wb-rail-item" href="/settings" title="Settings" aria-label="Settings">
+      {/* Story 1.9 brought Settings inside the shell, so this is a BUTTON, not a
+          link: the epic requires the surface to open on the one mounted shell,
+          and a route change for a surface switch is what `epics.md:367` forbids
+          (it would unmount everything above the canvas, typed Chat input
+          included). Settings is deliberately not a mode — `WORKBENCH_MODES` is
+          the rail's ten, pinned by `workbench-modes.test.ts` — so it carries its
+          own active state rather than joining the map above. */}
+      <button
+        type="button"
+        className={`wb-rail-item${settingsActive ? " wb-rail-item--active" : ""}`}
+        title="Settings"
+        aria-label="Settings"
+        aria-current={settingsActive ? "page" : undefined}
+        onClick={onToggleSettings}
+      >
         <SettingsIcon />
-      </a>
+      </button>
 
       <button
         type="button"

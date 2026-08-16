@@ -477,3 +477,115 @@ source_spec: `spec-1-8-edit-schema.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
+
+### DW-61: The legacy `/settings` page now offers `Custom` in its provider picker but has no base-URL or key field for it, so selecting it there stores a provider no LLM call can construct.
+origin: spec-deferred 172fbd06f98e
+location: src/components/ProviderForm.tsx:47, src/lib/providers.ts (PROVIDER_INFO)
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: medium
+reason: `custom` was added to the shared `PROVIDER_INFO`, which `src/components/ProviderForm.tsx:47` spreads into the legacy page's dropdown; that form renders conditional fields only for `ollama` and `ollama-cloud`. Saving `provider: "custom"` there leaves `getModel()` throwing "The Custom provider needs a base URL. Set it in Settings → LLM Models." — actionable, and recoverable from the Workbench surface, which is why it was not patched here: this story's spec forbids modifying `ProviderForm` or the legacy route, and the honest fix is either to give that form the two fields or to retire the page.
+status: open
+
+### DW-62: The `g s` keyboard shortcut still routes out of the shell to the legacy Settings page, doing exactly the route change the rail control stopped doing.
+origin: spec-deferred cbeb1a3bf4ed
+location: src/hooks/useKeyboardShortcuts.ts:46,161
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: medium
+reason: `src/hooks/useKeyboardShortcuts.ts:46` maps `g s` to `/settings` and dispatches it with `router.push`, and `KeyboardShortcutsProvider` wraps the Workbench. So from inside the shell the keyboard path unmounts everything above the canvas and lands on a page with none of this story's categories, while the rail button opens the in-shell surface. `keyboard-shortcuts.test.ts:102,203` pin the old route, and this story is forbidden from editing pre-existing test files beyond the one rail pin — closing it means deciding whether the shortcut opens the surface or the legacy page stays a legitimate target.
+status: open
+
+### DW-63: Two live Settings surfaces now write one config file with no lost-update protection between them.
+origin: spec-deferred b1364ed893f7
+location: src/app/api/settings/route.ts, src/lib/config.ts (saveConfig)
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: medium
+reason: Both the new surface and `/settings` read-modify-write the same `AppConfig` through `loadConfig` → merge → `saveConfig`, with no `If-Match`, no version and no lock. A draft seeded before the other surface (or another tab) saved will overwrite it silently on the next Save. This is the same lost-update shape already recorded for the page and artifact writes (DW-38, DW-51, DW-56) rather than a new mechanism, and closing it needs the conflict-surface design those entries are waiting on.
+status: open
+
+### DW-64: The configured deadline bounds a whole STREAM on `callLLMStream`, and a deadline that fires surfaces raw transport vocabulary.
+origin: spec-deferred 0d779aa5cece
+location: src/lib/llm.ts (callLLMStream, timeoutOption)
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: medium
+reason: `callLLMStream` is not retry-wrapped, so its single `AbortSignal.timeout` measures total stream duration rather than time-to-first-response: a 30s deadline set to catch hangs would truncate every answer that takes longer than 30s to finish. Separately, `AbortSignal.timeout` raises a `TimeoutError` whose message matches none of `RETRYABLE_MESSAGES`, so it propagates verbatim — "The operation was aborted due to timeout" is exactly the transport vocabulary this repo's copy rules exclude. Both need Chat's streaming semantics (Epic 3) to decide what a deadline means for a stream and which sentence the owner should see.
+status: open
+
+### DW-65: On a read-only deployment the Settings selects and checkbox are `disabled`, which takes them out of the tab order, so a keyboard user cannot even read the stored provider.
+origin: spec-deferred e6bf2b886405
+location: src/components/workbench/SettingsCanvas.tsx
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: low
+reason: Text inputs use `readOnly` (focusable, still readable) while selects and the vector checkbox use `disabled`, because HTML has no `readonly` for either. The accessible fix is `aria-disabled` plus a suppressed change handler, and it wants one decision applied to every control class in the shell rather than one made inside this surface.
+status: open
+
+### DW-66: `hasCustomApiKey` / `hasFirecrawlApiKey` conflate an env-supplied key with a stored one, so `Remove` is offered for keys it cannot remove.
+origin: spec-deferred a152dc3b5b3f
+location: src/lib/config.ts (getWorkbenchSettings), src/components/workbench/SettingsCanvas.tsx
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: low
+reason: `apiKeyForProvider("custom")` and `getFirecrawlSettings().hasKey` both count `LLM_CUSTOM_API_KEY` / `FIRECRAWL_API_KEY` alongside the stored value, and the surface renders "A key is stored." plus a `Remove` button from that one boolean. Pressing Remove on an env-supplied key clears nothing and the sentence does not change. The embeddings half of this was closed in the patch pass (`hasEnvEmbeddingApiKey` rides separately); the same split for the other two was left out to keep the payload from growing again.
+status: open
+
+### DW-67: Edits typed while a save is in flight are discarded when the response re-seeds the draft.
+origin: spec-deferred 7fd1f35ba122
+location: src/components/workbench/SettingsCanvas.tsx (save)
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: low
+reason: `save` re-seeds the whole draft from the stored values the route answers with, which is what clears `dirty` — but the fields stay editable during the request, so anything typed in that window is replaced without a word. The alternatives (freeze the form while saving, or merge only untouched fields) are both behavioural choices this story's acceptance does not settle.
+status: open
+
+### DW-68: Storing an embedding key through the new surface flips `hasEmbeddingSupport()` on for the existing ingest caller even with vector search switched off.
+origin: spec-deferred 050a745f1202
+location: src/lib/embeddings.ts:139 (embeddingApiKeyFor), src/lib/ingest.ts:989
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: medium
+reason: `embeddingApiKeyFor` now falls back to `loadConfigSync().embeddingApiKey` (which the spec's Execution list requires, or the three stored vector values would have no reader at all). `hasEmbeddingSupport()` → `getEmbeddingModelName()` → `resolveEmbeddingProvider()` → `embeddingApiKeyFor()`, so an owner who pastes a key into Settings → Embeddings and leaves the switch off — the story's headline default — turns `ingest.ts:989` from off to on. Nothing fails: `embeddings.test.ts` drives that path from env vars, which are unchanged. The epic assigns "embed after ingest only when vector is on" to Story 2.9 and the spec's Never list forbids gating the callers here, so closing it is that story's work.
+status: open
+
+### DW-69: One `embeddingApiKey` is shared by both keyed embedding vendors, so switching provider silently reuses the other vendor's key.
+origin: spec-deferred bddb90da84c0
+location: src/lib/embeddings.ts:139, src/lib/config.ts (getWorkbenchSettings)
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: low
+reason: `embeddingApiKeyFor` reads the same stored value for `openai` and `google`, and `settingsSaveBody` omits an untouched secret — so an owner who stored an OpenAI key and then picks Google sends that key to Google while the hint still reads "A key is stored." Keying the field per provider (or labelling which vendor the stored key belongs to) is a store-shape decision this story's acceptance does not settle; the vector gate's env leg was made provider-aware in this pass, but the STORED key deliberately stayed vendor-agnostic so a provider changed in the draft can still answer the gate before it is saved.
+status: open
+
+### DW-70: The Embeddings category offers an endpoint field that is never read for `ollama` or `workers-ai`.
+origin: spec-deferred 9c4aafe22ebe
+location: src/lib/embeddings.ts:228-247, src/components/workbench/SettingsCanvas.tsx
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: low
+reason: `_createEmbeddingModel` applies `config.embeddingBaseUrl` for `openai` and `google` only; `ollama` reaches its server through `getOllamaBaseUrl()` and `workers-ai` through the Cloudflare binding. The vector gate agrees (both are in `SELF_TRANSPORTING_EMBEDDING_PROVIDERS` and are not asked for an endpoint), so nothing is broken — but the field still accepts a value that goes nowhere. Hiding it per provider, or routing `ollama`'s embedding endpoint through it, both change what `ollamaBaseUrl` means and want one decision rather than a fix inside this surface.
+status: open
+
+### DW-71: `LLM_CUSTOM_BASE_URL` wins at runtime but is invisible on the surface, so the Custom endpoint box can be typed into and saved with no effect.
+origin: spec-deferred 982384b4e50e
+location: src/lib/config.ts (getWorkbenchSettings, getCustomBaseUrl), src/components/workbench/SettingsCanvas.tsx
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: medium
+reason: `getCustomBaseUrl()` resolves `nonEmpty(process.env.LLM_CUSTOM_BASE_URL) ?? nonEmpty(cfg.customBaseUrl)`, while `getWorkbenchSettings()` serves `customBaseUrl: nonEmpty(cfg.customBaseUrl)` — the STORE only. A deployment that sets the env var therefore renders an empty endpoint box; the owner types a URL, the save succeeds, and the runtime keeps using the variable. This is exactly the failure the follow-up pass fixed for embeddings with `settingsEnvOverrideCopy` / `envEmbeddingModel`, and closing it the same way means another payload field plus another copy function — worth doing beside the already-recorded `hasCustomApiKey` env/store split rather than as a third separate touch of the same rows.
+status: open
+
+### DW-72: One stored `embeddingBaseUrl` is handed to whichever embedding provider is active, so an endpoint entered for OpenAI is sent to Google after a switch.
+origin: spec-deferred 1ed1cc09bf7d
+location: src/lib/embeddings.ts:228-238 (_createEmbeddingModel)
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: low
+reason: `_createEmbeddingModel` reads `loadConfigSync().embeddingBaseUrl` and applies it to the `openai` and `google` branches alike, with nothing tying the value to the provider it was typed for. This is the endpoint twin of the already-recorded vendor-agnostic `embeddingApiKey`, and it has the same resolution: keying the field per provider is a store-shape decision this story's acceptance does not settle. Nothing breaks today — the pair is usually changed together — but the silent reuse is real.
+status: open
+
+### DW-73: A `workers-ai` embedding model outside the `@cf/` namespace satisfies the vector gate and is then silently discarded at resolution time.
+origin: spec-deferred e96831d64aed
+location: src/lib/workbench-settings.ts:427-440, src/lib/embeddings.ts (resolveEmbeddingModelName)
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: low
+reason: `canEnableVectorSearch` asks `workers-ai` for a provider and a model only (it is keyless and self-transporting), so `{ provider: "workers-ai", model: "text-embedding-3-small" }` turns the switch on. `resolveEmbeddingModelName` then rejects the same value for a namespace mismatch and falls back to `@cf/baai/bge-m3`. The owner's model choice is replaced without a word. The namespace guard is pre-existing; teaching the gate about it means deciding whether the surface refuses the model, rewrites it, or narrows the picker.
+status: open
+
+### DW-74: Follow-up review still recommended for 1-9-settings-for-models-and-embeddings after the damping cap was spent
+origin: review-budget-followup
+location: n/a
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
+status: open

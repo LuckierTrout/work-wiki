@@ -2,12 +2,16 @@ import {
   loadConfig,
   saveConfig,
   getEffectiveSettings,
+  getWorkbenchSettings,
+  applyWorkbenchSettings,
+  workbenchSettingsStored,
   isValidProvider,
   isReadOnly,
   _resetConfigCache,
   type AppConfig,
 } from "@/lib/config";
 import { getEffectiveProvider } from "@/lib/config";
+import { validateWorkbenchSettingsPatch } from "@/lib/workbench-settings";
 import {
   PROVIDER_INFO,
   EMBEDDING_PROVIDERS,
@@ -32,7 +36,15 @@ export async function GET() {
   }
   await loadConfig();
   const settings = getEffectiveSettings();
-  return Response.json(settings);
+  // ONE settings API. Story 1.9's fields ride under ONE nested `workbench` key
+  // beside the frozen legacy object — widening `EffectiveSettings` would force
+  // edits to `settings-route.test.ts`'s whole-object fixture and to
+  // `useSettings.ts`'s hand-duplicated type for fields neither of them uses.
+  //
+  // `getWorkbenchSettings()` builds that object, and it is the only thing that
+  // may: no field it returns carries a stored API key — the three secrets become
+  // `has*ApiKey` booleans (AD-23).
+  return Response.json({ ...settings, workbench: getWorkbenchSettings() });
 }
 
 // ---------------------------------------------------------------------------
@@ -54,7 +66,9 @@ export async function PUT(request: Request) {
   }
 
   try {
-    const body = (await request.json()) as Partial<AppConfig>;
+    const body = (await request.json()) as Partial<AppConfig> & {
+      workbench?: unknown;
+    };
 
     // Validate provider if provided
     if (body.provider !== undefined && body.provider !== null) {
@@ -202,7 +216,31 @@ export async function PUT(request: Request) {
       }
     }
 
-    await saveConfig(updated);
+    // Story 1.9's fields, applied AFTER every legacy branch and only when the
+    // key is present — a body with no `workbench` produces byte-identically the
+    // same saved object it did before this story.
+    //
+    // The client already disabled the vector control with
+    // `canEnableVectorSearch`; re-running the same predicate here, over the
+    // config this request is about to write, is what makes FR-56 a RULE rather
+    // than a disabled button. `workbenchSettingsStored(updated)` is deliberately
+    // the post-legacy-merge object: an `embeddingModel` set by the flat field in
+    // this same request counts toward the gate.
+    let merged = updated;
+    if (body.workbench !== undefined) {
+      const validation = validateWorkbenchSettingsPatch(
+        body.workbench,
+        workbenchSettingsStored(updated),
+      );
+      if (!validation.ok) {
+        // Nothing is written: the refusal happens before `saveConfig`, so a
+        // rejected vector switch leaves the store exactly as it was.
+        return Response.json({ error: validation.error }, { status: 400 });
+      }
+      merged = applyWorkbenchSettings(updated, validation.patch);
+    }
+
+    await saveConfig(merged);
 
     // Re-prime the sync cache so the response and any immediate LLM request use
     // the newly selected provider rather than falling back to env detection.
@@ -214,6 +252,9 @@ export async function PUT(request: Request) {
     return Response.json({
       saved: true,
       effective,
+      // The fresh stored values, so a landed save re-seeds the surface's draft
+      // from what the kernel actually holds rather than from what was sent.
+      workbench: getWorkbenchSettings(),
     });
   } catch (err) {
     const message = getErrorMessage(err);

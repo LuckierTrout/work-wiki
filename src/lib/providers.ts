@@ -16,6 +16,11 @@ export const PROVIDER_INFO = [
   { value: "deepseek", label: "DeepSeek" },
   { value: "ollama-cloud", label: "Ollama Cloud" },
   { value: "ollama", label: "Ollama (self-hosted)" },
+  // Story 1.9: any OpenAI-compatible endpoint the owner points at themselves.
+  // It carries no {@link DEFAULT_MODELS} entry ON PURPOSE — a custom endpoint
+  // has no model this repo could know the name of, and inventing one would send
+  // a request that 404s at a server nobody here has seen.
+  { value: "custom", label: "Custom" },
 ] as const;
 
 /** Union type of valid provider values. */
@@ -51,6 +56,12 @@ export function isEmbeddingProvider(p: string): p is EmbeddingProvider {
 
 /**
  * Default model for each provider.
+ *
+ * `custom` is deliberately absent: an owner-supplied OpenAI-compatible endpoint
+ * serves whatever model names its operator chose, so there is no default this
+ * repo could name. Every reader already falls back (`?? provider`,
+ * `?? "Enter model name"`), so the omission surfaces as "you must type one"
+ * rather than as a request to a model that does not exist.
  */
 export const DEFAULT_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-20250514",
@@ -68,4 +79,18 @@ export const DEFAULT_MODELS: Record<string, string> = {
 export function providerLabel(provider: string): string {
   const entry = PROVIDER_INFO.find((p) => p.value === provider);
   return entry?.label ?? provider;
+}
+
+/**
+ * Display label for an EMBEDDING provider.
+ *
+ * `workers-ai` embeds but does not generate, so it is absent from
+ * {@link PROVIDER_INFO} — and `providerLabel` would fall back to the raw slug,
+ * putting `workers-ai` in a picker beside "OpenAI" and "Google". Adding it to
+ * the LLM list to get a label would offer it as a generation provider it cannot
+ * be, so the one extra name lives here instead.
+ */
+export function embeddingProviderLabel(provider: string): string {
+  if (provider === "workers-ai") return "Cloudflare Workers AI";
+  return providerLabel(provider);
 }

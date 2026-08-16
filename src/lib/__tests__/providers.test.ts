@@ -19,10 +19,12 @@ describe("PROVIDER_INFO", () => {
     expect(values).toContain("deepseek");
     expect(values).toContain("ollama-cloud");
     expect(values).toContain("ollama");
+    // Story 1.9: an owner-pointed OpenAI-compatible endpoint.
+    expect(values).toContain("custom");
   });
 
-  it("has exactly 6 providers", () => {
-    expect(PROVIDER_INFO).toHaveLength(6);
+  it("has exactly 7 providers", () => {
+    expect(PROVIDER_INFO).toHaveLength(7);
   });
 
   it("each entry has value and label properties", () => {
@@ -47,9 +49,10 @@ describe("PROVIDER_INFO", () => {
 // ---------------------------------------------------------------------------
 
 describe("VALID_PROVIDERS", () => {
-  it("is a Set containing exactly the 6 provider values", () => {
+  it("is a Set containing exactly the 7 provider values", () => {
     expect(VALID_PROVIDERS).toBeInstanceOf(Set);
-    expect(VALID_PROVIDERS.size).toBe(6);
+    expect(VALID_PROVIDERS.size).toBe(7);
+    expect(VALID_PROVIDERS.has("custom")).toBe(true);
     expect(VALID_PROVIDERS.has("anthropic")).toBe(true);
     expect(VALID_PROVIDERS.has("openai")).toBe(true);
     expect(VALID_PROVIDERS.has("google")).toBe(true);
@@ -75,16 +78,20 @@ describe("VALID_PROVIDERS", () => {
 // ---------------------------------------------------------------------------
 
 describe("DEFAULT_MODELS", () => {
-  it("has a default model for each provider", () => {
+  it("has a default model for every provider that can have one", () => {
     for (const provider of VALID_PROVIDERS) {
+      // `custom` is an endpoint the owner points at, so no model name here
+      // could be right — the owner types one. See DEFAULT_MODELS' docblock.
+      if (provider === "custom") continue;
       expect(DEFAULT_MODELS[provider]).toBeDefined();
       expect(typeof DEFAULT_MODELS[provider]).toBe("string");
       expect(DEFAULT_MODELS[provider].length).toBeGreaterThan(0);
     }
   });
 
-  it("has exactly 6 entries", () => {
+  it("has exactly 6 entries — one per provider except `custom`", () => {
     expect(Object.keys(DEFAULT_MODELS)).toHaveLength(6);
+    expect(DEFAULT_MODELS.custom).toBeUndefined();
   });
 
   it("deepseek default model is deepseek-v4-flash", () => {

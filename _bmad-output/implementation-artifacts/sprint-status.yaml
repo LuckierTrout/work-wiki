@@ -44,7 +44,7 @@ development_status:
   1-6-drag-resize-and-durable-layout: done
   1-7-dataversion-workbench-refresh: done
   1-8-edit-schema: done
-  1-9-settings-for-models-and-embeddings: backlog
+  1-9-settings-for-models-and-embeddings: done
   epic-1-retrospective: optional
 
   epic-2: backlog

@@ -98,10 +98,22 @@ describe("IconRail", () => {
     expect(source).not.toMatch(/role="status"[\s\S]{0,200}aria-label=\{sidecarLabel\}/);
   });
 
-  it("keeps Settings a real link to the existing route", async () => {
+  it("opens Settings as a surface on this shell, not as a route", async () => {
+    // Story 1.9 brought Settings inside the shell. A link here would be the
+    // route change `epics.md:367` forbids for a surface switch — it unmounts
+    // everything above the canvas, typed Chat input included — so the control is
+    // a button with its own active state, and the accessible name is unchanged.
     const source = await read("IconRail.tsx");
-    expect(source).toContain('href="/settings"');
+    expect(source).not.toContain('href="/settings"');
+    // It TOGGLES: the control marks itself current while Settings is showing,
+    // so a press that only ever opened would read as a switch that cannot be
+    // switched off.
+    expect(source).toContain("onClick={onToggleSettings}");
     expect(source).toContain('aria-label="Settings"');
+    expect(source).toContain('aria-current={settingsActive ? "page" : undefined}');
+    // Exactly one rail control is ever current: a mode's own active state is
+    // suppressed while Settings is showing.
+    expect(source).toContain("const active = !settingsActive && item.id === mode;");
   });
 
   it("labels the collapse control for both directions", async () => {

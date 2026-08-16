@@ -46,6 +46,13 @@ import {
   writeStoredTreeTab,
 } from "@/lib/workbench-state";
 import {
+  DEFAULT_SETTINGS_CATEGORY,
+  SETTINGS_LABEL,
+  settingsAnnouncement,
+  settingsCategory,
+  type SettingsCategoryId,
+} from "@/lib/workbench-settings";
+import {
   DEFAULT_TREE_TAB,
   isSameSelection,
   restorableSelection,
@@ -57,6 +64,8 @@ import {
 import { IconRail } from "./IconRail";
 import { ModeCanvas } from "./ModeCanvas";
 import { PreviewColumn } from "./PreviewColumn";
+import { SettingsCanvas } from "./SettingsCanvas";
+import { SettingsNav } from "./SettingsNav";
 import { SplitHandle } from "./SplitHandle";
 import { TreePanel } from "./TreePanel";
 import { WikiSwitcher } from "./WikiSwitcher";
@@ -113,6 +122,13 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   const [collapsed, setCollapsed] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [treeTab, setTreeTab] = useState<TreeTabId>(DEFAULT_TREE_TAB);
+  // Story 1.9's surface. Deliberately NOT persisted: `workbench-state.ts`'s
+  // durable set is mode, tab, selection, collapse and widths, and a reload must
+  // not land the owner in Settings holding a form they have no context for.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsCategoryId, setSettingsCategoryId] = useState<SettingsCategoryId>(
+    DEFAULT_SETTINGS_CATEGORY,
+  );
   // Which tree row is showing in the Preview column. The shell owns it — not
   // the tree — so Story 1.6 has one place to restore it from and the Preview
   // dock is decided by the same component that owns the grid.
@@ -255,10 +271,39 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       setModeState(next);
       writeStoredMode(next);
       setAnnouncement(workbenchMode(next).label);
+      // Leaving Settings is what DISCARDS the draft: `SettingsCanvas` owns it,
+      // so unmounting the surface is the whole of "unsaved edits are discarded
+      // on leave". No diff, no prompt, nothing sent.
+      setSettingsOpen(false);
       closeSheet();
     },
     [closeSheet],
   );
+
+  // Opening Settings is `useState` on the ONE mounted shell, exactly as a mode
+  // switch is — never `router.push`, never a `<Link>`. The announcement names
+  // the surface the same way a mode change does (EXPERIENCE.md:175).
+  //
+  // It TOGGLES. The rail control renders `aria-current="page"` and the active
+  // wash while Settings is showing, which reads as a control that is on and can
+  // therefore be turned off; a press that only ever opened would leave the mode
+  // canvas reachable solely by picking a mode. Closing announces the surface the
+  // owner lands back on, exactly as `selectMode` does.
+  const toggleSettings = useCallback(() => {
+    if (settingsOpen) {
+      setSettingsOpen(false);
+      setAnnouncement(workbenchMode(mode).label);
+    } else {
+      setSettingsOpen(true);
+      setAnnouncement(settingsAnnouncement(settingsCategory(settingsCategoryId).label));
+    }
+    closeSheet();
+  }, [closeSheet, mode, settingsCategoryId, settingsOpen]);
+
+  const selectSettingsCategory = useCallback((next: SettingsCategoryId) => {
+    setSettingsCategoryId(next);
+    setAnnouncement(settingsAnnouncement(settingsCategory(next).label));
+  }, []);
 
   // The storage write is deliberately OUTSIDE the updater: an updater must be
   // pure, and React invokes it twice under StrictMode. Same rule `setSheetClosed`
@@ -329,7 +374,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       // the sheet exists at all. Taken raw, the list makes that hidden button
       // the wrap point: Shift+Tab off the first mode calls `focus()` on a
       // `display: none` element (a silent no-op) and dead-ends, while forward
-      // Tab off the Settings link never matches `last`, so it is not prevented
+      // Tab off the Settings control never matches `last`, so it is not prevented
       // and focus walks straight out of the rail onto the canvas the backdrop
       // has made unclickable. `getClientRects()` is empty for a `display: none`
       // element; `offsetParent` is not used here because the rail itself is
@@ -422,7 +467,10 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // The dock rule is a pure function in `workbench-tree`, not a condition typed
   // here: it is the story's headline behaviour, and inlined in JSX it could only
   // ever be grepped for, never executed by a test.
-  const previewOpen = shouldDockPreview(mode, selection);
+  // …with one conjunction: a docked Preview beside a Settings detail column
+  // would describe a tree row the owner cannot point at, because the trees are
+  // not on screen while the settings nav has the left column.
+  const previewOpen = shouldDockPreview(mode, selection) && !settingsOpen;
 
   // Everything below is `workbench-split`'s: the widths the grid gets, the range
   // each divider enforces AND announces, whether a divider exists at all, and
@@ -438,6 +486,12 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       ref={shellRef}
       style={splitStyleVars(applied, mounted, layout) as CSSProperties | undefined}
       data-collapsed={collapsed ? "true" : "false"}
+      // Settings puts its own nav in the left column, so a collapsed column
+      // would leave no category reachable at all — and `collapsed` is durable,
+      // so that state would survive every reload. CSS force-shows the column
+      // while this is true; the owner's stored preference is not rewritten, and
+      // it takes effect again the moment Settings closes.
+      data-settings={settingsOpen ? "true" : "false"}
       data-sheet-open={sheetOpen ? "true" : "false"}
       data-mounted={mounted ? "true" : "false"}
       data-preview={previewOpen ? "true" : "false"}
@@ -461,6 +515,8 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
         leftColumnId={LEFT_ID}
         mode={mode}
         onSelect={selectMode}
+        onToggleSettings={toggleSettings}
+        settingsActive={settingsOpen}
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
         sidecar={sidecar}
@@ -476,7 +532,11 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
           tree — but the trees describe the Wiki surface, so every other mode
           keeps the muted label it has had since Story 1.3 rather than showing a
           Knowledge tree next to, say, the Lint canvas. */}
-      <aside className="wb-left" id={LEFT_ID} aria-label={`${surface.label} panel`}>
+      <aside
+        className="wb-left"
+        id={LEFT_ID}
+        aria-label={`${settingsOpen ? SETTINGS_LABEL : surface.label} panel`}
+      >
         <div className="wb-left-head">
           <h1 className="wb-title">{APP_NAME}</h1>
           <WikiSwitcher
@@ -485,7 +545,13 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
             unavailable={registryUnavailable}
           />
         </div>
-        {mode === "wiki" ? (
+        {settingsOpen ? (
+          // Settings' own nav takes the column the trees usually have (UX-DR14).
+          <SettingsNav
+            category={settingsCategoryId}
+            onSelect={selectSettingsCategory}
+          />
+        ) : mode === "wiki" ? (
           <TreePanel
             tab={treeTab}
             onTabChange={selectTreeTab}
@@ -535,9 +601,16 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
         />
       )}
 
-      <ModeCanvas mode={mode} sidecar={sidecar} headingId={headingId}>
-        {children}
-      </ModeCanvas>
+      {/* ONE canvas at a time. `SettingsCanvas` takes `CANVAS_ID` and
+          `tabIndex={-1}` from `ModeCanvas` while it is open, so the skip link
+          keeps exactly one target and the id stays unique. */}
+      {settingsOpen ? (
+        <SettingsCanvas category={settingsCategoryId} headingId={headingId} />
+      ) : (
+        <ModeCanvas mode={mode} sidecar={sidecar} headingId={headingId}>
+          {children}
+        </ModeCanvas>
+      )}
 
       {showSplitHandle("preview", mounted, layout) && (
         <SplitHandle

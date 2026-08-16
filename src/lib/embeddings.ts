@@ -124,16 +124,41 @@ function resolveEmbeddingProvider(
   return null;
 }
 
-/** Resolve the API key for an embedding provider from its own env var. */
+/**
+ * Resolve the API key for an embedding provider.
+ *
+ * Its own env var first, then the key the owner stored through Settings (Story
+ * 1.9). Env still wins, so a deployment that already carries the secret keeps
+ * it out of the config JSON — and with nothing stored every branch resolves
+ * exactly as it did before, which is what keeps `hasEmbeddingSupport()`'s
+ * current answers (and `embeddings.test.ts`) untouched.
+ *
+ * Without this fallback, "vector search needs an endpoint, a model and a key"
+ * would store three values that no code path could ever use.
+ *
+ * Every leg goes through {@link nonEmpty} rather than `??`, because a
+ * set-but-empty `OPENAI_API_KEY=` line short-circuits `??` to `""` and masks the
+ * key the owner just stored. `config.ts`'s vector gate reads the same two env
+ * vars through its own trim-and-null, so `??` here would also make the switch
+ * report itself on while every embedding call resolved nothing.
+ */
 function embeddingApiKeyFor(provider: EmbeddingProvider): string | null {
+  const stored = nonEmpty(loadConfigSync().embeddingApiKey);
   switch (provider) {
     case "openai":
-      return process.env.OPENAI_API_KEY ?? null;
+      return nonEmpty(process.env.OPENAI_API_KEY) ?? stored;
     case "google":
-      return process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? null;
+      return nonEmpty(process.env.GOOGLE_GENERATIVE_AI_API_KEY) ?? stored;
     default:
       return null; // ollama and workers-ai are keyless
   }
+}
+
+/** Trim-and-null: `""` and whitespace are "unset", not "set to nothing". */
+function nonEmpty(value: string | undefined | null): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**
@@ -203,19 +228,28 @@ export function getEmbeddingModel(): EmbeddingModel | null {
  * Internal helper to construct an AI SDK embedding model instance.
  *
  * Ollama base URL is resolved via `getOllamaBaseUrl()` from the config layer.
+ * OpenAI and Google honour a stored `embeddingBaseUrl` (Story 1.9's "endpoint"
+ * half of the vector gate) — additive, so with nothing stored the option is
+ * omitted entirely and both providers resolve to their own defaults exactly as
+ * before.
  */
 function _createEmbeddingModel(
   provider: string,
   apiKey: string | null,
   modelName: string,
 ): EmbeddingModel | null {
+  const stored = loadConfigSync().embeddingBaseUrl;
+  const baseUrlOption =
+    typeof stored === "string" && stored.trim().length > 0
+      ? { baseURL: stored.trim() }
+      : {};
   switch (provider) {
     case "openai": {
-      const openai = createOpenAI({ apiKey: apiKey! });
+      const openai = createOpenAI({ apiKey: apiKey!, ...baseUrlOption });
       return openai.embedding(modelName);
     }
     case "google": {
-      const google = createGoogleGenerativeAI({ apiKey: apiKey! });
+      const google = createGoogleGenerativeAI({ apiKey: apiKey!, ...baseUrlOption });
       return google.embedding(modelName);
     }
     case "ollama": {

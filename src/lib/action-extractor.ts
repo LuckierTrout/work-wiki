@@ -1,6 +1,7 @@
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { proposeActionItems, type ActionItem } from "./action-items";
+import { llmTimeoutOption } from "./config";
 import { getConfiguredModel, hasLLMKey, retryWithBackoff } from "./llm";
 import {
   canonicalizeNamesTerm,
@@ -55,6 +56,8 @@ export async function extractActionsFromPage(
         (dictionaryGuidance ? `\n\n${dictionaryGuidance}` : ""),
       prompt: `Source page: ${page.title} (${slug}.md)\n\n${page.content.slice(0, 80_000)}`,
       maxOutputTokens: 2_500,
+      // Inside the thunk, so each retry gets its own fresh deadline.
+      ...llmTimeoutOption(),
     }),
   );
 

@@ -1,4 +1,5 @@
 import { generateText } from "ai";
+import { llmTimeoutOption } from "./config";
 import { contentHash } from "./embeddings";
 import { isEnoent } from "./errors";
 import { fetchUrlContent, validateUrlSafety } from "./fetch";
@@ -397,6 +398,8 @@ async function defaultDraftUpdate(input: {
       `Source URL: ${input.monitor.url}\nSource title: ${input.sourceTitle}\n\n` +
       `CURRENT PAGE BODY:\n${parsed.body.slice(0, 40_000)}\n\n` +
       `LATEST SOURCE CONTENT:\n${input.sourceContent.slice(0, 60_000)}`,
+    // No retry wrapper here, so this is the one and only deadline for the call.
+    ...llmTimeoutOption(),
   });
   const body = stripCodeFence(text);
   if (!body) throw new Error("The model returned an empty monitored update");
