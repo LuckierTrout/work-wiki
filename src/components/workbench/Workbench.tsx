@@ -1,6 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { APP_NAME } from "@/lib/brand";
 import { useSidecarStatus } from "@/hooks/useSidecarStatus";
 import {
@@ -9,16 +17,38 @@ import {
   type WorkbenchModeId,
 } from "@/lib/workbench-modes";
 import {
+  DEFAULT_SPLIT_WIDTHS,
+  clampSplitWidth,
+  clampSplitWidths,
+  layoutSignature,
+  nextSplitWidthFromKey,
+  showSplitHandle,
+  splitBounds,
+  splitLabel,
+  splitStyleVars,
+  splitWidthFromPointer,
+  withSplitWidth,
+  type SplitBounds,
+  type SplitId,
+  type SplitLayout,
+  type SplitWidths,
+} from "@/lib/workbench-split";
+import {
   readStoredCollapsed,
   readStoredMode,
+  readStoredSelection,
+  readStoredSplitWidths,
   readStoredTreeTab,
   writeStoredCollapsed,
   writeStoredMode,
+  writeStoredSelection,
+  writeStoredSplitWidths,
   writeStoredTreeTab,
 } from "@/lib/workbench-state";
 import {
   DEFAULT_TREE_TAB,
   isSameSelection,
+  restorableSelection,
   shouldDockPreview,
   wikilinkSelection,
   type TreeSelection,
@@ -27,6 +57,7 @@ import {
 import { IconRail } from "./IconRail";
 import { ModeCanvas } from "./ModeCanvas";
 import { PreviewColumn } from "./PreviewColumn";
+import { SplitHandle } from "./SplitHandle";
 import { TreePanel } from "./TreePanel";
 import { WikiSwitcher } from "./WikiSwitcher";
 import { useWorkbenchData } from "./WorkbenchData";
@@ -93,20 +124,56 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // stored mode on load is not a change the owner made, and announcing it would
   // report a mode switch that never happened. Only `selectMode` fills this in.
   const [announcement, setAnnouncement] = useState("");
+  // The owner's PREFERRED column widths — what they dragged to, not what fits.
+  // `clampSplitWidths` reduces them to the frame at render, so narrowing the
+  // window never quietly rewrites the layout they chose.
+  const [widths, setWidths] = useState<SplitWidths>(DEFAULT_SPLIT_WIDTHS);
+  // The measured shell. Zero until the mount effect runs, which is what keeps
+  // the first paint the server's and the inline width vars unwritten.
+  const [shellWidth, setShellWidth] = useState(0);
+  const [resizing, setResizing] = useState(false);
   const sidecar = useSidecarStatus();
   const headingId = useId();
   const railRef = useRef<HTMLElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
   const sheetTriggerRef = useRef<HTMLButtonElement>(null);
   // Focus returns to the trigger only when the sheet was dismissed, not when it
   // was never opened — otherwise the first paint steals focus.
   const restoreFocusRef = useRef(false);
+  // The layout a restored selection belongs to. See the reset effect below: the
+  // restore and the reset would otherwise fight, and the reset would win.
+  const restoreSignatureRef = useRef<string | null>(null);
+  // Read inside handlers and the mount effect without taking a dependency on
+  // them — assigned during render, the `useDialogA11y` idiom `PreviewColumn`
+  // already follows. The mount effect must see the trees the FIRST render was
+  // given; a dependency on them would re-run the whole restore on every refetch.
+  const latestRef = useRef({ currentWikiId, knowledge, files, widths });
+  latestRef.current = { currentWikiId, knowledge, files, widths };
 
   const surface = workbenchMode(mode);
 
   useEffect(() => {
+    // Read once for the restore signature, then again at the three call sites
+    // `workbench-chrome.test.ts:195-205` and `workbench-left-column.test.ts:72-82`
+    // pin verbatim. The accessors are guarded reads with no side effect, so the
+    // second call costs nothing and the frozen form stays exactly as it was.
+    const restoredMode = readStoredMode();
+    const restoredTab = readStoredTreeTab();
     setModeState(readStoredMode());
     setCollapsed(readStoredCollapsed());
     setTreeTab(readStoredTreeTab());
+    setWidths(readStoredSplitWidths());
+    // A stored row is restored only when it belongs to the Wiki the registry
+    // still calls current AND still names a row in the trees this render was
+    // given. A deleted page, another Wiki's row, or a kind whose tree does not
+    // contain it all restore nothing: no Preview docks, and no row carries
+    // `aria-current`.
+    const { currentWikiId: wikiId, knowledge: groups, files: nodes } = latestRef.current;
+    const restored = restorableSelection(readStoredSelection(), wikiId, groups, nodes);
+    if (restored) {
+      restoreSignatureRef.current = layoutSignature(restoredMode, wikiId, restoredTab);
+      setSelection(restored);
+    }
     setMounted(true);
   }, []);
 
@@ -115,9 +182,55 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // on screen, so the docked column would describe something the owner cannot
   // point at and nothing visible would carry `aria-current`. Undocking is a
   // layout change only — no route change, exactly like a mode switch.
+  //
+  // The guard is what makes a restored selection survive its own restore. The
+  // mount effect restores mode, tab and row together, which makes this effect
+  // fire again with the restored deps and clear the row that was just put back —
+  // invisibly, and with every existing assertion still green. So the restore
+  // records the signature of the layout it restored INTO, and this returns
+  // without clearing until that signature arrives. Every later change behaves
+  // exactly as it did before.
   useEffect(() => {
+    const pending = restoreSignatureRef.current;
+    if (pending !== null) {
+      if (pending === layoutSignature(mode, currentWikiId, treeTab)) {
+        restoreSignatureRef.current = null;
+      }
+      return;
+    }
     setSelection(null);
   }, [mode, currentWikiId, treeTab]);
+
+  // The pick outlives the SESSION — not the tab, the mode or the Wiki: the reset
+  // effect above clears the selection whenever any of those change, and this
+  // then clears the key with it. What survives a reload is the row the owner was
+  // still on when they closed the tab, scoped to the Wiki they were in.
+  //
+  // …but only when the shell actually knows. A failed registry read leaves
+  // `currentWikiId` null, and a failed index or file read hands the trees down
+  // empty — in all three cases the restore above correctly declines, and writing
+  // that outcome down would record "we could not find out" as "the owner
+  // deselected" and forget the row permanently after one bad minute on the
+  // server. A genuine deselect with healthy reads still clears the key.
+  useEffect(() => {
+    if (!mounted) return;
+    if (currentWikiId === null || knowledgeUnavailable || filesUnavailable) return;
+    writeStoredSelection(currentWikiId, selection);
+  }, [mounted, currentWikiId, selection, knowledgeUnavailable, filesUnavailable]);
+
+  // The frame the clamp measures against. `getBoundingClientRect()` on the shell
+  // itself, never the viewport's own width: the shell is a grid child of
+  // `layout.tsx`'s <main>, so what the window reports is not what it gets. No
+  // `ResizeObserver` — a resize listener is the whole of what changes here, and
+  // the responsive breakpoints stay in CSS where they can't drift.
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const measure = () => setShellWidth(shell.getBoundingClientRect().width);
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
 
   // Mirrors `sheetOpen` for the callbacks below. A state updater must be pure,
   // so "was it open?" is read from here rather than from inside `setSheetOpen`.
@@ -271,18 +384,63 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     }
   }, [sheetOpen]);
 
+  // The press begins; the shell suppresses text selection for its duration.
+  const startResize = useCallback(() => setResizing(true), []);
+
+  // …and ends. The preference is written ONCE, here, rather than on every
+  // pointermove: a drag is ~60 events a second, and localStorage is synchronous.
+  const endResize = useCallback(() => {
+    setResizing(false);
+    writeStoredSplitWidths(latestRef.current.widths);
+  }, []);
+
+  // The only geometry the shell touches is the rect it measures. Where the
+  // pointer lands and what the range is are both `workbench-split`'s answers.
+  const dragTo = useCallback((id: SplitId, clientX: number, bounds: SplitBounds) => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const rect = shell.getBoundingClientRect();
+    const raw = splitWidthFromPointer(id, clientX, rect.left, rect.width);
+    setWidths((current) => withSplitWidth(current, id, clampSplitWidth(raw, bounds)));
+  }, []);
+
+  // Returns whether the divider claimed the key, so the control knows whether to
+  // prevent the default — Tab and Escape must still work from a focused handle.
+  const pressResizeKey = useCallback(
+    (id: SplitId, key: string, current: number, bounds: SplitBounds) => {
+      const next = nextSplitWidthFromKey(id, key, current, bounds);
+      if (next === null) return false;
+      const updated = withSplitWidth(latestRef.current.widths, id, next);
+      setWidths(updated);
+      writeStoredSplitWidths(updated);
+      return true;
+    },
+    [],
+  );
+
   // The dock rule is a pure function in `workbench-tree`, not a condition typed
   // here: it is the story's headline behaviour, and inlined in JSX it could only
   // ever be grepped for, never executed by a test.
   const previewOpen = shouldDockPreview(mode, selection);
 
+  // Everything below is `workbench-split`'s: the widths the grid gets, the range
+  // each divider enforces AND announces, whether a divider exists at all, and
+  // the two inline custom properties. Not one of them is spelled here.
+  const layout: SplitLayout = { shellWidth, previewOpen, collapsed };
+  const applied = clampSplitWidths(widths, layout);
+  const treeBounds = splitBounds("tree", applied, layout);
+  const previewBounds = splitBounds("preview", applied, layout);
+
   return (
     <div
       className="wb-shell"
+      ref={shellRef}
+      style={splitStyleVars(applied, mounted, layout) as CSSProperties | undefined}
       data-collapsed={collapsed ? "true" : "false"}
       data-sheet-open={sheetOpen ? "true" : "false"}
       data-mounted={mounted ? "true" : "false"}
       data-preview={previewOpen ? "true" : "false"}
+      data-resizing={resizing ? "true" : "false"}
     >
       <button
         type="button"
@@ -339,6 +497,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
             filesUnavailable={filesUnavailable}
             selection={selection}
             onSelect={selectRow}
+            collapsed={collapsed}
           />
         ) : (
           <p className="wb-left-surface" data-no-localize>
@@ -355,9 +514,43 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
           (below 900px the column is force-shown and this one withdraws). */}
       <h1 className="wb-sr-only wb-title-fallback">{APP_NAME}</h1>
 
+      {/* Each divider follows the column it moves, so the tab order reads
+          rail → left column → divider → canvas → divider → Preview. Rendered
+          only once mounted AND measured: a handle in the SSR markup would be a
+          hydration mismatch, and one rendered before the shell has a width would
+          announce the floors as its whole range. Below 1200px they are hidden by
+          a media query, never by a width comparison here. */}
+      {showSplitHandle("tree", mounted, layout) && (
+        <SplitHandle
+          id="tree"
+          label={splitLabel("tree")}
+          value={applied.tree}
+          min={treeBounds.min}
+          max={treeBounds.max}
+          onStart={startResize}
+          onMove={(clientX) => dragTo("tree", clientX, treeBounds)}
+          onEnd={endResize}
+          onKey={(key) => pressResizeKey("tree", key, applied.tree, treeBounds)}
+        />
+      )}
+
       <ModeCanvas mode={mode} sidecar={sidecar} headingId={headingId}>
         {children}
       </ModeCanvas>
+
+      {showSplitHandle("preview", mounted, layout) && (
+        <SplitHandle
+          id="preview"
+          label={splitLabel("preview")}
+          value={applied.preview}
+          min={previewBounds.min}
+          max={previewBounds.max}
+          onStart={startResize}
+          onMove={(clientX) => dragTo("preview", clientX, previewBounds)}
+          onEnd={endResize}
+          onKey={(key) => pressResizeKey("preview", key, applied.preview, previewBounds)}
+        />
+      )}
 
       {/* After the canvas in the DOM, so the tab order stays rail → left column
           → canvas → Preview without a single `tabindex` (EXPERIENCE.md:165). */}

@@ -1,6 +1,15 @@
 "use client";
 
-import { useCallback, useId, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
+import { treeScrollActive } from "@/lib/workbench-split";
+import { readStoredTreeScroll, writeStoredTreeScroll } from "@/lib/workbench-state";
 import {
   FILES_EMPTY_COPY,
   FILES_TRUNCATED_COPY,
@@ -55,6 +64,27 @@ export interface TreePanelProps {
   filesUnavailable?: boolean;
   selection: TreeSelection | null;
   onSelect: (selection: TreeSelection) => void;
+  /**
+   * The left column is collapsed to a zero-width track, so this panel is
+   * `display: none`. Story 1.6 reads it for one reason only — see the scroll
+   * effects below.
+   */
+  collapsed?: boolean;
+}
+
+/**
+ * Is the scroll container actually on screen?
+ *
+ * The element is ASKED — `getClientRects()` is empty for an element that is not
+ * rendered, the same question the shell's sheet focus wrap already asks, and it
+ * contains no width comparison, so the breakpoint stays in the stylesheet where
+ * it has one definition. What that answer MEANS is `treeScrollActive`'s, in
+ * `workbench-split`, so the node suite executes the rule instead of grepping for
+ * it: inverted here it would leave the scroll memory dead with every assertion
+ * green.
+ */
+function treeBodyShowing(panel: HTMLElement, collapsed: boolean): boolean {
+  return treeScrollActive(collapsed, panel.getClientRects().length > 0);
 }
 
 /** 12px per level (`mockups/todos.html:111`), applied in CSS from this depth. */
@@ -76,8 +106,10 @@ export function TreePanel({
   filesUnavailable = false,
   selection,
   onSelect,
+  collapsed = false,
 }: TreePanelProps) {
   const baseId = useId();
+  const bodyRef = useRef<HTMLDivElement>(null);
   // Groups and directories open by default: a tree that starts fully collapsed
   // hides the very thing the tab exists to show. Only explicit closes are
   // remembered, so a newly appeared group is open too.
@@ -87,6 +119,39 @@ export function TreePanel({
   }, []);
 
   const panelId = `${baseId}-panel`;
+
+  // Where the owner left this tab. Restored per tab because the two trees are
+  // different lengths — one shared offset would drop them somewhere arbitrary on
+  // whichever tab they did not leave. Keyed on `collapsed` too: showing a column
+  // again is the moment the browser has just reset `scrollTop` to 0.
+  useEffect(() => {
+    const panel = bodyRef.current;
+    if (!panel || !treeBodyShowing(panel, collapsed)) return;
+    panel.scrollTop = readStoredTreeScroll()[tab];
+  }, [tab, collapsed]);
+
+  // …and remembering it. Coalesced through `requestAnimationFrame` because a
+  // scroll fires far faster than localStorage writes synchronously, and skipped
+  // while the panel is not rendered: a `display: none` column reports
+  // `scrollTop === 0` by the browser's own rules, so a persist that ran there
+  // would overwrite the offset the owner is about to come back to.
+  useEffect(() => {
+    const panel = bodyRef.current;
+    if (!panel || !treeBodyShowing(panel, collapsed)) return;
+    let frame = 0;
+    const onScroll = () => {
+      if (frame !== 0) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        writeStoredTreeScroll(tab, panel.scrollTop);
+      });
+    };
+    panel.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      panel.removeEventListener("scroll", onScroll);
+      if (frame !== 0) cancelAnimationFrame(frame);
+    };
+  }, [tab, collapsed]);
 
   function body() {
     if (unavailable) {
@@ -214,6 +279,7 @@ export function TreePanel({
         ))}
       </div>
       <div
+        ref={bodyRef}
         className="wb-tree-body"
         role="tabpanel"
         id={panelId}

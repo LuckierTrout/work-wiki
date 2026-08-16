@@ -140,6 +140,55 @@ export function isSameSelection(
 }
 
 /**
+ * Is this pick still a row the trees on screen actually contain? (Story 1.6.)
+ *
+ * A selection restored from browser storage may name a page that was deleted, a
+ * file the walk no longer lists, or a row that belonged to a Wiki the owner has
+ * since switched away from. Restoring it anyway docks a Preview that answers
+ * `This file couldn’t be loaded.` and puts `aria-current` on nothing — a shell
+ * that looks broken rather than one that forgot. Built on the two lookups the
+ * Preview column already uses, so "is this row in the tree?" has one answer.
+ *
+ * A directory is not a row: the file tree renders directories as disclosures,
+ * never as selectable buttons, so restoring one would dock a column with no
+ * bytes behind it.
+ */
+export function selectionExists(
+  selection: TreeSelection | null,
+  knowledge: readonly KnowledgeGroup[],
+  files: readonly FileNode[],
+): boolean {
+  if (!selection) return false;
+  if (selection.kind === "page") {
+    return findKnowledgePage(knowledge, selection.slug) !== null;
+  }
+  const node = findFileNode(files, selection.path);
+  return node !== null && !node.isDirectory;
+}
+
+/**
+ * The whole restore decision for a stored pick (Story 1.6): the row to select on
+ * mount, or `null` for "restore nothing".
+ *
+ * Three conditions have to hold together, and spelling them inline in the mount
+ * effect would leave them where only a grep could reach them — the Wiki half in
+ * particular, whose failure (another Wiki's row restored over the current one) is
+ * invisible until the Preview loads somebody else's page. `stored` is typed
+ * structurally rather than imported from `workbench-state`, which imports THIS
+ * module; the shape is `StoredSelection`.
+ */
+export function restorableSelection(
+  stored: { wikiId: string; selection: TreeSelection } | null,
+  currentWikiId: string | null,
+  knowledge: readonly KnowledgeGroup[],
+  files: readonly FileNode[],
+): TreeSelection | null {
+  if (!stored || currentWikiId === null) return null;
+  if (stored.wikiId !== currentWikiId) return null;
+  return selectionExists(stored.selection, knowledge, files) ? stored.selection : null;
+}
+
+/**
  * Whether the Preview column docks — the story's headline behaviour, lifted out
  * of JSX so it is executed by a test rather than grepped for in a source scan.
  *

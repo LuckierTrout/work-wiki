@@ -2868,6 +2868,11 @@ textarea.studio-input { resize: vertical; }
      indent — `mockups/chat-cited.html:108` and `mockups/todos.html:111`. */
   --wb-preview: 360px;
   --wb-tree-indent: 12px;
+  /* Story 1.6: the grab strip a divider offers. The only geometry token this
+     story adds — every width and floor it clamps to is already above, and
+     `workbench-split.ts` restates exactly those six. Wider than the 1px hairline
+     it draws, because a 1px pointer target is not one. */
+  --wb-split-hit: 9px;
 
   /* Type — DESIGN.md `typography.ui` / `ui-strong` / `title` / `mono`. */
   --wb-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -2967,6 +2972,10 @@ textarea.studio-input { resize: vertical; }
 
   display: grid;
   grid-template-columns: var(--wb-rail) minmax(var(--wb-split-min-tree), var(--wb-tree)) minmax(0, 1fr);
+  /* Story 1.6: the containing block the two dividers are positioned against.
+     They sit on the column boundaries, which is a property of the shell, not of
+     any one column — and a column cannot host a control that straddles it. */
+  position: relative;
   /* The shell lives inside layout.tsx's `min-h-screen flex flex-col` body with
      `<main class="flex-1">`, so it claims the viewport by height rather than
      assuming it owns <body>. */
@@ -3778,6 +3787,63 @@ body:has(.wb-shell) {
   color: var(--wb-muted);
 }
 
+/* ---- Drag-resize separators (Story 1.6) -------------------------------- */
+/* The handle is positioned from the SAME custom properties the grid tracks read.
+   Computing `left` in JavaScript would be a second derivation of the layout, and
+   the applied width and the divider's position have to agree to the pixel or the
+   owner grabs a strip of nothing. Reading `calc(var(--wb-rail) + var(--wb-tree)
+   - …)` here makes the handle read the exact value the track read, whether that
+   value came from the token block or from the shell's inline style. */
+.wb-split-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: var(--wb-split-hit);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  /* Without this a touch drag scrolls the page instead of moving the divider,
+     and pointer capture never sees the moves. */
+  touch-action: none;
+}
+/* The visible hairline is a pseudo-element centred in the grab strip, so the
+   target can be 9px wide while the divider still reads as a 1px rule. It is
+   invisible at rest: the columns already have borders, and a second permanent
+   line beside them would be chrome the layout does not need. */
+.wb-split-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc((var(--wb-split-hit) - 1px) / 2);
+  width: 1px;
+  background: transparent;
+}
+.wb-split-handle:hover::before,
+.wb-split-handle:focus-visible::before {
+  background: var(--wb-border);
+}
+.wb-split-handle--tree {
+  left: calc(var(--wb-rail) + var(--wb-tree) - var(--wb-split-hit) / 2);
+}
+.wb-split-handle--preview {
+  right: calc(var(--wb-preview) - var(--wb-split-hit) / 2);
+}
+/* A drag that selects the tree labels it passes over is a drag the owner has to
+   undo afterwards, and the cursor must not revert every time the pointer leaves
+   the 9px strip mid-gesture. */
+.wb-shell[data-resizing="true"] {
+  cursor: col-resize;
+  /* Prefixed too: Safari only dropped `-webkit-` for this property in 17.4, and
+     without it every drag on an older one sweeps a selection across the tree
+     labels the pointer passes over — the exact thing this rule exists to stop.
+     The file already carries `-webkit-` for the same reason elsewhere. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* ---- Docking the Preview as a fourth column ---------------------------- */
 /* These follow every base grid rule in the file on purpose: `[data-preview]`
    and `[data-collapsed]` have the same specificity, so source order is what
@@ -3800,6 +3866,13 @@ body:has(.wb-shell) {
 /* 900–1199px: honour the minimum widths for BOTH side panels, so the canvas
    gives up the space rather than the tree (`epics.md` resize limits). */
 @media (max-width: 1199px) {
+  /* Both side columns are pinned to their minimums from here down, so there is
+     no width left to drag and the inline width tokens have nothing to do. The
+     breakpoint stays in CSS: a `window.innerWidth` comparison in the shell would
+     be a second copy of this rule, free to drift from it. */
+  .wb-split-handle {
+    display: none;
+  }
   .wb-shell[data-preview="true"] {
     grid-template-columns:
       var(--wb-rail)

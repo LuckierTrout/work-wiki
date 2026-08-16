@@ -341,3 +341,35 @@ source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
+
+### DW-44: The divider's 9px grab strip is under WCAG 2.2 AA's 24px target-size minimum, and its outer half overlaps the tree's own scrollbar.
+origin: spec-deferred 223f18c1acac
+location: src/app/globals.css (.wb-split-handle), src/lib/workbench-split.ts
+source_spec: `spec-1-6-drag-resize-and-durable-layout.md`
+severity: low
+reason: `--wb-split-hit: 9px` centred on the boundary puts ~4.5px of the strip over the tree column, which is exactly where `.wb-tree-body`'s scrollbar sits, and leaves the target far short of SC 2.5.8's 24×24 CSS px (the spacing exception does not apply — tree rows are adjacent targets). The epic's floor calls AA "a target", and 9px is the width every desktop splitter uses, so this is a deliberate trade rather than an oversight. Widening the strip to 24px is not the obvious fix either: it would cover the scrollbar entirely and eat 12px of the canvas edge. Deciding between a wider strip, an offset strip, and a documented exception is a chrome decision for whichever story revisits the shell's pointer targets.
+status: open
+
+### DW-45: The separators carry no `aria-controls`, and the keyboard surface has no coarse step (PageUp/PageDown).
+origin: spec-deferred e99921b6f2d1
+location: src/components/workbench/SplitHandle.tsx, src/lib/workbench-split.ts
+source_spec: `spec-1-6-drag-resize-and-durable-layout.md`
+severity: low
+reason: The ARIA window-splitter pattern names the pane a separator resizes via `aria-controls`. The tree divider could point at `LEFT_ID`, which the shell already declares — but the Preview divider would need an id on `.wb-preview`, and `PreviewColumn.tsx` is outside the set of existing files this story's Code Map allows it to edit. Wiring one and not the other is worse than wiring neither. The same applies to PageUp/PageDown: with `SPLIT_KEY_STEP = 16`, crossing the tree's real range is ~30 presses. Both belong with whichever story next opens the Preview column's markup.
+status: open
+
+### DW-46: The restore validates a stored row against the two trees and the Wiki id, but never against the tree TAB it restores alongside it.
+origin: spec-deferred ce30a7341cbf
+location: src/lib/workbench-tree.ts (restorableSelection), src/components/workbench/Workbench.tsx (mount effect)
+source_spec: `spec-1-6-drag-resize-and-durable-layout.md`
+severity: low
+reason: `restorableSelection` takes `(stored, wikiId, knowledge, files)`. The shell's reset effect exists to prevent exactly one state — a docked Preview describing a row the showing tree cannot mark with `aria-current` — and the restore path is the one site that can produce it, because the mount effect's signature guard then protects the mismatch from being cleared. Reaching it needs the two keys to diverge, which needs the persist effect's health guard to skip a write across a tab switch (a transient `knowledgeUnavailable` / `filesUnavailable`), so it is narrow. The obvious fix is not obviously right either: requiring `kind` to agree with `tab` would drop the restore of a page selection made on the Files tab, which `wikilinkSelection` deliberately produces when the walk did not list that page's file (Story 1.5). Whether that pairing should survive a reload is a decision about the wikilink fallback, not about the clamp, and it belongs with whichever story next opens that path.
+status: open
+
+### DW-47: The tree's scroll effects re-run on tab and collapse only, so crossing the 899px force-show boundary by RESIZING is missed.
+origin: spec-deferred 960bd3db4d29
+location: src/components/workbench/TreePanel.tsx (the two scroll effects)
+source_spec: `spec-1-6-drag-resize-and-durable-layout.md`
+severity: low
+reason: `treeScrollActive` correctly asks the element rather than the collapse flag, because `@media (max-width: 899px)` force-shows a collapsed column. But both effects are keyed `[tab, collapsed]`, and neither changes when the viewport crosses 900px mid-session — so an owner who is collapsed and narrows the window gets a fully visible, scrollable tree whose offset is neither restored nor recorded until they next switch tabs. A load at that width is fine; only the live transition is missed. Closing it needs a `matchMedia("(max-width: 899px)")` listener in `TreePanel`, which is a second copy of a breakpoint this story deliberately keeps in the stylesheet (and which `workbench-split.test.ts` bans by name). Whether that trade is worth making belongs with whichever story revisits the left column's responsive behaviour.
+status: open
