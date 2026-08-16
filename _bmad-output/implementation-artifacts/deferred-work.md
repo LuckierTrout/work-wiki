@@ -219,6 +219,7 @@ source_spec: `spec-1-3-nashsu-icon-rail-and-workbench-chrome.md`
 severity: low
 reason: Mode lives in React state plus `yopedia_workbench_mode`. The intent's constraint is that a mode switch must not unmount the shell (`epics.md:367`), which a shallow query-param sync would also satisfy — so this is a design choice the story did not have to make, not a requirement it met. It is cheap now and a breaking change to the persisted-state contract later, so it is worth an explicit decision before Stories 1.4-1.6 build selection state on top of it.
 status: open
+decision: 2026-08-16 Shallow ?mode= sync — Mirror the active mode into a query param via shallow history updates (no shell unmount), accept it on load ahead of localStorage, and update the router-ban pin so deep-linking a mode and Back/Forward work.
 
 ### DW-28: `HomeDashboard` is no longer mounted by any route, and the test that pinned it as the landing page's `<h1>` owner now guards a component that does not ship.
 origin: spec-deferred 8594e9c2456b

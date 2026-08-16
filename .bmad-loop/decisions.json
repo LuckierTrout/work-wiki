@@ -17,6 +17,15 @@
     "label": "Build rename+delete",
     "resolution": ""
   },
+  "DW-27": {
+    "answered_at": "2026-08-16",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Mirror the active mode into a query param via shallow history updates (no shell unmount), accept it on load ahead of localStorage, and update the router-ban pin so deep-linking a mode and Back/Forward work.",
+    "key": "1",
+    "label": "Shallow ?mode= sync",
+    "resolution": ""
+  },
   "DW-4": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
