@@ -406,6 +406,7 @@ source_spec: `spec-1-7-dataversion-workbench-refresh.md`
 severity: low
 reason: Before this story the body changed only when the owner picked a row, which is their own action. A bump from another actor now replaces it underneath them, and `PreviewColumn` has no live region. The epic's accessibility floor already says mode changes announce the surface name, so the same argument applies here — but any announcement is a new authored sentence, and the epic's Copy table is the only place a Workbench sentence may be born. That makes it a copy decision rather than a wiring fix, and it belongs with whichever story next opens that table for the Preview column.
 status: open
+decision: 2026-08-16 Author and wire — Add a 'Preview updated'-style sentence to the epic's Copy table and announce it from the fetch effect's response handler when a silent same-row refresh replaces rendered content.
 
 ### DW-51: `PUT /api/wiki/[slug]` carries no `If-Match` precondition, so the Preview editor silently clobbers a write another actor made while it was open.
 origin: spec-deferred d5ca34c088fa

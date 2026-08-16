@@ -44,6 +44,15 @@
     "label": "Retire zh-CN",
     "resolution": ""
   },
+  "DW-50": {
+    "answered_at": "2026-08-16",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a 'Preview updated'-style sentence to the epic's Copy table and announce it from the fetch effect's response handler when a silent same-row refresh replaces rendered content.",
+    "key": "1",
+    "label": "Author and wire",
+    "resolution": ""
+  },
   "DW-7": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
