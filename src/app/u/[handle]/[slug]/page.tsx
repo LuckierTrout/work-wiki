@@ -8,6 +8,7 @@ import {
 import { pagePath } from "@/lib/links";
 import { getPrincipal } from "@/lib/auth";
 import { canReadFrontmatter } from "@/lib/authz";
+import { aliasRedirectForMissing } from "@/lib/page-redirect";
 import { ArticleView } from "@/components/ArticleView";
 import { getPageEvidence } from "@/lib/evidence";
 
@@ -72,6 +73,11 @@ export default async function WikiPageView({ params }: WikiPageProps) {
   // A private page the viewer can't read is indistinguishable from a missing
   // one (same 404 UI) — never reveal that a private page exists.
   if (!page || !canReadFrontmatter(page.frontmatter, principal)) {
+    // A merged-away/renamed slug forwards (one 308) to its survivor's
+    // canonical URL — but only when THIS viewer may read the survivor, so
+    // forwarding never becomes a private-page existence oracle.
+    const target = await aliasRedirectForMissing(slug, principal);
+    if (target) permanentRedirect(target);
     return (
       <main className="mx-auto max-w-3xl px-6 py-12">
         <h1 className="text-3xl font-bold">Page not found</h1>

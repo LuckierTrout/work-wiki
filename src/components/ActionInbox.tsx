@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { slugPath } from "@/lib/links";
+import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { Alert } from "@/components/Alert";
@@ -58,6 +58,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export function ActionInbox() {
+  const { hrefForSlug } = useSlugTenants();
   const [items, setItems] = useState<ActionItem[]>([]);
   const [tab, setTab] = useState<ActionItemStatus | "all">("inbox");
   const [loading, setLoading] = useState(true);
@@ -383,7 +384,7 @@ export function ActionInbox() {
                         {item.assignee && <span className="receipt" style={{ fontSize: 10.5 }}>owner · {item.assignee}</span>}
                         {item.dueDate && <span className="receipt" style={{ fontSize: 10.5 }}>due · {item.dueDate}</span>}
                         {typeof item.confidence === "number" && <span className="receipt" style={{ fontSize: 10.5 }}>{Math.round(item.confidence * 100)}% confidence</span>}
-                        {item.sourceSlug && <Link href={slugPath(item.sourceSlug)} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>source · {item.sourceSlug}</Link>}
+                        {item.sourceSlug && <Link href={hrefForSlug(item.sourceSlug)} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>source · {item.sourceSlug}</Link>}
                       </div>
                     </div>
                     <div className="row" style={{ gap: 6, alignSelf: "start", flexWrap: "wrap", justifyContent: "end" }}>

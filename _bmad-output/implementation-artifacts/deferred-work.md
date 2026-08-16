@@ -13,7 +13,8 @@ location: src/lib/links.ts
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: medium
 reason: `slugPath()` hard-codes `DEFAULT_TENANT` and leans on the 308 in `src/app/u/[handle]/[slug]/page.tsx`. Call sites such as RecentIngests, VaultExplorer, ChatWorkspace, ActionInbox, BulkDocumentImport and KnowledgeStudio already hold (or can fetch) the real owner, so each of those links costs a redirect hop and shows a misleading handle in the address bar and in link previews.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-owner-scoped-linking
 
 ### DW-3: Alias forwarding for merged or renamed slugs disappeared with the retired commons URL and was never rebuilt on the owner-scoped URL.
 origin: spec-deferred 162f1930cc8c
@@ -21,7 +22,8 @@ location: src/lib/page-redirect.ts
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: medium
 reason: `commonsRedirectForMissing` resolved an absorbed slug to its survivor and 308'd to `/wiki/<canonical>`; it now returns null unconditionally. Its only caller was the retired page, so nothing regressed at that URL — but a wikilink to a merged-away slug now resolves through `slugPath()` to `/u/<tenant>/<old-slug>`, which 404s. `resolveAlias` has no routing caller.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-owner-scoped-linking
 
 ### DW-4: The zh-CN translation catalog has stale keys and still spells the old brand.
 origin: spec-deferred ee84aaa25ba2
@@ -665,6 +667,70 @@ status: open
 ### DW-82: Follow-up review still recommended for dw-retire-dead-machinery after the damping cap was spent
 origin: review-budget-followup
 source_spec: `spec-retire-dead-machinery.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-122748-68ea; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-83: MarkdownRenderer call sites outside the intent's component list still emit DEFAULT_TENANT wikilinks for in-content [x](slug.md) targets, taking the wrong-handle 308 hop the named components were just
+origin: spec-deferred 9c6585bd571d
+source_spec: `spec-owner-scoped-linking.md`
+location: src/components/QueryResultPanel.tsx:182
+severity: medium
+reason: QueryResultPanel.tsx:182 renders query answers (which cite [Title](slug.md) per src/lib/query.ts:62) without passing slugTenants even though the component already calls useSlugTenants for its source chips — a one-line adoption; RawSourceBrowser.tsx:90, SlidePreview.tsx:61,77, AgentApiContent.tsx:45 and src/app/wiki/log/page.tsx:66 render with no map either. All pre-date this change; the intent's component list (union of DW-2 and the bundle intent) does not include them.
+status: open
+
+### DW-84: The edit and raw owner-scoped routes do not alias-forward merged-away slugs, so an old /u/<handle>/<slug>/edit bookmark 404s where the page-view URL now forwards.
+origin: spec-deferred 7e750d1a36d0
+source_spec: `spec-owner-scoped-linking.md`
+location: src/app/u/[handle]/[slug]/edit/page.tsx
+severity: low
+reason: aliasRedirectForMissing is wired only into src/app/u/[handle]/[slug]/page.tsx; the edit and raw routes keep their pre-existing hard-404 miss behavior. Pre-existing asymmetry surfaced by this change; the intent names only the owner route's page-view miss path.
+status: open
+
+### DW-85: The owner route's "Page not found" UI is rendered as a normal HTTP 200 response instead of signalling notFound(), so dead slugs (including alias candidates that fail the forwarding guard) are indexabl
+origin: spec-deferred 7952daea88ca
+source_spec: `spec-owner-scoped-linking.md`
+location: src/app/u/[handle]/[slug]/page.tsx:75
+severity: low
+reason: The miss branch of src/app/u/[handle]/[slug]/page.tsx returns JSX directly rather than calling next/navigation notFound(); pre-existing behavior that this change extends but did not introduce.
+status: open
+
+### DW-86: Converted components' rendered anchors have no executable coverage: reverting any one call site to slugPath (or dropping a slugTenants renderer prop) passes the whole suite, so the story's component-s
+origin: spec-deferred 7eeab2ede4b6
+source_spec: `spec-owner-scoped-linking.md`
+location: vitest.config.ts
+severity: medium
+reason: vitest.config.ts runs node-only with include src/**/__tests__/**/*.test.ts (no .tsx), and package.json carries no jsdom or @testing-library dependency, so no test can render the six converted "use client" components; ChatWorkspace's saved-banner url fallback and VaultExplorer's owner-direct link are likewise unasserted. The hook's render contract is now pinned via react-dom/server, but per-component adoption above it is not. Surfaced by this story's review; the missing client-component harness pre-dates the story and adopting one is a project-level decision.
+status: open
+
+### DW-87: loadSlugTenants caches a non-OK response's empty map for the whole session (no retry) while a rejected fetch is retried, so one transient 401/429/500 from /api/wiki/routes pins DEFAULT_TENANT fallback
+origin: spec-deferred e1b670ffa4b7
+source_spec: `spec-owner-scoped-linking.md`
+location: src/hooks/useSlugTenants.ts
+severity: low
+reason: In src/hooks/useSlugTenants.ts the non-OK branch's {} flows into the .then that assigns cache, so cache = {} permanently; the .catch path returns {} without assigning cache, so the next caller re-fetches. Byte-identical logic pre-dates this story (only renamed/exported here). Links still work via the 308 fallback, so the consequence is a session of wrong-handle hrefs, not breakage.
+status: open
+
+### DW-88: getAliasIndex caches only successful builds, so while any page file has malformed frontmatter every missing-slug request re-runs the full wiki scan behind aliasRedirectForMissing before failing closed
+origin: spec-deferred 30b195a5eb4f
+source_spec: `spec-owner-scoped-linking.md`
+location: src/lib/alias-index.ts:107
+severity: low
+reason: buildAliasIndex sets cachedIndex only after a complete scan (src/lib/alias-index.ts:100) and getAliasIndex re-invokes it whenever cachedIndex is null, so a mid-loop parse throw leaves nothing cached and the next miss-path request re-scans. The cache-only-on-success behavior pre-dates this story; the owner route's miss path is merely its first routing caller, and the proper fix (failure caching or a cooldown) lives in alias-index.ts, which the intent walls off ("Never: Change resolveAlias / alias-index semantics"). Consequence is bounded: the scan is one readdir plus frontmatter parses, aborts at the corrupt file, and each failure is now logger.warn-visible.
+status: open
+
+### DW-89: SlugTenantMap lookups use plain inherited-prototype indexing, so a slug naming an Object.prototype member (a page titled "Constructor" slugifies to "constructor") resolves to the inherited function an
+origin: spec-deferred 8c3a40745345
+source_spec: `spec-owner-scoped-linking.md`
+location: src/lib/links.ts:157
+severity: low
+reason: resolveSlugPath does slugTenants?.[slug] ?? fallbackTenant (src/lib/links.ts:157) and the map is parsed response JSON, whose objects inherit Object.prototype — map["constructor"] is a function, which ?? does not filter, so pagePath receives it and tenantSegment calls .trim() on a function (TypeError) wherever such a slug renders as a link. The lookup idiom is byte-identical to the pre-story hook and MarkdownRenderer paths; this story only spread the same map to more call sites. Requires a page slug colliding with an Object.prototype member, hence low.
+status: open
+
+### DW-90: Follow-up review still recommended for dw-owner-scoped-linking after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-owner-scoped-linking.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-122748-68ea; this entry preserves the lingering recommendation for a deliberate later review.

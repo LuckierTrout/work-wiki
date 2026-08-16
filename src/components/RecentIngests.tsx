@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { forgetRecentJobs, getRecentJobIds } from "@/lib/recent-ingests";
-import { slugPath } from "@/lib/links";
+import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { hostOf } from "@/lib/share-target";
 
 /** A still-running (or failed) job submitted from THIS browser (live status). */
@@ -62,6 +62,7 @@ function ago(iso: string): string {
  * Refreshes on tab focus so a bookmarklet save made in a popup appears on return.
  */
 export function RecentIngests() {
+  const { hrefForSlug } = useSlugTenants();
   const [inflight, setInflight] = useState<InFlight[]>([]);
   const [history, setHistory] = useState<LedgerEntry[]>([]);
   const [emailJobs, setEmailJobs] = useState<EmailJob[]>([]);
@@ -483,7 +484,7 @@ export function RecentIngests() {
                   {failed ? "failed" : done ? ago(job.createdAt) : job.status === "processing" ? "working…" : "queued"}
                 </span>
                 {done && job.slug ? (
-                  <Link href={slugPath(job.slug)} style={{ color: "var(--accent)", fontSize: 13.5 }}>
+                  <Link href={hrefForSlug(job.slug)} style={{ color: "var(--accent)", fontSize: 13.5 }}>
                     {job.email?.subject || job.title || job.slug}
                   </Link>
                 ) : (
@@ -564,7 +565,7 @@ export function RecentIngests() {
               {ago(e.finished_at)}
             </span>
             {e.primary_slug ? (
-              <Link href={slugPath(e.primary_slug)} style={{ color: "var(--accent)", fontSize: 13.5 }}>
+              <Link href={hrefForSlug(e.primary_slug)} style={{ color: "var(--accent)", fontSize: 13.5 }}>
                 {e.primary_slug}
               </Link>
             ) : (

@@ -35,7 +35,10 @@ import {
   serializeFrontmatter,
   writeWikiPageWithSideEffects,
 } from "../wiki";
+import { resetAliasIndex } from "../alias-index";
 import type { Frontmatter } from "../frontmatter";
+import { getPrincipal } from "@/lib/auth";
+import { permanentRedirect } from "next/navigation";
 import WikiPageView from "@/app/u/[handle]/[slug]/page";
 
 let tmpDir: string;
@@ -48,6 +51,11 @@ beforeEach(async () => {
   originalRawDir = process.env.RAW_DIR;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
+  // The alias index is a module singleton; drop it so each test's miss-path
+  // forwarding resolves against THIS test's pages only. (clearAllMocks keeps
+  // mock implementations — it only clears recorded calls.)
+  resetAliasIndex();
+  vi.clearAllMocks();
   await ensureDirectories();
 });
 
@@ -112,5 +120,72 @@ describe("/u/<handle>/<slug> canonical-handle redirect", () => {
         params: Promise.resolve({ handle: "owner", slug: "owned-note" }),
       }),
     ).rejects.not.toThrow(/^REDIRECT:/);
+  });
+});
+
+describe("/u/<handle>/<slug> alias forwarding for missing slugs", () => {
+  it("308s a merged-away slug once, directly to the survivor's canonical URL", async () => {
+    // A merge records the absorbed slug as an alias of the survivor; visiting
+    // the old slug under ANY handle (here a non-default one, pinning that the
+    // handle segment is immaterial on the miss path) must land on the
+    // survivor's real tenant in a single hop (never via DEFAULT_TENANT).
+    await seedPage("survivor", { owner: "alice", aliases: ["old-slug"] });
+    await expect(
+      WikiPageView({
+        params: Promise.resolve({ handle: "someone-else", slug: "old-slug" }),
+      }),
+    ).rejects.toThrow("REDIRECT:/u/alice/survivor");
+  });
+
+  it("still renders the 404 UI for a missing slug with no alias", async () => {
+    await seedPage("unrelated", { owner: "alice" });
+    // As above: the node environment has no JSX runtime, so reaching the 404
+    // render throws its own (non-REDIRECT) error — which is the proof control
+    // took the 404 branch rather than being diverted by a 308.
+    await expect(
+      WikiPageView({
+        params: Promise.resolve({ handle: "yopedia", slug: "ghost" }),
+      }),
+    ).rejects.not.toThrow(/^REDIRECT:/);
+    expect(vi.mocked(permanentRedirect)).not.toHaveBeenCalled();
+  });
+
+  it("forwards the owner to their private survivor but 404s anonymous viewers", async () => {
+    await seedPage("secret-survivor", {
+      owner: "owner",
+      visibility: "private",
+      aliases: ["gone-slug"],
+    });
+    // The mocked principal IS the owner → forwarded to the canonical URL.
+    await expect(
+      WikiPageView({
+        params: Promise.resolve({ handle: "yopedia", slug: "gone-slug" }),
+      }),
+    ).rejects.toThrow("REDIRECT:/u/owner/secret-survivor");
+    // Anonymous → the neutral 404 UI (no JSX runtime here, so the 404 render
+    // throws its own non-REDIRECT error), indistinguishable from missing.
+    // Clear the owner half's recorded redirect call so the mock assertion
+    // below is as strong as the neighboring tests'.
+    vi.mocked(permanentRedirect).mockClear();
+    vi.mocked(getPrincipal).mockResolvedValueOnce(null);
+    await expect(
+      WikiPageView({
+        params: Promise.resolve({ handle: "yopedia", slug: "gone-slug" }),
+      }),
+    ).rejects.not.toThrow(/^REDIRECT:/);
+    expect(vi.mocked(permanentRedirect)).not.toHaveBeenCalled();
+  });
+
+  it("renders the 404 UI for an existing-but-unreadable page instead of self-redirecting", async () => {
+    // An existing private page the viewer can't read takes the miss branch,
+    // and the alias index maps every live slug to itself — without the
+    // `canonical !== slug` guard this would 308 to its own URL forever.
+    await seedPage("locked", { owner: "alice", visibility: "private" });
+    await expect(
+      WikiPageView({
+        params: Promise.resolve({ handle: "yopedia", slug: "locked" }),
+      }),
+    ).rejects.not.toThrow(/^REDIRECT:/);
+    expect(vi.mocked(permanentRedirect)).not.toHaveBeenCalled();
   });
 });

@@ -19,7 +19,7 @@ import {
   selectBulkDocuments,
 } from "@/lib/bulk-document-import";
 import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
-import { slugPath } from "@/lib/links";
+import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { rememberRecentJob } from "@/lib/recent-ingests";
 
 const ACCEPTED_DOCUMENTS =
@@ -83,6 +83,7 @@ function statusColor(status: ImportStatus): string {
 }
 
 export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
+  const { hrefForSlug } = useSlugTenants();
   const inputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
@@ -528,7 +529,7 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
                       </span>
                       {item.status === "done" && item.slug && (
                         <Link
-                          href={slugPath(item.slug)}
+                          href={hrefForSlug(item.slug)}
                           style={{ fontSize: 11.5, color: "var(--accent)" }}
                         >
                           Open page →

@@ -10,7 +10,7 @@ vi.mock("../llm", () => ({
 }));
 
 import { mergePages } from "../merge";
-import { commonsRedirectForMissing } from "../page-redirect";
+import { aliasRedirectForMissing } from "../page-redirect";
 import { writeWikiPageWithSideEffects } from "../lifecycle";
 import {
   ensureDirectories,
@@ -144,11 +144,14 @@ describe("mergePages", () => {
     expect(into!.frontmatter.created).toBe("2026-01-15");
     expect(into!.frontmatter.confidence as number).toBeGreaterThan(0.6);
 
-    // The absorbed slug still resolves to the survivor via the alias index.
-    // The commons redirect it used to feed is retired, so it forwards nowhere.
+    // The absorbed slug still resolves to the survivor via the alias index,
+    // and the owner route's miss path forwards it (one 308) to the survivor's
+    // canonical owner-scoped URL.
     resetAliasIndex();
     expect(await resolveAlias("harness-ai-agents")).toBe("agent-harness");
-    expect(await commonsRedirectForMissing("harness-ai-agents")).toBeNull();
+    expect(await aliasRedirectForMissing("harness-ai-agents", null)).toBe(
+      "/u/alice/agent-harness",
+    );
   });
 
   it("re-points internal backlinks from the absorbed slug to the survivor BEFORE deleting", async () => {
@@ -294,10 +297,11 @@ describe("mergePages", () => {
   });
 });
 
-describe("commonsRedirectForMissing (alias redirect safety)", () => {
-  it("never forwards to a private page (no existence oracle)", async () => {
-    // A private page that happens to carry an alias must not be reachable via a
-    // public /wiki/<alias> redirect.
+describe("aliasRedirectForMissing (alias redirect safety)", () => {
+  it("never forwards an anonymous viewer to a private page, but forwards its owner", async () => {
+    // A private page that happens to carry an alias must not be reachable by a
+    // viewer who can't read it — forwarding would be an existence oracle. The
+    // owner, though, must reach their own private survivor.
     const fm = serializeFrontmatter(
       {
         created: "2026-01-01",
@@ -318,12 +322,73 @@ describe("commonsRedirectForMissing (alias redirect safety)", () => {
       author: "alice",
     });
     resetAliasIndex();
-    expect(await commonsRedirectForMissing("ghost-alias")).toBeNull();
+    expect(await aliasRedirectForMissing("ghost-alias", null)).toBeNull();
+    expect(
+      await aliasRedirectForMissing("ghost-alias", { id: "user_alice", handle: "alice" }),
+    ).toBe("/u/alice/secret");
   });
 
   it("returns null for a slug with no alias", async () => {
     await seedPage("real", { title: "Real" });
     resetAliasIndex();
-    expect(await commonsRedirectForMissing("nonexistent")).toBeNull();
+    expect(await aliasRedirectForMissing("nonexistent", null)).toBeNull();
+  });
+
+  it("forwards an alias of an ownerless page to the DEFAULT_TENANT canonical URL", async () => {
+    // Ownerless/seed content lives under the default tenant, so its aliases
+    // forward there — via tenantForOwner(undefined), never an empty segment.
+    const fm = serializeFrontmatter(
+      {
+        created: "2026-01-01",
+        updated: "2026-01-01",
+        aliases: ["seed-alias"],
+      },
+      "# Seed\n\nSeed body.",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "seed-page",
+      title: "Seed",
+      content: fm,
+      summary: "seed",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    resetAliasIndex();
+    expect(await aliasRedirectForMissing("seed-alias", null)).toBe(
+      "/u/yopedia/seed-page",
+    );
+  });
+
+  it("never self-redirects an existing-but-unreadable page (canonical !== slug guard)", async () => {
+    // The alias index maps every LIVE slug to itself, so a private page whose
+    // slug is looked up by a viewer who can't read it resolves to its own slug.
+    // Without the guard that would 308 the miss path to its own URL forever.
+    await seedPage("locked", { title: "Locked", visibility: "private" });
+    resetAliasIndex();
+    expect(await resolveAlias("locked")).toBe("locked");
+    expect(await aliasRedirectForMissing("locked", null)).toBeNull();
+  });
+
+  it("fails closed (null, not a throw) when a page file has malformed frontmatter", async () => {
+    // Building the alias index parses every page's frontmatter, so one corrupt
+    // file would otherwise turn every missing-page request into a 500. The
+    // resolver must degrade to the 404 UI (null), never propagate the error.
+    await seedPage("healthy", { title: "Healthy" });
+    const files = (await fs.readdir(process.env.WIKI_DIR!, {
+      recursive: true,
+    })) as string[];
+    const target = files.find((f) => f.endsWith("healthy.md"));
+    expect(target).toBeDefined();
+    await fs.writeFile(
+      path.join(process.env.WIKI_DIR!, target!),
+      "---\ncreated: 2026-01-01\n# no closing delimiter",
+      "utf8",
+    );
+    resetAliasIndex();
+    // The corruption genuinely breaks index building (guards against this test
+    // passing vacuously)...
+    await expect(resolveAlias("anything")).rejects.toThrow();
+    // ...and the resolver still fails closed instead of rejecting.
+    await expect(aliasRedirectForMissing("anything", null)).resolves.toBeNull();
   });
 });

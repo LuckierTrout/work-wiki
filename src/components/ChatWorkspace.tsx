@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { slugPath } from "@/lib/links";
+import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { useEffect, useState } from "react";
 import { Alert } from "@/components/Alert";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
@@ -24,6 +24,7 @@ async function json<T>(response: Response): Promise<T> {
 }
 
 export function ChatWorkspace() {
+  const { hrefForSlug, slugTenants } = useSlugTenants();
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [active, setActive] = useState<ChatConversation | null>(null);
   const [scope, setScope] = useState("");
@@ -37,7 +38,11 @@ export function ChatWorkspace() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  // The saved banner links via the server-returned canonical `url`: a
+  // just-created slug cannot be in the session-cached slug→tenant map, so
+  // `hrefForSlug` would bounce it through the 308 fallback. `hrefForSlug` is
+  // only the fallback if the response carried no url.
+  const [savedMessage, setSavedMessage] = useState<{ slug: string; url?: string } | null>(null);
   const [hermes, setHermes] = useState<{ configured: boolean; available: boolean; safe: boolean; reason?: string } | null>(null);
 
   useEffect(() => {
@@ -215,7 +220,7 @@ export function ChatWorkspace() {
     if (!active) return;
     setSavedMessage(null);
     try {
-      const result = await json<{ slug: string }>(await fetch("/api/query/save", {
+      const result = await json<{ slug: string; url?: string }>(await fetch("/api/query/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -225,7 +230,10 @@ export function ChatWorkspace() {
           format: "prose",
         }),
       }));
-      setSavedMessage(result.slug);
+      // json() maps an unparseable-but-OK body to {} — without a slug there is
+      // nothing to link, so keep the banner hidden (the pre-object behavior)
+      // rather than rendering "Saved as undefined".
+      setSavedMessage(result.slug ? { slug: result.slug, url: result.url } : null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Answer could not be saved.");
     }
@@ -256,7 +264,7 @@ export function ChatWorkspace() {
 
       {error && <div style={{ marginBottom: 16 }}><Alert variant="error">{error}</Alert></div>}
       {savedMessage && (
-        <div style={{ marginBottom: 16 }}><Alert variant="success">Saved as <Link href={slugPath(savedMessage)}>{savedMessage}</Link>.</Alert></div>
+        <div style={{ marginBottom: 16 }}><Alert variant="success">Saved as <Link href={savedMessage.url ?? hrefForSlug(savedMessage.slug)}>{savedMessage.slug}</Link>.</Alert></div>
       )}
 
       <div className="grid lg:grid-cols-[260px_minmax(0,1fr)]" style={{ gap: 18, alignItems: "stretch" }}>
@@ -339,11 +347,11 @@ export function ChatWorkspace() {
                       {message.role === "user" ? "You" : message.backend === "hermes" ? "work-wiki · Hermes" : "work-wiki"}
                     </p>
                     <div style={{ background: message.role === "user" ? "var(--paper-3)" : "transparent", border: message.role === "user" ? "1px solid var(--rule)" : 0, borderRadius: 14, padding: message.role === "user" ? "11px 14px" : 0 }}>
-                      {message.role === "assistant" ? <MarkdownRenderer content={message.content} /> : <p style={{ margin: 0, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{message.content}</p>}
+                      {message.role === "assistant" ? <MarkdownRenderer content={message.content} slugTenants={slugTenants} /> : <p style={{ margin: 0, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{message.content}</p>}
                     </div>
                     {message.role === "assistant" && (
                       <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                        {message.sources.map((source) => <Link key={source} href={slugPath(source)} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>{source}</Link>)}
+                        {message.sources.map((source) => <Link key={source} href={hrefForSlug(source)} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>{source}</Link>)}
                         <button type="button" className="btn ghost" onClick={() => void saveAnswer(message)} style={{ fontSize: 11, padding: "5px 8px" }}>Save to wiki</button>
                       </div>
                     )}

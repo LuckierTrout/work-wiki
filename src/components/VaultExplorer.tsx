@@ -11,7 +11,8 @@ import {
   useState,
 } from "react";
 import { Icon } from "@/components/folio/icons";
-import { slugPath } from "@/lib/links";
+import { useSlugTenants } from "@/hooks/useSlugTenants";
+import { ownerToTenant, pagePath } from "@/lib/links";
 import type { Vault } from "@/lib/vault";
 import type { VaultExplorerEntry } from "@/lib/vault-explorer";
 import {
@@ -223,6 +224,7 @@ export function VaultExplorer({
   initialEntries,
 }: VaultExplorerProps) {
   const router = useRouter();
+  const { slugTenants } = useSlugTenants();
   const [entries, setEntries] = useState(initialEntries);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -542,7 +544,11 @@ export function VaultExplorer({
                 <h2>{selectedEntry.title}</h2>
                 {selectedEntry.summary ? <p>{selectedEntry.summary}</p> : null}
                 <div className="vault-preview-actions">
-                  <Link className="btn primary" href={slugPath(selectedEntry.slug)}>
+                  {/* The entry already holds its owner, so the canonical
+                      owner-scoped URL is built directly — no session-map wait,
+                      no DEFAULT_TENANT hop. ownerToTenant(undefined) yields the
+                      default tenant for genuinely ownerless entries. */}
+                  <Link className="btn primary" href={pagePath(ownerToTenant(selectedEntry.owner), selectedEntry.slug)}>
                     Open full page <Icon.arrow width="14" height="14" aria-hidden="true" />
                   </Link>
                   {originalHref ? (
@@ -637,6 +643,8 @@ export function VaultExplorer({
                   <MarkdownRenderer
                     content={stripLeadingTitle(selectedPreview.page.body)}
                     className="prose-article vault-preview-prose"
+                    tenant={ownerToTenant(selectedEntry.owner)}
+                    slugTenants={slugTenants}
                   />
                 ) : null}
               </div>
