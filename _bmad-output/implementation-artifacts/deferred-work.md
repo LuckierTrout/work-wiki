@@ -128,7 +128,8 @@ location: vitest.config.ts
 source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: medium
 reason: `vitest.config.ts` is `environment: "node"` with `include: ["src/**/__tests__/**/*.test.ts"]`, and `@testing-library/*` is not a dependency — across ~230 test files the only component tests render to a string with `renderToStaticMarkup`. `create-wiki-ui.test.ts` follows the established `single-ia.test.ts` fallback and greps the source, so rewiring `onConfirm` to call `applyTemplate()` without the dialog would leave every assertion passing. Establishing jsdom + testing-library is a repo-wide infrastructure change that predates this story; this story is simply the first to add a substantial interactive surface on top of the gap.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-dom-test-environment
 
 ### DW-16: `purpose.md` is written at create time but no runtime path reads it.
 origin: spec-deferred 0335bb4045db
@@ -202,7 +203,8 @@ location: vitest.config.ts
 source_spec: `spec-1-3-nashsu-icon-rail-and-workbench-chrome.md`
 severity: medium
 reason: `vitest.config.ts` is `environment: "node"` with `include: ["src/**/__tests__/**/*.test.ts"]`, and this story was given "Do not add jsdom, `@testing-library/*`, or `.test.tsx` support" as a Never. So `workbench-chrome.test.ts` is `readFile` + `toContain` throughout: sheet open/close, the Esc handler, focus move-in and restore, the `matchMedia` widening dismissal, the collapse toggle, badge rendering at 0 vs > 0, and every CSS breakpoint are asserted as strings present in the file that implements them. `src/hooks/useSidecarStatus.ts` — the poll schedule, the visibility gating, the abort-on-unmount guard — has no test at all; deleting `startPolling()` from its `visible` branch would leave the suite green and the status dot frozen. Establishing a DOM test environment is a repo-wide change that predates this story (it is also entry 2 of Story 1.2's ledger); this story is simply the first to put a substantial amount of behaviour behind that gap.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-dom-test-environment
 
 ### DW-25: Nothing states the cross-origin contract an HTTPS page must satisfy to reach `http://127.0.0.1:19828`, so the probe can fail closed forever for reasons the copy cannot explain.
 origin: spec-deferred 344c510011f1
@@ -431,7 +433,8 @@ location: vitest.config.ts, src/components/workbench/DataVersionWatcher.tsx, src
 source_spec: `spec-1-7-dataversion-workbench-refresh.md`
 severity: medium
 reason: `vitest.config.ts` is `environment: "node"` and the repo has no jsdom, happy-dom, Testing Library or React test plugin, so no suite renders a component, mounts an effect, advances a timer or dispatches a `visibilitychange`. The story's decisions were extracted into pure functions precisely to work around this, and that half IS executed — but "a backgrounded tab does not poll", "becoming visible checks immediately", "one AbortController per run" and "full teardown in the cleanup" are runtime claims pinned by `expect(source).toContain( "clearInterval(timer)")` and friends. Those assertions survive a broken rewrite and break on a reflow. This pass patched the two places where a one-character inversion stayed green (the refresh guard's `!` and the two `setFailed` branches), but the remedy for the class is a DOM test environment, which is a project-level dependency and CI decision rather than something one story should take unilaterally.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-dom-test-environment
 
 ### DW-53: A page another actor deletes now disappears from the trees mid-session while the docked selection survives, leaving no row marked current.
 origin: spec-deferred a8eec345e2bd
@@ -848,4 +851,84 @@ source_spec: `spec-email-ingest-attachment-test.md`
 location: workers/email-ingest/index.ts:39
 severity: low
 reason: The worker rejects on `message.rawSize > MAX_RAW_EMAIL_BYTES` (10 MB, `index.ts:39/147`) — a raw-message measurement taken *before* MIME decoding. Base64 inflates payloads by roughly a third, so the effective per-attachment ceiling over email is about 7.5 MB, while `MAX_DOCUMENT_SIZE` in `src/lib/constants.ts` is 10 MB. The gap is undocumented and untested in both directions.
+status: open
+
+### DW-105: The shared dialog hook `useDialogA11y` — the richest DOM-only behaviour in reach — still has no mounted coverage.
+origin: spec-deferred 1fd2c04cc42e
+source_spec: `spec-dom-test-environment.md`
+location: src/hooks/useDialogA11y.ts
+severity: medium
+reason: Esc dismissal, the deliberate "an open <select> eats its own Esc" carve-out, Tab trapping and pull-back, the `document.body.style.overflow` lock/restore, and the `fallbackFocusRef` path (whose own comment names the case: confirming Create Wiki unmounts the button that opened it) are all invisible to a source scan and all still pinned only by `create-wiki-ui.test.ts`'s greps. The DOM environment this pass established is what makes them testable.
+status: open
+
+### DW-106: WikiWorkbench's other write paths have no mounted coverage — switchWiki's rollback and re-entry guard, the degraded `unavailable` render, and create()'s failure branch.
+origin: spec-deferred 684689c6d8cd
+source_spec: `spec-dom-test-environment.md`
+location: src/components/WikiWorkbench.tsx:108
+severity: medium
+reason: `switchWiki` exists because overlapping PUTs settle out of order and roll the selection back to a stale id; the `unavailable` branch must NOT show "No wiki yet." or a Create button; the `!wiki?.id` guard's comment says the alternative is "a blank page rather than the error message"; and `create()`'s catch has no equivalent of the template flow's "keeps the dialog open and shows the failure inside it". None of these are observable from a source scan, and this pass covered only the confirm gate the bundle intent named.
+status: open
+
+### DW-107: Nothing pins the `busy` gate on either dialog, so a double-submit would issue two destructive writes with the suite green.
+origin: spec-deferred d8fb9fb38bc8
+source_spec: `spec-dom-test-environment.md`
+location: src/components/ConfirmDialog.tsx:93
+severity: medium
+reason: No test clicks `Overwrite` or `Create` twice before the first request settles. Dropping `disabled={busy}` from `ConfirmDialog` would double-apply a template overwrite; the labels ("Working…", "Creating…") and the mid-flight refusal of Cancel/Esc are likewise unasserted.
+status: open
+
+### DW-108: Seventeen source files still tell the reader this repository has no DOM test environment, and several use that as the stated justification for their design.
+origin: spec-deferred bca5238bf2c5
+source_spec: `spec-dom-test-environment.md`
+location: src/lib/workbench-data-version.ts:9
+severity: medium
+reason: `src/lib/workbench-data-version.ts:9`, `workbench-split.ts:8`, `workbench-settings.ts:10`, `workbench-preview.ts:243`, four components under `src/components/workbench/`, and nine `__tests__` files say so in prose — e.g. "a rule living inside a React effect could only ever be grepped for". After this pass that premise is false, so a future agent will reproduce the workaround on a reason that no longer holds. The spec's Never forbade touching `src/` in this pass, which is why it was not done here.
+status: open
+
+### DW-109: Most of DW-24's own verbatim list is still scan-only — the collapse toggle, badge rendering at 0 vs > 0, the sidecar dot's three states, and the live-region announcement.
+origin: spec-deferred e63cd3a386e5
+source_spec: `spec-dom-test-environment.md`
+location: src/components/workbench/IconRail.tsx
+severity: medium
+reason: DW-24 enumerates more surfaces than the bundle intent's shortlist. The shortlist (sheet open/close/Esc/focus-restore) is now mounted and exceeded, but `workbench-chrome.test.ts` is still the only thing covering the rest, by `readFile` + `toContain`. Each is now cheaply mountable against the environment this pass added.
+status: open
+
+### DW-110: The two polling suites have no mounted case for a rejecting fetch, a malformed body, or a wedged (never-settling) probe.
+origin: spec-deferred 71d48dcc2b92
+source_spec: `spec-dom-test-environment.md`
+location: src/components/workbench/__tests__/data-version-watcher.test.tsx
+severity: low
+reason: `data-version-watcher.test.tsx` covers `ok: false` but not a transport failure or `{ dataVersion: "4" }`; `useSidecarStatus.test.tsx` covers a rejection but not a non-2xx answer or the `SIDECAR_PROBE_TIMEOUT_MS` race. The pure halves are executed by the node suite, so this is about the effect's handling of them, not the parsing.
+status: open
+
+### DW-111: The new `*.test.tsx` ⇒ jsdom / `*.test.ts` ⇒ node convention is documented only in a `vitest.config.ts` comment.
+origin: spec-deferred 781ee7265273
+source_spec: `spec-dom-test-environment.md`
+location: AGENTS.md
+severity: low
+reason: `AGENTS.md`'s "Running and verifying" section says nothing about it, so a contributor who names a DOM suite `*.test.ts` gets `document is not defined` with no pointer to why. That section sits inside the `bmad:context` managed block, which a refresh rewrites — so the note needs to be placed deliberately rather than appended here.
+status: open
+
+### DW-112: The DOM suites import their shim helpers through a relative ladder out of `src` (`../../../../vitest.setup.dom`), hardcoding each file's directory depth.
+origin: spec-deferred 60cbf8e54eb5
+source_spec: `spec-dom-test-environment.md`
+location: src/hooks/__tests__/useSidecarStatus.test.tsx:5
+severity: low
+reason: Every other import in the suite uses the `@` alias. Moving a test file requires fixing the depth. The natural fix — helpers in `src/test/dom-helpers.ts` re-exported by the setup file — adds a file under `src/`, which the spec's Never forbade in this pass.
+status: open
+
+### DW-113: No mounted test can reach the shell's width-derived decisions, because a mounted `Workbench` measures `shellWidth === 0`.
+origin: spec-deferred d7b2d8e349f5
+source_spec: `spec-dom-test-environment.md`
+location: vitest.setup.dom.ts
+severity: low
+reason: The DOM setup file shims `getClientRects()` to a fixed 1x1 but deliberately leaves `getBoundingClientRect()` as jsdom's all-zeros, so every `workbench-split` decision the mounted shell makes — the clamp, the divider bounds, whether a `SplitHandle` renders at all — runs at a width no browser reports, and the window `resize` listener is never exercised. The split RULES have their own node-project suite; what stays unpinned is the shell's reaction to a width. A `getBoundingClientRect` shim would open this up, and needs its own fidelity argument rather than being added in passing.
+status: open
+
+### DW-114: Follow-up review still recommended for dw-dom-test-environment after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-dom-test-environment.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-122748-68ea; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
