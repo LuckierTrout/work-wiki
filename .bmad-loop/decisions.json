@@ -26,6 +26,15 @@
     "label": "Shallow ?mode= sync",
     "resolution": ""
   },
+  "DW-34": {
+    "answered_at": "2026-08-16",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add dock/undock announcement sentences to the epic's Copy table, write them to the existing polite live region from the selection setters, and scroll the docked column into view at narrow widths.",
+    "key": "1",
+    "label": "Author and wire",
+    "resolution": ""
+  },
   "DW-4": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

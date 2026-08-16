@@ -277,6 +277,7 @@ source_spec: `spec-1-4-knowledge-tree-and-file-tree.md`
 severity: low
 reason: Story 1.3 gave the shell a polite live region, but only `selectMode` writes to it — selecting a tree row adds a whole fourth column with no announcement and no focus move, and re-selecting the same row removes it just as quietly. At `max-width: 899px` the shell is one column and the Preview stacks as the last row, so on a phone tapping a tree row appears to do nothing until the owner scrolls. Neither behaviour is wrong against this story's acceptance criteria, which ask only that selection dock the column, and both are cheap to get wrong in isolation: what to announce depends on what the column will say, which is Story 1.5's, and where a docked column goes at narrow widths is the layout question Story 1.6 owns. Deciding either here would pre-empt a story that has the context.
 status: open
+decision: 2026-08-16 Author and wire — Add dock/undock announcement sentences to the epic's Copy table, write them to the existing polite live region from the selection setters, and scroll the docked column into view at narrow widths.
 
 ### DW-35: Follow-up review still recommended for 1-4-knowledge-tree-and-file-tree after the damping cap was spent
 origin: review-budget-followup
