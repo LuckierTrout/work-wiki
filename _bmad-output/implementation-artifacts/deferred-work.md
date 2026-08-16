@@ -85,7 +85,8 @@ location: tools/workwiki-sync.mjs
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: low
 reason: `tools/workwiki-sync.mjs`, `tools/WORKWIKI_SYNC.md`, `BACKLOG.md`, `docs/llm-wiki-functional-parity-roadmap.md` and `workers/sandbox-runner/README.md` still say "WorkWiki". None of it is rendered product copy — the intent's rename targets user-visible surfaces — and one of them is a filename, so renaming is a separate, wider cut.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-maintainer-brand-sweep
 
 ### DW-11: Every owner-only page renders a second `<main>` landmark inside the one `SiteChrome` already provides.
 origin: spec-deferred 87a650148e71
@@ -734,4 +735,60 @@ source_spec: `spec-owner-scoped-linking.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-122748-68ea; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-91: tools/WORKWIKI_SYNC.md filename still carries the old WORKWIKI brand after the sweep.
+origin: spec-deferred 2182a48bb95c
+source_spec: `spec-maintainer-brand-sweep.md`
+location: tools/WORKWIKI_SYNC.md
+severity: low
+reason: DW-10's bundle intent authorized renaming only the sync script file. Nothing references the doc's path anywhere (repo-wide grep), so renaming it is safe whenever a wider filename cut is taken; until then it is the last maintainer-visible old-brand filename and the content-only scan can never flag it.
+status: open
+
+### DW-92: workers/sandbox-runner/README.md H1 still reads "Yopedia sandbox runner" — stale display prose invisible to both brand scans.
+origin: spec-deferred 25a5969a3d48
+source_spec: `spec-maintainer-brand-sweep.md`
+location: workers/sandbox-runner/README.md:1
+severity: low
+reason: DW-10 covers only "WorkWiki" strings. Workers markdown is scanned only by the new WorkWiki-only maintainer scan, and the yopedia-identifier test walks workers *.ts only, so this heading can never fail a test.
+status: open
+
+### DW-93: AGENTS.md's frozen-identifier list omits the WORKWIKI_* operator family.
+origin: spec-deferred 082aa1c5ca08
+source_spec: `spec-maintainer-brand-sweep.md`
+location: AGENTS.md:12
+severity: low
+reason: AGENTS.md enumerates only yopedia/YOPEDIA_* identifiers as frozen. WORKWIKI_* env vars, .workwiki-source-sync.json, the workwiki-*.zip archive prefix, and the workwiki.app origin are equally load-bearing for existing operator setups, and a future brand sweep could "fix" them and silently break every operator's environment.
+status: open
+
+### DW-94: public/ served static copy (e.g. public/agent-api.md) is outside both brand scans.
+origin: spec-deferred b6515946b4ea
+source_spec: `spec-maintainer-brand-sweep.md`
+location: public/agent-api.md
+severity: low
+reason: public/agent-api.md is served at the production origin and carries brand-adjacent strings (workwiki.app base URL, yopedia identifier examples), but neither scannedSources() nor maintainerSources() reads public/, so a stale display-brand regression there would ship unseen. Pre-existing coverage gap, not introduced by this change.
+status: open
+
+### DW-95: DW-91's recorded premise ("nothing references the doc's path") is now stale — the sweep's vacuity-guard test pins tools/WORKWIKI_SYNC.md by literal path.
+origin: spec-deferred 153d65f75801
+source_spec: `spec-maintainer-brand-sweep.md`
+location: src/lib/__tests__/brand-copy.test.ts
+severity: low
+reason: The pin-by-name test in brand-copy.test.ts asserts maintainerSources() contains tools/WORKWIKI_SYNC.md, so the future filename cut DW-91 anticipates must also update that pin list. The failure would be loud and self-locating, but the ledger entry's "safe to rename, nothing references it" evidence no longer holds as written. Existing ledger entries are orchestrator-owned, so this is recorded here instead of amending DW-91.
+status: open
+
+### DW-96: Maintainer-facing surfaces outside the four scan roots remain unscanned: scripts/, journal-site/, and .opencode/commands/*.md.
+origin: spec-deferred 7d14595dc7b0
+source_spec: `spec-maintainer-brand-sweep.md`
+location: src/lib/__tests__/brand-copy.test.ts
+severity: low
+reason: maintainerSources() covers tools/, root markdown, docs/ markdown, and workers/ markdown per the bundle intent. scripts/*.sh|*.mjs, journal-site/*.mjs, and .opencode/commands markdown are the same class of maintainer tooling and are clean today (repo-wide grep), but a "WorkWiki" reintroduced there would be invisible to every test — same class of gap as the public/ item already ledgered from this spec.
+status: open
+
+### DW-97: A stray empty ~/pnpm-workspace.yaml (outside the repo) breaks every `pnpm <cmd>` on this dev machine, including all of this spec's documented verification commands.
+origin: spec-deferred 6a474b2bad10
+source_spec: `spec-maintainer-brand-sweep.md`
+location: /Users/christianlee/pnpm-workspace.yaml
+severity: low
+reason: pnpm resolves /Users/christianlee/pnpm-workspace.yaml as the workspace root and fails with "packages field missing or empty" before running any script. Confirmed during this review pass; CI on fresh checkouts is unaffected. Workaround used: invoke ./node_modules/.bin/vitest and `node tools/work-wiki-sync.mjs` directly. Deleting or populating that stray file restores `pnpm test` / `pnpm sync` / `pnpm lint` locally.
 status: open

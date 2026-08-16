@@ -1,7 +1,7 @@
 # Yopedia sandbox runner
 
 This is a separate Cloudflare Worker + Container boundary for agent code
-execution. The main WorkWiki Worker sends only a command and explicitly supplied
+execution. The main work-wiki Worker sends only a command and explicitly supplied
 files; no Clerk, R2, LLM, or provider credentials are mounted in the container.
 
 Before deployment, create the shared secret with:

@@ -1,13 +1,13 @@
 # LLM Wiki functional parity roadmap
 
-This document defines how WorkWiki will reach user-visible functional parity
+This document defines how work-wiki will reach user-visible functional parity
 with [`nashsu/llm_wiki`](https://github.com/nashsu/llm_wiki) while remaining an
 owner-only cloud application. The audit baseline is upstream version `0.6.7`,
 commit `ad215b51252ffc1c6721d5b057f0449a2fb51530` (2026-08-02).
 
-"Parity" means that a WorkWiki user can achieve the same outcome. It does not
+"Parity" means that a work-wiki user can achieve the same outcome. It does not
 mean copying the desktop implementation or forcing local-computer concepts into
-a Cloudflare Worker. The upstream repository is GPL-3.0 licensed, so WorkWiki
+a Cloudflare Worker. The upstream repository is GPL-3.0 licensed, so work-wiki
 will independently implement the behavior and will not copy its source code,
 prompts, templates, or UI.
 
@@ -23,13 +23,13 @@ prompts, templates, or UI.
   folder on a user's computer.
 - Shell and code execution use an isolated remote sandbox with explicit grants,
   timeouts, budgets, output limits, and approval. They never run in the Worker
-  or on the WorkWiki host filesystem.
+  or on the work-wiki host filesystem.
 - Provider credentials stay server-side. Purpose, model choices, and retrieval
   preferences may be changed in the owner UI.
 
 ## Capability matrix
 
-| Area | Reference behavior | WorkWiki today | Status | Parity work |
+| Area | Reference behavior | work-wiki today | Status | Parity work |
 | --- | --- | --- | --- | --- |
 | Knowledge layers | Immutable sources, generated wiki, schema, purpose, overview, and log | Raw snapshots, wiki pages, conventions, revisions, evidence, and activity ledger | Partial | Add owner and vault purpose profiles plus a generated overview page |
 | Project templates | Research, reading, personal growth, business, and general scenarios | Page templates and vaults, but no purpose/schema scenario setup | Missing | Add independently written scenario profiles that initialize purpose, page types, and starter questions |
@@ -71,7 +71,7 @@ prompts, templates, or UI.
 
 The companion watches only folders the owner explicitly selects. It computes
 content hashes locally and sends a signed change manifest plus changed files to
-WorkWiki. WorkWiki records every change before enqueueing ingest. Deletions are
+work-wiki. work-wiki records every change before enqueueing ingest. Deletions are
 proposals unless the owner enables a narrow automatic rule. The companion
 reports its last operation to Knowledge Studio and its status record can be
 retired there. Stopping the local process or rotating the shared owner
@@ -89,7 +89,7 @@ enforceable per-command network-egress declaration remains a hardening item.
 ### Browser extension
 
 The extension carries no token. It sends the current URL, title, and optional
-remembered tags into a compact WorkWiki-origin window, where the existing owner
+remembered tags into a compact work-wiki-origin window, where the existing owner
 session controls vault selection, final tag editing, and the verified ingest
 job. Selected-text and readable-content capture remain optional future work.
 
@@ -157,7 +157,7 @@ coherent tranche:
    private evidence-backed Review proposal.
 4. Agent runs retain private artifacts and structured owner-input forms. Agents
    with the explicit `run-sandbox` grant can execute bounded commands through a
-   separately deployable Cloudflare Sandbox worker with no WorkWiki or provider
+   separately deployable Cloudflare Sandbox worker with no work-wiki or provider
    credentials mounted.
 5. PDF figures are extracted with page context, converted to PNG, captioned and
    transcribed through vision, cached by content hash, and preserved. EPUB,

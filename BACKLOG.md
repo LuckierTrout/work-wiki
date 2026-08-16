@@ -165,7 +165,7 @@ complete.
 ## LLM Wiki functional parity
 
 - [ ] Reach outcome-level feature parity with `nashsu/llm_wiki` while keeping
-  WorkWiki cloud-first, owner-only, and independently implemented. The pinned
+  work-wiki cloud-first, owner-only, and independently implemented. The pinned
   source audit, capability matrix, cloud adaptations, six delivery phases, and
   acceptance criteria are recorded in
   [`docs/llm-wiki-functional-parity-roadmap.md`](docs/llm-wiki-functional-parity-roadmap.md).

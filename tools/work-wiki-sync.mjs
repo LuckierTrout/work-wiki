@@ -29,7 +29,7 @@ function headers(contentType) {
 async function checked(response) {
   if (response.ok) return response;
   const body = await response.text();
-  throw new Error(`WorkWiki returned ${response.status}: ${body.slice(0, 500)}`);
+  throw new Error(`work-wiki returned ${response.status}: ${body.slice(0, 500)}`);
 }
 
 async function reportHeartbeat({ mode, operation, state, itemCount, message }) {
@@ -49,7 +49,7 @@ async function reportHeartbeat({ mode, operation, state, itemCount, message }) {
       }),
     }));
   } catch (error) {
-    process.stderr.write(`WorkWiki sync status could not be updated: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`work-wiki sync status could not be updated: ${error instanceof Error ? error.message : String(error)}\n`);
   }
 }
 
@@ -164,7 +164,7 @@ function sourceSummary(plan) {
     changed: plan.changed.map(({ path, size, sha256: digest }) => ({ path, size, sha256: digest })),
     deleted: plan.deleted,
     oversized: plan.oversized,
-    note: "Deleted local files are reported only; WorkWiki pages are never deleted by the companion.",
+    note: "Deleted local files are reported only; work-wiki pages are never deleted by the companion.",
   };
 }
 
@@ -258,7 +258,7 @@ try {
   else if (command === "source-push" && target) await pushSources(target, sourceOptions);
   else if (command === "source-watch" && target) await watchSources(target, sourceOptions);
   else {
-    process.stdout.write(`WorkWiki local sync companion\n\nUsage:\n  pnpm sync pull [archive.zip|directory]\n  pnpm sync push <archive.zip> [--overwrite] [--confirm]\n  pnpm sync watch [directory]\n  pnpm sync source-preview <directory>\n  pnpm sync source-push <directory> [--confirm] [--vault=ID] [--tags=a,b]\n  pnpm sync source-watch <directory> --confirm [--vault=ID] [--tags=a,b]\n\nEnvironment:\n  WORKWIKI_API_TOKEN                 required for network operations\n  WORKWIKI_URL                       default https://workwiki.app\n  WORKWIKI_SYNC_CLIENT               stable client id; default computer hostname\n  WORKWIKI_SYNC_LABEL                display name in Knowledge Studio\n  WORKWIKI_SYNC_INTERVAL_MINUTES     backup interval; default 360, minimum 5\n  WORKWIKI_SYNC_KEEP                 default 30 archives\n  WORKWIKI_SOURCE_INTERVAL_MINUTES   source-watch interval; default 10, minimum 1\n  WORKWIKI_SOURCE_MAX_MB             per-source local ceiling; default 50\n`);
+    process.stdout.write(`work-wiki local sync companion\n\nUsage:\n  pnpm sync pull [archive.zip|directory]\n  pnpm sync push <archive.zip> [--overwrite] [--confirm]\n  pnpm sync watch [directory]\n  pnpm sync source-preview <directory>\n  pnpm sync source-push <directory> [--confirm] [--vault=ID] [--tags=a,b]\n  pnpm sync source-watch <directory> --confirm [--vault=ID] [--tags=a,b]\n\nEnvironment:\n  WORKWIKI_API_TOKEN                 required for network operations\n  WORKWIKI_URL                       default https://workwiki.app\n  WORKWIKI_SYNC_CLIENT               stable client id; default computer hostname\n  WORKWIKI_SYNC_LABEL                display name in Knowledge Studio\n  WORKWIKI_SYNC_INTERVAL_MINUTES     backup interval; default 360, minimum 5\n  WORKWIKI_SYNC_KEEP                 default 30 archives\n  WORKWIKI_SOURCE_INTERVAL_MINUTES   source-watch interval; default 10, minimum 1\n  WORKWIKI_SOURCE_MAX_MB             per-source local ceiling; default 50\n`);
   }
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);

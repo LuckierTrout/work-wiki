@@ -1,17 +1,17 @@
-# WorkWiki local sync companion
+# work-wiki local sync companion
 
 The sync companion creates an off-account copy of the complete owner archive. It uses the existing fixed service principal, so the server decides the owner; the CLI cannot choose another tenant.
 
 ```sh
 export WORKWIKI_API_TOKEN='the same high-entropy value stored as YOPEDIA_SERVICE_TOKEN'
-pnpm sync pull /Volumes/EncryptedBackup/WorkWiki
+pnpm sync pull /Volumes/EncryptedBackup/work-wiki
 ```
 
 For recurring snapshots, keep a terminal or service manager running:
 
 ```sh
 WORKWIKI_SYNC_INTERVAL_MINUTES=360 WORKWIKI_SYNC_KEEP=30 \
-  pnpm sync watch /Volumes/EncryptedBackup/WorkWiki
+  pnpm sync watch /Volumes/EncryptedBackup/work-wiki
 ```
 
 Restore is deliberately two-step. The first command only verifies checksums and displays collisions. Add `--confirm` after reviewing that preview:
@@ -46,5 +46,5 @@ WORKWIKI_SOURCE_INTERVAL_MINUTES=10 \
 ```
 
 Hidden files, symlinks, and unsupported formats are ignored. Local deletions
-are reported but never delete WorkWiki pages; removal remains an owner review
+are reported but never delete work-wiki pages; removal remains an owner review
 action in the app.

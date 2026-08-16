@@ -11,7 +11,7 @@
  * stop a future edit from reintroducing "Yopedia" into rendered copy.
  */
 import { describe, expect, it } from "vitest";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { APP_NAME, APP_TITLE } from "../brand";
 import manifest from "../../app/manifest";
@@ -109,6 +109,35 @@ async function scannedSources(): Promise<string[]> {
   return files.filter((f) => !BRAND_SCAN_EXEMPT.has(f));
 }
 
+const ROOT = path.resolve(SRC, "..");
+const MARKDOWN = /\.md$/;
+const ANY_FILE = /(?:)/;
+
+/**
+ * Maintainer-facing surfaces the DW-10 sweep covered: operator tooling and the
+ * repo's markdown documentation. These are scanned ONLY for the stale
+ * "WorkWiki" display name — deliberately NOT folded into `scannedSources()`,
+ * because root markdown legitimately carries capital-Y "Yopedia" prose and
+ * `yologdev/yopedia` upstream links (AGENTS.md says never "fix" them), which
+ * would fail the yopedia-identifier test below.
+ *
+ * The root markdown listing is deliberately NON-recursive: process artifacts
+ * under `_bmad-output/` (historical specs, the deferred-work ledger)
+ * legitimately carry the old "WorkWiki" string, so a recursive walk would fail
+ * the suite for a non-obvious reason.
+ */
+async function maintainerSources(): Promise<string[]> {
+  const rootMarkdown = (await readdir(ROOT, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && MARKDOWN.test(entry.name))
+    .map((entry) => path.join(ROOT, entry.name));
+  return [
+    ...(await walk(path.join(ROOT, "tools"), ANY_FILE)),
+    ...rootMarkdown,
+    ...(await walk(path.join(ROOT, "docs"), MARKDOWN)),
+    ...(await walk(path.join(ROOT, "workers"), MARKDOWN)),
+  ];
+}
+
 describe("no stale brand strings in rendered copy", () => {
   it("actually reads the browser clipper's shipped copy", async () => {
     // A scan that matches no files passes every assertion below while proving
@@ -125,6 +154,32 @@ describe("no stale brand strings in rendered copy", () => {
     for (const file of await scannedSources()) {
       if ((await readFile(file, "utf8")).includes("WorkWiki")) {
         offenders.push(path.relative(SRC, file));
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("actually reads every surface the maintainer sweep covered", async () => {
+    // Same vacuousness guard as the clipper canary above: pin the five swept
+    // files by name so a relocated file or a filter that stops matching fails
+    // here instead of silently shrinking the scan.
+    const scanned = (await maintainerSources()).map((f) => path.relative(ROOT, f));
+    for (const file of [
+      path.join("tools", "work-wiki-sync.mjs"),
+      path.join("tools", "WORKWIKI_SYNC.md"),
+      "BACKLOG.md",
+      path.join("docs", "llm-wiki-functional-parity-roadmap.md"),
+      path.join("workers", "sandbox-runner", "README.md"),
+    ]) {
+      expect(scanned).toContain(file);
+    }
+  });
+
+  it('no maintainer-facing file says "WorkWiki"', async () => {
+    const offenders: string[] = [];
+    for (const file of await maintainerSources()) {
+      if ((await readFile(file, "utf8")).includes("WorkWiki")) {
+        offenders.push(path.relative(ROOT, file));
       }
     }
     expect(offenders).toEqual([]);
@@ -156,5 +211,24 @@ describe("wire-protocol identifiers survive the display rename", () => {
     );
     expect(producer).toContain(HEADER);
     expect(consumer).toContain(HEADER);
+  });
+
+  it("the sync script named by package.json exists on disk", async () => {
+    // `scripts.sync` and the renamed companion script are a two-sided contract
+    // like the header above: rename either side alone and every other test
+    // stays green while `pnpm sync` — the owner's documented backup entry
+    // point, also emitted by LocalSyncPanel — dies at startup with
+    // ERR_MODULE_NOT_FOUND.
+    const pkg = JSON.parse(await readFile(path.join(ROOT, "package.json"), "utf8"));
+    const sync = pkg.scripts?.sync;
+    expect(sync, "package.json must keep a scripts.sync entry").toBeTypeOf("string");
+    // Tolerate runner flags (e.g. `node --enable-source-maps <path>`): the
+    // contract is only that the command names an .mjs file that exists.
+    const scriptPath = sync.split(/\s+/).find((token: string) => token.endsWith(".mjs"));
+    expect(
+      scriptPath,
+      `scripts.sync ("${sync}") must invoke an .mjs script by path`,
+    ).toBeDefined();
+    expect((await stat(path.join(ROOT, scriptPath as string))).isFile()).toBe(true);
   });
 });
