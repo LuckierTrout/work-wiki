@@ -107,6 +107,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     files,
     filesUnavailable,
     filesTruncated,
+    dataVersion,
   } = useWorkbenchData();
   const [mode, setModeState] = useState<WorkbenchModeId>(DEFAULT_WORKBENCH_MODE);
   const [collapsed, setCollapsed] = useState(false);
@@ -560,6 +561,12 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
           knowledge={knowledge}
           files={files}
           onOpenPage={openPage}
+          // The trees come from the server render, which the watcher re-runs;
+          // the Preview's bytes come from a client read keyed on the
+          // selection, so a refreshed page changes nothing about them. This is
+          // the Preview's half of the same signal — the shell is where context
+          // becomes props, and it stays router-free.
+          dataVersion={dataVersion}
         />
       )}
 

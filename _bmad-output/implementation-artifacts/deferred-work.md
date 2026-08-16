@@ -373,3 +373,67 @@ source_spec: `spec-1-6-drag-resize-and-durable-layout.md`
 severity: low
 reason: `treeScrollActive` correctly asks the element rather than the collapse flag, because `@media (max-width: 899px)` force-shows a collapsed column. But both effects are keyed `[tab, collapsed]`, and neither changes when the viewport crosses 900px mid-session — so an owner who is collapsed and narrows the window gets a fully visible, scrollable tree whose offset is neither restored nor recorded until they next switch tabs. A load at that width is fine; only the live transition is missed. Closing it needs a `matchMedia("(max-width: 899px)")` listener in `TreePanel`, which is a second copy of a breakpoint this story deliberately keeps in the stylesheet (and which `workbench-split.test.ts` bans by name). Whether that trade is worth making belongs with whichever story revisits the left column's responsive behaviour.
 status: open
+
+### DW-48: A refresh whose server re-render still reads the OLD version strands that version: `refreshedFor` has already advanced, so it is never retried.
+origin: spec-deferred 50d952f5c317
+location: src/components/workbench/DataVersionWatcher.tsx (run), src/lib/workbench-data-version.ts (shouldRefreshForDataVersion)
+source_spec: `spec-1-7-dataversion-workbench-refresh.md`
+severity: low
+reason: `DataVersionWatcher` sets `refreshedForRef.current = result.version` before `router.refresh()` and never checks that the new render's `dataVersion` caught up. Both reads go through the same Worker, so the window is narrow — but if the RSC read answers the pre-bump integer, `served` stays behind while `refreshedFor` is ahead, and `shouldRefreshForDataVersion` returns `false` for that version forever; the trees then wait for the NEXT write. The obvious fix is not obviously right: dropping the guard restores the unbounded re-render loop it exists to prevent (a degraded `page.tsx` read stuck at 0 against a route answering 7 would refresh every tick, forever), so closing this needs a bounded retry policy — how many attempts, how long to wait for the baseline to move — which is a refresh-policy decision for whichever story next revisits the signal (Epic 2's Ingest is its first real consumer).
+status: open
+
+### DW-49: Writes that bypass `runPageLifecycleOp` — template seeding of `purpose.md` and `schema.md`, raw source files — never move the signal.
+origin: spec-deferred 53e5882c5f58
+location: src/lib/wikis.ts (seedWikiArtifacts), src/lib/lifecycle.ts (runPageLifecycleOp)
+source_spec: `spec-1-7-dataversion-workbench-refresh.md`
+severity: low
+reason: The bump is at the kernel pipeline's tail, which is what the story's `When` clause names, and `seedWikiArtifacts` (`wikis.ts:280`) writes through `storage.writeFile` instead. Creating a Wiki is covered because `WikiSwitcher` still calls `router.refresh()` itself, but a confirm-gated template RE-APPLY, and any later writer that lands bytes the Files tab renders, would leave a second open tab stale. Story 1.8 routes Schema edits through the kernel write path, at which point that half needs nothing; the open question is only whether seeding and template re-apply should bump too, and that belongs with whichever story owns those flows.
+status: open
+
+### DW-50: A silent same-row refresh swaps the Preview's body with no announcement, so a screen-reader user reading it is not told the content changed.
+origin: spec-deferred 6d3ef6e9607b
+location: src/components/workbench/PreviewColumn.tsx (the fetch effect's response handler)
+source_spec: `spec-1-7-dataversion-workbench-refresh.md`
+severity: low
+reason: Before this story the body changed only when the owner picked a row, which is their own action. A bump from another actor now replaces it underneath them, and `PreviewColumn` has no live region. The epic's accessibility floor already says mode changes announce the surface name, so the same argument applies here — but any announcement is a new authored sentence, and the epic's Copy table is the only place a Workbench sentence may be born. That makes it a copy decision rather than a wiring fix, and it belongs with whichever story next opens that table for the Preview column.
+status: open
+
+### DW-51: `PUT /api/wiki/[slug]` carries no `If-Match` precondition, so the Preview editor silently clobbers a write another actor made while it was open.
+origin: spec-deferred d5ca34c088fa
+location: src/app/api/wiki/[slug]/route.ts (PUT), src/lib/workbench-preview.ts (savePreviewBody)
+source_spec: `spec-1-7-dataversion-workbench-refresh.md`
+severity: medium
+reason: Pre-existing — the write path has never had one — but this story makes the race visible for the first time by teaching the shell to notice other actors' writes, and it deliberately does NOT disturb an open editor, so the draft can now be knowingly stale. The read side already supports the primitive (`readFileWithEtag` / `writeFileIfMatch` in `storage/types.ts`); what is missing is a version on the preview payload, a precondition on the route, and a decision about what the column shows when it fails. That is a whole conflict-handling design, not a patch.
+status: open
+
+### DW-52: The watcher's effect lifecycle — poll cadence, visibility gating, abort, teardown — is verified only by matching strings in its own source.
+origin: spec-deferred 90233d0f0577
+location: vitest.config.ts, src/components/workbench/DataVersionWatcher.tsx, src/lib/__tests__/workbench-data-version.test.ts
+source_spec: `spec-1-7-dataversion-workbench-refresh.md`
+severity: medium
+reason: `vitest.config.ts` is `environment: "node"` and the repo has no jsdom, happy-dom, Testing Library or React test plugin, so no suite renders a component, mounts an effect, advances a timer or dispatches a `visibilitychange`. The story's decisions were extracted into pure functions precisely to work around this, and that half IS executed — but "a backgrounded tab does not poll", "becoming visible checks immediately", "one AbortController per run" and "full teardown in the cleanup" are runtime claims pinned by `expect(source).toContain( "clearInterval(timer)")` and friends. Those assertions survive a broken rewrite and break on a reflow. This pass patched the two places where a one-character inversion stayed green (the refresh guard's `!` and the two `setFailed` branches), but the remedy for the class is a DOM test environment, which is a project-level dependency and CI decision rather than something one story should take unilaterally.
+status: open
+
+### DW-53: A page another actor deletes now disappears from the trees mid-session while the docked selection survives, leaving no row marked current.
+origin: spec-deferred a8eec345e2bd
+location: src/components/workbench/Workbench.tsx (the selection reset effect), src/lib/workbench-tree.ts (selectionExists)
+source_spec: `spec-1-7-dataversion-workbench-refresh.md`
+severity: low
+reason: Before this story the trees only changed under a `WikiSwitcher` refresh, which also changes `currentWikiId` and so re-runs the selection reset at `Workbench.tsx:194-203`; `restorableSelection` / `selectionExists` are reached only from the `[]` mount effect (`:173`). A watcher-driven refresh changes neither, so the selection outlives the row: the Preview stays docked showing `PREVIEW_FAILED_COPY` (truthful) while no tree row carries `aria-current` — the state Story 1.6's `selectionExists` docblock names as "a shell that looks broken rather than one that forgot". Reconciling a live selection against a refreshed tree is a design decision (does the shell silently undock, fall back to the sibling row, or say something?) and the last of those needs a sentence from the epic's Copy table, so it belongs with whichever story next opens it.
+status: open
+
+### DW-54: A silent refresh cannot tell "another actor deleted this page" from "the network blipped", so a transient failure replaces the page the owner is reading with the failure copy and does not heal itself.
+origin: spec-deferred de2abf5767d2
+location: src/lib/workbench-preview.ts (fetchPreview, previewBodyState), src/components/workbench/PreviewColumn.tsx (the fetch effect's response handler)
+source_spec: `spec-1-7-dataversion-workbench-refresh.md`
+severity: medium
+reason: `fetchPreview` (`workbench-preview.ts:344-364`) collapses 404, 500, a malformed body, the `REQUEST_TIMEOUT_MS` deadline and a bare transport failure into one `{ status: "failed" }`, and `previewBodyState` (`workbench-preview.ts:152-155`) puts `failed` AHEAD of a payload that is still held. Before this story the flag could only be set right after an explicit pick, behind a `Loading…` the owner had just caused. A silent same-row refresh sets it with `plan.reset === false`, so a page jumps straight from rendered bytes to `PREVIEW_FAILED_COPY` for a reason the owner did not initiate — and because the effect re-runs only on `[selection, dataVersion, editing]`, it stays that way until the next bump or until they click elsewhere and back. The spec's rule ("a failed silent refresh still tells the truth, because a page another actor just deleted must not keep rendering as if it were there") is right about deletion and is what makes the conflation visible; separating "gone" from "could not reach
+status: open
+
+### DW-55: Follow-up review still recommended for 1-7-dataversion-workbench-refresh after the damping cap was spent
+origin: review-budget-followup
+location: n/a
+source_spec: `spec-1-7-dataversion-workbench-refresh.md`
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
+status: open

@@ -19,6 +19,7 @@ import {
   enrichEntry,
 } from "./wiki";
 import { syncPageIndexForPage, removePageIndexForSlug } from "./page-index";
+import { bumpDataVersion } from "./data-version";
 import { getStorage } from "./storage";
 import { withFileLock } from "./lock";
 import { escapeRegex } from "./links";
@@ -645,6 +646,28 @@ async function runPageLifecycleOp(
   // 5. Log.
   const details = logDetails?.({ crossRefedSlugs, strippedBacklinksFrom });
   await appendToLog(logOp, op.title, details);
+
+  // 6. Bump the Workbench's refresh signal (Story 1.7).
+  //
+  //    This is the pipeline's single tail, and it is also where "the op
+  //    succeeded" actually becomes true — every step above can throw, and a
+  //    throw means nothing bumped. Both `writeWikiPageWithSideEffects` and
+  //    `deleteWikiPage` are thin wrappers over this function, so one line here
+  //    covers both verbs, all ~40 call sites (routes, `mcp.ts`, `cli.ts`,
+  //    `ingest.ts`, `lint-fix.ts`, …) and every future caller — without one of
+  //    them knowing the counter exists. It is NOT in `writeWikiPage`, which this
+  //    pipeline itself calls 2–4× per op.
+  //
+  //    Fail-soft, in the shape every other side effect here uses: a config-store
+  //    hiccup must not reject a write that already landed. A stale tree is
+  //    recoverable by the next poll or reload; a lost save is not.
+  //    `bumpDataVersion` already swallows its own failures — this is the guard
+  //    that stays correct if that ever stops being true.
+  try {
+    await bumpDataVersion();
+  } catch (err) {
+    logger.warn("data-version", `bump skipped for "${slug}":`, err);
+  }
 
   return { slug, crossRefedSlugs, strippedBacklinksFrom, removedFromIndex };
 }

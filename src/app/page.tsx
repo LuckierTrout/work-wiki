@@ -1,8 +1,10 @@
 import { redirect } from "next/navigation";
 import { WikiWorkbench } from "@/components/WikiWorkbench";
+import { DataVersionWatcher } from "@/components/workbench/DataVersionWatcher";
 import { Workbench } from "@/components/workbench/Workbench";
 import { WorkbenchDataProvider } from "@/components/workbench/WorkbenchData";
 import { getPrincipal } from "@/lib/auth";
+import { readDataVersion } from "@/lib/data-version";
 import { logger } from "@/lib/logger";
 import type { IndexEntry } from "@/lib/types";
 import { listReadableWikiPages } from "@/lib/wiki";
@@ -35,6 +37,28 @@ export const dynamic = "force-dynamic";
 export default async function Home() {
   const principal = await getPrincipal();
   if (!principal) redirect("/sign-in");
+
+  // The baseline `DataVersionWatcher` compares every poll against, read BEFORE
+  // the data it describes rather than beside it.
+  //
+  // The bump is the LAST step of a kernel op, after the page index has already
+  // been rewritten. So a version read racing that op can answer the POST-bump
+  // integer while a page-index read issued at the same moment answered the
+  // PRE-write index — a render carrying the new number over the old trees. The
+  // comparison is forward-only, so those trees would then never be refreshed:
+  // the route keeps answering the number this render already claims, and the
+  // shell waits for the NEXT write. Reading the version first makes the
+  // baseline at worst OLDER than the data rendered beside it, which costs one
+  // wasted server render and never a missed one.
+  //
+  // A failed read degrades to 0 like the two reads below — and unlike them it
+  // needs no flag: the forward-only comparison refreshes at most once per
+  // observed version, so a degraded baseline is never a loop and never a wrong
+  // sentence on screen.
+  const dataVersion = await readDataVersion().catch((error) => {
+    logger.error("home", "data version read failed", error);
+    return 0;
+  });
 
   // The registry and the page index do not depend on each other, so they are
   // awaited together. The file walk needs BOTH — the current Wiki id for the
@@ -96,8 +120,13 @@ export default async function Home() {
         // find out". The flag travels with the gate it depends on.
         filesUnavailable: fileListing.unavailable || pageIndex.unavailable,
         filesTruncated: fileListing.truncated,
+        dataVersion,
       }}
     >
+      {/* Renders nothing. Inside the provider because the version it compares
+          against is the one THIS render was built from, and it is a sibling of
+          the shell because the shell must stay router-free. */}
+      <DataVersionWatcher />
       <Workbench>
         {/* Keyed on the current Wiki: Story 1.2's card seeds `useState` from its
             props, so a `router.refresh()` triggered by the HEADER switcher would

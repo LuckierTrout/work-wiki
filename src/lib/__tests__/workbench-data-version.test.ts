@@ -1,0 +1,901 @@
+/**
+ * Story 1.7 — the `dataVersion` refresh signal, executed rather than grepped
+ * wherever a node suite can execute it.
+ *
+ * The whole story is invisible when it works: a correct refresh looks like
+ * nothing happening, and a broken one looks like a tree that is merely a few
+ * seconds behind. So everything that CAN be run is run — the counter against a
+ * real temp `DATA_DIR` through the filesystem provider (the fixture shape
+ * `lifecycle.test.ts` uses), the real write and delete pipelines, the route with
+ * a mocked principal, the poll against a stubbed fetch, and every decision
+ * function directly.
+ *
+ * What is left is the component wiring, which `environment: "node"` cannot
+ * render at all. That is pinned by source scan, the `workbench-left-column.
+ * test.ts` convention — chiefly that the shell and the column stayed router-free
+ * and that the watcher spells no version comparison of its own.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
+
+/**
+ * The route's gate is `getPrincipal()`. Mocked here — hoisted, so it governs the
+ * whole file — because there is no Clerk session in a node suite and what is
+ * under test is what the route does WITH a principal. Every other module in this
+ * file imports only the `Principal` TYPE from `@/lib/auth`, so nothing else is
+ * affected.
+ */
+const principal = vi.hoisted(() => ({
+  current: null as { id: string; handle: string } | null,
+  throws: false,
+}));
+vi.mock("@/lib/auth", () => ({
+  getPrincipal: vi.fn(async () => {
+    if (principal.throws) throw new Error("auth backend unreachable");
+    return principal.current;
+  }),
+}));
+
+import {
+  DATA_VERSION_KEY,
+  DATA_VERSION_LOCK,
+  bumpDataVersion,
+  readDataVersion,
+} from "../data-version";
+import {
+  DATA_VERSION_POLL_MS,
+  DATA_VERSION_ROUTE,
+  _resetDataVersionListeners,
+  fetchDataVersion,
+  previewFetchPlan,
+  requestDataVersionCheck,
+  shouldRefreshForDataVersion,
+  subscribeDataVersionCheck,
+  type DataVersionFetch,
+  type DataVersionResponseLike,
+} from "../workbench-data-version";
+import type { TreeSelection } from "../workbench-tree";
+import { deleteWikiPage, writeWikiPageWithSideEffects } from "../lifecycle";
+import { ensureDirectories } from "../wiki";
+import { _resetStorage, getStorage } from "../storage";
+
+const SRC = path.resolve(__dirname, "../..");
+const WORKBENCH = path.join(SRC, "components/workbench");
+
+function readSource(relative: string): Promise<string> {
+  return fs.readFile(path.join(SRC, relative), "utf8");
+}
+
+// ---------------------------------------------------------------------------
+// The counter, against a real filesystem provider
+// ---------------------------------------------------------------------------
+
+describe("the counter in the config store", () => {
+  let tmpDir: string;
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "data-version-"));
+    for (const key of ["WIKI_DIR", "RAW_DIR", "DATA_DIR"]) original[key] = process.env[key];
+    process.env.WIKI_DIR = path.join(tmpDir, "wiki");
+    process.env.RAW_DIR = path.join(tmpDir, "raw");
+    // Isolate DATA_DIR so `.indexes/` lands under tmp, not the repo cwd.
+    process.env.DATA_DIR = tmpDir;
+    _resetStorage();
+    await ensureDirectories();
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    // The principal mock is hoisted and therefore file-global. Restoring it
+    // here rather than at the end of each route case means a case that throws
+    // part-way cannot leave a permanently-throwing `getPrincipal` behind for
+    // every test after it — which would fail them for a reason that has nothing
+    // to do with what they assert.
+    principal.current = null;
+    principal.throws = false;
+    for (const [key, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    _resetStorage();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Where the filesystem provider keeps it — `_idx:data-version` in KV. */
+  function storedPath(): string {
+    return path.join(tmpDir, ".indexes", `${DATA_VERSION_KEY}.json`);
+  }
+
+  it("names one key and one lock, and nothing else invents either", () => {
+    expect(DATA_VERSION_KEY).toBe("data-version");
+    expect(DATA_VERSION_LOCK).toBe("data-version");
+  });
+
+  it("reads 0 from a fresh store", async () => {
+    await expect(readDataVersion()).resolves.toBe(0);
+  });
+
+  it("stores 1 on the first bump and keeps counting from there", async () => {
+    await expect(bumpDataVersion()).resolves.toBe(1);
+    await expect(readDataVersion()).resolves.toBe(1);
+    // …and it lands under the provider's index API, not in `config.json`, not
+    // in the wiki registry, and not per-tenant or per-wiki.
+    await expect(fs.readFile(storedPath(), "utf8")).resolves.toBe("1");
+    await expect(bumpDataVersion()).resolves.toBe(2);
+    await expect(bumpDataVersion()).resolves.toBe(3);
+  });
+
+  it("counts forward from whatever was already stored", async () => {
+    await getStorage().putIndex(DATA_VERSION_KEY, 7);
+    await expect(bumpDataVersion()).resolves.toBe(8);
+    await expect(bumpDataVersion()).resolves.toBe(9);
+    await expect(readDataVersion()).resolves.toBe(9);
+  });
+
+  it("never lets concurrent bumps collapse into one", async () => {
+    // The lock is the whole reason two ops that both read `n` cannot both store
+    // `n + 1` — which would make the second write invisible to a client that
+    // already refreshed for the first.
+    //
+    // This proves the property at the SINGLE-PROCESS filesystem provider, which
+    // is what `withFileLock` covers (`lock.ts`: in-process only). It is not
+    // proof for KV across Workers isolates, where a collapse is still possible;
+    // `DATA_VERSION_LOCK`'s docblock says what that costs.
+    await Promise.all(Array.from({ length: 8 }, () => bumpDataVersion()));
+    await expect(readDataVersion()).resolves.toBe(8);
+  });
+
+  it("narrows a corrupt stored value to 0 rather than propagating it", async () => {
+    for (const corrupt of ["x", -1, 1.5, true, null, {}, [], "4"]) {
+      await getStorage().putIndex(DATA_VERSION_KEY, corrupt);
+      await expect(readDataVersion()).resolves.toBe(0);
+      // …and the next bump self-heals to a usable counter.
+      await expect(bumpDataVersion()).resolves.toBe(1);
+    }
+  });
+
+  it("treats an unparseable stored file as 0 as well", async () => {
+    await fs.mkdir(path.dirname(storedPath()), { recursive: true });
+    await fs.writeFile(storedPath(), "NaN", "utf8");
+    await expect(readDataVersion()).resolves.toBe(0);
+  });
+
+  it("never throws when the store does — a stale tree beats a rejected write", async () => {
+    const storage = getStorage();
+    const read = vi
+      .spyOn(storage, "getIndex")
+      .mockRejectedValue(new Error("config store unreachable"));
+    await expect(readDataVersion()).resolves.toBe(0);
+    await expect(bumpDataVersion()).resolves.toBe(0);
+    read.mockRestore();
+
+    const write = vi.spyOn(storage, "putIndex").mockRejectedValue(new Error("kv down"));
+    await expect(bumpDataVersion()).resolves.toBe(0);
+    write.mockRestore();
+    // Nothing was written, so the counter is still where it was.
+    await expect(readDataVersion()).resolves.toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // The pipeline — the reason no call site had to be edited
+  // -------------------------------------------------------------------------
+
+  const PAGE = {
+    slug: "alpha",
+    title: "Alpha",
+    content: "# Alpha\n\nBody.\n",
+    summary: "The alpha page",
+    logOp: "ingest" as const,
+    // Cross-ref discovery needs an LLM key it will not have here; `null` skips
+    // it, and this story changes nothing about that branch.
+    crossRefSource: null,
+  };
+
+  it("raises the signal by exactly one on a successful kernel write", async () => {
+    const before = await readDataVersion();
+    await writeWikiPageWithSideEffects(PAGE);
+    await expect(readDataVersion()).resolves.toBe(before + 1);
+    // A second write is a second bump — the signal counts ops, not pages.
+    await writeWikiPageWithSideEffects({ ...PAGE, summary: "Edited" });
+    await expect(readDataVersion()).resolves.toBe(before + 2);
+  });
+
+  it("raises it by exactly one on a successful kernel delete", async () => {
+    await writeWikiPageWithSideEffects(PAGE);
+    const before = await readDataVersion();
+    await deleteWikiPage("alpha");
+    await expect(readDataVersion()).resolves.toBe(before + 1);
+  });
+
+  it("does not raise it when the op throws before the pipeline's tail", async () => {
+    const before = await readDataVersion();
+    await expect(
+      writeWikiPageWithSideEffects({ ...PAGE, slug: "../escape" }),
+    ).rejects.toThrow();
+    await expect(deleteWikiPage("no-such-page")).rejects.toThrow();
+    await expect(readDataVersion()).resolves.toBe(before);
+  });
+
+  it("still returns the write's result when the bump itself fails", async () => {
+    const storage = getStorage();
+    const realPut = storage.putIndex.bind(storage);
+    const spy = vi
+      .spyOn(storage, "putIndex")
+      .mockImplementation(async (key: string, value: unknown) => {
+        if (key === DATA_VERSION_KEY) throw new Error("kv down");
+        return realPut(key, value);
+      });
+    // A config-store hiccup must not turn a write that already landed into a
+    // failed one: the owner's text is gone either way, and only one of those
+    // two outcomes is recoverable.
+    await expect(writeWikiPageWithSideEffects(PAGE)).resolves.toEqual({
+      slug: "alpha",
+      updatedSlugs: [],
+    });
+    spy.mockRestore();
+    await expect(readDataVersion()).resolves.toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // The route
+  // -------------------------------------------------------------------------
+
+  async function get(): Promise<Response> {
+    const { GET } = await import("@/app/api/workbench/version/route");
+    return GET();
+  }
+
+  it("serves the integer to a signed-in owner, uncacheably", async () => {
+    principal.current = { id: "u1", handle: "yuanhao" };
+    principal.throws = false;
+    await bumpDataVersion();
+    await bumpDataVersion();
+    const response = await get();
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ dataVersion: 2 });
+    // Per-principal and gated: a shared cache holding one answer would hand it
+    // to the next reader, and the bfcache would serve a version that has moved.
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+  });
+
+  it("answers 401 without a principal, in the shape the column parses", async () => {
+    principal.current = null;
+    principal.throws = false;
+    const response = await get();
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: "Sign in required." });
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+  });
+
+  it("answers a throw with its own { error } shape, never a framework 500", async () => {
+    principal.current = null;
+    principal.throws = true;
+    const response = await get();
+    expect(response.status).toBe(500);
+    const body = (await response.json()) as { error?: unknown };
+    expect(typeof body.error).toBe("string");
+    // …and never a page's content.
+    expect(JSON.stringify(body)).not.toContain("dataVersion");
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The poll
+// ---------------------------------------------------------------------------
+
+function jsonResponse(status: number, body: unknown): DataVersionResponseLike {
+  return { ok: status >= 200 && status < 300, json: async () => body };
+}
+
+function stubFetch(handler: (url: string) => unknown): {
+  fetchImpl: DataVersionFetch;
+  calls: string[];
+  signals: (AbortSignal | undefined)[];
+} {
+  const calls: string[] = [];
+  // What the transport was actually handed. Recorded because every abort case
+  // below works by pre-aborting a controller that `fetchDataVersion` inspects
+  // ITSELF — so a poll that never passed `{ signal }` on to `fetchImpl` would
+  // answer `stale` in all four of them and stay green, while being
+  // uncancellable in the browser. `abortRef` and the effect cleanup both depend
+  // on the opposite, so it is asserted rather than assumed.
+  const signals: (AbortSignal | undefined)[] = [];
+  const fetchImpl: DataVersionFetch = async (url, init) => {
+    calls.push(url);
+    signals.push(init?.signal);
+    const result = handler(url);
+    if (result instanceof Error) throw result;
+    return result as DataVersionResponseLike;
+  };
+  return { fetchImpl, calls, signals };
+}
+
+describe("fetchDataVersion", () => {
+  it("polls the one route and parses the integer", async () => {
+    const { fetchImpl, calls, signals } = stubFetch(() => jsonResponse(200, { dataVersion: 4 }));
+    const signal = new AbortController().signal;
+    await expect(fetchDataVersion(signal, fetchImpl)).resolves.toEqual({
+      status: "ok",
+      version: 4,
+    });
+    expect(calls).toEqual([DATA_VERSION_ROUTE]);
+    expect(DATA_VERSION_ROUTE).toBe("/api/workbench/version");
+    // The caller's signal reaches the TRANSPORT, not only this module's own
+    // `signal.aborted` checks: the watcher aborts the previous run at the top of
+    // every tick and again in its cleanup, and neither ends a request that was
+    // issued without it. A poll left hanging on a stalled connection would then
+    // outlive the shell that started it.
+    expect(signals).toEqual([signal]);
+    // A cadence, not a hot loop, and not zero — and BOUNDED ABOVE as well. A
+    // lower bound alone is satisfied by a ten-minute interval, which keeps the
+    // suite green while making "a page written by the CLI or an agent reaches
+    // the trees without a reload" untrue for the length of a working session.
+    expect(DATA_VERSION_POLL_MS).toBeGreaterThanOrEqual(1000);
+    expect(DATA_VERSION_POLL_MS).toBeLessThanOrEqual(30_000);
+  });
+
+  it("reports a body it does not recognise as unavailable, never as a version", async () => {
+    for (const body of [
+      {},
+      { dataVersion: "4" },
+      { dataVersion: null },
+      { dataVersion: 1.5 },
+      { dataVersion: -1 },
+      { dataVersion: Number.NaN },
+      { version: 4 },
+      null,
+      4,
+      "4",
+    ]) {
+      const { fetchImpl } = stubFetch(() => jsonResponse(200, body));
+      await expect(
+        fetchDataVersion(new AbortController().signal, fetchImpl),
+      ).resolves.toEqual({ status: "unavailable" });
+    }
+  });
+
+  it("reports a refusal, a failure and a non-JSON body as unavailable", async () => {
+    for (const status of [401, 404, 500, 503]) {
+      const { fetchImpl } = stubFetch(() => jsonResponse(status, { error: "nope" }));
+      await expect(
+        fetchDataVersion(new AbortController().signal, fetchImpl),
+      ).resolves.toEqual({ status: "unavailable" });
+    }
+    const unparseable = stubFetch(() => ({
+      ok: true,
+      json: async () => {
+        throw new SyntaxError("Unexpected token < in JSON");
+      },
+    }));
+    await expect(
+      fetchDataVersion(new AbortController().signal, unparseable.fetchImpl),
+    ).resolves.toEqual({ status: "unavailable" });
+    const down = stubFetch(() => new TypeError("Failed to fetch"));
+    await expect(
+      fetchDataVersion(new AbortController().signal, down.fetchImpl),
+    ).resolves.toEqual({ status: "unavailable" });
+  });
+
+  it("reports an abort as stale, both before and after the body is parsed", async () => {
+    const early = new AbortController();
+    const first = stubFetch(() => {
+      early.abort();
+      return jsonResponse(200, { dataVersion: 9 });
+    });
+    await expect(fetchDataVersion(early.signal, first.fetchImpl)).resolves.toEqual({
+      status: "stale",
+    });
+
+    const late = new AbortController();
+    const second = stubFetch(() => ({
+      ok: true,
+      json: async () => {
+        late.abort();
+        return { dataVersion: 9 };
+      },
+    }));
+    await expect(fetchDataVersion(late.signal, second.fetchImpl)).resolves.toEqual({
+      status: "stale",
+    });
+
+    // …and a fetch that throws BECAUSE it was aborted is stale too, not a
+    // failure the watcher would otherwise treat as a signal it cannot read.
+    const thrown = new AbortController();
+    const third = stubFetch(() => {
+      thrown.abort();
+      return new DOMException("The operation was aborted.", "AbortError");
+    });
+    await expect(fetchDataVersion(thrown.signal, third.fetchImpl)).resolves.toEqual({
+      status: "stale",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two decisions
+// ---------------------------------------------------------------------------
+
+describe("shouldRefreshForDataVersion", () => {
+  it("refreshes when the served number moved forward", () => {
+    expect(
+      shouldRefreshForDataVersion({ served: 3, polled: 4, refreshedFor: 3 }),
+    ).toBe(true);
+    expect(
+      shouldRefreshForDataVersion({ served: 0, polled: 1, refreshedFor: 0 }),
+    ).toBe(true);
+  });
+
+  it("does nothing when it did not move", () => {
+    expect(
+      shouldRefreshForDataVersion({ served: 3, polled: 3, refreshedFor: 3 }),
+    ).toBe(false);
+  });
+
+  it("refreshes at most once per observed version", () => {
+    // The guard against a degraded server read: if `page.tsx` answers 0 forever
+    // while the route answers 7, an unguarded watcher refreshes every tick.
+    expect(
+      shouldRefreshForDataVersion({ served: 3, polled: 4, refreshedFor: 4 }),
+    ).toBe(false);
+    expect(
+      shouldRefreshForDataVersion({ served: 0, polled: 7, refreshedFor: 7 }),
+    ).toBe(false);
+    expect(
+      shouldRefreshForDataVersion({ served: 0, polled: 8, refreshedFor: 7 }),
+    ).toBe(true);
+  });
+
+  it("ignores a backwards read — eventual consistency is not a change", () => {
+    expect(
+      shouldRefreshForDataVersion({ served: 5, polled: 4, refreshedFor: 0 }),
+    ).toBe(false);
+  });
+});
+
+describe("previewFetchPlan", () => {
+  const ALPHA: TreeSelection = { kind: "page", slug: "alpha" };
+  const BETA: TreeSelection = { kind: "page", slug: "beta" };
+  const FILE: TreeSelection = { kind: "file", path: "wiki/alpha.md" };
+
+  it("fetches and resets for a new row, whatever the editor is doing", () => {
+    for (const editing of [false, true]) {
+      expect(previewFetchPlan({ shown: ALPHA, next: BETA, editing })).toEqual({
+        fetch: true,
+        reset: true,
+        shown: BETA,
+      });
+    }
+    // The first run of all — nothing has been read yet — is a new row too.
+    expect(previewFetchPlan({ shown: null, next: ALPHA, editing: false })).toEqual({
+      fetch: true,
+      reset: true,
+      shown: ALPHA,
+    });
+    // The same page reached from the other tab is a different ROW, and its
+    // bytes are fetched under a different query.
+    expect(previewFetchPlan({ shown: ALPHA, next: FILE, editing: false })).toEqual({
+      fetch: true,
+      reset: true,
+      shown: FILE,
+    });
+  });
+
+  it("refreshes the same row silently when the owner is only reading", () => {
+    // No reset, so `Loading…` does not flash over a page somebody is reading.
+    // A fresh-but-equal object is the same row: the shell's one equality rule.
+    expect(
+      previewFetchPlan({ shown: ALPHA, next: { kind: "page", slug: "alpha" }, editing: false }),
+    ).toEqual({ fetch: true, reset: false, shown: { kind: "page", slug: "alpha" } });
+  });
+
+  it("does nothing at all while the editor is open", () => {
+    expect(previewFetchPlan({ shown: ALPHA, next: ALPHA, editing: true })).toEqual({
+      fetch: false,
+      reset: false,
+      shown: ALPHA,
+    });
+  });
+
+  it("records the row it read, and leaves it alone when it read nothing", () => {
+    // The ordering the component can no longer get wrong, executed: a run that
+    // fetches records what it fetched, and a run that does not fetch must leave
+    // the previous row recorded — recording `next` there would make the NEXT
+    // pick look like the same row, so the editor would survive a row change and
+    // the column would show one row's draft over another row's header.
+    expect(previewFetchPlan({ shown: ALPHA, next: BETA, editing: true }).shown).toEqual(BETA);
+    expect(previewFetchPlan({ shown: ALPHA, next: ALPHA, editing: true }).shown).toBe(ALPHA);
+    expect(previewFetchPlan({ shown: null, next: ALPHA, editing: true }).shown).toEqual(ALPHA);
+    // …and the recorded row of a no-fetch run is the SHOWN one even though a
+    // different object with the same identity was offered.
+    const equal: TreeSelection = { kind: "page", slug: "alpha" };
+    expect(previewFetchPlan({ shown: ALPHA, next: equal, editing: true }).shown).toBe(ALPHA);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The nudge
+// ---------------------------------------------------------------------------
+
+describe("the immediate-check nudge", () => {
+  afterEach(() => _resetDataVersionListeners());
+
+  it("runs every subscriber, and none after they unsubscribe", () => {
+    const seen: string[] = [];
+    const offA = subscribeDataVersionCheck(() => seen.push("a"));
+    const offB = subscribeDataVersionCheck(() => seen.push("b"));
+    requestDataVersionCheck();
+    expect(seen).toEqual(["a", "b"]);
+    offA();
+    offB();
+    requestDataVersionCheck();
+    expect(seen).toEqual(["a", "b"]);
+  });
+
+  it("does not let one throwing listener strand the others", () => {
+    const seen: string[] = [];
+    subscribeDataVersionCheck(() => {
+      throw new Error("watcher exploded");
+    });
+    subscribeDataVersionCheck(() => seen.push("b"));
+    expect(() => requestDataVersionCheck()).not.toThrow();
+    expect(seen).toEqual(["b"]);
+  });
+
+  it("survives a listener that unsubscribes itself mid-notify", () => {
+    const seen: string[] = [];
+    const off = subscribeDataVersionCheck(() => {
+      seen.push("a");
+      off();
+    });
+    subscribeDataVersionCheck(() => seen.push("b"));
+    requestDataVersionCheck();
+    expect(seen).toEqual(["a", "b"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The wiring a node suite cannot execute
+// ---------------------------------------------------------------------------
+
+describe("the bump lives at exactly one site", () => {
+  it("sits between the log append and the pipeline's return, inside a try/catch", async () => {
+    const source = await readSource("lib/lifecycle.ts");
+    expect(source).toMatch(
+      /await appendToLog\(logOp, op\.title, details\);[\s\S]{0,1200}try \{\s*\n\s*await bumpDataVersion\(\);\s*\n\s*\} catch \(err\) \{[\s\S]{0,160}logger\.warn\("data-version"/,
+    );
+    const bump = source.indexOf("await bumpDataVersion();");
+    expect(bump).toBeGreaterThan(source.indexOf("await appendToLog(logOp"));
+    expect(bump).toBeLessThan(
+      source.indexOf("return { slug, crossRefedSlugs, strippedBacklinksFrom, removedFromIndex };"),
+    );
+    // Not in the two wrappers, and not in `writeWikiPage`, which the pipeline
+    // itself calls 2–4× per op.
+    expect(source.match(/bumpDataVersion\(\)/g) ?? []).toHaveLength(1);
+  });
+
+  it("is called from nowhere else in the app", async () => {
+    const offenders: string[] = [];
+    for (const file of await walk(SRC)) {
+      if (file.includes(`${path.sep}__tests__${path.sep}`)) continue;
+      if ((await fs.readFile(file, "utf8")).includes("bumpDataVersion(")) {
+        offenders.push(path.relative(SRC, file).split(path.sep).join("/"));
+      }
+    }
+    // The definition and the one call site. `seedWikiArtifacts` and every other
+    // writer that bypasses `runPageLifecycleOp` are deliberately absent.
+    expect(offenders.sort()).toEqual(["lib/data-version.ts", "lib/lifecycle.ts"]);
+  });
+
+  it("introduces no second refresh paradigm anywhere in src", async () => {
+    // `WebSocket` is banned alongside `EventSource`, and the SWR half is
+    // case-insensitive because one dependency is spelled three ways (`useSWR`,
+    // `from "swr"`, `SWRConfig`). Both are matched as USE rather than as a bare
+    // substring: `html.ts` names WebSocket in a CSP comment, and
+    // `vendor/yoyo-reference.generated.ts` is a base64 blob that contains
+    // almost every three-letter sequence there is.
+    const banned = [
+      /revalidatePath/,
+      /revalidateTag/,
+      /unstable_cache/,
+      /new\s+EventSource\s*\(/,
+      /new\s+WebSocket\s*\(/,
+      /\buseSWR\b/i,
+      /\bSWRConfig\b/i,
+      /from\s+["']swr["']/i,
+      /react-query/i,
+    ];
+    const offenders: string[] = [];
+    for (const file of await walk(SRC)) {
+      if (file.includes(`${path.sep}__tests__${path.sep}`)) continue;
+      const source = await fs.readFile(file, "utf8");
+      if (banned.some((pattern) => pattern.test(source))) {
+        offenders.push(path.relative(SRC, file).split(path.sep).join("/"));
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("never reloads the window — a refresh the owner can see is a bug", async () => {
+    // The acceptance criterion says the window does not reload: mode, tree tab,
+    // selection, scroll offset and column widths all survive precisely because
+    // nothing here unmounts. `location.reload()` or an assignment to
+    // `window.location` would satisfy "the trees are current" and destroy every
+    // one of them, so all three files that could reach for it are checked.
+    for (const file of ["DataVersionWatcher.tsx", "PreviewColumn.tsx", "Workbench.tsx"]) {
+      const source = await fs.readFile(path.join(WORKBENCH, file), "utf8");
+      expect(source).not.toMatch(/location\s*\.\s*reload\s*\(/);
+      expect(source).not.toMatch(/location\s*\.\s*(href|assign|replace)\s*[=(]/);
+      expect(source).not.toMatch(/window\.location\s*=/);
+    }
+  });
+});
+
+async function walk(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...(await walk(full)));
+    else if (/\.tsx?$/.test(entry.name)) out.push(full);
+  }
+  return out;
+}
+
+describe("the served baseline reaches the browser through the provider", () => {
+  it("page.tsx reads it on the server, BEFORE the data it describes", async () => {
+    const source = await readSource("app/page.tsx");
+    expect(source).toContain("await Promise.all([");
+    expect(source).toContain("readDataVersion()");
+    // Degrades like the two reads below it rather than throwing the page away.
+    expect(source).toMatch(
+      /readDataVersion\(\)\.catch\(\(error\) => \{[\s\S]{0,200}logger\.error\("home"[\s\S]{0,120}return 0;/,
+    );
+    expect(source).toContain("const [wikiRegistry, pageIndex] = await Promise.all([");
+    expect(source).toContain("dataVersion,");
+    // The ORDER is the whole correctness argument, so it is asserted rather
+    // than commented. The bump is the last step of a kernel op, after the page
+    // index has been rewritten — so a version read racing that op CONCURRENTLY
+    // with the index read can answer the post-bump integer over the pre-write
+    // trees, and forward-only comparison then never refreshes them. Awaiting it
+    // first makes the baseline at worst older than the data beside it.
+    const version = source.indexOf("await readDataVersion()");
+    const round = source.indexOf("await Promise.all([");
+    expect(version).toBeGreaterThan(-1);
+    expect(version).toBeLessThan(round);
+    // …and it is genuinely awaited on its own, not a third element of the round.
+    expect(source).not.toMatch(/Promise\.all\(\[[\s\S]*?readDataVersion\(\)[\s\S]*?\]\)/);
+    // The trees stay a server read: no client fetch of tree data, and the
+    // version is a lib call rather than a request to its own route.
+    expect(source).not.toContain("fetch(");
+    // The watcher is mounted INSIDE the provider — outside it, the baseline it
+    // compares against would be `EMPTY_DATA`'s 0 on every render.
+    const provider = source.indexOf("<WorkbenchDataProvider");
+    const watcher = source.indexOf("<DataVersionWatcher />");
+    const shell = source.indexOf("<Workbench>");
+    expect(provider).toBeGreaterThan(-1);
+    expect(watcher).toBeGreaterThan(provider);
+    expect(watcher).toBeLessThan(shell);
+  });
+
+  it("WorkbenchData carries it as a field with an empty default", async () => {
+    const source = await fs.readFile(path.join(WORKBENCH, "WorkbenchData.tsx"), "utf8");
+    expect(source).toContain("dataVersion: number;");
+    expect(source).toContain("dataVersion: 0,");
+  });
+
+  it("the shell hands it to the Preview and stays router-free", async () => {
+    const source = await fs.readFile(path.join(WORKBENCH, "Workbench.tsx"), "utf8");
+    expect(source).toContain("dataVersion,");
+    expect(source).toContain("dataVersion={dataVersion}");
+    // A mode switch is state, never a route change — and the trees are refreshed
+    // by the watcher, which is the only component here that may hold a router.
+    expect(source).not.toMatch(/\buseRouter\(/);
+    expect(source).not.toContain("router.refresh()");
+  });
+});
+
+describe("the Preview column re-reads its bytes without disturbing an editor", () => {
+  it("gates its effect on the executed plan and takes the version as a dep", async () => {
+    const source = await fs.readFile(path.join(WORKBENCH, "PreviewColumn.tsx"), "utf8");
+    // Whitespace-insensitive: what matters is that BOTH selections reach the
+    // plan and that the recorded row comes back OUT of it. The ordering the
+    // component used to hold by hand — compare, then record — is now inside
+    // `previewFetchPlan`, where the suite executes it.
+    expect(source).toMatch(
+      /previewFetchPlan\(\{\s*shown:\s*shownSelectionRef\.current,\s*next:\s*selection,\s*editing,\s*\}\)/,
+    );
+    expect(source).toContain("shownSelectionRef.current = plan.shown;");
+    // …and the component records nothing of its own, so there is no assignment
+    // left that a tidy-up could hoist above the comparison.
+    expect(source).not.toContain("shownSelectionRef.current = selection");
+    expect(source).toContain("if (!plan.fetch) return;");
+    expect(source).toContain("if (plan.reset) {");
+    expect(source).toMatch(/\}, \[selection, dataVersion, editing\]\)/);
+    // The reset block — the one that abandons an open editor — is now BEHIND the
+    // plan, and still inside the effect.
+    const effect = source.slice(
+      source.indexOf("if (plan.reset) {"),
+      source.indexOf("}, [selection, dataVersion, editing])"),
+    );
+    expect(effect).toContain("setEditing(false)");
+    expect(effect).toContain("editingSlugRef.current = null");
+    expect(effect).toContain("setPayload(null)");
+    // A silent refresh that succeeds must clear a previous failure; one that
+    // fails must still say so, because a page another actor just deleted cannot
+    // keep rendering as if it were there.
+    //
+    // Scoped to the RESPONSE HANDLER, not to the effect: the reset block above
+    // carries its own `setFailed(false);`, so an effect-wide check is satisfied
+    // by a handler that never clears the flag — and a row that failed once would
+    // then keep showing `This file couldn’t be loaded.` over bytes it has since
+    // re-read successfully.
+    // …and scoped to each BRANCH of that handler, not to the handler as a
+    // whole: one slice containing both calls is satisfied by the two of them
+    // swapped, which renders `This file couldn’t be loaded.` over every page
+    // that read fine and leaves every genuine failure rendering as if the bytes
+    // were still there — the precise pair of states this pins against.
+    const handler = source.slice(
+      source.indexOf("void fetchPreview("),
+      source.indexOf("setLoading(false);", source.indexOf("void fetchPreview(")),
+    );
+    const okStart = handler.indexOf('if (result.status === "ok") {');
+    const elseStart = handler.indexOf("} else {", okStart);
+    expect(okStart).toBeGreaterThan(-1);
+    expect(elseStart).toBeGreaterThan(okStart);
+    const ok = handler.slice(okStart, elseStart);
+    const failed = handler.slice(elseStart);
+    expect(ok).toContain("setPayload(result.payload);");
+    expect(ok).toContain("setFailed(false);");
+    expect(ok).not.toContain("setFailed(true);");
+    expect(failed).toContain("setFailed(true);");
+    expect(failed).not.toContain("setFailed(false);");
+  });
+
+  it("nudges the watcher after a save instead of refreshing anything itself", async () => {
+    const source = await fs.readFile(path.join(WORKBENCH, "PreviewColumn.tsx"), "utf8");
+    expect(source).toContain("requestDataVersionCheck();");
+    expect(source).not.toMatch(/\buseRouter\(/);
+    expect(source).not.toContain("router.refresh()");
+    expect(source).not.toContain('from "next/navigation"');
+    // The column still issues no request of its own.
+    expect(source).not.toMatch(/\bfetch\(/);
+  });
+});
+
+describe("DataVersionWatcher", () => {
+  it("renders nothing and owns the only refresh in the shell", async () => {
+    const source = await fs.readFile(path.join(WORKBENCH, "DataVersionWatcher.tsx"), "utf8");
+    expect(source).toContain('"use client"');
+    expect(source).toContain("return null;");
+    expect(source).toContain("useRouter()");
+    expect(source).toContain("router.refresh();");
+    // The baseline is the provider's field, read through a ref assigned during
+    // render so a poll compares against the payload now on screen.
+    expect(source).toContain("useWorkbenchData()");
+    expect(source).toContain("servedRef.current = dataVersion;");
+    expect(source).toContain("refreshedForRef.current = result.version;");
+  });
+
+  it("spells no comparison of its own — the decision is the executed function", async () => {
+    const source = await fs.readFile(path.join(WORKBENCH, "DataVersionWatcher.tsx"), "utf8");
+    expect(source).toContain("shouldRefreshForDataVersion({");
+    expect(source).toContain("served: servedRef.current,");
+    expect(source).toContain("polled: result.version,");
+    expect(source).toContain("refreshedFor: refreshedForRef.current,");
+    // Strip the comments first: the docblock explains forward-only comparison in
+    // prose, and prose is not a comparison.
+    const code = source
+      .split("\n")
+      .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+      .join("\n");
+    expect(code).not.toMatch(/(version|Version|polled|served)\s*[<>]=?\s*/);
+  });
+
+  it("uses the decision's answer the right way round", async () => {
+    const source = await fs.readFile(path.join(WORKBENCH, "DataVersionWatcher.tsx"), "utf8");
+    // Executing the decision is not the same as OBEYING it. `toContain(
+    // "shouldRefreshForDataVersion({")` above is satisfied by a watcher that
+    // dropped the `!` — which refreshes on every poll where nothing changed and
+    // never when a write lands, i.e. the exact inverse of the story, with the
+    // whole suite green. The polarity is the thing, so it is pinned here.
+    const run = source.slice(
+      source.indexOf("async function run()"),
+      source.indexOf("function startPolling()"),
+    );
+    expect(run).toMatch(
+      /if \(\s*!shouldRefreshForDataVersion\(\{[\s\S]{0,240}?\}\)\s*\) \{\s*return;\s*\}/,
+    );
+    // …and the refresh is reached only AFTER that guard, exactly once, so the
+    // branch cannot be bypassed by a second call site above it.
+    expect(run.match(/router\.refresh\(\)/g) ?? []).toHaveLength(1);
+    expect(run.indexOf("router.refresh()")).toBeGreaterThan(
+      run.indexOf("shouldRefreshForDataVersion"),
+    );
+    // A poll that could not answer never reaches the decision at all.
+    expect(run).toMatch(/if \(result\.status !== "ok"\) return;/);
+  });
+
+  it("polls only while the tab is visible, one controller per run", async () => {
+    const source = await fs.readFile(path.join(WORKBENCH, "DataVersionWatcher.tsx"), "utf8");
+    // The `useSidecarStatus` loop, verbatim in structure.
+    expect(source).toContain('document.visibilityState === "visible"');
+    expect(source).toContain("setInterval(() => void run(), DATA_VERSION_POLL_MS)");
+    expect(source).toContain("clearInterval(timer)");
+    expect(source).toContain("new AbortController()");
+    // The handler is REGISTERED, asserted rather than merely used below as a
+    // slice delimiter. Deleting this one line leaves every other assertion in
+    // this test green — `mount`'s slice just runs to the end of the file, and
+    // the cleanup still references `onVisibility` so eslint stays quiet — while
+    // a Workbench mounted into a hidden tab (a restored session, a
+    // background-opened tab) never reaches `startPolling()` for the whole life
+    // of that mount, and a visible one never stops.
+    expect(source).toContain('document.addEventListener("visibilitychange", onVisibility);');
+
+    // BOTH call sites, each sliced. A whole-file `toContain("startPolling()")`
+    // is satisfied by the function's own declaration, so deleting both calls
+    // would leave the story's only non-owner refresh path silently dead with
+    // the suite green: the tab would then refresh solely when the owner saves.
+    //
+    // The mount: an immediate check AND the interval, so the first answer does
+    // not wait a full cadence.
+    const mount = source.slice(
+      source.lastIndexOf('if (document.visibilityState === "visible") {'),
+      source.indexOf('document.addEventListener("visibilitychange"'),
+    );
+    expect(mount).toContain("void run();");
+    expect(mount).toContain("startPolling();");
+    // …and coming back to a backgrounded tab does exactly the same, so the
+    // trees are fresh by the time they are visible again.
+    const onVisibility = source.slice(
+      source.indexOf("function onVisibility() {"),
+      source.indexOf("} else {", source.indexOf("function onVisibility() {")),
+    );
+    expect(onVisibility).toContain("void run();");
+    expect(onVisibility).toContain("startPolling();");
+    // …and going away STOPS it, sliced to the hidden branch alone. A whole-file
+    // `toContain("stopPolling();")` is satisfied by the cleanup's own copy, so
+    // deleting this branch's call would leave the suite green while a
+    // backgrounded tab kept polling forever — the one claim the visibility gate
+    // makes, and the reason the loop exists in this shape at all.
+    const hidden = source.slice(
+      source.indexOf("} else {", source.indexOf("function onVisibility() {")),
+      source.lastIndexOf('if (document.visibilityState === "visible") {'),
+    );
+    expect(hidden).toContain("stopPolling();");
+    expect(hidden).not.toContain("startPolling();");
+    expect(source).toContain("let cancelled = false;");
+    expect(source).toContain("if (cancelled || controller.signal.aborted) return;");
+    // Full teardown: the interval, the listener, the subscription and the
+    // in-flight request all stop when the shell goes away.
+    const cleanup = source.slice(source.lastIndexOf("return () => {"));
+    expect(cleanup).toContain("cancelled = true;");
+    expect(cleanup).toContain("stopPolling();");
+    expect(cleanup).toContain('document.removeEventListener("visibilitychange", onVisibility);');
+    expect(cleanup).toContain("unsubscribe();");
+    expect(cleanup).toContain("abortRef.current?.abort();");
+    // The save's immediate check is wired in the SAME effect as the poll, so it
+    // can never outlive the teardown.
+    expect(source).toContain("subscribeDataVersionCheck(() => void run())");
+    // No browser-local copy of the signal (AD-7 adds no new key here).
+    expect(source).not.toContain("localStorage");
+  });
+});
+
+describe("the route", () => {
+  it("follows the shape every other Workbench route answers with", async () => {
+    const source = await readSource("app/api/workbench/version/route.ts");
+    expect(source).toContain('const NO_STORE = { "Cache-Control": "private, no-store" } as const;');
+    expect(source).toContain("getPrincipal()");
+    expect(source).toContain('return json({ error: "Sign in required." }, 401);');
+    expect(source).toContain("return await handle();");
+    expect(source).toContain("return json({ error: getErrorMessage(error) }, 500);");
+    expect(source).toContain("readDataVersion()");
+    // The gate is the route's, and the counter is the module's — the route
+    // invents neither a key nor an idea of what an invalid value means.
+    expect(source).not.toContain("getIndex");
+    expect(source).not.toContain("putIndex");
+  });
+});

@@ -276,7 +276,7 @@ describe("PreviewColumn is view-first over a rendered body", () => {
     expect(source).not.toContain('payload.format === "unsupported"');
   });
 
-  it("fetches the bytes abortably, keyed on the selection", async () => {
+  it("fetches the bytes abortably, keyed on the selection and the data version", async () => {
     const source = await read("PreviewColumn.tsx");
     // The URL is built by the shared module, so the route and its one caller
     // cannot drift on a parameter name — and the stale/failed DECISION is made
@@ -295,7 +295,7 @@ describe("PreviewColumn is view-first over a rendered body", () => {
     // read leaves `Loading…` on screen for the rest of that selection, which is
     // indistinguishable from the hang the deadline exists to end.
     expect(source).toContain("setLoading(false)");
-    expect(source).toMatch(/\}, \[selection\]\)/);
+    expect(source).toMatch(/\}, \[selection, dataVersion, editing\]\)/);
     // No second copy of the decision: the component must not re-derive it.
     expect(source).not.toContain("response.ok");
   });
@@ -339,7 +339,7 @@ describe("PreviewColumn is view-first over a rendered body", () => {
     // deleted — which is why the check above exists as well as this line.
     const fetchEffect = source.slice(
       source.indexOf("const controller = new AbortController()"),
-      source.indexOf("}, [selection])"),
+      source.indexOf("}, [selection, dataVersion, editing])"),
     );
     expect(fetchEffect).toContain("setEditing(false)");
     expect(fetchEffect).toContain("editingSlugRef.current = null");

@@ -10,8 +10,9 @@ import type { WikiRecord } from "@/lib/wikis";
  * It arrives as context rather than as `<Workbench>` props because `page.tsx`
  * is a server component and the shell is a client one: a provider is the one
  * seam where a growing set of server reads can be handed across that boundary
- * without every intermediate component restating them. Stories 1.5 (Preview
- * bytes) and 1.7 (`dataVersion`) add fields here, not another prop each.
+ * without every intermediate component restating them. Story 1.7's
+ * `dataVersion` is here for exactly that reason rather than as another prop —
+ * both the watcher and, through the shell, the Preview column read it.
  *
  * Every field has an empty default so a consumer rendered outside the provider
  * degrades to "nothing loaded" instead of throwing.
@@ -38,6 +39,16 @@ export interface WorkbenchData {
   filesUnavailable: boolean;
   /** The file walk hit a cap; the Files tab says so under the tree. */
   filesTruncated: boolean;
+  /**
+   * The refresh signal this server render was built from — the monotonic
+   * integer every kernel page write and delete raises by one. `DataVersionWatcher`
+   * compares it to what `GET /api/workbench/version` answers and re-runs the
+   * server render when it has moved forward; `PreviewColumn` takes it as a
+   * dependency so the docked row re-reads its bytes at the same moment. A read
+   * that failed degrades to `0`, which the forward-only comparison makes at
+   * worst one wasted render rather than a loop.
+   */
+  dataVersion: number;
 }
 
 const EMPTY_DATA: WorkbenchData = {
@@ -49,6 +60,7 @@ const EMPTY_DATA: WorkbenchData = {
   files: [],
   filesUnavailable: false,
   filesTruncated: false,
+  dataVersion: 0,
 };
 
 const WorkbenchDataContext = createContext<WorkbenchData>(EMPTY_DATA);

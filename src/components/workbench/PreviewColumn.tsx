@@ -1,8 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import {
+  previewFetchPlan,
+  requestDataVersionCheck,
+} from "@/lib/workbench-data-version";
 import {
   PREVIEW_CANCEL_COPY,
   PREVIEW_EDIT_CONFIRM_BODY,
@@ -64,6 +67,15 @@ export interface PreviewColumnProps {
    * Not navigation — see the module docblock on why this is a button.
    */
   onOpenPage: (slug: string) => void;
+  /**
+   * The refresh signal the shell's current server render was built from
+   * (Story 1.7). The Preview's bytes come from a client read, not from that
+   * render, so re-running the server render alone would leave this column
+   * showing the bytes it read before somebody else's write. It is a DEPENDENCY of the
+   * fetch effect rather than a trigger the column acts on: what a re-run may
+   * touch is `previewFetchPlan`'s answer, never a condition typed in here.
+   */
+  dataVersion: number;
 }
 
 /**
@@ -79,6 +91,7 @@ export function PreviewColumn({
   knowledge,
   files,
   onOpenPage,
+  dataVersion,
 }: PreviewColumnProps) {
   // No selection, no column — the shell already decides this with
   // `shouldDockPreview`, and this keeps the component honest on its own. The
@@ -90,6 +103,7 @@ export function PreviewColumn({
       knowledge={knowledge}
       files={files}
       onOpenPage={onOpenPage}
+      dataVersion={dataVersion}
     />
   );
 }
@@ -99,8 +113,8 @@ function PreviewPane({
   knowledge,
   files,
   onOpenPage,
+  dataVersion,
 }: PreviewColumnProps & { selection: TreeSelection }) {
-  const router = useRouter();
   const [payload, setPayload] = useState<PreviewPayload | null>(null);
   // What is on screen RIGHT NOW, readable from an async callback that closed
   // over an older render. Assigned during render, the `useDialogA11y` idiom.
@@ -126,6 +140,12 @@ function PreviewPane({
   // also closes the editor, and pulling focus back to `Edit` there would steal
   // it from the tree row they just clicked.
   const restoreEditFocus = useRef(false);
+  // Which row the effect last read bytes FOR. The effect now re-runs for two
+  // different reasons — a pick, and a bump — and only this ref can tell them
+  // apart: `selection` is already the new one by the time the effect runs, so
+  // comparing it to itself would answer "same row" for both. Both reading it
+  // and updating it are `previewFetchPlan`'s job; see the effect below.
+  const shownSelectionRef = useRef<TreeSelection | null>(null);
   const editorId = useId();
 
   // Wikilinks resolve against the same set the Knowledge tab renders, so a link
@@ -133,6 +153,25 @@ function PreviewPane({
   const readableSlugs = useMemo(() => readableSlugsFromKnowledge(knowledge), [knowledge]);
 
   useEffect(() => {
+    // WHY this effect is running, and therefore what it may touch — decided by
+    // an executed function, never by conditions typed here. A bump that lands
+    // while the owner is mid-edit must not take their draft, and a bump that
+    // lands while they are reading must not flash `Loading…` at them; both of
+    // those are `previewFetchPlan`'s answers, which the node suite runs.
+    const plan = previewFetchPlan({
+      shown: shownSelectionRef.current,
+      next: selection,
+      editing,
+    });
+    // The row this run leaves recorded is the PLAN's answer, not an assignment
+    // sequenced against the comparison above: `shownSelectionRef.current =
+    // selection` written by hand here would make every run look like the same
+    // row the moment somebody hoisted it, and a pick made while the editor is
+    // open would then keep row A's bytes and A's draft under row B's header.
+    shownSelectionRef.current = plan.shown;
+    // The open editor is never disturbed. `editing` is in the deps below, so
+    // closing it lets the deferred read happen instead of losing it.
+    if (!plan.fetch) return;
     const controller = new AbortController();
     // The deadline is armed here rather than through `AbortSignal.timeout` so
     // one controller carries both reasons to stop: the owner picking another
@@ -144,16 +183,18 @@ function PreviewPane({
       () => controller.abort(PREVIEW_TIMEOUT_REASON),
       REQUEST_TIMEOUT_MS,
     );
-    setLoading(true);
-    setFailed(false);
-    setPayload(null);
-    // A pick abandons an open editor: the column is about to show another
-    // file's bytes, and a textarea holding this one's draft over that one's
-    // header is the state `save`'s slug check also refuses.
-    setEditing(false);
-    editingSlugRef.current = null;
-    setConfirmOpen(false);
-    setSaveError(null);
+    if (plan.reset) {
+      setLoading(true);
+      setFailed(false);
+      setPayload(null);
+      // A pick abandons an open editor: the column is about to show another
+      // file's bytes, and a textarea holding this one's draft over that one's
+      // header is the state `save`'s slug check also refuses.
+      setEditing(false);
+      editingSlugRef.current = null;
+      setConfirmOpen(false);
+      setSaveError(null);
+    }
 
     // One branch per outcome, and no decision of its own: whether a response is
     // stale (the owner picked another row mid-flight) or failed is decided by
@@ -161,8 +202,17 @@ function PreviewPane({
     // inline here it could only ever be grepped for.
     void fetchPreview(previewRequestUrl(selection), controller.signal).then((result) => {
       if (result.status === "stale") return;
-      if (result.status === "ok") setPayload(result.payload);
-      else setFailed(true);
+      // `setFailed(false)` explicitly, not only via the reset block above: a
+      // silent refresh starts from whatever the last read left behind, so a row
+      // that failed once would keep saying so after it began answering again.
+      if (result.status === "ok") {
+        setPayload(result.payload);
+        setFailed(false);
+      } else {
+        // A silent refresh that fails still tells the truth — a page another
+        // actor just deleted must not keep rendering as if it were there.
+        setFailed(true);
+      }
       setLoading(false);
     });
 
@@ -170,7 +220,7 @@ function PreviewPane({
       clearTimeout(deadline);
       controller.abort();
     };
-  }, [selection]);
+  }, [selection, dataVersion, editing]);
 
   // Confirming the dialog unmounts the `Edit` button that opened it, so
   // `useDialogA11y`'s restore has nothing to return focus to. The caret belongs
@@ -223,7 +273,7 @@ function PreviewPane({
     // column is showing that row now, so stamping this draft onto its payload
     // would put page A's text under page B's header — and the focus restore
     // would pull focus off whatever they just clicked. The write is done and
-    // `router.refresh()` is not needed: this selection is no longer rendered.
+    // the shell will notice it either way — the bump already landed.
     if (payloadRef.current?.slug !== slug) return;
     if (result.status === "ok") {
       // Back to view-first showing what was saved. The body is the text that
@@ -232,14 +282,18 @@ function PreviewPane({
       restoreEditFocus.current = true;
       setEditing(false);
       // The trees carry the page's title and `updated`, both of which this write
-      // may have changed. Story 1.7 replaces this with the `dataVersion` signal.
-      router.refresh();
+      // may have changed — but this column does not refresh anything itself.
+      // The write bumped `dataVersion` at the kernel's one tail like every other
+      // write in the system, so the owner's own save is not a special case: it
+      // just asks the watcher to look NOW instead of on the next tick, and the
+      // answer still comes from the server's integer.
+      requestDataVersionCheck();
     } else {
       // The editor stays open holding the owner's text — a failed save must
       // never be the thing that loses it.
       setSaveError(result.message);
     }
-  }, [draft, router, saving]);
+  }, [draft, saving]);
 
   const page = selection.kind === "page" ? findKnowledgePage(knowledge, selection.slug) : null;
   const node = selection.kind === "file" ? findFileNode(files, selection.path) : null;
