@@ -67,7 +67,7 @@ export interface QueryResult {
 
 /** A single issue found by the lint operation. */
 export interface LintIssue {
-  type: "orphan-page" | "stale-index" | "missing-crossref" | "empty-page" | "contradiction" | "missing-concept-page" | "broken-link" | "stale-page" | "low-confidence" | "unmigrated-page" | "duplicate-entity" | "uncited-claims" | "unresolved-discussions" | "disputed-page" | "supersedes-dangling" | "incomplete-coverage";
+  type: "orphan-page" | "stale-index" | "missing-crossref" | "empty-page" | "contradiction" | "missing-concept-page" | "broken-link" | "stale-page" | "low-confidence" | "unmigrated-page" | "duplicate-entity" | "uncited-claims" | "supersedes-dangling" | "incomplete-coverage";
   slug: string;
   /** Structured target slug for cross-ref, contradiction, broken-link, and duplicate-entity fixes.
    * Eliminates the need to parse human-readable messages to extract targets. */

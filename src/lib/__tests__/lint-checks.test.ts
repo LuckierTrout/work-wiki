@@ -15,12 +15,11 @@ import {
   checkLowConfidence,
   checkUnmigratedPages,
   checkUncitedClaims,
-  checkUnresolvedDiscussions,
-  checkDisputedPages,
   checkSupersededDangling,
   LOW_CONFIDENCE_THRESHOLD,
   STALE_VERIFICATION_DAYS,
   buildSummary,
+  ALL_CHECK_TYPES,
 } from "../lint-checks";
 import type { LintIssue } from "../types";
 
@@ -857,119 +856,6 @@ describe("checkUncitedClaims", () => {
 });
 
 // ---------------------------------------------------------------------------
-// checkUnresolvedDiscussions
-// ---------------------------------------------------------------------------
-describe("checkUnresolvedDiscussions", () => {
-  it("returns no issues when no discuss files exist", async () => {
-    await writeWikiPage("clean-page", "# Clean\n\nNo discussions here.");
-    const slugs = ["clean-page"];
-    const issues = await checkUnresolvedDiscussions(slugs);
-    expect(issues).toHaveLength(0);
-  });
-
-  it("flags a page with open discussion threads", async () => {
-    await writeWikiPage("debated", "# Debated\n\nSome content.");
-    // Create a discuss file with one open and one resolved thread
-    const discussDir = path.join(tmpDir, "discuss");
-    await fs.mkdir(discussDir, { recursive: true });
-    const threads = [
-      { title: "Thread 1", status: "open", author: "alice", createdAt: new Date().toISOString(), comments: [] },
-      { title: "Thread 2", status: "resolved", author: "bob", createdAt: new Date().toISOString(), comments: [] },
-    ];
-    await fs.writeFile(path.join(discussDir, "debated.json"), JSON.stringify(threads));
-    _resetStorage();
-
-    const issues = await checkUnresolvedDiscussions(["debated"]);
-    expect(issues).toHaveLength(1);
-    expect(issues[0].type).toBe("unresolved-discussions");
-    expect(issues[0].slug).toBe("debated");
-    expect(issues[0].severity).toBe("warning");
-  });
-
-  it("uses plural when multiple threads are open", async () => {
-    await writeWikiPage("hot-topic", "# Hot Topic\n\nControversial.");
-    const discussDir = path.join(tmpDir, "discuss");
-    await fs.mkdir(discussDir, { recursive: true });
-    const threads = [
-      { title: "T1", status: "open", author: "a", createdAt: new Date().toISOString(), comments: [] },
-      { title: "T2", status: "open", author: "b", createdAt: new Date().toISOString(), comments: [] },
-    ];
-    await fs.writeFile(path.join(discussDir, "hot-topic.json"), JSON.stringify(threads));
-    _resetStorage();
-
-    const issues = await checkUnresolvedDiscussions(["hot-topic"]);
-    expect(issues).toHaveLength(1);
-    expect(issues[0].message).toContain("2 unresolved discussion threads");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// checkDisputedPages
-// ---------------------------------------------------------------------------
-describe("checkDisputedPages", () => {
-  it("flags a page with disputed: true", async () => {
-    await createPageWithIndex("controversial", "Controversial Topic", {
-      disputed: true,
-      created: "2025-01-01",
-    });
-
-    const issues = await checkDisputedPages();
-    expect(issues).toHaveLength(1);
-    expect(issues[0].type).toBe("disputed-page");
-    expect(issues[0].slug).toBe("controversial");
-    expect(issues[0].severity).toBe("warning");
-    expect(issues[0].message).toContain("disputed");
-    expect(issues[0].suggestion).toContain("discussion");
-  });
-
-  it("returns no issues when no pages are disputed", async () => {
-    await createPageWithIndex("peaceful", "Peaceful Topic", {
-      disputed: false,
-      created: "2025-01-01",
-    });
-    await createPageWithIndex("neutral", "Neutral Topic", {
-      created: "2025-01-01",
-    });
-
-    const issues = await checkDisputedPages();
-    expect(issues).toHaveLength(0);
-  });
-
-  it("mentions existing unresolved threads when present", async () => {
-    await createPageWithIndex("hot-debate", "Hot Debate", {
-      disputed: true,
-      created: "2025-01-01",
-    });
-
-    // Create a discuss file with one open thread
-    const discussDir = path.join(tmpDir, "discuss");
-    await fs.mkdir(discussDir, { recursive: true });
-    const threads = [
-      { title: "Disagreement", status: "open", author: "alice", createdAt: new Date().toISOString(), comments: [] },
-    ];
-    await fs.writeFile(path.join(discussDir, "hot-debate.json"), JSON.stringify(threads));
-    _resetStorage();
-
-    const issues = await checkDisputedPages();
-    expect(issues).toHaveLength(1);
-    expect(issues[0].message).toContain("1 unresolved discussion thread");
-    expect(issues[0].suggestion).toContain("resolve");
-  });
-
-  it("suggests opening a discussion when disputed page has no threads", async () => {
-    await createPageWithIndex("no-discussion", "No Discussion Yet", {
-      disputed: true,
-      created: "2025-01-01",
-    });
-
-    const issues = await checkDisputedPages();
-    expect(issues).toHaveLength(1);
-    expect(issues[0].message).toContain("no discussion threads");
-    expect(issues[0].suggestion).toContain("Open a discussion thread");
-  });
-});
-
-// ---------------------------------------------------------------------------
 // checkSupersededDangling
 // ---------------------------------------------------------------------------
 describe("checkSupersededDangling", () => {
@@ -1013,5 +899,20 @@ describe("checkSupersededDangling", () => {
 
     const issues = await checkSupersededDangling(["normal-page"]);
     expect(issues).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retired discussion checks
+// ---------------------------------------------------------------------------
+
+describe("retired discussion checks", () => {
+  it("ALL_CHECK_TYPES no longer offers the talk-surface checks", () => {
+    // The talk surface is retired; these types drove the lint_wiki /
+    // fix_lint_issue MCP schemas and the API's check-type validation via this
+    // const.
+    expect(ALL_CHECK_TYPES).not.toContain("unresolved-discussions");
+    expect(ALL_CHECK_TYPES).not.toContain("disputed-page");
+    expect(ALL_CHECK_TYPES).toHaveLength(14);
   });
 });

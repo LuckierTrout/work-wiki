@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
 import { getServicePrincipal } from "@/lib/auth";
 import { enqueueTask, parseTask } from "@/lib/tasks";
-import { reconcileFromTalk } from "@/lib/reconcile";
 import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest } from "@/lib/ingest";
 import { extractDocumentTextAsync } from "@/lib/document-extract";
 import { fixLintIssue } from "@/lib/lint-fix";
 import { getIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
 import { readStagedBytes, readStagedText, deleteStaged } from "@/lib/ingest-staging";
 import {
-  agentIdFor,
   addAgentLearningPage,
   DEFAULT_AGENT_NAME,
   listAgentsForOwner,
@@ -50,8 +48,7 @@ import { runResearchProject } from "@/lib/research-runtime";
  *   - 5xx → transient failure → the consumer retries (CF redelivers; DLQ after
  *           max_retries).
  *
- * Handlers are idempotent/retry-safe: reconcile re-reconciles harmlessly, ingest
- * dedups.
+ * Handlers are idempotent/retry-safe: ingest dedups.
  */
 export async function POST(req: Request) {
   // Service-token only.
@@ -124,30 +121,8 @@ export async function POST(req: Request) {
       }
     }
 
-    if (task.kind === "reconcile") {
-      // Attribute the edit to the requester's yoyo (the human who asked), else a
-      // generic yoyo for autonomous/unknown triggers.
-      const author = task.requestedBy
-        ? agentIdFor(task.requestedBy, DEFAULT_AGENT_NAME)
-        : undefined;
-      const result = await reconcileFromTalk(task.slug, task.threadIndex, {
-        author,
-      });
-      return NextResponse.json({ ok: true, ...result });
-    }
-
     if (task.kind === "maintain") {
       // Autonomous maintenance (Q2). Attributed to a generic yoyo (no requester).
-      if (task.op === "reconcile") {
-        if (typeof task.threadIndex !== "number") {
-          return NextResponse.json(
-            { error: "maintain:reconcile requires threadIndex" },
-            { status: 400 },
-          );
-        }
-        const result = await reconcileFromTalk(task.slug, task.threadIndex);
-        return NextResponse.json({ ok: true, ...result });
-      }
       if (task.op === "fix") {
         // Deterministic, no-LLM lint auto-fix (backfill defaults, drop dead refs).
         if (!task.lintType) {

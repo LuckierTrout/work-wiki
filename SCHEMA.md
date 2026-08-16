@@ -68,7 +68,7 @@ These were added in Phase 1 of the work-wiki pivot.
 | `authors` | string array | the acting user (`["system"]` for legacy/MCP) | Initial ingest from the session actor; preserved on re-ingest (never reset) | `/wiki/contributors` page, `ContributorBadge` component, contributor profiles API |
 | `contributors` | string array | `[]` | Re-ingest / edit appends the acting identity (session principal) if not already present | `/wiki/contributors` page, `ContributorBadge` component, contributor profiles API |
 | `content_hash` | string (FNV-1a hex) | hash of the ingested content | Set on ingest | Ingest dedup (`source_index`): identical content attaches to the existing page instead of re-synthesizing |
-| `disputed` | boolean | `false` | Set manually or by future contradiction resolution; preserved on re-ingest | `disputed-page` lint check; talk page system (`discuss/` directory); wiki page view warning badge |
+| `disputed` | boolean | `false` | Set by ingest when a merge contradicts the existing page (or manually); nothing clears it automatically; preserved on re-ingest | Wiki page view warning badge (the `ArticleView` disputed banner) |
 | `supersedes` | string (slug) | `""` (empty) | Set manually when a page replaces another; preserved on re-ingest | Future redirect system |
 | `aliases` | string array | `[]` | Set manually for alternative names; preserved on re-ingest | Alias index for entity deduplication at ingest time; `duplicate-entity` lint check; search resolution |
 | `sources` | JSON string (SourceEntry[]) | `"[]"` | Ingest appends a new entry; re-ingest appends if the source URL is new | Wiki page view provenance section; parseSources() in `src/lib/sources.ts` |
@@ -593,18 +593,10 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
   frontmatter fields (`confidence`, `expiry`, `authors`), indicating it
   predates the schema migration. Auto-fix: add sensible defaults
   (confidence 0.5, expiry 90 days out, authors `["system"]`, etc.).
-- **`unresolved-discussions`** (warning) — page has open (unresolved)
-  discussion threads on its talk page. No auto-fix — requires reviewing
-  and resolving the open threads on the talk page.
-- **`disputed-page`** (warning) — page has `disputed: true` in its
-  frontmatter, indicating unresolved contradictions. Reports whether
-  the page has open discussion threads to resolve the dispute or needs
-  one opened. No auto-fix — requires reviewing the page content and
-  talk page to resolve the dispute through discussion.
 - **`supersedes-dangling`** (warning) — page declares a `supersedes` field
   pointing to a slug that doesn't exist on disk. The supersession chain is
-  broken. No auto-fix — create the target page or remove the `supersedes`
-  field.
+  broken. Auto-fix: clear the dead reference (re-verified missing before
+  clearing).
 - **`incomplete-coverage`** (info) — LLM comparison of raw source content
   (`raw/<slug>.md`) against the corresponding wiki page (`wiki/<slug>.md`)
   flags cases where significant information from the source is absent from
@@ -644,10 +636,10 @@ sessions should pick from this list:
   via RRF. Batch rebuild of the full vector index is available via the Settings
   page (`/api/settings/rebuild-embeddings`).
   Anthropic-only users see no regression (pure BM25 fallback).
-- Lint auto-fix handles nine of sixteen checks (`orphan-page`, `stale-index`,
+- Lint auto-fix handles ten of fourteen checks (`orphan-page`, `stale-index`,
   `empty-page`, `broken-link`, `missing-crossref`, `contradiction`,
-  `missing-concept-page`, `stale-page`, `unmigrated-page`) via
-  `POST /api/lint/fix`.
+  `missing-concept-page`, `stale-page`, `unmigrated-page`,
+  `supersedes-dangling`) via `POST /api/lint/fix`.
   The `contradiction` fix uses the LLM to rewrite the affected page.
   The `missing-concept-page` fix generates a stub page via the LLM.
   The `broken-link` fix removes broken links from the source page.
@@ -655,15 +647,13 @@ sessions should pick from this list:
   refreshes `valid_from` to today.
   The `unmigrated-page` fix adds sensible work-wiki defaults (confidence 0.5,
   expiry 90 days out, authors `["system"]`).
-  The seven exceptions without auto-fix are: `low-confidence` (requires
+  The `supersedes-dangling` fix clears the dead reference (re-verified
+  missing before clearing).
+  The four exceptions without auto-fix are: `low-confidence` (requires
   ingesting additional sources), `duplicate-entity` (requires human judgment
   to merge), `uncited-claims` (requires adding citations or ingesting
-  sources), `unresolved-discussions` (requires reviewing and resolving
-  open threads on the talk page), `disputed-page` (requires resolving
-  the dispute through discussion), `supersedes-dangling` (requires
-  creating the target page or removing the supersedes field), and
-  `incomplete-coverage` (requires ingesting additional sources to
-  improve topic coverage).
+  sources), and `incomplete-coverage` (requires ingesting additional sources
+  to improve topic coverage).
 - Long documents are chunked at ingest time (12K chars per chunk ≈ 3K
   tokens) so they fit within provider context windows. Token counting is
   character-based (not tokenizer-exact), which is conservative but not

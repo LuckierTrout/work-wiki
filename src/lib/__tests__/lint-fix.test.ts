@@ -935,15 +935,6 @@ describe("fixLintIssue", () => {
     );
   });
 
-  it("throws helpful FixValidationError for disputed-page type", async () => {
-    await expect(fixLintIssue("disputed-page", "some-slug")).rejects.toThrow(
-      FixValidationError,
-    );
-    await expect(fixLintIssue("disputed-page", "some-slug")).rejects.toThrow(
-      "Disputed pages cannot be auto-fixed",
-    );
-  });
-
   it("dispatches supersedes-dangling to fixSupersededDangling (clears the dead ref)", async () => {
     // Page declares supersedes: "ghost"; "ghost" has no page → dangling.
     mockedReadWikiPageWithFrontmatter.mockImplementation(async (slug: string) =>

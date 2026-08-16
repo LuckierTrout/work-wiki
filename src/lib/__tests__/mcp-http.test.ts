@@ -146,7 +146,7 @@ describe("dispatchMcp — tools/call auth gating", () => {
     const writes = MCP_TOOLS.filter((t) => t.write).map((t) => t.name);
     const reads = MCP_TOOLS.filter((t) => !t.write).map((t) => t.name);
     expect(writes).toEqual(
-      expect.arrayContaining(["ingest_url", "batch_ingest_urls", "ingest_text", "ingest_image", "ingest_pdf", "ingest_x_mention", "create_page", "update_page", "delete_page", "save_query_answer", "reingest", "update_metadata", "fix_lint_issue", "reconcile_page", "merge_pages", "delete_agent", "vault_delete", "vault_rename"]),
+      expect.arrayContaining(["ingest_url", "batch_ingest_urls", "ingest_text", "ingest_image", "ingest_pdf", "ingest_x_mention", "create_page", "update_page", "delete_page", "save_query_answer", "reingest", "update_metadata", "fix_lint_issue", "merge_pages", "delete_agent", "vault_delete", "vault_rename"]),
     );
     expect(reads).toEqual(
       expect.arrayContaining(["search_wiki", "read_page", "list_pages", "query_wiki", "lint_wiki", "query_history"]),
@@ -501,25 +501,47 @@ describe("dispatchMcp — fix_lint_issue", () => {
   });
 });
 
-describe("dispatchMcp — reconcile_page", () => {
-  it("tools/list returns reconcile_page", async () => {
+describe("dispatchMcp — reconcile_page (retired)", () => {
+  it("tools/list omits reconcile_page", async () => {
     const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
     const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("reconcile_page");
+    expect(tools.map((t) => t.name)).not.toContain("reconcile_page");
   });
 
-  it("rejects reconcile_page without auth (write-gated)", async () => {
+  it("is an unknown tool when called", async () => {
     const res = await dispatchMcp(
       {
         id: 1,
         method: "tools/call",
-        params: { name: "reconcile_page", arguments: { pageSlug: "test", threadIndex: 0 } },
+        params: {
+          name: "reconcile_page",
+          arguments: { pageSlug: "test", threadIndex: 0 },
+        },
       },
-      null,
+      ALICE,
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/authentication required/i);
+    expect(r.content[0].text).toMatch(/unknown tool/i);
+  });
+
+  it("lint_wiki rejects the retired discussion check types", async () => {
+    // The two discussion checks retired with reconcile-from-talk must not be
+    // accepted by the shared handler either (schema here is free-form strings).
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "lint_wiki",
+          arguments: { checks: ["unresolved-discussions", "disputed-page"] },
+        },
+      },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/invalid check type/i);
   });
 });
 

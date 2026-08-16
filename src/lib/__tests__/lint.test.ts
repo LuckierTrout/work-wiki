@@ -96,7 +96,7 @@ describe("lint", () => {
     // Only the contradiction-skipped and missing-concept-page-skipped info issues (no LLM key)
     // Also filter unmigrated-page and uncited-claims — the test page has no work-wiki frontmatter/sources by design
     const nonLLMSkipped = result.issues.filter(
-      (i) => i.type !== "contradiction" && i.type !== "missing-concept-page" && i.type !== "incomplete-coverage" && i.type !== "unmigrated-page" && i.type !== "uncited-claims" && i.type !== "unresolved-discussions",
+      (i) => i.type !== "contradiction" && i.type !== "missing-concept-page" && i.type !== "incomplete-coverage" && i.type !== "unmigrated-page" && i.type !== "uncited-claims",
     );
     expect(nonLLMSkipped).toHaveLength(0);
     expect(result.checkedAt).toBeTruthy();

@@ -36,7 +36,6 @@ describe("write-gate in-route auth exemptions", () => {
     expect(authenticatesInRoute("/api/sync/status")).toBe(true);
     expect(authenticatesInRoute("/api/agents/seed")).toBe(true);
     expect(authenticatesInRoute("/api/agents/alice--yoyo/ingest")).toBe(true);
-    expect(authenticatesInRoute("/api/agents/alice--yoyo/publish")).toBe(true);
     expect(authenticatesInRoute("/api/admin/migrate")).toBe(true);
     expect(authenticatesInRoute("/api/admin/reset")).toBe(true);
     expect(authenticatesInRoute("/api/admin/rebuild-embeddings")).toBe(true);
@@ -53,6 +52,9 @@ describe("write-gate in-route auth exemptions", () => {
     expect(authenticatesInRoute("/api/tasks/run/extra")).toBe(false);
     // Sub-paths beyond /api/wiki/:slug still go through Clerk (except revisions)
     expect(authenticatesInRoute("/api/wiki/transformers/discuss")).toBe(false);
+    // The retired publish route answers 404 in-route when reached; it needs no
+    // exemption (a bearer caller now gets 401 at this gate, never the route).
+    expect(authenticatesInRoute("/api/agents/alice--yoyo/publish")).toBe(false);
   });
 
   it("does NOT exempt fixed wiki sub-routes that are not slugs", () => {

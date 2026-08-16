@@ -11,7 +11,7 @@
  * `tools/call`.
  *
  * Tool handlers are REUSED from the stdio server (`@/mcp`) — single source of
- * truth, no parallel write-path to drift (see `.yoyo/learnings.md`). All 43
+ * truth, no parallel write-path to drift (see `.yoyo/learnings.md`). All 42
  * tools are exposed — full parity with the stdio MCP server.
  *
  * Auth/attribution lives in the route (`src/app/api/mcp/route.ts`): a Bearer
@@ -36,7 +36,6 @@ import {
   handleUpdateMetadata,
   handleLintWiki,
   handleFixLintIssue,
-  handleReconcilePage,
   handleListRevisions,
   handleReadRevision,
   handleRevertRevision,
@@ -485,25 +484,6 @@ export const MCP_TOOLS: ToolDef[] = [
     run: (a, p) =>
       handleFixLintIssue({
         ...(a as { type: string; slug: string; target?: string; message?: string }),
-        author: p!.handle,
-      }),
-  },
-  {
-    name: "reconcile_page",
-    description:
-      "Reconcile a wiki page by applying valid points from a discussion thread. " +
-      "Reads the page and thread, LLM-revises the page, posts a summary comment, and resolves the thread.",
-    inputSchema: schema(
-      {
-        pageSlug: str("Slug of the wiki page to reconcile"),
-        threadIndex: { type: "number", description: "Zero-based index of the discussion thread" },
-      },
-      ["pageSlug", "threadIndex"],
-    ),
-    write: true,
-    run: (a, p) =>
-      handleReconcilePage({
-        ...(a as { pageSlug: string; threadIndex: number }),
         author: p!.handle,
       }),
   },

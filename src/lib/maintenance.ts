@@ -4,9 +4,6 @@
  * runs this scan and enqueues `maintain` tasks (or dry-runs when autonomous
  * maintenance is off). Two ops, chosen for safety + reuse of proven engines:
  *
- *   - **reconcile**: a `disputed` page with an OPEN thread whose latest comment
- *     is from a HUMAN (so yoyo hasn't already answered and is waiting) → run the
- *     same `reconcileFromTalk` as the on-demand button.
  *   - **staleness**: a page past its `expiry` with a `source_url` → re-ingest
  *     from the source (the reconcile-on-merge step refreshes it). Also used for
  *     low-confidence pages (below `LOW_CONFIDENCE_THRESHOLD`) that have a
@@ -23,15 +20,11 @@
  *     private page reingested by a generic agent forks (the realm guard) instead
  *     of refreshing, leaving the original to be re-flagged every scan;
  *   - skip pages updated TODAY (don't act on a just-edited page);
- *   - skip disputed threads yoyo already answered (last comment is an agent) —
- *     avoids re-reconciling a stuck dispute on every scan;
  *   - cap the number of tasks per scan (cost + blast-radius bound).
  */
 
 import { listWikiPages, readWikiPageWithFrontmatter } from "./wiki";
 import { getOnDiskSlugs, checkMissingCrossRefs, LOW_CONFIDENCE_THRESHOLD } from "./lint-checks";
-import { listThreads } from "./talk";
-import { isAgentHandle } from "./agents";
 import { extractWikiLinks } from "./links";
 import { purgeStaleIngestJobs } from "./ingest-jobs";
 import type { Task } from "./tasks";
@@ -98,23 +91,7 @@ export async function scanForMaintenance(
     // Page passed all guardrails — eligible for cross-page checks later.
     eligibleSlugs.add(entry.slug);
 
-    // (1) Disputed → reconcile, but only when a HUMAN is awaiting a response
-    //     (the latest comment on an open thread isn't yoyo's).
-    if (fm.disputed === true) {
-      const threads = await listThreads(entry.slug);
-      const idx = threads.findIndex(
-        (t) =>
-          t.status === "open" &&
-          t.comments.length > 0 &&
-          !isAgentHandle(t.comments[t.comments.length - 1].author),
-      );
-      if (idx >= 0) {
-        tasks.push({ kind: "maintain", op: "reconcile", slug: entry.slug, threadIndex: idx });
-        continue; // one task per page
-      }
-    }
-
-    // (2) Deterministic janitorial fixes (no LLM, safe): backfill a legacy page
+    // (1) Deterministic janitorial fixes (no LLM, safe): backfill a legacy page
     //     missing ALL work-wiki schema fields; clear a dangling `supersedes` ref.
     if (
       !("confidence" in fm) &&
@@ -168,7 +145,7 @@ export async function scanForMaintenance(
       continue;
     }
 
-    // (3) Stale (expiry passed) → re-ingest if source URL exists, else bump
+    // (2) Stale (expiry passed) → re-ingest if source URL exists, else bump
     //     expiry via the deterministic `stale-page` fixer.
     const expiry = fm.expiry;
     const sourceUrl = fm.source_url;
@@ -185,7 +162,7 @@ export async function scanForMaintenance(
       continue;
     }
 
-    // (4) Low-confidence pages with a source_url → re-ingest to re-synthesize
+    // (3) Low-confidence pages with a source_url → re-ingest to re-synthesize
     //     and potentially raise confidence.
     const confidence = fm.confidence;
     if (

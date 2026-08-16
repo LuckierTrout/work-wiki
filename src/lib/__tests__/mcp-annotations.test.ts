@@ -26,14 +26,15 @@ describe("MCP tool annotations", () => {
   const server = createMcpServer();
   const tools = getRegisteredTools(server);
 
-  // 43 after publish_to_commons and the five discussion tools were retired
-  // with the commons and with talk (AD-21).
-  it("registers exactly 43 tools", () => {
-    expect(Object.keys(tools)).toHaveLength(43);
+  // 42 after publish_to_commons, the five discussion tools (retired with the
+  // commons and with talk, AD-21), and reconcile_page (reconcile-from-talk
+  // retired) were removed.
+  it("registers exactly 42 tools", () => {
+    expect(Object.keys(tools)).toHaveLength(42);
   });
 
-  // The retirement removed six tools but left the count hand-written in two
-  // places, where it silently went stale. Both are read by agent integrators —
+  // The tool retirements left the count hand-written in two places, where it
+  // silently went stale. Both are read by agent integrators —
   // `public/agent-api.md` is served at `/agent-api` — so pin them to the real
   // registration count rather than to another hand-written number.
   it.each([
@@ -63,6 +64,7 @@ describe("MCP tool annotations", () => {
     "create_discussion",
     "add_comment",
     "resolve_discussion",
+    "reconcile_page",
   ])("no longer exposes %s", (retired) => {
     expect(Object.keys(tools)).not.toContain(retired);
   });
@@ -115,7 +117,6 @@ describe("MCP tool annotations", () => {
     "seed_agent",
     "update_agent",
     "fix_lint_issue",
-    "reconcile_page",
     "reingest",
     "revert_revision",
   ];

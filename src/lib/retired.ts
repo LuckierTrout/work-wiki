@@ -10,10 +10,10 @@ import { notFound } from "next/navigation";
  * or {@link retiredRoute} (route handlers), so "what got cut" is one enumerable
  * list rather than twenty independent edits.
  *
- * The underlying `src/lib/` modules are deliberately left on disk with no
- * reachable callers — deleting them would cascade into `trail.ts`,
- * `graph-build.ts`, `search.ts`, `merge.ts`, `vault.ts`, and `maintenance.ts`,
- * which later epics still need.
+ * Of the underlying `src/lib/` modules, those with remaining live callers
+ * (dependencies of `trail.ts`, `graph-build.ts`, `search.ts`, `merge.ts`,
+ * `vault.ts`, and `maintenance.ts`, which later epics still need) stay on
+ * disk; `publish.ts` and `reconcile.ts` were deleted once nothing needed them.
  *
  * Paths use the App Router's dynamic-segment notation (`[slug]`) so a surface
  * is named the same way its file is.

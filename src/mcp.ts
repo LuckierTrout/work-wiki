@@ -27,7 +27,6 @@
  *   delete_agent   — Delete an agent profile
  *   lint_wiki      — Run quality checks on the wiki
  *   fix_lint_issue — Auto-fix a lint issue found by lint_wiki
- *   reconcile_page     — Reconcile a page from a discussion thread (LLM-driven)
  *   reingest           — Re-ingest a wiki page from its original source URL
  *   ingest_history     — View ingest ledger entries for provenance auditing
  *   dataview_query     — Query wiki pages by frontmatter fields
@@ -89,7 +88,6 @@ import { listRevisions, readRevision, readRevisionMeta, type Revision } from "./
 import { vaultIdFor, getVault, findVaultByName, createVault, renameVault, deleteVault, addToVault, removeFromVault, listVaults, vaultSlugs } from "./lib/vault";
 import type { Vault } from "./lib/vault";
 import { isVaultEligible } from "./lib/commons";
-import { reconcileFromTalk, type ReconcileFromTalkResult } from "./lib/reconcile";
 import { buildWikiGraph, type GraphNode, type GraphEdge } from "./lib/graph-build";
 import { mergePages, type MergePagesResult } from "./lib/merge";
 import { scanForMaintenance } from "./lib/maintenance";
@@ -1233,30 +1231,6 @@ export async function handleFixLintIssue(args: {
   author?: string | undefined;
 }): Promise<FixResult> {
   return fixLintIssue(args.type, args.slug, args.target, args.message, args.author);
-}
-
-// ---------------------------------------------------------------------------
-// Discussion (talk page) handlers
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Reconcile page handler
-// ---------------------------------------------------------------------------
-
-export async function handleReconcilePage(args: {
-  pageSlug: string;
-  threadIndex: number;
-  author?: string | undefined;
-}): Promise<ReconcileFromTalkResult> {
-  if (!args.pageSlug) {
-    throw new Error("pageSlug is required");
-  }
-  if (args.threadIndex === undefined || args.threadIndex === null) {
-    throw new Error("threadIndex is required");
-  }
-  return reconcileFromTalk(args.pageSlug, args.threadIndex, {
-    author: args.author || undefined,
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2554,52 +2528,6 @@ export function createMcpServer(): McpServer {
   // resolve_discussion, add_comment) are RETIRED with talk (AD-21): the REST
   // handlers 404 and the UI panel is gone, so an agent thread would land on a
   // surface nothing can display. `src/lib/talk.ts` stays on disk.
-
-  // reconcile_page — Reconcile a wiki page from a discussion thread
-  server.registerTool("reconcile_page", {
-    description:
-      "Reconcile a wiki page by applying valid points from a discussion thread — the core 'agents maintain, humans discuss' action. Reads the page and thread, LLM-revises the page, posts a summary comment, and resolves the thread.",
-    inputSchema: {
-      pageSlug: z
-        .string()
-        .describe("Slug of the wiki page to reconcile"),
-      threadIndex: z
-        .number()
-        .describe("Zero-based index of the discussion thread to reconcile from"),
-      author: z
-        .string()
-        .optional()
-        .describe("Author handle for attribution (defaults to 'yoyo')"),
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: true,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleReconcilePage(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
 
   // reingest — Re-ingest a wiki page from its original source URL
   server.registerTool("reingest", {

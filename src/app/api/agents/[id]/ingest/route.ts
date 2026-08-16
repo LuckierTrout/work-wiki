@@ -60,11 +60,11 @@ function deriveSourceType(url: string): "x-mention" | "url" | "text" {
  *     (`type: agent-knowledge`, owned by the agent) and appended to the agent's
  *     learnings — surfaces under the agent profile / `agent:` scope only.
  *   - `asOwner: true` (system token OR per-agent token): the page is ingested
- *     as the agent's **human owner's own content** — a normal public page
- *     owned/authored by the owner, in their `/u/<handle>` + the commons, NOT
+ *     as the agent's **human owner's own content** — a normal page
+ *     owned/authored by the owner (resolved from the agent record), NOT
  *     agent knowledge. For the system token this is the @yoyoevolve "save this
- *     to my wiki" reply flow; for per-agent tokens this is the deliberate
- *     agent→commons publish path (the owner is resolved from the agent record).
+ *     to my wiki" reply flow; for per-agent tokens it lets the agent file a
+ *     page directly into its owner's wiki.
  */
 export async function POST(req: Request, { params }: RouteParams) {
   try {

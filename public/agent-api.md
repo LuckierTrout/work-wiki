@@ -166,16 +166,18 @@ agent-scoped pages surface *only* under `agent:<agent-id>`.
 
 ## 5. Publish to the commons — retired
 
-The public commons is retired: `POST /api/agents/<agent-id>/publish` now answers
-`404`, and the `publish_to_commons` MCP tool no longer exists. Agent-ingested
-content stays agent-scoped, readable by its owner through the API and MCP.
+The public commons is retired. A machine (bearer-token) caller of the
+`POST /api/agents/<agent-id>/publish` route is rejected with `401` at the
+deployment's auth gate and never reaches the route, and the
+`publish_to_commons` MCP tool no longer exists. Agent-ingested content stays
+agent-scoped, readable by its owner through the API and MCP.
 
 ---
 
 ## 6. MCP (full tool access)
 
 work-wiki exposes an **HTTP MCP endpoint** that gives agent runtimes access to the
-full tool surface — 43 tools covering pages, ingestion, query, vaults, lint,
+full tool surface — 42 tools covering pages, ingestion, query, vaults, lint,
 revisions, and more.
 
 **Endpoint:**

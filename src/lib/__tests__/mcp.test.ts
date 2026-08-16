@@ -27,7 +27,6 @@ import {
   handleDeleteAgent,
   handleLintWiki,
   handleFixLintIssue,
-  handleReconcilePage,
   handleReingest,
   handleIngestHistory,
   handleDataviewQuery,
@@ -45,9 +44,6 @@ import {
   handleMaintenanceScan,
   createMcpServer,
 } from "../../mcp";
-// Talk's MCP tools are retired (AD-21); reconcile_page's fixtures seed threads
-// through the library directly.
-import { createThread } from "../talk";
 import { vaultIdFor, listVaults, getVault, createVault } from "../vault";
 import { readWikiPageWithFrontmatter } from "../wiki";
 import { _resetStorage } from "../storage";
@@ -2656,86 +2652,6 @@ describe("fix_lint_issue", () => {
 
     expect(result.success).toBe(true);
     expect(result.slug).toBe("source-page");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// reconcile_page tests
-// ---------------------------------------------------------------------------
-
-describe("reconcile_page", () => {
-  it("throws for missing pageSlug", async () => {
-    await expect(
-      handleReconcilePage({ pageSlug: "", threadIndex: 0 }),
-    ).rejects.toThrow("pageSlug is required");
-  });
-
-  it("throws for missing threadIndex", async () => {
-    await expect(
-      handleReconcilePage({
-        pageSlug: "some-page",
-        threadIndex: undefined as unknown as number,
-      }),
-    ).rejects.toThrow("threadIndex is required");
-  });
-
-  it("throws for non-existent page", async () => {
-    await expect(
-      handleReconcilePage({ pageSlug: "nonexistent", threadIndex: 0 }),
-    ).rejects.toThrow('page "nonexistent" not found');
-  });
-
-  it("throws for non-existent thread", async () => {
-    await writeTestPage(
-      "reconcile-no-thread",
-      "---\ntags: [test]\n---\n# Reconcile No Thread\n\nContent.",
-    );
-    await expect(
-      handleReconcilePage({ pageSlug: "reconcile-no-thread", threadIndex: 99 }),
-    ).rejects.toThrow("thread 99 not found");
-  });
-
-  it("reconciles a page from a discussion thread", async () => {
-    await writeTestPage(
-      "reconcile-test",
-      "---\ntags: [test]\n---\n# Reconcile Test\n\nOriginal content.",
-    );
-    await createThread(
-      "reconcile-test",
-      "Fix this claim",
-      "user1",
-      "The content needs correction.",
-    );
-
-    const result = await handleReconcilePage({
-      pageSlug: "reconcile-test",
-      threadIndex: 0,
-    });
-
-    expect(result.slug).toBe("reconcile-test");
-    expect(typeof result.changed).toBe("boolean");
-    expect(typeof result.disputed).toBe("boolean");
-  });
-
-  it("passes author to reconcileFromTalk", async () => {
-    await writeTestPage(
-      "reconcile-author",
-      "---\ntags: [test]\n---\n# Reconcile Author\n\nContent.",
-    );
-    await createThread(
-      "reconcile-author",
-      "Needs update",
-      "user2",
-      "Please fix this.",
-    );
-
-    const result = await handleReconcilePage({
-      pageSlug: "reconcile-author",
-      threadIndex: 0,
-      author: "custom-agent",
-    });
-
-    expect(result.slug).toBe("reconcile-author");
   });
 });
 

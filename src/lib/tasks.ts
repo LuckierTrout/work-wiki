@@ -25,14 +25,6 @@ import type { EmailIngestMetadata } from "./email-ingest";
  */
 export type Task =
   | {
-      /** Reconcile a commons page from a human-flagged talk thread (B2b loop). */
-      kind: "reconcile";
-      slug: string;
-      threadIndex: number;
-      /** Handle of the human who asked yoyo to address it (attribution). */
-      requestedBy?: string;
-    }
-  | {
       /** Async ingestion. Every interactive/API ingest dispatches through this
        *  Task type (enqueued on Workers; run inline off-Workers via
        *  `enqueueOrInline`). Exactly ONE source: `url`, `content`, or `staged`
@@ -154,16 +146,14 @@ export type Task =
       owner: string;
     }
   | {
-      /** Autonomous maintenance, enqueued by the scan cron (Q2). `reconcile` a
-       *  disputed page from its open thread; `staleness` re-ingest an expired
-       *  page from its source; `fix` apply a deterministic lint auto-fix
-       *  (`lintType`). `threadIndex` is required for `reconcile`; `lintType` for
-       *  `fix`; `targetSlug` for `broken-link` (identifies which dead link to
+      /** Autonomous maintenance, enqueued by the scan cron (Q2). `staleness`
+       *  re-ingest an expired page from its source; `fix` apply a deterministic
+       *  lint auto-fix (`lintType`). `lintType` is required for `fix`;
+       *  `targetSlug` for `broken-link` (identifies which dead link to
        *  remove) and `missing-crossref` (identifies which page to link to). */
       kind: "maintain";
-      op: "reconcile" | "staleness" | "fix";
+      op: "staleness" | "fix";
       slug: string;
-      threadIndex?: number;
       lintType?: MaintainFixType;
       /** The target slug for `broken-link` (dead link to remove) or
        *  `missing-crossref` (page that should be linked to). */
@@ -276,19 +266,6 @@ export function parseTask(body: unknown): Task | null {
   if (!body || typeof body !== "object") return null;
   const t = body as Record<string, unknown>;
   switch (t.kind) {
-    case "reconcile":
-      if (typeof t.slug !== "string" || t.slug.trim() === "") return null;
-      if (typeof t.threadIndex !== "number" || !Number.isInteger(t.threadIndex)) {
-        return null;
-      }
-      return {
-        kind: "reconcile",
-        slug: t.slug,
-        threadIndex: t.threadIndex,
-        ...(typeof t.requestedBy === "string"
-          ? { requestedBy: t.requestedBy }
-          : {}),
-      };
     case "ingest": {
       const hasUrl = typeof t.url === "string" && t.url.trim() !== "";
       const hasContent = typeof t.content === "string" && t.content.trim() !== "";
@@ -416,13 +393,6 @@ export function parseTask(body: unknown): Task | null {
     }
     case "maintain": {
       if (typeof t.slug !== "string" || t.slug.trim() === "") return null;
-      // `reconcile` needs a thread to reconcile from.
-      if (t.op === "reconcile") {
-        if (typeof t.threadIndex !== "number" || !Number.isInteger(t.threadIndex)) {
-          return null;
-        }
-        return { kind: "maintain", op: "reconcile", slug: t.slug, threadIndex: t.threadIndex };
-      }
       if (t.op === "staleness") {
         return { kind: "maintain", op: "staleness", slug: t.slug };
       }

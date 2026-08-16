@@ -8,7 +8,6 @@ import type { LintIssue } from "./types";
 import { logger } from "./logger";
 import { findDuplicateEntities } from "./alias-index";
 import { parseSources } from "./sources";
-import { getDiscussionStatsForSlugs, getDiscussionStats } from "./talk";
 import { listRawSources, readRawSource } from "./raw";
 import { getPageIndex } from "./page-index";
 
@@ -26,8 +25,6 @@ export const ALL_CHECK_TYPES = [
   "unmigrated-page",
   "duplicate-entity",
   "uncited-claims",
-  "unresolved-discussions",
-  "disputed-page",
   "supersedes-dangling",
   "incomplete-coverage",
 ] as const satisfies readonly LintIssue["type"][];
@@ -793,57 +790,6 @@ export async function checkUncitedClaims(): Promise<LintIssue[]> {
       message: `Page has no sources and no inline citations — claims are unverifiable`,
       severity: "warning",
       suggestion: `Ingest a source URL about "${entry.title}" to add provenance, or add inline citations manually`,
-    });
-  }
-  return issues;
-}
-
-export async function checkUnresolvedDiscussions(
-  diskSlugs: string[],
-): Promise<LintIssue[]> {
-  const statsMap = await getDiscussionStatsForSlugs(diskSlugs);
-  const issues: LintIssue[] = [];
-  for (const [slug, stats] of statsMap) {
-    if (stats.open > 0) {
-      const plural = stats.open === 1 ? "thread" : "threads";
-      issues.push({
-        type: "unresolved-discussions",
-        slug,
-        message: `${stats.open} unresolved discussion ${plural}`,
-        severity: "warning",
-        suggestion: `Review and resolve the open discussion threads on the "${slug}" talk page.`,
-      });
-    }
-  }
-  return issues;
-}
-
-export async function checkDisputedPages(): Promise<LintIssue[]> {
-  const pages = await listWikiPages();
-  const issues: LintIssue[] = [];
-  for (const entry of pages) {
-    const page = await readWikiPageWithFrontmatter(entry.slug);
-    if (!page) continue;
-    if (page.frontmatter.disputed !== true) continue;
-
-    // Check whether the page already has unresolved discussion threads
-    const stats = await getDiscussionStats(entry.slug);
-    const hasOpenThreads = stats.open > 0;
-
-    const message = hasOpenThreads
-      ? `Page is marked as disputed and has ${stats.open} unresolved discussion ${stats.open === 1 ? "thread" : "threads"}`
-      : `Page is marked as disputed but has no discussion threads`;
-
-    const suggestion = hasOpenThreads
-      ? `Review and resolve the ${stats.open} open discussion ${stats.open === 1 ? "thread" : "threads"} on the "${entry.slug}" talk page to clear the dispute`
-      : `Open a discussion thread to resolve the dispute on "${entry.slug}"`;
-
-    issues.push({
-      type: "disputed-page",
-      slug: entry.slug,
-      message,
-      severity: "warning",
-      suggestion,
     });
   }
   return issues;

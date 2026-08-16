@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getServicePrincipal: vi.fn() }));
-vi.mock("@/lib/reconcile", () => ({ reconcileFromTalk: vi.fn() }));
 vi.mock("@/lib/ingest", () => ({
   ingest: vi.fn(),
   ingestUrl: vi.fn(),
@@ -11,8 +10,8 @@ vi.mock("@/lib/ingest", () => ({
   reingest: vi.fn(),
 }));
 vi.mock("@/lib/lint-fix", () => ({ fixLintIssue: vi.fn() }));
-// Keep agentIdFor / DEFAULT_AGENT_NAME real (the reconcile path uses them);
-// only stub addAgentLearningPage so we can assert the learning attach + fail-soft.
+// Keep DEFAULT_AGENT_NAME real (the staleness path uses it); only stub
+// addAgentLearningPage so we can assert the learning attach + fail-soft.
 vi.mock("@/lib/agents", async (orig) => ({
   ...(await orig<typeof import("@/lib/agents")>()),
   addAgentLearningPage: vi.fn(async () => {}),
@@ -45,7 +44,6 @@ vi.mock("@/lib/monitor-digests", () => ({
 }));
 
 import { getServicePrincipal } from "@/lib/auth";
-import { reconcileFromTalk } from "@/lib/reconcile";
 import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest } from "@/lib/ingest";
 import { fixLintIssue } from "@/lib/lint-fix";
 import { getIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
@@ -60,7 +58,6 @@ import {
 import { deliverMonitorDigest } from "@/lib/monitor-digests";
 
 const mockedGetService = vi.mocked(getServicePrincipal);
-const mockedReconcile = vi.mocked(reconcileFromTalk);
 const mockedIngest = vi.mocked(ingest);
 const mockedIngestUrl = vi.mocked(ingestUrl);
 const mockedIngestPdf = vi.mocked(ingestPdf);
@@ -123,15 +120,33 @@ beforeEach(() => {
 describe("POST /api/tasks/run", () => {
   it("401s without the service token (no other side effects)", async () => {
     mockedGetService.mockReturnValue(null);
-    const res = await run({ kind: "reconcile", slug: "p", threadIndex: 0 });
+    const res = await run({ kind: "maintain", op: "staleness", slug: "p" });
     expect(res.status).toBe(401);
-    expect(mockedReconcile).not.toHaveBeenCalled();
+    expect(mockedReingest).not.toHaveBeenCalled();
   });
 
   it("400s a malformed task (poison → don't retry)", async () => {
     const res = await run({ kind: "bogus" });
     expect(res.status).toBe(400);
-    expect(mockedReconcile).not.toHaveBeenCalled();
+    expect(mockedIngest).not.toHaveBeenCalled();
+  });
+
+  it("400s the retired reconcile task kinds as malformed (poison)", async () => {
+    // reconcile-from-talk is retired: such queue messages must parse as
+    // malformed (400 → ack/drop), never fall through to another handler.
+    const legacy = await run({ kind: "reconcile", slug: "p", threadIndex: 0 });
+    expect(legacy.status).toBe(400);
+    expect(await legacy.json()).toEqual({ error: "malformed task" });
+    const maintain = await run({
+      kind: "maintain",
+      op: "reconcile",
+      slug: "p",
+      threadIndex: 1,
+    });
+    expect(maintain.status).toBe(400);
+    expect(await maintain.json()).toEqual({ error: "malformed task" });
+    expect(mockedReingest).not.toHaveBeenCalled();
+    expect(mockedFixLint).not.toHaveBeenCalled();
   });
 
   it("dispatches a persisted monitor digest for queued email delivery", async () => {
@@ -200,18 +215,6 @@ describe("POST /api/tasks/run", () => {
       ["notes"],
       "provider unavailable",
     );
-  });
-
-  it("dispatches a reconcile task, attributing to the requester's yoyo", async () => {
-    mockedReconcile.mockResolvedValue({ slug: "p", changed: true, disputed: false });
-    const res = await run({
-      kind: "reconcile",
-      slug: "p",
-      threadIndex: 3,
-      requestedBy: "alice",
-    });
-    expect(res.status).toBe(200);
-    expect(mockedReconcile).toHaveBeenCalledWith("p", 3, { author: "alice--yoyo" });
   });
 
   it("dispatches an ingest task by URL", async () => {
@@ -533,13 +536,6 @@ describe("POST /api/tasks/run", () => {
     });
   });
 
-  it("dispatches maintain:reconcile (autonomous — generic yoyo, no requester)", async () => {
-    mockedReconcile.mockResolvedValue({ slug: "d", changed: true, disputed: false });
-    const res = await run({ kind: "maintain", op: "reconcile", slug: "d", threadIndex: 1 });
-    expect(res.status).toBe(200);
-    expect(mockedReconcile).toHaveBeenCalledWith("d", 1);
-  });
-
   it("dispatches maintain:fix via fixLintIssue (deterministic lint fix)", async () => {
     mockedFixLint.mockResolvedValue({ success: true, slug: "p", message: "fixed" });
     const res = await run({
@@ -621,11 +617,11 @@ describe("POST /api/tasks/run", () => {
   });
 
   it("maps a 'not found' failure to 422 (poison), other failures to 500 (retry)", async () => {
-    mockedReconcile.mockRejectedValueOnce(new Error('page "x" not found'));
-    expect((await run({ kind: "reconcile", slug: "x", threadIndex: 0 })).status).toBe(422);
+    mockedReingest.mockRejectedValueOnce(new Error('page "x" not found'));
+    expect((await run({ kind: "maintain", op: "staleness", slug: "x" })).status).toBe(422);
 
-    mockedReconcile.mockRejectedValueOnce(new Error("LLM timeout"));
-    expect((await run({ kind: "reconcile", slug: "x", threadIndex: 0 })).status).toBe(500);
+    mockedReingest.mockRejectedValueOnce(new Error("LLM timeout"));
+    expect((await run({ kind: "maintain", op: "staleness", slug: "x" })).status).toBe(500);
   });
 
   it("files into vault when ingest task carries vaultId", async () => {

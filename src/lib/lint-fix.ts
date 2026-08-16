@@ -703,17 +703,9 @@ export async function fixLintIssue(
       throw new FixValidationError(
         "Uncited-claims pages cannot be auto-fixed. Ingest a source URL for this topic or add inline citations manually.",
       );
-    case "unresolved-discussions":
-      throw new FixValidationError(
-        "Unresolved discussions cannot be auto-fixed. Review and resolve the open threads on the talk page.",
-      );
     case "duplicate-entity":
       throw new FixValidationError(
         "Duplicate entities require human judgment to merge. Review the alias lists and decide which page to keep.",
-      );
-    case "disputed-page":
-      throw new FixValidationError(
-        "Disputed pages cannot be auto-fixed. Review the page content and talk page to resolve the dispute through discussion.",
       );
     case "supersedes-dangling":
       // Auto-fixable: clear the dead reference (re-verified missing first).

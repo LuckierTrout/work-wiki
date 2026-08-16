@@ -196,11 +196,14 @@ describe("WikiWorkbench empty state and preview copy", () => {
     expect(source).not.toContain("if (!open) return;\n    setScenario");
   });
 
-  it("adds a second h1 to the landing page for nobody", async () => {
+  it("leaves the landing page h1 to the Workbench shell", async () => {
+    // The Workbench shell owns the landing page <h1> (the wb-title masthead —
+    // pinned as one token so the class can't drift off the h1); WikiWorkbench
+    // must not add another.
     const workbench = await read("WikiWorkbench.tsx");
-    const dashboard = await read("HomeDashboard.tsx");
+    const shell = await read("workbench/Workbench.tsx");
     expect(workbench).not.toMatch(/<h1[\s>]/);
-    expect(dashboard).toMatch(/<h1[\s>]/);
+    expect(shell).toMatch(/<h1 className="wb-title">/);
   });
 
   it("refetches the server tree after a mutation that rewrites the profile", async () => {

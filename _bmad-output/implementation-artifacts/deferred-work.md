@@ -4,7 +4,8 @@ location: src/cli.ts
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: low
 reason: `src/cli.ts` keeps `publish <slug> --agent <id>` calling `publishToCommons` (`src/lib/publish.ts`), and `src/lib/__tests__/cli.test.ts` still asserts the promotion end to end. The intent names routes and the MCP tool list, not the owner-local CLI, so it was left alone; it now writes into an index nothing reads.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-retire-dead-machinery
 
 ### DW-2: slugPath() addresses every slug-only link through the default tenant, so the URL names the wrong handle until the owner route redirects it.
 origin: spec-deferred fe2df3ceb0dd
@@ -37,7 +38,8 @@ location: src/lib/reconcile.ts, src/lib/lint-checks.ts
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: low
 reason: `/api/tasks/run` still dispatches `reconcile`/`maintain:reconcile` through `reconcileFromTalk`, the `reconcile_page` MCP tool remains, and `checkUnresolvedDiscussions` / `checkDisputedPages` still emit warnings whose remediation surface now 404s. Harmless while no surface can create a thread, but it is dead machinery.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-retire-dead-machinery
 
 ### DW-6: ArticleActions still branches on the commons realm.
 origin: spec-deferred 5bb7128d058f
@@ -45,7 +47,8 @@ location: src/components/ArticleActions.tsx
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: low
 reason: `src/components/ArticleActions.tsx` keeps `isCommonsPage` gating for Delete and "Save to vault", and `ArticleView` computes and threads the flag purely to feed it. Changing delete authorization was out of this story's scope, so the realm model survives with no commons behind it.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-retire-dead-machinery
 
 ### DW-7: canWritePage's commons-realm rule lost its escape hatch when talk was retired.
 origin: spec-deferred 51476f69db15
@@ -71,7 +74,8 @@ location: src/middleware.ts:73
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: low
 reason: `src/middleware.ts` keeps `AGENT_PUBLISH_RE` and documents `/api/agents/<id>/publish` as "the agent's own per-agent token" in its header comment, though the handler is now `retiredRoute()` and inspects nothing. Harmless (the request 404s), but the exemption cannot be removed here: `middleware-write-gate.test.ts:39` pins it, and this story's constraints forbid changing that suite's behavior.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-retire-dead-machinery
 
 ### DW-10: Maintainer-facing files still carry the old brand after the display rename.
 origin: spec-deferred 4087d7d02acb
@@ -227,7 +231,8 @@ location: src/components/HomeDashboard.tsx
 source_spec: `spec-1-3-nashsu-icon-rail-and-workbench-chrome.md`
 severity: low
 reason: `src/app/page.tsx` no longer renders `<HomeDashboard>`, but `src/components/HomeDashboard.tsx` and `src/lib/home-dashboard.ts` stay on disk because `create-wiki-ui.test.ts:199-204` reads the component file and asserts it contains an `<h1>`, and `home-dashboard.test.ts` exercises `buildHomeDashboardSnapshot`. Deleting either file would modify a pre-existing test, which this story was forbidden to do. So three test files now report green on a surface nothing renders. Retiring the dashboard properly — deleting the modules and retargeting that assertion at the shell's `<h1>` — belongs with whatever cleans up the remaining pre-Workbench surfaces.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-retire-dead-machinery
 
 ### DW-29: Follow-up review still recommended for 1-3-nashsu-icon-rail-and-workbench-chrome after the damping cap was spent
 origin: review-budget-followup
@@ -599,4 +604,68 @@ location: n/a
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-75: LintFilterControls.tsx keeps a hand-copied ALL_CHECK_TYPES with only 11 entries while the lib const in lint-checks.ts has 14, so the lint UI cannot toggle uncited-claims, supersedes-dangling, or incom
+origin: spec-deferred e4d2cbfe1b61
+source_spec: `spec-retire-dead-machinery.md`
+location: src/components/LintFilterControls.tsx:5
+severity: medium
+reason: Pre-existing drift, not introduced here: src/components/LintFilterControls.tsx:5-16 lacks uncited-claims, supersedes-dangling, incomplete-coverage; src/lib/lint-checks.ts ALL_CHECK_TYPES has 14 entries; no parity test ties the two constants together.
+status: open
+
+### DW-76: The disputed frontmatter flag is now one-way — ingest still sets disputed: true on contradicting merges and ArticleView still renders the disputed banner, but with reconcile-from-talk and the disputed
+origin: spec-deferred 78f255fc65a4
+source_spec: `spec-retire-dead-machinery.md`
+location: src/lib/ingest.ts
+severity: medium
+reason: src/lib/ingest.ts parseDisputedMarker still sets the flag; src/components/ArticleView.tsx still renders the "This page is disputed" banner; the bundle intent explicitly directed deleting checkDisputedPages, so the surfacing gap is a knowing consequence to revisit with whatever story owns disputed-page semantics.
+status: open
+
+### DW-77: authz.ts still carries the commons-realm delete-deny branch with no commons behind it; after this change the client delete gate no longer mirrors it for a hypothetical non-admin owner of a public page
+origin: spec-deferred a067ea608790
+source_spec: `spec-retire-dead-machinery.md`
+location: src/lib/authz.ts:193
+severity: low
+reason: src/lib/authz.ts:193-198 denies body/delete on belongsInCommons pages for non-service, non-admin principals, pinned by authz.test.ts:228-231; DW-6's ledger explicitly kept delete authorization out of scope, so the server-side realm residue remains dead machinery.
+status: open
+
+### DW-78: HomeGraph.tsx had zero references already at the baseline revision — a pre-existing dead component, not orphaned by this story (unlike HomeAsk.tsx, which this story deleted).
+origin: spec-deferred 05b39e1a7083
+source_spec: `spec-retire-dead-machinery.md`
+location: src/components/HomeGraph.tsx
+severity: low
+reason: git grep HomeGraph at baseline 1aac75ea returns no references outside the component file itself.
+status: open
+
+### DW-79: The orchestrator's ledger sweep truncates entry headings at a fixed width mid-word — DW-75's heading in deferred-work.md ends "or incom" and DW-76's ends "and the disputed", and DW-75's useLint-length
+origin: spec-deferred 5e93c57512b0
+source_spec: `spec-retire-dead-machinery.md`
+location: _bmad-output/implementation-artifacts/deferred-work.md:609
+severity: low
+reason: _bmad-output/implementation-artifacts/deferred-work.md:609 and :617 carry the truncated headings; the entries' reason fields hold the evidence text, not the lost summary tails. Ledger entries are orchestrator-owned (invocation constraint), so this pass records the defect instead of editing them.
+status: open
+
+### DW-80: workers/task-consumer docs still describe reconcile as live work — its README walks through "reconcile a page from a discussion thread" and index.ts's header says the actual work is "(reconcile / inge
+origin: spec-deferred 72b5e66c4034
+source_spec: `spec-retire-dead-machinery.md`
+location: workers/task-consumer/README.md:9
+severity: medium
+reason: workers/task-consumer/README.md:9 and :35 plus workers/task-consumer/index.ts:6 reference the retired reconcile task kind; the spec's "verified: no reconcile/publish references" parenthetical covered live code paths, not docs and comments. Intent Never: "Do not touch workers/task-consumer/".
+status: open
+
+### DW-81: talk.ts getDiscussionStats is newly orphaned by this story — its last production callers were the deleted discussion lint checks — and reports green under talk.test.ts with no reachable caller; the ba
+origin: spec-deferred 327d8597cfc7
+source_spec: `spec-retire-dead-machinery.md`
+location: src/lib/talk.ts:342
+severity: low
+reason: grep after this change shows no non-test caller of getDiscussionStats; talk.ts itself is intent-protected ("Do not delete src/lib/talk.ts"; AD-21 deliberately keeps talk machinery on disk), so whether to trim the export or leave it as deliberate AD-21 residue belongs to a story that owns talk.ts.
+status: open
+
+### DW-82: Follow-up review still recommended for dw-retire-dead-machinery after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-retire-dead-machinery.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-122748-68ea; this entry preserves the lingering recommendation for a deliberate later review.
 status: open

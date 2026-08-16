@@ -27,7 +27,7 @@ A wiki designed for both humans and agents to read and write.
 
 **Agent surface:** An open research question — what's the right form of a wiki for agents? Structured claims? Embeddings? Fact triples? The product answers this over time.
 
-**Not RAG.** RAG re-derives every query. work-wiki accumulates — pages update, contradictions reconcile on talk pages, lineage is preserved, what's stale visibly decays.
+**Not RAG.** RAG re-derives every query. work-wiki accumulates — pages update, contradictions reconcile on merge, lineage is preserved, what's stale visibly decays.
 
 ### What makes it different
 

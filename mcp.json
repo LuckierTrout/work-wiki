@@ -33,7 +33,6 @@
     "wiki_graph",
     "lint_wiki",
     "fix_lint_issue",
-    "reconcile_page",
     "reingest",
     "ingest_history",
     "dataview_query",

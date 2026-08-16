@@ -17,8 +17,6 @@ interface ArticleActionsProps {
   owner: string;
   /** Contributor handles. */
   contributors: string[];
-  /** Whether this is a PUBLIC, non-agent commons page (gates Delete realm). */
-  isCommonsPage: boolean;
   /** Whether the page may be curated into a vault: public + non-agent, INCLUDING
    *  artifacts (gates the "Save to vault" button). */
   isCuratable: boolean;
@@ -36,12 +34,12 @@ interface ArticleActionsProps {
  *   - View raw        — when a raw source exists.
  *   - Reingest        — owner/contributor, when a source URL exists.
  *   - Graphify page   — page owner only; refreshes derived private knowledge.
- *   - Delete          — site owner/admin on a commons page; page owner on a
- *                       non-commons (private/artifact/agent) page.
- *   - Save to vault    — signed-in non-owner/contributor on a commons page.
+ *   - Delete          — page owner or site owner/admin.
+ *   - Save to vault    — any signed-in viewer on a curatable page (owners and
+ *                       contributors included; gated by `isCuratable`).
  *
- * There is intentionally NO human "Edit page" button: in the commons-first
- * model pages are maintained by agents (via API/MCP), not hand-edited here.
+ * There is intentionally NO human "Edit page" button: in this deployment
+ * pages are maintained by agents (via API/MCP), not hand-edited here.
  *
  * These are CONVENIENCE gates only; every underlying route re-authorizes the
  * request server-side, so a stale/forged client never bypasses the real check.
@@ -51,7 +49,6 @@ export function ArticleActions({
   tenant,
   owner,
   contributors,
-  isCommonsPage,
   isCuratable,
   hasRawSource,
   hasSourceUrl,
@@ -79,11 +76,10 @@ export function ArticleActions({
   const ownsOrContributes =
     !!handleLc &&
     (isOwner || contributors.some((c) => c.toLowerCase() === handleLc));
-  // Mirror the server realm gate (authz.canWritePage with "delete") so the button
-  // never shows a delete that 403s: a COMMONS page is operator-only (the site
-  // owner / admin); a non-commons page (private / artifact / agent) is deletable
-  // by its page owner. The site owner can delete either.
-  const canDelete = isCommonsPage ? isSiteOwner : isOwner || isSiteOwner;
+  // In this single-owner deployment the owner IS the site admin, so "page
+  // owner or site owner/admin" is the effective server outcome for delete.
+  // This is a convenience gate only — the server re-authorizes every request.
+  const canDelete = isOwner || isSiteOwner;
   // Any signed-in user can curate a curatable page (public + non-agent, incl.
   // artifacts) into their vault — including owners and contributors (owned/
   // contributed pages are NOT automatically in vaults, so excluding them created

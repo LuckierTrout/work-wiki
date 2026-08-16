@@ -40,7 +40,6 @@ const mockedMarkDigestQueued = vi.mocked(markMonitorDigestQueued);
 
 const SAMPLE = [
   { kind: "maintain" as const, op: "staleness" as const, slug: "stale" },
-  { kind: "maintain" as const, op: "reconcile" as const, slug: "disp", threadIndex: 0 },
   { kind: "maintain" as const, op: "fix" as const, slug: "page-a", lintType: "broken-link" as const, targetSlug: "dead-link" },
   { kind: "maintain" as const, op: "fix" as const, slug: "page-b", lintType: "orphan-page" as const },
 ];
@@ -88,18 +87,18 @@ describe("POST /api/tasks/scan", () => {
   it("dry-runs maintenance tasks when AUTONOMOUS_MAINTENANCE is off", async () => {
     const res = await scan();
     const body = await res.json();
-    expect(body).toMatchObject({ enabled: false, dry: true, found: 4, enqueued: 0 });
+    expect(body).toMatchObject({ enabled: false, dry: true, found: 3, enqueued: 0 });
     expect(mockedEnqueue).not.toHaveBeenCalled();
     // Still reports what it WOULD enqueue.
-    expect(body.tasks).toHaveLength(4);
+    expect(body.tasks).toHaveLength(3);
   });
 
   it("enqueues when AUTONOMOUS_MAINTENANCE=on", async () => {
     process.env.AUTONOMOUS_MAINTENANCE = "on";
     const res = await scan();
     const body = await res.json();
-    expect(body).toMatchObject({ enabled: true, dry: false, found: 4, enqueued: 4 });
-    expect(mockedEnqueue).toHaveBeenCalledTimes(4);
+    expect(body).toMatchObject({ enabled: true, dry: false, found: 3, enqueued: 3 });
+    expect(mockedEnqueue).toHaveBeenCalledTimes(3);
   });
 
   it("?dry=1 forces a dry-run even when enabled", async () => {
@@ -192,21 +191,19 @@ describe("POST /api/tasks/scan", () => {
     const res = await scan();
     const body = await res.json();
     // broken-link fix includes both lintType and targetSlug
-    expect(body.tasks[2]).toEqual({
+    expect(body.tasks[1]).toEqual({
       op: "fix",
       slug: "page-a",
       lintType: "broken-link",
       targetSlug: "dead-link",
     });
     // orphan-page fix includes lintType but omits targetSlug
-    expect(body.tasks[3]).toEqual({
+    expect(body.tasks[2]).toEqual({
       op: "fix",
       slug: "page-b",
       lintType: "orphan-page",
     });
     // staleness op omits lintType and targetSlug
     expect(body.tasks[0]).toEqual({ op: "staleness", slug: "stale" });
-    // reconcile op includes threadIndex but not lintType/targetSlug
-    expect(body.tasks[1]).toEqual({ op: "reconcile", slug: "disp", threadIndex: 0 });
   });
 });

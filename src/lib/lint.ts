@@ -18,8 +18,6 @@ import {
   checkUnmigratedPages,
   checkDuplicateEntities,
   checkUncitedClaims,
-  checkUnresolvedDiscussions,
-  checkDisputedPages,
   checkSupersededDangling,
   buildSummary,
   parseLLMJsonArray,
@@ -56,8 +54,6 @@ export {
   checkUnmigratedPages,
   checkDuplicateEntities,
   checkUncitedClaims,
-  checkUnresolvedDiscussions,
-  checkDisputedPages,
   checkSupersededDangling,
   ALL_CHECK_TYPES,
 };
@@ -66,7 +62,7 @@ export {
  * Run all lint checks against the wiki and return the results.
  *
  * @param options - Optional configuration for selective checks and severity filtering.
- *   - `checks`: array of check types to run (defaults to all 15)
+ *   - `checks`: array of check types to run (defaults to all 14)
  *   - `minSeverity`: minimum severity to include in results (defaults to "info")
  */
 export async function lint(options?: LintOptions): Promise<LintResult> {
@@ -92,7 +88,7 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
     const indexSlugs = new Set(indexPages.map((p) => p.slug));
 
     // Run lightweight checks in parallel
-    const [orphans, stale, empty, crossRefs, brokenLinks, stalePages, lowConfidence, unmigratedPages, duplicateEntities, uncitedClaims, unresolvedDiscussions, disputedPages, supersedesDangling] = await Promise.all([
+    const [orphans, stale, empty, crossRefs, brokenLinks, stalePages, lowConfidence, unmigratedPages, duplicateEntities, uncitedClaims, supersedesDangling] = await Promise.all([
       enabledChecks.has("orphan-page")
         ? checkOrphanPages(diskSlugs, indexSlugs)
         : [],
@@ -123,12 +119,6 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
       enabledChecks.has("uncited-claims")
         ? checkUncitedClaims()
         : [],
-      enabledChecks.has("unresolved-discussions")
-        ? checkUnresolvedDiscussions(diskSlugs)
-        : [],
-      enabledChecks.has("disputed-page")
-        ? checkDisputedPages()
-        : [],
       enabledChecks.has("supersedes-dangling")
         ? checkSupersededDangling(diskSlugs)
         : [],
@@ -148,7 +138,7 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
         : [],
     ]);
 
-    let issues = [...orphans, ...stale, ...empty, ...crossRefs, ...brokenLinks, ...stalePages, ...lowConfidence, ...unmigratedPages, ...duplicateEntities, ...uncitedClaims, ...unresolvedDiscussions, ...disputedPages, ...supersedesDangling, ...contradictions, ...missingConcepts, ...incompleteCoverage];
+    let issues = [...orphans, ...stale, ...empty, ...crossRefs, ...brokenLinks, ...stalePages, ...lowConfidence, ...unmigratedPages, ...duplicateEntities, ...uncitedClaims, ...supersedesDangling, ...contradictions, ...missingConcepts, ...incompleteCoverage];
 
     // Filter by minimum severity
     if (minSeverityRank > 0) {

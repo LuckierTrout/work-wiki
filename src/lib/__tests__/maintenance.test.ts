@@ -9,7 +9,7 @@ import {
   getWikiDir,
   type Frontmatter,
 } from "../wiki";
-import { createThread, addComment } from "../talk";
+import { createThread } from "../talk";
 import { scanForMaintenance, rebuildDerivedIndexes } from "../maintenance";
 import { listCommonsPages } from "../commons";
 import { _resetStorage } from "../storage";
@@ -80,22 +80,9 @@ describe("scanForMaintenance", () => {
     });
   });
 
-  it("enqueues a reconcile when a disputed page has an open thread awaiting a human reply", async () => {
+  it("produces no task for a disputed page (reconcile-from-talk retired)", async () => {
     await seed("disputed", { disputed: true });
     await createThread("disputed", "Issue", "bob", "This claim looks wrong.");
-    const tasks = await scanForMaintenance();
-    expect(tasks).toContainEqual({
-      kind: "maintain",
-      op: "reconcile",
-      slug: "disputed",
-      threadIndex: 0,
-    });
-  });
-
-  it("skips a disputed thread yoyo already answered (last comment is an agent)", async () => {
-    await seed("answered", { disputed: true });
-    await createThread("answered", "Issue", "bob", "Wrong claim.");
-    await addComment("answered", 0, "bob--yoyo", "I looked — keeping both views (disputed).");
     expect(await scanForMaintenance()).toHaveLength(0);
   });
 
