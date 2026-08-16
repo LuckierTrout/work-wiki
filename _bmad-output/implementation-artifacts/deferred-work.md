@@ -146,6 +146,7 @@ source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: low
 reason: `wikis.ts` exposes create/apply/set-current only. The name is baked into the `# <name>` heading of `purpose.md` at seed time, so a typo is permanent, and an entry dropped by `normalizeRegistry` leaves its `wikis/<id>/purpose.md` and `schema.md` on disk with nothing referencing them. Story 1.2's acceptance criteria ask for neither operation.
 status: open
+decision: 2026-08-16 Build rename+delete — Add rename (updates registry and the purpose.md heading) and confirm-gated delete (removes the registry entry and its wikis/<id>/ directory, refusing to delete the current Wiki), plus an orphan-directory sweep, with matching routes and Workbench controls.
 
 ### DW-19: `loadPageConventions()` resolves the active Wiki deployment-globally from `NEXT_PUBLIC_OWNER_HANDLE`, while the guidance beside it at the same prompt sites resolves per-caller.
 origin: spec-deferred 54c8fcb81384

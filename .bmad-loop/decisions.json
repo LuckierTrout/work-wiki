@@ -8,6 +8,15 @@
     "label": "Per-Wiki profiles",
     "resolution": ""
   },
+  "DW-18": {
+    "answered_at": "2026-08-16",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add rename (updates registry and the purpose.md heading) and confirm-gated delete (removes the registry entry and its wikis/<id>/ directory, refusing to delete the current Wiki), plus an orphan-directory sweep, with matching routes and Workbench controls.",
+    "key": "1",
+    "label": "Build rename+delete",
+    "resolution": ""
+  },
   "DW-4": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
