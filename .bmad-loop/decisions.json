@@ -16,5 +16,14 @@
     "key": "1",
     "label": "Keep, re-document",
     "resolution": ""
+  },
+  "DW-8": {
+    "answered_at": "2026-08-16",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Unregister list_contributors and get_contributor from mcp-http.ts, mcp.ts and mcp.json, and update mcp-http.test.ts \u2014 completing the retirement the rest of the surface already had.",
+    "key": "1",
+    "label": "Retire the tools",
+    "resolution": ""
   }
 }

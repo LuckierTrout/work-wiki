@@ -63,6 +63,7 @@ source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: low
 reason: `/wiki/contributors`, `/api/contributors` and `/api/contributors/[handle]` all 404, and `/u/<handle>` is gone — but `list_contributors` and `get_contributor` remain registered in `src/lib/mcp-http.ts` and `mcp.json`, and `mcp-http.test.ts` was updated to keep them passing. They are read-only and bearer-gated, so nothing leaks in a single-owner deployment; whether the capability should survive at MCP after being cut everywhere else is a product call, not a defect.
 status: open
+decision: 2026-08-16 Retire the tools — Unregister list_contributors and get_contributor from mcp-http.ts, mcp.ts and mcp.json, and update mcp-http.test.ts — completing the retirement the rest of the surface already had.
 
 ### DW-9: Middleware still exempts the retired publish route as an in-route-auth path.
 origin: spec-deferred 049dafc8e212
