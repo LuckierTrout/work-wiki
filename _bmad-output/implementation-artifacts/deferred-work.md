@@ -112,6 +112,7 @@ source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: medium
 reason: `seedWikiArtifacts()` calls `saveWorkspaceProfile(owner, templateProfile(...))`, which is what makes a seeded template reach the seven prompt sites that consume `buildWorkspaceGuidance(owner)`. The profile is a per-tenant singleton at `tenants/<t>/workspace-profile.json`, so a Wiki create silently replaces whatever the owner wrote on the Workspace Purpose settings form. Both dialogs say "purpose.md and Schema", which is true in substance (the profile is the machine form of purpose) but does not name the Settings surface the owner will see change. The inverse also holds: a Settings edit does not update the Wiki's `schema.md`, so the two diverge. Reconciling the two representations belongs with Story 1.8 (Edit Schema), which owns editing both.
 status: open
+decision: 2026-08-16 Per-Wiki profiles — Store one workspace profile per Wiki; switching Wikis swaps the active profile instead of overwriting a shared singleton, so hand-authored text survives per Wiki and create/re-template only touch their own Wiki's profile.
 
 ### DW-15: The repository has no DOM test environment, so the confirm gate and "Cancel writes nothing" are pinned only by scans of component source text.
 origin: spec-deferred 2b4928bd0582

@@ -1,4 +1,13 @@
 {
+  "DW-14": {
+    "answered_at": "2026-08-16",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Store one workspace profile per Wiki; switching Wikis swaps the active profile instead of overwriting a shared singleton, so hand-authored text survives per Wiki and create/re-template only touch their own Wiki's profile.",
+    "key": "2",
+    "label": "Per-Wiki profiles",
+    "resolution": ""
+  },
   "DW-4": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
