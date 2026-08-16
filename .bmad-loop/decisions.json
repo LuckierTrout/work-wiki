@@ -1,0 +1,11 @@
+{
+  "DW-4": {
+    "answered_at": "2026-08-16",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Remove the zh-CN catalog, LocaleSwitcher, and locale-cookie plumbing (LocaleProvider, layout.tsx cookie read), and drop brand-copy.test.ts's path exemption for i18n.ts \u2014 matching the recorded English-only preference.",
+    "key": "1",
+    "label": "Retire zh-CN",
+    "resolution": ""
+  }
+}

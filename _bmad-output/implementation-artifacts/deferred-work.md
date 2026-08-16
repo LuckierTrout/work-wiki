@@ -29,6 +29,7 @@ source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: medium
 reason: `src/lib/i18n.ts` keys on exact English source strings, so the renamed chrome labels ("The commons", "What is WorkWiki", "Browse all") no longer match and silently fall back to English; keys for deleted UI (Browse, Join waitlist, Contributors, Mobile navigation) are now unreachable; and line 43 still ships "WorkWiki" as rendered copy. The spec forbids i18n work in this story, and the recorded user preference is English-only, so the whole module is a later cut.
 status: open
+decision: 2026-08-16 Retire zh-CN — Remove the zh-CN catalog, LocaleSwitcher, and locale-cookie plumbing (LocaleProvider, layout.tsx cookie read), and drop brand-copy.test.ts's path exemption for i18n.ts — matching the recorded English-only preference.
 
 ### DW-5: Reconcile-from-talk plumbing and the discussion lint checks outlive the talk surface they point at.
 origin: spec-deferred af264a332ec0
