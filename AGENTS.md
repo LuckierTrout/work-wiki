@@ -36,6 +36,7 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 - Reshape the existing Next.js web app toward nashsu/llm_wiki UX parity; do not start a desktop or Tauri rewrite.
 - Match nashsu Workbench density and layout from the captured screenshots; do not invent a restyle of the shell. Type is locked: system sans (SF) for chrome and Chat; Georgia for Preview page body and headings.
 - Prefer BMAD Fast path (draft with assumption tags) over Coaching when a working mode is offered.
+- Prefer Claude Opus 5 at high effort for bmad-loop adapter (dev/review); keep triage at medium.
 
 ## Learned Workspace Facts
 
@@ -49,4 +50,5 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 - Active UX run: `_bmad-output/planning-artifacts/ux-designs/ux-work-wiki-2026-08-12/` — `DESIGN.md` + `EXPERIENCE.md` are `status: final`. Nashsu screenshots in `imports/` are layout/density reference. Type: SF chrome, Georgia Preview. Color: nashsu light gray, black primary.
 - Active architecture run: `_bmad-output/planning-artifacts/architecture/architecture-work-wiki-2026-08-12/` — `ARCHITECTURE-SPINE.md` is `status: final`. Wiki kernel (OpenNext + R2) is the system of record; local sidecar owns Chat/extract/shell/` :19828`.
 - Final spec: `_bmad-output/specs/spec-work-wiki/` (`SPEC.md`, `glossary.md`, `success-metrics.md`); companions are the final PRD, UX, and architecture spine.
-- Epic breakdown complete in `_bmad-output/planning-artifacts/epics.md` (8 epics, 68 stories; `stepsCompleted` through step-04). P0: Private Workbench, Sources compile, Ask the wiki, Meeting Todos; P1: See the wiki's shape, Deep Research, Any document in, Agents at the door. Office/email extract stays in Epic 7, not Epic 2. Next planning gate is sprint planning.
+- Epic breakdown complete in `_bmad-output/planning-artifacts/epics.md` (8 epics, 68 stories; `stepsCompleted` through step-04). P0: Private Workbench, Sources compile, Ask the wiki, Meeting Todos; P1: See the wiki's shape, Deep Research, Any document in, Agents at the door. Office/email extract stays in Epic 7, not Epic 2. Implementation is underway in `_bmad-output/implementation-artifacts/` (`sprint-status.yaml`, `deferred-work.md`).
+- `.bmad-loop/policy.toml` is gitignored and machine-local; adapter and sweep settings apply on the next local `bmad-loop` start, not via git push.

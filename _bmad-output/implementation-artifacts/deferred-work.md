@@ -102,7 +102,8 @@ location: workers/email-ingest/index.ts:239
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: low
 reason: `workers/email-ingest/index.ts:239` copies attachment bytes into a fresh `Uint8Array` before wrapping them in a `Blob` for the `attachments` FormData part. `email-ingest-worker.test.ts` is the only test that imports the worker, and its fixture is a plain-text message with no attachment; both cases assert only on `msg.reply`'s text. Zeroing the copy would still produce a correctly-sized buffer, a `{ ok: true, slug }` response and the same acknowledgement email, so every emailed PDF/DOCX would ingest empty with the suite green. The attachment path is pre-existing; this story only fixed a type error on that line.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-email-ingest-attachment-test
 
 ### DW-13: Follow-up review still recommended for 1-1-sign-in-privately-and-retire-commons after the damping cap was spent
 origin: review-budget-followup
@@ -791,4 +792,60 @@ source_spec: `spec-maintainer-brand-sweep.md`
 location: /Users/christianlee/pnpm-workspace.yaml
 severity: low
 reason: pnpm resolves /Users/christianlee/pnpm-workspace.yaml as the workspace root and fails with "packages field missing or empty" before running any script. Confirmed during this review pass; CI on fresh checkouts is unaffected. Workaround used: invoke ./node_modules/.bin/vitest and `node tools/work-wiki-sync.mjs` directly. Deleting or populating that stray file restores `pnpm test` / `pnpm sync` / `pnpm lint` locally.
+status: open
+
+### DW-98: The email-ingest route's own byte handoff to `stageBytes` is unverified, so the empty-attachment harm DW-12 names is still reachable one hop past the worker.
+origin: spec-deferred 84b8769da573
+source_spec: `spec-email-ingest-attachment-test.md`
+location: src/app/api/email/ingest/route.ts:194
+severity: medium
+reason: `src/app/api/email/ingest/route.ts:191-203` reads `await file.arrayBuffer()` and passes it to `stageBytes`. `src/lib/__tests__/email-ingest-route.test.ts:21-24` mocks `@/lib/ingest-staging` with `stageBytes: vi.fn(async (_jobId, filename) => ...)` — the mock ignores the bytes argument entirely, and the attachment assertions (lines 206, 211) check only `supportedAttachmentCount` and `filename`. Demonstrated: replacing `bytes: await file.arrayBuffer()` with `new ArrayBuffer(0)` leaves the full suite green (206 files / 4301 tests). The worker half of the path is now pinned; the route half is not.
+status: open
+
+### DW-99: The worker's supported-attachment allowlist has drifted from the app's document extractor, so formats the app can read are rejected at the email door.
+origin: spec-deferred e07612517bf9
+source_spec: `spec-email-ingest-attachment-test.md`
+location: workers/email-ingest/index.ts:42-73
+severity: medium
+reason: `workers/email-ingest/index.ts:42-68` omits `odt`, `ods`, `odp`, `epub`, `org`, `rtf`, `mobi` and `text/x-markdown`, all of which `src/lib/document-extract.ts:7-64` supports — so those emailed files draw a "not supported" reply even though ingestion would have worked. The worker also matches `mimeType.toLowerCase()` whole, while `detectDocumentFormat` strips `;` parameters first, so a `text/csv; charset=utf-8` part matches only via its extension. Nothing pins the two lists in agreement, and deleting the worker's filter at `index.ts:193-195` outright leaves the suite green.
+status: open
+
+### DW-100: The `attachmentName` FormData fields the worker sends are unobserved, so names of unsupported attachments can vanish from ingest job metadata undetected.
+origin: spec-deferred 92d4586ec775
+source_spec: `spec-email-ingest-attachment-test.md`
+location: workers/email-ingest/index.ts:225
+severity: medium
+reason: `workers/email-ingest/index.ts:225` appends every attachment name (supported or not); `src/app/api/email/ingest/route.ts:58-60` reads them back and persists them into the job's `email` metadata. Demonstrated: deleting the append loop leaves the full suite green. The route's union of names only recovers the *supported* files' names, so anything filtered out at `index.ts:193-195` is lost with nothing failing. The new worker test already parses the outgoing FormData but reads only `getAll("attachments")`.
+status: open
+
+### DW-101: Only the ArrayBuffer branch of the worker's attachment-content normalization is exercised — including, ironically, not the branch the defensive copy exists for.
+origin: spec-deferred 0da5a9e0e5df
+source_spec: `spec-email-ingest-attachment-test.md`
+location: workers/email-ingest/index.ts:228-238
+severity: low
+reason: `workers/email-ingest/index.ts:228-238` has three branches: string content via `TextEncoder`, `ArrayBuffer`, and a typed-array view reconstructed from `.buffer/.byteOffset/.byteLength`. Probing the installed `postal-mime@2.7.5` with a base64 part yields an `ArrayBuffer`, so only `index.ts:230-231` runs. The view branch carries the byteOffset arithmetic most prone to silent corruption, and the copy's own comment names the SharedArrayBuffer view as its reason for existing.
+status: open
+
+### DW-102: Multi-attachment behaviour is unobserved — the 10-attachment cap, per-index filename/bytes pairing, and both fallbacks are untested.
+origin: spec-deferred 376e7071da0f
+source_spec: `spec-email-ingest-attachment-test.md`
+location: workers/email-ingest/index.ts:193-246
+severity: low
+reason: The fixture carries exactly one named attachment with an explicit mimeType, so `.slice(0, 10)` (`index.ts:195`), the `attachment-${index + 1}` filename fallback (`index.ts:227`) and the `"application/octet-stream"` mimeType fallback (`index.ts:243`) never run. Demonstrated: narrowing the cap to `.slice(0, 1)` leaves the full suite green — a regression that forwards only the first of ten attached documents, or pairs attachment i's bytes with attachment j's filename (and therefore the wrong extractor at `route.ts:237-239`), would ship undetected. The `10` also duplicates the route's `MAX_EMAIL_DOCUMENTS` with nothing pinning them in agreement.
+status: open
+
+### DW-103: The acknowledgement copy a sender receives about their attachments is unpinned.
+origin: spec-deferred 929e58770d4a
+source_spec: `spec-email-ingest-attachment-test.md`
+location: workers/email-ingest/index.ts:287-292
+severity: low
+reason: `workers/email-ingest/index.ts:287-292` builds the "N supported attachment(s) were queued" and "N unsupported attachment(s) were recorded but skipped" lines, including their singular/plural branches. Demonstrated: blanking those lines leaves the full suite green. The two existing tests assert on reply text but drive a no-attachment fixture; the new test drives an attachment fixture but reads only the outgoing request.
+status: open
+
+### DW-104: Base64 expansion makes the route's 10 MB per-document limit unreachable via email, and neither cap is tested against the other.
+origin: spec-deferred 4fa3442f8443
+source_spec: `spec-email-ingest-attachment-test.md`
+location: workers/email-ingest/index.ts:39
+severity: low
+reason: The worker rejects on `message.rawSize > MAX_RAW_EMAIL_BYTES` (10 MB, `index.ts:39/147`) — a raw-message measurement taken *before* MIME decoding. Base64 inflates payloads by roughly a third, so the effective per-attachment ceiling over email is about 7.5 MB, while `MAX_DOCUMENT_SIZE` in `src/lib/constants.ts` is 10 MB. The gap is undocumented and untested in both directions.
 status: open
