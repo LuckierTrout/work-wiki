@@ -8,15 +8,12 @@ import {
 } from "@/lib/workbench-data-version";
 import {
   PREVIEW_CANCEL_COPY,
-  PREVIEW_EDIT_CONFIRM_BODY,
   PREVIEW_EDIT_CONFIRM_LABEL,
-  PREVIEW_EDIT_CONFIRM_TITLE,
   PREVIEW_EDIT_COPY,
   PREVIEW_EMPTY_COPY,
   PREVIEW_FAILED_COPY,
   PREVIEW_LOADING_COPY,
   PREVIEW_SAVE_COPY,
-  PREVIEW_SAVE_FAILED_COPY,
   PREVIEW_SAVING_COPY,
   PREVIEW_TRUNCATED_COPY,
   PREVIEW_TIMEOUT_REASON,
@@ -24,9 +21,12 @@ import {
   canEditPreview,
   fetchPreview,
   previewBodyState,
+  previewEditCopy,
   previewRequestUrl,
+  previewWriteTarget,
   savePreviewBody,
   type PreviewPayload,
+  type PreviewWriteTarget,
 } from "@/lib/workbench-preview";
 import {
   findFileNode,
@@ -49,10 +49,17 @@ import { PreviewBody } from "./PreviewBody";
  *
  * VIEW-FIRST. The body renders; it does not edit. `Edit` opens
  * {@link ConfirmDialog}, and only a confirm swaps the body for a raw-markdown
- * `<textarea>` that saves through `PUT /api/wiki/[slug]` — i.e. through
- * `writeWikiPageWithSideEffects`, the one write path. There is no rich-text
- * mode, no formatting bar, no autosave, and no way to reach the editor around
- * the dialog.
+ * `<textarea>`. There is no rich-text mode, no formatting bar, no autosave, and
+ * no way to reach the editor around the dialog.
+ *
+ * ONE editor, TWO targets (Story 1.8). A Page saves through
+ * `PUT /api/wiki/[slug]` — i.e. `writeWikiPageWithSideEffects`, the one page
+ * write path — and the Wiki's `schema.md` saves through
+ * `PUT /api/workbench/artifact`, which is the only writer for bytes the page
+ * route cannot address. WHICH of the two, and which sentences the dialog shows,
+ * are `previewWriteTarget` and `previewEditCopy`: functions the node suite
+ * executes, because this repo has no DOM test environment and a rule typed into
+ * JSX here could only ever be grepped for.
  *
  * The field names in the strip are the page's own frontmatter keys, not authored
  * labels — the same convention the mockup's `.fm` block uses.
@@ -129,13 +136,15 @@ function PreviewPane({
   const [saveError, setSaveError] = useState<string | null>(null);
   const editRef = useRef<HTMLButtonElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
-  // The slug the open editor was SEEDED from. Captured when the editor opens
-  // rather than read off `payload` when Save is pressed, because those two
-  // differ exactly when a pick landed while the editor was open — and reading
-  // the current payload there would write page A's draft under page B's slug.
-  // The selection effect closes the editor, so this should never disagree; it
-  // is a ref precisely so that "should" is not the only thing holding.
-  const editingSlugRef = useRef<string | null>(null);
+  // The write target the open editor was SEEDED from — the URL Save posts to
+  // AND the key that says which thing the draft came from. Captured when the
+  // editor opens rather than derived from `payload` when Save is pressed,
+  // because those two differ exactly when a pick landed while the editor was
+  // open — and reading the current payload there would write file A's draft to
+  // file B's route. The selection effect closes the editor, so this should never
+  // disagree; it is a ref precisely so that "should" is not the only thing
+  // holding.
+  const editingTargetRef = useRef<PreviewWriteTarget | null>(null);
   // Armed only when the owner LEAVES the editor themselves. A selection change
   // also closes the editor, and pulling focus back to `Edit` there would steal
   // it from the tree row they just clicked.
@@ -189,9 +198,9 @@ function PreviewPane({
       setPayload(null);
       // A pick abandons an open editor: the column is about to show another
       // file's bytes, and a textarea holding this one's draft over that one's
-      // header is the state `save`'s slug check also refuses.
+      // header is the state `save`'s target check also refuses.
       setEditing(false);
-      editingSlugRef.current = null;
+      editingTargetRef.current = null;
       setConfirmOpen(false);
       setSaveError(null);
     }
@@ -239,42 +248,59 @@ function PreviewPane({
 
   const startEditing = useCallback(() => {
     if (!payload) return;
+    // The target is captured HERE, from the payload the body was rendered from
+    // — not re-derived at Save. `canEditPreview` is the same predicate, so the
+    // `Edit` control was on screen only when this was non-null WHEN IT WAS
+    // PRESSED — but a silent same-row refresh (Story 1.7) can replace the
+    // payload while this dialog is open, and the new one may be truncated or no
+    // longer editable. Opening the editor then would seed `editingTargetRef`
+    // with `null`, and `Save` would neither write nor say why: the outcome
+    // `previewWriteTarget` documents as the worst of the three. So the dialog
+    // closes and the column stays view-first instead.
+    const target = previewWriteTarget(payload);
+    if (!target) {
+      setConfirmOpen(false);
+      return;
+    }
     // The editor is seeded with the SAME string the body rendered, which is the
-    // same string `PUT` expects — the route stripped the YAML block before it
-    // ever reached the browser, and the owner never sees or edits it.
+    // same string the write route expects — for a page the route stripped the
+    // YAML block before it ever reached the browser, and for an artifact there
+    // is no block to strip.
     setDraft(payload.body);
-    editingSlugRef.current = payload.slug ?? null;
+    editingTargetRef.current = target;
     setSaveError(null);
     setConfirmOpen(false);
     setEditing(true);
   }, [payload]);
 
   const save = useCallback(async () => {
-    const slug = editingSlugRef.current;
-    if (!slug || saving) return;
-    // The column must still be showing the page this draft came from. It always
-    // is — the selection effect closes the editor — and the check is here so
-    // that a change to the effect cannot turn the editor into a cross-page
+    const target = editingTargetRef.current;
+    if (!target || saving) return;
+    // The column must still be showing the thing this draft came from, compared
+    // by the SAME key the save is about to post to — a check against some other
+    // expression of "same row" could pass while the URL points elsewhere. It
+    // always is — the selection effect closes the editor — and the check is here
+    // so that a change to the effect cannot turn the editor into a cross-file
     // overwrite without something refusing.
-    if (payloadRef.current?.slug !== slug) return;
+    if (previewWriteTarget(payloadRef.current)?.key !== target.key) return;
     setSaving(true);
     setSaveError(null);
     // The request, the write route and the "server's sentence, else the Copy
     // table's" rule all live in `workbench-preview`, where a stubbed fetch can
     // run them. `savePreviewBody` RESOLVES on a rejected save rather than
     // throwing, because the only correct response is to keep the editor open.
-    const result = await savePreviewBody(slug, draft, {
+    const result = await savePreviewBody(target.url, draft, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      fallback: PREVIEW_SAVE_FAILED_COPY,
+      fallback: previewEditCopy(target).saveFallback,
     });
     // Busy flag first, on every exit path including the superseded one below.
     setSaving(false);
     // The owner may have picked another row while this was in flight. The
     // column is showing that row now, so stamping this draft onto its payload
-    // would put page A's text under page B's header — and the focus restore
+    // would put file A's text under file B's header — and the focus restore
     // would pull focus off whatever they just clicked. The write is done and
     // the shell will notice it either way — the bump already landed.
-    if (payloadRef.current?.slug !== slug) return;
+    if (previewWriteTarget(payloadRef.current)?.key !== target.key) return;
     if (result.status === "ok") {
       // Back to view-first showing what was saved. The body is the text that
       // just went over the wire, so no second read is needed to be truthful.
@@ -306,9 +332,15 @@ function PreviewPane({
         // `undefined`, so a nullish fallback would leave the header blank.
         node?.name || selection.path.split("/").filter(Boolean).at(-1) || selection.path;
 
-  // Both conditions live in one executed function — see `canEditPreview`. Left
-  // inline, dropping the truncation half kept the whole suite green.
+  // Every condition lives in one executed function — see `canEditPreview`, which
+  // is `previewWriteTarget(payload) !== null`. Left inline, dropping the
+  // truncation half kept the whole suite green.
   const canEdit = canEditPreview(payload);
+  // WHICH sentences the confirm dialog shows — a page's or the Schema's —
+  // decided by an executed function rather than a ternary in the JSX below. A
+  // dialog that promised to update "its index and links" while overwriting the
+  // Schema is a wording bug no source scan can see.
+  const editCopy = previewEditCopy(previewWriteTarget(payload));
 
   function body() {
     // WHICH state this is, decided by an executed function rather than by four
@@ -453,8 +485,8 @@ function PreviewPane({
           with nothing written; only Confirm opens the editor. */}
       <ConfirmDialog
         open={confirmOpen}
-        title={PREVIEW_EDIT_CONFIRM_TITLE}
-        body={PREVIEW_EDIT_CONFIRM_BODY}
+        title={editCopy.confirmTitle}
+        body={editCopy.confirmBody}
         confirmLabel={PREVIEW_EDIT_CONFIRM_LABEL}
         cancelLabel={PREVIEW_CANCEL_COPY}
         onConfirm={startEditing}

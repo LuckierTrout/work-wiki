@@ -437,3 +437,43 @@ source_spec: `spec-1-7-dataversion-workbench-refresh.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
+
+### DW-56: The Schema write has no lost-update protection, so an editor left open across another actor's save silently clobbers it.
+origin: spec-deferred 078a87eb5dc9
+location: src/app/api/workbench/artifact/route.ts, src/lib/wikis.ts (writeWikiArtifact)
+source_spec: `spec-1-8-edit-schema.md`
+severity: medium
+reason: `PUT /api/workbench/artifact` carries no ETag, no `If-Match` and no `updatedAt` precondition, and `writeWikiArtifact` stores the body unconditionally. Story 1.7's refresh deliberately does not disturb an open editor, so a draft can legitimately outlive several bumps and then overwrite them. `PUT /api/wiki/[slug]` has the same property — this is the inherited pattern, not a new one — but the artifact is the single file every ingest, chat and lint prompt reads, so the blast radius is larger. The storage contract already exposes a compare-and-set write; what is missing is a version on the payload and a decision about what the column shows on conflict, which is the same conflict-surface design spec-1-7 deferred for the Preview.
+status: open
+
+### DW-57: A Preview left open on `schema.md` across a Scenario Template re-apply shows pre-template bytes, and saving them silently reverts the re-apply.
+origin: spec-deferred a5eae62be08b
+location: src/lib/wikis.ts (seedWikiArtifacts / applyScenarioTemplate), src/components/workbench/PreviewColumn.tsx
+source_spec: `spec-1-8-edit-schema.md`
+severity: medium
+reason: `applyScenarioTemplate` rewrites `schema.md` through `seedWikiArtifacts`, which by this spec's own Never list does not bump `dataVersion` (DW-49). `PreviewPane`'s fetch effect re-runs only on `[selection, dataVersion, editing]`, and a re-apply moves none of the three — the Wiki id, the mode and the tree tab are unchanged, so `Workbench`'s selection-reset effect does not fire either. Before this story that stale column was read-only; it is now writable, so Edit → Save writes the pre-template Schema back over the freshly seeded one with a success message. Closing it means deciding whether seeding and re-apply bump the counter, which belongs with the story that owns those flows.
+status: open
+
+### DW-58: FR-34's other half is still unbuilt — `purpose.md` is editable from no surface, and the narrow allowlist now pins that shut.
+origin: spec-deferred d9e12a049e09
+location: src/lib/wiki-scenarios.ts (EDITABLE_ARTIFACT_FILES)
+source_spec: `spec-1-8-edit-schema.md`
+severity: low
+reason: PRD FR-34 reads "Christian can view/edit purpose and Schema from Settings or Wiki tree", and the UX run names both files. This story's acceptance covers Schema alone, so the exclusion is correct here — but it is now an asserted invariant (`expect(EDITABLE_ARTIFACT_FILES).not.toContain( "purpose.md")`), so a later story must edit a test to open it. Opening it also needs an answer to what `purpose.md` must contain to be valid (the Schema's `hasPageConventions` has no analogue) and to how it reconciles with the tenant-global workspace profile (DW-14, DW-21), which is why it was not simply widened here.
+status: open
+
+### DW-59: An overwritten Schema has no recovery path — the artifact write takes no revision snapshot, while the page write it is modelled on does.
+origin: spec-deferred 3d268db29649
+location: src/lib/wikis.ts (writeWikiArtifact / putWikiArtifact), src/lib/revisions.ts
+source_spec: `spec-1-8-edit-schema.md`
+severity: medium
+reason: `writeWikiPageWithSideEffects` calls `saveRevision(slug, existing, …)` (`src/lib/wiki.ts:442`) before it overwrites, and `GET/POST /api/wiki/[slug]/revisions` can revert a page. `writeWikiArtifact` writes through `putWikiArtifact` with no prior read and no snapshot, so the previous `schema.md` is simply gone. That was harmless while the file was seed-only and immutable; it is not once the file is editable, and this is the single file every ingest, chat and lint prompt reads. The story's Design Notes deliberately enumerate the artifact tail as log + bump, so this is a decided omission rather than a missed one — but revisioning is not an index/backlink concern the artifact class lacks, it is the recovery path, and closing it needs a decision about where artifact revisions live (the `revisions/` silo is slug-keyed) that this story does not own.
+status: open
+
+### DW-60: Follow-up review still recommended for 1-8-edit-schema after the damping cap was spent
+origin: review-budget-followup
+location: n/a
+source_spec: `spec-1-8-edit-schema.md`
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
+status: open

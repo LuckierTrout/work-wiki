@@ -8,6 +8,7 @@
  * is spelled twice across the client/server boundary.
  */
 
+import { isEditableArtifactFile, type EditableArtifactFile } from "./wiki-scenarios";
 import type { TreeSelection } from "./workbench-tree";
 
 // ---------------------------------------------------------------------------
@@ -92,8 +93,25 @@ export interface PreviewPayload {
    * same bytes reached two ways — and it is what the editor `PUT`s to.
    */
   slug?: string;
+  /**
+   * The seeded Wiki artifact this body IS, when it is one (Story 1.8). Present
+   * only for a file selection naming an artifact the owner may write —
+   * `schema.md` today — and never together with `slug`: an artifact has no slug,
+   * no page-index entry and no file under `wiki/`, which is precisely why it is
+   * written through its own route rather than through `PUT /api/wiki/[slug]`.
+   */
+  artifact?: EditableArtifactFile;
   format: PreviewFormat;
-  /** Markdown BODY — never the YAML block, which the server strips. */
+  /**
+   * What the column renders and what the editor is seeded with.
+   *
+   * For a PAGE this is the markdown BODY with the YAML block already stripped,
+   * because `PUT /api/wiki/[slug]` owns frontmatter end-to-end. For an
+   * {@link PreviewPayload.artifact} it is the WHOLE file, block included:
+   * `PUT /api/workbench/artifact` stores `content` verbatim and owns no
+   * frontmatter, so stripping here would hand the editor a body whose next save
+   * deletes the block. Read and write agree on which bytes they mean, per kind.
+   */
   body: string;
   /** The body was longer than {@link PREVIEW_MAX_CHARS} and was sliced. */
   truncated: boolean;
@@ -104,24 +122,17 @@ export interface PreviewPayload {
 /**
  * May the confirm-gated editor be offered for this payload?
  *
- * THREE conditions, and they travel together. `editable` is the route's judgement
- * that a write path exists (a compiled Page, never an artifact or a source).
- * `!truncated` is the one that is easy to drop and expensive to lose: the editor
- * is seeded with `payload.body`, which for a capped page is a PREFIX, and saving
- * it would replace the whole page with that prefix through
- * `writeWikiPageWithSideEffects`. A pure function so a test executes the pair —
- * inline in JSX, deleting half of it left the whole suite green.
+ * Exactly "is there somewhere for `Save` to go", which is
+ * {@link previewWriteTarget}. Expressing it that way rather than as a second
+ * list of conditions is what keeps the truncation rule ATTACHED to the decision
+ * instead of sitting beside it: the editor is seeded with `payload.body`, which
+ * for a capped file is a PREFIX, and saving that replaces a whole page — or,
+ * since Story 1.8, a whole executable Schema — with its first
+ * {@link PREVIEW_MAX_CHARS} characters. Inline in JSX, deleting half of the old
+ * pair left the entire suite green.
  */
 export function canEditPreview(payload: PreviewPayload | null): boolean {
-  if (payload === null) return false;
-  // A THIRD condition, and the reason it is here rather than assumed: the editor
-  // saves to `pageWriteUrl(slug)`, so a payload that is `editable` without a
-  // slug can open the editor, enable `Save`, and then do nothing at all when it
-  // is pressed — the worst of the three outcomes, because it neither writes nor
-  // says why. The route never emits that pair; `isPreviewPayload` does not check
-  // it either, so nothing else refuses it.
-  if (typeof payload.slug !== "string" || payload.slug.length === 0) return false;
-  return payload.editable && !payload.truncated;
+  return previewWriteTarget(payload) !== null;
 }
 
 /**
@@ -174,15 +185,87 @@ export function previewRequestUrl(selection: TreeSelection): string {
 }
 
 /**
- * The ONE write path. `PUT /api/wiki/[slug]` goes through
+ * The one write path FOR A PAGE. `PUT /api/wiki/[slug]` goes through
  * `writeWikiPageWithSideEffects`, so index, cross-references, backlinks and the
  * activity log all stay consistent. Named here so the Preview cannot grow a
  * second markdown writer by typing a different URL.
+ *
+ * Story 1.8 adds {@link ARTIFACT_WRITE_ROUTE} beside it — not a second writer
+ * for the same bytes, but the only writer for a class of bytes this route
+ * cannot address at all. Which of the two a payload uses is
+ * {@link previewWriteTarget}'s answer and nothing else's.
  */
 export const PAGE_WRITE_ROUTE = "/api/wiki";
 
 export function pageWriteUrl(slug: string): string {
   return `${PAGE_WRITE_ROUTE}/${encodeURIComponent(slug)}`;
+}
+
+/**
+ * The OTHER write path, and the only other one there is: `PUT
+ * /api/workbench/artifact` (Story 1.8).
+ *
+ * A Wiki artifact is not a Page — no slug, no page-index entry, nothing under
+ * `tenants/<t>/wiki/` — so it cannot travel through {@link PAGE_WRITE_ROUTE}
+ * without acquiring all three. It goes to a route of its own that writes through
+ * `writeWikiArtifact`, which fires the two side effects an artifact actually has
+ * (the activity log and the refresh counter).
+ */
+export const ARTIFACT_WRITE_ROUTE = "/api/workbench/artifact";
+
+/**
+ * The browser never names a Wiki, a tenant or a storage key — only WHICH
+ * artifact. The route re-derives everything else from the session, so this URL
+ * carries exactly one parameter and nothing a caller could widen.
+ */
+export function artifactWriteUrl(file: EditableArtifactFile): string {
+  return `${ARTIFACT_WRITE_ROUTE}?path=${encodeURIComponent(file)}`;
+}
+
+/**
+ * Where an open editor's `Save` posts, and how to tell whether the column is
+ * still showing the thing the draft came from.
+ *
+ * ONE value carrying both, because the column needs both and they must agree:
+ * a `key` compared against a URL derived somewhere else is exactly how a pick
+ * made mid-save writes one file's draft to another file's route. `key` is
+ * namespaced (`page:` / `artifact:`) so a page whose slug happens to read
+ * `schema.md` can never collide with the artifact.
+ */
+export type PreviewWriteTarget =
+  | { kind: "page"; key: string; url: string }
+  | { kind: "artifact"; key: string; url: string };
+
+/**
+ * Decide the write target for a payload, or `null` when there is none.
+ *
+ * A pure function rather than a branch typed into the component: this suite runs
+ * `environment: "node"` with no DOM, so a rule living inside a React effect can
+ * only ever be grepped for — and "which URL does Save go to" is precisely the
+ * kind of rule a rewrite keeps the wording of while changing the behaviour.
+ *
+ * `truncated` is refused here, for both kinds, for the reason
+ * {@link canEditPreview} documents. `editable` is the SERVER's judgement and is
+ * required: the column decides nothing about what may be written, it only asks
+ * where. And a payload that is `editable` with neither a slug nor an artifact
+ * returns `null` rather than a target — otherwise the editor opens, `Save`
+ * enables, and pressing it neither writes nor says why.
+ */
+export function previewWriteTarget(
+  payload: PreviewPayload | null,
+): PreviewWriteTarget | null {
+  if (payload === null || !payload.editable || payload.truncated) return null;
+  if (typeof payload.slug === "string" && payload.slug.length > 0) {
+    return { kind: "page", key: `page:${payload.slug}`, url: pageWriteUrl(payload.slug) };
+  }
+  if (isEditableArtifactFile(payload.artifact)) {
+    return {
+      kind: "artifact",
+      key: `artifact:${payload.artifact}`,
+      url: artifactWriteUrl(payload.artifact),
+    };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +313,16 @@ export const PREVIEW_EDIT_CONFIRM_BODY =
   "Preview is view-first. Editing opens the raw markdown — there is no rich-text editor. Saving writes through the wiki and updates its index and links.";
 export const PREVIEW_EDIT_CONFIRM_LABEL = "Edit markdown";
 
+/**
+ * The same gate for the Schema, which is not a page and does not behave like
+ * one. The consequence sentence is the whole reason this copy differs: a page
+ * edit changes what one page says, and a Schema edit changes what every future
+ * ingest, chat and lint prompt is told to do.
+ */
+export const PREVIEW_EDIT_SCHEMA_CONFIRM_TITLE = "Edit this Wiki’s Schema?";
+export const PREVIEW_EDIT_SCHEMA_CONFIRM_BODY =
+  "Preview is view-first. Editing opens the raw markdown — there is no rich-text editor. The Schema is executable: its Page conventions section is read by every ingest, chat and lint that runs after you save.";
+
 /** Editor actions. `Cancel` is shared with the confirm dialog. */
 export const PREVIEW_CANCEL_COPY = "Cancel";
 export const PREVIEW_SAVE_COPY = "Save";
@@ -242,6 +335,45 @@ export const PREVIEW_SAVING_COPY = "Saving…";
  * as the FALLBACK: a message the server supplied is always preferred.
  */
 export const PREVIEW_SAVE_FAILED_COPY = "This page couldn’t be saved.";
+
+/** The same fallback for the Schema, which is not a page. */
+export const PREVIEW_SCHEMA_SAVE_FAILED_COPY = "This Schema couldn’t be saved.";
+
+/** Every sentence the editor needs, chosen by what it is about to write. */
+export interface PreviewEditCopy {
+  confirmTitle: string;
+  confirmBody: string;
+  /** Shown only when the server supplied no sentence of its own. */
+  saveFallback: string;
+}
+
+/**
+ * Which of the two copy sets the confirm dialog and the save show.
+ *
+ * A function the node suite executes rather than a ternary typed into JSX, for
+ * the same reason {@link previewWriteTarget} is one: with no DOM environment, a
+ * branch in the component can only be matched as source text, and "the dialog
+ * says page when it is about to overwrite the Schema" is a wording bug a source
+ * scan cannot see.
+ *
+ * A `null` target answers the PAGE copy — the dialog is unreachable without a
+ * target (`canEditPreview` is the same predicate), so this only has to be
+ * total, not meaningful.
+ */
+export function previewEditCopy(target: PreviewWriteTarget | null): PreviewEditCopy {
+  if (target?.kind === "artifact") {
+    return {
+      confirmTitle: PREVIEW_EDIT_SCHEMA_CONFIRM_TITLE,
+      confirmBody: PREVIEW_EDIT_SCHEMA_CONFIRM_BODY,
+      saveFallback: PREVIEW_SCHEMA_SAVE_FAILED_COPY,
+    };
+  }
+  return {
+    confirmTitle: PREVIEW_EDIT_CONFIRM_TITLE,
+    confirmBody: PREVIEW_EDIT_CONFIRM_BODY,
+    saveFallback: PREVIEW_SAVE_FAILED_COPY,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // The two request decisions
@@ -369,11 +501,20 @@ export type PreviewSaveResult =
   | { status: "error"; message: string };
 
 /**
- * Save an edited body through {@link PAGE_WRITE_ROUTE}.
+ * Save an edited body to a write target's URL.
  *
- * `content` is the markdown BODY with no YAML: that route documents the field
- * that way and owns frontmatter end-to-end, so handing it a full file would
- * double the block.
+ * ONE save client for both write paths. The URL is the caller's — always
+ * {@link previewWriteTarget}'s `url`, i.e. {@link pageWriteUrl} or
+ * {@link artifactWriteUrl} — rather than a slug this function turns into a
+ * route, because the moment the column had to choose between two routes the
+ * alternative was a second `fetch` in the component, which is the state the
+ * whole module exists to prevent. Both routes take `PUT` with `{ content }` and
+ * answer `{ error }` on refusal, so nothing else here branches.
+ *
+ * `content` is the markdown BODY with no YAML: `PUT /api/wiki/[slug]` documents
+ * the field that way and owns frontmatter end-to-end, so handing it a full file
+ * would double the block. An artifact has no frontmatter at all, so its bytes
+ * are the whole file.
  *
  * A rejected save resolves — it does not throw — because the caller's only
  * correct response is to keep the editor open with the owner's text and show
@@ -387,7 +528,7 @@ export type PreviewSaveResult =
  * reaches the owner verbatim, because only the server knows which it was.
  */
 export async function savePreviewBody(
-  slug: string,
+  url: string,
   content: string,
   options: {
     signal?: AbortSignal;
@@ -398,7 +539,7 @@ export async function savePreviewBody(
   const send = options.fetchImpl ?? fetch;
   const fallback = options.fallback ?? PREVIEW_SAVE_FAILED_COPY;
   try {
-    const response = await send(pageWriteUrl(slug), {
+    const response = await send(url, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content }),

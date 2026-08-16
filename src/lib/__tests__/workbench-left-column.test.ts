@@ -316,7 +316,7 @@ describe("PreviewColumn is view-first over a rendered body", () => {
     // and the PUT live in `workbench-preview` (executed there); what this pins
     // is that the column reaches the write path only through that function and
     // never spells a request of its own.
-    expect(source).toContain("savePreviewBody(slug, draft");
+    expect(source).toContain("savePreviewBody(target.url, draft");
     // Call sites, not the docblock that explains the route: the column issues
     // no request of its own at all now — both go through `workbench-preview`,
     // where a stubbed fetch executes them.
@@ -328,12 +328,16 @@ describe("PreviewColumn is view-first over a rendered body", () => {
     expect(source).toContain("setSaving(false)");
     // A save that lands after the owner picked another row must not stamp this
     // draft onto that row's payload, nor pull focus off what they just clicked.
-    expect(source).toContain("if (payloadRef.current?.slug !== slug) return;");
-    // The draft is keyed to the page it was SEEDED from, not to whatever the
+    expect(source).toContain(
+      "if (previewWriteTarget(payloadRef.current)?.key !== target.key) return;",
+    );
+    // The draft is keyed to the TARGET it was SEEDED from, not to whatever the
     // column happens to be showing when Save is pressed. Reading `payload?.slug`
     // there would write page A's text under page B's slug the moment the editor
-    // outlived a selection change.
-    expect(source).toContain("const slug = editingSlugRef.current;");
+    // outlived a selection change — and since Story 1.8 the same mistake would
+    // post a page's draft to the Schema's route, because the two now differ in
+    // URL as well as in key.
+    expect(source).toContain("const target = editingTargetRef.current;");
     expect(source).not.toContain("const slug = payload?.slug;");
     // And a pick closes the editor, so the two can only disagree if this is
     // deleted — which is why the check above exists as well as this line.
@@ -342,7 +346,7 @@ describe("PreviewColumn is view-first over a rendered body", () => {
       source.indexOf("}, [selection, dataVersion, editing])"),
     );
     expect(fetchEffect).toContain("setEditing(false)");
-    expect(fetchEffect).toContain("editingSlugRef.current = null");
+    expect(fetchEffect).toContain("editingTargetRef.current = null");
     // Disabling the focused textarea moves focus to `<body>` for the length of
     // the save, dropping the caret and, on failure, the owner's place in it.
     // `lastIndexOf`: the module docblock names `<textarea>` too, and the

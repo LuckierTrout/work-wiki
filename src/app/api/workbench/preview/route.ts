@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
+import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { stripFrontmatterBlock } from "@/lib/markdown";
+import { isOwnerHandle } from "@/lib/owner";
 import { listReadableWikiPages, readWikiPage } from "@/lib/wiki";
+import { isEditableArtifactFile } from "@/lib/wiki-scenarios";
 import { getWikiRegistry } from "@/lib/wikis";
 import { readWorkbenchFile, wikiLeafSlug, workbenchFileExists } from "@/lib/workbench-files";
 import {
@@ -62,13 +65,23 @@ function badRequest(message: string) {
 }
 
 /**
- * The body as the owner reads it AND as the editor edits it: one string, with
- * the YAML block already gone. `PUT /api/wiki/[slug]` documents `content` as the
- * body without frontmatter and owns the block end-to-end, so stripping here is
- * what makes read, edit and save agree on one string.
+ * The body as the owner reads it AND as the editor edits it: one string.
+ *
+ * For a PAGE the YAML block is already gone. `PUT /api/wiki/[slug]` documents
+ * `content` as the body without frontmatter and owns the block end-to-end, so
+ * stripping here is what makes read, edit and save agree on one string.
+ *
+ * `whole` is the ARTIFACT's exception, and it is not cosmetic.
+ * `PUT /api/workbench/artifact` stores `content` as the ENTIRE file and owns no
+ * frontmatter for it at all — which is what `PreviewPayload.artifact` already
+ * claims. Stripping a leading `---` block here would hand the editor a body the
+ * next save writes back without it: a silent deletion, answered with a 200 and a
+ * `dataVersion` bump. Read and write have to agree on which bytes they mean, and
+ * for an artifact those bytes are all of them.
  */
-function bodyFor(format: PreviewFormat, content: string): string {
+function bodyFor(format: PreviewFormat, content: string, whole = false): string {
   if (format === "unsupported") return "";
+  if (whole) return content;
   return format === "markdown" ? stripFrontmatterBlock(content) : content;
 }
 
@@ -160,7 +173,6 @@ async function handle(request: Request) {
     content = file.content;
   }
 
-  const { body, truncated } = capPreviewBody(bodyFor(format, content));
   // `wiki/<slug>.md` is the same bytes a Page selection reads, reached from the
   // other tab — so it carries the slug and is editable through the same route.
   const segments = displayPath.split("/");
@@ -174,17 +186,51 @@ async function handle(request: Request) {
       ? (wikiLeafSlug(segments[1]) ?? undefined)
       : undefined;
 
+  // The Schema (Story 1.8). A single-segment display path that is in
+  // `EDITABLE_ARTIFACT_FILES` and got this far has already been resolved through
+  // `readWorkbenchFile` → `readWikiArtifact`, which needs `currentId` and the
+  // file to exist — so reaching here means this Wiki genuinely has one. The
+  // allowlist is the SAME constant the write route gates on, so what the column
+  // is offered and what the server will accept cannot drift.
+  const artifact = isEditableArtifactFile(displayPath) ? displayPath : undefined;
+
+  // Decided AFTER `artifact`, because whether the YAML block is stripped depends
+  // on it — see `bodyFor`. An artifact is whole-file in both directions.
+  const { body, truncated } = capPreviewBody(
+    bodyFor(format, content, artifact !== undefined),
+  );
+
   const payload: PreviewPayload = {
     name: segments[segments.length - 1],
     path: displayPath,
     ...(slug ? { slug } : {}),
+    ...(artifact ? { artifact } : {}),
     format,
     body,
     truncated,
-    // Editable only where a Page lives. `purpose.md`, `schema.md` and everything
-    // under `raw/` stay read-only here — Schema editing is Story 1.8 and Sources
-    // are Epic 2, and neither has a write path through `/api/wiki/[slug]`.
-    editable: slug !== undefined && format === "markdown",
+    // Editable where a Page lives, or where the editable artifact does.
+    // `purpose.md` and everything under `raw/` stay read-only: the first is
+    // deliberately out of Story 1.8's scope (it has no runtime reader and its
+    // content overlaps the tenant-global workspace profile), and Sources are
+    // Epic 2. Neither has a write path at all.
+    //
+    // The artifact half also consults BOTH refusals `PUT
+    // /api/workbench/artifact` answers 403 to — `isReadOnly()` and
+    // `isOwnerHandle()` — because offering `Edit` where the write will refuse
+    // walks the owner through the confirm dialog and a full retype of an
+    // executable Schema only to fail at `Save`. The owner half matters even on a
+    // single-owner deployment: `isOwnerHandle` is false for EVERYONE when
+    // `NEXT_PUBLIC_OWNER_HANDLE` is unset (`owner.ts`), while the Workbench
+    // itself is only signed-in-gated (`page.tsx`), so without this the affordance
+    // is offered on a deployment where no save can ever land. The page half
+    // deliberately consults neither: `PUT /api/wiki/[slug]` has no read-only and
+    // no owner check at all, so a page save still lands for any signed-in
+    // principal on such a deployment, and pretending otherwise here would be the
+    // drift.
+    editable:
+      format === "markdown" &&
+      (slug !== undefined ||
+        (artifact !== undefined && !isReadOnly() && isOwnerHandle(principal.handle))),
   };
   return json(payload);
 }

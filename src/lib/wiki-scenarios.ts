@@ -57,6 +57,40 @@ export const SCENARIO_LABELS: Record<WorkspaceScenario, string> = {
 export const WIKI_ARTIFACT_FILES = ["purpose.md", "schema.md"] as const;
 export type WikiArtifactFile = (typeof WIKI_ARTIFACT_FILES)[number];
 
+/**
+ * The artifacts an owner may EDIT from the Preview (Story 1.8) — a strict
+ * subset of {@link WIKI_ARTIFACT_FILES}, and today exactly one.
+ *
+ * `schema.md` is executable: `loadPageConventions()` reads the active Wiki's
+ * copy and hands its `## Page conventions` body to every ingest, chat and lint
+ * prompt, so editing it changes behaviour with no deploy. `purpose.md` has no
+ * runtime reader at all and its content overlaps the tenant-global workspace
+ * profile, whose reconciliation is an open design decision — so it stays
+ * read-only until whichever story owns that decision. Adding it is one entry
+ * here, which is the whole point of the list being named.
+ *
+ * Declared in THIS module rather than in `wikis.ts` because both the browser
+ * (`workbench-preview.ts`, which the Preview column imports) and the write
+ * route have to name it, and `wikis.ts` would drag the storage provider into
+ * the client chunk.
+ */
+export const EDITABLE_ARTIFACT_FILES = ["schema.md"] as const;
+export type EditableArtifactFile = (typeof EDITABLE_ARTIFACT_FILES)[number];
+
+/**
+ * Whether a value names the one artifact the Preview may write.
+ *
+ * Takes `unknown` on purpose: it is the write route's allowlist over a raw
+ * query parameter as well as the payload check the column runs, so it must
+ * refuse a number, an array and `undefined` without a caller narrowing first.
+ */
+export function isEditableArtifactFile(value: unknown): value is EditableArtifactFile {
+  return (
+    typeof value === "string" &&
+    (EDITABLE_ARTIFACT_FILES as readonly string[]).includes(value)
+  );
+}
+
 /** Longest accepted Wiki name — shared by the input parser and the dialog. */
 export const MAX_WIKI_NAME_CHARS = 80;
 

@@ -585,9 +585,32 @@ describe("the bump lives at exactly one site", () => {
         offenders.push(path.relative(SRC, file).split(path.sep).join("/"));
       }
     }
-    // The definition and the one call site. `seedWikiArtifacts` and every other
-    // writer that bypasses `runPageLifecycleOp` are deliberately absent.
-    expect(offenders.sort()).toEqual(["lib/data-version.ts", "lib/lifecycle.ts"]);
+    // The definition, the page pipeline's one call site, and — since Story 1.8
+    // — `writeWikiArtifact`, the ONE writer for a class of bytes the page
+    // pipeline cannot address at all (`schema.md` has no slug and no page-index
+    // entry). `seedWikiArtifacts` and every other writer that bypasses both are
+    // still deliberately absent.
+    expect(offenders.sort()).toEqual([
+      "lib/data-version.ts",
+      "lib/lifecycle.ts",
+      "lib/wikis.ts",
+    ]);
+  });
+
+  it("has exactly one site inside wikis.ts, and it is the artifact writer", async () => {
+    // The list above is FILE-granular, so allowlisting `lib/wikis.ts` for
+    // `writeWikiArtifact` would otherwise buy a blanket exemption for the whole
+    // module — and `seedWikiArtifacts`, `createWiki` and `applyScenarioTemplate`
+    // all live in it and are all forbidden from bumping (DW-49's seeding half
+    // belongs to whichever story owns those flows). This pins the count the way
+    // the `lifecycle.ts` test above pins its own, so a second bump anywhere in
+    // the module fails here instead of passing as an already-known file.
+    const source = await readSource("lib/wikis.ts");
+    expect(source.match(/bumpDataVersion\(\)/g) ?? []).toHaveLength(1);
+    const bump = source.indexOf("await bumpDataVersion();");
+    const writer = source.indexOf("export async function writeWikiArtifact(");
+    expect(writer).toBeGreaterThan(-1);
+    expect(bump).toBeGreaterThan(writer);
   });
 
   it("introduces no second refresh paradigm anywhere in src", async () => {
@@ -721,7 +744,7 @@ describe("the Preview column re-reads its bytes without disturbing an editor", (
       source.indexOf("}, [selection, dataVersion, editing])"),
     );
     expect(effect).toContain("setEditing(false)");
-    expect(effect).toContain("editingSlugRef.current = null");
+    expect(effect).toContain("editingTargetRef.current = null");
     expect(effect).toContain("setPayload(null)");
     // A silent refresh that succeeds must clear a previous failure; one that
     // fails must still say so, because a page another actor just deleted cannot

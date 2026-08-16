@@ -76,6 +76,44 @@ export function sectionBody(section: string): string {
 }
 
 /**
+ * Does this Schema still carry page conventions a prompt can use?
+ *
+ * Composed from {@link extractSection}, {@link sectionBody} and
+ * {@link PAGE_CONVENTIONS_HEADING} — the SAME three primitives
+ * `loadPageConventions()` runs, so "what the prompt will find" and "what the
+ * write route accepts" cannot drift. A second regex over `## Page conventions`
+ * anywhere in this repo is the forked copy AD-10 forbids.
+ *
+ * The BODY is what is tested, not the section: `extractSection` always returns
+ * at least the heading line itself, so a file holding nothing but
+ * `## Page conventions` would pass a section-level check and still hand the
+ * prompt an empty contract.
+ *
+ * Takes `unknown`, like its sibling `isEditableArtifactFile`: its first caller
+ * is a route validating a field off a parsed JSON body, so it has to refuse a
+ * number, an object and `undefined` without the caller narrowing first. Typing
+ * it `string` would make the guard below unreachable on paper and force every
+ * honest test of it through a cast.
+ */
+export function hasPageConventions(content: unknown): boolean {
+  if (typeof content !== "string") return false;
+  return sectionBody(extractSection(content, PAGE_CONVENTIONS_HEADING)).length > 0;
+}
+
+/**
+ * What a save is refused with when {@link hasPageConventions} is false.
+ *
+ * Why refuse at all: `loadPageConventions()` deliberately falls back to the
+ * repo-root `SCHEMA.md` when the Wiki's section is empty, so that a file nobody
+ * edited cannot strip the prompt. That fallback is the wrong answer to a
+ * DELIBERATE save — the owner would be told it succeeded while their Schema
+ * quietly stopped steering anything. The sentence names the section so the fix
+ * is the next thing they can type; the heading is interpolated rather than
+ * spelled, so it cannot outlive the literal `extractSection` matches on.
+ */
+export const PAGE_CONVENTIONS_REQUIRED_COPY = `A Wiki’s Schema must keep a “${PAGE_CONVENTIONS_HEADING}” section with something in it — that section is what every ingest, chat and lint prompt reads.`;
+
+/**
  * The engine's page-conventions BODY from the repo-root `SCHEMA.md`.
  *
  * The slug rule, the H1/summary rules, the `[Title](other-slug.md)`

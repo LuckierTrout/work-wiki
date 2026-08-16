@@ -31,6 +31,7 @@ vi.mock("@/lib/auth", () => ({
 }));
 import { stripFrontmatterBlock } from "../markdown";
 import {
+  ARTIFACT_WRITE_ROUTE,
   PAGE_WRITE_ROUTE,
   PREVIEW_MAX_CHARS,
   PREVIEW_ROUTE,
@@ -38,6 +39,7 @@ import {
   PREVIEW_TIMEOUT_REASON,
   PREVIEW_TRUNCATED_COPY,
   WIKILINK_MISSING_COPY,
+  artifactWriteUrl,
   canEditPreview,
   capPreviewBody,
   fetchPreview,
@@ -45,6 +47,7 @@ import {
   previewBodyState,
   previewFileKind,
   previewRequestUrl,
+  previewWriteTarget,
   savePreviewBody,
   type PreviewFetch,
   type PreviewPayload,
@@ -487,14 +490,103 @@ describe("canEditPreview", () => {
     expect(canEditPreview({ ...editable, editable: false, truncated: true })).toBe(false);
   });
 
-  it("refuses a payload that is editable but names no page", () => {
-    // The editor writes to `pageWriteUrl(slug)`. Without a slug the control
-    // opens, `Save` enables, and pressing it does nothing at all — no write and
-    // no message. The route never emits this pair and `isPreviewPayload` does
-    // not check it, so this is the only thing that refuses it.
+  it("refuses a payload that is editable but names no target at all", () => {
+    // The editor writes to a target's URL. With neither a slug nor an artifact
+    // the control opens, `Save` enables, and pressing it does nothing at all —
+    // no write and no message. Neither route emits this shape and
+    // `isPreviewPayload` does not check it, so this is the only thing that
+    // refuses it.
     const { slug: _slug, ...slugless } = editable;
     expect(canEditPreview(slugless as PreviewPayload)).toBe(false);
     expect(canEditPreview({ ...editable, slug: "" })).toBe(false);
+  });
+
+  it("offers the editor for the editable artifact, which has no slug", () => {
+    // Story 1.8: `schema.md` is editable and is NOT a page — the old
+    // slug-or-nothing rule would have refused it forever.
+    const { slug: _slug, ...base } = editable;
+    const schema = { ...base, artifact: "schema.md" } as PreviewPayload;
+    expect(canEditPreview(schema)).toBe(true);
+    // The server still decides, and truncation still refuses — saving a capped
+    // prefix over an executable Schema is the same mistake as over a page.
+    expect(canEditPreview({ ...schema, editable: false })).toBe(false);
+    expect(canEditPreview({ ...schema, truncated: true })).toBe(false);
+    // The allowlist is the gate, not "any string in `artifact`".
+    expect(
+      canEditPreview({ ...base, artifact: "purpose.md" } as unknown as PreviewPayload),
+    ).toBe(false);
+  });
+});
+
+describe("previewWriteTarget", () => {
+  const editable: PreviewPayload = { ...PAYLOAD_SHAPE, editable: true, truncated: false };
+
+  it("routes a page to the page write path", () => {
+    expect(previewWriteTarget(editable)).toEqual({
+      kind: "page",
+      key: "page:alpha",
+      url: "/api/wiki/alpha",
+    });
+  });
+
+  it("routes the artifact to the artifact write path", () => {
+    const { slug: _slug, ...base } = editable;
+    expect(
+      previewWriteTarget({ ...base, artifact: "schema.md" } as PreviewPayload),
+    ).toEqual({
+      kind: "artifact",
+      key: "artifact:schema.md",
+      url: "/api/workbench/artifact?path=schema.md",
+    });
+  });
+
+  it("namespaces the key so a page can never collide with the artifact", () => {
+    // A page whose slug reads `schema.md` and the Schema itself must not share
+    // a key: the column compares keys to decide whether the row on screen is
+    // still the one the draft came from, and a collision there would let a save
+    // land on the wrong URL.
+    const page = previewWriteTarget({ ...editable, slug: "schema.md" });
+    const { slug: _slug, ...base } = editable;
+    const artifact = previewWriteTarget({
+      ...base,
+      artifact: "schema.md",
+    } as PreviewPayload);
+    expect(page?.key).not.toBe(artifact?.key);
+    expect(page?.url).not.toBe(artifact?.url);
+  });
+
+  it("answers null for everything with nowhere to write", () => {
+    const { slug: _slug, ...slugless } = editable;
+    expect(previewWriteTarget(null)).toBeNull();
+    expect(previewWriteTarget({ ...editable, editable: false })).toBeNull();
+    expect(previewWriteTarget({ ...editable, truncated: true })).toBeNull();
+    expect(previewWriteTarget(slugless as PreviewPayload)).toBeNull();
+  });
+
+  it("is exactly what canEditPreview asks", () => {
+    // Not two rules that agree today: one is defined as the other, so the
+    // truncation half cannot be dropped from the edit control without also
+    // dropping it from the save.
+    const { slug: _slug, ...base } = editable;
+    for (const payload of [
+      editable,
+      { ...editable, truncated: true },
+      { ...editable, editable: false },
+      { ...base, artifact: "schema.md" } as PreviewPayload,
+      base as PreviewPayload,
+    ]) {
+      expect(canEditPreview(payload)).toBe(previewWriteTarget(payload) !== null);
+    }
+  });
+});
+
+describe("artifactWriteUrl", () => {
+  it("names the route and carries nothing but the file", () => {
+    expect(ARTIFACT_WRITE_ROUTE).toBe("/api/workbench/artifact");
+    expect(artifactWriteUrl("schema.md")).toBe("/api/workbench/artifact?path=schema.md");
+    // The browser names neither a Wiki, a tenant nor a storage key — the route
+    // re-derives all three from the session.
+    expect(artifactWriteUrl("schema.md")).not.toMatch(/tenant|wikis?\/|wikiId/);
   });
 });
 
@@ -833,15 +925,23 @@ describe("GET /api/workbench/preview", () => {
   let originalDataDir: string | undefined;
   let originalWikiDir: string | undefined;
   let originalRawDir: string | undefined;
+  // The artifact half of `editable` consults `isOwnerHandle()`, which is false
+  // for EVERYONE while `NEXT_PUBLIC_OWNER_HANDLE` is unset — so a block that
+  // asserts what the owner is offered has to say who the owner is. Without it
+  // the `schema.md` case below would assert `editable: true` in the one
+  // configuration where no save can land.
+  let originalOwner: string | undefined;
 
   beforeAll(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "wb-preview-route-"));
     originalDataDir = process.env.DATA_DIR;
     originalWikiDir = process.env.WIKI_DIR;
     originalRawDir = process.env.RAW_DIR;
+    originalOwner = process.env.NEXT_PUBLIC_OWNER_HANDLE;
     process.env.DATA_DIR = root;
     process.env.WIKI_DIR = path.join(root, "wiki");
     process.env.RAW_DIR = path.join(root, "raw");
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
     await fs.mkdir(process.env.WIKI_DIR, { recursive: true });
     await fs.mkdir(process.env.RAW_DIR, { recursive: true });
     _resetStorage();
@@ -852,6 +952,7 @@ describe("GET /api/workbench/preview", () => {
       ["DATA_DIR", originalDataDir],
       ["WIKI_DIR", originalWikiDir],
       ["RAW_DIR", originalRawDir],
+      ["NEXT_PUBLIC_OWNER_HANDLE", originalOwner],
     ] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -932,8 +1033,12 @@ describe("GET /api/workbench/preview", () => {
         "kind=file&path=wiki%2Fghost.md",
         "kind=file&path=wiki%2F..%2Fsecrets.md",
         "kind=file&path=%2Fetc%2Fpasswd",
-        // No current Wiki in this fixture, so the artifacts resolve to nothing.
+        // No current Wiki in this fixture, so the artifacts resolve to nothing —
+        // including the one Story 1.8 made editable. "Editable" is a statement
+        // about a resolved artifact, never a reason to answer differently about
+        // one that did not resolve.
         "kind=file&path=purpose.md",
+        "kind=file&path=schema.md",
       ].map(async (query) => {
         const response = await get(query);
         return { status: response.status, body: await response.json() };
@@ -1063,6 +1168,72 @@ describe("GET /api/workbench/preview", () => {
       // The other seeded artifact was never written, and a missing artifact is
       // the same 404 as one outside the caller's reach.
       expect((await get("kind=file&path=schema.md")).status).toBe(404);
+    } finally {
+      // Every other case in this block asserts against an EMPTY registry.
+      await fs.rm(path.dirname(registry), { recursive: true, force: true });
+    }
+  });
+
+  it("offers schema.md for editing and keeps purpose.md read-only", async () => {
+    // Story 1.8. The SERVER decides what may be written: the column only asks.
+    // Both artifacts resolve through the same `currentId`, so the pair proves
+    // the allowlist rather than the presence of a Wiki.
+    const WIKI_ID = "11111111-2222-4333-8444-555555555555";
+    const registry = path.join(root, wikiRegistryPath(OWNER));
+    await fs.mkdir(path.dirname(registry), { recursive: true });
+    await fs.writeFile(
+      registry,
+      JSON.stringify({
+        version: 1,
+        currentId: WIKI_ID,
+        wikis: [
+          {
+            id: WIKI_ID,
+            name: "Field notes",
+            scenario: "research",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      }),
+      "utf-8",
+    );
+    for (const [file, body] of [
+      ["schema.md", "# Schema\n\n## Page conventions\n\nKeep it short.\n"],
+      ["purpose.md", "# Purpose\n"],
+    ] as const) {
+      const abs = path.join(root, wikiArtifactPath(OWNER, WIKI_ID, file));
+      await fs.mkdir(path.dirname(abs), { recursive: true });
+      await fs.writeFile(abs, body, "utf-8");
+    }
+
+    try {
+      const schema = await (await get("kind=file&path=schema.md")).json();
+      expect(schema).toMatchObject({
+        name: "schema.md",
+        path: "schema.md",
+        format: "markdown",
+        artifact: "schema.md",
+        editable: true,
+      });
+      expect(schema.body).toContain("## Page conventions");
+      // An artifact has no slug — it is not a Page and never acquires one.
+      expect(schema.slug).toBeUndefined();
+
+      const purpose = await (await get("kind=file&path=purpose.md")).json();
+      expect(purpose).toMatchObject({ format: "markdown", editable: false });
+      expect(purpose.artifact).toBeUndefined();
+      expect(purpose.slug).toBeUndefined();
+
+      // An artifact is WHOLE-FILE: the write route stores `content` verbatim and
+      // owns no frontmatter for it, so a leading `---` block must survive the
+      // read. Stripping it here would hand the editor a body whose next save
+      // deletes the block, answered with a 200.
+      const yaml = "---\nnote: keep me\n---\n\n## Page conventions\n\nx\n";
+      const abs = path.join(root, wikiArtifactPath(OWNER, WIKI_ID, "schema.md"));
+      await fs.writeFile(abs, yaml, "utf-8");
+      const whole = await (await get("kind=file&path=schema.md")).json();
+      expect(whole.body).toBe(yaml);
     } finally {
       // Every other case in this block asserts against an EMPTY registry.
       await fs.rm(path.dirname(registry), { recursive: true, force: true });
@@ -1270,15 +1441,31 @@ describe("pageWriteUrl", () => {
 });
 
 describe("savePreviewBody", () => {
-  it("PUTs the body — no YAML — to the one write path", async () => {
+  it("PUTs the body — no YAML — to the URL it was handed", async () => {
     const { fetchImpl, calls } = stubFetch(() => jsonResponse(200, { ok: true }));
-    await expect(savePreviewBody("alpha", "# Alpha\n", { fetchImpl })).resolves.toEqual({
-      status: "ok",
-    });
+    await expect(
+      savePreviewBody(pageWriteUrl("alpha"), "# Alpha\n", { fetchImpl }),
+    ).resolves.toEqual({ status: "ok" });
     expect(calls[0].url).toBe("/api/wiki/alpha");
     expect(calls[0].init?.method).toBe("PUT");
     expect(calls[0].init?.headers).toEqual({ "Content-Type": "application/json" });
     expect(JSON.parse(calls[0].init?.body ?? "{}")).toEqual({ content: "# Alpha\n" });
+  });
+
+  it("sends the artifact's body to the artifact route, in the same shape", async () => {
+    // ONE save client for both write paths (Story 1.8). The URL is the only
+    // difference; a second `fetch` in the column is the state this prevents.
+    const { fetchImpl, calls } = stubFetch(() => jsonResponse(200, { ok: true }));
+    await expect(
+      savePreviewBody(artifactWriteUrl("schema.md"), "## Page conventions\n\nx\n", {
+        fetchImpl,
+      }),
+    ).resolves.toEqual({ status: "ok" });
+    expect(calls[0].url).toBe("/api/workbench/artifact?path=schema.md");
+    expect(calls[0].init?.method).toBe("PUT");
+    expect(JSON.parse(calls[0].init?.body ?? "{}")).toEqual({
+      content: "## Page conventions\n\nx\n",
+    });
   });
 
   it("prefers the server's own sentence on a 403", async () => {
@@ -1286,7 +1473,7 @@ describe("savePreviewBody", () => {
     const { fetchImpl } = stubFetch(() =>
       jsonResponse(403, { error: "You don't have permission to edit this page." }),
     );
-    await expect(savePreviewBody("alpha", "x", { fetchImpl })).resolves.toEqual({
+    await expect(savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl })).resolves.toEqual({
       status: "error",
       message: "You don't have permission to edit this page.",
     });
@@ -1302,7 +1489,7 @@ describe("savePreviewBody", () => {
       [403, "You don't have permission to edit this page."],
     ] as const) {
       const { fetchImpl } = stubFetch(() => jsonResponse(status, { error }));
-      await expect(savePreviewBody("alpha", "x", { fetchImpl })).resolves.toEqual({
+      await expect(savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl })).resolves.toEqual({
         status: "error",
         message: error,
       });
@@ -1313,14 +1500,14 @@ describe("savePreviewBody", () => {
     // The old shape produced "Request failed (500)" here — a user-visible string
     // that is in no Copy table and names the transport rather than the failure.
     const { fetchImpl } = stubFetch(() => jsonResponse(500, undefined));
-    await expect(savePreviewBody("alpha", "x", { fetchImpl })).resolves.toEqual({
+    await expect(savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl })).resolves.toEqual({
       status: "error",
       message: PREVIEW_SAVE_FAILED_COPY,
     });
     // Same for a 500 with a well-formed body that simply carries no message.
     const empty = stubFetch(() => jsonResponse(500, { error: "   " }));
     await expect(
-      savePreviewBody("alpha", "x", { fetchImpl: empty.fetchImpl }),
+      savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl: empty.fetchImpl }),
     ).resolves.toEqual({ status: "error", message: PREVIEW_SAVE_FAILED_COPY });
   });
 
@@ -1336,7 +1523,7 @@ describe("savePreviewBody", () => {
     ];
     for (const cause of thrown) {
       const { fetchImpl } = stubFetch(() => cause);
-      const result = await savePreviewBody("alpha", "x", { fetchImpl });
+      const result = await savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl });
       expect(result).toEqual({ status: "error", message: PREVIEW_SAVE_FAILED_COPY });
       expect(result).not.toMatchObject({ message: cause.message });
     }
@@ -1346,7 +1533,7 @@ describe("savePreviewBody", () => {
     const { fetchImpl } = stubFetch(() => new TypeError("network down"));
     // A rejection here would skip the caller's "keep the text, show the error"
     // branch entirely unless every call site remembered to catch.
-    await expect(savePreviewBody("alpha", "x", { fetchImpl })).resolves.toEqual({
+    await expect(savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl })).resolves.toEqual({
       status: "error",
       message: PREVIEW_SAVE_FAILED_COPY,
     });
@@ -1355,7 +1542,7 @@ describe("savePreviewBody", () => {
   it("honours a caller-supplied fallback sentence", async () => {
     const { fetchImpl } = stubFetch(() => jsonResponse(500, undefined));
     await expect(
-      savePreviewBody("alpha", "x", { fetchImpl, fallback: "Nope." }),
+      savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl, fallback: "Nope." }),
     ).resolves.toEqual({ status: "error", message: "Nope." });
   });
 });

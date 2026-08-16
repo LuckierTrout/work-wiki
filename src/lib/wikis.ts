@@ -23,12 +23,14 @@
  * a hard cap) mirrors `research-projects.ts`.
  */
 
+import { bumpDataVersion } from "./data-version";
 import { ClientInputError, isEnoent } from "./errors";
 import { withFileLock } from "./lock";
 import { logger } from "./logger";
 import { getOwnerHandle } from "./owner";
 import { readEnginePageConventions } from "./schema-source";
 import { getStorage } from "./storage";
+import { appendToLog } from "./wiki-log";
 import {
   CREATABLE_SCENARIOS,
   MAX_WIKI_NAME_CHARS,
@@ -39,6 +41,7 @@ import {
   renderSchemaMarkdown,
   scenarioTemplate,
   type CreatableScenario,
+  type EditableArtifactFile,
   type WikiArtifactFile,
 } from "./wiki-scenarios";
 import { tenantForOwner, validateTenant } from "./wiki";
@@ -271,11 +274,36 @@ function templateProfile(scenario: CreatableScenario): WorkspaceProfileInput {
 }
 
 /**
+ * The BYTES of one artifact, and nothing else — no lock, no log, no bump.
+ *
+ * UNLOCKED on purpose. `seedWikiArtifacts` runs inside `withFileLock(
+ * lockKey(owner))` already (via {@link createWiki} and
+ * {@link applyScenarioTemplate}) and `withFileLock` is NOT reentrant — `lock.ts`
+ * chains a new call onto the key's existing promise, so taking
+ * `wikis:<tenant>` again from in there would deadlock the whole tenant. Callers
+ * that are not already holding it take it themselves; see
+ * {@link writeWikiArtifact}.
+ *
+ * This is also the ONE place artifact bytes are written. Both the seeder and
+ * the Schema editor address them through {@link wikiArtifactPath}, so
+ * `tenants/<t>/wikis/<id>/…` has a single expression in the repo.
+ */
+async function putWikiArtifact(
+  owner: string,
+  wikiId: string,
+  file: WikiArtifactFile,
+  content: string,
+): Promise<void> {
+  await getStorage().writeFile(wikiArtifactPath(owner, wikiId, file), content);
+}
+
+/**
  * Write the two artifacts and the workspace profile for `wiki`.
  *
  * This is the whole footprint of create and of re-template: nothing under
  * `tenants/<t>/wiki/`, nothing under `tenants/<t>/raw/`, no page index entry,
- * no log line.
+ * no log line, and no `dataVersion` bump — seeding's half of that signal
+ * belongs with whichever story owns create and re-template.
  */
 async function seedWikiArtifacts(owner: string, wiki: WikiRecord): Promise<void> {
   const template = scenarioTemplate(wiki.scenario);
@@ -283,16 +311,82 @@ async function seedWikiArtifacts(owner: string, wiki: WikiRecord): Promise<void>
   // scenario's, so the Wiki's file IS the whole executable Schema and
   // activating it never strips the structural contract from a prompt.
   const engineConventions = await readEnginePageConventions();
-  const storage = getStorage();
-  await storage.writeFile(
-    wikiArtifactPath(owner, wiki.id, "purpose.md"),
+  await putWikiArtifact(
+    owner,
+    wiki.id,
+    "purpose.md",
     renderPurposeMarkdown(wiki.name, template),
   );
-  await storage.writeFile(
-    wikiArtifactPath(owner, wiki.id, "schema.md"),
+  await putWikiArtifact(
+    owner,
+    wiki.id,
+    "schema.md",
     renderSchemaMarkdown(template, engineConventions),
   );
   await saveWorkspaceProfile(owner, templateProfile(wiki.scenario));
+}
+
+/**
+ * Overwrite one seeded artifact — the write half of Story 1.8's Schema editing.
+ *
+ * WHY THIS IS NOT `writeWikiPageWithSideEffects`. The epic's one-write-path rule
+ * exists so index, backlink, cross-reference and embedding side effects cannot
+ * be skipped by a second markdown writer. An artifact has NONE of those: it has
+ * no slug, no page-index entry, nothing links to it, and it is not embedded.
+ * Routing it through the page pipeline would not add those effects — it would
+ * MOVE the file into `tenants/<t>/wiki/`, where `readActiveWikiSchema()` does
+ * not look and where `reconcileSilos()` would delete it as an unindexed orphan.
+ * The two tail effects an artifact genuinely HAS are the activity log and the
+ * refresh counter, and this function fires both, so "an artifact write has a
+ * tail" is true for every future caller rather than for one route.
+ *
+ * WHY THE TAIL IS OUTSIDE THE LOCK. `appendToLog` takes `"log.md"` and
+ * `bumpDataVersion` takes `DATA_VERSION_LOCK`; holding `wikis:<tenant>` across
+ * either would nest two lock keys in an order nothing else in the codebase
+ * takes them in. The bytes have already landed by then, which is what makes the
+ * two effects fail-soft rather than transactional.
+ *
+ * FAIL-SOFT, in the same shape as the lifecycle pipeline's own tail: a log or
+ * counter hiccup is warned about, never surfaced. A save that already reached
+ * storage must not be reported as failed — a stale tree is recoverable by the
+ * next poll or reload, a rejected save the owner then retypes is not.
+ *
+ * `file` is the EDITABLE subset, not the seeded set, so the COMPILER carries the
+ * allowlist instead of the route being the only thing holding it: a future
+ * caller cannot reach `purpose.md` through this function without first widening
+ * {@link EditableArtifactFile} — which is also what keeps the log line below
+ * honest, since it names the Schema. The seeder writes both artifacts through
+ * {@link putWikiArtifact}, which takes the wider type and owns no tail.
+ */
+export async function writeWikiArtifact(
+  owner: string,
+  wikiId: string,
+  file: EditableArtifactFile,
+  content: string,
+): Promise<void> {
+  await withFileLock(lockKey(owner), () =>
+    putWikiArtifact(owner, wikiId, file, content),
+  );
+
+  try {
+    // `wiki/log.md` is tenant-global while `schema.md` is PER WIKI, so the
+    // heading alone ("Schema — schema.md") is the same sentence for every Wiki
+    // the owner has. The id goes on the details line, where `appendToLog`
+    // already puts the entry's payload, so the log can still answer "whose
+    // Schema moved" once there is more than one.
+    await appendToLog("edit", `Schema — ${file}`, `Wiki: ${wikiId}`);
+  } catch (error) {
+    logger.warn("wikis", `logging the artifact edit of "${file}" failed`, error);
+  }
+  try {
+    await bumpDataVersion();
+  } catch (error) {
+    logger.warn(
+      "wikis",
+      `the refresh signal did not move after editing "${file}"`,
+      error,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
