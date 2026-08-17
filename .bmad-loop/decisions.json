@@ -44,6 +44,15 @@
     "label": "List only openable leaves",
     "resolution": ""
   },
+  "DW-44": {
+    "answered_at": "2026-08-17",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Keep the visual divider at its current width but move the hit strip fully onto the canvas side of the boundary and widen it toward 24px there, so the scrollbar stays reachable and the target grows. Verify against the tree's scrollbar at both collapsed and expanded widths.",
+    "key": "1",
+    "label": "Offset the strip off the scrollbar",
+    "resolution": ""
+  },
   "DW-50": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
