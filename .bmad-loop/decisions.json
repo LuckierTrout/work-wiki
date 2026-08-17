@@ -1,22 +1,4 @@
 {
-  "DW-14": {
-    "answered_at": "2026-08-16",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Store one workspace profile per Wiki; switching Wikis swaps the active profile instead of overwriting a shared singleton, so hand-authored text survives per Wiki and create/re-template only touch their own Wiki's profile.",
-    "key": "2",
-    "label": "Per-Wiki profiles",
-    "resolution": ""
-  },
-  "DW-18": {
-    "answered_at": "2026-08-16",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Add rename (updates registry and the purpose.md heading) and confirm-gated delete (removes the registry entry and its wikis/<id>/ directory, refusing to delete the current Wiki), plus an orphan-directory sweep, with matching routes and Workbench controls.",
-    "key": "1",
-    "label": "Build rename+delete",
-    "resolution": ""
-  },
   "DW-27": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
@@ -35,15 +17,6 @@
     "label": "Author and wire",
     "resolution": ""
   },
-  "DW-4": {
-    "answered_at": "2026-08-16",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Remove the zh-CN catalog, LocaleSwitcher, and locale-cookie plumbing (LocaleProvider, layout.tsx cookie read), and drop brand-copy.test.ts's path exemption for i18n.ts \u2014 matching the recorded English-only preference.",
-    "key": "1",
-    "label": "Retire zh-CN",
-    "resolution": ""
-  },
   "DW-50": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
@@ -60,24 +33,6 @@
     "intent": "",
     "key": "2",
     "label": "Wait for DW-14",
-    "resolution": ""
-  },
-  "DW-7": {
-    "answered_at": "2026-08-16",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Keep the deny (it still usefully stops future non-admin principals from overwriting curated public pages), rewrite its stale rationale comment, and give the edit page's denial copy an accurate explanation.",
-    "key": "1",
-    "label": "Keep, re-document",
-    "resolution": ""
-  },
-  "DW-8": {
-    "answered_at": "2026-08-16",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Unregister list_contributors and get_contributor from mcp-http.ts, mcp.ts and mcp.json, and update mcp-http.test.ts \u2014 completing the retirement the rest of the surface already had.",
-    "key": "1",
-    "label": "Retire the tools",
     "resolution": ""
   }
 }
