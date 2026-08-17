@@ -164,6 +164,7 @@ source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: medium
 reason: `readActiveWikiSchema()` calls `getOwnerHandle()`, the only place in the repo where that value becomes a storage key — every other tenant-scoped read/write (`workspace-profile.ts`, `research-projects.ts`, `portable-archive.ts`) takes a passed-in owner. At `ingest.ts:1165/1239/ 1511`, `query.ts:226`, `agent-runtime.ts:154` and `source-monitors.ts:386` the no-argument `loadPageConventions()` sits directly beside `buildWorkspaceGuidance(owner)`, whose `owner` can be `"system"`, an agent handle, or a monitor's owner. So a non-site-owner caller now gets the site owner's Scenario Template conventions where it previously got the generic root `SCHEMA.md`. The spec's Code Map sanctions `getOwnerHandle()` as "how a server-side helper with no owner argument resolves the single-owner tenant", and `isOwnerHandle()` already makes handle equality the repo's owner-trust model, so this is correct for the single-owner deployment shipping today. Threading a tenant into the loader is the real fix and it b
 status: open
+decision: 2026-08-16 Keep, document the constraint — Leave the getOwnerHandle() resolution in place and document it as an explicit single-owner invariant at src/lib/wikis.ts:540 and at each no-argument loadPageConventions() call site, naming what must change when a second tenant arrives. Add a test that pins the single-owner assumption so a multi-tenant change cannot land silently.
 
 ### DW-20: Create and re-template are not atomic across the two artifact writes, the profile write, and the registry write.
 origin: spec-deferred 1f1c9143305b
@@ -255,6 +256,7 @@ source_spec: `spec-1-4-knowledge-tree-and-file-tree.md`
 severity: medium
 reason: `src/lib/wikis.ts:16-17` states that Pages and Sources are deliberately not partitioned per Wiki, and `deferred-work.md` DW-17 already owns that migration. `listWorkbenchFilePaths` therefore walks the owner's one silo (`tenants/<t>/wiki`, `tenants/<t>/raw`, or the flat roots when the silo is empty) regardless of `wikiId`, and `buildKnowledgeTree` groups `listReadableWikiPages(principal)` — also tenant-wide. The AC's "the trees show that Wiki's files" is met only to the extent anything is per-Wiki on disk today: the two seeded artifacts under `tenants/<t>/wikis/<id>/`. Closing the gap means repartitioning the kernel's storage, which reaches ingest, index, silo, graph and MCP — a migration, not a browse story.
 status: open
+decision: 2026-08-16 Reword the AC, keep flat — Keep the tenant-flat storage and make the product honest about it: correct the acceptance wording and the Wiki-switch copy so a Wiki is understood as a lens over shared Pages and Sources plus its own purpose.md/schema.md, and document the invariant beside listWorkbenchFilePaths so no later story re-reads the AC as a partitioning promise.
 
 ### DW-31: The Files tab shows `purpose.md` and `schema.md` at the tree root, so the path the Preview strip prints for them is not the path that addresses their bytes.
 origin: spec-deferred 5bb2e2fd9c76
@@ -345,6 +347,7 @@ source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
 severity: low
 reason: `wikiLeafFilter` passes every name not ending in `.md`, so `wiki/notes.txt` and `wiki/dump.json` are rows the owner can see and click. The read gate `readableWikiLeaf` refuses them — deliberately, and for a reason the previous review pass recorded at length ("two filters, two reasons — do not re-unify them"), because `resolveRoot`'s flat fallback means those bytes need not be the caller's. The consequence is a visible row that cannot open, which reads as a broken Preview rather than as a gate. The coherent fix is at the LISTING — stop showing a leaf the Preview will refuse — which means editing the filter the previous pass froze on security grounds and re-deciding what the Files tab is for. That is a Story 1.4 surface decision, not a patch to this story's reader.
 status: open
+decision: 2026-08-16 List only openable leaves — Narrow the listing so the Files tab shows only leaves the read gate will serve: keep the two filters and their two reasons distinct, but derive the listing's admissible set from the same predicate the read gate applies, so no row can be shown that the Preview will refuse. Update the frozen comment at workbench-files.ts:326-339 to record the new rule.
 
 ### DW-42: `editable` is every page the READ gate admits, but the write ACL is narrower, so a readable-but-unwritable page offers `Edit` and fails at Save.
 origin: spec-deferred e4b29f3d45f4
@@ -369,6 +372,7 @@ source_spec: `spec-1-6-drag-resize-and-durable-layout.md`
 severity: low
 reason: `--wb-split-hit: 9px` centred on the boundary puts ~4.5px of the strip over the tree column, which is exactly where `.wb-tree-body`'s scrollbar sits, and leaves the target far short of SC 2.5.8's 24×24 CSS px (the spacing exception does not apply — tree rows are adjacent targets). The epic's floor calls AA "a target", and 9px is the width every desktop splitter uses, so this is a deliberate trade rather than an oversight. Widening the strip to 24px is not the obvious fix either: it would cover the scrollbar entirely and eat 12px of the canvas edge. Deciding between a wider strip, an offset strip, and a documented exception is a chrome decision for whichever story revisits the shell's pointer targets.
 status: open
+decision: 2026-08-16 Offset the strip off the scrollbar — Keep the visual divider at its current width but move the hit strip fully onto the canvas side of the boundary and widen it toward 24px there, so the scrollbar stays reachable and the target grows. Verify against the tree's scrollbar at both collapsed and expanded widths.
 
 ### DW-45: The separators carry no `aria-controls`, and the keyboard surface has no coarse step (PageUp/PageDown).
 origin: spec-deferred e99921b6f2d1
@@ -385,6 +389,7 @@ source_spec: `spec-1-6-drag-resize-and-durable-layout.md`
 severity: low
 reason: `restorableSelection` takes `(stored, wikiId, knowledge, files)`. The shell's reset effect exists to prevent exactly one state — a docked Preview describing a row the showing tree cannot mark with `aria-current` — and the restore path is the one site that can produce it, because the mount effect's signature guard then protects the mismatch from being cleared. Reaching it needs the two keys to diverge, which needs the persist effect's health guard to skip a write across a tab switch (a transient `knowledgeUnavailable` / `filesUnavailable`), so it is narrow. The obvious fix is not obviously right either: requiring `kind` to agree with `tab` would drop the restore of a page selection made on the Files tab, which `wikilinkSelection` deliberately produces when the walk did not list that page's file (Story 1.5). Whether that pairing should survive a reload is a decision about the wikilink fallback, not about the clamp, and it belongs with whichever story next opens that path.
 status: open
+decision: 2026-08-16 Restore the tab, not reject the row — When a restored selection's kind disagrees with the restored tab, switch the tab to the one that can mark the row rather than dropping the selection. This keeps the wikilink cross-tab pairing restorable and still guarantees the docked Preview always has a row carrying aria-current.
 
 ### DW-47: The tree's scroll effects re-run on tab and collapse only, so crossing the 899px force-show boundary by RESIZING is missed.
 origin: spec-deferred 960bd3db4d29
@@ -393,6 +398,7 @@ source_spec: `spec-1-6-drag-resize-and-durable-layout.md`
 severity: low
 reason: `treeScrollActive` correctly asks the element rather than the collapse flag, because `@media (max-width: 899px)` force-shows a collapsed column. But both effects are keyed `[tab, collapsed]`, and neither changes when the viewport crosses 900px mid-session — so an owner who is collapsed and narrows the window gets a fully visible, scrollable tree whose offset is neither restored nor recorded until they next switch tabs. A load at that width is fine; only the live transition is missed. Closing it needs a `matchMedia("(max-width: 899px)")` listener in `TreePanel`, which is a second copy of a breakpoint this story deliberately keeps in the stylesheet (and which `workbench-split.test.ts` bans by name). Whether that trade is worth making belongs with whichever story revisits the left column's responsive behaviour.
 status: open
+decision: 2026-08-16 Allow one shared breakpoint constant — Introduce a single exported breakpoint constant consumed by both the stylesheet build and TreePanel's matchMedia listener, add the listener to both scroll effects so the live 900px transition restores and records the offset, and retarget the workbench-split.test.ts ban to forbid ad-hoc duplicate literals rather than the shared constant.
 
 ### DW-48: A refresh whose server re-render still reads the OLD version strands that version: `refreshedFor` has already advanced, so it is never retried.
 origin: spec-deferred 50d952f5c317
@@ -443,6 +449,7 @@ source_spec: `spec-1-7-dataversion-workbench-refresh.md`
 severity: low
 reason: Before this story the trees only changed under a `WikiSwitcher` refresh, which also changes `currentWikiId` and so re-runs the selection reset at `Workbench.tsx:194-203`; `restorableSelection` / `selectionExists` are reached only from the `[]` mount effect (`:173`). A watcher-driven refresh changes neither, so the selection outlives the row: the Preview stays docked showing `PREVIEW_FAILED_COPY` (truthful) while no tree row carries `aria-current` — the state Story 1.6's `selectionExists` docblock names as "a shell that looks broken rather than one that forgot". Reconciling a live selection against a refreshed tree is a design decision (does the shell silently undock, fall back to the sibling row, or say something?) and the last of those needs a sentence from the epic's Copy table, so it belongs with whichever story next opens it.
 status: open
+decision: 2026-08-16 Undock and announce — Reconcile a live selection against a refreshed tree: when the selected row is gone, undock the Preview and announce a new Copy-table sentence through the shell's existing polite live region, so the change is neither silent nor mistaken for a broken column. Thread the reconciliation without growing the reset effect's pinned deps.
 
 ### DW-54: A silent refresh cannot tell "another actor deleted this page" from "the network blipped", so a transient failure replaces the page the owner is reading with the failure copy and does not heal itself.
 origin: spec-deferred de2abf5767d2
@@ -451,6 +458,7 @@ source_spec: `spec-1-7-dataversion-workbench-refresh.md`
 severity: medium
 reason: `fetchPreview` (`workbench-preview.ts:344-364`) collapses 404, 500, a malformed body, the `REQUEST_TIMEOUT_MS` deadline and a bare transport failure into one `{ status: "failed" }`, and `previewBodyState` (`workbench-preview.ts:152-155`) puts `failed` AHEAD of a payload that is still held. Before this story the flag could only be set right after an explicit pick, behind a `Loading…` the owner had just caused. A silent same-row refresh sets it with `plan.reset === false`, so a page jumps straight from rendered bytes to `PREVIEW_FAILED_COPY` for a reason the owner did not initiate — and because the effect re-runs only on `[selection, dataVersion, editing]`, it stays that way until the next bump or until they click elsewhere and back. The spec's rule ("a failed silent refresh still tells the truth, because a page another actor just deleted must not keep rendering as if it were there") is right about deletion and is what makes the conflation visible; separating "gone" from "could not reach
 status: open
+decision: 2026-08-16 Separate gone from unreachable — Have fetchPreview report 404 separately from transport and timeout failures. On a silent same-row refresh, a 404 replaces the body with the existing gone copy, while an unreachable answer keeps the last-good bytes and shows a transient, self-healing indicator with a retry. Author the one new sentence this needs in the epic's Copy table.
 
 ### DW-55: Follow-up review still recommended for 1-7-dataversion-workbench-refresh after the damping cap was spent
 origin: review-budget-followup
@@ -492,6 +500,7 @@ source_spec: `spec-1-8-edit-schema.md`
 severity: medium
 reason: `writeWikiPageWithSideEffects` calls `saveRevision(slug, existing, …)` (`src/lib/wiki.ts:442`) before it overwrites, and `GET/POST /api/wiki/[slug]/revisions` can revert a page. `writeWikiArtifact` writes through `putWikiArtifact` with no prior read and no snapshot, so the previous `schema.md` is simply gone. That was harmless while the file was seed-only and immutable; it is not once the file is editable, and this is the single file every ingest, chat and lint prompt reads. The story's Design Notes deliberately enumerate the artifact tail as log + bump, so this is a decided omission rather than a missed one — but revisioning is not an index/backlink concern the artifact class lacks, it is the recovery path, and closing it needs a decision about where artifact revisions live (the `revisions/` silo is slug-keyed) that this story does not own.
 status: open
+decision: 2026-08-16 Per-Wiki artifact revisions — Snapshot artifacts under their own per-Wiki revision namespace (tenants/<t>/wikis/<id>/revisions/<file>/), read-before-write in writeWikiArtifact, and expose list/revert through the artifact route mirroring the page revisions API. Keeps the slug-keyed revisions silo untouched.
 
 ### DW-60: Follow-up review still recommended for 1-8-edit-schema after the damping cap was spent
 origin: review-budget-followup
@@ -508,6 +517,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `custom` was added to the shared `PROVIDER_INFO`, which `src/components/ProviderForm.tsx:47` spreads into the legacy page's dropdown; that form renders conditional fields only for `ollama` and `ollama-cloud`. Saving `provider: "custom"` there leaves `getModel()` throwing "The Custom provider needs a base URL. Set it in Settings → LLM Models." — actionable, and recoverable from the Workbench surface, which is why it was not patched here: this story's spec forbids modifying `ProviderForm` or the legacy route, and the honest fix is either to give that form the two fields or to retire the page.
 status: open
+decision: 2026-08-16 Retire the legacy page — Delete the legacy /settings route and ProviderForm now that the Workbench Settings surface covers models, embeddings and keys, redirecting /settings into the shell's Settings mode and updating the tests that pin the old route. Resolves DW-62's shortcut question in the same move.
 
 ### DW-62: The `g s` keyboard shortcut still routes out of the shell to the legacy Settings page, doing exactly the route change the rail control stopped doing.
 origin: spec-deferred cbeb1a3bf4ed
@@ -516,6 +526,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `src/hooks/useKeyboardShortcuts.ts:46` maps `g s` to `/settings` and dispatches it with `router.push`, and `KeyboardShortcutsProvider` wraps the Workbench. So from inside the shell the keyboard path unmounts everything above the canvas and lands on a page with none of this story's categories, while the rail button opens the in-shell surface. `keyboard-shortcuts.test.ts:102,203` pin the old route, and this story is forbidden from editing pre-existing test files beyond the one rail pin — closing it means deciding whether the shortcut opens the surface or the legacy page stays a legitimate target.
 status: open
+decision: 2026-08-16 Retarget to the in-shell surface — Change g s to select the Workbench's Settings mode instead of pushing /settings, so the keyboard path matches the rail control and never unmounts the shell, and retarget the keyboard-shortcuts.test.ts pins at :102-105 and :203. Consistent with retiring the legacy page under DW-61.
 
 ### DW-63: Two live Settings surfaces now write one config file with no lost-update protection between them.
 origin: spec-deferred b1364ed893f7
@@ -604,6 +615,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: low
 reason: `canEnableVectorSearch` asks `workers-ai` for a provider and a model only (it is keyless and self-transporting), so `{ provider: "workers-ai", model: "text-embedding-3-small" }` turns the switch on. `resolveEmbeddingModelName` then rejects the same value for a namespace mismatch and falls back to `@cf/baai/bge-m3`. The owner's model choice is replaced without a word. The namespace guard is pre-existing; teaching the gate about it means deciding whether the surface refuses the model, rewrites it, or narrows the picker.
 status: open
+decision: 2026-08-16 Validate at the surface — Teach canEnableVectorSearch the provider's namespace rule so a workers-ai model outside @cf/ fails validation with an explanatory message on the Settings surface, instead of enabling the switch and being discarded later at resolution time.
 
 ### DW-74: Follow-up review still recommended for 1-9-settings-for-models-and-embeddings after the damping cap was spent
 origin: review-budget-followup
@@ -628,6 +640,7 @@ location: src/lib/ingest.ts
 severity: medium
 reason: src/lib/ingest.ts parseDisputedMarker still sets the flag; src/components/ArticleView.tsx still renders the "This page is disputed" banner; the bundle intent explicitly directed deleting checkDisputedPages, so the surfacing gap is a knowing consequence to revisit with whatever story owns disputed-page semantics.
 status: open
+decision: 2026-08-16 Re-surface disputed pages — Give the flag a read model and a way out: a lint check or Workbench view listing disputed pages, and an owner action that clears the flag after review. Restores the loop that reconcile-from-talk used to close, without reviving talk.
 
 ### DW-77: authz.ts still carries the commons-realm delete-deny branch with no commons behind it; after this change the client delete gate no longer mirrors it for a hypothetical non-admin owner of a public page
 origin: spec-deferred a067ea608790
@@ -651,7 +664,9 @@ source_spec: `spec-retire-dead-machinery.md`
 location: _bmad-output/implementation-artifacts/deferred-work.md:609
 severity: low
 reason: _bmad-output/implementation-artifacts/deferred-work.md:609 and :617 carry the truncated headings; the entries' reason fields hold the evidence text, not the lost summary tails. Ledger entries are orchestrator-owned (invocation constraint), so this pass records the defect instead of editing them.
-status: open
+status: done 2026-08-16
+resolution: closed by human decision: Cosmetic and self-limiting: the reason field of each entry carries the full evidence, the two affected headings remain identifiable, and the writer lives outside the product codebase this loop builds.
+decision: 2026-08-16 Accept it — Cosmetic and self-limiting: the reason field of each entry carries the full evidence, the two affected headings remain identifiable, and the writer lives outside the product codebase this loop builds.
 
 ### DW-80: workers/task-consumer docs still describe reconcile as live work — its README walks through "reconcile a page from a discussion thread" and index.ts's header says the actual work is "(reconcile / inge
 origin: spec-deferred 72b5e66c4034
@@ -795,7 +810,9 @@ source_spec: `spec-maintainer-brand-sweep.md`
 location: /Users/christianlee/pnpm-workspace.yaml
 severity: low
 reason: pnpm resolves /Users/christianlee/pnpm-workspace.yaml as the workspace root and fails with "packages field missing or empty" before running any script. Confirmed during this review pass; CI on fresh checkouts is unaffected. Workaround used: invoke ./node_modules/.bin/vitest and `node tools/work-wiki-sync.mjs` directly. Deleting or populating that stray file restores `pnpm test` / `pnpm sync` / `pnpm lint` locally.
-status: open
+status: done 2026-08-16
+resolution: closed by human decision: The owner deletes or populates /Users/christianlee/pnpm-workspace.yaml on their machine, restoring pnpm test / pnpm sync / pnpm lint locally. Nothing in the repository changes, so the entry has no code fix to track.
+decision: 2026-08-16 Delete the stray file (human action) — The owner deletes or populates /Users/christianlee/pnpm-workspace.yaml on their machine, restoring pnpm test / pnpm sync / pnpm lint locally. Nothing in the repository changes, so the entry has no code fix to track.
 
 ### DW-98: The email-ingest route's own byte handoff to `stageBytes` is unverified, so the empty-attachment harm DW-12 names is still reachable one hop past the worker.
 origin: spec-deferred 84b8769da573
