@@ -633,6 +633,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: low
 reason: `canEnableVectorSearch` asks `workers-ai` for a provider and a model only (it is keyless and self-transporting), so `{ provider: "workers-ai", model: "text-embedding-3-small" }` turns the switch on. `resolveEmbeddingModelName` then rejects the same value for a namespace mismatch and falls back to `@cf/baai/bge-m3`. The owner's model choice is replaced without a word. The namespace guard is pre-existing; teaching the gate about it means deciding whether the surface refuses the model, rewrites it, or narrows the picker.
 status: open
+decision: 2026-08-17 Validate at the surface — Teach canEnableVectorSearch the provider's namespace rule so a workers-ai model outside @cf/ fails validation with an explanatory message on the Settings surface, instead of enabling the switch and being discarded later at resolution time.
 decision: 2026-08-16 Validate at the surface — Teach canEnableVectorSearch the provider's namespace rule so a workers-ai model outside @cf/ fails validation with an explanatory message on the Settings surface, instead of enabling the switch and being discarded later at resolution time.
 
 ### DW-74: Follow-up review still recommended for 1-9-settings-for-models-and-embeddings after the damping cap was spent

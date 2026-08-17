@@ -133,5 +133,14 @@
     "key": "1",
     "label": "Retarget to the in-shell surface",
     "resolution": ""
+  },
+  "DW-73": {
+    "answered_at": "2026-08-17",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Teach canEnableVectorSearch the provider's namespace rule so a workers-ai model outside @cf/ fails validation with an explanatory message on the Settings surface, instead of enabling the switch and being discarded later at resolution time.",
+    "key": "1",
+    "label": "Validate at the surface",
+    "resolution": ""
   }
 }
