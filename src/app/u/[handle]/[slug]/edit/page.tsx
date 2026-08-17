@@ -31,6 +31,14 @@ export default async function EditWikiPage({ params }: EditPageProps) {
 
   // Readable but not writable — show a clear message instead of the editor.
   // This is a body editor, so pass "body" to enforce the commons realm gate.
+  //
+  // The copy below may state the page's realm outright because this branch is
+  // reachable for exactly one kind of page: the read cloak above already
+  // returned "Page not found" for an unreadable private page, and a READABLE
+  // private page is writable by the same principals that could read it. So a
+  // denial here means a public, non-agent-scoped, non-artifact page — the class
+  // `belongsInCommons` names. Keep that ordering, or the sentence stops
+  // being true (and would leak a private page's realm).
   if (!canWriteFrontmatter(page.frontmatter, principal, "body")) {
     const backHref = pagePath(tenantForOwner(
       typeof page.frontmatter.owner === "string"
@@ -47,7 +55,10 @@ export default async function EditWikiPage({ params }: EditPageProps) {
         </Link>
         <h1 className="mt-6 text-3xl font-bold">Cannot edit</h1>
         <p className="mt-4 text-foreground/60">
-          You don&rsquo;t have write access to this page.
+          This page is public knowledge, and public knowledge pages are agent-maintained
+          — their prose is written and curated by agents, so it can&rsquo;t be
+          rewritten or deleted here. Only an agent or a site admin can revise
+          this page&rsquo;s text.
         </p>
       </main>
     );

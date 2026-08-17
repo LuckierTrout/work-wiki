@@ -59,7 +59,8 @@ location: src/lib/authz.ts
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: low
 reason: `src/lib/authz.ts` still denies `body` and `delete` writes on any public non-agent page to non-admin principals, justified in-comment by humans steering through metadata patches and talk threads. The edit page's copy is now a bare "You don't have write access to this page" with nowhere to go.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-authz-commons-realm-cleanup
 decision: 2026-08-16 Keep, re-document — Keep the deny (it still usefully stops future non-admin principals from overwriting curated public pages), rewrite its stale rationale comment, and give the edit page's denial copy an accurate explanation.
 
 ### DW-8: The contributor capability is retired at every page and REST surface but still ships as two MCP tools.
@@ -649,7 +650,8 @@ source_spec: `spec-retire-dead-machinery.md`
 location: src/lib/authz.ts:193
 severity: low
 reason: src/lib/authz.ts:193-198 denies body/delete on belongsInCommons pages for non-service, non-admin principals, pinned by authz.test.ts:228-231; DW-6's ledger explicitly kept delete authorization out of scope, so the server-side realm residue remains dead machinery.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-authz-commons-realm-cleanup
 
 ### DW-78: HomeGraph.tsx had zero references already at the baseline revision — a pre-existing dead component, not orphaned by this story (unlike HomeAsk.tsx, which this story deleted).
 origin: spec-deferred 05b39e1a7083
@@ -986,6 +988,46 @@ status: open
 ### DW-119: Follow-up review still recommended for dw-retire-zh-cn-locale after the damping cap was spent
 origin: review-budget-followup
 source_spec: `spec-retire-zh-cn-locale.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-215057-fc61; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-120: The client delete gate still shows "Delete page" to a non-admin owner of a public knowledge page, whose DELETE the same realm gate then refuses with a generic message.
+origin: spec-deferred 7cd7a18f81ec
+source_spec: `spec-authz-commons-realm-cleanup.md`
+location: src/components/ArticleActions.tsx:82
+severity: medium
+reason: `src/components/ArticleActions.tsx:82` computes `canDelete = isOwner || isSiteOwner` and renders `DeletePageButton` at :137. For a page where `belongsInCommons` is true, `canWritePage(meta, principal, "delete")` returns false for any non-service, non-admin principal — so a non-admin page owner sees the button and gets "You don't have permission to delete this page." from `src/app/api/wiki/[slug]/route.ts:39-49`, the same vague copy this pass replaced on the edit surface. The comment above the gate calls `isOwner || isSiteOwner` "the effective server outcome", which holds only for the site owner (who is an admin). Its pin, `src/lib/__tests__/article-actions-gate.test.ts:22-26`, reads ArticleActions.tsx as TEXT and asserts the literal source string, so it cannot observe the divergence from `canWritePage`. This is DW-77's second clause; the bundle intent scoped this pass to documentation and copy, so no behaviour was changed here.
+status: open
+
+### DW-121: The edit page gates the whole editor — including the seven metadata fields — on writeKind "body", withholding metadata patches that canWritePage still permits.
+origin: spec-deferred fbcd3507e87a
+source_spec: `spec-authz-commons-realm-cleanup.md`
+location: src/app/u/[handle]/[slug]/edit/page.tsx:34
+severity: medium
+reason: `src/app/u/[handle]/[slug]/edit/page.tsx:34` denies on `"body"` and returns before building `initialMetadata` (:69-79), yet `canWritePage(..., "metadata")` returns true for the same principal and `src/lib/patch-metadata.ts:91-106` admits the PATCH. The rewritten authz docblock now states that "metadata patches are still collectively editable", while the only UI reaching them is the screen that just refused. The bundle intent explicitly scoped a metadata-only editing surface out of this pass.
+status: open
+
+### DW-122: Seven other call sites of the same realm deny still emit a generic permission message with no realm explanation.
+origin: spec-deferred 8ef6b4ff69c9
+source_spec: `spec-authz-commons-realm-cleanup.md`
+location: src/app/api/wiki/[slug]/route.ts:126
+severity: low
+reason: `src/mcp.ts:295` and `:395`, `src/app/api/wiki/[slug]/route.ts:39` and `:123`, `src/app/api/wiki/[slug]/revisions/route.ts:144`, `src/app/api/ingest/reingest/route.ts:39`, `src/app/api/ingest/history/route.ts:195`, and `src/lib/mcp-http.ts:407` all return "You don't have permission to edit/delete this page." for the same deny the edit page now explains. `WikiEditor` renders the API's raw `error` string, so a human who read the new explanation on load would get the old generic one on save. The bundle intent named only `edit/page.tsx:50`, so the other surfaces were left alone.
+status: open
+
+### DW-123: The edit page's write denial returns before the canonical-tenant redirect, so a non-canonical edit URL renders the refusal instead of its 308.
+origin: spec-deferred 20dcb006b261
+source_spec: `spec-authz-commons-realm-cleanup.md`
+location: src/app/u/[handle]/[slug]/edit/page.tsx:33
+severity: low
+reason: `src/app/u/[handle]/[slug]/edit/page.tsx` runs the `canWriteFrontmatter` denial branch (:33) before the `permanentRedirect(editPath(pageTenant, slug))` at :65-67. A non-admin opening `/u/bob/transformers/edit` for alice's public knowledge page therefore gets a 200 "Cannot edit" screen whose "← Back to page" link points at `/u/alice/transformers`, while the writable path for the same URL 308s to the canonical handle first. The asymmetry predates this pass — the branch and the redirect were already in this order at `{baseline_revision}`; this pass only rewrote the sentence inside the branch, so the ordering was left alone.
+status: open
+
+### DW-124: Follow-up review still recommended for dw-authz-commons-realm-cleanup after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-authz-commons-realm-cleanup.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-215057-fc61; this entry preserves the lingering recommendation for a deliberate later review.

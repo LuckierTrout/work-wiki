@@ -160,12 +160,14 @@ export async function canReadSlug(
  *     anything — it is how autonomous agents and scheduled jobs write on an
  *     owner's behalf (the caller sets `owner` explicitly).
  *   - **Admins** may write/delete/manage every page.
- *   - **Commons body/delete** writes are agent-only: a commons page's prose is
- *     maintained by agents; humans steer via metadata patches and talk threads.
- *     Body replacements and deletions by non-service, non-admin principals are
- *     denied.
- *   - **Public** (commons) metadata patches are collectively editable by any
- *     signed-in user — the commons is a shared wiki.
+ *   - **Body/delete on a public knowledge page** is service- and admin-only: a
+ *     page that is public, not agent-scoped and not an artifact (exactly what
+ *     {@link belongsInCommons} selects) has agent- and admin-maintained prose,
+ *     so a non-service, non-admin principal may not replace its body or delete
+ *     it. The commons product surface and talk threads are retired (AD-21);
+ *     `belongsInCommons` survives only as the predicate naming that class.
+ *   - **Public** metadata patches are still collectively editable by any caller
+ *     the write-gate admits; only body replacement and deletion are gated.
  *   - **Private** (vault) pages are writable ONLY by the set {@link canReadPage}
  *     admits for a private page: the owner's human and that human's agents
  *     (`<user>--<name>` resolves to `<user>`). So a user's agents can write
@@ -186,10 +188,13 @@ export function canWritePage(
   // Admins may write/delete/manage every page (incl. others' private pages).
   if (isAdmin(principal)) return true;
 
-  // ── Realm gate: commons body/delete writes are agent-only ──
-  // A commons page's prose is maintained by agents; humans steer via metadata
-  // patches and talk threads. Body replacements and deletions by non-service,
-  // non-admin principals are denied.
+  // ── Realm gate: body/delete on a public knowledge page is service/admin-only ──
+  // The commons product surface and talk threads are retired (AD-21), but this
+  // deny still earns its place: a public, non-agent-scoped, non-artifact page's
+  // prose is agent- and admin-maintained, so it stops a non-service, non-admin
+  // principal from overwriting or deleting a curated public page. Service
+  // principals (agents, cron) and admins pass above; metadata patches on the
+  // same page stay collectively editable below.
   if (
     (writeKind === "body" || writeKind === "delete") &&
     belongsInCommons(meta)
@@ -197,7 +202,8 @@ export function canWritePage(
     return false;
   }
 
-  // Public / collective commons — metadata editable by any caller the write-gate admits.
+  // Public — metadata stays editable by any caller the write-gate admits. (The
+  // commons product surface is retired; only `belongsInCommons` keeps the name.)
   if (meta.visibility !== "private") return true;
   // Private — exactly the owner-equivalence class that may READ it (requires an
   // authenticated, matching principal).
