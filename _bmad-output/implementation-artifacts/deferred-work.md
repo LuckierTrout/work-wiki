@@ -543,6 +543,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `src/hooks/useKeyboardShortcuts.ts:46` maps `g s` to `/settings` and dispatches it with `router.push`, and `KeyboardShortcutsProvider` wraps the Workbench. So from inside the shell the keyboard path unmounts everything above the canvas and lands on a page with none of this story's categories, while the rail button opens the in-shell surface. `keyboard-shortcuts.test.ts:102,203` pin the old route, and this story is forbidden from editing pre-existing test files beyond the one rail pin — closing it means deciding whether the shortcut opens the surface or the legacy page stays a legitimate target.
 status: open
+decision: 2026-08-17 Retarget to the in-shell surface — Change g s to select the Workbench's Settings mode instead of pushing /settings, so the keyboard path matches the rail control and never unmounts the shell, and retarget the keyboard-shortcuts.test.ts pins at :102-105 and :203. Consistent with retiring the legacy page under DW-61.
 decision: 2026-08-16 Retarget to the in-shell surface — Change g s to select the Workbench's Settings mode instead of pushing /settings, so the keyboard path matches the rail control and never unmounts the shell, and retarget the keyboard-shortcuts.test.ts pins at :102-105 and :203. Consistent with retiring the legacy page under DW-61.
 
 ### DW-63: Two live Settings surfaces now write one config file with no lost-update protection between them.

@@ -124,5 +124,14 @@
     "key": "1",
     "label": "Retire the legacy page",
     "resolution": ""
+  },
+  "DW-62": {
+    "answered_at": "2026-08-17",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Change g s to select the Workbench's Settings mode instead of pushing /settings, so the keyboard path matches the rail control and never unmounts the shell, and retarget the keyboard-shortcuts.test.ts pins at :102-105 and :203. Consistent with retiring the legacy page under DW-61.",
+    "key": "1",
+    "label": "Retarget to the in-shell surface",
+    "resolution": ""
   }
 }
