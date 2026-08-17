@@ -143,7 +143,7 @@ export function WikiSwitcher({
   const value = pendingId ?? currentWikiId ?? "";
 
   return (
-    <div className="wb-wiki-switch" data-no-localize>
+    <div className="wb-wiki-switch">
       {unavailable ? (
         <p className="wb-wiki-switch-note" role="alert">
           {TREE_UNAVAILABLE_COPY}

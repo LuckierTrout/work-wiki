@@ -45,9 +45,6 @@ export function ModeCanvas({ mode, sidecar, headingId, children }: ModeCanvasPro
     // `#wiki-workbench-heading`, which is also both of its dialogs' fallback
     // focus target. Rendering a second "Wiki" heading here would announce the
     // surface twice, so the section borrows the one that exists.
-    //
-    // No `data-no-localize` here: this branch renders no copy of its own, and
-    // opting Story 1.2's surface out of localization is not this story's call.
     return (
       <section
         className="wb-canvas"
@@ -60,17 +57,12 @@ export function ModeCanvas({ mode, sidecar, headingId, children }: ModeCanvasPro
     );
   }
 
-  // `data-no-localize`: `src/lib/i18n.ts` carries entries for "Chat", "Review"
-  // and "Settings", so LocaleProvider's body-wide observer would rewrite this
-  // heading while the rail tooltip next to it — already opted out — stayed
-  // English. Half-translated chrome is worse than untranslated chrome.
   return (
     <section
       className="wb-canvas"
       id={CANVAS_ID}
       tabIndex={-1}
       aria-labelledby={headingId}
-      data-no-localize
     >
       <div className="wb-canvas-pad">
         <h2 id={headingId} className="wb-surface-title">

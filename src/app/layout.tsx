@@ -7,9 +7,6 @@ import { SiteChrome } from "@/components/SiteChrome";
 import { ClientProviders } from "@/components/ClientProviders";
 import { EnsureYoyo } from "@/components/EnsureYoyo";
 import { RegisterSW } from "@/components/RegisterSW";
-import { LocaleProvider } from "@/components/LocaleProvider";
-import { cookies } from "next/headers";
-import { INTERFACE_LOCALE_COOKIE, normalizeInterfaceLocale } from "@/lib/i18n";
 import { APP_NAME, APP_ORIGIN, APP_TITLE } from "@/lib/brand";
 import "katex/dist/katex.min.css";
 import "./globals.css";
@@ -70,15 +67,14 @@ const themeScript = `
 })();
 `;
 
-export default async function RootLayout({
+export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const locale = normalizeInterfaceLocale((await cookies()).get(INTERFACE_LOCALE_COOKIE)?.value);
   return (
     <html
-      lang={locale}
+      lang="en"
       suppressHydrationWarning
       className={`${fontSans.variable} ${fontSerif.variable} ${fontMono.variable}`}
     >
@@ -89,17 +85,15 @@ export default async function RootLayout({
         {/* No `waitlistUrl`: /waitlist is retired. This deployment is
             owner-only — there is no self-serve sign-up to route anywhere, and
             no public read path behind it. */}
-        <LocaleProvider initialLocale={locale}>
-          <ClerkProvider>
-            <ClientProviders>
-              <EnsureYoyo />
-              <RegisterSW />
-              <SiteChrome nav={<NavHeader />} footer={<Footer />}>
-                {children}
-              </SiteChrome>
-            </ClientProviders>
-          </ClerkProvider>
-        </LocaleProvider>
+        <ClerkProvider>
+          <ClientProviders>
+            <EnsureYoyo />
+            <RegisterSW />
+            <SiteChrome nav={<NavHeader />} footer={<Footer />}>
+              {children}
+            </SiteChrome>
+          </ClientProviders>
+        </ClerkProvider>
       </body>
     </html>
   );

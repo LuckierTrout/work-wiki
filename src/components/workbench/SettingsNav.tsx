@@ -17,11 +17,6 @@ import {
  *
  * The vocabulary is `SETTINGS_CATEGORIES` — this component restates no list of
  * its own, so "which categories exist" stays a thing the node suite can execute.
- *
- * `data-no-localize` for the same reason the rail carries it: `src/lib/i18n.ts`
- * holds an entry for "Settings", and LocaleProvider's body-wide observer would
- * rewrite these rows while the rail control beside them — already opted out —
- * stayed English.
  */
 
 export interface SettingsNavProps {
@@ -31,7 +26,7 @@ export interface SettingsNavProps {
 
 export function SettingsNav({ category, onSelect }: SettingsNavProps) {
   return (
-    <nav className="wb-set-nav" aria-label="Settings categories" data-no-localize>
+    <nav className="wb-set-nav" aria-label="Settings categories">
       {SETTINGS_CATEGORIES.map((item) => {
         const active = item.id === category;
         return (

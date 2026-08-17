@@ -1526,7 +1526,6 @@ describe("the Settings components stay inside the shell", () => {
     expect(nav).toContain('aria-current={active ? "page" : undefined}');
     // The vocabulary is the shared module's; a list typed here would be a fork.
     expect(nav).toContain("SETTINGS_CATEGORIES.map");
-    expect(nav).toContain("data-no-localize");
   });
 
   it("names the settings route in exactly one place", async () => {

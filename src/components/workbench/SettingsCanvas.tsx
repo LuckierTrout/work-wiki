@@ -553,7 +553,6 @@ function Frame({
       id={CANVAS_ID}
       tabIndex={-1}
       aria-labelledby={headingId}
-      data-no-localize
     >
       <div className="wb-canvas-pad wb-set-pad">
         <h2 id={headingId} className="wb-surface-title">

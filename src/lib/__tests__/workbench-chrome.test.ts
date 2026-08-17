@@ -65,9 +65,6 @@ describe("IconRail", () => {
     expect(source).toContain("aria-current");
     // The rail renders the shared order, rather than restating a list here.
     expect(source).toContain("WORKBENCH_MODES.map");
-    // LocaleProvider's body-wide observer rewrites text and aria-label/title;
-    // chrome that renames itself mid-interaction is worse than untranslated.
-    expect(source).toContain("data-no-localize");
   });
 
   it("hides count badges at zero and names them with count + noun", async () => {

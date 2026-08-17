@@ -258,7 +258,7 @@ export function TreePanel({
   }
 
   return (
-    <div className="wb-tree-panel" data-no-localize>
+    <div className="wb-tree-panel">
       <div className="wb-tabs" role="tablist" aria-label="Left column trees">
         {TREE_TABS.map((entry) => (
           <button

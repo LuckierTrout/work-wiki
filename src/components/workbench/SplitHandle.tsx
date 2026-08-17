@@ -77,7 +77,6 @@ export function SplitHandle({
       aria-valuemax={max}
       tabIndex={0}
       className={`wb-split-handle wb-split-handle--${id}`}
-      data-no-localize
       onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
         // A secondary button must not start a drag: it would take capture and
         // arm `data-resizing`, after which the divider follows a pointer with no

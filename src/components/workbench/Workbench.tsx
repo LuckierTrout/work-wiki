@@ -504,7 +504,6 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
         aria-expanded={sheetOpen}
         aria-controls={RAIL_ID}
         onClick={() => setSheetOpen((open) => !open)}
-        data-no-localize
       >
         Modes
       </button>
@@ -567,7 +566,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
             collapsed={collapsed}
           />
         ) : (
-          <p className="wb-left-surface" data-no-localize>
+          <p className="wb-left-surface">
             {surface.label}
           </p>
         )}
@@ -647,7 +646,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
           Polite, so it never interrupts an in-progress announcement — and empty
           until the owner actually switches, so a restored mode is not reported
           as a change on every page load. */}
-      <p className="wb-sr-only" aria-live="polite" data-no-localize>
+      <p className="wb-sr-only" aria-live="polite">
         {announcement}
       </p>
     </div>

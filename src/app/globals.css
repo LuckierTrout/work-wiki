@@ -1,10 +1,5 @@
 @import "tailwindcss";
 
-.locale-switcher {
-  display: inline-flex;
-  align-items: center;
-}
-
 /* Agent command approval docket ------------------------------------------------ */
 .agent-command-docket {
   position: relative;
@@ -171,22 +166,6 @@
   .vault-figure-lightbox-head button { position: absolute; top: 20px; right: 20px; }
 }
 
-.locale-switcher select {
-  height: 34px;
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  background: var(--paper-2);
-  color: var(--muted);
-  padding: 0 8px;
-  font: 600 10px/1 var(--font-mono);
-  letter-spacing: 0.04em;
-  cursor: pointer;
-}
-
-.locale-switcher select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:where(.dark, .dark *));

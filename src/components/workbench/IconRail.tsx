@@ -17,11 +17,6 @@ import { ChevronLeftIcon, RAIL_ICONS, SettingsIcon } from "./RailIcons";
  * Every control is a real `<button>` or `<a>` with both `title` (pointer
  * affordance) and `aria-label` (the icon carries no text), and the active mode
  * is marked `aria-current="page"` rather than by colour alone.
- *
- * `data-no-localize` opts the whole rail out of `LocaleProvider`'s body-wide
- * MutationObserver: it rewrites text nodes and `aria-label`/`title` in place,
- * and chrome that renames itself mid-interaction is worse than untranslated
- * chrome (this build is English-only anyway).
  */
 
 export interface IconRailProps {
@@ -89,7 +84,7 @@ export const IconRail = forwardRef<HTMLElement, IconRailProps>(function IconRail
         : "Checking sidecar";
 
   return (
-    <nav className="wb-rail" id={id} aria-label="Modes" data-no-localize ref={ref}>
+    <nav className="wb-rail" id={id} aria-label="Modes" ref={ref}>
       {WORKBENCH_MODES.map((item) => {
         const Glyph = RAIL_ICONS[item.id];
         const noun = BADGE_MODE_NOUNS[item.id];

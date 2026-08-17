@@ -62,7 +62,7 @@ prompts, templates, or UI.
 | Delete lifecycle | Source-aware cascade that preserves entities shared by other sources | Comprehensive cleanup plus a source-to-page contribution ledger that replaces one page's stale contribution without touching others | Strong partial | Drive source deletion through the contribution ledger before removing shared compiled pages |
 | Portability | Complete project ZIP export/import and deterministic index rebuild | Owner tenant ZIP export/import validates version, paths, size, tenant, and checksums; previews collisions and rebuilds derived indexes after skip/overwrite restore | Equivalent core | Add optional client-side archive encryption and a dedicated scoped sync token |
 | HTTP API and MCP | Projects, files, read, reviews, search, chat, graph, and source rescan | Larger MCP surface covering read/write, ingest, query, review-adjacent lifecycle, vaults, agents, graph, and history | Stronger | Add project binding, source-only search, research, skill, and sync operations |
-| Internationalization | English and Chinese UI, multilingual output behavior | English/Chinese interface selector, cookie persistence, catalog fallback, protected user content, and workspace output-language preference | Strong partial | Complete owner-session string coverage and add translation-catalog tooling |
+| Internationalization | English and Chinese UI, multilingual output behavior | English-only interface: the zh-CN catalog, the interface selector, and its locale cookie are retired, leaving a literal `lang="en"` document; the workspace output-language preference still steers generated content | Declined (recorded decision) | None — declined under parity clause 3: `AGENTS.md` → Learned User Preferences records English-only UI, so no interface translation or catalog tooling is planned |
 | Desktop shell | Three-column resizable local application and activity panel | Responsive three-column Knowledge Studio with workflow navigation, working center desks, and a persistent source-to-decision evidence rail | Equivalent web adaptation | Add optional user-resizable widths after owner-session UX acceptance |
 
 ## Cloud adaptations for desktop-only behavior
@@ -166,9 +166,9 @@ coherent tranche:
    rebuild. A token-free browser clipper uses the normal owner session. The
    optional local companion supports archive replication plus journaled source
    folder preview, push, and explicit continuous watch.
-7. Markdown renders KaTeX math, and a persistent English/Chinese interface
-   selector translates catalogued application copy while leaving wiki/source
-   content untouched.
+7. Markdown renders KaTeX math. The persistent English/Chinese interface
+   selector has been retired along with its translation catalog and locale
+   cookie: the interface is English-only.
 
 The dedicated UX polish is also implemented locally: sandbox requests pause in
 an exact-command approval docket and retain execution receipts; preserved PDF
@@ -269,7 +269,9 @@ for owner input, and complete in a sandbox without gaining wiki write authority.
 1. Add full project export/import, collision preview, and deterministic rebuild.
 2. Ship the scoped browser clipper.
 3. Ship the authenticated local sync companion and scheduled local import.
-4. Internationalize the interface.
+4. ~~Internationalize the interface.~~ Declined — the interface is English-only
+   (see the Internationalization row above); the shipped zh-CN catalog and its
+   selector were retired rather than extended.
 5. Add the optional resizable research workspace and complete cross-page
    consistency review.
 

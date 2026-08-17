@@ -83,14 +83,6 @@ describe("display name", () => {
   });
 });
 
-/**
- * `src/lib/i18n.ts` still carries the pre-rename English keys of its zh-CN
- * translation map. That map is scheduled for removal with the English-only
- * cleanup (it is not part of this story), so it is exempted here BY PATH — never
- * by widening the allowlist, which would blind the scan to real offenders.
- */
-const BRAND_SCAN_EXEMPT = new Set([path.join(SRC, "lib/i18n.ts")]);
-
 /** Everything that ships rendered copy or wire strings, not just the app tree. */
 async function scannedSources(): Promise<string[]> {
   const trees = ["app", "components", "lib", "hooks"].map((d) => path.join(SRC, d));
@@ -106,7 +98,7 @@ async function scannedSources(): Promise<string[]> {
     // no TypeScript, hence its own extension filter.
     ...(await walk(INTEGRATIONS, CLIPPER_SOURCES)),
   ];
-  return files.filter((f) => !BRAND_SCAN_EXEMPT.has(f));
+  return files;
 }
 
 const ROOT = path.resolve(SRC, "..");

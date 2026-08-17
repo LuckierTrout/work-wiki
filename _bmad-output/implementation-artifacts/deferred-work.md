@@ -31,7 +31,8 @@ location: src/lib/i18n.ts
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: medium
 reason: `src/lib/i18n.ts` keys on exact English source strings, so the renamed chrome labels ("The commons", "What is WorkWiki", "Browse all") no longer match and silently fall back to English; keys for deleted UI (Browse, Join waitlist, Contributors, Mobile navigation) are now unreachable; and line 43 still ships "WorkWiki" as rendered copy. The spec forbids i18n work in this story, and the recorded user preference is English-only, so the whole module is a later cut.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-retire-zh-cn-locale
 decision: 2026-08-16 Retire zh-CN — Remove the zh-CN catalog, LocaleSwitcher, and locale-cookie plumbing (LocaleProvider, layout.tsx cookie read), and drop brand-copy.test.ts's path exemption for i18n.ts — matching the recorded English-only preference.
 
 ### DW-5: Reconcile-from-talk plumbing and the discussion lint checks outlive the talk surface they point at.
@@ -948,4 +949,44 @@ source_spec: `spec-dom-test-environment.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-122748-68ea; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-115: `pnpm` cannot run any script in this repo, so the documented verification commands (`pnpm test`, `pnpm lint`) are unusable.
+origin: spec-deferred becf08fd7220
+source_spec: `spec-retire-zh-cn-locale.md`
+location: /Users/christianlee/pnpm-workspace.yaml
+severity: medium
+reason: `pnpm test` exits with `ERROR packages field missing or empty`. The cause is a stray `/Users/christianlee/pnpm-workspace.yaml` (an `allowBuilds:` stub with no `packages:` key) that pnpm picks up as a workspace root for every project under the home directory. Pre-existing and machine-local — not introduced by this change. Verification here ran the verbatim script bodies (`npx vitest run`, `npx eslint`) instead.
+status: open
+
+### DW-116: `<html lang>` is now unconditionally `"en"` while the wiki deliberately stores CJK and other non-English source content, so assistive technology announces those pages as English.
+origin: spec-deferred 98df4f306e4c
+source_spec: `spec-retire-zh-cn-locale.md`
+location: src/app/layout.tsx:70
+severity: low
+reason: `src/lib/slugify.ts`, `src/lib/bm25.ts` and `src/lib/ingest.ts` all preserve CJK by design, and nothing sets `lang` on the article or Preview subtree. Pre-existing rather than caused by this change — the old value tracked the UI locale, not the content language, so it was equally wrong — but the retirement removes the last place where a per-content `lang` could have been derived.
+status: open
+
+### DW-117: The `walk()` test helper is now copy-pasted across five suites with inconsistent directory exclusions, so the scans silently cover different file sets.
+origin: spec-deferred 5ee27cb93f34
+source_spec: `spec-retire-zh-cn-locale.md`
+location: src/lib/__tests__/
+severity: low
+reason: `brand-copy.test.ts`, `single-ia.test.ts`, `workbench-left-column.test.ts`, `workbench-data-version.test.ts` and the new `english-only.test.ts` each define their own `walk()`; only some skip `node_modules`, and the include filters differ. A shared `__tests__` helper would stop a future scan from looking thorough while reading a narrower tree.
+status: open
+
+### DW-118: No test renders the root layout or the nav, so the app shell's provider tree is guarded only by source-text reads.
+origin: spec-deferred 3681ca6a1583
+source_spec: `spec-retire-zh-cn-locale.md`
+location: src/app/layout.tsx
+severity: medium
+reason: `src/app/layout.tsx` is re-nested by hand whenever a provider is added or removed, but no suite imports it — the only assertions that touch it are `readFile` scans in `brand-copy.test.ts` and `english-only.test.ts`. If `<ClerkProvider>` or `<ClientProviders>` were dropped along with a wrapper, `npx tsc --noEmit`, `npx eslint` and the full Vitest run all stay green. The same holds for `NavHeader`, which no test renders. Pre-existing: the shell has never had a mounted test. The repo already has a jsdom vitest project (`vitest.config.ts`, `name: "dom"`) with four mounted suites, so the missing coverage is a gap, not a constraint.
+status: open
+
+### DW-119: Follow-up review still recommended for dw-retire-zh-cn-locale after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-retire-zh-cn-locale.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-215057-fc61; this entry preserves the lingering recommendation for a deliberate later review.
 status: open

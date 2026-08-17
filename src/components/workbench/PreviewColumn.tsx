@@ -387,7 +387,7 @@ function PreviewPane({
   }
 
   return (
-    <aside className="wb-preview" aria-label="Preview" data-no-localize>
+    <aside className="wb-preview" aria-label="Preview">
       <header className="wb-preview-head">
         <strong className="wb-preview-title">Preview</strong>
         <span className="wb-preview-name">{name}</span>

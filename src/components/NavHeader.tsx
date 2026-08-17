@@ -10,7 +10,6 @@ import { Avatar } from "./folio/primitives";
 import { AppMark } from "./Logo";
 import { APP_NAME } from "@/lib/brand";
 import { isOwnerHandle } from "@/lib/owner";
-import { LocaleSwitcher } from "./LocaleSwitcher";
 
 // Primary actions — the only links in the bar. Secondary/exploration links
 // (Graph, Log) live in the footer per the Folio design; owner admin (Lint,
@@ -132,7 +131,6 @@ export function NavHeader() {
             <GlobalSearch />
           </div>
           <ThemeToggle />
-          <LocaleSwitcher />
 
           <Show when="signed-out">
             {/* Owner-only deployment: signing in is the only entry point (the
