@@ -1240,6 +1240,56 @@ describe("GET /api/workbench/preview", () => {
     }
   });
 
+  it("serves the CURRENT Wiki's artifacts, not the first one in the registry", async () => {
+    // The left column now TELLS the owner "Switching wikis shows that wiki's
+    // purpose.md and Schema" (`WIKI_SCOPE_COPY`), and this route is the only
+    // thing that makes the promise true — `currentId` is what a switch moves.
+    // Both artifact cases above hold a ONE-Wiki registry, where `currentId` and
+    // "the first entry" are the same string: swapping this route's
+    // `getWikiRegistry(...).currentId` for `wikis[0].id` leaves them green while
+    // an owner on their second Wiki reads the first Wiki's Purpose and Schema —
+    // and then Story 1.8's `Edit` saves that body into the CURRENT Wiki, so a
+    // read/write mismatch overwrites the Wiki they were never shown.
+    const FIRST = "11111111-2222-4333-8444-555555555555";
+    const CURRENT = "33333333-4444-4555-8666-777777777777";
+    const registry = path.join(root, wikiRegistryPath(OWNER));
+    await fs.mkdir(path.dirname(registry), { recursive: true });
+    await fs.writeFile(
+      registry,
+      JSON.stringify({
+        version: 1,
+        // The current Wiki is deliberately NOT the first entry.
+        currentId: CURRENT,
+        wikis: [FIRST, CURRENT].map((id, index) => ({
+          id,
+          name: index === 0 ? "Field notes" : "Reading list",
+          scenario: "research",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        })),
+      }),
+      "utf-8",
+    );
+    for (const id of [FIRST, CURRENT]) {
+      for (const file of ["purpose.md", "schema.md"] as const) {
+        const abs = path.join(root, wikiArtifactPath(OWNER, id, file));
+        await fs.mkdir(path.dirname(abs), { recursive: true });
+        await fs.writeFile(abs, `# ${id} ${file}\n`, "utf-8");
+      }
+    }
+
+    try {
+      for (const file of ["purpose.md", "schema.md"] as const) {
+        const payload = await (await get(`kind=file&path=${file}`)).json();
+        expect(payload.body).toBe(`# ${CURRENT} ${file}\n`);
+        expect(payload.body).not.toContain(FIRST);
+      }
+    } finally {
+      // Every other case in this block asserts against an EMPTY registry.
+      await fs.rm(path.dirname(registry), { recursive: true, force: true });
+    }
+  });
+
   it("serves a page whose extension is cased oddly, still editable", async () => {
     // The read gate accepts `.MD` because a filesystem need not be
     // case-sensitive. A case-SENSITIVE slug derivation here would hand that

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { WikiSwitcher } from "@/components/workbench/WikiSwitcher";
+import { WIKI_SCOPE_COPY } from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -372,5 +373,87 @@ describe("the controls' gates", () => {
     expect(screen.queryByRole("button", { name: "Delete Wiki" })).toBeNull();
     // New Wiki is the one control that ends that state, so it stays.
     expect(screen.getByRole("button", { name: "New Wiki" })).toBeTruthy();
+  });
+});
+
+describe("the Wiki-scope sentence", () => {
+  /**
+   * A Wiki is a LENS, not a partition: Pages and Sources stay in the one tenant
+   * silo, so a switch changes only `purpose.md` and Schema while the Knowledge
+   * and Files trees keep showing the same rows (DW-30). Unsaid, that reads as a
+   * broken switcher. Asserted against the imported constant, never a retyped
+   * string — the wording has one owner.
+   */
+  it("tells the owner what a switch changes, beneath the switcher", () => {
+    mount();
+    const note = screen.getByText(WIKI_SCOPE_COPY);
+    expect(note.tagName).toBe("P");
+    // Not an alert: nothing failed, and the switcher's real error owns that
+    // channel. A `role="alert"` here would interrupt on every mount.
+    expect(note.getAttribute("role")).toBeNull();
+    // It describes the control directly above it, so it must follow the row
+    // that holds it rather than float somewhere else in the header.
+    const row = document.querySelector(".wb-wiki-switch-row");
+    expect(row).not.toBeNull();
+    expect(
+      row!.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // FOLLOWING alone is also set for a CONTAINED node (the mask is 20), and
+    // the row is `display: flex` — so folding the <p> back inside it would put
+    // the sentence on the same LINE as the <select> and leave the check above
+    // green. It must be the row's next sibling, outside it.
+    expect(row!.contains(note)).toBe(false);
+    expect(row!.nextElementSibling).toBe(note);
+  });
+
+  it("points the switcher at the sentence for a user who cannot see it sits below", () => {
+    // Visual proximity is the whole affordance for a sighted owner and nothing
+    // at all here: without this the control announces as "Active wiki,
+    // combobox" and the scope note is never reached.
+    mount();
+    const select = screen.getByLabelText("Active wiki");
+    const described = select.getAttribute("aria-describedby");
+    expect(described).toBeTruthy();
+    // Resolves to a real element, and that element is the one holding the copy.
+    const target = document.getElementById(described!);
+    expect(target).not.toBeNull();
+    expect(target!.textContent).toBe(WIKI_SCOPE_COPY);
+    expect(target).toBe(screen.getByText(WIKI_SCOPE_COPY));
+  });
+
+  it("claims nothing about wikis the registry could not read", () => {
+    // The component cannot say what a switch does when it could not load the
+    // list to switch between — only the failure sentence renders.
+    render(<WikiSwitcher wikis={[]} currentWikiId={null} unavailable />);
+    expect(screen.queryByText(WIKI_SCOPE_COPY)).toBeNull();
+    expect(screen.queryByLabelText("Active wiki")).toBeNull();
+  });
+
+  it("stays away before the first wiki exists", () => {
+    // No switcher, so nothing to explain: `New Wiki` stands alone.
+    render(<WikiSwitcher wikis={[]} currentWikiId={null} />);
+    expect(screen.queryByText(WIKI_SCOPE_COPY)).toBeNull();
+    expect(screen.queryByLabelText("Active wiki")).toBeNull();
+    expect(screen.getByRole("button", { name: "New Wiki" })).toBeTruthy();
+  });
+
+  it("stays put while a switch is in flight", async () => {
+    // Only controls are disabled mid-switch. The sentence is a statement of
+    // design, not of progress, so it must not flicker away and back.
+    let settle!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () => new Promise<Response>((resolve) => (settle = resolve)),
+    );
+    mount();
+    fireEvent.change(screen.getByLabelText("Active wiki"), {
+      target: { value: OTHER.id },
+    });
+
+    await waitFor(() => expect(button("Rename Wiki").disabled).toBe(true));
+    expect(screen.getByText(WIKI_SCOPE_COPY)).toBeTruthy();
+
+    settle(answer({ wiki: OTHER }));
+    await waitFor(() => expect(button("Rename Wiki").disabled).toBe(false));
+    expect(screen.getByText(WIKI_SCOPE_COPY)).toBeTruthy();
   });
 });

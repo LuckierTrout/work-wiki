@@ -267,7 +267,8 @@ location: src/lib/workbench-files.ts, src/lib/wikis.ts
 source_spec: `spec-1-4-knowledge-tree-and-file-tree.md`
 severity: medium
 reason: `src/lib/wikis.ts:16-17` states that Pages and Sources are deliberately not partitioned per Wiki, and `deferred-work.md` DW-17 already owns that migration. `listWorkbenchFilePaths` therefore walks the owner's one silo (`tenants/<t>/wiki`, `tenants/<t>/raw`, or the flat roots when the silo is empty) regardless of `wikiId`, and `buildKnowledgeTree` groups `listReadableWikiPages(principal)` — also tenant-wide. The AC's "the trees show that Wiki's files" is met only to the extent anything is per-Wiki on disk today: the two seeded artifacts under `tenants/<t>/wikis/<id>/`. Closing the gap means repartitioning the kernel's storage, which reaches ingest, index, silo, graph and MCP — a migration, not a browse story.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-wiki-lens-copy-and-invariant
 decision: 2026-08-17 Reword the AC, keep flat — Keep the tenant-flat storage and make the product honest about it: correct the acceptance wording and the Wiki-switch copy so a Wiki is understood as a lens over shared Pages and Sources plus its own purpose.md/schema.md, and document the invariant beside listWorkbenchFilePaths so no later story re-reads the AC as a partitioning promise.
 decision: 2026-08-16 Reword the AC, keep flat — Keep the tenant-flat storage and make the product honest about it: correct the acceptance wording and the Wiki-switch copy so a Wiki is understood as a lens over shared Pages and Sources plus its own purpose.md/schema.md, and document the invariant beside listWorkbenchFilePaths so no later story re-reads the AC as a partitioning promise.
 
@@ -1414,6 +1415,38 @@ status: open
 ### DW-169: Follow-up review still recommended for dw-workbench-mode-url-sync after the damping cap was spent
 origin: review-budget-followup
 source_spec: `spec-dw-27-workbench-mode-url-sync.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-170: DW-17's stated reopening trigger, and three frozen story records, still quote the Story 1.4 AC phrase this change removed.
+origin: spec-deferred 96e0e22d612c
+source_spec: `spec-dw-30-wiki-lens-copy-and-invariant.md`
+location: _bmad-output/implementation-artifacts/deferred-work.md:153
+severity: medium
+reason: `deferred-work.md:153` justifies DW-17 with "the per-Wiki Page partitioning that Story 1.4's 'the trees show that Wiki's files' implies", and the same phrase is quoted at `spec-1-2-create-a-wiki-from-a-scenario-template.md:71` and `spec-1-4-knowledge-tree-and-file-tree.md:25,132,310`. After this change that citation resolves to no live text in `epics.md`, so DW-17's rationale now rests on a phrase that no longer exists — which could either keep a migration alive on a dead citation or make it look spuriously resolved. The ledger is orchestrator-owned and the story specs are frozen records, so neither can be corrected from this story.
+status: open
+
+### DW-171: The PRD still glosses the File Tree as a browse of "the Wiki's files", the same per-Wiki reading this story removed from the epic.
+origin: spec-deferred 5ba851433aa5
+source_spec: `spec-dw-30-wiki-lens-copy-and-invariant.md`
+location: _bmad-output/planning-artifacts/prds/prd-work-wiki-2026-08-12/prd.md:99
+severity: low
+reason: `_bmad-output/planning-artifacts/prds/prd-work-wiki-2026-08-12/prd.md:99` reads "**File Tree** — Left-column browse of the Wiki's files (Pages, Sources, purpose/Schema)", which groups Pages and Sources under "the Wiki's" exactly as the corrected AC used to. The intent named `epics.md:400` specifically and said nothing about the PRD, so rewording a second planning artifact is outside what was authorised here.
+status: open
+
+### DW-172: The AC edit shifted `epics.md` by two lines, so four line-addressed citations in three completed story records now point two lines short.
+origin: spec-deferred 1f39f0c46915
+source_spec: `spec-dw-30-wiki-lens-copy-and-invariant.md`
+location: _bmad-output/implementation-artifacts/spec-1-6-drag-resize-and-durable-layout.md:246
+severity: low
+reason: Verified against the current file: `spec-1-6-drag-resize-and-durable-layout.md:246` cites `epics.md:440` (the 320px clause is now at :442), `spec-1-5-view-first-preview- with-gfm-and-wikilinks.md:383` cites `:423` (now :425), `:391` cites `:413` and `:414` (now :415 and :416), and `spec-1-4-knowledge-tree-and-file-tree.md:136` cites `:530` (now :532). The previous pass's triage entry claimed "every other `epics.md:<line>` citation in the repo sits above the edit" — that holds for shipped code under `src/` (the only other citations there are `epics.md:367`, above the edit, and `workbench-split.ts` was corrected) but not for the planning and implementation artifacts. The intent's Never clause puts the completed `spec-1-4` record off limits, and the same freeze applies to the other completed story records, so none of the four can be corrected from this story. Each lands within the same AC block, so a reader is misdirected by two lines rather than to unrelated text.
+status: open
+
+### DW-173: Follow-up review still recommended for dw-wiki-lens-copy-and-invariant after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-dw-30-wiki-lens-copy-and-invariant.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.

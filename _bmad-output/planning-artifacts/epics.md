@@ -397,7 +397,9 @@ so that I can browse compiled Pages and vault files without opening a local fold
 
 **Given** I switch Wikis from the header
 **When** I pick another of my Wikis
-**Then** the trees show that Wiki’s files
+**Then** the Files tree shows that Wiki’s `purpose.md` and Schema
+**And** Pages and Sources are shared across my Wikis, so Knowledge and Files keep showing the same ones
+**And** the left column says so, so a Wiki reads as a lens over shared Pages and Sources
 **And** I cannot see another owner’s Wiki
 
 ### Story 1.5: View-first Preview with GFM and wikilinks

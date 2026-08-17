@@ -79,6 +79,31 @@ export const TREE_NO_WIKI_COPY = "No wiki yet.";
 export const TREE_UNAVAILABLE_COPY = "Your wikis couldn’t be loaded.";
 
 /**
+ * What a Wiki switch actually swaps into view, said at the switcher.
+ *
+ * A Wiki is a LENS, not a partition: `src/lib/wikis.ts:16-17` is the storage
+ * fact — Pages and Sources stay in the one tenant silo, and creating or
+ * re-templating a Wiki writes only `purpose.md`, `schema.md` and that Wiki's
+ * own `workspace-profile.json`. So switching leaves the Knowledge and Files
+ * trees showing the same pages and sources, which without this sentence reads
+ * as a broken switcher rather than as the design.
+ *
+ * "shows", never "changes": this same surface already uses the changing verbs
+ * for WRITES — the rename dialog's "Pages and Sources are not changed", the
+ * canvas card's "This overwrites purpose.md, Schema…" — so "switching changes
+ * purpose.md" reads as a warning that the switch rewrites the owner's file.
+ * A switch writes nothing; it re-points what is displayed.
+ *
+ * It lives here with every other left-column sentence for the reason the module
+ * docstring gives: one owner per wording, so the claim cannot drift between the
+ * render site and the tests that pin it. It renders as a plain muted note, not
+ * `role="alert"` — nothing failed, and the switcher's real error already owns
+ * that channel.
+ */
+export const WIKI_SCOPE_COPY =
+  "Switching wikis shows that wiki’s purpose.md and Schema. Pages and Sources are shared across your wikis.";
+
+/**
  * The page index — not the registry — is what failed. Named separately because
  * the registry sentence would be a false statement here: the switcher above the
  * tree is at that moment happily listing the wikis it claims could not load.
@@ -295,6 +320,14 @@ function toKnowledgePage(entry: IndexEntry): KnowledgePage {
  * Agent-scoped pages are dropped here rather than at the call site so the rule
  * cannot be forgotten by a second caller: this matches `/api/wiki`'s default,
  * which is the browse contract the Knowledge tab is a view of.
+ *
+ * The index this groups is TENANT-WIDE, not per-Wiki (`src/lib/wikis.ts:16-17`,
+ * DW-30), so the same pages appear under every Wiki and a switch leaves this
+ * tab looking untouched. That is the storage fact, not a grouping bug — the
+ * left column says so (`WIKI_SCOPE_COPY`). Repartitioning the index per Wiki is
+ * DW-17's migration. Note the artifacts a switch DOES swap — `purpose.md` and
+ * `schema.md` — are deliberately kept out of the page index and so never reach
+ * this function; only the Files tab lists them.
  */
 export function buildKnowledgeTree(entries: readonly IndexEntry[]): KnowledgeGroup[] {
   const groups = new Map<string, KnowledgePage[]>();

@@ -16,6 +16,7 @@ import {
   DEFAULT_TREE_TAB,
   FILES_TRUNCATED_COPY,
   TREE_TABS,
+  WIKI_SCOPE_COPY,
   buildFileTree,
   buildKnowledgeTree,
   findFileNode,
@@ -31,6 +32,7 @@ import {
   WORKBENCH_FILE_LIMIT,
   WORKBENCH_FILE_MAX_DEPTH,
   listWorkbenchFilePaths,
+  readWorkbenchFile,
 } from "../workbench-files";
 import {
   WORKBENCH_TREE_TAB_KEY,
@@ -419,6 +421,49 @@ describe("listWorkbenchFilePaths", () => {
     expect(none.paths).toEqual(["raw/", "wiki/"]);
   });
 
+  it("shows the SAME silo under either Wiki, and only the artifacts differ", async () => {
+    // The product now TELLS the owner "Pages and Sources are shared across your
+    // wikis" (`WIKI_SCOPE_COPY`), and this is the listing that has to make that
+    // true. Every other silo case here passes `wikiId = null`, so the claim was
+    // pinned nowhere: partitioning the walk per Wiki would leave the suite green
+    // while turning the shipped sentence into a lie.
+    const OTHER_ID = "33333333-4444-4555-8666-777777777777";
+    await writeSilo("wiki", "shared-page.md");
+    await writeSilo("raw", "shared-source.md");
+    // Both Wikis exist on disk, each with its own artifact pair — the one thing
+    // a switch is allowed to change.
+    for (const id of [WIKI_ID, OTHER_ID]) {
+      for (const file of ["purpose.md", "schema.md"] as const) {
+        const abs = path.join(getDataDir(), wikiArtifactPath(OWNER, id, file));
+        await fs.mkdir(path.dirname(abs), { recursive: true });
+        await fs.writeFile(abs, `# ${id} ${file}\n`, "utf-8");
+      }
+    }
+
+    const first = await listWorkbenchFilePaths(OWNER, WIKI_ID, gate("shared-page"));
+    const second = await listWorkbenchFilePaths(OWNER, OTHER_ID, gate("shared-page"));
+
+    // Identical, entry for entry and in the same order — not merely overlapping.
+    const silo = (listing: { paths: string[] }) =>
+      listing.paths.filter((p) => p.startsWith("wiki/") || p.startsWith("raw/"));
+    expect(silo(first)).toEqual(["raw/", "raw/shared-source.md", "wiki/", "wiki/shared-page.md"]);
+    expect(silo(second)).toEqual(silo(first));
+    // And the whole listing is identical too: the artifacts a switch DOES swap
+    // are per-Wiki in CONTENT, not in path, so nothing at all moves in the tree.
+    expect(second.paths).toEqual(first.paths);
+    expect(first.paths.slice(0, 2)).toEqual(["purpose.md", "schema.md"]);
+
+    // What actually differs is on the other side of those two paths: each Wiki's
+    // own file. Read them back THROUGH the reader the Preview uses, not with
+    // `fs` — reading the fixture back with `fs` would compare the bytes this
+    // test just wrote and pass no matter what the product resolves. This is the
+    // per-Wiki half of the shipped sentence: the same display path, under two
+    // ids, must reach two different files.
+    const read = (id: string) => readWorkbenchFile(OWNER, id, "purpose.md", gate());
+    expect((await read(WIKI_ID))?.content).toBe(`# ${WIKI_ID} purpose.md\n`);
+    expect((await read(OTHER_ID))?.content).toBe(`# ${OTHER_ID} purpose.md\n`);
+  });
+
   it("shows no artifacts when there is no current Wiki, but still both roots", async () => {
     const { paths } = await listWorkbenchFilePaths(OWNER, null, gate());
     expect(paths).toEqual(["raw/", "wiki/"]);
@@ -606,6 +651,25 @@ describe("listWorkbenchFilePaths", () => {
     expect(WORKBENCH_FILE_MAX_DEPTH).toBe(3);
     // Derived, not typed: the numeral cannot outlive the cap.
     expect(FILES_TRUNCATED_COPY).toBe("File list truncated at 2,000 entries.");
+  });
+
+  it("says at the switcher what a Wiki switch actually changes", () => {
+    // The tenant-flat invariant this suite exercises above (one `wiki/` and one
+    // `raw/` under either Wiki) is only honest if the product admits it. This
+    // pins BOTH halves so a later edit cannot quietly turn the sentence back
+    // into a partitioning promise: what is per-Wiki, and what is shared.
+    expect(WIKI_SCOPE_COPY).toContain("purpose.md");
+    expect(WIKI_SCOPE_COPY).toContain("Schema");
+    expect(WIKI_SCOPE_COPY).toContain("Pages and Sources are shared");
+    expect(WIKI_SCOPE_COPY).toBe(
+      "Switching wikis shows that wiki’s purpose.md and Schema. Pages and Sources are shared across your wikis.",
+    );
+    // "shows", never "changes": the changing verbs belong to the WRITES this
+    // same surface performs (the rename dialog's "Pages and Sources are not
+    // changed", the canvas card's "This overwrites purpose.md, Schema…"), so
+    // "switching changes purpose.md" reads as a warning that the switch
+    // rewrites the owner's file. A switch writes nothing.
+    expect(WIKI_SCOPE_COPY).not.toMatch(/\bchanges\b|\boverwrites\b|\breplaces\b/);
   });
 });
 

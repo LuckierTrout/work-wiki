@@ -23,6 +23,7 @@ import {
   TREE_NO_WIKI_COPY,
   TREE_TABS,
   TREE_UNAVAILABLE_COPY,
+  WIKI_SCOPE_COPY,
 } from "../workbench-tree";
 import {
   PREVIEW_EMPTY_COPY,
@@ -247,6 +248,69 @@ describe("WikiSwitcher", () => {
     const gated = source.slice(gate, source.indexOf("</select>", gate));
     expect(gated).toContain("Active wiki");
     expect(gated).not.toContain("New Wiki");
+  });
+
+  it("sources the Wiki-scope sentence rather than inlining it", async () => {
+    const source = await read("WikiSwitcher.tsx");
+    // A Wiki is a lens, not a partition (`src/lib/wikis.ts:16-17`), and the
+    // switcher is where that misreading happens — so the sentence ships, and
+    // it ships from the module that owns every left-column sentence.
+    expect(source).toContain("WIKI_SCOPE_COPY");
+    expect(source).toContain('from "@/lib/workbench-tree"');
+    // Typed here it would be a second definition of copy the tests pin
+    // elsewhere — the same sourced-not-literal rule TREE_UNAVAILABLE_COPY has.
+    // Both the whole sentence and each half of it, because half a sentence
+    // pasted in is the same drift. The halves are DERIVED, never typed: typed
+    // fragments would stop matching the moment the constant is reworded, and
+    // then pass vacuously — exactly the failure this test exists to catch.
+    const halves = WIKI_SCOPE_COPY.split(". ").filter(Boolean);
+    expect(halves.length).toBeGreaterThan(1);
+    for (const half of [WIKI_SCOPE_COPY, ...halves]) {
+      expect(source).not.toContain(half);
+    }
+    // Not `role="alert"`: nothing failed. Announcing a statement of intended
+    // design on every mount would interrupt a screen-reader user, and would put
+    // a permanent fixture in the channel the switcher's real error uses.
+    const note = source.indexOf('className="wb-wiki-switch-note wb-wiki-switch-scope"');
+    expect(note).toBeGreaterThan(-1);
+    // Anchored at the element's OPENING `<p`, so a `role` written before
+    // `className` is inside the scanned window rather than behind it…
+    const open = source.lastIndexOf("<p", note);
+    expect(open).toBeGreaterThan(-1);
+    // …and bounded by a close tag that must actually exist and actually follow:
+    // a missing `</p>` would make `indexOf` return -1 and turn the slice into a
+    // whole-file scan, which fails on an unrelated `role="alert"` elsewhere.
+    const close = source.indexOf("</p>", note);
+    expect(close).toBeGreaterThan(note);
+    expect(source.slice(open, close)).not.toContain("role=");
+    // The sentence is still ANNOUNCED, just not as an alert: the <select> it
+    // describes points at it, which is the whole affordance for a user who
+    // cannot see that it sits directly below.
+    expect(source).toContain("aria-describedby={wikis.length > 0 ? scopeNoteId : undefined}");
+    expect(source.slice(open, close)).toContain("id={scopeNoteId}");
+  });
+
+  it("separates the scope sentence from the switcher row it sits under", async () => {
+    const css = await globals();
+    // Unpinned, deleting this rule leaves the sentence flush against the
+    // <select> — reading as part of the control rather than a note about it —
+    // with every other assertion in the suite still green.
+    //
+    // COMPOUND, not `.wb-wiki-switch-scope` alone: the element carries both
+    // classes, so a single-class selector ties on specificity with the
+    // `margin: 0` below and wins only by sitting later in the file. Pinned as a
+    // single class, moving either rule — or sorting the block — would flatten
+    // the spacing with this test still green, which is the failure it exists to
+    // catch.
+    expect(css).toMatch(
+      /\.wb-wiki-switch-note\.wb-wiki-switch-scope \{[^}]*margin-top: var\(--wb-space-1\);/,
+    );
+    // Its OWN rule, not a change to the shared muted face: that face also
+    // dresses the `unavailable` note, which is the only child of its branch and
+    // must keep `margin: 0`.
+    expect(css).toMatch(
+      /\.wb-wiki-switch-note,\s*\.wb-wiki-switch-error \{[^}]*margin: 0;/,
+    );
   });
 });
 

@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CreateWikiDialog } from "@/components/CreateWikiDialog";
-import { TREE_UNAVAILABLE_COPY } from "@/lib/workbench-tree";
+import { TREE_UNAVAILABLE_COPY, WIKI_SCOPE_COPY } from "@/lib/workbench-tree";
 import { MAX_WIKI_NAME_CHARS, type CreatableScenario } from "@/lib/wiki-scenarios";
 import type { WikiRecord } from "@/lib/wikis";
 
@@ -80,6 +80,7 @@ export function WikiSwitcher({
 }: WikiSwitcherProps) {
   const router = useRouter();
   const selectId = useId();
+  const scopeNoteId = useId();
   const renameInputId = useId();
   const deleteSelectId = useId();
   const [createOpen, setCreateOpen] = useState(false);
@@ -251,42 +252,63 @@ export function WikiSwitcher({
           {TREE_UNAVAILABLE_COPY}
         </p>
       ) : (
-        <div className="wb-wiki-switch-row">
+        <>
+          <div className="wb-wiki-switch-row">
+            {wikis.length > 0 && (
+              <>
+                {/* Labelled, not placeholder-labelled (accessibility floor). The
+                    label is clipped rather than absent: the column is 280px and
+                    the control's own option text already names the Wiki. */}
+                <label htmlFor={selectId} className="wb-sr-only">
+                  Active wiki
+                </label>
+                <select
+                  id={selectId}
+                  className="wb-wiki-switch-select"
+                  // Visual proximity is the whole affordance for a sighted
+                  // owner and nothing at all for a screen-reader user, who
+                  // would otherwise hear "Active wiki, combobox" with no hint
+                  // that the switch leaves Pages and Sources where they are.
+                  // Both are rendered under the same gate, so the id always
+                  // resolves — but it is written from the same condition so a
+                  // future edit cannot leave it dangling.
+                  aria-describedby={wikis.length > 0 ? scopeNoteId : undefined}
+                  value={value}
+                  disabled={switching}
+                  onChange={(event) => void switchWiki(event.target.value)}
+                >
+                  {wikis.map((wiki) => (
+                    <option key={wiki.id} value={wiki.id}>
+                      {wiki.name}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+            <button
+              type="button"
+              ref={newRef}
+              className="wb-wiki-switch-new"
+              onClick={() => {
+                setCreateError(null);
+                setCreateOpen(true);
+              }}
+            >
+              New Wiki
+            </button>
+          </div>
+          {/* A Wiki is a lens, not a partition: switching swaps `purpose.md`
+              and Schema into view while Pages and Sources stay put. The
+              sentence describes the <select> and nothing else, so it tracks
+              that control exactly — same gate, so it renders when and only when
+              the switcher does, and never as a caption over a row that holds
+              only `New Wiki`. Not an alert: nothing failed. */}
           {wikis.length > 0 && (
-            <>
-              {/* Labelled, not placeholder-labelled (accessibility floor). The
-                  label is clipped rather than absent: the column is 280px and
-                  the control's own option text already names the Wiki. */}
-              <label htmlFor={selectId} className="wb-sr-only">
-                Active wiki
-              </label>
-              <select
-                id={selectId}
-                className="wb-wiki-switch-select"
-                value={value}
-                disabled={switching}
-                onChange={(event) => void switchWiki(event.target.value)}
-              >
-                {wikis.map((wiki) => (
-                  <option key={wiki.id} value={wiki.id}>
-                    {wiki.name}
-                  </option>
-                ))}
-              </select>
-            </>
+            <p id={scopeNoteId} className="wb-wiki-switch-note wb-wiki-switch-scope">
+              {WIKI_SCOPE_COPY}
+            </p>
           )}
-          <button
-            type="button"
-            ref={newRef}
-            className="wb-wiki-switch-new"
-            onClick={() => {
-              setCreateError(null);
-              setCreateOpen(true);
-            }}
-          >
-            New Wiki
-          </button>
-        </div>
+        </>
       )}
 
       {/* Rename acts on the ACTIVE Wiki — the switcher's selection IS the

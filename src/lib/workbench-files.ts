@@ -234,6 +234,14 @@ const allowEveryLeaf: LeafFilter = () => true;
  * `wiki/` and `raw/` are the owner's single silo — Pages and Sources are not
  * partitioned per Wiki (`src/lib/wikis.ts:16-17`), so both roots are the same
  * under either Wiki. That is a storage fact, not a rendering choice.
+ *
+ * Story 1.4's Wiki-switch acceptance criterion (`### Story 1.4` in
+ * `_bmad-output/planning-artifacts/epics.md`) observes exactly that: the Files
+ * tree shows that Wiki's `purpose.md` and Schema, and Pages and Sources are
+ * shared. Keeping it flat and rewording the AC is DW-30's recorded decision, so
+ * the AC is NOT owed partitioning work — a Wiki is a lens, and the left column
+ * says so (`WIKI_SCOPE_COPY` in `workbench-tree.ts`). Repartitioning the silo
+ * per Wiki is DW-17 (ingest, index, silo, graph, MCP), not a gap here.
  */
 export async function listWorkbenchFilePaths(
   owner: string,

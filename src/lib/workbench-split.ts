@@ -41,7 +41,7 @@ export const SPLIT_MIN_PREVIEW = 200;
 /**
  * `--wb-split-min-chat: 320px`, applied to the CANVAS in every mode.
  *
- * `epics.md:440` reads "Chat (when visible) cannot go below 320px", and in
+ * `epics.md:442` reads "Chat (when visible) cannot go below 320px", and in
  * Epic 1 Chat is not a column — it is what the canvas renders when the rail's
  * second icon is active. Nothing about a mode switch changes a width, so a tree
  * dragged to leave 240px of canvas in Wiki mode would either crush Chat on the

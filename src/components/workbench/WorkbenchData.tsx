@@ -33,7 +33,13 @@ export interface WorkbenchData {
    * prevent.
    */
   knowledgeUnavailable: boolean;
-  /** The Wiki's files as a nested tree, for the Files tab. */
+  /**
+   * The owner's files as a nested tree, for the Files tab — the one tenant
+   * silo plus the CURRENT Wiki's `purpose.md` and `schema.md`. Not "the Wiki's
+   * files": Pages and Sources are shared across an owner's Wikis
+   * (`src/lib/wikis.ts:16-17`, DW-30), which is what `WIKI_SCOPE_COPY` says at
+   * the switcher and what Story 1.4's Wiki-switch AC now observes.
+   */
   files: readonly FileNode[];
   /** Same discrimination as `knowledgeUnavailable`, for the file walk. */
   filesUnavailable: boolean;

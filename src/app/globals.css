@@ -2907,6 +2907,16 @@ body:has(.wb-shell) {
 .wb-wiki-switch-error {
   margin-top: var(--wb-space-1);
 }
+/* The scope sentence sits under the switcher row and needs the same separation
+   the error gets. Its own rule, not a change to `.wb-wiki-switch-note`: that
+   face is shared with the `unavailable` note, which is the only child of its
+   branch and must keep `margin: 0`. The element carries BOTH classes, so this
+   selector is compound rather than single: at equal specificity it would beat
+   `margin: 0` only by sitting later in the file, and the spacing would vanish
+   the moment either rule moved. */
+.wb-wiki-switch-note.wb-wiki-switch-scope {
+  margin-top: var(--wb-space-1);
+}
 
 /* ---- Knowledge | Files tabs ------------------------------------------- */
 .wb-tree-panel {
