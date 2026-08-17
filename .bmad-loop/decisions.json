@@ -106,5 +106,14 @@
     "key": "2",
     "label": "Wait for DW-14",
     "resolution": ""
+  },
+  "DW-59": {
+    "answered_at": "2026-08-17",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Snapshot artifacts under their own per-Wiki revision namespace (tenants/<t>/wikis/<id>/revisions/<file>/), read-before-write in writeWikiArtifact, and expose list/revert through the artifact route mirroring the page revisions API. Keeps the slug-keyed revisions silo untouched.",
+    "key": "1",
+    "label": "Per-Wiki artifact revisions",
+    "resolution": ""
   }
 }
