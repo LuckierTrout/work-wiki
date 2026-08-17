@@ -56,7 +56,9 @@ import { tenantForOwner, validateTenant } from "./wiki";
 import {
   WIKI_ID_RE,
   wikiArtifactPath,
+  wikiDirPath,
   wikiLockKey,
+  wikisRootPath,
 } from "./wiki-paths";
 import { putWorkspaceProfile } from "./workspace-profile";
 import type { WorkspaceProfileInput } from "./workspace-profile-schema";
@@ -83,6 +85,10 @@ export interface WikiRegistry {
 export interface CreateWikiInput {
   name: string;
   scenario: CreatableScenario;
+}
+
+export interface RenameWikiInput {
+  name: string;
 }
 
 // The artifact list and the name cap are declared in the pure, client-safe
@@ -144,21 +150,38 @@ export function parseScenarioInput(value: unknown): CreatableScenario {
   return scenario;
 }
 
-/** Parse a create-Wiki body: a non-blank name of at most 80 chars, plus a scenario. */
-export function parseCreateWikiInput(value: unknown): CreateWikiInput {
-  const scenario = parseScenarioInput(value);
-  const raw = asObject(value).name;
-  if (typeof raw !== "string") {
+/**
+ * The Wiki-name rules, in ONE place: text, trimmed, inner whitespace collapsed,
+ * non-blank, at most {@link MAX_WIKI_NAME_CHARS}.
+ *
+ * Create and rename both go through here so the cap and the collapse cannot
+ * drift apart — a rename that accepted 200 characters would put a name in the
+ * registry that create would have refused, and `# <name>` at the top of
+ * `purpose.md` would carry it.
+ */
+export function parseWikiName(value: unknown): string {
+  if (typeof value !== "string") {
     throw new ClientInputError("Wiki name must be text.");
   }
-  const name = raw.trim().replace(/\s+/g, " ");
+  const name = value.trim().replace(/\s+/g, " ");
   if (!name) throw new ClientInputError("Wiki name is required.");
   if (name.length > MAX_WIKI_NAME_CHARS) {
     throw new ClientInputError(
       `Wiki name must be ${MAX_WIKI_NAME_CHARS} characters or fewer.`,
     );
   }
-  return { name, scenario };
+  return name;
+}
+
+/** Parse a create-Wiki body: a non-blank name of at most 80 chars, plus a scenario. */
+export function parseCreateWikiInput(value: unknown): CreateWikiInput {
+  const scenario = parseScenarioInput(value);
+  return { name: parseWikiName(asObject(value).name), scenario };
+}
+
+/** Parse a rename body: `{ name }`, under the same rules as create. */
+export function parseRenameWikiInput(value: unknown): RenameWikiInput {
+  return { name: parseWikiName(asObject(value).name) };
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +264,9 @@ async function readRegistry(owner: string): Promise<WikiRegistry> {
  * Persist the registry as-is. Deliberately does NOT cap the list: silently
  * dropping the oldest record would orphan its `wikis/<id>/` artifacts on disk
  * with no error. {@link createWiki} enforces {@link MAX_WIKIS} up front instead.
+ *
+ * Orphans that DO arise — a `normalizeRegistry` drop, or an interrupted delete —
+ * are reclaimed by {@link sweepOrphanWikiDirectories} rather than avoided here.
  */
 async function writeRegistry(owner: string, registry: WikiRegistry): Promise<void> {
   await getStorage().writeFile(
@@ -498,6 +524,203 @@ export async function setCurrentWiki(
     if (!wiki) return null;
     registry.currentId = wiki.id;
     await writeRegistry(owner, registry);
+    return wiki;
+  });
+}
+
+/**
+ * Retitle a renamed Wiki's `purpose.md` — the artifact half of {@link renameWiki}.
+ *
+ * UNLOCKED, like {@link putWikiArtifact}: the caller is already holding
+ * `wikis:<tenant>`. Deliberately NOT `writeWikiArtifact`, which would take that
+ * key again (deadlock) and fire a log line and a `dataVersion` bump the sibling
+ * lifecycle operations do not have.
+ *
+ * FAIL-SOFT, and that is the whole design of it. The registry is what the
+ * switcher, the workbench heading and every id lookup read; `purpose.md`'s
+ * heading is prose. A Wiki with a missing or hand-edited purpose file must
+ * still be renameable, so a surprise here is warned about and the rename
+ * stands. Only a LEADING `# …` line is replaced — anything else is left exactly
+ * as the owner wrote it rather than guessed at.
+ */
+async function retitlePurpose(
+  owner: string,
+  wikiId: string,
+  name: string,
+): Promise<void> {
+  try {
+    const purpose = await readWikiArtifact(owner, wikiId, "purpose.md");
+    if (purpose === null) {
+      logger.warn(
+        "wikis",
+        `renamed wiki "${wikiId}" has no purpose.md to retitle — the registry name is the rename`,
+      );
+      return;
+    }
+    const lines = purpose.split("\n");
+    if (!/^#\s+/.test(lines[0] ?? "")) {
+      logger.warn(
+        "wikis",
+        `purpose.md for wiki "${wikiId}" does not open with a "# " heading — leaving the file untouched`,
+      );
+      return;
+    }
+    lines[0] = `# ${name}`;
+    await putWikiArtifact(owner, wikiId, "purpose.md", lines.join("\n"));
+  } catch (error) {
+    logger.warn("wikis", `retitling purpose.md for wiki "${wikiId}" failed`, error);
+  }
+}
+
+/**
+ * Rename a Wiki: the registry entry, and the `# <name>` heading `purpose.md`
+ * was seeded with. Returns null when the id is unknown, so the route can 404.
+ *
+ * `name` is re-parsed here with {@link parseWikiName} rather than trusted from
+ * the route, so a rejected name never reaches the lock and never writes
+ * anything. Nothing else moves: the Scenario Template, the Schema, the
+ * workspace profile, Pages and Sources are all untouched — a rename is a label
+ * change, not a re-seed.
+ */
+export async function renameWiki(
+  owner: string,
+  wikiId: string,
+  name: string,
+): Promise<WikiRecord | null> {
+  const parsed = parseWikiName(name);
+  return withFileLock(wikiLockKey(owner), async () => {
+    const registry = await readRegistry(owner);
+    const wiki = registry.wikis.find((item) => item.id === wikiId);
+    if (!wiki) return null;
+    wiki.name = parsed;
+    wiki.updatedAt = new Date().toISOString();
+    await writeRegistry(owner, registry);
+    await retitlePurpose(owner, wiki.id, parsed);
+    return wiki;
+  });
+}
+
+/**
+ * Remove one orphaned `wikis/<uuid>/` directory per entry that no registry
+ * record claims. Returns how many were removed.
+ *
+ * UNLOCKED — the caller holds `wikis:<tenant>`. `registry` is passed in rather
+ * than re-read so {@link deleteWiki} sweeps against the registry it has just
+ * WRITTEN; re-reading would be a second round trip that can only be staler.
+ *
+ * ONLY directories whose name is a Wiki id and which the registry does not
+ * name are removed. A loose file under `tenants/<t>/wikis/`, or a directory
+ * with any other shape of name, is left alone — a future sibling there must
+ * not become collateral damage of a delete.
+ *
+ * AN EMPTY REGISTRY SWEEPS NOTHING. `readRegistry` degrades a missing or
+ * unparseable `wikis.json` to {@link emptyRegistry}, so "no entries, but
+ * directories on disk" is indistinguishable from "the registry was lost or is
+ * half-restored" — and against that state every Wiki the tenant has is an
+ * orphan. It also cannot be the legitimate post-delete state: the current Wiki
+ * is undeletable, so a delete never empties the registry. Bailing out costs a
+ * genuinely-empty tenant one skipped no-op; not bailing out costs a tenant with
+ * a lost registry every artifact it owns.
+ */
+async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<number> {
+  if (registry.wikis.length === 0) {
+    logger.warn(
+      "wikis",
+      "skipping the orphan sweep: the registry names no wikis, which is a lost or unreadable wikis.json as often as it is an empty tenant — and a sweep against that would delete every wiki directory on disk",
+    );
+    return 0;
+  }
+  const known = new Set(registry.wikis.map((wiki) => wiki.id));
+  const entries = await getStorage().listFiles(wikisRootPath(owner));
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory) continue;
+    if (!WIKI_ID_RE.test(entry.name)) continue;
+    if (known.has(entry.name)) continue;
+    await getStorage().deleteDirectory(wikiDirPath(owner, entry.name));
+    removed += 1;
+    logger.warn(
+      "wikis",
+      `removed orphaned wiki directory "${entry.name}" — no registry entry referenced it`,
+    );
+  }
+  return removed;
+}
+
+/**
+ * Reclaim every `tenants/<t>/wikis/<uuid>/` directory the registry does not
+ * name. Returns how many were removed.
+ *
+ * `normalizeRegistry` drops unusable entries during a plain READ, so the sweep
+ * cannot live there without making reads destructive. It runs from
+ * {@link deleteWiki} — the one moment a Wiki directory is legitimately removed —
+ * and is exported here, taking the lock itself, so it is directly testable and
+ * callable by a future maintenance task.
+ */
+export async function sweepOrphanWikiDirectories(owner: string): Promise<number> {
+  return withFileLock(wikiLockKey(owner), async () =>
+    sweepOrphans(owner, await readRegistry(owner)),
+  );
+}
+
+/**
+ * Delete a Wiki: its registry entry AND its `tenants/<t>/wikis/<id>/`
+ * directory. Returns null when the id is unknown, so the route can 404.
+ *
+ * REFUSES THE CURRENT WIKI, with a `ClientInputError` the route answers 400 —
+ * and does NOT re-point `currentId` to make the delete succeed. Which Wiki is
+ * active decides which `schema.md` executes in every ingest, chat and lint
+ * prompt; moving that pointer as a side effect of a delete would silently
+ * change what the whole workspace runs on. The owner switches first.
+ *
+ * ORDER: registry, then the directory. A crash between the two leaves an orphan
+ * directory, which {@link sweepOrphanWikiDirectories} is built to reclaim. The
+ * reverse order leaves a registry entry pointing at artifacts that are gone —
+ * the failure the UI cannot recover from.
+ *
+ * WHICH IS ALSO WHY BOTH BYTE-REMOVAL STEPS ARE FAIL-SOFT. Once the registry
+ * write lands the Wiki is gone from every read in the app, so a throw from
+ * either `deleteDirectory` or the sweep would 500 a delete that has effectively
+ * happened — and the owner's retry would then 404. The leftovers are exactly
+ * what the sweep reclaims on the next delete.
+ *
+ * Pages, Sources, the page index and `tenants/<t>/wiki/**` are untouched: they
+ * are tenant-wide, not per-Wiki, so a delete never removes content.
+ */
+export async function deleteWiki(
+  owner: string,
+  wikiId: string,
+): Promise<WikiRecord | null> {
+  return withFileLock(wikiLockKey(owner), async () => {
+    const registry = await readRegistry(owner);
+    const wiki = registry.wikis.find((item) => item.id === wikiId);
+    if (!wiki) return null;
+    if (registry.currentId === wiki.id) {
+      throw new ClientInputError(
+        "Switch to a different wiki before deleting this one.",
+      );
+    }
+    registry.wikis = registry.wikis.filter((item) => item.id !== wiki.id);
+    await writeRegistry(owner, registry);
+    try {
+      await getStorage().deleteDirectory(wikiDirPath(owner, wiki.id));
+    } catch (error) {
+      // The entry is already gone, so the Wiki is gone from every read in the
+      // app. Reporting that as a failure would send the owner into a retry that
+      // 404s; the bytes stay behind for the next sweep to reclaim instead.
+      logger.warn(
+        "wikis",
+        `removing the directory of deleted wiki "${wiki.id}" failed — leaving it for the orphan sweep`,
+        error,
+      );
+    }
+    try {
+      await sweepOrphans(owner, registry);
+    } catch (error) {
+      // Same reasoning, one step further out: leftovers from some EARLIER
+      // interruption must not fail the delete the owner actually asked for.
+      logger.warn("wikis", "sweeping orphaned wiki directories failed", error);
+    }
     return wiki;
   });
 }

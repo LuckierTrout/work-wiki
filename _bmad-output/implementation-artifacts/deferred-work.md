@@ -158,7 +158,8 @@ location: src/lib/wikis.ts
 source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: low
 reason: `wikis.ts` exposes create/apply/set-current only. The name is baked into the `# <name>` heading of `purpose.md` at seed time, so a typo is permanent, and an entry dropped by `normalizeRegistry` leaves its `wikis/<id>/purpose.md` and `schema.md` on disk with nothing referencing them. Story 1.2's acceptance criteria ask for neither operation.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-wiki-rename-and-delete
 decision: 2026-08-16 Build rename+delete — Add rename (updates registry and the purpose.md heading) and confirm-gated delete (removes the registry entry and its wikis/<id>/ directory, refusing to delete the current Wiki), plus an orphan-directory sweep, with matching routes and Workbench controls.
 
 ### DW-19: `loadPageConventions()` resolves the active Wiki deployment-globally from `NEXT_PUBLIC_OWNER_HANDLE`, while the guidance beside it at the same prompt sites resolves per-caller.
@@ -1211,6 +1212,46 @@ status: open
 ### DW-146: Follow-up review still recommended for dw-per-wiki-workspace-profiles after the damping cap was spent
 origin: review-budget-followup
 source_spec: `spec-per-wiki-workspace-profiles.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-215057-fc61; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-147: The orphan-directory sweep has no trigger other than a successful delete, so a tenant that never deletes never reclaims a directory orphaned by a normalizeRegistry drop.
+origin: spec-deferred 68436c804582
+source_spec: `spec-wiki-rename-and-delete.md`
+location: src/lib/wikis.ts (sweepOrphanWikiDirectories) / src/lib/maintenance.ts
+severity: medium
+reason: `sweepOrphanWikiDirectories` is exported and locked but has no caller in `src/` outside the test suite; `deleteWiki` is the only production path that reaches the sweep, and deleting the last (always current) Wiki is refused. The repo already has a home for this class of work: `scanForMaintenance` in `src/lib/maintenance.ts`, cron-driven via `src/app/api/tasks/scan/route.ts`, which emits a structurally identical `orphan-page` op for "file on disk, no index entry". DW-18's intent names a registry READ as the orphan's cause but does not say what should trigger the cleanup, so the delete-side-effect reading was chosen at planning time rather than settled by the intent.
+status: open
+
+### DW-148: Wiki names are not unique and both the switcher and the new delete picker render the name alone, so two Wikis with the same name are indistinguishable at the moment of an irreversible delete.
+origin: spec-deferred b04ccd5558d3
+source_spec: `spec-wiki-rename-and-delete.md`
+location: src/components/workbench/WikiSwitcher.tsx
+severity: low
+reason: Neither `parseWikiName` nor the registry enforces uniqueness, and every `<option>` in `WikiSwitcher` (pre-existing) and in the delete picker (new) carries only `wiki.name` — no scenario, created date, or id fragment.
+status: open
+
+### DW-149: WikiSwitcher offers its write controls with no client-side read-only signal, so on a read-only deployment the 403 arrives only after the owner has confirmed.
+origin: spec-deferred 8a87b42369f8
+source_spec: `spec-wiki-rename-and-delete.md`
+location: src/components/workbench/WikiSwitcher.tsx
+severity: low
+reason: All four routes gate on `isReadOnly()`, but the component renders New Wiki, the switcher, Rename and Delete unconditionally. Pre-existing for New Wiki and the switcher; the new controls inherit it. Other surfaces (PreviewColumn, WorkspacePurposeSettings) do carry a read-only signal.
+status: open
+
+### DW-150: `withFileLock` is in-process only, so on a multi-isolate deployment the orphan sweep can delete the directory of a Wiki whose registry entry has not landed yet.
+origin: spec-deferred 11deb3958f5b
+source_spec: `spec-wiki-rename-and-delete.md`
+location: src/lib/wikis.ts (sweepOrphans) / src/lib/lock.ts
+severity: low
+reason: `src/lib/lock.ts` documents the lock as in-process ("does not protect against multiple server processes"), and `createWiki` seeds `wikis/<id>/` BEFORE pushing the entry and writing the registry — both inside the lock, so a single Node process is safe. Under `build:cloudflare` / `open-next.config.ts` two isolates can hold the "same" lock at once: isolate A is mid-create with the directory on disk and no entry, isolate B deletes an unrelated Wiki and its sweep sees A's directory as an orphan. Every other registry operation has the same exposure, but this is the first one whose consequence is byte removal rather than a lost entry. A mtime grace period on sweep candidates, or a cross-process lock, would close it; both are design decisions past DW-18.
+status: open
+
+### DW-151: Follow-up review still recommended for dw-wiki-rename-and-delete after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-wiki-rename-and-delete.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-215057-fc61; this entry preserves the lingering recommendation for a deliberate later review.

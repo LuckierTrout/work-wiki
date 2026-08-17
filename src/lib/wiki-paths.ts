@@ -39,6 +39,23 @@ export function validateWikiId(id: unknown): string {
 }
 
 /**
+ * `tenants/<tenant>/wikis` — the directory each Wiki's own directory sits in.
+ *
+ * Lives here rather than in `wikis.ts` for the same reason everything else in
+ * this module does: `tenants/<t>/wikis/…` has ONE expression in the repo, and a
+ * second copy is how the sweep's listing prefix and `wikiDirPath`'s delete
+ * target drift onto different directories.
+ *
+ * Only the orphan sweep addresses this level — it is the one operation that
+ * enumerates what is on disk instead of following an id, so it is also the one
+ * path that carries no {@link validateWikiId} of its own. Every name it finds
+ * there goes back through {@link wikiDirPath} before it becomes a delete.
+ */
+export function wikisRootPath(owner: string): string {
+  return `tenants/${tenantFor(owner)}/wikis`;
+}
+
+/**
  * `tenants/<tenant>/wikis/<wikiId>` — everything that belongs to ONE Wiki.
  *
  * `purpose.md`, `schema.md` and `workspace-profile.json` are all siblings in

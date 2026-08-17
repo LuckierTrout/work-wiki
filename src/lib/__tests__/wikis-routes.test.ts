@@ -17,17 +17,23 @@ vi.mock("@/lib/wikis", async (original) => ({
   createWiki: vi.fn(),
   applyScenarioTemplate: vi.fn(),
   setCurrentWiki: vi.fn(),
+  renameWiki: vi.fn(),
+  deleteWiki: vi.fn(),
 }));
 
 import { GET, POST } from "@/app/api/wikis/route";
 import { PUT } from "@/app/api/wikis/current/route";
 import { POST as APPLY_TEMPLATE } from "@/app/api/wikis/[id]/template/route";
+import { DELETE as DELETE_WIKI, PATCH as RENAME_WIKI } from "@/app/api/wikis/[id]/route";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
+import { ClientInputError } from "@/lib/errors";
 import {
   applyScenarioTemplate,
   createWiki,
+  deleteWiki,
   getWikiRegistry,
+  renameWiki,
   setCurrentWiki,
   type WikiRecord,
 } from "@/lib/wikis";
@@ -46,6 +52,8 @@ const mockedRegistry = vi.mocked(getWikiRegistry);
 const mockedCreate = vi.mocked(createWiki);
 const mockedApply = vi.mocked(applyScenarioTemplate);
 const mockedSetCurrent = vi.mocked(setCurrentWiki);
+const mockedRename = vi.mocked(renameWiki);
+const mockedDelete = vi.mocked(deleteWiki);
 
 function jsonRequest(url: string, method: string, body: unknown) {
   return new Request(url, {
@@ -62,6 +70,15 @@ const currentRequest = (body: unknown) =>
 const templateRequest = (body: unknown) =>
   jsonRequest(`http://localhost/api/wikis/${WIKI.id}/template`, "POST", body);
 const templateContext = (id = WIKI.id) => ({ params: Promise.resolve({ id }) });
+// The id is a PARAMETER of both, so a 404 case can point the URL and the route
+// context at the SAME unknown id. Hard-coding `WIKI.id` in the URL while
+// passing another id through `params` would let a handler that parsed the id
+// out of the pathname pass every assertion here.
+const renameRequest = (body: unknown, id = WIKI.id) =>
+  jsonRequest(`http://localhost/api/wikis/${id}`, "PATCH", body);
+const deleteRequest = (id = WIKI.id) =>
+  new Request(`http://localhost/api/wikis/${id}`, { method: "DELETE" });
+const idContext = (id = WIKI.id) => ({ params: Promise.resolve({ id }) });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -71,6 +88,8 @@ beforeEach(() => {
   mockedCreate.mockResolvedValue(WIKI);
   mockedApply.mockResolvedValue({ ...WIKI, scenario: "reading" });
   mockedSetCurrent.mockResolvedValue(WIKI);
+  mockedRename.mockResolvedValue({ ...WIKI, name: "Q4 plan" });
+  mockedDelete.mockResolvedValue(WIKI);
 });
 
 describe("wiki API auth", () => {
@@ -83,10 +102,16 @@ describe("wiki API auth", () => {
       (await APPLY_TEMPLATE(templateRequest({ scenario: "reading" }), templateContext()))
         .status,
     ).toBe(401);
+    expect(
+      (await RENAME_WIKI(renameRequest({ name: "Q4 plan" }), idContext())).status,
+    ).toBe(401);
+    expect((await DELETE_WIKI(deleteRequest(), idContext())).status).toBe(401);
     expect(mockedRegistry).not.toHaveBeenCalled();
     expect(mockedCreate).not.toHaveBeenCalled();
     expect(mockedSetCurrent).not.toHaveBeenCalled();
     expect(mockedApply).not.toHaveBeenCalled();
+    expect(mockedRename).not.toHaveBeenCalled();
+    expect(mockedDelete).not.toHaveBeenCalled();
   });
 
   it("refuses writes on a read-only deployment", async () => {
@@ -97,9 +122,15 @@ describe("wiki API auth", () => {
       (await APPLY_TEMPLATE(templateRequest({ scenario: "reading" }), templateContext()))
         .status,
     ).toBe(403);
+    expect(
+      (await RENAME_WIKI(renameRequest({ name: "Q4 plan" }), idContext())).status,
+    ).toBe(403);
+    expect((await DELETE_WIKI(deleteRequest(), idContext())).status).toBe(403);
     expect(mockedCreate).not.toHaveBeenCalled();
     expect(mockedSetCurrent).not.toHaveBeenCalled();
     expect(mockedApply).not.toHaveBeenCalled();
+    expect(mockedRename).not.toHaveBeenCalled();
+    expect(mockedDelete).not.toHaveBeenCalled();
   });
 });
 
@@ -123,9 +154,19 @@ describe("malformed bodies", () => {
       ).status,
     ).toBe(400);
 
+    expect(
+      (
+        await RENAME_WIKI(
+          bad(`http://localhost/api/wikis/${WIKI.id}`, "PATCH"),
+          idContext(),
+        )
+      ).status,
+    ).toBe(400);
+
     expect(mockedCreate).not.toHaveBeenCalled();
     expect(mockedSetCurrent).not.toHaveBeenCalled();
     expect(mockedApply).not.toHaveBeenCalled();
+    expect(mockedRename).not.toHaveBeenCalled();
   });
 
   it("400s on valid JSON that is not an object, without touching storage", async () => {
@@ -137,11 +178,13 @@ describe("malformed bodies", () => {
       expect(
         (await APPLY_TEMPLATE(templateRequest(body), templateContext())).status,
       ).toBe(400);
+      expect((await RENAME_WIKI(renameRequest(body), idContext())).status).toBe(400);
     }
 
     expect(mockedCreate).not.toHaveBeenCalled();
     expect(mockedSetCurrent).not.toHaveBeenCalled();
     expect(mockedApply).not.toHaveBeenCalled();
+    expect(mockedRename).not.toHaveBeenCalled();
   });
 });
 
@@ -208,6 +251,77 @@ describe("POST /api/wikis/<id>/template", () => {
     );
     expect(response.status).toBe(400);
     expect(mockedApply).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/wikis/<id>", () => {
+  it("renames the wiki and answers with the updated record", async () => {
+    const response = await RENAME_WIKI(renameRequest({ name: "  Q4   plan " }), idContext());
+    expect(response.status).toBe(200);
+    expect((await response.json()).wiki.name).toBe("Q4 plan");
+    // The route's parser normalises before the lib call, so the lib never sees
+    // the raw string — the 80-char cap and the collapse are one rule.
+    expect(mockedRename).toHaveBeenCalledWith("alice", WIKI.id, "Q4 plan");
+  });
+
+  it("404s on an unknown wiki", async () => {
+    mockedRename.mockResolvedValue(null);
+    const unknown = "00000000-0000-4000-8000-000000000000";
+    const response = await RENAME_WIKI(
+      renameRequest({ name: "Q4 plan" }, unknown),
+      idContext(unknown),
+    );
+    expect(response.status).toBe(404);
+    expect(mockedRename).toHaveBeenCalledWith("alice", unknown, "Q4 plan");
+  });
+
+  it("400s on a blank, non-string or oversized name without reaching the lib", async () => {
+    for (const body of [{ name: "   " }, { name: 7 }, {}, { name: "x".repeat(81) }]) {
+      const response = await RENAME_WIKI(renameRequest(body), idContext());
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toBeTruthy();
+    }
+    expect(mockedRename).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a lib-side ClientInputError as a 400 and anything else as a 500", async () => {
+    mockedRename.mockRejectedValueOnce(new ClientInputError("Wiki name is required."));
+    expect((await RENAME_WIKI(renameRequest({ name: "x" }), idContext())).status).toBe(400);
+    mockedRename.mockRejectedValueOnce(new Error("disk on fire"));
+    expect((await RENAME_WIKI(renameRequest({ name: "x" }), idContext())).status).toBe(500);
+  });
+});
+
+describe("DELETE /api/wikis/<id>", () => {
+  it("deletes the wiki and answers with the removed record", async () => {
+    const response = await DELETE_WIKI(deleteRequest(), idContext());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ wiki: WIKI });
+    expect(mockedDelete).toHaveBeenCalledWith("alice", WIKI.id);
+  });
+
+  it("404s on an unknown wiki", async () => {
+    mockedDelete.mockResolvedValue(null);
+    const unknown = "00000000-0000-4000-8000-000000000000";
+    const response = await DELETE_WIKI(deleteRequest(unknown), idContext(unknown));
+    expect(response.status).toBe(404);
+    expect(mockedDelete).toHaveBeenCalledWith("alice", unknown);
+  });
+
+  it("400s when the lib refuses to delete the active wiki", async () => {
+    // The one rejection an owner can act on: switch first, then delete. A 500
+    // would read as a server fault and offer nothing to do about it.
+    mockedDelete.mockRejectedValueOnce(
+      new ClientInputError("Switch to a different wiki before deleting this one."),
+    );
+    const response = await DELETE_WIKI(deleteRequest(), idContext());
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain("Switch to a different wiki");
+  });
+
+  it("500s on an unexpected failure", async () => {
+    mockedDelete.mockRejectedValueOnce(new Error("disk on fire"));
+    expect((await DELETE_WIKI(deleteRequest(), idContext())).status).toBe(500);
   });
 });
 

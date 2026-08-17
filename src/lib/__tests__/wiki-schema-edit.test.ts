@@ -899,11 +899,19 @@ describe("the two routes", () => {
       "utf8",
     );
     expect(paths).toContain("`tenants/${tenantFor(owner)}/wikis/");
+    // The sweep addresses the PARENT of a Wiki's directory, so `wiki-paths.ts`
+    // owns that expression too rather than a second module re-deriving the
+    // listing prefix a delete then has to agree with.
+    expect(paths).toContain("`tenants/${tenantFor(owner)}/wikis`");
     // No other module interpolates the layout — prose in a docblock is fine,
-    // a second `${…}/wikis/` expression is the regression.
+    // a second `${…}/wikis` expression is the regression, WITH or without the
+    // trailing slash: `…/wikis` alone is the directory the sweep enumerates,
+    // and a `not.toContain("}/wikis/")` guard sails straight past it. The
+    // negative lookahead spares `wikiRegistryPath`'s `…}/wikis.json`, which
+    // addresses the registry file rather than the artifact tree.
     for (const name of ["wikis.ts", "workspace-profile.ts"]) {
       const source = await fs.readFile(path.resolve(__dirname, `../${name}`), "utf8");
-      expect(source).not.toContain("}/wikis/");
+      expect(source).not.toMatch(/\}\/wikis(?!\.)/);
     }
     // The profile is a sibling of the artifacts: same directory, one helper.
     const profile = await fs.readFile(

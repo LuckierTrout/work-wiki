@@ -7,13 +7,13 @@
  * differ, and — the load-bearing one — that applying a template leaves
  * `tenants/<t>/wiki/**` and `tenants/<t>/raw/**` byte-identical.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { ClientInputError } from "../errors";
 import { _resetLocks, withFileLock } from "../lock";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 import { tenantForOwner } from "../wiki";
 import { wikiLockKey } from "../wiki-paths";
 import { buildWorkspaceGuidance } from "../workspace-guidance";
@@ -23,13 +23,17 @@ import {
   MAX_WIKIS,
   applyScenarioTemplate,
   createWiki,
+  deleteWiki,
   getCurrentWiki,
   getWikiRegistry,
   listWikis,
   parseCreateWikiInput,
+  parseRenameWikiInput,
   parseScenarioInput,
   readWikiArtifact,
+  renameWiki,
   setCurrentWiki,
+  sweepOrphanWikiDirectories,
   wikiArtifactPath,
   wikiRegistryPath,
   type WikiRecord,
@@ -501,5 +505,334 @@ describe("the active wiki pointer", () => {
       "utf8",
     );
     expect(profileStore).toContain("withFileLock(wikiLockKey(owner)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lifecycle: rename, delete, and the orphan sweep (DW-18)
+// ---------------------------------------------------------------------------
+
+/** The absolute path of one Wiki's own directory, for existence assertions. */
+function wikiDir(wikiId: string): string {
+  return abs("tenants", TENANT, "wikis", wikiId);
+}
+
+async function exists(target: string): Promise<boolean> {
+  try {
+    await fs.stat(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Backdate a Wiki's `updatedAt` so "bumped" is an observation, not a coin flip. */
+async function backdate(wikiId: string, when = "2000-01-01T00:00:00.000Z"): Promise<void> {
+  const file = abs(wikiRegistryPath(OWNER));
+  const registry = JSON.parse(await fs.readFile(file, "utf8"));
+  for (const entry of registry.wikis) {
+    if (entry.id === wikiId) entry.updatedAt = when;
+  }
+  await fs.writeFile(file, JSON.stringify(registry, null, 2));
+}
+
+describe("renaming a wiki", () => {
+  it("trims and collapses the name, bumps updatedAt, and retitles purpose.md only", async () => {
+    const wiki = await createWiki(OWNER, { name: "Q3 planning", scenario: "business" });
+    await backdate(wiki.id);
+    const before = (await readWikiArtifact(OWNER, wiki.id, "purpose.md")) ?? "";
+    const schemaBefore = await readWikiArtifact(OWNER, wiki.id, "schema.md");
+    const profileBefore = await profileBytes(wiki.id);
+
+    const renamed = await renameWiki(OWNER, wiki.id, "  Q4   plan ");
+
+    expect(renamed?.name).toBe("Q4 plan");
+    expect(renamed?.updatedAt.localeCompare("2000-01-01T00:00:00.000Z")).toBe(1);
+    expect((await getWikiRegistry(OWNER)).wikis[0].name).toBe("Q4 plan");
+    // The scenario is a label change away from nothing else: a rename must not
+    // re-seed, so the Schema and the profile are byte-identical.
+    expect(renamed?.scenario).toBe("business");
+    expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toBe(schemaBefore);
+    expect(await profileBytes(wiki.id)).toBe(profileBefore);
+
+    const after = (await readWikiArtifact(OWNER, wiki.id, "purpose.md")) ?? "";
+    expect(after.split("\n")[0]).toBe("# Q4 plan");
+    // Only line 1 moved — the rest of the seeded file is byte-identical.
+    expect(after.split("\n").slice(1)).toEqual(before.split("\n").slice(1));
+  });
+
+  it("rejects a blank, non-string or oversized name and writes nothing", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const purpose = await readWikiArtifact(OWNER, wiki.id, "purpose.md");
+    const registryBefore = await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8");
+
+    for (const name of ["   ", "", 42 as never, null as never, "x".repeat(81)]) {
+      await expect(renameWiki(OWNER, wiki.id, name)).rejects.toThrow(ClientInputError);
+    }
+    // The parser is also reachable on its own, the way the route calls it.
+    for (const body of [{ name: "  " }, { name: 7 }, {}, { name: "x".repeat(81) }]) {
+      expect(() => parseRenameWikiInput(body)).toThrow(ClientInputError);
+    }
+    expect(parseRenameWikiInput({ name: "  Q4   plan " })).toEqual({ name: "Q4 plan" });
+
+    expect(await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8")).toBe(registryBefore);
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toBe(purpose);
+  });
+
+  it("returns null for an unknown or traversal-shaped id and writes nothing", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const registryBefore = await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8");
+
+    for (const id of ["00000000-0000-4000-8000-000000000000", "../../etc/passwd", "nope"]) {
+      expect(await renameWiki(OWNER, id, "New name")).toBeNull();
+    }
+
+    expect(await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8")).toBe(registryBefore);
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain("# Ops");
+  });
+
+  it("still renames when purpose.md is missing or does not open with a heading", async () => {
+    const missing = await createWiki(OWNER, { name: "Gone", scenario: "general" });
+    await fs.rm(path.join(wikiDir(missing.id), "purpose.md"));
+
+    expect((await renameWiki(OWNER, missing.id, "Renamed anyway"))?.name).toBe(
+      "Renamed anyway",
+    );
+    expect(await readWikiArtifact(OWNER, missing.id, "purpose.md")).toBeNull();
+
+    const shapeless = await createWiki(OWNER, { name: "Odd", scenario: "general" });
+    await fs.writeFile(
+      path.join(wikiDir(shapeless.id), "purpose.md"),
+      "no heading here\n## Purpose\n",
+    );
+
+    expect((await renameWiki(OWNER, shapeless.id, "Also renamed"))?.name).toBe(
+      "Also renamed",
+    );
+    // The owner's own bytes are left exactly as written, not guessed at.
+    expect(await readWikiArtifact(OWNER, shapeless.id, "purpose.md")).toBe(
+      "no heading here\n## Purpose\n",
+    );
+    const names = (await getWikiRegistry(OWNER)).wikis.map((item) => item.name);
+    expect(names).toEqual(["Renamed anyway", "Also renamed"]);
+  });
+
+  it("still renames when writing the retitled purpose.md fails", async () => {
+    // The registry write lands FIRST, so the rename has already happened by
+    // the time the artifact is touched. Propagating a storage failure from
+    // there would 500 a rename the owner can see took effect — and the retry
+    // would 500 again. The delete path pins the mirror of this with a
+    // `deleteDirectory` spy; this is the rename half.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    const spy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) =>
+        target.endsWith("purpose.md")
+          ? Promise.reject(new Error("the artifact store is unavailable"))
+          : write(target, content),
+      );
+
+    try {
+      expect((await renameWiki(OWNER, wiki.id, "Q4 plan"))?.name).toBe("Q4 plan");
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The registry — what the switcher and every id lookup read — has moved.
+    expect((await getWikiRegistry(OWNER)).wikis[0].name).toBe("Q4 plan");
+    // The heading is stale, which is the accepted cost of not failing.
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain("# Ops");
+  });
+});
+
+describe("deleting a wiki", () => {
+  it("removes the entry and the directory, and leaves the active wiki alone", async () => {
+    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
+    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
+    // `drop` was created last, so it is current — move the pointer back.
+    await setCurrentWiki(OWNER, keep.id);
+
+    // The trees a delete must never reach.
+    await fs.mkdir(abs("tenants", TENANT, "wiki"), { recursive: true });
+    await fs.mkdir(abs("tenants", TENANT, "raw"), { recursive: true });
+    await fs.writeFile(abs("tenants", TENANT, "wiki", "existing-page.md"), "# Page\n");
+    await fs.writeFile(abs("tenants", TENANT, "raw", "source.txt"), "raw bytes\n");
+
+    expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
+
+    const registry = await getWikiRegistry(OWNER);
+    expect(registry.wikis.map((item) => item.id)).toEqual([keep.id]);
+    expect(registry.currentId).toBe(keep.id);
+    expect(await exists(wikiDir(drop.id))).toBe(false);
+    // The OTHER wiki's directory is untouched — all three files still there.
+    expect(await exists(wikiDir(keep.id))).toBe(true);
+    expect(await readWikiArtifact(OWNER, keep.id, "purpose.md")).toContain("# Keep");
+    expect(await readWikiArtifact(OWNER, keep.id, "schema.md")).toBeTruthy();
+    expect(await profileBytes(keep.id)).toBeTruthy();
+    // Pages and Sources are tenant-wide; a delete is not a content reset.
+    expect(
+      await fs.readFile(abs("tenants", TENANT, "wiki", "existing-page.md"), "utf8"),
+    ).toBe("# Page\n");
+    expect(await fs.readFile(abs("tenants", TENANT, "raw", "source.txt"), "utf8")).toBe(
+      "raw bytes\n",
+    );
+  });
+
+  it("refuses the current wiki instead of silently re-pointing current", async () => {
+    const first = await createWiki(OWNER, { name: "One", scenario: "business" });
+    const second = await createWiki(OWNER, { name: "Two", scenario: "reading" });
+    expect((await getCurrentWiki(OWNER))?.id).toBe(second.id);
+
+    await expect(deleteWiki(OWNER, second.id)).rejects.toThrow(ClientInputError);
+
+    // Nothing moved: not the entry, not the directory, and not the pointer.
+    const registry = await getWikiRegistry(OWNER);
+    expect(registry.wikis.map((item) => item.id)).toEqual([first.id, second.id]);
+    expect(registry.currentId).toBe(second.id);
+    expect(await exists(wikiDir(second.id))).toBe(true);
+  });
+
+  it("refuses the last wiki, which is always the current one", async () => {
+    const only = await createWiki(OWNER, { name: "Only", scenario: "general" });
+    await expect(deleteWiki(OWNER, only.id)).rejects.toThrow(ClientInputError);
+    expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([only.id]);
+  });
+
+  it("returns null for an unknown or traversal-shaped id and removes nothing", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const registryBefore = await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8");
+
+    for (const id of ["00000000-0000-4000-8000-000000000000", "../../etc/passwd", "nope"]) {
+      expect(await deleteWiki(OWNER, id)).toBeNull();
+    }
+
+    expect(await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8")).toBe(registryBefore);
+    expect(await exists(wikiDir(wiki.id))).toBe(true);
+  });
+
+  it("still reports success when removing the directory fails", async () => {
+    // The registry write has already landed, so the wiki is gone from every
+    // read in the app. Propagating the failure would 500 a delete that has
+    // effectively happened — and the owner's retry would then 404.
+    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
+    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
+    await setCurrentWiki(OWNER, keep.id);
+
+    const removal = vi
+      .spyOn(getStorage(), "deleteDirectory")
+      .mockRejectedValue(new Error("the directory is busy"));
+    try {
+      expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
+    } finally {
+      removal.mockRestore();
+    }
+
+    expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([keep.id]);
+    // The bytes are still there — deliberately, for the next sweep to reclaim.
+    expect(await exists(wikiDir(drop.id))).toBe(true);
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+    expect(await exists(wikiDir(drop.id))).toBe(false);
+    expect(await exists(wikiDir(keep.id))).toBe(true);
+  });
+});
+
+describe("the orphan-directory sweep", () => {
+  /** A `wikis/<uuid>/` directory with artifacts and no registry entry. */
+  async function plantOrphan(id: string): Promise<string> {
+    await fs.mkdir(wikiDir(id), { recursive: true });
+    await fs.writeFile(path.join(wikiDir(id), "purpose.md"), "# Orphan\n");
+    return wikiDir(id);
+  }
+
+  it("removes only unreferenced uuid directories, and counts them", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const orphan = await plantOrphan("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+    // Neither of these is a Wiki directory, so neither is the sweep's business.
+    const sibling = abs("tenants", TENANT, "wikis", "archive");
+    await fs.mkdir(sibling, { recursive: true });
+    const loose = abs("tenants", TENANT, "wikis", "README.md");
+    await fs.writeFile(loose, "notes\n");
+
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+
+    expect(await exists(orphan)).toBe(false);
+    expect(await exists(sibling)).toBe(true);
+    expect(await exists(loose)).toBe(true);
+    expect(await exists(wikiDir(wiki.id))).toBe(true);
+    // Idempotent: a second sweep has nothing left to reclaim.
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+  });
+
+  it("reclaims orphans as a side effect of a delete", async () => {
+    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
+    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
+    await setCurrentWiki(OWNER, keep.id);
+    const orphan = await plantOrphan("11111111-2222-4333-8444-555555555555");
+
+    expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
+
+    expect(await exists(orphan)).toBe(false);
+    expect(await exists(wikiDir(drop.id))).toBe(false);
+    expect(await exists(wikiDir(keep.id))).toBe(true);
+  });
+
+  it("is empty, not an error, when no wiki directory exists at all", async () => {
+    // The registry has to NAME something, or the empty-registry guard below
+    // returns first and `listFiles` is never reached — the assertion would then
+    // pass for a reason that has nothing to do with the missing directory.
+    // `wikis.json` is a sibling of the `wikis/` tree, so removing the tree
+    // leaves the registry standing.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await fs.rm(abs("tenants", TENANT, "wikis"), { recursive: true });
+
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+  });
+
+  it("refuses to sweep against an empty registry, whatever is on disk", async () => {
+    // `readRegistry` degrades a missing or unparseable wikis.json to an EMPTY
+    // registry, so "no entries but directories on disk" is a lost or
+    // half-restored registry as often as it is an empty tenant — and against
+    // that reading, every wiki the owner has is an orphan. It also cannot be a
+    // legitimate post-delete state: the current wiki is undeletable, so a
+    // delete never empties the registry.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const purpose = await readWikiArtifact(OWNER, wiki.id, "purpose.md");
+    await fs.rm(abs(wikiRegistryPath(OWNER)));
+
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+
+    expect(await exists(wikiDir(wiki.id))).toBe(true);
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toBe(purpose);
+    // Same for a registry that parses but names nothing.
+    await fs.writeFile(
+      abs(wikiRegistryPath(OWNER)),
+      JSON.stringify({ version: 1, wikis: [], currentId: null }),
+    );
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+    expect(await exists(wikiDir(wiki.id))).toBe(true);
+  });
+
+  it("never fails the delete it runs inside", async () => {
+    // The requested wiki is gone from BOTH the registry and the disk by the
+    // time the sweep runs. Failing the request over leftovers from some earlier
+    // interruption would report a completed delete as failed, and the owner
+    // would retry a delete that has already happened.
+    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
+    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
+    await setCurrentWiki(OWNER, keep.id);
+
+    const listing = vi
+      .spyOn(getStorage(), "listFiles")
+      .mockRejectedValue(new Error("listing the wikis directory failed"));
+    try {
+      expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
+    } finally {
+      listing.mockRestore();
+    }
+
+    expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([keep.id]);
+    expect(await exists(wikiDir(drop.id))).toBe(false);
   });
 });

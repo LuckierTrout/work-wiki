@@ -2861,7 +2861,21 @@ body:has(.wb-shell) {
   font-size: var(--wb-font-size);
   line-height: var(--wb-line-height);
 }
-.wb-wiki-switch-new {
+/* Rename and Delete sit on their OWN row: three controls beside the <select>
+   do not fit the 280px column. They take the New Wiki treatment rather than a
+   second button face — same size, same border, same hover. */
+.wb-wiki-switch-actions {
+  display: flex;
+  align-items: center;
+  /* The children are `flex: 0 0 auto`, so without this they overflow the 280px
+     column rather than stacking — and the column is narrower still below the
+     1199px and 899px breakpoints. */
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+  margin-top: var(--wb-space-1);
+}
+.wb-wiki-switch-new,
+.wb-wiki-switch-action {
   flex: 0 0 auto;
   padding: var(--wb-space-1) var(--wb-space-3);
   min-height: 28px;
@@ -2873,8 +2887,17 @@ body:has(.wb-shell) {
   font-weight: var(--wb-weight-strong);
   cursor: pointer;
 }
-.wb-wiki-switch-new:hover {
+.wb-wiki-switch-new:hover,
+.wb-wiki-switch-action:hover:not([disabled]) {
   background: var(--wb-rail-hover);
+}
+/* Both actions are disabled while a switch is in flight, so they need the
+   shell's disabled treatment — the same one `.wb-preview-action` and
+   `.wb-set-save` carry. Without it they still light up on hover and still show
+   a pointer cursor while refusing every click. */
+.wb-wiki-switch-action[disabled] {
+  opacity: 0.6;
+  cursor: default;
 }
 .wb-wiki-switch-note,
 .wb-wiki-switch-error {

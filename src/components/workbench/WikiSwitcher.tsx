@@ -2,9 +2,10 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CreateWikiDialog } from "@/components/CreateWikiDialog";
 import { TREE_UNAVAILABLE_COPY } from "@/lib/workbench-tree";
-import type { CreatableScenario } from "@/lib/wiki-scenarios";
+import { MAX_WIKI_NAME_CHARS, type CreatableScenario } from "@/lib/wiki-scenarios";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -19,10 +20,12 @@ import type { WikiRecord } from "@/lib/wikis";
  * `page.tsx` keys `WikiWorkbench` on the current Wiki id, so the card remounts
  * with fresh props when this header switches.
  *
- * A native `<select>`, not a popover: there is no DOM test environment in this
- * repo (DW-15, DW-24), so a hand-rolled listbox's focus management, Esc and
- * outside-click dismissal would ship entirely unverified. The platform's
- * control gets all three for free.
+ * A native `<select>`, not a popover. A hand-rolled listbox owns its own
+ * roving focus, typeahead, Esc and outside-click dismissal, and — the part no
+ * jsdom suite can stand in for — its own touch and screen-reader behaviour on
+ * every platform the owner might open this on. The native control gets all of
+ * that from the OS, which is why it stays even now that this component has a
+ * mounted suite (`wiki-switcher-lifecycle.test.tsx`).
  */
 
 export interface WikiSwitcherProps {
@@ -77,19 +80,45 @@ export function WikiSwitcher({
 }: WikiSwitcherProps) {
   const router = useRouter();
   const selectId = useId();
+  const renameInputId = useId();
+  const deleteSelectId = useId();
   const [createOpen, setCreateOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameName, setRenameName] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteTargetId, setDeleteTargetId] = useState("");
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   // The optimistic selection. `currentWikiId` only catches up once
   // `router.refresh()` lands, so without this the <select> visibly snaps back
   // to the old Wiki for the length of the round trip. On success it is left in
   // place — it already equals what the refresh will deliver.
   const [pendingId, setPendingId] = useState<string | null>(null);
-  // Creating the first Wiki does not unmount this button (unlike the canvas
-  // empty state), but the dialog still needs a landing place if it ever does.
+  /**
+   * New Wiki — the one control here that no operation unmounts, and therefore
+   * the landing place for keyboard focus when an opener goes away.
+   *
+   * `useDialogA11y` only reaches `fallbackFocusRef` when the opener is already
+   * detached at close time, which is NOT what a delete does: `remove()` closes
+   * the dialog first, so focus is restored to a Delete button that is still
+   * mounted, and only then does `router.refresh()` shrink `wikis` and take that
+   * button away — dropping the keyboard user on <body> with no dialog left to
+   * blame. So a successful delete moves focus here EXPLICITLY rather than
+   * relying on the fallback branch.
+   */
   const newRef = useRef<HTMLButtonElement>(null);
+  /**
+   * Set by a successful delete that also UNMOUNTS the Delete button; consumed
+   * by the effect below. Only that case: when other deletable Wikis remain the
+   * opener survives the refresh, `useDialogA11y` restores focus to it
+   * correctly, and moving focus anyway would take the keyboard somewhere the
+   * owner never navigated to.
+   */
+  const refocusNewRef = useRef(false);
 
   // The optimism ends the moment the server's answer arrives. Without this the
   // stale `pendingId` outranks `currentWikiId` forever, so a later switch made
@@ -99,6 +128,16 @@ export function WikiSwitcher({
   useEffect(() => {
     setPendingId(null);
   }, [currentWikiId]);
+
+  // React flushes every effect TEARDOWN before any effect body, so this lands
+  // after `useDialogA11y` has restored focus to the Delete button — the button
+  // the shrinking `wikis` list is about to unmount. Doing it any earlier would
+  // simply be overwritten.
+  useEffect(() => {
+    if (deleteOpen || !refocusNewRef.current) return;
+    refocusNewRef.current = false;
+    newRef.current?.focus();
+  }, [deleteOpen]);
 
   async function switchWiki(id: string) {
     if (switching) return;
@@ -140,7 +179,70 @@ export function WikiSwitcher({
     }
   }
 
+  async function rename(wiki: WikiRecord, name: string) {
+    setBusy(true);
+    setRenameError(null);
+    try {
+      const { wiki: renamed } = await send<{ wiki?: WikiRecord }>(
+        `/api/wikis/${encodeURIComponent(wiki.id)}`,
+        { method: "PATCH", body: JSON.stringify({ name }) },
+      );
+      // A 2xx whose body is not the documented shape must not reach state.
+      if (!renamed?.id) throw new Error("Couldn’t rename the wiki.");
+      setRenameOpen(false);
+      setError(null);
+      router.refresh();
+    } catch (cause) {
+      setRenameError(failureMessage(cause, "Couldn’t rename the wiki."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(wiki: WikiRecord) {
+    setBusy(true);
+    setDeleteError(null);
+    try {
+      const { wiki: deleted } = await send<{ wiki?: WikiRecord }>(
+        `/api/wikis/${encodeURIComponent(wiki.id)}`,
+        { method: "DELETE" },
+      );
+      if (!deleted?.id) throw new Error("Couldn’t delete the wiki.");
+      // Claimed BEFORE the close, consumed by the effect that runs once the
+      // dialog has finished restoring focus to the doomed opener. Focusing
+      // here would be too early — `setDeleteOpen(false)` has not rendered yet,
+      // so `useDialogA11y`'s teardown would land after us and undo it.
+      //
+      // ONLY when this delete takes the Delete button with it: the control is
+      // gated on `wikis.length > 1`, so it survives unless the refreshed list
+      // drops to one. While it survives, the dialog's own focus restore is
+      // right and this would override it.
+      refocusNewRef.current = wikis.length <= 2;
+      setDeleteOpen(false);
+      setError(null);
+      router.refresh();
+    } catch (cause) {
+      setDeleteError(failureMessage(cause, "Couldn’t delete the wiki."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const value = pendingId ?? currentWikiId ?? "";
+  // `value`, NOT `currentWikiId`: during an in-flight switch the <select> shows
+  // the optimistic pick while `currentWikiId` still names the previous Wiki.
+  // Deriving these from the prop would aim Rename at the Wiki the owner just
+  // navigated AWAY from, and offer the one they navigated TO as a delete
+  // target. The controls are disabled while `switching` as well, so neither
+  // dialog can be opened against a selection the server has not confirmed.
+  const current = wikis.find((wiki) => wiki.id === value) ?? null;
+  // The server refuses to delete the ACTIVE Wiki — moving `current` as a side
+  // effect would change which `schema.md` every prompt executes. So the picker
+  // offers only the others, and a delete aimed at the selection is impossible
+  // by construction rather than by a message after the round trip.
+  const deletable = wikis.filter((wiki) => wiki.id !== value);
+  const deleteTarget = deletable.find((wiki) => wiki.id === deleteTargetId) ?? null;
+  const renameReady = renameName.trim().length > 0;
 
   return (
     <div className="wb-wiki-switch">
@@ -187,6 +289,41 @@ export function WikiSwitcher({
         </div>
       )}
 
+      {/* Rename acts on the ACTIVE Wiki — the switcher's selection IS the
+          target, so no second picker is needed. Delete cannot: see `deletable`.
+          Both sit on their own row because three controls do not fit the 280px
+          column beside the <select>. */}
+      {!unavailable && current && (
+        <div className="wb-wiki-switch-actions">
+          <button
+            type="button"
+            className="wb-wiki-switch-action"
+            disabled={switching}
+            onClick={() => {
+              setRenameName(current.name);
+              setRenameError(null);
+              setRenameOpen(true);
+            }}
+          >
+            Rename Wiki
+          </button>
+          {wikis.length > 1 && (
+            <button
+              type="button"
+              className="wb-wiki-switch-action"
+              disabled={switching}
+              onClick={() => {
+                setDeleteTargetId(deletable[0]?.id ?? "");
+                setDeleteError(null);
+                setDeleteOpen(true);
+              }}
+            >
+              Delete Wiki
+            </button>
+          )}
+        </div>
+      )}
+
       {error && (
         <p role="alert" className="wb-wiki-switch-error">
           {error}
@@ -200,6 +337,97 @@ export function WikiSwitcher({
         fallbackFocusRef={newRef}
         onCancel={() => setCreateOpen(false)}
         onCreate={(input) => void create(input)}
+      />
+
+      <ConfirmDialog
+        open={renameOpen && current !== null}
+        title="Rename Wiki"
+        confirmLabel="Rename"
+        cancelLabel="Cancel"
+        busy={busy}
+        error={renameError}
+        fallbackFocusRef={newRef}
+        confirmDisabled={!renameReady}
+        onCancel={() => setRenameOpen(false)}
+        onConfirm={() => {
+          if (current) void rename(current, renameName);
+        }}
+        body={
+          <>
+            <label htmlFor={renameInputId} className="block font-medium">
+              Wiki name
+            </label>
+            <input
+              id={renameInputId}
+              type="text"
+              className="mt-1 w-full rounded-md border border-foreground/15 bg-background px-2 py-1"
+              value={renameName}
+              maxLength={MAX_WIKI_NAME_CHARS}
+              disabled={busy}
+              onChange={(event) => setRenameName(event.target.value)}
+              // Enter is the whole keyboard path through a one-field dialog.
+              // `CreateWikiDialog` gets it from the <form> it wraps its name
+              // field in; this input sits bare in a ConfirmDialog body, so it
+              // has to say so. Gated on exactly what Rename is gated on, or the
+              // key would reach past a disabled button.
+              //
+              // `isComposing` is the IME guard: typing a CJK name commits each
+              // candidate with Enter, and that keystroke reaches this handler
+              // too. Without the check the first commit would submit a
+              // half-composed name — the reason the platform exposes the flag.
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                if (busy || !renameReady) return;
+                event.preventDefault();
+                if (current) void rename(current, renameName);
+              }}
+            />
+            <p className="mt-2">
+              Renames this wiki and the heading of its purpose.md. The Scenario
+              Template, Schema, Pages and Sources are not changed.
+            </p>
+          </>
+        }
+      />
+
+      <ConfirmDialog
+        open={deleteOpen && deletable.length > 0}
+        title="Delete Wiki"
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        busy={busy}
+        error={deleteError}
+        fallbackFocusRef={newRef}
+        confirmDisabled={deleteTarget === null}
+        onCancel={() => setDeleteOpen(false)}
+        onConfirm={() => {
+          if (deleteTarget) void remove(deleteTarget);
+        }}
+        body={
+          <>
+            <label htmlFor={deleteSelectId} className="block font-medium">
+              Wiki to delete
+            </label>
+            <select
+              id={deleteSelectId}
+              className="mt-1 w-full rounded-md border border-foreground/15 bg-background px-2 py-1"
+              value={deleteTargetId}
+              disabled={busy}
+              onChange={(event) => setDeleteTargetId(event.target.value)}
+            >
+              {deletable.map((wiki) => (
+                <option key={wiki.id} value={wiki.id}>
+                  {wiki.name}
+                </option>
+              ))}
+            </select>
+            <p className="mt-2">
+              This deletes that wiki’s purpose.md, Schema and Workspace Purpose
+              for good. The active wiki cannot be deleted — switch to another
+              one first. Pages and Sources are shared and are not removed.
+            </p>
+          </>
+        }
       />
     </div>
   );
