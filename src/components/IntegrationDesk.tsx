@@ -82,7 +82,7 @@ export function IntegrationDesk() {
   const failed = events.filter((event) => event.status === "failed").length;
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>dispatch desk</p>
@@ -153,7 +153,7 @@ export function IntegrationDesk() {
           </article>
         ))}
       </section>
-    </main>
+    </div>
   );
 }
 

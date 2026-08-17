@@ -79,7 +79,7 @@ export default function IngestPage() {
   const currentStep: 1 | 2 = stage === "queued" ? 2 : 1;
 
   return (
-    <main
+    <div
       className="mx-auto px-6"
       style={{ maxWidth: 900, paddingTop: 56, paddingBottom: 88 }}
     >
@@ -414,6 +414,6 @@ export default function IngestPage() {
           <RecentIngests />
         </>
       )}
-    </main>
+    </div>
   );
 }

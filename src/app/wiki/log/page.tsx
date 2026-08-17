@@ -47,7 +47,7 @@ export default async function LogPage() {
   }
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end", marginBottom: 32 }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>the trail</p>
@@ -70,6 +70,6 @@ export default async function LogPage() {
           No activity logged yet. Ingest some content to see the timeline.
         </p>
       )}
-    </main>
+    </div>
   );
 }

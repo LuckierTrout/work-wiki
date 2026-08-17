@@ -66,7 +66,7 @@ export default function NewWikiPage() {
   }
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
       <p className="fmark" style={{ marginBottom: 16 }}>create knowledge</p>
       <h1 className="display" style={{ fontSize: "clamp(36px,4.5vw,58px)", margin: 0 }}>Create a new wiki page</h1>
       <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 32px", maxWidth: "64ch" }}>
@@ -152,6 +152,6 @@ export default function NewWikiPage() {
           </button>
         </div>
       </form>
-    </main>
+    </div>
   );
 }

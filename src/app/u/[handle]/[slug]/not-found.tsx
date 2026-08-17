@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export default function WikiPageNotFound() {
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
+    <div className="mx-auto max-w-3xl px-6 py-12">
       <h1 className="text-3xl font-bold">Page not found</h1>
       <p className="mt-4 text-foreground/60">
         This wiki page doesn&apos;t exist. Check the slug spelling, or{" "}
@@ -11,6 +11,6 @@ export default function WikiPageNotFound() {
         </Link>{" "}
         to create it.
       </p>
-    </main>
+    </div>
   );
 }

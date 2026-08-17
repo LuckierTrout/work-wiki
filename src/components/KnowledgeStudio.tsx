@@ -210,7 +210,7 @@ export function KnowledgeStudio() {
         ))}
       </aside>
 
-      <main className="studio-main">
+      <div className="studio-main">
         <header className="studio-main-header">
           <div>
             <p className="receipt">{SECTIONS.find((item) => item.id === section)?.group}</p>
@@ -269,7 +269,7 @@ export function KnowledgeStudio() {
         ) : null}
         {section === "portability" ? <PortabilityPanel setFeedback={setFeedback} /> : null}
         {section === "connections" ? <ConnectionsPanel vaults={vaults} /> : null}
-      </main>
+      </div>
 
       <aside className="studio-evidence" aria-label="Evidence and actions">
         <div className="studio-evidence-heading">

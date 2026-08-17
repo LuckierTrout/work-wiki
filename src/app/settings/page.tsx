@@ -52,7 +52,7 @@ export default function SettingsPage() {
 
   if (loadError) {
     return (
-      <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
+      <div className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
         <Link
           href="/"
           className="text-sm text-foreground/50 hover:text-foreground/80 transition-colors"
@@ -65,12 +65,12 @@ export default function SettingsPage() {
         <div className="mt-6 rounded-lg border border-red-500/20 bg-red-50 p-4 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-400">
           Failed to load settings: {loadError}
         </div>
-      </main>
+      </div>
     );
   }
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
       <p className="fmark" style={{ marginBottom: 16 }}>owner configuration</p>
       <h1 className="display" style={{ fontSize: "clamp(36px,4.5vw,58px)", margin: 0 }}>Settings</h1>
       <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 0", maxWidth: "64ch" }}>
@@ -216,6 +216,6 @@ export default function SettingsPage() {
           <VaultExportButton />
         </section>
       </div>
-    </main>
+    </div>
   );
 }

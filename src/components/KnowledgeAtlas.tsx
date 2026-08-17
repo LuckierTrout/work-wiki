@@ -205,7 +205,7 @@ export function KnowledgeAtlas() {
   const graphifyRetryable = graphifyJob?.status === "completed_with_errors" || graphifyJob?.status === "stalled";
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>knowledge atlas</p>
@@ -381,6 +381,6 @@ export function KnowledgeAtlas() {
           {extracting ? "Graphifying…" : "Graphify page"}
         </button>
       </form>
-    </main>
+    </div>
   );
 }

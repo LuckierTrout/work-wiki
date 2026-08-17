@@ -97,7 +97,8 @@ location: src/components/PrivateWorkspaceNotice.tsx
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: low
 reason: `SiteChrome` wraps all children in `<main id="main-content">`, and the signed-out branch of nine pages returns `PrivateWorkspaceNotice`, whose root element is another `<main>`. The nesting predates this story — the baseline `chat/page.tsx` had the same `<main className="shell fade">` — so the refactor into one component inherited it rather than causing it. It is a duplicate-landmark violation in a component whose own docstring cites WCAG 2.2 AA, and the same pattern appears on `settings`, `query` and other signed-in pages, so the fix is a chrome-wide sweep, not a one-file edit.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-single-main-landmark-sweep
 
 ### DW-12: The email-ingest worker's attachment-forwarding path has no test, so its byte-copy could silently forward empty files.
 origin: spec-deferred 02eeaa536555
@@ -1268,4 +1269,28 @@ source_spec: `spec-wiki-rename-and-delete.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-215057-fc61; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-152: Demoting KnowledgeStudio's and VaultExplorer's content columns to plain `<div>` leaves each grid with labelled `<aside>` landmarks on both sides and no landmark on the content between them.
+origin: spec-deferred e6cd199706ac
+source_spec: `spec-single-main-landmark-sweep.md`
+location: src/components/KnowledgeStudio.tsx:213, src/components/VaultExplorer.tsx:369
+severity: low
+reason: `src/components/KnowledgeStudio.tsx:213` (`.studio-main`) sits between `<aside className="studio-nav" aria-label="Knowledge Studio sections">` and `<aside className="studio-evidence" aria-label="Evidence and actions">`. `src/components/VaultExplorer.tsx:369` is the same shape: after the sweep the grid's only landmark children are `<aside aria-label="Vault explorer">` and `<aside aria-label="Document preview">`. A screen-reader user can jump to both rails but not to the substance between them. Three independent reviewers raised it. Not patched here for two reasons: DW-11's intent authorises `<div>` OR `<section>` without selecting between them per site and promises nothing about region navigability, and this spec's frozen intent-contract says "Do not add ARIA roles, headings or landmarks to compensate". Restoring the region means a named `<section>` (or `role="region"` + `aria-label`) on those two wrappers — a deliberate a11y decision, not a mechanical follow-on to the sweep. Note that
+status: open
+
+### DW-153: The DW-152 entry in the deferred-work ledger is truncated mid-sentence, losing the clause that scopes it away from PrivateWorkspaceNotice.
+origin: spec-deferred b0e8da54231b
+source_spec: `spec-single-main-landmark-sweep.md`
+location: _bmad-output/implementation-artifacts/deferred-work.md (DW-152)
+severity: low
+reason: `deferred-work.md`'s DW-152 `reason:` ends with "... not a mechanical follow-on to the sweep. Note that" and then jumps straight to `status: open`. The missing tail survives only here, in this spec's `deferred[0]` block scalar: "`single-main-landmark-mounted.test.tsx` pins `PrivateWorkspaceNotice`'s wrapper as a `DIV`; that surface has no aside siblings and is not part of this item." The clause was lost flattening a multi-line block scalar onto one ledger line. It matters because the ledger is what the sweep tooling reads, so a later run picking up DW-152 cannot see which surface the item excludes. Recorded here rather than fixed: this run was invoked under an explicit instruction not to modify, re-open or rewrite deferred-work ledger entries — the orchestrator owns their text, status and resolution.
+status: open
+
+### DW-154: Follow-up review still recommended for dw-single-main-landmark-sweep after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-single-main-landmark-sweep.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
 status: open

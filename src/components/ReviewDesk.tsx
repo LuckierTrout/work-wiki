@@ -247,7 +247,7 @@ export function ReviewDesk() {
   const pendingCount = proposals.filter((proposal) => proposal.status === "pending").length;
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>private review desk</p>
@@ -474,6 +474,6 @@ export function ReviewDesk() {
           </section>
         </div>
       )}
-    </main>
+    </div>
   );
 }

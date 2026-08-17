@@ -29,8 +29,8 @@ export default async function SavePage({
   const tags = first(sp.tags);
 
   return (
-    <main style={{ maxWidth: 720, margin: "0 auto", padding: "56px 24px 88px" }}>
+    <div style={{ maxWidth: 720, margin: "0 auto", padding: "56px 24px 88px" }}>
       {url ? <SaveCapture url={url} title={title} initialTags={tags} /> : <SaveGuide />}
-    </main>
+    </div>
   );
 }

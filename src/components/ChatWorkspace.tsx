@@ -243,7 +243,7 @@ export function ChatWorkspace() {
     scopeOptions.find((option) => option.value === scope)?.label ?? "Custom scope";
 
   return (
-    <main className="shell fade" style={{ paddingTop: 46, paddingBottom: 88 }}>
+    <div className="shell fade" style={{ paddingTop: 46, paddingBottom: 88 }}>
       <p className="fmark" style={{ marginBottom: 16 }}>grounded conversation</p>
       <div className="spread" style={{ gap: 20, alignItems: "end", marginBottom: 30 }}>
         <div>
@@ -374,6 +374,6 @@ export function ChatWorkspace() {
           </div>
         </section>
       </div>
-    </main>
+    </div>
   );
 }

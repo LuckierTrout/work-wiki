@@ -125,7 +125,7 @@ export function SourceMonitorDesk() {
   const errors = monitors.filter((monitor) => monitor.state === "error").length;
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>source watch</p>
@@ -227,7 +227,7 @@ export function SourceMonitorDesk() {
           </article>
         ))}
       </div>
-    </main>
+    </div>
   );
 }
 

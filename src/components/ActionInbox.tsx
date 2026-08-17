@@ -210,7 +210,7 @@ export function ActionInbox() {
   const proposed = scopedItems.filter((item) => item.status === "inbox").length;
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 88 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 88 }}>
       <p className="fmark" style={{ marginBottom: 16 }}>private action ledger</p>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
@@ -401,6 +401,6 @@ export function ActionInbox() {
           })}
         </div>
       )}
-    </main>
+    </div>
   );
 }

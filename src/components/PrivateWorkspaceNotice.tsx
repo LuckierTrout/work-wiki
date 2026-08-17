@@ -20,7 +20,7 @@ export function PrivateWorkspaceNotice({
   heading: string;
 }) {
   return (
-    <main
+    <div
       className="shell fade"
       style={{ paddingTop: 120, paddingBottom: 120, textAlign: "center" }}
     >
@@ -40,6 +40,6 @@ export function PrivateWorkspaceNotice({
       <SignInButton mode="modal">
         <button className="btn primary">{action}</button>
       </SignInButton>
-    </main>
+    </div>
   );
 }

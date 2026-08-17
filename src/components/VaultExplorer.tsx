@@ -366,7 +366,7 @@ export function VaultExplorer({
         </div>
       </header>
 
-      <main className="vault-explorer-shell vault-explorer-grid">
+      <div className="vault-explorer-shell vault-explorer-grid">
         <aside className="vault-explorer-shelves" aria-label="Vault explorer">
           <div className="vault-explorer-rail-section">
             <p className="vault-explorer-section-label receipt">Vault shelves</p>
@@ -662,7 +662,7 @@ export function VaultExplorer({
             </>
           )}
         </aside>
-      </main>
+      </div>
       {activeFigure ? <FigureLightbox figure={activeFigure} onClose={() => setActiveFigure(null)} /> : null}
     </div>
   );

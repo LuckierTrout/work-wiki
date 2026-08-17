@@ -227,7 +227,7 @@ export default function QueryPage() {
   }
 
   return (
-    <main className="mx-auto max-w-4xl px-6" style={{ paddingTop: 64, paddingBottom: 88 }}>
+    <div className="mx-auto max-w-4xl px-6" style={{ paddingTop: 64, paddingBottom: 88 }}>
       <p className="fmark" style={{ marginBottom: 18 }}>
         ask the accumulated brain
       </p>
@@ -491,6 +491,6 @@ export default function QueryPage() {
           />
         </div>
       </div>
-    </main>
+    </div>
   );
 }

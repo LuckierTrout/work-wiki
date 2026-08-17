@@ -79,12 +79,12 @@ export default async function WikiPageView({ params }: WikiPageProps) {
     const target = await aliasRedirectForMissing(slug, principal);
     if (target) permanentRedirect(target);
     return (
-      <main className="mx-auto max-w-3xl px-6 py-12">
+      <div className="mx-auto max-w-3xl px-6 py-12">
         <h1 className="text-3xl font-bold">Page not found</h1>
         <p className="mt-4 text-foreground/60">
           No wiki page exists for &ldquo;{slug}&rdquo;.
         </p>
-      </main>
+      </div>
     );
   }
 

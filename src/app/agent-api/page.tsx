@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 
 export default function AgentApiPage() {
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
       <p className="fmark" style={{ marginBottom: 16 }}>external agent guide</p>
       <h1 className="display" style={{ fontSize: "clamp(36px,4.5vw,58px)", margin: 0 }}>Agent API</h1>
       <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 32px", maxWidth: "64ch" }}>
@@ -21,6 +21,6 @@ export default function AgentApiPage() {
       <section style={{ maxWidth: 900, paddingTop: 26, borderTop: "1px solid var(--rule)" }}>
         <AgentApiContent />
       </section>
-    </main>
+    </div>
   );
 }

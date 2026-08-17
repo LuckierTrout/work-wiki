@@ -138,7 +138,7 @@ export function RawSourceBrowser({
   const content = selected ? cache[selected.key] : undefined;
 
   return (
-    <main className="mx-auto max-w-6xl px-6" style={{ paddingTop: 40, paddingBottom: 80 }}>
+    <div className="mx-auto max-w-6xl px-6" style={{ paddingTop: 40, paddingBottom: 80 }}>
       <Link
         href={backHref}
         className="text-sm text-foreground/60 hover:text-foreground transition-colors"
@@ -264,6 +264,6 @@ export function RawSourceBrowser({
           )}
         </section>
       </div>
-    </main>
+    </div>
   );
 }

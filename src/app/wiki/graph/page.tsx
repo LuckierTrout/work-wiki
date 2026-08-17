@@ -126,7 +126,7 @@ export default function GraphPage() {
   );
 
   return (
-    <main className="mx-auto max-w-5xl px-6 py-12">
+    <div className="mx-auto max-w-5xl px-6 py-12">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-3xl font-bold tracking-tight">Wiki Graph</h1>
         {lens}
@@ -170,6 +170,6 @@ export default function GraphPage() {
           </p>
         </>
       )}
-    </main>
+    </div>
   );
 }

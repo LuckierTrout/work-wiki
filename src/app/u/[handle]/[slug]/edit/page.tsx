@@ -20,12 +20,12 @@ export default async function EditWikiPage({ params }: EditPageProps) {
   // A private page the viewer can't read is indistinguishable from missing.
   if (!page || !canReadFrontmatter(page.frontmatter, principal)) {
     return (
-      <main className="mx-auto max-w-3xl px-6 py-12">
+      <div className="mx-auto max-w-3xl px-6 py-12">
         <h1 className="text-3xl font-bold">Page not found</h1>
         <p className="mt-4 text-foreground/60">
           No wiki page exists for &ldquo;{slug}&rdquo; — nothing to edit.
         </p>
-      </main>
+      </div>
     );
   }
 
@@ -46,7 +46,7 @@ export default async function EditWikiPage({ params }: EditPageProps) {
         : undefined,
     ), slug);
     return (
-      <main className="mx-auto max-w-3xl px-6 py-12">
+      <div className="mx-auto max-w-3xl px-6 py-12">
         <Link
           href={backHref}
           className="text-sm text-foreground/60 hover:text-foreground transition-colors"
@@ -60,7 +60,7 @@ export default async function EditWikiPage({ params }: EditPageProps) {
           rewritten or deleted here. Only an agent or a site admin can revise
           this page&rsquo;s text.
         </p>
-      </main>
+      </div>
     );
   }
 
@@ -87,7 +87,7 @@ export default async function EditWikiPage({ params }: EditPageProps) {
   };
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
       <Link
         href={pagePath(pageTenant, slug)}
         className="text-sm text-foreground/60 hover:text-foreground transition-colors"
@@ -109,6 +109,6 @@ export default async function EditWikiPage({ params }: EditPageProps) {
           initialMetadata={initialMetadata}
         />
       </section>
-    </main>
+    </div>
   );
 }

@@ -179,7 +179,7 @@ export function SystemHealthDesk() {
   const attention = health?.status === "attention";
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>operator&apos;s desk</p>
@@ -300,7 +300,7 @@ export function SystemHealthDesk() {
         <p style={{ ...bodyCopy, margin: 0 }}>{health?.queue.note ?? "Queue telemetry is checked in Cloudflare."}</p>
         <p style={{ ...bodyCopy, margin: 0 }}>Dead-letter queue depth is provider telemetry, while work-wiki keeps owner-visible operation and retry receipts. <Link href="/integrations" className="underline">Inspect integrations</Link> or <Link href="/review" className="underline">open the Review Desk</Link>.</p>
       </aside>
-    </main>
+    </div>
   );
 }
 
