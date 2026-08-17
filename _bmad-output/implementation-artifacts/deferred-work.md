@@ -533,6 +533,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `custom` was added to the shared `PROVIDER_INFO`, which `src/components/ProviderForm.tsx:47` spreads into the legacy page's dropdown; that form renders conditional fields only for `ollama` and `ollama-cloud`. Saving `provider: "custom"` there leaves `getModel()` throwing "The Custom provider needs a base URL. Set it in Settings → LLM Models." — actionable, and recoverable from the Workbench surface, which is why it was not patched here: this story's spec forbids modifying `ProviderForm` or the legacy route, and the honest fix is either to give that form the two fields or to retire the page.
 status: open
+decision: 2026-08-17 Retire the legacy page — Delete the legacy /settings route and ProviderForm now that the Workbench Settings surface covers models, embeddings and keys, redirecting /settings into the shell's Settings mode and updating the tests that pin the old route. Resolves DW-62's shortcut question in the same move.
 decision: 2026-08-16 Retire the legacy page — Delete the legacy /settings route and ProviderForm now that the Workbench Settings surface covers models, embeddings and keys, redirecting /settings into the shell's Settings mode and updating the tests that pin the old route. Resolves DW-62's shortcut question in the same move.
 
 ### DW-62: The `g s` keyboard shortcut still routes out of the shell to the legacy Settings page, doing exactly the route change the rail control stopped doing.

@@ -115,5 +115,14 @@
     "key": "1",
     "label": "Per-Wiki artifact revisions",
     "resolution": ""
+  },
+  "DW-61": {
+    "answered_at": "2026-08-17",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Delete the legacy /settings route and ProviderForm now that the Workbench Settings surface covers models, embeddings and keys, redirecting /settings into the shell's Settings mode and updating the tests that pin the old route. Resolves DW-62's shortcut question in the same move.",
+    "key": "1",
+    "label": "Retire the legacy page",
+    "resolution": ""
   }
 }
