@@ -1,4 +1,13 @@
 {
+  "DW-19": {
+    "answered_at": "2026-08-17",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Leave the getOwnerHandle() resolution in place and document it as an explicit single-owner invariant at src/lib/wikis.ts:540 and at each no-argument loadPageConventions() call site, naming what must change when a second tenant arrives. Add a test that pins the single-owner assumption so a multi-tenant change cannot land silently.",
+    "key": "1",
+    "label": "Keep, document the constraint",
+    "resolution": ""
+  },
   "DW-27": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
