@@ -976,9 +976,16 @@ describe("the shell wires the split without spelling any of it", () => {
   it("keeps the three frozen restores and the frozen reset effect", async () => {
     // These are Story 1.3's and 1.4's, pinned verbatim by two pre-existing test
     // files. This story adds beside them; it does not reword them.
+    //
+    // One exception, and it is DW-27's: the MODE restore is now URL-first, so
+    // what the mount effect hands `setModeState` is the resolved mode rather
+    // than the stored one. `workbench-chrome.test.ts` pins the resolution call
+    // itself; what matters here is that the same one value reaches both
+    // `setModeState` and the layout signature below, or a restored tree
+    // selection is cleared by the reset effect.
     const source = await component("Workbench.tsx");
     for (const call of [
-      "setModeState(readStoredMode())",
+      "setModeState(restoredMode)",
       "setCollapsed(readStoredCollapsed())",
       "setTreeTab(readStoredTreeTab())",
       "writeStoredMode(next)",

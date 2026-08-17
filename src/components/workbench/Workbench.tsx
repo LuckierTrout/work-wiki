@@ -46,6 +46,12 @@ import {
   writeStoredTreeTab,
 } from "@/lib/workbench-state";
 import {
+  initialMode,
+  locationHref,
+  modeHref,
+  readModeFromSearch,
+} from "@/lib/workbench-url";
+import {
   DEFAULT_SETTINGS_CATEGORY,
   SETTINGS_LABEL,
   settingsAnnouncement,
@@ -81,6 +87,24 @@ import { useWorkbenchData } from "./WorkbenchData";
  * typed Chat input). Epic 1 ships no composer, so the rule has no visible
  * surface yet; honouring it structurally now is what lets Story 3.2 lift a
  * draft into this state without a rewrite.
+ *
+ * The active mode is nonetheless MIRRORED into `?mode=` (DW-27), so a mode can
+ * be linked, bookmarked and reached with Back. That is `window.history`
+ * pushState / replaceState — Next 15's sanctioned shallow-routing call, which
+ * updates the URL with no server round trip and no unmount — never the router,
+ * and never a `next/navigation` search-params hook (it would force a Suspense
+ * boundary onto `page.tsx`). The ban is on ROUTING, not on the URL. Every rule
+ * about WHAT the URL says lives in `workbench-url.ts` where the node suite can
+ * execute it; all that is spelled here is WHEN a history entry is written.
+ *
+ * One consequence of that mirroring reaches outside this file: because Next
+ * patches the history methods, the search-params hook elsewhere in the tree SEES
+ * each write — and `Analytics` (mounted app-wide by `ClientProviders`) captures
+ * a `$pageview` whenever it changes. So a mode switch is now a pageview — one
+ * per rail click, plus one more when the mount seed corrects the URL.
+ * Recorded rather than suppressed: a mode has an address now, so counting a
+ * switch as a page view is the honest reading, and the alternative is teaching
+ * `Analytics` to special-case a param this component owns.
  *
  * DOM order is rail → left column → canvas → Preview, so the tab order the
  * accessibility floor specifies falls out of the markup instead of `tabindex`
@@ -160,6 +184,13 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // The layout a restored selection belongs to. See the reset effect below: the
   // restore and the reset would otherwise fight, and the reset would win.
   const restoreSignatureRef = useRef<string | null>(null);
+  // Mirrors `mode` for the `popstate` handler, which has to ask "did this
+  // traversal actually move the mode?" without taking `mode` as a dependency —
+  // that would tear the listener down and rebuild it on every mode change, and
+  // on every re-render that follows one. Assigned during render, the same idiom
+  // `sheetOpenRef` and `latestRef` already use.
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   // Read inside handlers and the mount effect without taking a dependency on
   // them — assigned during render, the `useDialogA11y` idiom `PreviewColumn`
   // already follows. The mount effect must see the trees the FIRST render was
@@ -170,16 +201,50 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   const surface = workbenchMode(mode);
 
   useEffect(() => {
-    // Read once for the restore signature, then again at the three call sites
-    // `workbench-chrome.test.ts:195-205` and `workbench-left-column.test.ts:72-82`
-    // pin verbatim. The accessors are guarded reads with no side effect, so the
-    // second call costs nothing and the frozen form stays exactly as it was.
-    const restoredMode = readStoredMode();
+    // The URL wins over storage, and only for the MODE (DW-27): a deep link is
+    // an explicit instruction, while the stored mode is a preference from an
+    // earlier session. Everything below still reads storage and nothing else —
+    // the tab, the collapse flag, the widths and the row are browser-local view
+    // state with nothing to link to.
+    //
+    // URL-first is not an SSR guarantee. This is an EFFECT, exactly like the
+    // widths and the selection restore below it: the first paint is the
+    // server's, so `/?mode=chat` paints the default Wiki canvas for one frame
+    // and this corrects it. Reading the param during render instead would put a
+    // browser-only value in the server's markup and hydrate a different tree —
+    // the same reason `mounted` exists (see its declaration above).
+    //
+    // `readStoredMode` and `readStoredTreeTab` are each read more than once —
+    // for the resolution, for the comparison below, and at the call sites
+    // `workbench-chrome.test.ts` and `workbench-left-column.test.ts:72-82` pin
+    // verbatim. The accessors are guarded reads with no side effect, so the
+    // extra calls cost nothing and the frozen forms stay exactly as they were.
+    const restoredMode = initialMode(window.location.search, readStoredMode());
     const restoredTab = readStoredTreeTab();
-    setModeState(readStoredMode());
+    setModeState(restoredMode);
     setCollapsed(readStoredCollapsed());
     setTreeTab(readStoredTreeTab());
     setWidths(readStoredSplitWidths());
+    // Seed the URL so the FIRST entry names its mode too. Without this, Back
+    // after one switch lands on an entry with no `mode` at all and the popstate
+    // handler below would have to invent a policy for it. `replaceState`, so no
+    // entry is added and the owner's Back button still leaves the app on the
+    // first press.
+    try {
+      const seeded = modeHref(window.location, restoredMode);
+      if (seeded !== locationHref(window.location)) {
+        window.history.replaceState(null, "", seeded);
+      }
+    } catch {
+      // History unavailable — a sandboxed iframe or opaque-origin document
+      // throws `SecurityError`, and Safari throws it again after ~100 calls in
+      // 30 seconds. The shell keeps working for this session; only the linkable
+      // URL is lost. Deliberately caught HERE rather than around the whole
+      // effect: the selection restore and `setMounted(true)` come after this,
+      // and letting a history failure skip them would leave the split handles
+      // unrendered and the inline width vars unwritten — a layout bug with no
+      // visible connection to the URL.
+    }
     // A stored row is restored only when it belongs to the Wiki the registry
     // still calls current AND still names a row in the trees this render was
     // given. A deleted page, another Wiki's row, or a kind whose tree does not
@@ -188,9 +253,29 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     const { currentWikiId: wikiId, knowledge: groups, files: nodes } = latestRef.current;
     const restored = restorableSelection(readStoredSelection(), wikiId, groups, nodes);
     if (restored) {
+      // The EFFECTIVE mode, never the stored one. On a deep link the two differ,
+      // and a signature naming a layout the shell is not in never arrives — so
+      // the reset effect's guard returns forever and the Preview goes on
+      // describing a row that has left the tree on screen.
       restoreSignatureRef.current = layoutSignature(restoredMode, wikiId, restoredTab);
       setSelection(restored);
     }
+    // LAST, and deliberately after every storage READ above: a deep link that
+    // beat storage writes itself down, and doing it earlier would make the reads
+    // above observe a value this same effect had just written — which is exactly
+    // how the signature bug one line up stops being reachable in a test.
+    //
+    // Why write at all: `applyMode` keeps "what is on screen" and "what a
+    // param-less reload would restore" in step on every other path, and a deep
+    // link must not be the one place they diverge — otherwise `/?mode=chat`
+    // shows Chat, and the owner's next visit to a bare `/` silently drops them
+    // back into Wiki. Silent by design: this moves storage, not the live region,
+    // and a restore is still not a change the owner made. It is also what makes
+    // the `popstate` guard below sound for a foreign entry carrying no `mode` at
+    // all — `initialMode` then falls back to storage, which now names the mode
+    // already on screen, so the guard skips it instead of announcing a switch
+    // that never happened.
+    if (restoredMode !== readStoredMode()) writeStoredMode(restoredMode);
     setMounted(true);
   }, []);
 
@@ -266,9 +351,19 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   /** Dismissals the owner performs — focus goes back where they left it. */
   const closeSheet = useCallback(() => setSheetClosed(true), [setSheetClosed]);
 
-  const selectMode = useCallback(
+  /**
+   * Everything a mode change does to this shell, with nothing said about the
+   * URL. Split out of `selectMode` so a `popstate` — which arrives with the URL
+   * ALREADY moved — can reuse it without writing a second history entry for the
+   * traversal that just happened.
+   */
+  const applyMode = useCallback(
     (next: WorkbenchModeId) => {
       setModeState(next);
+      // Storage is written on this path too, including from `popstate`: what is
+      // on screen and what a param-less reload would restore must not diverge.
+      // Outside any state updater, the rule `toggleCollapsed` already follows —
+      // React invokes updaters twice under StrictMode.
       writeStoredMode(next);
       setAnnouncement(workbenchMode(next).label);
       // Leaving Settings is what DISCARDS the draft: `SettingsCanvas` owns it,
@@ -279,6 +374,50 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     },
     [closeSheet],
   );
+
+  const selectMode = useCallback(
+    (next: WorkbenchModeId) => {
+      applyMode(next);
+      try {
+        // Compared against the URL, not against `mode`: no dependency on the
+        // state this is about to change, and re-clicking the mode already
+        // showing adds no entry for Back to swallow before it reaches the
+        // previous mode.
+        if (readModeFromSearch(window.location.search) !== next) {
+          window.history.pushState(null, "", modeHref(window.location, next));
+        }
+      } catch {
+        // Same degrade as the mount seed, and the reason this sits AFTER
+        // `applyMode` rather than around it: the mode has already switched and
+        // been written down, so a history failure costs the owner a linkable
+        // URL and nothing else. Rethrowing would take the mode switch with it.
+      }
+    },
+    [applyMode],
+  );
+
+  // Back and Forward. The entry the browser moved to is the only input — the
+  // same `initialMode` rule the mount effect uses, so load and traversal cannot
+  // drift — and a traversal that MOVES the mode is a change the owner made, so
+  // unlike the restore on load it announces the surface it lands on
+  // (EXPERIENCE.md:175).
+  useEffect(() => {
+    const onPopState = () => {
+      const next = initialMode(window.location.search, readStoredMode());
+      // Not every entry in this session is one the shell wrote. The skip link
+      // in `SiteChrome` is an `<a href="#wb-canvas">`, and following it pushes a
+      // fragment entry carrying the SAME `?mode=` — so Back from there is a
+      // traversal with no mode change in it. Handing that to `applyMode` would
+      // close Settings (discarding the draft `SettingsCanvas` holds), rewrite
+      // storage and announce a surface switch that never happened. `modeRef`
+      // rather than `mode`, so this listener is registered once and not rebuilt
+      // on every mode change.
+      if (next === modeRef.current) return;
+      applyMode(next);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [applyMode]);
 
   // Opening Settings is `useState` on the ONE mounted shell, exactly as a mode
   // switch is — never `router.push`, never a `<Link>`. The announcement names

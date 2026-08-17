@@ -132,7 +132,7 @@ describe("IconRail", () => {
 });
 
 describe("Workbench shell", () => {
-  it("switches modes with state, never with a route change", async () => {
+  it("switches modes with state and the History API, never with a route change", async () => {
     // `epics.md:367`: a mode switch must not destroy typed Chat input. Routing
     // per mode unmounts everything above the mode panel and makes that
     // impossible, so it is forbidden rather than merely unnecessary.
@@ -142,6 +142,18 @@ describe("Workbench shell", () => {
     expect(source).not.toMatch(/from "next\/link"/);
     expect(source).not.toMatch(/\buseRouter\(/);
     expect(source).toContain("setModeState");
+    // DW-27 NARROWS the ban rather than lifting it: the mode is mirrored into
+    // `?mode=` with the native History API, which Next 15 patches into its
+    // router — the URL moves with no server round trip and no unmount. So the
+    // rule is "no routing", not "no URL".
+    expect(source).toContain("window.history.pushState(");
+    expect(source).toContain("window.history.replaceState(");
+    expect(source).toContain('window.addEventListener("popstate", onPopState)');
+    // The other half of the ban. `useSearchParams()` would read the same value
+    // at the cost of a Suspense boundary and dynamic rendering on `page.tsx`,
+    // and it is a `next/navigation` hook in a shell that must own no routing.
+    expect(source).not.toMatch(/\buseSearchParams\(/);
+    expect(source).not.toMatch(/from "next\/navigation"/);
   });
 
   it("announces the surface name politely on change, but not on restore", async () => {
@@ -207,7 +219,11 @@ describe("Workbench shell", () => {
     // moving an assertion.
     const source = await read("Workbench.tsx");
     expect(source).toContain("@/lib/workbench-state");
-    expect(source).toContain("setModeState(readStoredMode())");
+    // The mode restore is URL-FIRST since DW-27, and the precedence itself is a
+    // pure function the node suite executes (`workbench-url.test.ts`) rather
+    // than a `??` typed here — this pins that the shell actually calls it, with
+    // the stored mode as the fallback and not the other way round.
+    expect(source).toContain("initialMode(window.location.search, readStoredMode())");
     expect(source).toContain("setCollapsed(readStoredCollapsed())");
     expect(source).toContain("writeStoredMode(next)");
     expect(source).toContain("writeStoredCollapsed(next)");

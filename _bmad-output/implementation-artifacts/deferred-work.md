@@ -240,7 +240,8 @@ location: src/components/workbench/Workbench.tsx
 source_spec: `spec-1-3-nashsu-icon-rail-and-workbench-chrome.md`
 severity: low
 reason: Mode lives in React state plus `yopedia_workbench_mode`. The intent's constraint is that a mode switch must not unmount the shell (`epics.md:367`), which a shallow query-param sync would also satisfy — so this is a design choice the story did not have to make, not a requirement it met. It is cheap now and a breaking change to the persisted-state contract later, so it is worth an explicit decision before Stories 1.4-1.6 build selection state on top of it.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-workbench-mode-url-sync
 decision: 2026-08-16 Shallow ?mode= sync — Mirror the active mode into a query param via shallow history updates (no shell unmount), accept it on load ahead of localStorage, and update the router-ban pin so deep-linking a mode and Back/Forward work.
 
 ### DW-28: `HomeDashboard` is no longer mounted by any route, and the test that pinned it as the landing page's `<h1>` owner now guards a component that does not ship.
@@ -1381,6 +1382,38 @@ status: open
 ### DW-165: Follow-up review still recommended for dw-wiki-create-and-template-atomicity after the damping cap was spent
 origin: review-budget-followup
 source_spec: `spec-dw-20-wiki-create-and-template-atomicity.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-166: The repo now carries two independent conventions for reading a query param on the client, and neither references the other.
+origin: spec-deferred 77952b63c537
+source_spec: `spec-dw-27-workbench-mode-url-sync.md`
+location: src/app/wiki/graph/page.tsx:35-42
+severity: low
+reason: `src/app/wiki/graph/page.tsx:41` already does `new URLSearchParams(window.location.search).get("scope")`, with a comment at `:35` giving the same "avoid the useSearchParams bailout" rationale that `src/lib/workbench-url.ts` was introduced under. Pre-existing — DW-27 did not create it — but `workbench-url.ts` is now presented as the home for URL rules, so the divergence is easier to inherit than it was.
+status: open
+
+### DW-167: With Settings open the URL still names the underlying mode, so a link copied there reopens the mode canvas and Back on the first entry leaves the app with the unsaved Settings draft.
+origin: spec-deferred 1361b6b2b5e9
+source_spec: `spec-dw-27-workbench-mode-url-sync.md`
+location: src/components/workbench/Workbench.tsx (toggleSettings)
+severity: low
+reason: DW-27 is scoped to the mode by its own ledger text ("the active mode has no URL representation"), and Settings is a surface, not a mode — so this is not a regression: Back left the app before this change too, on every surface. What changed is that modes now have a Back that stays, which makes Settings the one surface where it still does not. Worth an explicit decision alongside whatever story owns the Settings draft lifecycle.
+status: open
+
+### DW-168: A deep link followed by a signed-out browser loses its `?mode=` at the sign-in redirect, which is the case a shared or bookmarked link is most likely to be in.
+origin: spec-deferred e025aeb56769
+source_spec: `spec-dw-27-workbench-mode-url-sync.md`
+location: src/app/page.tsx:38
+severity: medium
+reason: `src/app/page.tsx:38` is `redirect("/sign-in")` with no return-to, and `src/app/sign-in/[[...sign-in]]/page.tsx` renders `<SignIn />` with no `forceRedirectUrl` / `fallbackRedirectUrl`, so Clerk returns to `/`. The whole original URL is dropped, not just the param — pre-existing, and it predates DW-27 by every commit. DW-27 is what gives it a cost: before this there was nothing in the URL to lose.
+status: open
+
+### DW-169: Follow-up review still recommended for dw-workbench-mode-url-sync after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-dw-27-workbench-mode-url-sync.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
