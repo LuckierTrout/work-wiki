@@ -53,6 +53,15 @@
     "label": "Offset the strip off the scrollbar",
     "resolution": ""
   },
+  "DW-46": {
+    "answered_at": "2026-08-17",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "When a restored selection's kind disagrees with the restored tab, switch the tab to the one that can mark the row rather than dropping the selection. This keeps the wikilink cross-tab pairing restorable and still guarantees the docked Preview always has a row carrying aria-current.",
+    "key": "1",
+    "label": "Restore the tab, not reject the row",
+    "resolution": ""
+  },
   "DW-50": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
