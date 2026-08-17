@@ -1215,6 +1215,15 @@ export async function collectTagVocabulary(
 }
 
 export async function buildIngestSystemPrompt(owner?: string): Promise<string> {
+  // DW-19 — deliberately NO argument: the conventions are deployment-global.
+  // They come from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
+  // resolved inside `readActiveWikiSchema`), NOT from the `owner` parameter
+  // used for guidance below. `owner` is a PRINCIPAL, not a tenant — it can be
+  // `"system"`, an agent handle, or a monitor's owner, none of which may become
+  // a Schema storage key. Correct while work-wiki is single-owner; a second
+  // tenant means threading a tenant argument through `loadPageConventions()`
+  // and passing it here — the caller's TENANT, which is not necessarily
+  // `owner`. See the invariant on `readActiveWikiSchema` in `wikis.ts`.
   const conventions = await loadPageConventions();
   const vocab = await collectTagVocabulary();
 

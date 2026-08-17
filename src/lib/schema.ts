@@ -33,6 +33,19 @@ import { readActiveWikiSchema } from "./wikis";
  * the section can't be found, so ingest degrades gracefully rather than
  * crashing on a fresh clone.
  *
+ * TENANCY (DW-19): the no-argument form is DEPLOYMENT-GLOBAL, not per-caller. It
+ * resolves the active Wiki via {@link readActiveWikiSchema}, which reads the
+ * site owner from `NEXT_PUBLIC_OWNER_HANDLE` — so every caller gets the SITE
+ * OWNER's conventions, whoever they are. That is correct only while work-wiki
+ * is a single-owner deployment. Adding a second tenant means adding a tenant
+ * parameter here and threading it into `readActiveWikiSchema()`, then passing
+ * it at all four no-argument call sites (`query.ts`, `ingest.ts`, and both
+ * `lint-checks.ts` detectors). See the invariant on `readActiveWikiSchema` in
+ * `wikis.ts` and the pins in `src/lib/__tests__/wiki-schema-source.test.ts`.
+ * The existing `schemaPath` argument is NOT that parameter and must not be
+ * pressed into service as one: it names a file and bypasses tenant resolution
+ * entirely, which is why it stays a test-only override.
+ *
  * Accepts an optional `schemaPath` override for tests; defaults to
  * `<cwd>/SCHEMA.md`.
  */

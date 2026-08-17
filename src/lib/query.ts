@@ -216,6 +216,15 @@ export async function buildQuerySystemPrompt(
 
   // Append SCHEMA.md conventions so the query prompt stays in sync with the
   // wiki's page conventions — same pattern used by ingest.
+  //
+  // DW-19 — deliberately NO argument: the conventions are deployment-global.
+  // They come from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
+  // resolved inside `readActiveWikiSchema`), NOT from the `owner` used by the
+  // `if (owner)` guidance block below — that one is per-caller and may be a
+  // different handle entirely. Correct while work-wiki is single-owner; a
+  // second tenant means threading a tenant argument through
+  // `loadPageConventions()` and passing it here. See the invariant on
+  // `readActiveWikiSchema` in `wikis.ts`.
   const conventions = await loadPageConventions();
   if (conventions) {
     systemPrompt += `\n\nThe wiki you are querying follows these conventions (from SCHEMA.md):\n\n${conventions}`;

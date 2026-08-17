@@ -169,7 +169,8 @@ location: src/lib/wikis.ts:398
 source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: medium
 reason: `readActiveWikiSchema()` calls `getOwnerHandle()`, the only place in the repo where that value becomes a storage key — every other tenant-scoped read/write (`workspace-profile.ts`, `research-projects.ts`, `portable-archive.ts`) takes a passed-in owner. At `ingest.ts:1165/1239/ 1511`, `query.ts:226`, `agent-runtime.ts:154` and `source-monitors.ts:386` the no-argument `loadPageConventions()` sits directly beside `buildWorkspaceGuidance(owner)`, whose `owner` can be `"system"`, an agent handle, or a monitor's owner. So a non-site-owner caller now gets the site owner's Scenario Template conventions where it previously got the generic root `SCHEMA.md`. The spec's Code Map sanctions `getOwnerHandle()` as "how a server-side helper with no owner argument resolves the single-owner tenant", and `isOwnerHandle()` already makes handle equality the repo's owner-trust model, so this is correct for the single-owner deployment shipping today. Threading a tenant into the loader is the real fix and it b
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-single-owner-resolution-invariant
 decision: 2026-08-17 Keep, document the constraint — Leave the getOwnerHandle() resolution in place and document it as an explicit single-owner invariant at src/lib/wikis.ts:540 and at each no-argument loadPageConventions() call site, naming what must change when a second tenant arrives. Add a test that pins the single-owner assumption so a multi-tenant change cannot land silently.
 decision: 2026-08-16 Keep, document the constraint — Leave the getOwnerHandle() resolution in place and document it as an explicit single-owner invariant at src/lib/wikis.ts:540 and at each no-argument loadPageConventions() call site, naming what must change when a second tenant arrives. Add a test that pins the single-owner assumption so a multi-tenant change cannot land silently.
 
@@ -1290,6 +1291,54 @@ status: open
 ### DW-154: Follow-up review still recommended for dw-single-main-landmark-sweep after the damping cap was spent
 origin: review-budget-followup
 source_spec: `spec-single-main-landmark-sweep.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-155: `readActiveWikiSchema()`'s catch branch — warn and fall back to the root Schema on an unreadable or unparseable registry — has no test.
+origin: spec-deferred e7c53a0d9578
+source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
+location: src/lib/wikis.ts
+severity: low
+reason: src/lib/wikis.ts logs `logger.warn("wikis", ...)` and returns null when `getCurrentWiki`/`readWikiArtifact` throws. The sibling fallbacks (no owner, no Wiki, missing schema.md, empty conventions section) are all covered in `wiki-schema-source.test.ts`; this one is not. A corrupt `tenants/<t>/wikis.json` would serve the root SCHEMA.md forever, which is exactly the silent-misconfiguration case the warn line exists for. Pre-existing — the branch predates this change.
+status: open
+
+### DW-156: Owner-handle case normalization is load-bearing for the single-owner invariant but untested at the Schema path.
+origin: spec-deferred d5cca58d2f5d
+source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
+location: src/lib/links.ts:80
+severity: low
+reason: `getOwnerHandle()` returns the raw trimmed env value while `isOwnerHandle()` compares case-insensitively; the two only stay consistent because `ownerToTenant()` (src/lib/links.ts) lowercases before the value becomes a storage key. Nothing pins that `NEXT_PUBLIC_OWNER_HANDLE="Alice"` resolves alice's Wiki. Pre-existing, and adjacent to the invariant this change pins.
+status: open
+
+### DW-157: The backup scheduler re-implements `getOwnerHandle()` inline, so the owner env var has two readers and a `getOwnerHandle` grep misses one.
+origin: spec-deferred 194d538ba460
+source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
+location: src/app/api/tasks/scan/route.ts:139
+severity: low
+reason: src/app/api/tasks/scan/route.ts:139 reads `process.env.NEXT_PUBLIC_OWNER_HANDLE?.trim()` directly into `backupOwner` and passes it to `isOwnerBackupDue()` and `enqueueTask({ owner })` — both tenant-keyed. Routing it through `getOwnerHandle()` would leave exactly one reader of the env var. Pre-existing.
+status: open
+
+### DW-158: Neither `lint-checks.ts` detector has any test that it resolves the ACTIVE Wiki's Schema — a mutation pinning both to the repo-root file passes the entire suite.
+origin: spec-deferred 517d89b179e4
+source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
+location: src/lib/lint-checks.ts:414 and src/lib/lint-checks.ts:570
+severity: medium
+reason: `checkContradictions()` and `checkMissingConceptPages()` call the no-argument `loadPageConventions()`. The only lint-side conventions test, `src/lib/__tests__/lint.test.ts:670`, writes a bare `SCHEMA.md` into its tmpdir and never sets `NEXT_PUBLIC_OWNER_HANDLE` or calls `createWiki`, so it exercises only the repo-root fallback branch. Replacing both detector calls with `loadPageConventions(`${process.cwd()}/SCHEMA.md`)` — lint permanently ignoring the active Wiki's seeded Schema — leaves lint.test.ts (73), wiki-schema-source.test.ts and cli.test.ts (83) all green, 170 tests passing. Pre-existing: this is Wiki-vs-root precedence (Story 1.2 / AD-10), not DW-19 tenancy, and the gap predates this change. DW-19's own pins are at the loader plus the two call sites that carry a principal; the lint detectors carry none, so there is no non-owner caller to pin them with.
+status: open
+
+### DW-159: `POST /api/wikis` is gated on sign-in but not ownership, so a non-owner can create a Wiki that every downstream surface then treats as inert.
+origin: spec-deferred 0cea96b84531
+source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
+location: src/app/api/wikis/route.ts:37
+severity: low
+reason: `src/app/api/wikis/route.ts` checks `getPrincipal()` and `isReadOnly()`, then calls `createWiki(principal.handle, …)` — no `isOwnerHandle` gate. The resulting Wiki's Schema is never resolved (`readActiveWikiSchema()` reads `NEXT_PUBLIC_OWNER_HANDLE`) and its Schema edits are 403'd at `src/app/api/workbench/artifact/route.ts:82`, whose own comment reasons about exactly this inertness for the save path. So the "second tenant" state DW-19 treats as hypothetical is reachable in production today; the creation path is the one door left open. Pre-existing, and a product decision (gate creation, or accept inert non-owner Wikis) rather than a defect of this change.
+status: open
+
+### DW-160: Follow-up review still recommended for dw-single-owner-resolution-invariant after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.

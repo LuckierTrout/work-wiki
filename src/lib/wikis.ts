@@ -741,10 +741,52 @@ export async function readWikiArtifact(
 
 /**
  * The active Wiki's `schema.md`, for the schema loader — which has no owner
- * argument. work-wiki is a single-owner deployment, so the owner is resolved
- * from `NEXT_PUBLIC_OWNER_HANDLE`; with no owner, no Wiki, or any read
- * failure this returns null and the caller falls back to the repo-root
- * `SCHEMA.md`.
+ * argument.
+ *
+ * INVARIANT (DW-19, single-owner tenancy resolution): this function resolves
+ * the tenant DEPLOYMENT-GLOBALLY from `NEXT_PUBLIC_OWNER_HANDLE`, not from a
+ * caller — the only place the SCHEMA path turns that env value into a storage
+ * key. (It is not the only reader of the env var repo-wide: the backup
+ * scheduler in `src/app/api/tasks/scan/route.ts` also reads it as an owner for
+ * manifest reads and the `create-backup` task. Two independent readers, same
+ * single-owner assumption.) Every other tenant-scoped read/write —
+ * `workspace-profile.ts`, `research-projects.ts`, `portable-archive.ts`, and
+ * `createWiki`/`getCurrentWiki` above — takes a passed-in `owner` instead.
+ * That asymmetry is deliberate and correct ONLY because work-wiki ships as a
+ * single-owner deployment (see `src/lib/owner.ts`): the site owner's Schema is
+ * the site's Schema, so every caller gets it regardless of who they are.
+ *
+ * MIGRATION (a second tenant): note that more than one owner can hold Wikis
+ * ALREADY — `POST /api/wikis` gates on `getPrincipal()`, not `isOwnerHandle`,
+ * so any signed-in non-owner can create one. What does not exist yet is
+ * multi-tenant SERVING: such a Wiki is inert, because this function never
+ * resolves it and `src/app/api/workbench/artifact/route.ts` 403s its Schema
+ * edits. So the trigger is not "a second owner appears" — it is "a non-owner's
+ * Wiki must actually serve that non-owner". At that moment this must stop
+ * reading `getOwnerHandle()` and instead take a tenant argument, threaded
+ * through `loadPageConventions()` in `schema.ts` and supplied at every one of
+ * its no-argument call sites. Those sites are not equally ready for it:
+ *   - `query.ts` (`buildQuerySystemPrompt`) and `ingest.ts`
+ *     (`buildIngestSystemPrompt`) already have a per-caller `owner` in scope —
+ *     but note it is a PRINCIPAL, not necessarily a tenant (it can be
+ *     `"system"` or an agent handle), so it cannot simply be forwarded.
+ *   - `checkContradictions()` and `checkMissingConceptPages()` in
+ *     `lint-checks.ts` have NO owner at all. Threading a tenant there means
+ *     carrying it down through `lint()` in `lint.ts` from both of its entry
+ *     points, `src/app/api/lint/route.ts` and `src/cli.ts`.
+ * Leaving the deployment-global resolution in place through such a migration
+ * is what would silently hand a non-owner caller the site owner's Scenario
+ * Template conventions.
+ *
+ * Pinned by the "single-owner Schema resolution invariant" describe block in
+ * `src/lib/__tests__/wiki-schema-source.test.ts`: behavioral pins (another
+ * tenant's Wiki never wins), consumer-surface pins on the ingest and query
+ * prompt builders, and a signature pin that reads the DECLARED parameter list
+ * so a defaulted tenant parameter cannot slip past. Adding a tenant parameter
+ * must be a deliberate, test-updating change.
+ *
+ * With no owner, no Wiki, or any read failure this returns null and the
+ * caller falls back to the repo-root `SCHEMA.md`.
  */
 export async function readActiveWikiSchema(): Promise<string | null> {
   const owner = getOwnerHandle();
