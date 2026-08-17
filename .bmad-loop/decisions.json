@@ -35,6 +35,15 @@
     "label": "Author and wire",
     "resolution": ""
   },
+  "DW-41": {
+    "answered_at": "2026-08-17",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Narrow the listing so the Files tab shows only leaves the read gate will serve: keep the two filters and their two reasons distinct, but derive the listing's admissible set from the same predicate the read gate applies, so no row can be shown that the Preview will refuse. Update the frozen comment at workbench-files.ts:326-339 to record the new rule.",
+    "key": "1",
+    "label": "List only openable leaves",
+    "resolution": ""
+  },
   "DW-50": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
