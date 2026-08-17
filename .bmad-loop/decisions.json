@@ -89,6 +89,15 @@
     "label": "Undock and announce",
     "resolution": ""
   },
+  "DW-54": {
+    "answered_at": "2026-08-17",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Have fetchPreview report 404 separately from transport and timeout failures. On a silent same-row refresh, a 404 replaces the body with the existing gone copy, while an unreachable answer keeps the last-good bytes and shows a transient, self-healing indicator with a retry. Author the one new sentence this needs in the epic's Copy table.",
+    "key": "1",
+    "label": "Separate gone from unreachable",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
