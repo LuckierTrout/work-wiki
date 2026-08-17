@@ -3343,6 +3343,52 @@ body:has(.wb-shell) {
   color: var(--wb-muted);
 }
 
+/* ---- The stale strip (DW-54) ------------------------------------------- */
+/* A read that could not be REACHED, over bytes that are still on screen and
+   still true. Token-only and muted, exactly like `.wb-preview-error`: no alert
+   colour, because UX-DR15 reserves red for destructive labels and nothing here
+   was lost, refused or deleted. It sits above the body as a strip rather than
+   replacing it, which is the whole distinction this story draws — a 404 takes
+   the body, a blip takes nothing. */
+.wb-preview-stale {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-2) var(--wb-space-4);
+  border-bottom: 1px solid var(--wb-border);
+  background: var(--wb-surface-subtle);
+  color: var(--wb-muted);
+  font-size: 12px;
+}
+.wb-preview-stale-note {
+  margin: 0;
+  min-width: 0;
+}
+/* The same control geometry as `.wb-preview-edit`, because it is the same kind
+   of thing: a small secondary action living in a strip of chrome. */
+.wb-preview-retry {
+  flex: 0 0 auto;
+  /* WCAG 2.2 SC 2.5.8 floor (24×24 CSS px). `.wb-preview-edit`'s 2px padding
+     alone leaves ~20px at this 12px face, and unlike that control this one
+     exists FOR the narrow breakpoint — where the column is a stacked row and
+     the pointer is a thumb. The horizontal axis clears 24px on the label. */
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font-size: 12px;
+  cursor: pointer;
+}
+.wb-preview-retry:hover {
+  background: var(--wb-rail-hover);
+}
+
 /* ===========================================================================
    Settings inside the shell (Story 1.9).
 
@@ -3648,7 +3694,8 @@ body:has(.wb-shell) {
      the column it scrolls inside. */
   .wb-preview-body,
   .wb-preview-editor,
-  .wb-preview-note {
+  .wb-preview-note,
+  .wb-preview-stale {
     padding-left: var(--wb-space-2);
     padding-right: var(--wb-space-2);
   }
@@ -3664,6 +3711,42 @@ body:has(.wb-shell) {
   .wb-shell[data-collapsed="true"][data-preview="true"] {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto minmax(0, 1fr) auto;
+    /* DW-34: the clamp is RELEASED while a Preview is docked. `.wb-shell` is
+       `height: 100dvh; max-height: 100dvh; overflow: hidden`, which is right
+       for a three-column desktop surface that must not scroll as a page — but
+       here the Preview is a fourth ROW, so that rule places it past the bottom
+       of a box that clips. Not "below the fold": UNREACHABLE, by scroll, by
+       `scrollIntoView`, by anything. A tap on a tree row appeared to do
+       nothing at all.
+
+       `min-height`, so a short shell still fills the viewport, and
+       `overflow: visible`, so the DOCUMENT scrolls rather than the grid. The
+       two stacked children that would otherwise run away are already capped
+       (`.wb-tree-body` at 40vh, `.wb-preview-body` at 50vh), which leaves the
+       canvas row: with no clamp above it, `minmax(0, 1fr)` resolves to its
+       content instead of scrolling inside `.wb-canvas`'s own `overflow: auto`,
+       so a long surface makes a long PAGE while a Preview is docked. That is the
+       trade this rule makes deliberately — one document that scrolls, with the
+       tree and the Preview both reachable in it, rather than a fourth row
+       nothing can reach. Scoped to `[data-preview]` and to this breakpoint: the
+       wide layout keeps every rule it had. */
+    height: auto;
+    min-height: 100dvh;
+    max-height: none;
+    overflow: visible;
+  }
+  /* …and the clamp comes BACK while the mode sheet is open. This is exactly the
+     breakpoint at which the rail is a `position: fixed` off-canvas sheet over a
+     fixed backdrop, so a document that scrolls scrolls the page BEHIND an open
+     modal — the backdrop stays put while the content slides under it, which
+     reads as a broken overlay and lets a pointer drag content the backdrop is
+     there to make unreachable. Two attributes wide, so it outranks the docked
+     selectors above without depending on source order. */
+  .wb-shell[data-preview="true"][data-sheet-open="true"],
+  .wb-shell[data-collapsed="true"][data-preview="true"][data-sheet-open="true"] {
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
   }
   .wb-preview {
     grid-column: 1;

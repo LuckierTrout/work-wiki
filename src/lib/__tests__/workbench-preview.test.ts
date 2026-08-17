@@ -33,11 +33,17 @@ import { stripFrontmatterBlock } from "../markdown";
 import {
   ARTIFACT_WRITE_ROUTE,
   PAGE_WRITE_ROUTE,
+  PREVIEW_CLOSED_COPY,
+  PREVIEW_FAILED_COPY,
   PREVIEW_MAX_CHARS,
+  PREVIEW_REMOVED_COPY,
+  PREVIEW_RETRY_COPY,
   PREVIEW_ROUTE,
   PREVIEW_SAVE_FAILED_COPY,
   PREVIEW_TIMEOUT_REASON,
   PREVIEW_TRUNCATED_COPY,
+  PREVIEW_UNREACHABLE_COPY,
+  PREVIEW_UPDATED_COPY,
   WIKILINK_MISSING_COPY,
   artifactWriteUrl,
   canEditPreview,
@@ -45,8 +51,11 @@ import {
   fetchPreview,
   pageWriteUrl,
   previewBodyState,
+  previewDockAnnouncement,
   previewFileKind,
+  previewRefreshAnnouncement,
   previewRequestUrl,
+  previewStaleNotice,
   previewWriteTarget,
   savePreviewBody,
   type PreviewFetch,
@@ -594,24 +603,24 @@ describe("previewBodyState", () => {
   const payload: PreviewPayload = { ...PAYLOAD_SHAPE };
 
   it("shows the loading sentence before anything else", () => {
-    expect(previewBodyState({ loading: true, failed: false, payload: null })).toEqual({
+    expect(previewBodyState({ loading: true, gone: false, payload: null })).toEqual({
       kind: "loading",
     });
     // Still loading even with a stale payload still on screen: the column is
     // about to replace it, and rendering it under the new row's header would
     // put one file's bytes under another file's name.
-    expect(previewBodyState({ loading: true, failed: true, payload })).toEqual({
+    expect(previewBodyState({ loading: true, gone: true, payload })).toEqual({
       kind: "loading",
     });
   });
 
   it("treats a missing payload as a failure once loading is over", () => {
-    expect(previewBodyState({ loading: false, failed: true, payload })).toEqual({
+    expect(previewBodyState({ loading: false, gone: true, payload })).toEqual({
       kind: "failed",
     });
     // The flag is not the only route into this state: settled with nothing to
     // render is a failure whether or not anything set it.
-    expect(previewBodyState({ loading: false, failed: false, payload: null })).toEqual({
+    expect(previewBodyState({ loading: false, gone: false, payload: null })).toEqual({
       kind: "failed",
     });
   });
@@ -622,7 +631,7 @@ describe("previewBodyState", () => {
     expect(
       previewBodyState({
         loading: false,
-        failed: false,
+        gone: false,
         payload: { ...payload, format: "unsupported", body: "" },
       }),
     ).toEqual({ kind: "unsupported" });
@@ -630,24 +639,195 @@ describe("previewBodyState", () => {
 
   it("distinguishes an empty file from a body", () => {
     expect(
-      previewBodyState({ loading: false, failed: false, payload: { ...payload, body: "" } }),
+      previewBodyState({ loading: false, gone: false, payload: { ...payload, body: "" } }),
     ).toEqual({ kind: "empty" });
     // Whitespace only is empty to a reader, and the sentence is the honest
     // answer rather than a blank column.
     expect(
-      previewBodyState({ loading: false, failed: false, payload: { ...payload, body: "\n \t\n" } }),
+      previewBodyState({ loading: false, gone: false, payload: { ...payload, body: "\n \t\n" } }),
     ).toEqual({ kind: "empty" });
-    expect(previewBodyState({ loading: false, failed: false, payload })).toEqual({
+    expect(previewBodyState({ loading: false, gone: false, payload })).toEqual({
       kind: "body",
       payload,
     });
     // The payload travels with the state, so the caller renders the one it was
     // judged on rather than re-reading a variable that may have moved on.
     const truncated = { ...payload, truncated: true };
-    expect(previewBodyState({ loading: false, failed: false, payload: truncated })).toEqual({
+    expect(previewBodyState({ loading: false, gone: false, payload: truncated })).toEqual({
       kind: "body",
       payload: truncated,
     });
+  });
+
+  it("has no input for a read that merely could not be reached (DW-54)", () => {
+    // The rename is the point. The old input was `failed`, which meant all five
+    // of deleted, refused, 5xx, blip and malformed — so a dropped packet
+    // replaced the page the owner was reading with `This file couldn’t be
+    // loaded.` This function now only ever hears about the 404, and an
+    // unreachable read reaches `previewStaleNotice` instead. With a payload
+    // held, that read leaves the BODY on screen.
+    expect(previewBodyState({ loading: false, gone: false, payload })).toEqual({
+      kind: "body",
+      payload,
+    });
+    // …and `gone` still wins over the bytes, because a 404 is the one answer
+    // that says the row is not there. No strip over that replacement.
+    expect(previewBodyState({ loading: false, gone: true, payload })).toEqual({
+      kind: "failed",
+    });
+  });
+});
+
+describe("previewStaleNotice", () => {
+  const payload: PreviewPayload = { ...PAYLOAD_SHAPE };
+  const landed = {
+    loading: false,
+    gone: false,
+    unreachable: false,
+    editing: false,
+    payload,
+  };
+
+  it("shows only over bytes that are actually on screen", () => {
+    expect(previewStaleNotice({ ...landed, unreachable: true })).toBe(true);
+    // With no payload the column is already showing PREVIEW_FAILED_COPY, and a
+    // `Retry` beside it would promise to restore bytes it never had. This is
+    // the FRESH-PICK failure the spec refuses to change: no strip.
+    expect(previewStaleNotice({ ...landed, unreachable: true, payload: null })).toBe(false);
+  });
+
+  it("stays away while a read is in flight or after a 4xx", () => {
+    // A read is already answering the previous one's failure; a strip there
+    // would report a state the column is in the middle of leaving.
+    expect(previewStaleNotice({ ...landed, unreachable: true, loading: true })).toBe(false);
+    // The body has been REPLACED by the failure sentence, so "showing the last
+    // version that loaded" would be a false statement about what is underneath.
+    expect(previewStaleNotice({ ...landed, unreachable: true, gone: true })).toBe(false);
+  });
+
+  it("stays away while the editor is open, because Retry could do nothing", () => {
+    // `previewFetchPlan` answers `fetch: false` for every run while `editing`,
+    // so the strip's one control would be a button that silently no-ops on
+    // every press — the worst of the three outcomes `previewWriteTarget`
+    // documents, in a different place. Closing the editor lets the deferred
+    // read happen, and THAT decides whether the strip comes back.
+    expect(previewStaleNotice({ ...landed, unreachable: true, editing: true })).toBe(false);
+    // …and it is the editor, not the payload, doing the refusing here.
+    expect(previewStaleNotice({ ...landed, unreachable: true, editing: false })).toBe(true);
+  });
+
+  it("is absent whenever the read landed", () => {
+    expect(previewStaleNotice(landed)).toBe(false);
+    // Self-healing, expressed as a pure read of current state rather than a
+    // dismissible banner: the next read that already happens clears
+    // `unreachable`, and the strip goes with it. No timer is involved.
+    expect(previewStaleNotice({ ...landed, payload: null })).toBe(false);
+  });
+});
+
+describe("previewRefreshAnnouncement", () => {
+  const payload: PreviewPayload = { ...PAYLOAD_SHAPE };
+  const changed: PreviewPayload = { ...PAYLOAD_SHAPE, body: `${PAYLOAD_SHAPE.body} more` };
+
+  it("announces a body swapped underneath a reader", () => {
+    expect(
+      previewRefreshAnnouncement({ reset: false, shown: payload, next: changed }),
+    ).toBe(PREVIEW_UPDATED_COPY);
+  });
+
+  it("says nothing when the bytes did not move", () => {
+    // A `dataVersion` bump fires for every write in the system, most of them
+    // about some other page. Announcing each one makes the region chatter at a
+    // reader whose screen did not change.
+    expect(
+      previewRefreshAnnouncement({ reset: false, shown: payload, next: { ...payload } }),
+    ).toBeNull();
+    // …including when a field that is IDENTITY rather than content moved.
+    // `name` follows from the row this read was for, which on the announcing
+    // path is the row already showing, so it is not something the reader can
+    // hear change underneath them.
+    expect(
+      previewRefreshAnnouncement({
+        reset: false,
+        shown: payload,
+        next: { ...payload, name: "Alpha (renamed)" },
+      }),
+    ).toBeNull();
+  });
+
+  it("announces a truncation that appeared or vanished", () => {
+    // Flipping `truncated` adds or removes PREVIEW_TRUNCATED_COPY above the
+    // bytes AND takes the `Edit` control with it (`canEditPreview` refuses a
+    // prefix), so a page that grew past the cap changes the column visibly even
+    // when the first 200,000 characters are byte-identical.
+    expect(
+      previewRefreshAnnouncement({
+        reset: false,
+        shown: payload,
+        next: { ...payload, truncated: !payload.truncated },
+      }),
+    ).toBe(PREVIEW_UPDATED_COPY);
+  });
+
+  it("says nothing on a fresh pick, which the shell already announced", () => {
+    // The dock announcement (`Preview, Alpha`) reported this event once. A
+    // second sentence about the same click reports it twice.
+    expect(
+      previewRefreshAnnouncement({ reset: true, shown: payload, next: changed }),
+    ).toBeNull();
+    // …including the case where a pick's read genuinely differs from whatever
+    // the column happened to be holding a moment earlier.
+    expect(
+      previewRefreshAnnouncement({ reset: true, shown: null, next: changed }),
+    ).toBeNull();
+  });
+
+  it("says nothing when there were no bytes to swap out", () => {
+    // Nothing was replaced underneath anybody: the column was empty or failed,
+    // and the arriving bytes are the first bytes.
+    expect(
+      previewRefreshAnnouncement({ reset: false, shown: null, next: payload }),
+    ).toBeNull();
+  });
+});
+
+describe("the announcement copy", () => {
+  it("names the thing the Preview just docked on", () => {
+    // The same shape as `Settings, <category>`: a surface appeared and it is
+    // showing a named thing (EXPERIENCE.md:175).
+    expect(previewDockAnnouncement("Alpha")).toBe("Preview, Alpha");
+    expect(previewDockAnnouncement("a b.md")).toBe("Preview, a b.md");
+  });
+
+  it("keeps the two undock sentences apart", () => {
+    // One is the owner's own re-click; the other is a row that left the tree
+    // while they were reading it. Only the second owes them a reason.
+    expect(PREVIEW_CLOSED_COPY).toBe("Preview closed");
+    expect(PREVIEW_REMOVED_COPY).not.toBe(PREVIEW_CLOSED_COPY);
+    expect(PREVIEW_REMOVED_COPY).toContain("removed");
+  });
+
+  it("does not reuse the body's failure sentence for a blip", () => {
+    // `PREVIEW_FAILED_COPY` replaces the body. Shown above bytes that are still
+    // there it would tell the owner their page is gone while they are reading
+    // it — the exact conflation DW-54 is about.
+    expect(PREVIEW_UNREACHABLE_COPY).not.toBe(PREVIEW_FAILED_COPY);
+    expect(PREVIEW_UPDATED_COPY).toBe("Preview updated");
+    expect(PREVIEW_RETRY_COPY).toBe("Retry");
+  });
+
+  it("uses typographic apostrophes, like every other sentence here", () => {
+    for (const copy of [
+      PREVIEW_CLOSED_COPY,
+      PREVIEW_REMOVED_COPY,
+      PREVIEW_UPDATED_COPY,
+      PREVIEW_UNREACHABLE_COPY,
+      PREVIEW_RETRY_COPY,
+      previewDockAnnouncement("Alpha"),
+    ]) {
+      expect(copy).not.toContain("'");
+    }
+    expect(PREVIEW_UNREACHABLE_COPY).toContain("’");
   });
 });
 
@@ -1370,11 +1550,14 @@ describe("fetchPreview", () => {
     // valid JSON on one. The column reads `payload.body.trim()` during render,
     // where a non-string throws and takes the column down instead of showing
     // the sentence a failed read exists to show.
+    // …and it is `unreachable`, not `gone`: a proxy, an interstitial or a
+    // future change to the route is not evidence that the row was removed, so
+    // the bytes already on screen must survive it.
     for (const body of [null, "a string", 42, {}, { ...PAYLOAD, body: 42 }, { ...PAYLOAD, format: "pdf" }]) {
       const { fetchImpl } = stubFetch(() => jsonResponse(200, body));
       await expect(
         fetchPreview(PREVIEW_ROUTE, new AbortController().signal, fetchImpl),
-      ).resolves.toEqual({ status: "failed" });
+      ).resolves.toEqual({ status: "unreachable" });
     }
     // The real shape still passes, including one with no `slug`.
     const { fetchImpl } = stubFetch(() => jsonResponse(200, { ...PAYLOAD, slug: undefined }));
@@ -1417,16 +1600,53 @@ describe("fetchPreview", () => {
     });
   });
 
-  it("reports a non-ok response as failed, with no message of its own", async () => {
-    for (const status of [400, 401, 404, 500]) {
-      const { fetchImpl } = stubFetch(() => jsonResponse(status, { error: "Not found." }));
+  it("splits a refusal from a read that did not land (DW-54)", async () => {
+    // 4xx is `gone`, and the seam is whether RETRYING COULD EVER HELP. 404 is
+    // the route's "there is nothing here for you" — deliberately
+    // indistinguishable between absent and refused, per `PREVIEW_FAILED_COPY`.
+    // 400 is a request this build will keep sending identically, and 401/403 is
+    // an expired or insufficient session: all three answer the same way next
+    // time, so holding stale bytes behind a `Retry` would promise a recovery
+    // that is not coming and a strip that never heals.
+    for (const status of [400, 401, 403, 404, 410]) {
+      const { fetchImpl } = stubFetch(() => jsonResponse(status, { error: "Nope." }));
       await expect(
         fetchPreview("/preview", new AbortController().signal, fetchImpl),
-      ).resolves.toEqual({ status: "failed" });
+      ).resolves.toEqual({ status: "gone" });
+    }
+
+    // A server that erred or a hop that dropped goes away by itself, so the
+    // bytes already on screen survive it. Collapsed into one `failed`, a 502
+    // from a proxy hiccup deleted the page the owner was reading.
+    //
+    // 408, 425 and 429 ride with them even though they are 4xx: each says WHEN
+    // rather than WHAT, and a rate limiter in front of the route is precisely
+    // the intermediary this split exists to stop reading as a deletion. Ranged
+    // as `>= 400 && < 500`, a throttled refresh wiped the page the owner was
+    // reading and offered no way back — the DW-54 failure, one status class over.
+    for (const status of [408, 425, 429, 500, 502, 503, 504]) {
+      const { fetchImpl } = stubFetch(() => jsonResponse(status, { error: "Nope." }));
+      await expect(
+        fetchPreview("/preview", new AbortController().signal, fetchImpl),
+      ).resolves.toEqual({ status: "unreachable" });
     }
   });
 
-  it("reports a DEADLINE abort as failed, not as stale", async () => {
+  it("carries no message of its own on either failure", async () => {
+    // The server's `{ error }` sentence is read by `savePreviewBody` and by
+    // nothing here: a read has exactly two sentences, both in the Copy table,
+    // so a transport or route string can never reach the owner as copy nobody
+    // wrote.
+    for (const status of [404, 500]) {
+      const { fetchImpl } = stubFetch(() =>
+        jsonResponse(status, { error: "Some internal detail." }),
+      );
+      const result = await fetchPreview("/preview", new AbortController().signal, fetchImpl);
+      expect(Object.keys(result)).toEqual(["status"]);
+    }
+  });
+
+  it("reports a DEADLINE abort as unreachable, not as stale — and never as gone", async () => {
     // The bug this pins: both reasons stop the same controller, so with one
     // outcome for "aborted" a hung request is silently classified as superseded
     // — the caller stays quiet, `loading` is never cleared, and the column shows
@@ -1437,12 +1657,16 @@ describe("fetchPreview", () => {
       controller.abort(PREVIEW_TIMEOUT_REASON);
       return abortError("AbortError");
     });
+    // `unreachable`, and this is the half DW-54 adds: a request that took too
+    // long says NOTHING about whether the row still exists, so answering `gone`
+    // would delete a page from the owner's screen because their connection
+    // stalled.
     await expect(fetchPreview("/preview", controller.signal, fetchImpl)).resolves.toEqual({
-      status: "failed",
+      status: "unreachable",
     });
   });
 
-  it("reports a deadline that fired after the response landed as failed too", async () => {
+  it("reports a deadline that fired after the response landed as unreachable too", async () => {
     // Same reason, the other await: a response that arrives just as the deadline
     // fires must not be reported as superseded either.
     const controller = new AbortController();
@@ -1451,15 +1675,15 @@ describe("fetchPreview", () => {
       return jsonResponse(200, PAYLOAD);
     });
     await expect(fetchPreview("/preview", controller.signal, fetchImpl)).resolves.toEqual({
-      status: "failed",
+      status: "unreachable",
     });
   });
 
-  it("reports a transport failure as failed, and an abort as stale", async () => {
+  it("reports a transport failure as unreachable, and an abort as stale", async () => {
     const { fetchImpl } = stubFetch(() => new TypeError("network down"));
     await expect(
       fetchPreview("/preview", new AbortController().signal, fetchImpl),
-    ).resolves.toEqual({ status: "failed" });
+    ).resolves.toEqual({ status: "unreachable" });
 
     // The same throw, but the caller is the one who stopped it.
     const controller = new AbortController();
@@ -1476,7 +1700,7 @@ describe("fetchPreview", () => {
     const { fetchImpl } = stubFetch(() => jsonResponse(200, undefined));
     await expect(
       fetchPreview("/preview", new AbortController().signal, fetchImpl),
-    ).resolves.toEqual({ status: "failed" });
+    ).resolves.toEqual({ status: "unreachable" });
   });
 });
 

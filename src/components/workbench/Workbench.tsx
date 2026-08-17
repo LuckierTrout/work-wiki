@@ -59,9 +59,16 @@ import {
   type SettingsCategoryId,
 } from "@/lib/workbench-settings";
 import {
+  PREVIEW_CLOSED_COPY,
+  PREVIEW_REMOVED_COPY,
+  previewDockAnnouncement,
+} from "@/lib/workbench-preview";
+import {
   DEFAULT_TREE_TAB,
   isSameSelection,
   restorableSelection,
+  selectionName,
+  selectionRefreshAction,
   shouldDockPreview,
   wikilinkSelection,
   type TreeSelection,
@@ -197,8 +204,49 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // given; a dependency on them would re-run the whole restore on every refetch.
   const latestRef = useRef({ currentWikiId, knowledge, files, widths });
   latestRef.current = { currentWikiId, knowledge, files, widths };
+  // WHICH layout the current selection belongs to. A dependency of the
+  // reconciliation effect below rather than something it reads from a ref: the
+  // effect owns a record of the last signature it saw, and a record only that
+  // effect writes goes STALE the moment the layout moves without it running.
+  // The next tree-only refresh — a genuinely different commit — would then
+  // still compare against the pre-switch signature, conclude the layout had
+  // just moved, and stand down on a real deletion. So a layout change re-runs
+  // this effect too: it records the new signature and returns.
+  const signature = layoutSignature(mode, currentWikiId, treeTab);
+  // The live pick, for the reconciliation effect and the two selection setters.
+  // Assigned during render, the same idiom as `latestRef` above: taking
+  // `selection` as a dependency would re-run "did the row leave the tree?" on
+  // every pick, which is the one moment the answer is guaranteed to be about
+  // the wrong thing.
+  const liveRef = useRef({ selection, docked: false });
+  // The docked column, so a narrow layout can scroll it into view (DW-34).
+  const previewRef = useRef<HTMLElement>(null);
+  // Has the OWNER picked a row in this session? Only the two selection setters
+  // write it, which is what separates a dock the owner asked for from the mount
+  // restore — the one commit where a Preview appears with nobody having touched
+  // anything, and the one where scrolling to it would move the page under them.
+  const ownerPickedRef = useRef(false);
+  // The layout signature the last reconciliation ran against. A Wiki, mode or
+  // tab change and a refreshed server render can land in the SAME commit, and
+  // the reset effect owns the clear in that case — so this is how the
+  // reconciliation recognises the commit it must stay out of.
+  const reconciledSignatureRef = useRef<string | null>(null);
 
   const surface = workbenchMode(mode);
+
+  // The dock rule is a pure function in `workbench-tree`, not a condition typed
+  // here: it is the story's headline behaviour, and inlined in JSX it could only
+  // ever be grepped for, never executed by a test.
+  // …with one conjunction: a docked Preview beside a Settings detail column
+  // would describe a tree row the owner cannot point at, because the trees are
+  // not on screen while the settings nav has the left column.
+  //
+  // Computed HERE, above the effects, because two of them need it: the narrow
+  // reveal, and the reconciliation — which must not speak about a column that
+  // is not on screen. Settings holds a live selection with this false for as
+  // long as it is open.
+  const previewOpen = shouldDockPreview(mode, selection) && !settingsOpen;
+  liveRef.current = { selection, docked: previewOpen };
 
   useEffect(() => {
     // The URL wins over storage, and only for the MODE (DW-27): a deep link is
@@ -319,6 +367,62 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     if (currentWikiId === null || knowledgeUnavailable || filesUnavailable) return;
     writeStoredSelection(currentWikiId, selection);
   }, [mounted, currentWikiId, selection, knowledgeUnavailable, filesUnavailable]);
+
+  // A row can leave the tree without the owner touching anything: another
+  // actor, an agent or a CLI run deletes the page, the watcher re-runs the
+  // server render, and the refreshed trees simply no longer contain it (DW-53).
+  // Nothing noticed before this — the selection stayed alive, no visible row
+  // carried `aria-current`, and the Preview went on describing something the
+  // owner could not point at.
+  //
+  // A SEPARATE effect from the reset above, and deliberately so: the reset's
+  // deps are frozen at `[mode, currentWikiId, treeTab]` (Story 1.4), and adding
+  // the trees to them would clear the selection on every refresh rather than on
+  // the ones that lost the row. What is left is that both can fire in the same
+  // commit — the reset runs first and clears, and this one, reading a
+  // render-assigned ref, would still see the old pick and announce a REMOVAL
+  // for a layout change. `layoutMoved` is that guard, executed inside
+  // `selectionRefreshAction` rather than typed here.
+  //
+  // `signature` is in the dependency array for the reason its declaration
+  // gives: this effect owns the record, so it has to see every layout change or
+  // the record it compares against describes a layout two switches ago.
+  useEffect(() => {
+    if (!mounted) return;
+    const { selection: picked, docked } = liveRef.current;
+    const layoutMoved = reconciledSignatureRef.current !== signature;
+    reconciledSignatureRef.current = signature;
+    // Three answers, because clearing and SAYING SO are separate acts: a stale
+    // pick must never survive, but a sentence about a column that closed is a
+    // lie when no column was showing (Settings has the left column, and the
+    // selection outlives it). A failed read is not a deletion and neither is a
+    // truncated walk; which flag applies is the selection's own kind, which is
+    // why all four arrive separately rather than pre-`||`-ed into one boolean.
+    const action = selectionRefreshAction({
+      selection: picked,
+      knowledge,
+      files,
+      docked,
+      knowledgeUnavailable,
+      filesUnavailable,
+      filesTruncated,
+      layoutMoved,
+    });
+    if (action === "keep") return;
+    setSelection(null);
+    // Spoken only when there was something to see go: this is the one undock the
+    // owner did not ask for, and a column that simply vanished mid-read is
+    // indistinguishable from a bug.
+    if (action === "report") setAnnouncement(PREVIEW_REMOVED_COPY);
+  }, [
+    mounted,
+    knowledge,
+    files,
+    knowledgeUnavailable,
+    filesUnavailable,
+    filesTruncated,
+    signature,
+  ]);
 
   // The frame the clamp measures against. `getBoundingClientRect()` on the shell
   // itself, never the viewport's own width: the shell is a grid child of
@@ -463,7 +567,26 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // Picking the row that is already picked deselects it. Without this the only
   // ways to undock the Preview are leaving Wiki mode, switching tabs, or
   // switching Wikis — none of which the owner would reach for to close a panel.
+  //
+  // Both outcomes are ANNOUNCED (DW-34). Docking and undocking are layout
+  // changes with no focus move and no route change, so to a screen-reader user
+  // a click on a tree row otherwise produces nothing at all: a panel appeared
+  // somewhere below, or the one they were reading stopped existing.
   const selectRow = useCallback((next: TreeSelection) => {
+    // Outside the state updater, the rule `toggleCollapsed` already follows —
+    // React invokes updaters twice under StrictMode, and an announcement made
+    // in there would be written twice and, worse, made by a function that is
+    // required to be pure. The live pick comes from the render-assigned ref, so
+    // this callback still takes no dependency on it.
+    const { knowledge: groups, files: nodes } = latestRef.current;
+    // The owner is picking, so a dock from here on is a change they made — see
+    // the reveal effect below, which stays out of the mount restore.
+    ownerPickedRef.current = true;
+    setAnnouncement(
+      isSameSelection(liveRef.current.selection, next)
+        ? PREVIEW_CLOSED_COPY
+        : previewDockAnnouncement(selectionName(next, groups, nodes)),
+    );
     setSelection((current) => (isSameSelection(current, next) ? null : next));
   }, []);
 
@@ -475,8 +598,19 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // just made. No route change: the shell owns selection, and always has.
   const openPage = useCallback(
     (slug: string) => {
+      const next = wikilinkSelection(treeTab, files, slug);
+      // Following a link is a pick too, for the reveal effect's purposes.
+      ownerPickedRef.current = true;
+      // Announced only when the column actually MOVES. A link pointing at the
+      // page already showing makes React bail out below, so there is no dock to
+      // report — and `Preview, Alpha` spoken over an unchanged Alpha would tell
+      // the owner something happened when nothing did. Computed here, outside
+      // the updater, for the same StrictMode reason `selectRow` gives.
+      if (!isSameSelection(liveRef.current.selection, next)) {
+        const { knowledge: groups, files: nodes } = latestRef.current;
+        setAnnouncement(previewDockAnnouncement(selectionName(next, groups, nodes)));
+      }
       setSelection((current) => {
-        const next = wikilinkSelection(treeTab, files, slug);
         // Returning the SAME object makes React bail out. Without this, a link
         // pointing at the row already showing hands the Preview a new object,
         // and its fetch effect is keyed on selection IDENTITY — so the body it
@@ -603,13 +737,43 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     [],
   );
 
-  // The dock rule is a pure function in `workbench-tree`, not a condition typed
-  // here: it is the story's headline behaviour, and inlined in JSX it could only
-  // ever be grepped for, never executed by a test.
-  // …with one conjunction: a docked Preview beside a Settings detail column
-  // would describe a tree row the owner cannot point at, because the trees are
-  // not on screen while the settings nav has the left column.
-  const previewOpen = shouldDockPreview(mode, selection) && !settingsOpen;
+  // Below 900px the Preview is not a column beside the canvas — it is a stacked
+  // fourth ROW, past the fold of a shell that is `100dvh; overflow: hidden`.
+  // Docking one there looked like a tap that did nothing (DW-34). The CSS
+  // releases the shell's clamp while a Preview is docked so there is somewhere
+  // to scroll TO; this brings the column into view once there is.
+  //
+  // Keyed on the ROW as well as on the dock. At this width the column is below
+  // the fold whether or not one was already open, so picking a second row while
+  // the first is showing changes content the owner cannot see — the identical
+  // "a tap appeared to do nothing" symptom, and the common case once a Preview
+  // is in use at all. `selection` is the shell's stable identity for a pick:
+  // `openPage` returns the SAME object when a wikilink points at the row
+  // already showing, so a link that changes nothing scrolls nothing either.
+  //
+  // No focus move, on this path or any other: the announcement is the whole of
+  // the report, and pulling focus off the tree row the owner just clicked would
+  // cost a keyboard user their place in the tree.
+  //
+  // …and never for a RESTORE. The mount effect docks a stored pick, which makes
+  // `previewOpen` true on a commit the owner did nothing to cause — this would
+  // then open every page load below 900px already scrolled past the tree and
+  // the canvas to the bottom row. It is the same rule the restore already
+  // follows for the live region (announce nothing), applied to the other half
+  // of the report: a reveal answers a pick, and a restore is not one.
+  useEffect(() => {
+    if (!previewOpen) return;
+    if (!ownerPickedRef.current) return;
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    // The WIDE layout already has the column on screen; scrolling there would
+    // move a shell that does not scroll and, in a browser that honours it, jump
+    // the canvas for no reason.
+    if (window.matchMedia(WIDE_QUERY).matches) return;
+    // An optional CALL, not a feature test: jsdom ships no `scrollIntoView` and
+    // neither do a few embedded webviews, and a dock that throws is strictly
+    // worse than a dock the owner has to scroll to themselves.
+    previewRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [previewOpen, selection]);
 
   // Everything below is `workbench-split`'s: the widths the grid gets, the range
   // each divider enforces AND announces, whether a divider exists at all, and
@@ -778,6 +942,10 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
           // the Preview's half of the same signal — the shell is where context
           // becomes props, and it stays router-free.
           dataVersion={dataVersion}
+          // …and the shell keeps the geometry. Below 900px the column is a
+          // stacked row the shell has to scroll to; the column itself never
+          // reads the viewport.
+          ref={previewRef}
         />
       )}
 

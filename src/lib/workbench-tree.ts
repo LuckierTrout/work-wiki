@@ -192,6 +192,97 @@ export function selectionExists(
 }
 
 /**
+ * What to CALL this pick — the name the Preview header prints and the name the
+ * shell's dock announcement speaks (DW-34).
+ *
+ * Lifted out of `PreviewColumn` because the shell now needs it too, and two
+ * derivations of one name is how the spoken sentence starts naming something
+ * other than what the column shows. The rule is exactly the one the column
+ * already spelled:
+ *
+ * - a page is its title, and its SLUG when the trees no longer carry it. A
+ *   selection can outlive its page (a refresh that dropped it), and the slug is
+ *   still a true statement about what the owner picked;
+ * - a file is its node's name, else the last non-empty path segment, else the
+ *   whole path. `||` and not `??` at both steps: `"a/b/".split("/").at(-1)` is
+ *   the EMPTY STRING, not `undefined`, so a nullish fallback would leave the
+ *   header blank and the announcement reading `Preview, `.
+ */
+export function selectionName(
+  selection: TreeSelection,
+  knowledge: readonly KnowledgeGroup[],
+  files: readonly FileNode[],
+): string {
+  if (selection.kind === "page") {
+    return findKnowledgePage(knowledge, selection.slug)?.title ?? selection.slug;
+  }
+  const node = findFileNode(files, selection.path);
+  return node?.name || selection.path.split("/").filter(Boolean).at(-1) || selection.path;
+}
+
+/**
+ * What a refreshed server render should do with the selected row (DW-53).
+ *
+ * THREE answers, not two, because clearing and announcing are separate acts:
+ *
+ * - `keep` — the pick is still real, or nothing here can prove it is not;
+ * - `clear` — the pick is stale and must not survive, but no column is on
+ *   screen, so there is nothing for a sentence to be about;
+ * - `report` — clear it AND say so. The Preview was visible and is about to
+ *   vanish mid-read, which is indistinguishable from a bug unless it is spoken.
+ *
+ * `docked` is what separates the last two, and it is not the same question as
+ * "is there a selection". Settings takes the left column, so the shell holds a
+ * live pick with `previewOpen === false` for the whole time it is open —
+ * announcing `Preview closed — that item was removed.` there would report the
+ * disappearance of a panel the owner cannot see.
+ */
+export type SelectionRefreshAction = "keep" | "clear" | "report";
+
+/**
+ * The refusals, each a different way of being wrong about a deletion:
+ *
+ * - a read that FAILED hands its tree down empty, and treating that as "every
+ *   row was deleted" would close the Preview after one bad minute on the
+ *   server. Matched to the selection's own kind: a failed file walk says
+ *   nothing at all about whether a PAGE still exists, and suppressing
+ *   reconciliation for both would leave a genuinely deleted page docked for as
+ *   long as the unrelated read stays broken;
+ * - a TRUNCATED walk listed real files and then stopped at
+ *   {@link WORKBENCH_FILE_LIMIT}. The selected file may be one of the ones it
+ *   never reached, so "absent from this list" is not evidence of removal —
+ *   only for a file selection, since the cap is the file walk's alone;
+ * - `layoutMoved` — a Wiki, mode or tab change and a server re-render can land
+ *   in the SAME commit, and the reset effect owns the clear in that case.
+ *   Clearing again, with a sentence about removal, would report something that
+ *   did not happen. Passed in rather than compared here so the shell holds no
+ *   condition of its own;
+ * - no selection at all — nothing was lost.
+ */
+export function selectionRefreshAction(input: {
+  selection: TreeSelection | null;
+  knowledge: readonly KnowledgeGroup[];
+  files: readonly FileNode[];
+  /** Is a Preview column actually on screen for this pick? */
+  docked: boolean;
+  knowledgeUnavailable: boolean;
+  filesUnavailable: boolean;
+  filesTruncated: boolean;
+  layoutMoved: boolean;
+}): SelectionRefreshAction {
+  const selection = input.selection;
+  if (selection === null) return "keep";
+  if (input.layoutMoved) return "keep";
+  if (selection.kind === "page") {
+    if (input.knowledgeUnavailable) return "keep";
+  } else if (input.filesUnavailable || input.filesTruncated) {
+    return "keep";
+  }
+  if (selectionExists(selection, input.knowledge, input.files)) return "keep";
+  return input.docked ? "report" : "clear";
+}
+
+/**
  * The whole restore decision for a stored pick (Story 1.6): the row to select on
  * mount, or `null` for "restore nothing".
  *

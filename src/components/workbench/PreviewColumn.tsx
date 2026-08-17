@@ -1,6 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   previewFetchPlan,
@@ -15,23 +23,27 @@ import {
   PREVIEW_LOADING_COPY,
   PREVIEW_SAVE_COPY,
   PREVIEW_SAVING_COPY,
+  PREVIEW_RETRY_COPY,
   PREVIEW_TRUNCATED_COPY,
   PREVIEW_TIMEOUT_REASON,
+  PREVIEW_UNREACHABLE_COPY,
   PREVIEW_UNSUPPORTED_COPY,
   canEditPreview,
   fetchPreview,
   previewBodyState,
   previewEditCopy,
+  previewRefreshAnnouncement,
   previewRequestUrl,
+  previewStaleNotice,
   previewWriteTarget,
   savePreviewBody,
   type PreviewPayload,
   type PreviewWriteTarget,
 } from "@/lib/workbench-preview";
 import {
-  findFileNode,
   findKnowledgePage,
   readableSlugsFromKnowledge,
+  selectionName,
   type FileNode,
   type KnowledgeGroup,
   type TreeSelection,
@@ -83,6 +95,13 @@ export interface PreviewColumnProps {
    * touch is `previewFetchPlan`'s answer, never a condition typed in here.
    */
   dataVersion: number;
+  /**
+   * Forwarded onto the `<aside>` so the SHELL can scroll the docked column into
+   * view below 900px (DW-34), where it is a stacked fourth row rather than a
+   * column beside the canvas. The shell owns the dock, so it owns the reveal;
+   * this column never reads the viewport and never scrolls itself.
+   */
+  ref?: Ref<HTMLElement>;
 }
 
 /**
@@ -99,6 +118,7 @@ export function PreviewColumn({
   files,
   onOpenPage,
   dataVersion,
+  ref,
 }: PreviewColumnProps) {
   // No selection, no column — the shell already decides this with
   // `shouldDockPreview`, and this keeps the component honest on its own. The
@@ -111,6 +131,7 @@ export function PreviewColumn({
       files={files}
       onOpenPage={onOpenPage}
       dataVersion={dataVersion}
+      ref={ref}
     />
   );
 }
@@ -121,14 +142,29 @@ function PreviewPane({
   files,
   onOpenPage,
   dataVersion,
+  ref,
 }: PreviewColumnProps & { selection: TreeSelection }) {
   const [payload, setPayload] = useState<PreviewPayload | null>(null);
   // What is on screen RIGHT NOW, readable from an async callback that closed
   // over an older render. Assigned during render, the `useDialogA11y` idiom.
   const payloadRef = useRef<PreviewPayload | null>(null);
   payloadRef.current = payload;
-  const [failed, setFailed] = useState(false);
+  // The route answered 404: the row is not there. Replaces the body.
+  const [gone, setGone] = useState(false);
+  // The read did not land at all — a blip, a 5xx, the deadline, a body that was
+  // not a payload. Two flags rather than one, because they are two facts and a
+  // single `failed` is what made a dropped packet look like a deletion (DW-54).
+  const [unreachable, setUnreachable] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Bumped by the `Retry` control and read as a fetch-effect DEPENDENCY, which
+  // is what makes a retry go through exactly the same plan as every other read
+  // — including the rule that an open editor defers it — instead of becoming a
+  // second request path with its own reset semantics.
+  const [retryNonce, setRetryNonce] = useState(0);
+  // What the column's OWN polite region says. Separate from the shell's, which
+  // reports which surface is showing; a body swapped underneath a reader is a
+  // change to what they are reading, not to where they are (DW-50).
+  const [refreshAnnouncement, setRefreshAnnouncement] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -194,8 +230,13 @@ function PreviewPane({
     );
     if (plan.reset) {
       setLoading(true);
-      setFailed(false);
+      setGone(false);
+      setUnreachable(false);
       setPayload(null);
+      // A new row has nothing to have been updated FROM, and the shell already
+      // announced the dock. Clearing keeps a sentence about the previous row
+      // from being re-read when this region next changes.
+      setRefreshAnnouncement("");
       // A pick abandons an open editor: the column is about to show another
       // file's bytes, and a textarea holding this one's draft over that one's
       // header is the state `save`'s target check also refuses.
@@ -206,21 +247,43 @@ function PreviewPane({
     }
 
     // One branch per outcome, and no decision of its own: whether a response is
-    // stale (the owner picked another row mid-flight) or failed is decided by
-    // `fetchPreview`, which the node suite executes with a stubbed fetch. Left
-    // inline here it could only ever be grepped for.
+    // stale (the owner picked another row mid-flight), gone (a 404) or merely
+    // unreachable is decided by `fetchPreview`, which the node suite executes
+    // with a stubbed fetch. Left inline here it could only ever be grepped for.
     void fetchPreview(previewRequestUrl(selection), controller.signal).then((result) => {
       if (result.status === "stale") return;
-      // `setFailed(false)` explicitly, not only via the reset block above: a
+      // Both flags are cleared EXPLICITLY, not only via the reset block above: a
       // silent refresh starts from whatever the last read left behind, so a row
-      // that failed once would keep saying so after it began answering again.
+      // that failed once would keep saying so after it began answering again —
+      // and that clearing is exactly what makes an unreachable read self-heal
+      // on the next read that already happens, with no timer anywhere.
       if (result.status === "ok") {
+        // WHETHER this swap is worth a sentence is an executed function, not a
+        // comparison typed here: a bump fires for every write in the system, so
+        // an unguarded announcement would chatter at a reader whose screen did
+        // not change. `??` to the empty string, because a live region's content
+        // is a string and `null` would render the word.
+        setRefreshAnnouncement(
+          previewRefreshAnnouncement({
+            reset: plan.reset,
+            shown: payloadRef.current,
+            next: result.payload,
+          }) ?? "",
+        );
         setPayload(result.payload);
-        setFailed(false);
+        setGone(false);
+        setUnreachable(false);
+      } else if (result.status === "gone") {
+        // A page another actor just deleted must not keep rendering as if it
+        // were there — the body is replaced, and no stale strip appears over a
+        // replacement that is not stale.
+        setGone(true);
+        setUnreachable(false);
       } else {
-        // A silent refresh that fails still tells the truth — a page another
-        // actor just deleted must not keep rendering as if it were there.
-        setFailed(true);
+        // The read could not be reached. The last-good bytes STAY: they are the
+        // most recent true thing this column knows, and replacing them with a
+        // failure sentence because of one dropped packet is the bug DW-54 is.
+        setUnreachable(true);
       }
       setLoading(false);
     });
@@ -229,7 +292,7 @@ function PreviewPane({
       clearTimeout(deadline);
       controller.abort();
     };
-  }, [selection, dataVersion, editing]);
+  }, [selection, dataVersion, editing, retryNonce]);
 
   // Confirming the dialog unmounts the `Edit` button that opened it, so
   // `useDialogA11y`'s restore has nothing to return focus to. The caret belongs
@@ -322,15 +385,12 @@ function PreviewPane({
   }, [draft, saving]);
 
   const page = selection.kind === "page" ? findKnowledgePage(knowledge, selection.slug) : null;
-  const node = selection.kind === "file" ? findFileNode(files, selection.path) : null;
-  const name =
-    selection.kind === "page"
-      ? // A selection can outlive its page (a refresh that dropped it). The slug
-        // is still a true statement about what the owner picked.
-        (page?.title ?? selection.slug)
-      : // `||`, not `??`: `"a/b/".split("/").at(-1)` is the empty string, not
-        // `undefined`, so a nullish fallback would leave the header blank.
-        node?.name || selection.path.split("/").filter(Boolean).at(-1) || selection.path;
+  // WHAT to call this pick is `selectionName`, in `workbench-tree` where the
+  // node suite runs it — not a ternary here. The shell speaks the same name in
+  // its dock announcement (DW-34), and two derivations of one name is how the
+  // sentence a screen reader hears starts naming something other than what this
+  // header shows.
+  const name = selectionName(selection, knowledge, files);
 
   // Every condition lives in one executed function — see `canEditPreview`, which
   // is `previewWriteTarget(payload) !== null`. Left inline, dropping the
@@ -348,7 +408,7 @@ function PreviewPane({
     // the empty test showed `This file is empty.` for every readable file with
     // the whole suite green, because a source scan is all a node suite can do
     // to a component. This function only maps a state to its element.
-    const state = previewBodyState({ loading, failed, payload });
+    const state = previewBodyState({ loading, gone, payload });
     if (state.kind === "loading") {
       return <p className="wb-preview-note">{PREVIEW_LOADING_COPY}</p>;
     }
@@ -387,7 +447,7 @@ function PreviewPane({
   }
 
   return (
-    <aside className="wb-preview" aria-label="Preview">
+    <aside className="wb-preview" aria-label="Preview" ref={ref}>
       <header className="wb-preview-head">
         <strong className="wb-preview-title">Preview</strong>
         <span className="wb-preview-name">{name}</span>
@@ -423,6 +483,42 @@ function PreviewPane({
           </p>
         )}
       </div>
+
+      {/* ABOVE the body, because it is a statement ABOUT the body: the bytes
+          below are the last ones that arrived, not the ones the last read asked
+          for. WHETHER it shows is `previewStaleNotice` — never over a missing
+          body, never during a read, never over a 404's replacement, and never
+          while the editor is open, where `previewFetchPlan` defers every read
+          and `Retry` could only be a control that silently does nothing. All
+          five conditions live in that one executed function; none is typed
+          here. It is transient rather than dismissible, so the next read that
+          already happens takes it away. No `role="alert"`: nothing was lost,
+          and nothing was deleted. */}
+      {previewStaleNotice({ loading, gone, unreachable, editing, payload }) && (
+        <div className="wb-preview-stale">
+          <p className="wb-preview-stale-note">{PREVIEW_UNREACHABLE_COPY}</p>
+          <button
+            type="button"
+            className="wb-preview-retry"
+            // Bumps a dependency of the fetch effect rather than calling a
+            // reader of its own: one request path, one plan, one set of reset
+            // rules. `Date.now()` would also be a new value every press, and a
+            // counter cannot collide with itself twice in the same millisecond.
+            onClick={() => setRetryNonce((nonce) => nonce + 1)}
+          >
+            {PREVIEW_RETRY_COPY}
+          </button>
+        </div>
+      )}
+
+      {/* The column's OWN polite region. Inside the column, not the shell's:
+          the shell reports which SURFACE is showing, and a body replaced
+          underneath a reader is a change to what they are reading. Empty
+          whenever there is nothing to report, so a restore, a pick and an
+          unchanged refresh are all silent. */}
+      <p className="wb-sr-only" aria-live="polite">
+        {refreshAnnouncement}
+      </p>
 
       {editing ? (
         <div className="wb-preview-editor">

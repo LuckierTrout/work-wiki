@@ -335,9 +335,23 @@ describe("PreviewColumn is view-first over a rendered body", () => {
     // inverting the empty test there rendered `This file is empty.` for every
     // readable file with the whole suite green. `workbench-preview.test.ts` runs
     // all five branches; what is left here is that the column asks.
-    expect(source).toContain("previewBodyState({ loading, failed, payload })");
+    expect(source).toContain("previewBodyState({ loading, gone, payload })");
     expect(source).not.toContain("payload.body.trim().length === 0");
     expect(source).not.toContain('payload.format === "unsupported"');
+    // DW-54 renamed the input with the fact it carries. The column must not
+    // hold a flag called `failed` at all any more: it meant five things, and
+    // the four that are not a 404 must leave the body where it is. The
+    // mounted suite (`preview-announcements.test.tsx`) observes both halves
+    // directly; what this pins is that neither can be re-conflated in source.
+    expect(source).not.toContain("setFailed(");
+    expect(source).toContain("setGone(");
+    expect(source).toContain("setUnreachable(");
+    // …and the strip is a decision too, not five conditions typed into JSX —
+    // `editing` among them, which is what keeps `Retry` off screen in the one
+    // state where `previewFetchPlan` would refuse to act on it.
+    expect(source).toContain(
+      "previewStaleNotice({ loading, gone, unreachable, editing, payload })",
+    );
   });
 
   it("fetches the bytes abortably, keyed on the selection and the data version", async () => {
@@ -359,7 +373,10 @@ describe("PreviewColumn is view-first over a rendered body", () => {
     // read leaves `Loading…` on screen for the rest of that selection, which is
     // indistinguishable from the hang the deadline exists to end.
     expect(source).toContain("setLoading(false)");
-    expect(source).toMatch(/\}, \[selection, dataVersion, editing\]\)/);
+    // DW-54 adds a fourth dependency: the `Retry` control bumps a nonce rather
+    // than calling a reader of its own, so a retry goes through the SAME plan
+    // as every other read — including the rule that an open editor defers it.
+    expect(source).toMatch(/\}, \[selection, dataVersion, editing, retryNonce\]\)/);
     // No second copy of the decision: the component must not re-derive it.
     expect(source).not.toContain("response.ok");
   });
@@ -609,6 +626,84 @@ describe("globals.css docks the Preview as a fourth column", () => {
       const block = css.slice(start, next === -1 ? undefined : next);
       expect(block).toContain('[data-preview="true"]');
     }
+  });
+
+  it("releases the shell's clamp below 900px so a docked column is reachable", async () => {
+    // DW-34. `.wb-shell` is `height: 100dvh; max-height: 100dvh; overflow:
+    // hidden` — right for a desktop surface that must not scroll as a page, and
+    // fatal here: below 900px the Preview is a fourth ROW, so that rule places
+    // it past the bottom of a box that CLIPS. Not below the fold — unreachable,
+    // by scroll, by `scrollIntoView`, by anything. A tap on a tree row appeared
+    // to do nothing at all, which is why `Workbench`'s reveal effect cannot fix
+    // this on its own.
+    const css = await globals();
+    const start = css.lastIndexOf("@media (max-width: 899px)");
+    const next = css.indexOf("@media", start + 1);
+    const block = css.slice(start, next === -1 ? undefined : next);
+    const docked = block.slice(
+      block.indexOf('.wb-shell[data-preview="true"],'),
+      block.indexOf("}", block.indexOf('.wb-shell[data-preview="true"],')),
+    );
+    // All four declarations of the release, not three: `height: auto` is what
+    // stops `height: 100dvh` from winning and re-clipping the fourth row, so a
+    // scan that omitted it would stay green over exactly the bug this fixes.
+    expect(docked).toContain("height: auto;");
+    expect(docked).toContain("max-height: none;");
+    expect(docked).toContain("overflow: visible;");
+    // …and it comes BACK while the mode sheet is open. This is exactly the
+    // breakpoint at which the rail is a fixed off-canvas sheet over a fixed
+    // backdrop, so a scrolling document scrolls the page BEHIND an open modal:
+    // the backdrop stays put while the content slides under it, and a pointer
+    // can drag content the backdrop exists to make unreachable.
+    const sheet = block.slice(
+      block.indexOf('.wb-shell[data-preview="true"][data-sheet-open="true"],'),
+      block.indexOf(
+        "}",
+        block.indexOf('.wb-shell[data-preview="true"][data-sheet-open="true"],'),
+      ),
+    );
+    expect(sheet).toContain("max-height: 100dvh;");
+    expect(sheet).toContain("overflow: hidden;");
+    // Two attributes wide on the collapsed variant too, or the collapsed
+    // three-attribute docked selector above would outrank it.
+    expect(block).toContain(
+      '.wb-shell[data-collapsed="true"][data-preview="true"][data-sheet-open="true"]',
+    );
+    // …and a short shell still fills the viewport rather than collapsing to its
+    // content, which would leave the canvas floating above a blank page.
+    expect(docked).toContain("min-height: 100dvh;");
+    // The column takes the single grid column here, with the border moved to
+    // the edge it now actually has.
+    expect(block).toMatch(/\.wb-preview \{\s*grid-column: 1;/);
+    expect(block).toContain("border-top: 1px solid var(--wb-border);");
+    // The WIDE layout is untouched: the base rule still clamps, and the base
+    // `.wb-preview` is still the fourth column.
+    const shellStart = css.indexOf("\n.wb-shell {");
+    expect(shellStart).toBeGreaterThan(-1);
+    const base = css.slice(shellStart, css.indexOf("\n}", shellStart));
+    expect(base).toContain("max-height: 100dvh;");
+    expect(base).toContain("overflow: hidden;");
+  });
+
+  it("dresses the stale strip as chrome, with no alert colour", async () => {
+    // DW-54's strip sits over bytes that are still there. UX-DR15 reserves red
+    // for destructive labels, and the shell has no danger colour at all — the
+    // same reasoning `.wb-preview-error` already follows.
+    const css = await globals();
+    const start = css.indexOf(".wb-preview-stale {");
+    expect(start).toBeGreaterThan(-1);
+    const rule = css.slice(start, css.indexOf("}", start));
+    expect(rule).toContain("color: var(--wb-muted);");
+    expect(rule).not.toMatch(/#[0-9a-f]{3,8}|\brgb|\bred\b|--wb-danger/i);
+    // WCAG 2.2 SC 2.5.8: a 24×24 CSS-pixel floor. `Retry` is the one control
+    // this change adds and it exists FOR the narrow breakpoint, where the
+    // column is a stacked row and the pointer is a thumb — 2px of padding at a
+    // 12px face leaves roughly 20px.
+    const retryStart = css.indexOf(".wb-preview-retry {");
+    expect(retryStart).toBeGreaterThan(-1);
+    expect(css.slice(retryStart, css.indexOf("}", retryStart))).toContain(
+      "min-height: 24px;",
+    );
   });
 
   it("declares the reading face once, in the token block, and reads it nowhere else", async () => {

@@ -219,6 +219,28 @@ HTMLElement.prototype.getClientRects = function getClientRects(
 };
 
 // ---------------------------------------------------------------------------
+// Element.prototype.scrollIntoView
+// ---------------------------------------------------------------------------
+//
+// Same missing layout engine once more: jsdom implements no scrolling at all
+// and ships NO `scrollIntoView`, so calling it is a `TypeError` rather than a
+// no-op. `Workbench`'s narrow-width reveal calls it on the docked Preview, and
+// without a shim the only way to keep the suite green would be to delete the
+// call or wrap it in a capability test — i.e. to reshape the component so it
+// stops asking the platform, which is the one thing this file exists to avoid.
+//
+// It is deliberately a `vi.fn`-able plain method rather than a recorder: a test
+// that wants to observe the call spies on it (`vi.spyOn(Element.prototype,
+// "scrollIntoView")`) and gets both the arguments and a per-test reset.
+//
+// FIDELITY LIMIT: it scrolls nothing, because there is nothing to scroll.
+// `scrollTop`, `scrollY` and every rect stay at zero afterwards, so "the column
+// is now visible" is not observable here — only that the shell asked for it.
+// Whether the CSS actually leaves somewhere to scroll TO is pinned as a rule in
+// the stylesheet scan, not here.
+Element.prototype.scrollIntoView = function scrollIntoView(): void {};
+
+// ---------------------------------------------------------------------------
 // document.visibilityState
 // ---------------------------------------------------------------------------
 //

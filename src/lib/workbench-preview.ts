@@ -139,7 +139,7 @@ export function canEditPreview(payload: PreviewPayload | null): boolean {
  * Which of the five things the body area shows.
  *
  * The branch ORDER is the whole content of this decision — `loading` before
- * `failed`, a missing payload folded into `failed`, `unsupported` before
+ * `gone`, a missing payload folded into `failed`, `unsupported` before
  * `empty` because a blob this reader cannot render has no body to be empty —
  * and inline in JSX it could only ever be grepped for. Inverting one test there
  * (`payload.body.trim().length === 0` → `> 0`) rendered `This file is empty.`
@@ -157,13 +157,20 @@ export type PreviewBodyState =
 
 export function previewBodyState(input: {
   loading: boolean;
-  failed: boolean;
+  /**
+   * The route answered 404 — the row is not there any more, or never was
+   * (DW-54). Named `gone` rather than `failed` because a read that merely could
+   * not be REACHED is {@link previewStaleNotice}'s business and must leave the
+   * last-good bytes on screen: one flag meaning both is exactly the conflation
+   * that let a network blip replace the page the owner was reading.
+   */
+  gone: boolean;
   payload: PreviewPayload | null;
 }): PreviewBodyState {
   if (input.loading) return { kind: "loading" };
   // No payload and not loading is a failure whether or not the flag was set:
   // there is nothing to render, and nothing else true to say about it.
-  if (input.failed || input.payload === null) return { kind: "failed" };
+  if (input.gone || input.payload === null) return { kind: "failed" };
   const payload = input.payload;
   if (payload.format === "unsupported") return { kind: "unsupported" };
   if (payload.body.trim().length === 0) return { kind: "empty" };
@@ -304,6 +311,66 @@ export const PREVIEW_TRUNCATED_COPY = `Preview truncated at ${new Intl.NumberFor
  */
 export const WIKILINK_MISSING_COPY = "(missing page)";
 
+/**
+ * What the shell's live region says when the Preview DOCKS (DW-34).
+ *
+ * Mirrors `settingsAnnouncement`'s `Settings, <category>` shape, because
+ * this is the same event: a surface appeared and it is showing a named thing
+ * (EXPERIENCE.md:175). Docking and undocking are silent layout changes
+ * otherwise — the column simply exists, or stops existing, and a screen-reader
+ * user is told nothing about either.
+ *
+ * A function rather than a template typed at the call site: there are two call
+ * sites (a tree pick and a followed wikilink) and one wording, and the name is
+ * {@link selectionName}'s answer at both.
+ */
+export function previewDockAnnouncement(name: string): string {
+  return `Preview, ${name}`;
+}
+
+/**
+ * …and when it UNDOCKS because the owner re-clicked the row they were on.
+ *
+ * No name in it. The column is gone, so naming what it used to show reads as a
+ * report that something opened.
+ */
+export const PREVIEW_CLOSED_COPY = "Preview closed";
+
+/**
+ * The other way it undocks (DW-53): the row left the tree while the Preview was
+ * on it, so the shell closed the column without being asked.
+ *
+ * Says WHY, because this one is not the owner's own action — a column that
+ * simply vanished mid-read is indistinguishable from a bug. Deliberately
+ * "removed" rather than "deleted": all the shell knows is that a refreshed tree
+ * no longer contains the row.
+ */
+export const PREVIEW_REMOVED_COPY = "Preview closed — that item was removed.";
+
+/**
+ * A silent same-row refresh swapped the body underneath the reader (DW-50).
+ *
+ * Announced from the COLUMN's own polite region rather than the shell's: the
+ * shell's region reports which surface is showing, and a body swap does not
+ * change that. Polite, and never `role="alert"` — nothing failed.
+ */
+export const PREVIEW_UPDATED_COPY = "Preview updated";
+
+/**
+ * The read could not be reached — a transport failure, the deadline, a 5xx, or
+ * a 200 whose body is not a payload (DW-54).
+ *
+ * Deliberately NOT {@link PREVIEW_FAILED_COPY}: that sentence replaces the body,
+ * and shown for a blip it would tell the owner their page is gone while the
+ * bytes are still on screen. This one sits ABOVE bytes that are still true, so
+ * it says what is stale rather than what is missing.
+ */
+export const PREVIEW_UNREACHABLE_COPY =
+  "Couldn’t refresh — showing the last version that loaded.";
+
+/** The one control beside it. Self-healing means this is a shortcut, not the cure. */
+export const PREVIEW_RETRY_COPY = "Retry";
+
 /** The escape hatch out of view-first. */
 export const PREVIEW_EDIT_COPY = "Edit";
 
@@ -376,6 +443,95 @@ export function previewEditCopy(target: PreviewWriteTarget | null): PreviewEditC
 }
 
 // ---------------------------------------------------------------------------
+// The two refresh decisions (DW-50, DW-54)
+// ---------------------------------------------------------------------------
+
+/**
+ * Does the transient "couldn’t refresh" strip show?
+ *
+ * The SET of conditions is the whole content of the decision — unlike
+ * {@link previewBodyState}, whose branch order is what carries its meaning, this
+ * one is a conjunction in which every term is independent and none can be
+ * dropped. Never over a body that is not there: with no payload the column
+ * already shows
+ * {@link PREVIEW_FAILED_COPY}, and a `Retry` beside it would promise to restore
+ * bytes it never had. Never while `loading` either — a read is in flight, so
+ * the previous one's failure is already being answered — and never while
+ * {@link previewBodyState} is reporting `gone`, because a 404 replaces the body
+ * and a strip above the replacement would claim the bytes underneath are merely
+ * stale.
+ *
+ * Never while the EDITOR is open either, and that one is about the control
+ * rather than the sentence: `previewFetchPlan` answers `fetch: false` for every
+ * run while `editing`, so the strip's `Retry` would be a button that silently
+ * does nothing on every press. The strip and its one control arrive and leave
+ * together — closing the editor lets the deferred read happen, which is what
+ * decides whether the strip comes back.
+ *
+ * Self-healing falls out of this being a pure read of current state rather than
+ * a dismissible banner: the next read that already happens (a `dataVersion`
+ * bump, a pick, or the `Retry` control) clears `unreachable` and the strip goes
+ * with it. There is no timer and no polling loop.
+ */
+export function previewStaleNotice(input: {
+  loading: boolean;
+  gone: boolean;
+  unreachable: boolean;
+  editing: boolean;
+  payload: PreviewPayload | null;
+}): boolean {
+  return (
+    input.unreachable &&
+    !input.loading &&
+    !input.gone &&
+    !input.editing &&
+    input.payload !== null
+  );
+}
+
+/**
+ * What the COLUMN's polite live region should say after a read settled, or
+ * `null` for "say nothing" (DW-50).
+ *
+ * Only a SILENT same-row refresh announces. The three silences each have their
+ * own reason:
+ *
+ * - `reset` is a fresh pick, and the shell's own live region already said
+ *   `Preview, <name>` when it docked — a second sentence about the same event
+ *   reports it twice;
+ * - no `shown` payload means nothing was swapped out from under anybody: the
+ *   column was empty or failed, and arriving bytes are the first bytes;
+ * - an identical body is not an update. A `dataVersion` bump fires for every
+ *   write in the system, most of which are about some other page, and
+ *   announcing each one would make the region chatter at a reader who is
+ *   looking at an unchanged screen.
+ *
+ * What is compared is what the reader can PERCEIVE, which is the body and the
+ * truncation flag — not the whole payload. `truncated` earns its place because
+ * flipping it adds or removes {@link PREVIEW_TRUNCATED_COPY} above the bytes and
+ * takes the `Edit` control with it ({@link canEditPreview} refuses a prefix), so
+ * a page that grew past {@link PREVIEW_MAX_CHARS} changes the column visibly
+ * even when the first 200,000 characters are byte-identical. Everything else in
+ * {@link PreviewPayload} is IDENTITY rather than content: `name`, `path`,
+ * `slug`, `artifact` and `format` all follow from the row this read was for —
+ * which, on the only path that reaches here, is the row already showing — and
+ * `editable` follows from that same row plus deployment-level facts
+ * (`isReadOnly()`, the owner handle) that do not move between two reads of one
+ * session. Comparing them could only announce a change nobody can perceive.
+ */
+export function previewRefreshAnnouncement(input: {
+  reset: boolean;
+  shown: PreviewPayload | null;
+  next: PreviewPayload;
+}): string | null {
+  if (input.reset) return null;
+  if (input.shown === null) return null;
+  const same =
+    input.shown.body === input.next.body && input.shown.truncated === input.next.truncated;
+  return same ? null : PREVIEW_UPDATED_COPY;
+}
+
+// ---------------------------------------------------------------------------
 // The two request decisions
 // ---------------------------------------------------------------------------
 //
@@ -425,16 +581,60 @@ export const PREVIEW_TIMEOUT_REASON = "preview-request-timeout";
 /**
  * What a preview read produced.
  *
- * `stale` is deliberately its own outcome rather than a flavour of `failed`: a
+ * `stale` is deliberately its own outcome rather than a flavour of a failure: a
  * pick that lost a race is not an error, and reporting it as one would flash
  * "This file couldn’t be loaded." on a column that is about to show the row the
  * owner actually wants. A DEADLINE abort is the opposite case — nothing else is
- * coming, so it must not be silent — and resolves to `failed`.
+ * coming, so it must not be silent — and resolves to `unreachable`.
+ *
+ * `gone` and `unreachable` are two facts, not two names for one (DW-54). A
+ * single `failed` meant all five of "deleted", "gated out", "the server erred",
+ * "the network blipped" and "the body was not a payload" — so a dropped packet
+ * replaced the page the owner was reading with `This file couldn’t be loaded.`
+ * and never healed. Split here rather than at the caller because the caller's
+ * only input is this value: a component holding one boolean cannot recover a
+ * distinction the read already threw away.
+ *
+ * The seam is 4xx versus everything else, and it is drawn where it is because
+ * the two sides differ in whether RETRYING COULD EVER HELP:
+ *
+ * - `gone` is a 4xx the next attempt would meet again. The 404 is the route's
+ *   "there is nothing here for you", deliberately indistinguishable between
+ *   absent and refused per {@link PREVIEW_FAILED_COPY}; a 400 is a request this
+ *   build will keep sending identically; a 401 or 403 is an expired or
+ *   insufficient session. In every case the answer will not change on its own,
+ *   so the body is replaced with the one sentence rather than left behind a
+ *   `Retry` that can never succeed and a strip that never heals.
+ * - `unreachable` is a 5xx, a transport throw, the deadline, an unparseable
+ *   body, a 200 carrying JSON that is not a payload — and the three 4xx that
+ *   are explicitly statements about TIMING rather than about the row. It keeps
+ *   the body.
  */
 export type PreviewFetchResult =
   | { status: "ok"; payload: PreviewPayload }
   | { status: "stale" }
-  | { status: "failed" };
+  | { status: "gone" }
+  | { status: "unreachable" };
+
+/**
+ * The statuses that will answer the same way next time.
+ *
+ * See {@link PreviewFetchResult}: a client-error status is a refusal this
+ * browser cannot argue with, and holding stale bytes over one promises a
+ * recovery that is not coming.
+ *
+ * The three exceptions are the 4xx that say WHEN rather than WHAT: 408 is the
+ * server giving up on waiting, 425 is "you asked too early", and 429 is a rate
+ * limiter — none of them a statement that the row is not there, and all three
+ * answer differently on the next attempt by definition. A CDN or platform
+ * limiter in front of this route is exactly the kind of intermediary DW-54
+ * exists to stop mistaking for a deletion, so a throttled refresh keeps the
+ * bytes the owner is reading and offers the `Retry` that will actually work.
+ */
+function isDeterministicRefusal(status: number): boolean {
+  if (status === 408 || status === 425 || status === 429) return false;
+  return status >= 400 && status < 500;
+}
 
 /**
  * Is this parsed body actually a {@link PreviewPayload}?
@@ -458,10 +658,16 @@ function isPreviewPayload(value: unknown): value is PreviewPayload {
   );
 }
 
-/** Which kind of abort was this? See {@link PREVIEW_TIMEOUT_REASON}. */
+/**
+ * Which kind of abort was this? See {@link PREVIEW_TIMEOUT_REASON}.
+ *
+ * A deadline is `unreachable`, never `gone`: a request that took too long says
+ * nothing whatsoever about whether the row still exists, and answering `gone`
+ * would delete a page from the owner's screen because their connection stalled.
+ */
 function abortOutcome(signal: AbortSignal): PreviewFetchResult {
   return signal.reason === PREVIEW_TIMEOUT_REASON
-    ? { status: "failed" }
+    ? { status: "unreachable" }
     : { status: "stale" };
 }
 
@@ -481,17 +687,21 @@ export async function fetchPreview(
   try {
     const response = await fetchImpl(url, { signal });
     if (signal.aborted) return abortOutcome(signal);
-    if (!response.ok) return { status: "failed" };
+    // A refusal the next attempt will meet again replaces the body; a server
+    // that erred or a hop that dropped is a read that did not land.
+    if (isDeterministicRefusal(response.status)) return { status: "gone" };
+    if (!response.ok) return { status: "unreachable" };
     const payload: unknown = await response.json();
     if (signal.aborted) return abortOutcome(signal);
-    if (!isPreviewPayload(payload)) return { status: "failed" };
+    // A 200 carrying something else is a proxy, an interstitial or a future
+    // route change — none of which is evidence that the row was removed.
+    if (!isPreviewPayload(payload)) return { status: "unreachable" };
     return { status: "ok", payload };
   } catch {
-    // An abort is the caller's own doing; anything else is a real failure. No
-    // message is derived here at all: every read failure shows one sentence
-    // ({@link PREVIEW_FAILED_COPY}), so a transport string can never reach the
-    // owner as copy nobody wrote.
-    return signal.aborted ? abortOutcome(signal) : { status: "failed" };
+    // An abort is the caller's own doing; anything else could not be reached.
+    // No message is derived here at all: neither outcome carries one, so a
+    // transport string can never reach the owner as copy nobody wrote.
+    return signal.aborted ? abortOutcome(signal) : { status: "unreachable" };
   }
 }
 

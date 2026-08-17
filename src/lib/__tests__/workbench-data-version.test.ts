@@ -736,45 +736,72 @@ describe("the Preview column re-reads its bytes without disturbing an editor", (
     expect(source).not.toContain("shownSelectionRef.current = selection");
     expect(source).toContain("if (!plan.fetch) return;");
     expect(source).toContain("if (plan.reset) {");
-    expect(source).toMatch(/\}, \[selection, dataVersion, editing\]\)/);
+    // DW-54's `retryNonce` joins the array. It is a DEPENDENCY rather than an
+    // imperative re-read for the reason the plan exists at all: a second
+    // request path would carry its own reset semantics, and a retry pressed
+    // while the editor is open would then take the owner's draft.
+    expect(source).toMatch(/\}, \[selection, dataVersion, editing, retryNonce\]\)/);
     // The reset block — the one that abandons an open editor — is now BEHIND the
     // plan, and still inside the effect.
     const effect = source.slice(
       source.indexOf("if (plan.reset) {"),
-      source.indexOf("}, [selection, dataVersion, editing])"),
+      source.indexOf("}, [selection, dataVersion, editing, retryNonce])"),
     );
     expect(effect).toContain("setEditing(false)");
     expect(effect).toContain("editingTargetRef.current = null");
     expect(effect).toContain("setPayload(null)");
-    // A silent refresh that succeeds must clear a previous failure; one that
-    // fails must still say so, because a page another actor just deleted cannot
-    // keep rendering as if it were there.
+    // A silent refresh that succeeds must clear a previous failure; a 404 must
+    // still say so, because a page another actor just deleted cannot keep
+    // rendering as if it were there; and a read that could not be REACHED must
+    // do neither — the last-good bytes stay and a transient strip appears over
+    // them (DW-54). Three outcomes, three branches.
     //
     // Scoped to the RESPONSE HANDLER, not to the effect: the reset block above
-    // carries its own `setFailed(false);`, so an effect-wide check is satisfied
-    // by a handler that never clears the flag — and a row that failed once would
+    // carries its own clearing calls, so an effect-wide check is satisfied by a
+    // handler that never clears the flags — and a row that failed once would
     // then keep showing `This file couldn’t be loaded.` over bytes it has since
     // re-read successfully.
     // …and scoped to each BRANCH of that handler, not to the handler as a
-    // whole: one slice containing both calls is satisfied by the two of them
-    // swapped, which renders `This file couldn’t be loaded.` over every page
-    // that read fine and leaves every genuine failure rendering as if the bytes
-    // were still there — the precise pair of states this pins against.
+    // whole: one slice containing every call is satisfied by them swapped,
+    // which renders `This file couldn’t be loaded.` over every page that read
+    // fine and leaves every genuine failure rendering as if the bytes were
+    // still there — the precise pair of states this pins against.
     const handler = source.slice(
       source.indexOf("void fetchPreview("),
       source.indexOf("setLoading(false);", source.indexOf("void fetchPreview(")),
     );
     const okStart = handler.indexOf('if (result.status === "ok") {');
-    const elseStart = handler.indexOf("} else {", okStart);
+    const goneStart = handler.indexOf('} else if (result.status === "gone") {', okStart);
+    const elseStart = handler.indexOf("} else {", goneStart);
     expect(okStart).toBeGreaterThan(-1);
-    expect(elseStart).toBeGreaterThan(okStart);
-    const ok = handler.slice(okStart, elseStart);
-    const failed = handler.slice(elseStart);
+    expect(goneStart).toBeGreaterThan(okStart);
+    expect(elseStart).toBeGreaterThan(goneStart);
+    const ok = handler.slice(okStart, goneStart);
+    const gone = handler.slice(goneStart, elseStart);
+    const unreachable = handler.slice(elseStart);
+    // A landed read clears BOTH failure flags. `setGone(false)` alone would
+    // leave a strip standing over bytes that just arrived successfully.
     expect(ok).toContain("setPayload(result.payload);");
-    expect(ok).toContain("setFailed(false);");
-    expect(ok).not.toContain("setFailed(true);");
-    expect(failed).toContain("setFailed(true);");
-    expect(failed).not.toContain("setFailed(false);");
+    expect(ok).toContain("setGone(false);");
+    expect(ok).toContain("setUnreachable(false);");
+    // …and it is the only branch that may announce, because it is the only one
+    // in which the body actually changed. WHETHER it does is the executed
+    // `previewRefreshAnnouncement`, not a comparison typed here.
+    expect(ok).toContain("previewRefreshAnnouncement({");
+    expect(gone).not.toContain("previewRefreshAnnouncement(");
+    expect(unreachable).not.toContain("previewRefreshAnnouncement(");
+    // A 404 replaces the body and cancels any strip: "showing the last version
+    // that loaded" over `This file couldn’t be loaded.` is a false statement
+    // about what is underneath it.
+    expect(gone).toContain("setGone(true);");
+    expect(gone).toContain("setUnreachable(false);");
+    expect(gone).not.toContain("setGone(false);");
+    // And a blip touches NEITHER the payload nor `gone`. The whole of DW-54 is
+    // that these two lines are absent from this branch: with them, one dropped
+    // packet replaces the page the owner is reading and never heals.
+    expect(unreachable).toContain("setUnreachable(true);");
+    expect(unreachable).not.toContain("setGone(true);");
+    expect(unreachable).not.toContain("setPayload(");
   });
 
   it("nudges the watcher after a save instead of refreshing anything itself", async () => {

@@ -25,7 +25,11 @@ import {
   isTreeTabId,
   knowledgeGroupLabel,
   readableSlugsFromKnowledge,
+  selectionName,
+  selectionRefreshAction,
   shouldDockPreview,
+  type FileNode,
+  type KnowledgeGroup,
   type TreeSelection,
 } from "../workbench-tree";
 import {
@@ -266,6 +270,177 @@ describe("the Preview dock rule", () => {
     expect(isSameSelection(null, page)).toBe(false);
     expect(isSameSelection(page, null)).toBe(false);
     expect(isSameSelection(null, null)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// What a pick is CALLED, and whether it is still real (DW-34, DW-53)
+// ---------------------------------------------------------------------------
+
+const NAMED_KNOWLEDGE: KnowledgeGroup[] = [
+  {
+    id: "note",
+    label: "Note",
+    count: 1,
+    pages: [{ slug: "alpha", title: "Alpha", type: "note" }],
+  },
+];
+
+const NAMED_FILES: FileNode[] = buildFileTree(["wiki/alpha.md", "raw/", "raw/deep/x.md"]);
+
+describe("selectionName", () => {
+  it("calls a page by its title", () => {
+    expect(selectionName({ kind: "page", slug: "alpha" }, NAMED_KNOWLEDGE, NAMED_FILES)).toBe(
+      "Alpha",
+    );
+  });
+
+  it("falls back to the slug for a page the trees no longer carry", () => {
+    // A selection can outlive its page — a refresh that dropped it, or a
+    // reconciliation that has not run yet. The slug is still a true statement
+    // about what the owner picked, and it is what the Preview header shows, so
+    // the spoken sentence and the visible one agree.
+    expect(selectionName({ kind: "page", slug: "ghost" }, NAMED_KNOWLEDGE, NAMED_FILES)).toBe(
+      "ghost",
+    );
+  });
+
+  it("calls a file by its node's name", () => {
+    expect(
+      selectionName({ kind: "file", path: "raw/deep/x.md" }, NAMED_KNOWLEDGE, NAMED_FILES),
+    ).toBe("x.md");
+  });
+
+  it("derives a name for a path the walk does not list", () => {
+    expect(
+      selectionName({ kind: "file", path: "raw/absent/y.md" }, NAMED_KNOWLEDGE, NAMED_FILES),
+    ).toBe("y.md");
+  });
+
+  it("survives a trailing slash, which is the reason this is `||` and not `??`", () => {
+    // `"a/b/".split("/").at(-1)` is the EMPTY STRING, not `undefined`. A nullish
+    // fallback leaves the header blank and the announcement reading `Preview, `
+    // — a control with no accessible content, spoken as nothing.
+    expect(selectionName({ kind: "file", path: "a/b/" }, [], [])).toBe("b");
+    expect(selectionName({ kind: "file", path: "solo.md" }, [], [])).toBe("solo.md");
+    // Nothing left after filtering: the whole path is the last honest answer.
+    expect(selectionName({ kind: "file", path: "/" }, [], [])).toBe("/");
+  });
+});
+
+describe("selectionRefreshAction", () => {
+  const present: TreeSelection = { kind: "page", slug: "alpha" };
+  const gone: TreeSelection = { kind: "page", slug: "ghost" };
+  const goneFile: TreeSelection = { kind: "file", path: "wiki/left.md" };
+  const base = {
+    knowledge: NAMED_KNOWLEDGE,
+    files: NAMED_FILES,
+    docked: true,
+    knowledgeUnavailable: false,
+    filesUnavailable: false,
+    filesTruncated: false,
+    layoutMoved: false,
+  };
+
+  it("keeps a pick that is still in a tree, and one that never existed", () => {
+    expect(selectionRefreshAction({ ...base, selection: null })).toBe("keep");
+    expect(selectionRefreshAction({ ...base, selection: present })).toBe("keep");
+    expect(
+      selectionRefreshAction({ ...base, selection: { kind: "file", path: "wiki/alpha.md" } }),
+    ).toBe("keep");
+  });
+
+  it("reports the row a refreshed tree no longer contains", () => {
+    expect(selectionRefreshAction({ ...base, selection: gone })).toBe("report");
+    expect(selectionRefreshAction({ ...base, selection: goneFile })).toBe("report");
+  });
+
+  it("clears WITHOUT a sentence when no column is on screen", () => {
+    // Settings takes the left column, so the shell holds a live pick with
+    // `previewOpen === false` for as long as it is open. Announcing
+    // `Preview closed — that item was removed.` there reports the
+    // disappearance of a panel the owner cannot see — but the stale pick still
+    // must not survive, or closing Settings would dock a column onto a row that
+    // is gone.
+    expect(selectionRefreshAction({ ...base, selection: gone, docked: false })).toBe("clear");
+    // …and `docked` decides ONLY the sentence, never whether the pick is real.
+    expect(selectionRefreshAction({ ...base, selection: present, docked: false })).toBe("keep");
+  });
+
+  it("treats a directory as lost, because it was never a row", () => {
+    // The file tree renders directories as disclosures, never as selectable
+    // buttons — the same rule `selectionExists` already applies to a restore.
+    expect(
+      selectionRefreshAction({ ...base, selection: { kind: "file", path: "raw" } }),
+    ).toBe("report");
+  });
+
+  it("matches the unavailable flag to the selection's own kind", () => {
+    // A failed index read hands the KNOWLEDGE tree down empty; reading that as
+    // "every page was deleted" would close the Preview after one bad minute on
+    // the server.
+    expect(
+      selectionRefreshAction({
+        ...base,
+        selection: gone,
+        knowledge: [],
+        knowledgeUnavailable: true,
+      }),
+    ).toBe("keep");
+    // …but a failed FILE walk says nothing whatsoever about whether a page
+    // exists. Suppressing both would leave a genuinely deleted page docked for
+    // as long as an unrelated read stayed broken.
+    expect(
+      selectionRefreshAction({ ...base, selection: gone, files: [], filesUnavailable: true }),
+    ).toBe("report");
+    // And the mirror image, so neither half is a coincidence.
+    expect(
+      selectionRefreshAction({
+        ...base,
+        selection: goneFile,
+        files: [],
+        filesUnavailable: true,
+      }),
+    ).toBe("keep");
+    expect(
+      selectionRefreshAction({
+        ...base,
+        selection: goneFile,
+        knowledge: [],
+        knowledgeUnavailable: true,
+      }),
+    ).toBe("report");
+  });
+
+  it("refuses to call a truncated walk a deletion", () => {
+    // The walk listed real files and then stopped at WORKBENCH_FILE_LIMIT, so
+    // the selected file may simply be one it never reached. "Absent from this
+    // list" is not evidence of removal.
+    expect(
+      selectionRefreshAction({ ...base, selection: goneFile, filesTruncated: true }),
+    ).toBe("keep");
+    // The cap is the FILE walk's alone — the page index is not bounded by it,
+    // so a page selection is still reconciled while it is set.
+    expect(
+      selectionRefreshAction({ ...base, selection: gone, filesTruncated: true }),
+    ).toBe("report");
+  });
+
+  it("stands down when the layout moved in the same commit", () => {
+    // A Wiki, mode or tab change and a server re-render can land together, and
+    // the shell's reset effect owns the clear in that case. Clearing again with
+    // a sentence about removal would report something that did not happen —
+    // the owner switched tabs, nobody deleted anything.
+    expect(selectionRefreshAction({ ...base, selection: gone, layoutMoved: true })).toBe(
+      "keep",
+    );
+    // The guard is a refusal to ACT, not a claim the row is fine: the next
+    // refresh at a settled layout still answers truthfully. (The shell keeps
+    // that true by recording the signature on every layout change, so a later
+    // tree-only refresh is never mistaken for the switch that preceded it.)
+    expect(selectionRefreshAction({ ...base, selection: gone, layoutMoved: false })).toBe(
+      "report",
+    );
   });
 });
 

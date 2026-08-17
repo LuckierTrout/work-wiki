@@ -149,9 +149,20 @@ function current(): string | null {
  * reads the Settings status whenever Settings is open — silently measuring a
  * different region in exactly the cases (a traversal with Settings open) where
  * this helper is load-bearing.
+ *
+ * Two mechanisms, two different regions:
+ *
+ * - the CHILD combinator excludes `PreviewColumn`'s own polite `.wb-sr-only`
+ *   (DW-50), which is a GRANDchild — inside the `<aside>` — and sits earlier in
+ *   DOM order, so a class-only query would read it in every test that docks a
+ *   Preview;
+ * - `[length - 1]` covers the remaining case, a second announcer added as a
+ *   direct child of the shell. The shell's is the final one, and taking the
+ *   last match keeps this reading it rather than whatever is inserted above.
  */
 function announced(): string {
-  return document.querySelector('.wb-sr-only[aria-live="polite"]')?.textContent ?? "";
+  const regions = document.querySelectorAll('.wb-shell > .wb-sr-only[aria-live="polite"]');
+  return regions[regions.length - 1]?.textContent ?? "";
 }
 
 /** How long to wait for a traversal jsdom may never perform. */

@@ -304,7 +304,8 @@ location: src/components/workbench/Workbench.tsx, src/app/globals.css
 source_spec: `spec-1-4-knowledge-tree-and-file-tree.md`
 severity: low
 reason: Story 1.3 gave the shell a polite live region, but only `selectMode` writes to it — selecting a tree row adds a whole fourth column with no announcement and no focus move, and re-selecting the same row removes it just as quietly. At `max-width: 899px` the shell is one column and the Preview stacks as the last row, so on a phone tapping a tree row appears to do nothing until the owner scrolls. Neither behaviour is wrong against this story's acceptance criteria, which ask only that selection dock the column, and both are cheap to get wrong in isolation: what to announce depends on what the column will say, which is Story 1.5's, and where a docked column goes at narrow widths is the layout question Story 1.6 owns. Deciding either here would pre-empt a story that has the context.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-workbench-preview-announcements
 decision: 2026-08-16 Author and wire — Add dock/undock announcement sentences to the epic's Copy table, write them to the existing polite live region from the selection setters, and scroll the docked column into view at narrow widths.
 
 ### DW-35: Follow-up review still recommended for 1-4-knowledge-tree-and-file-tree after the damping cap was spent
@@ -442,7 +443,8 @@ location: src/components/workbench/PreviewColumn.tsx (the fetch effect's respons
 source_spec: `spec-1-7-dataversion-workbench-refresh.md`
 severity: low
 reason: Before this story the body changed only when the owner picked a row, which is their own action. A bump from another actor now replaces it underneath them, and `PreviewColumn` has no live region. The epic's accessibility floor already says mode changes announce the surface name, so the same argument applies here — but any announcement is a new authored sentence, and the epic's Copy table is the only place a Workbench sentence may be born. That makes it a copy decision rather than a wiring fix, and it belongs with whichever story next opens that table for the Preview column.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-workbench-preview-announcements
 decision: 2026-08-16 Author and wire — Add a 'Preview updated'-style sentence to the epic's Copy table and announce it from the fetch effect's response handler when a silent same-row refresh replaces rendered content.
 
 ### DW-51: `PUT /api/wiki/[slug]` carries no `If-Match` precondition, so the Preview editor silently clobbers a write another actor made while it was open.
@@ -468,7 +470,8 @@ location: src/components/workbench/Workbench.tsx (the selection reset effect), s
 source_spec: `spec-1-7-dataversion-workbench-refresh.md`
 severity: low
 reason: Before this story the trees only changed under a `WikiSwitcher` refresh, which also changes `currentWikiId` and so re-runs the selection reset at `Workbench.tsx:194-203`; `restorableSelection` / `selectionExists` are reached only from the `[]` mount effect (`:173`). A watcher-driven refresh changes neither, so the selection outlives the row: the Preview stays docked showing `PREVIEW_FAILED_COPY` (truthful) while no tree row carries `aria-current` — the state Story 1.6's `selectionExists` docblock names as "a shell that looks broken rather than one that forgot". Reconciling a live selection against a refreshed tree is a design decision (does the shell silently undock, fall back to the sibling row, or say something?) and the last of those needs a sentence from the epic's Copy table, so it belongs with whichever story next opens it.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-workbench-preview-announcements
 decision: 2026-08-17 Undock and announce — Reconcile a live selection against a refreshed tree: when the selected row is gone, undock the Preview and announce a new Copy-table sentence through the shell's existing polite live region, so the change is neither silent nor mistaken for a broken column. Thread the reconciliation without growing the reset effect's pinned deps.
 decision: 2026-08-16 Undock and announce — Reconcile a live selection against a refreshed tree: when the selected row is gone, undock the Preview and announce a new Copy-table sentence through the shell's existing polite live region, so the change is neither silent nor mistaken for a broken column. Thread the reconciliation without growing the reset effect's pinned deps.
 
@@ -478,7 +481,8 @@ location: src/lib/workbench-preview.ts (fetchPreview, previewBodyState), src/com
 source_spec: `spec-1-7-dataversion-workbench-refresh.md`
 severity: medium
 reason: `fetchPreview` (`workbench-preview.ts:344-364`) collapses 404, 500, a malformed body, the `REQUEST_TIMEOUT_MS` deadline and a bare transport failure into one `{ status: "failed" }`, and `previewBodyState` (`workbench-preview.ts:152-155`) puts `failed` AHEAD of a payload that is still held. Before this story the flag could only be set right after an explicit pick, behind a `Loading…` the owner had just caused. A silent same-row refresh sets it with `plan.reset === false`, so a page jumps straight from rendered bytes to `PREVIEW_FAILED_COPY` for a reason the owner did not initiate — and because the effect re-runs only on `[selection, dataVersion, editing]`, it stays that way until the next bump or until they click elsewhere and back. The spec's rule ("a failed silent refresh still tells the truth, because a page another actor just deleted must not keep rendering as if it were there") is right about deletion and is what makes the conflation visible; separating "gone" from "could not reach
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-workbench-preview-announcements
 decision: 2026-08-17 Separate gone from unreachable — Have fetchPreview report 404 separately from transport and timeout failures. On a silent same-row refresh, a 404 replaces the body with the existing gone copy, while an unreachable answer keeps the last-good bytes and shows a transient, self-healing indicator with a retry. Author the one new sentence this needs in the epic's Copy table.
 decision: 2026-08-16 Separate gone from unreachable — Have fetchPreview report 404 separately from transport and timeout failures. On a silent same-row refresh, a 404 replaces the body with the existing gone copy, while an unreachable answer keeps the last-good bytes and shows a transient, self-healing indicator with a retry. Author the one new sentence this needs in the epic's Copy table.
 
@@ -1508,4 +1512,52 @@ source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
 location: src/components/WikiWorkbench.tsx:172 with src/app/globals.css:2696
 severity: low
 reason: The card's wrapper is `grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]` (`WikiWorkbench.tsx:172`). `display: none` removes the second child from layout but not the track it sat in, so at the `lg:` breakpoint with `data-preview="true"` the receipt card stays pinned at 320px and the `1fr` column renders empty — space the sentence used to fill. The intent authorized a visibility change only ("Only its visibility while a Preview is docked changes"), so the diff is spec-compliant; whether the card should reflow to the full canvas width when the Preview docks is a UX call, not a mechanical fix. Adding a `grid-template-columns` override to the DW-39 rule would be cascade-safe (`workbench-split.test.ts:1247` keys on `lastIndexOf`, and this rule sits far ahead of the docked grid variants), so the blocker is the design decision, not the mechanism.
+status: open
+
+### DW-181: The `Edit` control stays live over a body a 404 has replaced, so the confirm dialog and then a `PUT` can be reached for a page the route says is not there.
+origin: spec-deferred 42b15c1d03b0
+source_spec: `spec-dw-34-workbench-preview-announcements.md`
+location: src/components/workbench/PreviewColumn.tsx (the fetch handler's `gone` branch, and `canEdit`)
+severity: medium
+reason: The `gone` branch deliberately keeps the last payload, so `canEditPreview(payload)` is still true and the header goes on rendering `Edit` while the body shows `This file couldn't be loaded.`. `save()`'s guard compares `previewWriteTarget(payloadRef.current)?.key` against that same stale payload, so it passes and posts. Pre-existing — the old `failed` branch kept the payload the same way — but DW-54 narrowing `gone` to mean exactly "the row is not there" is what makes it legible as a defect rather than as one undifferentiated failure.
+status: open
+
+### DW-182: A live region rewritten with the identical string is not re-announced, so two consecutive silent refreshes that both change the body report as one.
+origin: spec-deferred df75dfff157b
+source_spec: `spec-dw-34-workbench-preview-announcements.md`
+location: src/components/workbench/PreviewColumn.tsx and src/components/workbench/Workbench.tsx (both polite regions)
+severity: medium
+reason: `refreshAnnouncement` is set to the same `PREVIEW_UPDATED_COPY` literal each time, leaving the text node unchanged, and most assistive tech announces only on change. The shell's own region has had this shape since Story 1.3 (`setAnnouncement(workbenchMode(next).label)` re-announces nothing when the mode already showing is re-picked), so this is a house-wide property of both announcers rather than something this change introduced — but repeated same-page rewrites are the common case for DW-50 specifically. Fixing it needs a decision about the mechanism (a keyed node, an alternating suffix) that no test in a node or jsdom project can verify.
+status: open
+
+### DW-183: An unreachable refresh is the one refresh outcome that is never announced — the stale strip is a purely visual affordance.
+origin: spec-deferred 0fba34343eca
+source_spec: `spec-dw-34-workbench-preview-announcements.md`
+location: src/components/workbench/PreviewColumn.tsx (the stale strip)
+severity: low
+reason: A successful silent swap says `Preview updated` and a 404 mounts a `role="alert"` body sentence, but an unreachable read only renders `.wb-preview-stale`, which carries no live region. A screen-reader user goes on reading bytes with no way to learn the column stopped being able to refresh them. Not required by DW-54's recorded decision (which asks for an indicator with a retry, not a sentence), and announcing every blip politely would chatter — so the wording and the threshold are a copy decision rather than a wiring fix.
+status: open
+
+### DW-184: Pressing `Retry` produces no in-flight feedback, so a slow retry is indistinguishable from a broken button.
+origin: spec-deferred 8a133c7a6465
+source_spec: `spec-dw-34-workbench-preview-announcements.md`
+location: src/components/workbench/PreviewColumn.tsx (the `Retry` control)
+severity: low
+reason: A retry takes the silent-refresh path, so `loading` stays false by design (the point is not to flash `Loading…` at a reader), the strip renders unchanged, and a second failure is a no-op re-render. Adding an `aria-busy`/disabled pending state means a fifth flag in the column and a decision about whether the strip's label should change while a read is in flight.
+status: open
+
+### DW-185: No CSS layout rule in this repo is verified by anything that lays out a page — every breakpoint claim is a text scan of `globals.css`.
+origin: spec-deferred 8bd6d98814e7
+source_spec: `spec-dw-34-workbench-preview-announcements.md`
+location: vitest.config.ts (no browser project); src/lib/__tests__/workbench-left-column.test.ts (the CSS scans)
+severity: low
+reason: `vitest.config.ts` has exactly two projects, `node` and `dom` (jsdom), and jsdom has no layout engine; there is no Playwright config, no `e2e/` directory and no browser project anywhere. So DW-34's user-visible payoff — "a docked column below 900px is reachable" — is pinned by `workbench-left-column.test.ts` asserting that declaration strings appear inside a slice of the stylesheet. That scan cannot show the new rule wins the cascade, that the released clamp actually makes the row reachable, or that the `[data-sheet-open]` counter-rule outranks the docked selectors. The mounted suite observes only that the shell ASKS the platform to scroll. Pre-existing and repo-wide: every earlier Workbench story verified its stylesheet half the same way. Closing it means adding a browser test project, which is a project-level decision rather than a fix to this change.
+status: open
+
+### DW-186: Follow-up review still recommended for dw-workbench-preview-announcements after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-dw-34-workbench-preview-announcements.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
