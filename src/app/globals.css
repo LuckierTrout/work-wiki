@@ -2685,6 +2685,17 @@ body:has(.wb-shell) {
 .wb-empty--narrow {
   display: none;
 }
+/* Exactly one preview surface at a time (DW-39): the docked column and this
+   sentence describe the same slot, and the canvas is `children` of the shell,
+   so the state's owner decides it here rather than through a prop it cannot
+   see. Same shape as `.wb-title-fallback` above — a shell data attribute
+   withdrawing a canvas element — NOT the Graph pair, which swaps on width.
+   Deliberately outside every media query: `data-preview="true"` means a
+   `PreviewColumn` is mounted at all three widths, so a wrapper here would put
+   both surfaces back on screen wherever it did not apply. */
+.wb-shell[data-preview="true"] .wb-canvas-preview-note {
+  display: none;
+}
 
 .wb-sr-only {
   position: absolute;

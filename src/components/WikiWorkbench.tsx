@@ -13,13 +13,21 @@ import {
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
- * The Wiki surface on the owner's landing page.
+ * The Wiki surface on the owner's landing page — the Wiki-mode canvas.
  *
- * Story 1.2's minimal honest stand-in, now mounted as Story 1.3's Wiki-mode
- * canvas: it lands the owner somewhere real after Create Wiki without building
- * Story 1.4's trees. The seeded file names are inert text on purpose — opening
- * one into a rendered Preview is Story 1.5, so the preview region always reads
- * its empty sentence here.
+ * It owns the artifact receipt (`purpose.md`, `schema.md`), the wiki's name and
+ * scenario heading, `Change template`, and the `No wiki yet.` empty state whose
+ * `Create Wiki` action lands the owner somewhere real. It does NOT own
+ * switching: the left column header's `WikiSwitcher` is the single owner of the
+ * active-wiki `<select>` and of the persistent `New Wiki` control (DW-33), so
+ * one viewport never offers two of either.
+ *
+ * The seeded file names are inert text here — opening one into a rendered
+ * Preview is the shell's docked `PreviewColumn`. `Select a file to preview.` is
+ * this card's undocked stand-in for that column and is mutually exclusive with
+ * it: `wb-canvas-preview-note` is hidden by CSS while `.wb-shell` carries
+ * `data-preview="true"` (DW-39), because the canvas reaches the shell as
+ * `children` and cannot read that state as a prop.
  */
 
 export interface WikiWorkbenchProps {
@@ -59,13 +67,9 @@ export function WikiWorkbench({
   const [busy, setBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [templateError, setTemplateError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   // Confirming Create Wiki unmounts the empty state that holds the opening
   // button, so the dialogs need somewhere else to put focus on close.
   const headingRef = useRef<HTMLHeadingElement>(null);
-  // Guards the active-wiki <select> against overlapping PUTs, whose responses
-  // can settle out of order and roll the selection back to a stale id.
-  const [switching, setSwitching] = useState(false);
 
   const current = wikis.find((wiki) => wiki.id === currentId) ?? null;
 
@@ -94,7 +98,6 @@ export function WikiWorkbench({
       setWikis((existing) => [...existing, wiki]);
       setCurrentId(wiki.id);
       setCreateOpen(false);
-      setError(null);
       // The page is force-dynamic and this seeded a new wiki — its own
       // purpose.md, Schema and Workspace Purpose — and made it active, so the
       // wiki-derived server output is stale until the tree is refetched.
@@ -103,26 +106,6 @@ export function WikiWorkbench({
       setCreateError(cause instanceof Error ? cause.message : "Couldn’t create the wiki.");
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function switchWiki(id: string) {
-    if (switching) return;
-    const previous = currentId;
-    setSwitching(true);
-    setCurrentId(id);
-    setError(null);
-    try {
-      await send("/api/wikis/current", { method: "PUT", body: JSON.stringify({ id }) });
-      // Switching writes wikis.json and nothing else — it overwrites no
-      // artifact and no Workspace Purpose. It does change WHICH wiki's Schema
-      // and profile are live, so the server tree still has to be refetched.
-      router.refresh();
-    } catch (cause) {
-      setCurrentId(previous);
-      setError(cause instanceof Error ? cause.message : "Couldn’t switch wiki.");
-    } finally {
-      setSwitching(false);
     }
   }
 
@@ -189,48 +172,15 @@ export function WikiWorkbench({
       ) : (
         <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
           <div className="rounded-xl border border-foreground/15 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-foreground">{current.name}</p>
-                <p className="mt-0.5 text-xs text-foreground/50">
-                  {SCENARIO_LABELS[current.scenario]}
-                </p>
-              </div>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  setCreateError(null);
-                  setCreateOpen(true);
-                }}
-              >
-                New wiki
-              </button>
+            {/* Which Wiki this card describes, and nothing to change it with:
+                the switcher and New Wiki live in the left column header, which
+                is the single owner of both (DW-33). */}
+            <div>
+              <p className="text-sm font-semibold text-foreground">{current.name}</p>
+              <p className="mt-0.5 text-xs text-foreground/50">
+                {SCENARIO_LABELS[current.scenario]}
+              </p>
             </div>
-
-            {wikis.length > 1 && (
-              <div className="mt-4">
-                <label
-                  htmlFor="wiki-workbench-switcher"
-                  className="text-xs font-medium text-foreground/60"
-                >
-                  Active wiki
-                </label>
-                <select
-                  id="wiki-workbench-switcher"
-                  value={current.id}
-                  disabled={switching}
-                  onChange={(event) => void switchWiki(event.target.value)}
-                  className="mt-1 block w-full rounded-lg border border-foreground/15 bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-foreground/35"
-                >
-                  {wikis.map((wiki) => (
-                    <option key={wiki.id} value={wiki.id}>
-                      {wiki.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
 
             <ul className="mt-4 space-y-1 text-sm text-foreground/70">
               {WIKI_ARTIFACT_FILES.map((file) => (
@@ -253,16 +203,13 @@ export function WikiWorkbench({
             </button>
           </div>
 
-          <div className="rounded-xl border border-foreground/15 p-6">
+          {/* The undocked stand-in for the Preview column. `display: none` while
+              the real column is docked, decided in CSS off the shell's
+              `data-preview` (DW-39) — this card cannot see that state. */}
+          <div className="wb-canvas-preview-note rounded-xl border border-foreground/15 p-6">
             <p className="text-sm text-foreground/50">Select a file to preview.</p>
           </div>
         </div>
-      )}
-
-      {error && (
-        <p role="alert" className="mt-3 text-sm text-red-700">
-          {error}
-        </p>
       )}
 
       <CreateWikiDialog

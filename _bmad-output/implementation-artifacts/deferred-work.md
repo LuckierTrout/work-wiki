@@ -295,7 +295,8 @@ location: src/components/WikiWorkbench.tsx
 source_spec: `spec-1-4-knowledge-tree-and-file-tree.md`
 severity: low
 reason: `create-wiki-ui.test.ts:118-209` counts `btn primary`, `fallbackFocusRef={headingRef}` and `router.refresh()` occurrences inside `src/components/WikiWorkbench.tsx`, so this story was forbidden to edit that file at all — its `Active wiki` <select>, its `New wiki` button and its `Change template` control all stay. The result is a duplicated affordance in one viewport: the header switcher and the card switcher drive the same `PUT /api/wikis/current`, and `page.tsx` keys the card on `currentId` so they cannot disagree, but the owner is offered the same choice twice. Retiring the card's switcher means retargeting those frozen counts, which belongs with whatever story rebuilds the Wiki canvas (Story 1.5 onwards) rather than with the column that now duplicates it.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-retire-duplicate-wiki-canvas-controls
 
 ### DW-34: Docking and undocking the Preview is a silent layout change, and below 900px the column arrives off screen below the canvas.
 origin: spec-deferred 884c300a0a3f
@@ -344,7 +345,8 @@ location: src/components/WikiWorkbench.tsx:254
 source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
 severity: low
 reason: The sentence is an unconditional element of `WikiWorkbench.tsx:254`, rendered on the Wiki canvas at every moment, and this story's first acceptance criterion is satisfied by not disturbing it. Once the fourth column docks, one viewport carries a rendered page and a sentence saying nothing is selected. Retiring or conditioning that sentence means editing a file whose in-file occurrence counts `create-wiki-ui.test.ts:118-209` asserts — the same freeze that produced `spec-1-4` deferred entry 4, and the same owner: whichever story rebuilds the Wiki canvas.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-retire-duplicate-wiki-canvas-controls
 
 ### DW-40: A read under `raw/` inherits `resolveRoot`'s fallback to the SHARED flat root, so an owner whose raw silo is empty reads the legacy tree's bytes.
 origin: spec-deferred 8926f334b742
@@ -1450,4 +1452,60 @@ source_spec: `spec-dw-30-wiki-lens-copy-and-invariant.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-174: A header Rename leaves the Wiki canvas card naming the old wiki until a reload.
+origin: spec-deferred 3de0090154c7
+source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
+location: src/components/WikiWorkbench.tsx:62-63 with src/app/page.tsx:135
+severity: medium
+reason: `WikiWorkbench` seeds `useState(initialWikis)`/`useState(initialCurrentId)` from props, and `page.tsx:135` keys it on the wiki ID — which a rename does not change. So `router.refresh()` delivers the new name, the key stays the same, the card does not remount, and `current.name` keeps the pre-rename string while the header switcher shows the new one. Pre-existing (it shipped with rename), and the root fix is the one `spec-1-4` recorded as blocked by the now-lifted freeze: have the card read `wikis`/`currentWikiId` from `WorkbenchDataProvider`, which already carries both, instead of seeding local state and keying the remount.
+status: open
+
+### DW-175: `WikiWorkbench.send()` has no request deadline, so a hung create or re-template leaves the dialog spinning for the session.
+origin: spec-deferred f456e0d80acd
+source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
+location: src/components/WikiWorkbench.tsx:38-46
+severity: medium
+reason: `WikiSwitcher.tsx:42-47` documents exactly this failure and guards it with `AbortSignal.timeout(REQUEST_TIMEOUT_MS)`; the near-identical helper at `WikiWorkbench.tsx:46-54` has neither that nor `failureMessage`, and `finally` cannot rescue a promise that never settles — `busy` stays true. It also spreads `...init` AFTER `headers`, the ordering `WikiSwitcher.tsx:50-52` warns against. With switching gone the two helpers differ only in hardening, so they should be one shared module.
+status: open
+
+### DW-176: The zero-wiki viewport shows two byte-identical `No wiki yet.` sentences.
+origin: spec-deferred 5b12d4aa3439
+source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
+location: src/components/WikiWorkbench.tsx:160 with src/lib/workbench-tree.ts:71
+severity: low
+reason: The canvas empty state inlines the literal while the left column's tree renders `TREE_NO_WIKI_COPY` (`src/lib/workbench-tree.ts:71`) — the same string, on two surfaces, at the same moment. Same class of defect as DW-33, and the new mounted suite scopes its assertion to `.wb-canvas` to work around it. Deciding which surface owns the sentence is a UX call, not a mechanical de-duplication.
+status: open
+
+### DW-177: `Select a file to preview.` is still an inline literal restated in three files while every sibling sentence is an exported constant.
+origin: spec-deferred 1099d47dbb87
+source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
+location: src/components/WikiWorkbench.tsx:210
+severity: low
+reason: `TREE_NO_WIKI_COPY`, `TREE_UNAVAILABLE_COPY`, `WIKI_SCOPE_COPY` and `PREVIEW_EMPTY_COPY` all live in `src/lib/`, so a copy change is one edit and the node suite can execute it. This AC-quoted sentence is inline in the component and restated in `create-wiki-ui.test.ts` and `wiki-canvas-duplication.test.tsx`. Extracting it changes what `create-wiki-ui.test.ts:128` freezes, so it belongs with a deliberate copy-consolidation pass.
+status: open
+
+### DW-178: Collapsing the left column now leaves no Wiki switch, create, rename or delete control reachable.
+origin: spec-deferred e9c63e7fce1e
+source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
+location: src/app/globals.css:2645 with src/components/workbench/WikiSwitcher.tsx
+severity: low
+reason: `globals.css:2645-2647` sets `.wb-shell[data-collapsed="true"] .wb-left { display: none }`, and `collapsed` is durable. Before DW-33 the canvas card's own switcher and `New wiki` survived the collapse; now every Wiki control lives in the hidden column. The rail's collapse chevron is always visible, so nothing is a dead end and this is arguably just what "collapse" means — but it is a reachability change the retirement caused, and whether the rail should carry a Wiki affordance in that state is a UX decision.
+status: open
+
+### DW-179: The only Wiki switcher's label is `wb-sr-only`, so a sighted user now meets a bare combobox.
+origin: spec-deferred 7677137abba0
+source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
+location: src/components/workbench/WikiSwitcher.tsx:262-264
+severity: low
+reason: The retired card control carried a VISIBLE `Active wiki` label; the survivor's is clipped (`WikiSwitcher.tsx:262-264`), justified on the 280px column width. The accessibility floor is still met — the input is labelled beyond a placeholder — but that tradeoff was made while a visible label existed elsewhere on the same viewport, and it has not been re-examined now that it does not.
+status: open
+
+### DW-180: Hiding the preview note leaves the canvas grid's second track empty, so a docked Preview strands the card at 320px beside blank space.
+origin: spec-deferred 08dd131042c7
+source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
+location: src/components/WikiWorkbench.tsx:172 with src/app/globals.css:2696
+severity: low
+reason: The card's wrapper is `grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]` (`WikiWorkbench.tsx:172`). `display: none` removes the second child from layout but not the track it sat in, so at the `lg:` breakpoint with `data-preview="true"` the receipt card stays pinned at 320px and the `1fr` column renders empty — space the sentence used to fill. The intent authorized a visibility change only ("Only its visibility while a Preview is docked changes"), so the diff is spec-compliant; whether the card should reflow to the full canvas width when the Preview docks is a UX call, not a mechanical fix. Adding a `grid-template-columns` override to the DW-39 rule would be cascade-safe (`workbench-split.test.ts:1247` keys on `lastIndexOf`, and this rule sits far ahead of the docked grid variants), so the blocker is the design decision, not the mechanism.
 status: open

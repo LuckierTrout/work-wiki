@@ -12,13 +12,13 @@ import type { WikiRecord } from "@/lib/wikis";
  * The left column header's Wiki controls (UX-DR5): the switcher and New Wiki,
  * sitting under the product title.
  *
- * This is a SECOND switcher, not a moved one. `WikiWorkbench.tsx` keeps the
- * canvas card it has shipped since Story 1.2, because
- * `create-wiki-ui.test.ts:118-209` counts literals inside that file — moving
- * its switcher or its create path would break a frozen assertion. The two stay
- * consistent because both refresh the server tree after a write and
- * `page.tsx` keys `WikiWorkbench` on the current Wiki id, so the card remounts
- * with fresh props when this header switches.
+ * This is the ONLY switcher, and the only persistent New Wiki. It began as a
+ * second copy beside Story 1.2's canvas card, which survived only because
+ * `create-wiki-ui.test.ts` froze literal counts inside `WikiWorkbench.tsx`;
+ * DW-33 retired that copy, so one viewport no longer offers two switchers and
+ * two create controls. The canvas card keeps `Change template`, its artifact
+ * receipt and the wiki heading — and it remounts with fresh props when this
+ * header switches, because `page.tsx` keys it on the current Wiki id.
  *
  * A native `<select>`, not a popover. A hand-rolled listbox owns its own
  * roving focus, typeahead, Esc and outside-click dismissal, and — the part no
@@ -122,10 +122,13 @@ export function WikiSwitcher({
   const refocusNewRef = useRef(false);
 
   // The optimism ends the moment the server's answer arrives. Without this the
-  // stale `pendingId` outranks `currentWikiId` forever, so a later switch made
-  // from Story 1.2's canvas card would leave this <select> naming the previous
-  // Wiki — and re-picking the option it is already showing fires no change
-  // event, so the owner could not correct it from here.
+  // stale `pendingId` outranks `currentWikiId` forever, so any later change to
+  // the live Wiki — a `create` here, a delete, or a refetch the shell's
+  // `DataVersionWatcher` triggers — would leave this <select> naming the
+  // previous Wiki. And re-picking the option it is already showing fires no
+  // change event, so the owner could not correct it from here. (Before DW-33
+  // the canvas card's own switcher was one more way in; retiring it removed a
+  // route to this state, not the state itself.)
   useEffect(() => {
     setPendingId(null);
   }, [currentWikiId]);

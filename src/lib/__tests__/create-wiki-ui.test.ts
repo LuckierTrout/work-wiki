@@ -1,12 +1,17 @@
 /**
  * Story 1.2 — the UI invariants the AC states, pinned by source scan.
  *
- * Vitest runs `environment: "node"` and only `src/**\/__tests__/**\/*.test.ts`:
- * there is no jsdom and no testing-library, and adding them is out of scope for
- * this story. So this follows the `single-ia.test.ts` convention and reads the
- * components as text. What it really pins is that nobody reintroduces a blank
- * Wiki option, drops `aria-modal` from the one confirm overlay, or edits the
- * empty-state copy the AC quotes verbatim.
+ * This is the `node` project, so it reads the components as text following the
+ * `single-ia.test.ts` convention. What it pins is what a scan is genuinely good
+ * at: that nobody reintroduces a blank Wiki option, drops `aria-modal` from the
+ * one confirm overlay, edits the empty-state copy the AC quotes verbatim, or
+ * puts a second Wiki switcher back on the canvas.
+ *
+ * `vitest.config.ts` now ships a second `dom` project, so the behaviour a scan
+ * cannot see is asserted on rendered DOM instead — `create-wiki-flow.test.tsx`
+ * for this card's dialogs, and `workbench/__tests__/wiki-canvas-duplication.test.tsx`
+ * for the one-of-each counts in the assembled shell. Prefer those for anything
+ * observable; keep the scans here for source-shape invariants only.
  */
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
@@ -21,6 +26,17 @@ const COMPONENTS = path.resolve(__dirname, "../../components");
 
 function read(component: string): Promise<string> {
   return readFile(path.join(COMPONENTS, component), "utf8");
+}
+
+/**
+ * Source with its comments removed, matching `workbench-split.test.ts`: a ban on
+ * a label or a symbol is about what the component DOES, and the file's own prose
+ * explaining where that control moved to must not read as a violation.
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
 describe("CreateWikiDialog offers exactly the five Scenario Templates", () => {
@@ -173,8 +189,58 @@ describe("WikiWorkbench empty state and preview copy", () => {
     // mid-request would display a template that was not the one applied.
     expect(workbench).toContain("disabled={busy}");
     // Overlapping switches settle out of order and roll back to a stale id.
-    expect(workbench).toContain("disabled={switching}");
-    expect(workbench).toContain("if (switching) return;");
+    // The guard follows the switcher: DW-33 retired this card's copy, so the
+    // left column header is where the invariant now lives — retargeted, not
+    // dropped.
+    const switcher = await read("workbench/WikiSwitcher.tsx");
+    expect(switcher).toContain("disabled={switching}");
+    expect(switcher).toContain("if (switching) return;");
+  });
+
+  it("leaves switching and the persistent create control to the header (DW-33)", async () => {
+    // The canvas card and the left column header both shipped a switcher and a
+    // create button, so Wiki mode put two of each in one viewport. The header
+    // is the single owner; these negatives are what stops the card's copies
+    // coming back.
+    // The MECHANICS, not one label spelling: a returning duplicate need not
+    // reuse the old copy. So the bans are on the machinery a wiki switcher
+    // cannot do without — enumerating `wikis` as options, the write route, the
+    // handler and its in-flight flag — plus the labels, matched
+    // case-insensitively over comment-stripped source so the file's own prose
+    // about the header is not a finding. The rendered COUNT is asserted in
+    // `workbench/__tests__/wiki-canvas-duplication.test.tsx`, which is where a
+    // relabelled control is caught.
+    const workbench = stripComments(await read("WikiWorkbench.tsx"));
+    expect(workbench).not.toContain("wikis.map");
+    expect(workbench).not.toContain("switchWiki");
+    expect(workbench).not.toContain("setSwitching");
+    expect(workbench).not.toContain("wiki-workbench-switcher");
+    expect(workbench).not.toContain("/api/wikis/current");
+    expect(workbench).not.toMatch(/new wiki/i);
+    expect(workbench).not.toMatch(/active wiki/i);
+
+    const switcher = await read("workbench/WikiSwitcher.tsx");
+    expect(switcher).toContain("Active wiki");
+    expect(switcher).toContain("/api/wikis/current");
+    expect(switcher).toContain("New Wiki");
+  });
+
+  it("hands the preview sentence's visibility to the shell's own state (DW-39)", async () => {
+    // A docked Preview column and "Select a file to preview." describe the same
+    // slot, so both on screen at once is a contradiction. The canvas reaches the
+    // shell as `children` and cannot read `previewOpen`, so the class is the
+    // seam and the stylesheet decides. (The rule is EXERCISED — not just
+    // spelled — in `workbench/__tests__/wiki-canvas-duplication.test.tsx`.)
+    const workbench = await read("WikiWorkbench.tsx");
+    expect(workbench).toContain("wb-canvas-preview-note");
+
+    const css = await readFile(
+      path.resolve(__dirname, "../../app/globals.css"),
+      "utf8",
+    );
+    expect(css).toContain(
+      '.wb-shell[data-preview="true"] .wb-canvas-preview-note {',
+    );
   });
 
   it("does not offer Create Wiki when the registry could not be read", async () => {
@@ -209,9 +275,15 @@ describe("WikiWorkbench empty state and preview copy", () => {
     expect(shell).toMatch(/<h1 className="wb-title">/);
   });
 
-  it("refetches the server tree after a mutation that changes the live wiki", async () => {
+  it("refetches the server tree after each of its own kernel writes", async () => {
     const source = await read("WikiWorkbench.tsx");
-    expect(source.match(/router\.refresh\(\)/g) ?? []).toHaveLength(3);
+    // Two writes left on this card, and both make the server render stale:
+    // `create` (seeds a wiki and makes it active) and `applyTemplate`
+    // (rewrites purpose.md, Schema and the Workspace Purpose — the live wiki
+    // does not change, the bytes behind it do). The third was `switchWiki`,
+    // which went with the retired switcher (DW-33); the header's own switch
+    // refreshes in `WikiSwitcher.tsx`.
+    expect(source.match(/router\.refresh\(\)/g) ?? []).toHaveLength(2);
   });
 });
 
