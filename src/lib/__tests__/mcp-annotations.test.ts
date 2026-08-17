@@ -1,4 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../../mcp";
 
 // ---------------------------------------------------------------------------
@@ -26,11 +28,12 @@ describe("MCP tool annotations", () => {
   const server = createMcpServer();
   const tools = getRegisteredTools(server);
 
-  // 42 after publish_to_commons, the five discussion tools (retired with the
-  // commons and with talk, AD-21), and reconcile_page (reconcile-from-talk
-  // retired) were removed.
-  it("registers exactly 42 tools", () => {
-    expect(Object.keys(tools)).toHaveLength(42);
+  // 40 after publish_to_commons, the five discussion tools (retired with the
+  // commons and with talk, AD-21), reconcile_page (reconcile-from-talk
+  // retired), and the two contributor tools (every contributor page and REST
+  // route now 404s) were removed.
+  it("registers exactly 40 tools", () => {
+    expect(Object.keys(tools)).toHaveLength(40);
   });
 
   // The tool retirements left the count hand-written in two places, where it
@@ -65,6 +68,8 @@ describe("MCP tool annotations", () => {
     "add_comment",
     "resolve_discussion",
     "reconcile_page",
+    "list_contributors",
+    "get_contributor",
   ])("no longer exposes %s", (retired) => {
     expect(Object.keys(tools)).not.toContain(retired);
   });
@@ -140,8 +145,6 @@ describe("MCP tool annotations", () => {
     "dataview_query",
     "list_revisions",
     "read_revision",
-    "list_contributors",
-    "get_contributor",
   ];
 
   it.each(readOnlyTools)(
@@ -162,4 +165,59 @@ describe("MCP tool annotations", () => {
   it("ingest_url retains openWorldHint: true", () => {
     expect(tools["ingest_url"].annotations!.openWorldHint).toBe(true);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Retirement over the real stdio transport
+// ---------------------------------------------------------------------------
+// The checks above read the private `_registeredTools` map. That proves the
+// registration is gone but not what a client actually sees, so pin the retired
+// tools where the spec states the expectation: a `tools/list` / `tools/call`
+// round trip over the MCP transport, against the SDK's own unknown-tool path.
+describe("retired tools over the stdio transport", () => {
+  let client: Client;
+  let cleanup: () => Promise<void>;
+
+  beforeAll(async () => {
+    const server = createMcpServer();
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    client = new Client({ name: "test-client", version: "0.0.1" });
+    await client.connect(clientTransport);
+    cleanup = async () => {
+      await client.close();
+      await server.close();
+    };
+  });
+
+  afterAll(async () => {
+    await cleanup();
+  });
+
+  it.each(["list_contributors", "get_contributor"])(
+    "%s is absent from tools/list",
+    async (retired) => {
+      const { tools: listed } = await client.listTools();
+      expect(listed.map((t) => t.name)).not.toContain(retired);
+    },
+  );
+
+  // The SDK's unknown-tool rejection is surfaced as an `isError` result rather
+  // than a thrown error — the server wraps tool failures (see
+  // `mcp-error-wrap.test.ts`), so a retired name reads to the client the same
+  // way a failing tool does, carrying the SDK's own -32602 text.
+  it.each(["list_contributors", "get_contributor"])(
+    "calling %s comes back as an unknown-tool error",
+    async (retired) => {
+      const result = await client.callTool({
+        name: retired,
+        arguments: { handle: "alice" },
+      });
+      expect(result.isError).toBe(true);
+      const text = (result.content as { type: string; text: string }[])[0].text;
+      expect(text).toContain("-32602");
+      expect(text).toContain(retired);
+    },
+  );
 });

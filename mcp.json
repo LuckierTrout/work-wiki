@@ -28,8 +28,6 @@
     "list_agents",
     "update_agent",
     "delete_agent",
-    "list_contributors",
-    "get_contributor",
     "wiki_graph",
     "lint_wiki",
     "fix_lint_issue",

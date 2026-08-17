@@ -14,7 +14,6 @@ import {
   addComment,
   resolveThread,
   deleteDiscussions,
-  getDiscussionStats,
   getDiscussionStatsForSlugs,
   _resetTimestamp,
 } from "../talk";
@@ -280,18 +279,18 @@ describe("talk page data layer", () => {
       expect(thread!.status).toBe("open");
     });
 
-    it("reopened thread counts as open in getDiscussionStats", async () => {
+    it("reopened thread counts as open in getDiscussionStatsForSlugs", async () => {
       await createThread("reopen-stats", "Bug", "alice", "body");
       await resolveThread("reopen-stats", 0, "resolved");
 
       // After resolving, 0 open
-      let stats = await getDiscussionStats("reopen-stats");
-      expect(stats.open).toBe(0);
+      let stats = await getDiscussionStatsForSlugs(["reopen-stats"]);
+      expect(stats.get("reopen-stats")!.open).toBe(0);
 
       // Reopen
       await resolveThread("reopen-stats", 0, "open");
-      stats = await getDiscussionStats("reopen-stats");
-      expect(stats.open).toBe(1);
+      stats = await getDiscussionStatsForSlugs(["reopen-stats"]);
+      expect(stats.get("reopen-stats")!.open).toBe(1);
     });
   });
 
@@ -369,35 +368,6 @@ describe("talk page data layer", () => {
     });
   });
 
-  describe("getDiscussionStats", () => {
-    it("returns { total: 0, open: 0 } when no discuss file exists", async () => {
-      const stats = await getDiscussionStats("nonexistent-page");
-      expect(stats).toEqual({ total: 0, open: 0 });
-    });
-
-    it("returns correct counts with a mix of open/resolved/wontfix threads", async () => {
-      // Create 3 threads: 2 open, 1 resolved, then resolve one more as wontfix
-      await createThread("stats-page", "Thread 1", "alice", "Open");
-      await createThread("stats-page", "Thread 2", "bob", "Will resolve");
-      await createThread("stats-page", "Thread 3", "carol", "Will wontfix");
-
-      await resolveThread("stats-page", 1, "resolved");
-      await resolveThread("stats-page", 2, "wontfix");
-
-      const stats = await getDiscussionStats("stats-page");
-      expect(stats.total).toBe(3);
-      expect(stats.open).toBe(1); // only Thread 1 is still open
-    });
-
-    it("counts all threads as open when none are resolved", async () => {
-      await createThread("all-open", "A", "alice", "body");
-      await createThread("all-open", "B", "bob", "body");
-
-      const stats = await getDiscussionStats("all-open");
-      expect(stats).toEqual({ total: 2, open: 2 });
-    });
-  });
-
   describe("getDiscussionStatsForSlugs", () => {
     it("returns a map with correct per-slug stats", async () => {
       // Page A: 2 threads, 1 open
@@ -419,6 +389,21 @@ describe("talk page data layer", () => {
       expect(stats.get("page-a")).toEqual({ total: 2, open: 1 });
       expect(stats.get("page-b")).toEqual({ total: 1, open: 1 });
       expect(stats.get("page-c")).toEqual({ total: 0, open: 0 });
+    });
+
+    it("counts a wontfix thread toward total but not open", async () => {
+      // Three threads: one left open, one resolved, one wontfix. Only the first
+      // is `open`, but all three are `total` — a non-`open` status must not
+      // disappear from the count.
+      await createThread("mixed-status", "Thread 1", "alice", "Open");
+      await createThread("mixed-status", "Thread 2", "bob", "Will resolve");
+      await createThread("mixed-status", "Thread 3", "carol", "Will wontfix");
+
+      await resolveThread("mixed-status", 1, "resolved");
+      await resolveThread("mixed-status", 2, "wontfix");
+
+      const stats = await getDiscussionStatsForSlugs(["mixed-status"]);
+      expect(stats.get("mixed-status")).toEqual({ total: 3, open: 1 });
     });
 
     it("returns all zeros when discuss directory does not exist", async () => {

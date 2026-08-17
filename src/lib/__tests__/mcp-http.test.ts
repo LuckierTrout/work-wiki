@@ -92,8 +92,6 @@ describe("dispatchMcp — tools/list", () => {
     expect(names).toContain("wiki_graph");
     expect(names).toContain("activity_trail");
     expect(names).toContain("ingest_history");
-    expect(names).toContain("list_contributors");
-    expect(names).toContain("get_contributor");
     expect(names).toContain("delete_agent");
     expect(names).toContain("vault_delete");
     expect(names).toContain("vault_rename");
@@ -108,6 +106,74 @@ describe("dispatchMcp — tools/list", () => {
       expect(t).not.toHaveProperty("write");
       expect(t).not.toHaveProperty("run");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HTTP ↔ stdio parity
+// ---------------------------------------------------------------------------
+// `mcp-http.ts`'s header promises "full parity with the stdio MCP server", but
+// the two tool sets are maintained by hand in separate files (`MCP_TOOLS` here,
+// `server.registerTool` calls in `src/mcp.ts`). The existing guards only compare
+// `mcp.json` against the stdio registrations and grep a prose count, so a tool
+// added or retired on one side alone slipped through. Pin the two directly.
+describe("MCP_TOOLS ↔ stdio registration parity", () => {
+  it("exposes exactly the tools createMcpServer() registers", async () => {
+    const { createMcpServer } = await import("../../mcp");
+    const server = createMcpServer();
+    // _registeredTools is private in TypeScript but accessible at runtime —
+    // same idiom as mcp-annotations.test.ts / the mcp.json manifest-sync test.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stdioNames = Object.keys((server as any)._registeredTools);
+    const httpNames = MCP_TOOLS.map((t) => t.name);
+
+    const stdioSet = new Set(stdioNames);
+    const httpSet = new Set(httpNames);
+
+    const missingFromHttp = stdioNames.filter((n) => !httpSet.has(n));
+    const extraInHttp = httpNames.filter((n) => !stdioSet.has(n));
+
+    expect(
+      missingFromHttp,
+      `stdio registers tools the HTTP endpoint does not expose: ${missingFromHttp.join(", ")}`,
+    ).toEqual([]);
+    expect(
+      extraInHttp,
+      `HTTP endpoint exposes tools the stdio server does not register: ${extraInHttp.join(", ")}`,
+    ).toEqual([]);
+
+    // No duplicate descriptors on the HTTP side (the first would win silently).
+    expect(httpNames.length).toBe(httpSet.size);
+    expect([...httpNames].sort()).toEqual([...stdioNames].sort());
+  });
+
+  // Matching names is not parity on its own: `ToolDef.write` is what gates the
+  // HTTP side (auth requirement in `dispatchMcp`, the vault-filing suffix on
+  // write-tool descriptions), and its stdio counterpart is
+  // `annotations.readOnlyHint`. A tool whose two flags disagree passes the
+  // name check above while behaving differently on each transport.
+  it("agrees with the stdio readOnlyHint annotation on every tool's write flag", async () => {
+    const { createMcpServer } = await import("../../mcp");
+    const server = createMcpServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const registered = (server as any)._registeredTools as Record<
+      string,
+      { annotations?: { readOnlyHint?: boolean } }
+    >;
+
+    const disagreements = MCP_TOOLS.filter((t) => {
+      const readOnlyHint = registered[t.name]?.annotations?.readOnlyHint;
+      // An absent hint is its own drift — every tool declares one today.
+      return readOnlyHint === undefined || t.write === readOnlyHint;
+    }).map(
+      (t) =>
+        `${t.name} (write: ${t.write}, readOnlyHint: ${registered[t.name]?.annotations?.readOnlyHint})`,
+    );
+
+    expect(
+      disagreements,
+      `write flag disagrees with the stdio readOnlyHint annotation: ${disagreements.join(", ")}`,
+    ).toEqual([]);
   });
 });
 
@@ -1213,61 +1279,33 @@ describe("dispatchMcp — ingest_history", () => {
 });
 
 // ---------------------------------------------------------------------------
-// list_contributors dispatch
+// Contributor tools (retired) — every contributor page and REST route 404s, so
+// the two MCP tools went with them.
 // ---------------------------------------------------------------------------
-describe("dispatchMcp — list_contributors", () => {
-  it("is registered as a read-only tool", () => {
-    const tool = MCP_TOOLS.find((t) => t.name === "list_contributors");
-    expect(tool).toBeDefined();
-    expect(tool!.write).toBe(false);
-  });
+describe.each(["list_contributors", "get_contributor"])(
+  "dispatchMcp — %s is retired",
+  (retired) => {
+    it("is absent from tools/list", async () => {
+      const res = await dispatchMcp({ id: 1, method: "tools/list" }, ALICE);
+      const tools = (res!.result as { tools: { name: string }[] }).tools;
+      expect(tools.map((t) => t.name)).not.toContain(retired);
+    });
 
-  it("returns contributors array without auth (read-only)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: { name: "list_contributors", arguments: {} },
-      },
-      ALICE, // reads require a principal too (private deployment)
-    );
-
-    expect(res).not.toBeNull();
-    const r = res!.result as { content: { text: string }[] };
-    expect(r).not.toHaveProperty("isError");
-    const parsed = JSON.parse(r.content[0].text);
-    expect(parsed.contributors).toBeDefined();
-    expect(Array.isArray(parsed.contributors)).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// get_contributor dispatch
-// ---------------------------------------------------------------------------
-describe("dispatchMcp — get_contributor", () => {
-  it("is registered as a read-only tool", () => {
-    const tool = MCP_TOOLS.find((t) => t.name === "get_contributor");
-    expect(tool).toBeDefined();
-    expect(tool!.write).toBe(false);
-  });
-
-  it("returns an error for unknown contributor (read-only, no auth needed)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: { name: "get_contributor", arguments: { handle: "nonexistent-user" } },
-      },
-      ALICE, // reads require a principal too (private deployment)
-    );
-
-    expect(res).not.toBeNull();
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    // Unknown handles throw from handleGetContributor, surfaced as isError
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain("nonexistent-user");
-  });
-});
+    it("is an unknown tool when called", async () => {
+      const res = await dispatchMcp(
+        {
+          id: 1,
+          method: "tools/call",
+          params: { name: retired, arguments: { handle: "alice" } },
+        },
+        ALICE,
+      );
+      const r = res!.result as { isError?: boolean; content: { text: string }[] };
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toMatch(/unknown tool/i);
+    });
+  },
+);
 
 // ---------------------------------------------------------------------------
 // list_agents dispatch

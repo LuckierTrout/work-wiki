@@ -177,7 +177,7 @@ agent-scoped, readable by its owner through the API and MCP.
 ## 6. MCP (full tool access)
 
 work-wiki exposes an **HTTP MCP endpoint** that gives agent runtimes access to the
-full tool surface — 42 tools covering pages, ingestion, query, vaults, lint,
+full tool surface — 40 tools covering pages, ingestion, query, vaults, lint,
 revisions, and more.
 
 **Endpoint:**

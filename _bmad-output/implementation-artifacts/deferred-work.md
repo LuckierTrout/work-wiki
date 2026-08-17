@@ -69,7 +69,8 @@ location: src/lib/mcp-http.ts
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: low
 reason: `/wiki/contributors`, `/api/contributors` and `/api/contributors/[handle]` all 404, and `/u/<handle>` is gone — but `list_contributors` and `get_contributor` remain registered in `src/lib/mcp-http.ts` and `mcp.json`, and `mcp-http.test.ts` was updated to keep them passing. They are read-only and bearer-gated, so nothing leaks in a single-owner deployment; whether the capability should survive at MCP after being cut everywhere else is a product call, not a defect.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-retire-dead-machinery-round-2
 decision: 2026-08-16 Retire the tools — Unregister list_contributors and get_contributor from mcp-http.ts, mcp.ts and mcp.json, and update mcp-http.test.ts — completing the retirement the rest of the surface already had.
 
 ### DW-9: Middleware still exempts the retired publish route as an in-route-auth path.
@@ -659,7 +660,8 @@ source_spec: `spec-retire-dead-machinery.md`
 location: src/components/HomeGraph.tsx
 severity: low
 reason: git grep HomeGraph at baseline 1aac75ea returns no references outside the component file itself.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-retire-dead-machinery-round-2
 
 ### DW-79: The orchestrator's ledger sweep truncates entry headings at a fixed width mid-word — DW-75's heading in deferred-work.md ends "or incom" and DW-76's ends "and the disputed", and DW-75's useLint-length
 origin: spec-deferred 5e93c57512b0
@@ -677,7 +679,8 @@ source_spec: `spec-retire-dead-machinery.md`
 location: workers/task-consumer/README.md:9
 severity: medium
 reason: workers/task-consumer/README.md:9 and :35 plus workers/task-consumer/index.ts:6 reference the retired reconcile task kind; the spec's "verified: no reconcile/publish references" parenthetical covered live code paths, not docs and comments. Intent Never: "Do not touch workers/task-consumer/".
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-retire-dead-machinery-round-2
 
 ### DW-81: talk.ts getDiscussionStats is newly orphaned by this story — its last production callers were the deleted discussion lint checks — and reports green under talk.test.ts with no reachable caller; the ba
 origin: spec-deferred 327d8597cfc7
@@ -685,7 +688,8 @@ source_spec: `spec-retire-dead-machinery.md`
 location: src/lib/talk.ts:342
 severity: low
 reason: grep after this change shows no non-test caller of getDiscussionStats; talk.ts itself is intent-protected ("Do not delete src/lib/talk.ts"; AD-21 deliberately keeps talk machinery on disk), so whether to trim the export or leave it as deliberate AD-21 residue belongs to a story that owns talk.ts.
-status: open
+status: done 2026-08-16
+resolution: resolved by sweep bundle dw-retire-dead-machinery-round-2
 
 ### DW-82: Follow-up review still recommended for dw-retire-dead-machinery after the damping cap was spent
 origin: review-budget-followup
@@ -1028,6 +1032,94 @@ status: open
 ### DW-124: Follow-up review still recommended for dw-authz-commons-realm-cleanup after the damping cap was spent
 origin: review-budget-followup
 source_spec: `spec-authz-commons-realm-cleanup.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-215057-fc61; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-125: `listContributors` and `buildContributorProfile` in `src/lib/contributors.ts` now have test-only callers — retiring the two contributor MCP tools removed their last production consumers.
+origin: spec-deferred 4ca2c6cb527d
+source_spec: `spec-retire-dead-machinery-round-2.md`
+location: src/lib/contributors.ts:278
+severity: low
+reason: `src/lib/contributors.ts` exports `buildContributorProfile` (:278) and `listContributors` (:331). Their only remaining callers are `src/lib/__tests__/contributors.test.ts` and `src/lib/__tests__/contributor-index.test.ts:13`; the production call sites in `src/mcp.ts` (`handleListContributors` / `handleGetContributor`) were deleted in this pass. The sibling `buildContributorProfiles` (:313) is in the same test-only state, which predates this pass. The module itself must stay: `src/lib/contributor-index.ts:37-43` imports `computeScanData` and `computeTrustScore` from it, and `lifecycle.ts:33`, `talk.ts:46`, `maintenance.ts:231` keep the index live. The spec's Code Map called this residue explicitly out of scope ("record as deferred, do not delete") because deleting the scan functions would mean deciding whether the trust-score surface returns, which is a product call rather than a cleanup.
+status: open
+
+### DW-126: The daily maintenance scan still rebuilds the contributor index, but after this pass no production code reads what it builds.
+origin: spec-deferred 38e4600a3ab5
+source_spec: `spec-retire-dead-machinery-round-2.md`
+location: src/lib/maintenance.ts:231
+severity: low
+reason: `src/lib/maintenance.ts:231` registers `["contributors", () => rebuildContributorIndex()]`, and `lifecycle.ts:33` / `talk.ts:46` still write into the index. The read side (`profilesFromIndex`, `contributorProfileFromIndex`) is reached only through `src/lib/contributors.ts`'s fast paths, whose own callers are now test-only. So the cron pays for a full-wiki scan whose output nothing consumes. Removing it is not a cleanup decision: it depends on whether the contributor trust surface returns, the same product call recorded in the entry above.
+status: open
+
+### DW-127: `src/lib/maintenance.ts`'s module header documents only three deterministic `fix` lint types while the scan emits eight.
+origin: spec-deferred 3045ad1557a2
+source_spec: `spec-retire-dead-machinery-round-2.md`
+location: src/lib/maintenance.ts:11
+severity: medium
+reason: The header (`src/lib/maintenance.ts:11-14`) names `unmigrated-page`, `supersedes-dangling`, and `stale-index`; the scan body also emits `orphan-page` (:60), `broken-link` (:127), `empty-page` (:143), `stale-page` (:160), and `missing-crossref` (:193), matching `MaintainFixType` in `src/lib/tasks.ts:164-172`. Pre-existing drift surfaced while correcting the task-consumer README against this file — the README now carries the accurate list, so the module header is the remaining stale copy.
+status: open
+
+### DW-128: `.yoyo/status.md` still advertises `list_contributors` and `get_contributor` and an MCP tool count of 31.
+origin: spec-deferred d19fab62b40d
+source_spec: `spec-retire-dead-machinery-round-2.md`
+location: .yoyo/status.md:15
+severity: low
+reason: `.yoyo/status.md:15` lists both retired tool names inside "**MCP tools:** 31 (...)". The count was already stale before this pass (the real count was 42, now 40), so this is pre-existing drift in an agent-written status doc rather than a consequence of this change; it is out of the retirement's file scope and `.yoyo/` is upstream-agent territory.
+status: open
+
+### DW-129: `SCHEMA.md` still documents the contributor REST routes, wiki pages, and `ContributorBadge` component as live surfaces.
+origin: spec-deferred 08cb76da0f99
+source_spec: `spec-retire-dead-machinery-round-2.md`
+location: SCHEMA.md:195
+severity: low
+reason: `SCHEMA.md:195-201` advertises `GET /api/contributors`, `GET /api/contributors/:handle`, the `/wiki/contributors` index, the `/wiki/contributors/:handle` detail pages, and `ContributorBadge` components on wiki pages; `:68-69` cites the same surfaces as the consumers of the `authors`/`contributors` frontmatter fields. All three routes are `retiredRoute()` / `retiredPage()` 404s and `ContributorBadge` no longer exists anywhere under `src/`. This drift predates this pass — the routes were retired earlier, and this pass only removed the MCP tools — but it is the same contributor surface, so it belongs with DW-8's residue.
+status: open
+
+### DW-130: `DESIGN-triggers.md` states the MCP server exposes 21 tools; the real count is 40.
+origin: spec-deferred b88666035d3d
+source_spec: `spec-retire-dead-machinery-round-2.md`
+location: DESIGN-triggers.md:338
+severity: low
+reason: `DESIGN-triggers.md:338` reads "work-wiki's MCP server (`src/mcp.ts`) exposes 21 tools over stdio transport." The count guard in `src/lib/__tests__/mcp-annotations.test.ts:41-59` scans only `public/agent-api.md` and `src/lib/mcp-http.ts`, so this third hand-written count is unpinned and was already stale by ~20 before this pass. Out of the retirement's file scope.
+status: open
+
+### DW-131: The graph page's canvas accessibility fallback points readers at `/wiki`, which is a retired 404.
+origin: spec-deferred 0160c928098e
+source_spec: `spec-retire-dead-machinery-round-2.md`
+location: src/app/wiki/graph/page.tsx:161
+severity: medium
+reason: `src/app/wiki/graph/page.tsx:161` sets `aria-label="Wiki page relationship graph. Visit the wiki index for a text-based list of all pages."` and the canvas fallback text (`:164`) repeats it, but `/wiki` is listed in `RETIRED_SURFACES` (`src/lib/retired.ts:23`) and 404s. Deleting `HomeGraph.tsx` in this pass made this the only remaining graph canvas, so it is now the sole accessibility escape hatch for the visualization and it leads nowhere. The file was not touched by this pass and fixing it means choosing a live replacement target, which is a product call.
+status: open
+
+### DW-132: Two more hand-maintained tool/task inventories have no test pinning them against their source of truth.
+origin: spec-deferred b45716b28e31
+source_spec: `spec-retire-dead-machinery-round-2.md`
+location: src/mcp.ts:33
+severity: low
+reason: `src/mcp.ts`'s header comment carries a per-tool name list (the lines this pass edited at :33-37), and `workers/task-consumer/README.md:7-13` carries the `Task`-kind list. The new parity test pins `MCP_TOOLS` against the registrations and `mcp.json` against them too, and the count test pins the two numeric counts — but a tool or task kind added or retired without touching these two prose lists drifts silently. That is the exact failure mode DW-80 was filed for, one layer over. Pinning prose lists needs a convention decision (a test that greps Markdown/comments) rather than a cleanup edit.
+status: open
+
+### DW-133: No test exercises a `wontfix` thread through the KV-index fast path of `getDiscussionStatsForSlugs`.
+origin: spec-deferred ead2056e1663
+source_spec: `spec-retire-dead-machinery-round-2.md`
+location: src/lib/__tests__/discuss-stats-index.test.ts:133
+severity: low
+reason: `getDiscussionStatsForSlugs` fast-paths through the discuss-stats index when one exists and falls back to a directory scan otherwise. The mixed-status case added in this pass (`src/lib/__tests__/talk.test.ts`, "counts a wontfix thread toward total but not open") seeds no index, so it covers only the scan path, and the fast-path parity test at `src/lib/__tests__/discuss-stats-index.test.ts:133-162` uses only `open` and `resolved` threads. So `wontfix` never reaches `statsFromThreads()`. Pre-existing: the deleted `getDiscussionStats` never touched the index path either, so this pass neither created nor widened the gap.
+status: open
+
+### DW-134: `/api/tasks/scan?dry=1` is documented as pure inspection but still rebuilds derived indexes and purges stale jobs.
+origin: spec-deferred 7049e961715f
+source_spec: `spec-retire-dead-machinery-round-2.md`
+location: src/app/api/tasks/scan/route.ts:57
+severity: low
+reason: `src/app/api/tasks/scan/route.ts:57` calls `rebuildDerivedIndexes()` and `:60` calls `purgeStaleJobs()` before the `dry` branch is consulted — both write. `workers/task-consumer/README.md` defines dry-run as "logs/returns what it *would* enqueue and enqueues nothing" without noting them, which matters for the "inspect what it would do" step it recommends. Pre-existing route behavior; documenting it accurately means first deciding whether those two calls should move behind the flag, which is beyond a doc correction.
+status: open
+
+### DW-135: Follow-up review still recommended for dw-retire-dead-machinery-round-2 after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-retire-dead-machinery-round-2.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-215057-fc61; this entry preserves the lingering recommendation for a deliberate later review.

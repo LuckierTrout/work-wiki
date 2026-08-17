@@ -3,10 +3,16 @@
  *
  * A thin dispatcher: drains the `yopedia-tasks` Cloudflare Queue and POSTs each
  * message to the main work-wiki app's `/api/tasks/run` endpoint with the system
- * token. The actual work (reconcile / ingest) runs in the main app, which has
- * the full `src/lib` + OpenNext request context. This worker imports NO `src/lib`
- * code — that would transitively pull Clerk/Next and the OpenNext context a
- * standalone worker can't provide.
+ * token. The actual work runs in the main app, which has the full `src/lib` +
+ * OpenNext request context. The queue carries the `Task` union defined in
+ * `src/lib/tasks.ts` (the single source of truth — don't restate the kinds
+ * here): async ingestion, knowledge extraction/compilation, agent and research
+ * runs, source-monitor and integration/digest delivery, backups, and autonomous
+ * `maintain` upkeep. Dispatch itself is kind-agnostic — it forwards whatever it
+ * drains — with one exception: an `ingest` task carrying email metadata also
+ * gets a "Ready"/"Could not import" receipt mailed back (`notifyEmailReceipt`).
+ * It imports NO `src/lib` code, since that would transitively pull Clerk/Next
+ * and the OpenNext context a standalone worker can't provide.
  *
  * Ack/retry maps straight onto Cloudflare Queues semantics:
  *   - 2xx  → ack (done).
@@ -223,9 +229,14 @@ export default {
     }
   },
 
-  // Autonomous-maintenance cron (Q2). POSTs the scanner, which enqueues
-  // `maintain` tasks — or dry-runs (logs only) when AUTONOMOUS_MAINTENANCE isn't
-  // "on" in the main app. So this is safe to run on schedule before it's enabled.
+  // Autonomous-maintenance cron (Q2). POSTs the scanner. Only its `maintain`
+  // tasks are gated on AUTONOMOUS_MAINTENANCE — they dry-run (logs only) while
+  // the flag is off in the main app. The scan's other enqueues (`run-agent`,
+  // `monitor-source`, digest/outbox delivery, backups) are gated on `?dry=1`
+  // alone, so they fire on every tick regardless of the flag; see
+  // `src/app/api/tasks/scan/route.ts`. Safe to schedule before enabling the
+  // flag in the sense that no autonomous page edits happen — not in the sense
+  // that the scan does nothing.
   async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
     const base = (env.YOPEDIA_URL ?? "").replace(/\/+$/, "");
     const token = env.YOPEDIA_SERVICE_TOKEN;

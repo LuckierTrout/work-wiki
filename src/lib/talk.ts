@@ -337,18 +337,6 @@ export interface DiscussionStats {
   open: number;
 }
 
-/** Return discussion thread counts for a single page. Lightweight — reads
- *  the JSON file but only counts statuses, doesn't expose full content. */
-export async function getDiscussionStats(
-  pageSlug: string,
-): Promise<DiscussionStats> {
-  const threads = await readDiscussFile(pageSlug);
-  return {
-    total: threads.length,
-    open: threads.filter((t) => t.status === "open").length,
-  };
-}
-
 /**
  * Batch version: return discussion stats for multiple slugs in one pass.
  * Reads the discuss directory once and returns a Map keyed by slug.

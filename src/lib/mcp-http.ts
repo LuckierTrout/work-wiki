@@ -11,7 +11,7 @@
  * `tools/call`.
  *
  * Tool handlers are REUSED from the stdio server (`@/mcp`) — single source of
- * truth, no parallel write-path to drift (see `.yoyo/learnings.md`). All 42
+ * truth, no parallel write-path to drift (see `.yoyo/learnings.md`). All 40
  * tools are exposed — full parity with the stdio MCP server.
  *
  * Auth/attribution lives in the route (`src/app/api/mcp/route.ts`): a Bearer
@@ -59,8 +59,6 @@ import {
   handleIngestImage,
   handleIngestPdf,
   handleIngestXMention,
-  handleListContributors,
-  handleGetContributor,
 } from "@/mcp";
 import { mergePages } from "@/lib/merge";
 import { readWikiPageWithFrontmatter } from "@/lib/wiki";
@@ -885,28 +883,6 @@ export const MCP_TOOLS: ToolDef[] = [
     write: false,
     run: (a) =>
       handleIngestHistory(a as Parameters<typeof handleIngestHistory>[0]),
-  },
-  // -- Contributor trust awareness (read-only) --------------------------------
-  {
-    name: "list_contributors",
-    description:
-      "List all contributors with trust scores and activity summaries. Returns a JSON array of " +
-      "contributor profiles including handle, editCount, revertCount, trustScore, and activity breakdown. " +
-      "Useful for assessing contributor reliability before accepting, reverting, or escalating edits.",
-    inputSchema: schema({}),
-    write: false,
-    run: () => handleListContributors(),
-  },
-  {
-    name: "get_contributor",
-    description:
-      "Get a specific contributor's trust profile by handle. Returns a single contributor profile " +
-      "including editCount, revertCount, trustScore, commentCount, and detailed activity. " +
-      "Useful for checking a contributor's track record before acting on their edits.",
-    inputSchema: schema({ handle: str("Contributor handle to look up") }, ["handle"]),
-    write: false,
-    run: (a) =>
-      handleGetContributor(a as Parameters<typeof handleGetContributor>[0]),
   },
 ];
 
