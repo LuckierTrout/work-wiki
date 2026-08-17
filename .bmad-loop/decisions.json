@@ -62,6 +62,15 @@
     "label": "Restore the tab, not reject the row",
     "resolution": ""
   },
+  "DW-47": {
+    "answered_at": "2026-08-17",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Introduce a single exported breakpoint constant consumed by both the stylesheet build and TreePanel's matchMedia listener, add the listener to both scroll effects so the live 900px transition restores and records the offset, and retarget the workbench-split.test.ts ban to forbid ad-hoc duplicate literals rather than the shared constant.",
+    "key": "1",
+    "label": "Allow one shared breakpoint constant",
+    "resolution": ""
+  },
   "DW-50": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
