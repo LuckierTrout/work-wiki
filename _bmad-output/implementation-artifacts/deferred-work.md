@@ -659,6 +659,7 @@ location: src/lib/ingest.ts
 severity: medium
 reason: src/lib/ingest.ts parseDisputedMarker still sets the flag; src/components/ArticleView.tsx still renders the "This page is disputed" banner; the bundle intent explicitly directed deleting checkDisputedPages, so the surfacing gap is a knowing consequence to revisit with whatever story owns disputed-page semantics.
 status: open
+decision: 2026-08-17 Re-surface disputed pages — Give the flag a read model and a way out: a lint check or Workbench view listing disputed pages, and an owner action that clears the flag after review. Restores the loop that reconcile-from-talk used to close, without reviving talk.
 decision: 2026-08-16 Re-surface disputed pages — Give the flag a read model and a way out: a lint check or Workbench view listing disputed pages, and an owner action that clears the flag after review. Restores the loop that reconcile-from-talk used to close, without reviving talk.
 
 ### DW-77: authz.ts still carries the commons-realm delete-deny branch with no commons behind it; after this change the client delete gate no longer mirrors it for a hypothetical non-admin owner of a public page

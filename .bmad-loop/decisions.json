@@ -142,5 +142,14 @@
     "key": "1",
     "label": "Validate at the surface",
     "resolution": ""
+  },
+  "DW-76": {
+    "answered_at": "2026-08-17",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give the flag a read model and a way out: a lint check or Workbench view listing disputed pages, and an owner action that clears the flag after review. Restores the loop that reconcile-from-talk used to close, without reviving talk.",
+    "key": "1",
+    "label": "Re-surface disputed pages",
+    "resolution": ""
   }
 }
