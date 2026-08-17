@@ -17,6 +17,15 @@
     "label": "Shallow ?mode= sync",
     "resolution": ""
   },
+  "DW-30": {
+    "answered_at": "2026-08-17",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Keep the tenant-flat storage and make the product honest about it: correct the acceptance wording and the Wiki-switch copy so a Wiki is understood as a lens over shared Pages and Sources plus its own purpose.md/schema.md, and document the invariant beside listWorkbenchFilePaths so no later story re-reads the AC as a partitioning promise.",
+    "key": "1",
+    "label": "Reword the AC, keep flat",
+    "resolution": ""
+  },
   "DW-34": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
