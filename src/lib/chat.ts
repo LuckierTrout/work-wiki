@@ -19,7 +19,7 @@ import {
   type RawSourceChunk,
 } from "./raw-source-search";
 import { UNTRUSTED_CONTENT_RULE } from "./untrusted";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 import {
   isAgentScopedType,
   isArtifactType,

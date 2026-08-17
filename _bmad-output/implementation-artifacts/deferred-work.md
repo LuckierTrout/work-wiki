@@ -122,7 +122,8 @@ location: src/lib/wikis.ts
 source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: medium
 reason: `seedWikiArtifacts()` calls `saveWorkspaceProfile(owner, templateProfile(...))`, which is what makes a seeded template reach the seven prompt sites that consume `buildWorkspaceGuidance(owner)`. The profile is a per-tenant singleton at `tenants/<t>/workspace-profile.json`, so a Wiki create silently replaces whatever the owner wrote on the Workspace Purpose settings form. Both dialogs say "purpose.md and Schema", which is true in substance (the profile is the machine form of purpose) but does not name the Settings surface the owner will see change. The inverse also holds: a Settings edit does not update the Wiki's `schema.md`, so the two diverge. Reconciling the two representations belongs with Story 1.8 (Edit Schema), which owns editing both.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-per-wiki-workspace-profiles
 decision: 2026-08-16 Per-Wiki profiles — Store one workspace profile per Wiki; switching Wikis swaps the active profile instead of overwriting a shared singleton, so hand-authored text survives per Wiki and create/re-template only touch their own Wiki's profile.
 
 ### DW-15: The repository has no DOM test environment, so the confirm gate and "Cancel writes nothing" are pinned only by scans of component source text.
@@ -183,7 +184,8 @@ location: src/lib/wikis.ts
 source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: medium
 reason: `setCurrentWiki` calls `saveWorkspaceProfile(owner, templateProfile(...))` — added deliberately so `loadPageConventions()` and `buildWorkspaceGuidance()` cannot name two different templates at once. The consequence is that the bare `<select>` in `WikiWorkbench` is a destructive write on the same tenant singleton that `Change template` guards behind `ConfirmDialog`. Gating a switch is not in this story's acceptance criteria, and the durable fix is the same reconciliation of the per-Wiki and tenant-global representations that Story 1.8 (Edit Schema) owns.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-per-wiki-workspace-profiles
 
 ### DW-22: The `wikis:<tenant>` lock does not serialize against the `workspace-profile:<tenant>` lock it writes through.
 origin: spec-deferred 7d6ef98a9b38
@@ -191,7 +193,8 @@ location: src/lib/wikis.ts
 source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: low
 reason: `withFileLock("wikis:<tenant>", …)` wraps `saveWorkspaceProfile`, which takes `withFileLock("workspace-profile:<tenant>", …)` — a different key. A concurrent save from the Workspace Purpose settings form can therefore interleave, leaving `schema.md` naming one template and the profile another. Reachable only from one owner acting in two places at once on a single-owner deployment, and the obvious fix (nesting the two locks) introduces a lock-ordering hazard with any future caller that takes them the other way round.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-per-wiki-workspace-profiles
 
 ### DW-23: Follow-up review still recommended for 1-2-create-a-wiki-from-a-scenario-template after the damping cap was spent
 origin: review-budget-followup
@@ -1120,6 +1123,94 @@ status: open
 ### DW-135: Follow-up review still recommended for dw-retire-dead-machinery-round-2 after the damping cap was spent
 origin: review-budget-followup
 source_spec: `spec-retire-dead-machinery-round-2.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-215057-fc61; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-136: The Workspace Purpose form never refetches after the active Wiki changes, so it can keep naming and editing a Wiki that is no longer current.
+origin: spec-deferred eeecef5703cc
+source_spec: `spec-per-wiki-workspace-profiles.md`
+location: src/components/WorkspacePurposeSettings.tsx
+severity: medium
+reason: `WorkspacePurposeSettings.tsx` loads the active Wiki in a `useEffect` with an empty dependency array, and `router.refresh()` from the Wiki switcher re-renders server components without remounting a client component. The save is now safe — the route refuses on a `wikiId` mismatch — but the owner sees a stale Wiki name until reload.
+status: open
+
+### DW-137: The legacy tenant-global profile is read through by every pre-change Wiki in a tenant, so one purpose appears under all of them until each is individually saved.
+origin: spec-deferred 425c83c35758
+source_spec: `spec-per-wiki-workspace-profiles.md`
+location: src/lib/workspace-profile.ts
+severity: low
+reason: `getWorkspaceProfile` falls back to `tenants/<t>/workspace-profile.json` whenever a Wiki has no file of its own. Intentional and documented for the migration window, but it has no end date, no backfill, and no removal milestone.
+status: open
+
+### DW-138: `docs/llm-wiki-functional-parity-roadmap.md` still describes the Workspace Purpose editor as owner-scoped rather than per-Wiki.
+origin: spec-deferred c3c9cc846535
+source_spec: `spec-per-wiki-workspace-profiles.md`
+location: docs/llm-wiki-functional-parity-roadmap.md:101
+severity: low
+reason: Line 101 predates this change; the roadmap is not a spec surface this run owns, but the sentence is now wrong.
+status: open
+
+### DW-139: `putWorkspaceProfile` is an exported unlocked writer whose only guard is a docblock.
+origin: spec-deferred 5cc8cc30ccaa
+source_spec: `spec-per-wiki-workspace-profiles.md`
+location: src/lib/workspace-profile.ts
+severity: low
+reason: It must be exported so `seedWikiArtifacts` can write inside the non-reentrant `wikis:<tenant>` lock, but a future caller that is NOT holding that lock can write a profile with no serialization and nothing in the suite or the type system flags it. The module-private `putWikiArtifact` does not have this exposure.
+status: open
+
+### DW-140: `PUT /api/workspace-profile` has no explicit invalid-JSON branch, so a malformed body surfaces a raw parser message as the 400.
+origin: spec-deferred f65e39667a15
+source_spec: `spec-per-wiki-workspace-profiles.md`
+location: src/app/api/workspace-profile/route.ts
+severity: low
+reason: `/api/wikis/current` catches this and answers "Invalid JSON body."; this route lets `request.json()` throw into the generic catch. Pre-existing behaviour, unchanged here.
+status: open
+
+### DW-141: `buildWorkspaceGuidance` now performs two storage reads per call, uncached, at seven call sites including three in `ingest.ts`.
+origin: spec-deferred 4b7d37651866
+source_spec: `spec-per-wiki-workspace-profiles.md`
+location: src/lib/workspace-guidance.ts
+severity: low
+reason: It resolves `wikis.json` through `getCurrentWiki` and then reads the profile. Resolving the active Wiki once per request and passing it down would halve the I/O.
+status: open
+
+### DW-142: The Settings no-Wiki and load-failed states offer no CTA, no retry, and no aria-live announcement, and `loadFailed` is never reset.
+origin: spec-deferred f1b70803bbe7
+source_spec: `spec-per-wiki-workspace-profiles.md`
+location: src/components/WorkspacePurposeSettings.tsx
+severity: low
+reason: "Create a wiki first" does not link to where a Wiki is created, and a transient GET failure leaves the form permanently disabled until a full reload — `WikiWorkbench` at least says "Reload to try again".
+status: open
+
+### DW-143: A failure of the profile write in `seedWikiArtifacts` leaves `schema.md` on the new template and the profile on the old one.
+origin: spec-deferred 51c4bb218e74
+source_spec: `spec-per-wiki-workspace-profiles.md`
+location: src/lib/wikis.ts
+severity: low
+reason: The three writes are sequential and untransacted. Pre-existing ordering, not introduced here, and unreachable without a storage fault mid-seed.
+status: open
+
+### DW-144: A corrupt per-Wiki `workspace-profile.json` blocks the re-template that would have overwritten it.
+origin: spec-deferred 6e541a1b637d
+source_spec: `spec-per-wiki-workspace-profiles.md`
+location: src/lib/workspace-profile.ts
+severity: low
+reason: `getWorkspaceProfile` rethrows a `SyntaxError` from its own file (only the legacy fallback degrades), and `putWorkspaceProfile` reads existing state before writing. Pre-existing shape — the old tenant-global store behaved the same way.
+status: open
+
+### DW-145: Two tabs editing the SAME Wiki's Workspace Purpose still last-write-wins with no warning.
+origin: spec-deferred 47d53b63986a
+source_spec: `spec-per-wiki-workspace-profiles.md`
+location: src/app/api/workspace-profile/route.ts
+severity: low
+reason: The PUT guard compares Wiki identity only, so a drift check passes when both tabs name the same Wiki. The profile already carries `updatedAt` and the form already tracks `savedAt`, so an `If-Match`-style precondition was available; the store has never had one, so this is pre-existing shape, not new here.
+status: open
+
+### DW-146: Follow-up review still recommended for dw-per-wiki-workspace-profiles after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-per-wiki-workspace-profiles.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260816-215057-fc61; this entry preserves the lingering recommendation for a deliberate later review.

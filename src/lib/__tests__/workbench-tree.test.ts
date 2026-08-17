@@ -369,6 +369,33 @@ describe("listWorkbenchFilePaths", () => {
     expect(tree.map((n) => n.name)).toEqual(["raw", "wiki", "purpose.md", "schema.md"]);
   });
 
+  it("never lists the wiki's workspace-profile.json, its third sibling", async () => {
+    // The Workspace Purpose is stored per wiki, IN this directory, beside the
+    // two markdown artifacts — but it is a JSON store, not one of the owner's
+    // editable files, and `WIKI_ARTIFACT_FILES` is what the tab and the dialog
+    // copy both speak for. Without a case that puts the file on disk, the
+    // allowlist intersection could become a plain directory listing and every
+    // other artifact test would stay green.
+    await seedArtifacts();
+    const profileAbs = path.join(
+      getDataDir(),
+      wikiArtifactPath(OWNER, WIKI_ID, "purpose.md").replace(
+        /purpose\.md$/,
+        "workspace-profile.json",
+      ),
+    );
+    await fs.writeFile(profileAbs, '{"version":1}', "utf-8");
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, WIKI_ID, gate());
+    expect(paths).toContain("purpose.md");
+    expect(paths).toContain("schema.md");
+    expect(paths).not.toContain("workspace-profile.json");
+    expect(paths.some((p) => p.endsWith(".json"))).toBe(false);
+    expect(buildFileTree(paths).map((n) => n.name)).not.toContain(
+      "workspace-profile.json",
+    );
+  });
+
   it("lists only the artifacts that were actually written", async () => {
     // The tab must not assert a file the template never wrote: `seedWikiArtifacts`
     // is two separate writes, and an unreadable artifact directory degrades to an

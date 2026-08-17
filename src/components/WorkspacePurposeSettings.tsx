@@ -12,6 +12,9 @@ import {
 
 type Feedback = { ok: boolean; message: string } | null;
 
+/** The Wiki this purpose belongs to, as the route names it. */
+type ActiveWiki = { id: string; name: string };
+
 function listText(values: readonly string[]): string {
   return values.join("\n");
 }
@@ -45,6 +48,15 @@ export function WorkspacePurposeSettings() {
   const [readOnly, setReadOnly] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  // The Workspace Purpose is stored per Wiki, so the form is editing ONE
+  // wiki's profile — the active one. Null means the owner has no wiki yet and
+  // there is nothing for these bytes to belong to.
+  const [wiki, setWiki] = useState<ActiveWiki | null>(null);
+  // A failed GET also leaves `wiki` null, and "create a wiki first" would then
+  // be a claim about the registry this render never got to make (the same
+  // distinction WikiWorkbench draws with `unavailable`). The error banner below
+  // says what actually happened; this keeps the intro from contradicting it.
+  const [loadFailed, setLoadFailed] = useState(false);
 
   function placeProfile(value: WorkspaceProfileInput, updatedAt?: string | null) {
     setProfile({
@@ -61,14 +73,25 @@ export function WorkspacePurposeSettings() {
 
   useEffect(() => {
     let cancelled = false;
-    void request<{ profile: WorkspaceProfile; readOnly: boolean }>("/api/workspace-profile")
+    void request<{
+      profile: WorkspaceProfile;
+      readOnly: boolean;
+      wiki: ActiveWiki | null;
+    }>("/api/workspace-profile")
       .then((data) => {
         if (cancelled) return;
-        placeProfile(data.profile, data.profile.updatedAt);
+        // No wiki means these bytes belong to no wiki: with a retired
+        // tenant-global profile still on disk the route answers its fields so
+        // the owner can SEE them, but "Last saved …" would then date a save
+        // this form cannot repeat and no wiki owns. Show the values, not the
+        // receipt.
+        placeProfile(data.profile, data.wiki ? data.profile.updatedAt : null);
         setReadOnly(data.readOnly);
+        setWiki(data.wiki ?? null);
       })
       .catch((error) => {
         if (!cancelled) {
+          setLoadFailed(true);
           setFeedback({
             ok: false,
             message: error instanceof Error ? error.message : "Couldn’t load Workspace Purpose.",
@@ -110,15 +133,28 @@ export function WorkspacePurposeSettings() {
       outOfScope: parseList(outOfScope),
     };
     try {
-      const data = await request<{ profile: WorkspaceProfile }>("/api/workspace-profile", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
-      });
+      const data = await request<{ profile: WorkspaceProfile; wiki: ActiveWiki | null }>(
+        "/api/workspace-profile",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          // The wiki these edits were composed against travels WITH them. The
+          // route re-resolves the active wiki per request, so without this a
+          // switch in another tab between load and save would write what is on
+          // screen over a different wiki's stored purpose.
+          body: JSON.stringify({ ...input, wikiId: wiki?.id }),
+        },
+      );
       placeProfile(data.profile, data.profile.updatedAt);
+      // Adopt the wiki the server says it wrote, so the confirmation names the
+      // wiki actually written rather than the one this form last believed in.
+      const written = data.wiki ?? wiki;
+      setWiki(written);
       setFeedback({
         ok: true,
-        message: "Workspace Purpose saved. New ingest, chat, monitoring, extraction, and agent runs will use it.",
+        message: written
+          ? `Workspace Purpose saved for “${written.name}”. New ingest, chat, monitoring, extraction, and agent runs on this wiki will use it.`
+          : "Workspace Purpose saved. New ingest, chat, monitoring, extraction, and agent runs will use it.",
       });
     } catch (error) {
       setFeedback({
@@ -149,10 +185,30 @@ export function WorkspacePurposeSettings() {
             belongs outside its scope. The profile guides generated work; source
             evidence and citations still win.
           </p>
+          {/* Each wiki keeps its own Workspace Purpose beside its own Schema, so
+              the form has to say WHOSE purpose it is showing — otherwise editing
+              here after switching wikis is editing something unnamed. */}
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-foreground/60">
+            {loading
+              ? "Loading the active wiki’s purpose…"
+              : wiki
+                ? `This purpose belongs to “${wiki.name}”. Every wiki keeps its own, and switching the active wiki switches which one guides new runs.`
+                : loadFailed
+                  ? "The active wiki couldn’t be loaded, so there is nothing to edit here yet."
+                  : "Create a wiki first — the Workspace Purpose belongs to a wiki, so there is nothing to edit yet."}
+          </p>
         </div>
         <div className="rounded-full border border-foreground/15 bg-foreground/[0.025] px-3 py-1.5">
           <span className="receipt text-[10px] text-foreground/55">
-            {loading ? "loading…" : savedAt ? "active" : "not configured"}
+            {loading
+              ? "loading…"
+              : loadFailed
+                ? "unavailable"
+                : !wiki
+                  ? "no wiki"
+                  : savedAt
+                    ? "active"
+                    : "not configured"}
           </span>
         </div>
       </div>
@@ -161,7 +217,12 @@ export function WorkspacePurposeSettings() {
         onSubmit={save}
         className="mt-6 overflow-hidden rounded-2xl border border-foreground/15 bg-foreground/[0.018]"
       >
-        <fieldset disabled={loading || saving || readOnly} className="disabled:opacity-60">
+        {/* No active wiki means the PUT would be refused, so the controls stay
+            shut rather than collecting edits the server will throw away. */}
+        <fieldset
+          disabled={loading || saving || readOnly || !wiki}
+          className="disabled:opacity-60"
+        >
           <div className="grid gap-5 border-b border-foreground/10 p-5 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
             <div>
               <label className="text-sm font-medium text-foreground/75">
@@ -264,7 +325,11 @@ export function WorkspacePurposeSettings() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 border-t border-foreground/10 px-5 py-4">
-            <button type="submit" className="btn primary" disabled={saving || readOnly}>
+            <button
+              type="submit"
+              className="btn primary"
+              disabled={saving || readOnly || !wiki}
+            >
               {saving ? "Saving…" : "Save Workspace Purpose"}
             </button>
             {savedAt && (

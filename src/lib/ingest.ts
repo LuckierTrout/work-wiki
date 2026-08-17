@@ -29,7 +29,7 @@ import {
   canonicalizeNamesTerm,
   listNamesTerms,
 } from "./names-terms";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 
 /**
  * Merge a provenance entry into a sources list. A real source URL supersedes a

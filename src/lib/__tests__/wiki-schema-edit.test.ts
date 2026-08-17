@@ -889,11 +889,28 @@ describe("the two routes", () => {
   });
 
   it("expresses the artifact layout in exactly one module", async () => {
-    // `tenants/<t>/wikis/<id>/…` is `wikis.ts`'s alone — every other caller goes
-    // through `wikiArtifactPath`, or the write path and the read path could
-    // address different bytes.
-    const wikis = await fs.readFile(path.resolve(__dirname, "../wikis.ts"), "utf8");
-    expect(wikis).toContain("`tenants/${tenantFor(owner)}/wikis/");
+    // `tenants/<t>/wikis/<id>/…` is `wiki-paths.ts`'s alone — every other
+    // caller goes through `wikiDirPath`/`wikiArtifactPath`, or the write path
+    // and the read path could address different bytes. The helpers live in a
+    // leaf module (not `wikis.ts`) so the per-Wiki profile store can address
+    // the directory without importing `wikis.ts` back into a cycle.
+    const paths = await fs.readFile(
+      path.resolve(__dirname, "../wiki-paths.ts"),
+      "utf8",
+    );
+    expect(paths).toContain("`tenants/${tenantFor(owner)}/wikis/");
+    // No other module interpolates the layout — prose in a docblock is fine,
+    // a second `${…}/wikis/` expression is the regression.
+    for (const name of ["wikis.ts", "workspace-profile.ts"]) {
+      const source = await fs.readFile(path.resolve(__dirname, `../${name}`), "utf8");
+      expect(source).not.toContain("}/wikis/");
+    }
+    // The profile is a sibling of the artifacts: same directory, one helper.
+    const profile = await fs.readFile(
+      path.resolve(__dirname, "../workspace-profile.ts"),
+      "utf8",
+    );
+    expect(profile).toContain("wikiDirPath(owner, wikiId)");
     for (const file of [
       "workbench/artifact/route.ts",
       "workbench/preview/route.ts",

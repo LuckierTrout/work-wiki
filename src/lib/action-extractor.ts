@@ -9,7 +9,7 @@ import {
   renderNamesTermsGuidance,
 } from "./names-terms";
 import { readWikiPageWithFrontmatter } from "./wiki";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 
 const actionExtractionSchema = z.object({
   actions: z.array(

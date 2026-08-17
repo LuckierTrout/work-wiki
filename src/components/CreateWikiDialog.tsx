@@ -109,8 +109,8 @@ export function CreateWikiDialog({
               Create Wiki
             </h2>
             <p className="mt-1 text-sm leading-6 text-foreground/60">
-              Pick one Scenario Template. This writes purpose.md and Schema. There is
-              no blank wiki.
+              Pick one Scenario Template. This writes purpose.md, Schema, and this
+              wiki’s own Workspace Purpose. There is no blank wiki.
             </p>
           </div>
 

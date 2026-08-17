@@ -15,9 +15,17 @@
  *
  * Pages and Sources are NOT partitioned per Wiki — they stay in the tenant
  * silo exactly where they are. Creating or re-templating a Wiki writes
- * `purpose.md`, `schema.md`, and the workspace profile, and nothing else. The
- * profile write is what makes a seeded template reach the seven prompt sites
- * that consume `buildWorkspaceGuidance(owner)`.
+ * `purpose.md`, `schema.md`, and THAT WIKI'S OWN `workspace-profile.json`
+ * (a third sibling in the same directory), and nothing else. The profile is
+ * per-Wiki, so seeding one Wiki never disturbs another's hand-authored
+ * Workspace Purpose; which one reaches the seven prompt sites that consume
+ * `buildWorkspaceGuidance(owner)` follows the `current` pointer, resolved by
+ * `workspace-guidance.ts`.
+ *
+ * One lock key, `wikis:<tenant>`, owns the registry AND everything under
+ * `tenants/<t>/wikis/<id>/` — including the profile. `withFileLock` is not
+ * reentrant, so anything running inside it writes through an unlocked putter
+ * ({@link putWikiArtifact}, `putWorkspaceProfile`). See `src/lib/lock.ts`.
  *
  * The registry idiom (path, lock key, `crypto.randomUUID()`, ENOENT → empty,
  * a hard cap) mirrors `research-projects.ts`.
@@ -45,7 +53,12 @@ import {
   type WikiArtifactFile,
 } from "./wiki-scenarios";
 import { tenantForOwner, validateTenant } from "./wiki";
-import { saveWorkspaceProfile } from "./workspace-profile";
+import {
+  WIKI_ID_RE,
+  wikiArtifactPath,
+  wikiLockKey,
+} from "./wiki-paths";
+import { putWorkspaceProfile } from "./workspace-profile";
 import type { WorkspaceProfileInput } from "./workspace-profile-schema";
 
 // ---------------------------------------------------------------------------
@@ -95,33 +108,14 @@ export function wikiRegistryPath(owner: string): string {
   return `tenants/${tenantFor(owner)}/wikis.json`;
 }
 
-/**
- * Guard a Wiki id before it becomes a storage key. Ids are generated with
- * `crypto.randomUUID()`, but the id also arrives from a URL segment, so the
- * shape is enforced rather than assumed.
- */
-const WIKI_ID_RE =
-  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-
-function validateWikiId(id: unknown): string {
-  if (typeof id !== "string" || !WIKI_ID_RE.test(id)) {
-    throw new ClientInputError("Invalid wiki id.");
-  }
-  return id;
-}
-
-/** `tenants/<tenant>/wikis/<wikiId>/<file>` — a seeded Wiki artifact. */
-export function wikiArtifactPath(
-  owner: string,
-  wikiId: string,
-  file: WikiArtifactFile,
-): string {
-  return `tenants/${tenantFor(owner)}/wikis/${validateWikiId(wikiId)}/${file}`;
-}
-
-function lockKey(owner: string): string {
-  return `wikis:${tenantFor(owner)}`;
-}
+// The id guard, the Wiki directory address and the Wiki lock key live in the
+// leaf `wiki-paths` module so `workspace-profile.ts` can reach them without
+// importing this file back (this one imports IT). Re-exported here because five
+// existing suites still address artifacts through `wikis.wikiArtifactPath`
+// (`wikis`, `wiki-schema-edit`, `wiki-schema-source`, `workbench-preview`,
+// `workbench-tree`); every non-test caller now imports `wiki-paths` directly,
+// and new callers should too.
+export { wikiArtifactPath };
 
 // ---------------------------------------------------------------------------
 // Input parsing — every rejection is a ClientInputError so routes answer 400
@@ -277,7 +271,7 @@ function templateProfile(scenario: CreatableScenario): WorkspaceProfileInput {
  * The BYTES of one artifact, and nothing else — no lock, no log, no bump.
  *
  * UNLOCKED on purpose. `seedWikiArtifacts` runs inside `withFileLock(
- * lockKey(owner))` already (via {@link createWiki} and
+ * wikiLockKey(owner))` already (via {@link createWiki} and
  * {@link applyScenarioTemplate}) and `withFileLock` is NOT reentrant — `lock.ts`
  * chains a new call onto the key's existing promise, so taking
  * `wikis:<tenant>` again from in there would deadlock the whole tenant. Callers
@@ -304,6 +298,12 @@ async function putWikiArtifact(
  * `tenants/<t>/wiki/`, nothing under `tenants/<t>/raw/`, no page index entry,
  * no log line, and no `dataVersion` bump — seeding's half of that signal
  * belongs with whichever story owns create and re-template.
+ *
+ * All three writes land in `tenants/<t>/wikis/<id>/`, so the footprint is
+ * scoped to THIS Wiki: seeding one Wiki cannot touch another's hand-authored
+ * Workspace Purpose. The profile goes through the UNLOCKED `putWorkspaceProfile`
+ * for the same reason {@link putWikiArtifact} is unlocked — the caller is
+ * already holding `wikis:<tenant>`.
  */
 async function seedWikiArtifacts(owner: string, wiki: WikiRecord): Promise<void> {
   const template = scenarioTemplate(wiki.scenario);
@@ -323,7 +323,7 @@ async function seedWikiArtifacts(owner: string, wiki: WikiRecord): Promise<void>
     "schema.md",
     renderSchemaMarkdown(template, engineConventions),
   );
-  await saveWorkspaceProfile(owner, templateProfile(wiki.scenario));
+  await putWorkspaceProfile(owner, wiki.id, templateProfile(wiki.scenario));
 }
 
 /**
@@ -364,7 +364,7 @@ export async function writeWikiArtifact(
   file: EditableArtifactFile,
   content: string,
 ): Promise<void> {
-  await withFileLock(lockKey(owner), () =>
+  await withFileLock(wikiLockKey(owner), () =>
     putWikiArtifact(owner, wikiId, file, content),
   );
 
@@ -421,7 +421,7 @@ export async function createWiki(
   input: CreateWikiInput,
 ): Promise<WikiRecord> {
   const { name, scenario } = parseCreateWikiInput(input);
-  return withFileLock(lockKey(owner), async () => {
+  return withFileLock(wikiLockKey(owner), async () => {
     const registry = await readRegistry(owner);
     if (registry.wikis.length >= MAX_WIKIS) {
       throw new ClientInputError(
@@ -448,8 +448,9 @@ export async function createWiki(
  * Apply a different Scenario Template to an existing Wiki.
  *
  * Confirm-gated in the UI because it overwrites `purpose.md`, `schema.md`, and
- * the workspace profile. Pages and Sources are untouched. Returns null when
- * the id is unknown, so the route can answer 404.
+ * THIS Wiki's own `workspace-profile.json`. Every other Wiki's profile — and
+ * Pages and Sources — are untouched. Returns null when the id is unknown, so
+ * the route can answer 404.
  */
 export async function applyScenarioTemplate(
   owner: string,
@@ -459,7 +460,7 @@ export async function applyScenarioTemplate(
   if (!isCreatableScenario(scenario)) {
     throw new ClientInputError("Choose one Scenario Template.");
   }
-  return withFileLock(lockKey(owner), async () => {
+  return withFileLock(wikiLockKey(owner), async () => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
     if (!wiki) return null;
@@ -474,44 +475,29 @@ export async function applyScenarioTemplate(
 /**
  * Point `current` at an existing Wiki. Returns null when the id is unknown.
  *
- * Also re-seeds the workspace profile from the newly active Wiki's scenario.
- * The profile is tenant-global while `schema.md` is per-Wiki, so moving the
- * pointer alone would leave `loadPageConventions()` on the new template and
- * `buildWorkspaceGuidance(owner)` on whichever Wiki was created or
- * re-templated last — the ingest prompt would then carry both at once.
+ * NON-DESTRUCTIVE, and that is the whole point: `wikis.json` is the ONLY file
+ * this writes. A switch used to re-seed a tenant-global profile from the newly
+ * active Wiki's template, which silently discarded whatever the owner had
+ * authored in Settings; there is nothing left here to discard.
+ *
+ * WHAT THIS FIXES, EXACTLY. The profile is per-Wiki and lives beside that
+ * Wiki's `schema.md`, so the profile `buildWorkspaceGuidance(owner)` renders
+ * and the `schema.md` `loadPageConventions()` reads can no longer come from two
+ * DIFFERENT Wikis. It does NOT make them agree: within one Wiki, a Settings
+ * save can set `scenario: "custom"` while `schema.md` still spells out
+ * Business, and nothing here reconciles the two representations. Story 1.8 owns
+ * that; a Settings edit still does not rewrite `schema.md`.
  */
 export async function setCurrentWiki(
   owner: string,
   wikiId: string,
 ): Promise<WikiRecord | null> {
-  return withFileLock(lockKey(owner), async () => {
+  return withFileLock(wikiLockKey(owner), async () => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
     if (!wiki) return null;
-    const previousId = registry.currentId;
     registry.currentId = wiki.id;
     await writeRegistry(owner, registry);
-    try {
-      await saveWorkspaceProfile(owner, templateProfile(wiki.scenario));
-    } catch (error) {
-      // The pointer has already moved, so leaving it there ships exactly the
-      // split this function exists to prevent: `loadPageConventions()` on the
-      // newly active Wiki's `schema.md` while `buildWorkspaceGuidance()` still
-      // renders the old template — and the route answers 500, so the owner is
-      // told the switch failed and the UI rolls its selection back. Put the
-      // pointer back before rethrowing, inside the same lock.
-      registry.currentId = previousId;
-      try {
-        await writeRegistry(owner, registry);
-      } catch (restoreError) {
-        logger.warn(
-          "wikis",
-          `restoring the active wiki after a failed switch failed — the pointer is on "${wiki.id}" while the workspace profile is not`,
-          restoreError,
-        );
-      }
-      throw error;
-    }
     return wiki;
   });
 }

@@ -41,8 +41,9 @@ import {
   tenantWikiRelPath,
   wikiRelPath,
 } from "./wiki";
+import { wikiDirPath } from "./wiki-paths";
 import { WIKI_ARTIFACT_FILES } from "./wiki-scenarios";
-import { readWikiArtifact, wikiArtifactPath } from "./wikis";
+import { readWikiArtifact } from "./wikis";
 import { WORKBENCH_FILE_LIMIT, WORKBENCH_FILE_MAX_DEPTH } from "./workbench-tree";
 
 // One definition of each cap, declared in the client-safe module because the
@@ -91,13 +92,15 @@ interface Listing {
 type LeafFilter = (name: string) => boolean;
 
 /**
- * The directory holding this Wiki's seeded artifacts, derived from the one
- * exported path helper rather than re-spelling `tenants/<t>/wikis/<id>` here.
- * Re-spelling it would be a second definition of a layout `wikis.ts` owns.
+ * The directory holding this Wiki's seeded artifacts.
+ *
+ * `wiki-paths.ts` owns the layout and exports this address directly, so there is
+ * nothing to re-spell and nothing to derive: an earlier version of this function
+ * sliced the trailing filename off `wikiArtifactPath` to avoid stating
+ * `tenants/<t>/wikis/<id>` a second time, which `wikiDirPath` now does properly.
  */
 function wikiArtifactDir(owner: string, wikiId: string): string {
-  const sample = wikiArtifactPath(owner, wikiId, WIKI_ARTIFACT_FILES[0]);
-  return sample.slice(0, sample.lastIndexOf("/"));
+  return wikiDirPath(owner, wikiId);
 }
 
 /**

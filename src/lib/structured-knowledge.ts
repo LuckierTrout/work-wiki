@@ -20,7 +20,7 @@ import {
 } from "./names-terms";
 import { getStorage } from "./storage";
 import { tenantForOwner, tenantWikiRelPath, validateSlug, validateTenant } from "./wiki";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 
 export type KnowledgeKind =
   | "person"

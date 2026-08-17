@@ -223,7 +223,7 @@ describe("Create Wiki", () => {
     // The seeded wiki is now the canvas's current one, not the empty state.
     expect(screen.queryByText("No wiki yet.")).toBeNull();
     expect(screen.getByText(WIKI.name)).toBeTruthy();
-    // Creating rewrites the tenant workspace profile, so the server tree the
+    // Creating seeds a new wiki and makes it active, so the server tree the
     // owner is looking at is stale until it is refetched.
     expect(refresh).toHaveBeenCalledTimes(1);
   });

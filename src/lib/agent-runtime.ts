@@ -19,7 +19,7 @@ import {
 } from "./wiki";
 import type { AgentProfile } from "./types";
 import { recordOperationSafe } from "./operation-ledger";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 import { buildAgentSkillGuidance } from "./agent-skills";
 import {
   createAgentInteraction,

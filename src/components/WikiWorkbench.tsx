@@ -29,8 +29,8 @@ export interface WikiWorkbenchProps {
    * The server could not read the registry, so `initialWikis` is a degraded
    * placeholder rather than an observation. Rendering the ordinary empty state
    * here would tell the owner their wikis do not exist and invite them to
-   * create a duplicate — and creating one rewrites the tenant workspace
-   * profile. Say the read failed instead.
+   * create a duplicate — which seeds a second wiki, makes it the active one,
+   * and moves every prompt onto its template. Say the read failed instead.
    */
   unavailable?: boolean;
 }
@@ -95,8 +95,9 @@ export function WikiWorkbench({
       setCurrentId(wiki.id);
       setCreateOpen(false);
       setError(null);
-      // The page is force-dynamic and this rewrote the workspace profile, so
-      // profile-derived server output is stale until the tree is refetched.
+      // The page is force-dynamic and this seeded a new wiki — its own
+      // purpose.md, Schema and Workspace Purpose — and made it active, so the
+      // wiki-derived server output is stale until the tree is refetched.
       router.refresh();
     } catch (cause) {
       setCreateError(cause instanceof Error ? cause.message : "Couldn’t create the wiki.");
@@ -113,8 +114,9 @@ export function WikiWorkbench({
     setError(null);
     try {
       await send("/api/wikis/current", { method: "PUT", body: JSON.stringify({ id }) });
-      // Switching re-seeds the workspace profile too (it is tenant-global
-      // while schema.md is per-Wiki), so the server tree is stale as well.
+      // Switching writes wikis.json and nothing else — it overwrites no
+      // artifact and no Workspace Purpose. It does change WHICH wiki's Schema
+      // and profile are live, so the server tree still has to be refetched.
       router.refresh();
     } catch (cause) {
       setCurrentId(previous);
@@ -163,7 +165,8 @@ export function WikiWorkbench({
       {unavailable ? (
         // NOT the empty state: "No wiki yet." would be a claim about the
         // registry that this render cannot make, and its Create Wiki button
-        // would rewrite the workspace profile on the strength of a read error.
+        // would seed a duplicate wiki and move every prompt onto its template
+        // on the strength of a read error.
         <div className="mt-4 rounded-xl border border-foreground/15 p-6">
           <p role="alert" className="text-sm text-foreground/60">
             Your wikis couldn’t be loaded. Reload to try again.
@@ -278,8 +281,9 @@ export function WikiWorkbench({
         cancelLabel="Cancel"
         busy={busy}
         // The dialog opens on the Wiki's current scenario, so the default path
-        // through a destructive confirm would rewrite purpose, Schema and the
-        // profile to identical bytes and bump updatedAt for nothing.
+        // through a destructive confirm would rewrite this wiki's purpose,
+        // Schema and Workspace Purpose to identical template bytes — discarding
+        // any hand-authored purpose — and bump updatedAt for nothing.
         confirmDisabled={pendingScenario === current?.scenario}
         error={templateError}
         fallbackFocusRef={headingRef}
@@ -288,8 +292,9 @@ export function WikiWorkbench({
         body={
           <>
             <p>
-              This overwrites purpose.md and Schema for this wiki. Pages and Sources are
-              not changed.
+              This overwrites purpose.md, Schema, and the Workspace Purpose for this
+              wiki — a purpose you wrote in Settings will be replaced by the new
+              template’s. Other wikis, Pages and Sources are not changed.
             </p>
             <label
               htmlFor="wiki-workbench-template"

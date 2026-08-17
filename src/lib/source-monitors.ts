@@ -8,7 +8,7 @@ import { getConfiguredModel } from "./llm";
 import { withFileLock } from "./lock";
 import { createMemoryChangeProposal } from "./memory-proposals";
 import { buildNamesTermsGuidance } from "./names-terms";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 import { getStorage } from "./storage";
 import {
   buildClaimEvidence,

@@ -12,10 +12,13 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { ClientInputError } from "../errors";
-import { _resetLocks } from "../lock";
+import { _resetLocks, withFileLock } from "../lock";
 import { _resetStorage } from "../storage";
 import { tenantForOwner } from "../wiki";
-import { getWorkspaceProfile } from "../workspace-profile";
+import { wikiLockKey } from "../wiki-paths";
+import { buildWorkspaceGuidance } from "../workspace-guidance";
+import { getWorkspaceProfile, saveWorkspaceProfile } from "../workspace-profile";
+import { WORKSPACE_SCENARIO_TEMPLATES } from "../workspace-profile-schema";
 import {
   MAX_WIKIS,
   applyScenarioTemplate,
@@ -41,6 +44,14 @@ let originalDataDir: string | undefined;
 
 function abs(...segments: string[]): string {
   return path.join(tmpDir, ...segments);
+}
+
+/** The raw bytes of one wiki's profile — "byte-identical" needs the file, not the parse. */
+function profileBytes(wikiId: string): Promise<string> {
+  return fs.readFile(
+    abs("tenants", TENANT, "wikis", wikiId, "workspace-profile.json"),
+    "utf8",
+  );
 }
 
 beforeEach(async () => {
@@ -80,10 +91,17 @@ describe("create a wiki from a scenario template", () => {
     expect(purpose).toContain("# Q3 planning");
     expect(schema).toContain("## Page conventions");
 
-    // The seeded template reaches the prompt path, not just the disk.
-    const profile = await getWorkspaceProfile(OWNER);
+    // The seeded template reaches the prompt path, not just the disk — and it
+    // is stored in THIS wiki's directory, not tenant-globally.
+    const profile = await getWorkspaceProfile(OWNER, wiki.id);
     expect(profile.scenario).toBe("business");
     expect(profile.pageConventions).toContain("explicit owners");
+    await expect(
+      fs.stat(abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json")),
+    ).resolves.toBeTruthy();
+    await expect(
+      fs.stat(abs("tenants", TENANT, "workspace-profile.json")),
+    ).rejects.toThrow();
   });
 
   it("writes the artifacts under wikis/, never under the reconciled wiki/ tree", async () => {
@@ -299,7 +317,7 @@ describe("applying a different scenario template", () => {
     expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toContain(
       "## Page conventions",
     );
-    expect((await getWorkspaceProfile(OWNER)).scenario).toBe("reading");
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("reading");
 
     expect(
       await fs.readFile(abs("tenants", TENANT, "wiki", "existing-page.md"), "utf8"),
@@ -339,43 +357,149 @@ describe("the active wiki pointer", () => {
     expect((await getCurrentWiki(OWNER))?.id).toBe(first.id);
   });
 
-  it("re-seeds the workspace profile so guidance and Schema name one template", async () => {
-    // The profile is tenant-global while schema.md is per-wiki. Moving the
-    // pointer alone leaves loadPageConventions() on the newly active wiki and
-    // buildWorkspaceGuidance() on the last one created — and the ingest prompt
-    // then carries both templates at once.
+  it("writes only wikis.json — a switch overwrites no profile (DW-21)", async () => {
+    // The switch used to re-seed a tenant-global profile from the newly active
+    // wiki's template, so an unguarded <select> silently discarded whatever the
+    // owner had authored in Settings. The profile is per-wiki now: moving the
+    // pointer swaps which one is live and rewrites nothing.
     const business = await createWiki(OWNER, { name: "Ops", scenario: "business" });
-    await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
-    expect((await getWorkspaceProfile(OWNER)).scenario).toBe("reading");
+    const reading = await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
+
+    // Hand-author the business wiki's purpose, the way Settings would.
+    await saveWorkspaceProfile(OWNER, business.id, {
+      scenario: "custom",
+      purpose: "Hand-authored: the Phoenix decision record.",
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    });
+    const before = await Promise.all(
+      [business.id, reading.id].map((id) => profileBytes(id)),
+    );
+    const registryBefore = await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8");
 
     await setCurrentWiki(OWNER, business.id);
 
-    expect((await getWorkspaceProfile(OWNER)).scenario).toBe("business");
-    const schema = (await readWikiArtifact(OWNER, business.id, "schema.md")) ?? "";
-    expect(schema).toContain("### Scenario conventions — Business");
-    expect((await getWorkspaceProfile(OWNER)).pageConventions).toContain(
-      "explicit owners",
+    expect(await Promise.all([business.id, reading.id].map(profileBytes))).toEqual(before);
+    expect(await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8")).not.toBe(
+      registryBefore,
+    );
+    // Guidance and schema.md now come from the same wiki's directory.
+    expect(await buildWorkspaceGuidance(OWNER)).toContain("Hand-authored");
+    expect(await readWikiArtifact(OWNER, business.id, "schema.md")).toContain(
+      "### Scenario conventions — Business",
     );
   });
 
-  it("leaves the pointer where it was when the profile re-seed fails", async () => {
-    // The switch is two writes: the pointer, then the tenant-global profile.
-    // If the second fails the route answers 500 and the UI rolls its selection
-    // back — so a pointer left on the new wiki would mean loadPageConventions()
-    // reads one template's schema.md while buildWorkspaceGuidance() renders
-    // another, with the owner told nothing happened.
-    const first = await createWiki(OWNER, { name: "One", scenario: "business" });
-    await createWiki(OWNER, { name: "Two", scenario: "reading" });
-    const registryBefore = await getWikiRegistry(OWNER);
+  it("keeps a hand-authored purpose when another wiki is created or re-templated (DW-14)", async () => {
+    const first = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await saveWorkspaceProfile(OWNER, first.id, {
+      scenario: "custom",
+      purpose: "Hand-authored: the Phoenix decision record.",
+      keyQuestions: ["Who signed off?"],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    });
+    const authored = await profileBytes(first.id);
 
-    // Make the profile unwritable the way the filesystem can: a directory
-    // where the file belongs.
-    const profileFile = abs("tenants", TENANT, "workspace-profile.json");
-    await fs.rm(profileFile);
-    await fs.mkdir(profileFile);
+    const second = await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
+    expect(await profileBytes(first.id)).toBe(authored);
+    expect((await getWorkspaceProfile(OWNER, second.id)).scenario).toBe("reading");
 
-    await expect(setCurrentWiki(OWNER, first.id)).rejects.toThrow();
+    await applyScenarioTemplate(OWNER, second.id, "research");
+    expect(await profileBytes(first.id)).toBe(authored);
+    expect((await getWorkspaceProfile(OWNER, second.id)).scenario).toBe("research");
 
-    expect((await getWikiRegistry(OWNER)).currentId).toBe(registryBefore.currentId);
+    // And it is still what Settings would show once that wiki is active again.
+    await setCurrentWiki(OWNER, first.id);
+    expect((await getWorkspaceProfile(OWNER, first.id)).purpose).toContain(
+      "Hand-authored",
+    );
+  });
+
+  it("makes a Settings save wait on the Wiki lock, not a second key (DW-22)", async () => {
+    // THE DISCRIMINATOR. Firing the two operations concurrently proves nothing:
+    // they enqueue synchronously in call order, and neither one tears a single
+    // `writeFile`, so that shape passes under the OLD two-key arrangement too.
+    // Holding `wikis:<tenant>` from the test is what tells the arrangements
+    // apart — under `workspace-profile:<tenant>` the save would sail straight
+    // past a held Wiki lock, which is exactly the interleave DW-22 names.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const gate = withFileLock(wikiLockKey(OWNER), () => held);
+
+    let saved = false;
+    const save = saveWorkspaceProfile(OWNER, wiki.id, {
+      scenario: "custom",
+      purpose: "Settings save racing the re-template.",
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    }).then(() => {
+      saved = true;
+    });
+    let retemplated = false;
+    const template = applyScenarioTemplate(OWNER, wiki.id, "reading").then(() => {
+      retemplated = true;
+    });
+
+    // Give both every chance to run. Neither may, while the Wiki lock is held.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(saved).toBe(false);
+    expect(retemplated).toBe(false);
+
+    release();
+    await Promise.all([gate, save, template]);
+
+    // And each file is wholly ONE writer's bytes — never a blend. The save
+    // queued first, so the re-template's template bytes are what landed last.
+    const profile = await getWorkspaceProfile(OWNER, wiki.id);
+    expect(profile.scenario).toBe("reading");
+    expect(profile.purpose).toBe(WORKSPACE_SCENARIO_TEMPLATES.reading.purpose);
+    expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toContain(
+      "### Scenario conventions — Reading",
+    );
+    // Deliberately NOT asserted: that the profile's `scenario` and `schema.md`
+    // name the same template. Within one wiki they can still diverge — a
+    // Settings save sets `scenario: "custom"` and rewrites no artifact — and
+    // reconciling the two representations is Story 1.8's, explicitly out of
+    // scope here. What DW-22 buys is that they cannot come from two different
+    // wikis, and that neither file is ever half-written by the other operation.
+  });
+
+  it("takes no `workspace-profile:` lock key anywhere in src (DW-22)", async () => {
+    // The behaviour above pins that the save waits on the Wiki lock; this pins
+    // that the retired key is gone for good, in the source-scan style
+    // `wiki-schema-edit.test.ts` already uses for the artifact layout. A future
+    // caller reintroducing a second key would restore the exact nesting hazard.
+    const root = path.resolve(__dirname, "../..");
+    const files = (await fs.readdir(root, { recursive: true, encoding: "utf8" }))
+      .filter((name) => name.endsWith(".ts") || name.endsWith(".tsx"))
+      .map((name) => path.join(root, name));
+    expect(files.length).toBeGreaterThan(100);
+
+    for (const file of files) {
+      const source = await fs.readFile(file, "utf8");
+      // The lock-key FORM, not the words: `lock.ts` and this suite both discuss
+      // the retired key in prose, and prose is not a call.
+      expect(source).not.toMatch(/`workspace-profile:\$\{/);
+      expect(source).not.toMatch(/withFileLock\(\s*["'`]workspace-profile:/);
+    }
+
+    const profileStore = await fs.readFile(
+      path.resolve(__dirname, "../workspace-profile.ts"),
+      "utf8",
+    );
+    expect(profileStore).toContain("withFileLock(wikiLockKey(owner)");
   });
 });

@@ -24,7 +24,7 @@ import {
   buildNamesTermsGuidance,
   expandQueryWithNamesTerms,
 } from "./names-terms";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 import { UNTRUSTED_CONTENT_RULE, wrapUntrusted } from "./untrusted";
 import type { QueryResult } from "./types";
 import type { QueryFormat } from "./query-format";

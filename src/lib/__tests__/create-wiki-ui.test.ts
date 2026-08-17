@@ -47,7 +47,7 @@ describe("CreateWikiDialog offers exactly the five Scenario Templates", () => {
     const source = await read("CreateWikiDialog.tsx");
     expect(source).toContain('DEFAULT_SCENARIO: CreatableScenario = "business"');
     expect(source.replace(/\s+/g, " ")).toContain(
-      "Pick one Scenario Template. This writes purpose.md and Schema. There is no blank wiki.",
+      "Pick one Scenario Template. This writes purpose.md, Schema, and this wiki’s own Workspace Purpose. There is no blank wiki.",
     );
   });
 
@@ -141,8 +141,11 @@ describe("WikiWorkbench empty state and preview copy", () => {
     expect(WIKI_ARTIFACT_FILES).toEqual(["purpose.md", "schema.md"]);
     expect(source).toContain("Change template");
     const warning = source.replace(/\s+/g, " ");
+    // The Workspace Purpose is per-wiki and a re-template rewrites it too, so
+    // the confirm has to name it, say what is LOST (a purpose hand-authored in
+    // Settings, not just a file), and say the blast radius stops at this wiki.
     expect(warning).toContain(
-      "This overwrites purpose.md and Schema for this wiki. Pages and Sources are not changed.",
+      "This overwrites purpose.md, Schema, and the Workspace Purpose for this wiki — a purpose you wrote in Settings will be replaced by the new template’s. Other wikis, Pages and Sources are not changed.",
     );
   });
 
@@ -176,8 +179,8 @@ describe("WikiWorkbench empty state and preview copy", () => {
 
   it("does not offer Create Wiki when the registry could not be read", async () => {
     // "No wiki yet." is a claim about the registry. On a read failure the
-    // workbench cannot make it, and its primary action would rewrite the
-    // tenant workspace profile on the strength of a transient error.
+    // workbench cannot make it, and its primary action would seed a duplicate
+    // wiki and move every prompt onto its template on a transient error.
     const workbench = await read("WikiWorkbench.tsx");
     expect(workbench).toContain("unavailable");
     expect(workbench).toContain("Your wikis couldn’t be loaded.");
@@ -206,7 +209,7 @@ describe("WikiWorkbench empty state and preview copy", () => {
     expect(shell).toMatch(/<h1 className="wb-title">/);
   });
 
-  it("refetches the server tree after a mutation that rewrites the profile", async () => {
+  it("refetches the server tree after a mutation that changes the live wiki", async () => {
     const source = await read("WikiWorkbench.tsx");
     expect(source.match(/router\.refresh\(\)/g) ?? []).toHaveLength(3);
   });
