@@ -75,6 +75,21 @@ export function wikiArtifactPath(
 }
 
 /**
+ * `tenants/<tenant>/wikis/<wikiId>/workspace-profile.json` — the third sibling
+ * {@link wikiLockKey} covers, beside `purpose.md` and `schema.md`.
+ *
+ * It is deliberately NOT a {@link WikiArtifactFile}: that list drives the
+ * Files-tab tree and the dialog copy, and a JSON store is not one of the
+ * owner's editable markdown artifacts. It lives here anyway because TWO
+ * modules address it — `workspace-profile.ts` reads and writes it, and
+ * `wikis.ts` snapshots and restores it when a re-template fails — and a second
+ * copy of the literal is how those two drift onto different files.
+ */
+export function wikiProfilePath(owner: string, wikiId: string): string {
+  return `${wikiDirPath(owner, wikiId)}/workspace-profile.json`;
+}
+
+/**
  * `wikis:<tenant>` — the ONE lock key for Wiki state.
  *
  * It covers `tenants/<t>/wikis.json` AND everything under

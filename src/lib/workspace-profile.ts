@@ -20,7 +20,7 @@ import { withFileLock } from "./lock";
 import { logger } from "./logger";
 import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
-import { wikiDirPath, wikiLockKey } from "./wiki-paths";
+import { wikiLockKey, wikiProfilePath } from "./wiki-paths";
 import {
   EMPTY_WORKSPACE_PROFILE,
   parseWorkspaceProfileInput,
@@ -42,13 +42,13 @@ function tenant(owner: string): string {
   return value;
 }
 
-function profilePath(owner: string, wikiId: string): string {
-  return `${wikiDirPath(owner, wikiId)}/workspace-profile.json`;
-}
-
 /**
  * The retired tenant-global singleton. Kept as a READ-ONLY fallback address —
  * nothing in this module ever writes or deletes it.
+ *
+ * The LIVE address is `wikiProfilePath(owner, wikiId)` from `wiki-paths.ts`,
+ * not a literal here: `wikis.ts` snapshots and restores the same file when a
+ * re-template fails, and one expression is what keeps the two in step.
  */
 function legacyProfilePath(owner: string): string {
   return `tenants/${tenant(owner)}/workspace-profile.json`;
@@ -87,7 +87,7 @@ async function readOwnProfile(
   wikiId: string,
 ): Promise<WorkspaceProfile | null> {
   try {
-    return toProfile(await getStorage().readFile(profilePath(owner, wikiId)));
+    return toProfile(await getStorage().readFile(wikiProfilePath(owner, wikiId)));
   } catch (error) {
     if (isEnoent(error)) return null;
     throw error;
@@ -187,7 +187,7 @@ export async function putWorkspaceProfile(
     updatedAt: now,
   };
   await getStorage().writeFile(
-    profilePath(owner, wikiId),
+    wikiProfilePath(owner, wikiId),
     JSON.stringify(profile, null, 2),
   );
   return profile;

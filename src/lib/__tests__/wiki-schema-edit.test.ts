@@ -894,9 +894,11 @@ describe("the two routes", () => {
     // and the read path could address different bytes. The helpers live in a
     // leaf module (not `wikis.ts`) so the per-Wiki profile store can address
     // the directory without importing `wikis.ts` back into a cycle.
-    const paths = await fs.readFile(
-      path.resolve(__dirname, "../wiki-paths.ts"),
-      "utf8",
+    // Comment-stripped, like the routes below: EVERY module here documents the
+    // layout in prose, so a raw scan would pass on the docblock that explains
+    // the rule rather than on the code that keeps it.
+    const paths = code(
+      await fs.readFile(path.resolve(__dirname, "../wiki-paths.ts"), "utf8"),
     );
     expect(paths).toContain("`tenants/${tenantFor(owner)}/wikis/");
     // The sweep addresses the PARENT of a Wiki's directory, so `wiki-paths.ts`
@@ -909,16 +911,35 @@ describe("the two routes", () => {
     // and a `not.toContain("}/wikis/")` guard sails straight past it. The
     // negative lookahead spares `wikiRegistryPath`'s `…}/wikis.json`, which
     // addresses the registry file rather than the artifact tree.
+    // The profile is a sibling of the artifacts: same directory, ONE helper —
+    // and now a NAMED one, because two modules need the full address rather
+    // than just the directory. `workspace-profile.ts` reads and writes the
+    // file; `wikis.ts` snapshots and restores it when a re-template fails
+    // (DW-143). A second literal is how a restore silently starts putting back
+    // a file nothing ever wrote.
+    expect(paths).toContain("/workspace-profile.json`");
     for (const name of ["wikis.ts", "workspace-profile.ts"]) {
-      const source = await fs.readFile(path.resolve(__dirname, `../${name}`), "utf8");
+      const source = code(
+        await fs.readFile(path.resolve(__dirname, `../${name}`), "utf8"),
+      );
       expect(source).not.toMatch(/\}\/wikis(?!\.)/);
+      // …and BOTH modules reach the file through the promoted helper. `wikis.ts`
+      // is the module the promotion exists FOR: its snapshot and its restore
+      // have to address the same bytes `putWorkspaceProfile` writes, or a
+      // failed re-template puts a file back that nothing ever read. Matched as
+      // a SHAPE, so renaming the parameters is not a failure.
+      expect(source).toMatch(/wikiProfilePath\(\s*\w+\s*,\s*\w+\s*\)/);
+      // The per-Wiki profile address is not re-derived either — and the guard
+      // is on the FILENAME rather than on one spelling of the interpolation,
+      // because the realistic drift is a two-step derivation or a differently
+      // named local helper, neither of which a `wikiDirPath(…)}/…` pattern
+      // would catch. `wikis.ts` may not name the file at all; the ONE literal
+      // left in `workspace-profile.ts` is the retired tenant-global singleton
+      // (`tenants/${tenant(owner)}/workspace-profile.json`), a DIFFERENT file
+      // kept at its one read-only site.
+      const literals = source.match(/workspace-profile\.json/g) ?? [];
+      expect(literals).toHaveLength(name === "workspace-profile.ts" ? 1 : 0);
     }
-    // The profile is a sibling of the artifacts: same directory, one helper.
-    const profile = await fs.readFile(
-      path.resolve(__dirname, "../workspace-profile.ts"),
-      "utf8",
-    );
-    expect(profile).toContain("wikiDirPath(owner, wikiId)");
     for (const file of [
       "workbench/artifact/route.ts",
       "workbench/preview/route.ts",

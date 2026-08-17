@@ -58,6 +58,7 @@ import {
   wikiArtifactPath,
   wikiDirPath,
   wikiLockKey,
+  wikiProfilePath,
   wikisRootPath,
 } from "./wiki-paths";
 import { putWorkspaceProfile } from "./workspace-profile";
@@ -330,6 +331,12 @@ async function putWikiArtifact(
  * Workspace Purpose. The profile goes through the UNLOCKED `putWorkspaceProfile`
  * for the same reason {@link putWikiArtifact} is unlocked — the caller is
  * already holding `wikis:<tenant>`.
+ *
+ * THREE SEQUENTIAL WRITES, NO TRANSACTION, and deliberately none here: a fault
+ * at ANY of them — and at the caller's registry write that follows — is undone
+ * by the CALLER's compensation, because what the undo is depends on whether the
+ * directory is new (discard it) or being overwritten (restore the snapshot).
+ * See the compensation block below.
  */
 async function seedWikiArtifacts(owner: string, wiki: WikiRecord): Promise<void> {
   const template = scenarioTemplate(wiki.scenario);
@@ -350,6 +357,162 @@ async function seedWikiArtifacts(owner: string, wiki: WikiRecord): Promise<void>
     renderSchemaMarkdown(template, engineConventions),
   );
   await putWorkspaceProfile(owner, wiki.id, templateProfile(wiki.scenario));
+}
+
+// ---------------------------------------------------------------------------
+// Compensating cleanup for a half-finished seed (DW-20, DW-143)
+// ---------------------------------------------------------------------------
+
+/*
+ * The storage provider has NO transaction, and this deliberately does not add
+ * one — no journal, no write-ahead log, no two-phase commit. `seedWikiArtifacts`
+ * plus `writeRegistry` is four sequential `writeFile` calls, each meant to be
+ * atomic on its own (with the provider caveat noted at
+ * {@link applyScenarioTemplate}'s catch) and none atomic together, so a fault at
+ * ANY ONE of the four used to leave durable wreckage: a create left a
+ * `wikis/<id>/` directory no registry entry
+ * named, and a re-template left `purpose.md`/`schema.md` on the NEW template
+ * beside a `workspace-profile.json` still on the old one — one Wiki describing
+ * two templates to every prompt that reads it.
+ *
+ * What closes it is a compensation around each caller, and the two callers need
+ * DIFFERENT ones:
+ *
+ *   - CREATE is building a directory that did not exist a moment ago (the id
+ *     comes straight from `crypto.randomUUID()`), so the undo is to discard the
+ *     whole directory — one `deleteDirectory`, scoped to an id this call minted,
+ *     safe whether or not any byte landed.
+ *   - RE-TEMPLATE is OVERWRITING files an owner may have edited, so the undo has
+ *     to be a byte snapshot taken BEFORE the seed and written back after, with
+ *     "the file did not exist" restored as a delete rather than as an empty file.
+ *
+ * Both run inside the already-held `wikis:<tenant>` lock and therefore go
+ * through `getStorage()` directly — `withFileLock` is not reentrant, so taking
+ * `wikiLockKey(owner)` again from in here would deadlock the whole tenant.
+ *
+ * Both are FAIL-SOFT in the same shape as `deleteWiki`'s tail: a cleanup that
+ * itself throws is warned about and swallowed, because the caller must receive
+ * the ORIGINAL storage failure. Compensation removes wreckage; it never turns a
+ * failure into a success, and never replaces the diagnosis with its own.
+ */
+
+/** One seeded file's pre-seed bytes, or null when it did not exist. */
+interface SeededFileSnapshot {
+  path: string;
+  content: string | null;
+}
+
+/**
+ * The three paths a seed writes: both artifacts and this Wiki's profile.
+ *
+ * The profile address comes from `wikiProfilePath` rather than a literal, so
+ * `workspace-profile.ts`'s putter and this restore cannot drift onto different
+ * files — that drift would silently make the restore a no-op.
+ */
+function seededFilePaths(owner: string, wikiId: string): string[] {
+  return [
+    ...WIKI_ARTIFACT_FILES.map((file) => wikiArtifactPath(owner, wikiId, file)),
+    wikiProfilePath(owner, wikiId),
+  ];
+}
+
+/**
+ * Read the pre-seed bytes of everything {@link seedWikiArtifacts} will overwrite.
+ *
+ * DELIBERATELY NOT FAIL-SOFT, and it is the one step here that isn't: it runs
+ * BEFORE the first write, so a throw leaves the Wiki exactly as it was. Warning
+ * and carrying on would mean seeding with no way back — the precise state
+ * DW-143 is about.
+ *
+ * Missing reads ENOENT → null, the {@link readWikiArtifact} shape, because a
+ * Wiki whose profile file has never been written is an ordinary state (the
+ * legacy tenant-global read-through covers it) and restoring it must mean
+ * DELETING the file again, not leaving the new template's bytes behind.
+ */
+async function snapshotSeededFiles(
+  owner: string,
+  wikiId: string,
+): Promise<SeededFileSnapshot[]> {
+  const storage = getStorage();
+  return Promise.all(
+    seededFilePaths(owner, wikiId).map(async (path) => {
+      try {
+        return { path, content: await storage.readFile(path) };
+      } catch (error) {
+        if (isEnoent(error)) return { path, content: null };
+        throw error;
+      }
+    }),
+  );
+}
+
+/**
+ * Put every snapshotted file back, byte for byte. NEVER THROWS.
+ *
+ * The bytes are written back RAW rather than re-seeded through
+ * `putWorkspaceProfile`: re-seeding would re-stamp `updatedAt` and re-serialize
+ * through the parser, so "identical to before the call" would stop being true
+ * of the file even when it was true of the meaning.
+ *
+ * Each entry is attempted independently — one unwritable file must not skip the
+ * restore of the other two — and `content === null` restores "did not exist" as
+ * a delete, tolerating ENOENT because a seed that faulted before that write
+ * never created it.
+ */
+async function restoreSeededFiles(snapshot: SeededFileSnapshot[]): Promise<void> {
+  const storage = getStorage();
+  for (const entry of snapshot) {
+    try {
+      if (entry.content === null) {
+        try {
+          await storage.deleteFile(entry.path);
+        } catch (error) {
+          // The seed never got as far as creating it — nothing to undo.
+          if (!isEnoent(error)) throw error;
+        }
+      } else {
+        await storage.writeFile(entry.path, entry.content);
+      }
+    } catch (error) {
+      logger.warn(
+        "wikis",
+        `restoring "${entry.path}" after a failed re-template failed — this wiki may now describe two different scenario templates`,
+        error,
+      );
+    }
+  }
+}
+
+/**
+ * Discard the whole directory a {@link createWiki} was building. NEVER THROWS.
+ *
+ * Scoped to an id this call just minted with `crypto.randomUUID()`, so it can
+ * only ever remove a directory this call created — no other Wiki's directory,
+ * and never `wikis.json`, `tenants/<t>/wiki/**` or `tenants/<t>/raw/**`.
+ * `deleteDirectory` is a no-op when the directory is absent, so this is also
+ * correct when the fault came before the first byte landed.
+ */
+async function discardCreatedWikiDirectory(
+  owner: string,
+  wikiId: string,
+): Promise<void> {
+  try {
+    await getStorage().deleteDirectory(wikiDirPath(owner, wikiId));
+  } catch (error) {
+    // The registry never named this id, so the leftovers ARE an orphan. But
+    // "leave it for the sweep" would be too strong a promise, and it is most
+    // wrong in the case that matters most: after a failed FIRST create the
+    // tenant's registry names nothing, {@link sweepOrphans} deliberately bails
+    // on an empty registry, and its only non-test caller is {@link deleteWiki}.
+    // So these bytes sit there until the tenant has at least one wiki AND a
+    // delete runs. That is recoverable, not automatic — hence a warn that says
+    // what is actually true rather than one that implies a cleanup is queued.
+    logger.warn(
+      "wikis",
+      `removing the directory of half-created wiki "${wikiId}" failed — no registry entry names it, so it stays on disk until a delete in this tenant next sweeps`,
+      error,
+    );
+  }
 }
 
 /**
@@ -462,10 +625,20 @@ export async function createWiki(
       createdAt: now,
       updatedAt: now,
     };
-    await seedWikiArtifacts(owner, wiki);
-    registry.wikis.push(wiki);
-    registry.currentId = wiki.id;
-    await writeRegistry(owner, registry);
+    // The cap check above throws BEFORE this point on purpose: it writes
+    // nothing, so it must not be inside the compensation.
+    try {
+      await seedWikiArtifacts(owner, wiki);
+      registry.wikis.push(wiki);
+      registry.currentId = wiki.id;
+      await writeRegistry(owner, registry);
+    } catch (error) {
+      // Any of the four writes may have landed and any may not have. The id is
+      // this call's own, and no registry entry names it, so discarding the
+      // whole directory is the exact undo — see the compensation block above.
+      await discardCreatedWikiDirectory(owner, wiki.id);
+      throw error;
+    }
     return wiki;
   });
 }
@@ -490,10 +663,31 @@ export async function applyScenarioTemplate(
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
     if (!wiki) return null;
+    // Snapshot BEFORE the first overwrite. The in-memory mutation below needs
+    // no undo — the registry is re-read on every call, so a failed write simply
+    // leaves the stored `scenario` where it was; the FILES are what persist.
+    const snapshot = await snapshotSeededFiles(owner, wiki.id);
     wiki.scenario = scenario;
     wiki.updatedAt = new Date().toISOString();
-    await seedWikiArtifacts(owner, wiki);
-    await writeRegistry(owner, registry);
+    try {
+      await seedWikiArtifacts(owner, wiki);
+      await writeRegistry(owner, registry);
+    } catch (error) {
+      // What makes "put the old artifacts back" the correct undo rather than a
+      // guess: `StorageProvider.writeFile` is SPECIFIED atomic from the
+      // caller's view (`storage/types.ts`), so a throw from the registry write
+      // means those bytes never landed and the stored `scenario` is still the
+      // old one the snapshot belongs to.
+      //
+      // That rests on the INTERFACE contract, which the default provider does
+      // not yet honour: `FilesystemStorageProvider.writeFile` is a bare
+      // `fs.writeFile`, not the write-to-tmp + rename the contract describes.
+      // A torn write there would leave a truncated file that this compensation
+      // cannot detect and would happily restore around — a separate durability
+      // gap in the provider, not one DW-20/DW-143 closes.
+      await restoreSeededFiles(snapshot);
+      throw error;
+    }
     return wiki;
   });
 }

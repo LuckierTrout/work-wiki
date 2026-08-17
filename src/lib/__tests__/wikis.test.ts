@@ -13,9 +13,10 @@ import os from "os";
 import path from "path";
 import { ClientInputError } from "../errors";
 import { _resetLocks, withFileLock } from "../lock";
+import { logger } from "../logger";
 import { _resetStorage, getStorage } from "../storage";
 import { tenantForOwner } from "../wiki";
-import { wikiLockKey } from "../wiki-paths";
+import { wikiDirPath, wikiLockKey } from "../wiki-paths";
 import { buildWorkspaceGuidance } from "../workspace-guidance";
 import { getWorkspaceProfile, saveWorkspaceProfile } from "../workspace-profile";
 import { WORKSPACE_SCENARIO_TEMPLATES } from "../workspace-profile-schema";
@@ -834,5 +835,478 @@ describe("the orphan-directory sweep", () => {
 
     expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([keep.id]);
     expect(await exists(wikiDir(drop.id))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Compensating cleanup for a half-finished seed (DW-20, DW-143)
+// ---------------------------------------------------------------------------
+
+/**
+ * `seedWikiArtifacts` + `writeRegistry` is four sequential writes and the
+ * storage provider has no transaction, so every one of them is a place a create
+ * or a re-template can stop halfway. What these pin is what is on DISK
+ * afterwards: a create leaves no directory the registry does not name, and a
+ * re-template leaves all three of its files byte-identical to the pre-call
+ * bytes — never `purpose.md` on the new template beside a profile on the old
+ * one. The injector is the `writeFile` path-conditional spy the rename suite
+ * above already uses.
+ */
+describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-143)", () => {
+  const FAULT = "the storage provider is unavailable";
+
+  /**
+   * Reject the FIRST `writeFile` to each path ending in one of `suffixes`; pass
+   * every other write through, that path's later ones included.
+   *
+   * "First only" is what makes these rows test anything. The seed and the
+   * compensation write the SAME three paths, so a spy that rejects every match
+   * also rejects the restore of the very file it broke — the byte assertions
+   * then hold because nothing was ever overwritten, and a compensation that did
+   * nothing at all would satisfy them identically. Faulting the seed's write and
+   * letting the restore's land is the only arrangement under which "the bytes
+   * are back" means the restore put them back.
+   */
+  function failWritesTo(suffixes: string | string[], message = FAULT) {
+    const endings = Array.isArray(suffixes) ? suffixes : [suffixes];
+    const failed = new Set<string>();
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    return vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        if (endings.some((e) => target.endsWith(e)) && !failed.has(target)) {
+          failed.add(target);
+          return Promise.reject(new Error(message));
+        }
+        return write(target, content);
+      });
+  }
+
+  /** Capture every `logger.warn` call made while `run` executes. */
+  async function warnsDuring(run: () => Promise<void>): Promise<unknown[][]> {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await run();
+      return warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  /** A page and a raw source outside `wikis/`, as blast-radius controls. */
+  async function seedTenantTrees(): Promise<void> {
+    await fs.mkdir(abs("tenants", TENANT, "wiki"), { recursive: true });
+    await fs.mkdir(abs("tenants", TENANT, "raw"), { recursive: true });
+    await fs.writeFile(abs("tenants", TENANT, "wiki", "existing-page.md"), "# Page\n");
+    await fs.writeFile(abs("tenants", TENANT, "raw", "source.txt"), "raw bytes\n");
+  }
+
+  async function expectTenantTreesIntact(): Promise<void> {
+    expect(
+      await fs.readFile(abs("tenants", TENANT, "wiki", "existing-page.md"), "utf8"),
+    ).toBe("# Page\n");
+    expect(await fs.readFile(abs("tenants", TENANT, "raw", "source.txt"), "utf8")).toBe(
+      "raw bytes\n",
+    );
+  }
+
+  /** Every name directly under `tenants/<t>/wikis/`, sorted; [] when absent. */
+  async function wikisRootEntries(): Promise<string[]> {
+    try {
+      return (await fs.readdir(abs("tenants", TENANT, "wikis"))).sort();
+    } catch {
+      return [];
+    }
+  }
+
+  /** The raw bytes of all three seeded files, with null for "does not exist". */
+  function seededBytes(wikiId: string): Promise<(string | null)[]> {
+    return Promise.all(
+      ["purpose.md", "schema.md", "workspace-profile.json"].map(async (file) => {
+        try {
+          return await fs.readFile(path.join(wikiDir(wikiId), file), "utf8");
+        } catch {
+          return null;
+        }
+      }),
+    );
+  }
+
+  // One row per write a create makes, in the order it makes them.
+  for (const suffix of [
+    "purpose.md",
+    "schema.md",
+    "workspace-profile.json",
+    "wikis.json",
+  ]) {
+    it(`discards the fresh wiki directory when create faults on ${suffix}`, async () => {
+      // A wiki that already exists is the control: compensation is scoped to
+      // the id this call minted, so nothing of this one may move.
+      const existing = await createWiki(OWNER, { name: "Existing", scenario: "business" });
+      // This is the only compensation that issues a RECURSIVE directory delete,
+      // so the two tenant-wide trees are controls here even more than on the
+      // re-template rows: a `wikiDirPath` that ever lost its `<id>` segment
+      // would take the whole tenant with it.
+      await seedTenantTrees();
+      const registryBefore = await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8");
+      const entriesBefore = await wikisRootEntries();
+      const bytesBefore = await seededBytes(existing.id);
+
+      const spy = failWritesTo(suffix);
+      try {
+        await expect(
+          createWiki(OWNER, { name: "Doomed", scenario: "reading" }),
+        ).rejects.toThrow(FAULT);
+      } finally {
+        spy.mockRestore();
+      }
+
+      // No directory for the attempted id — whether the fault came before the
+      // first byte landed or after two files were already written.
+      expect(await wikisRootEntries()).toEqual(entriesBefore);
+      expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([existing.id]);
+      expect((await getWikiRegistry(OWNER)).currentId).toBe(existing.id);
+      // The old registry bytes and the other wiki's files are untouched.
+      expect(await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8")).toBe(registryBefore);
+      expect(await seededBytes(existing.id)).toEqual(bytesBefore);
+      await expectTenantTreesIntact();
+    });
+  }
+
+  it("re-throws the seed error, not the cleanup error, when the discard also fails", async () => {
+    // Compensation removes wreckage; it must never replace the diagnosis with
+    // its own, or the owner is told the directory was busy when what actually
+    // broke was the artifact store.
+    const write = failWritesTo("schema.md", "the artifact store is unavailable");
+    const remove = vi
+      .spyOn(getStorage(), "deleteDirectory")
+      .mockRejectedValue(new Error("the directory is busy"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let warned: unknown[][] = [];
+    try {
+      await expect(
+        createWiki(OWNER, { name: "Doomed", scenario: "reading" }),
+      ).rejects.toThrow("the artifact store is unavailable");
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      write.mockRestore();
+      remove.mockRestore();
+      warn.mockRestore();
+    }
+
+    expect(
+      warned.some(
+        ([scope, message]) =>
+          scope === "wikis" && String(message).includes("half-created"),
+      ),
+    ).toBe(true);
+    // The bytes stay behind, unnamed by any registry entry. That is an orphan
+    // — but deliberately NOT a self-healing one, and the warn must not claim
+    // otherwise: this tenant's registry names nothing, and the sweep bails out
+    // on an empty registry rather than treating every directory on disk as
+    // garbage. So the leftovers persist until the tenant has a wiki and a
+    // delete runs.
+    expect(await listWikis(OWNER)).toEqual([]);
+    expect(await wikisRootEntries()).toHaveLength(1);
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+    expect(await wikisRootEntries()).toHaveLength(1);
+
+    // Once the tenant has a real wiki, a delete's sweep does reclaim them.
+    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
+    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
+    await setCurrentWiki(OWNER, keep.id);
+    await deleteWiki(OWNER, drop.id);
+    expect((await wikisRootEntries()).sort()).toEqual([keep.id]);
+  });
+
+  // Same four writes, the other caller: here the files already existed, so the
+  // undo is a byte restore rather than a directory discard.
+  for (const suffix of [
+    "purpose.md",
+    "schema.md",
+    "workspace-profile.json",
+    "wikis.json",
+  ]) {
+    it(`restores all three files when a re-template faults on ${suffix}`, async () => {
+      // A bystander wiki (created FIRST, so the target stays current) and the
+      // two tenant-wide trees are the blast-radius controls: this is the first
+      // code on the seed path that DELETES files, and the compensation must
+      // reach nothing but the three files it snapshotted.
+      const bystander = await createWiki(OWNER, { name: "Bystander", scenario: "research" });
+      const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+      await seedTenantTrees();
+
+      const bytesBefore = await seededBytes(wiki.id);
+      const bystanderBefore = await seededBytes(bystander.id);
+      const registryBefore = await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8");
+
+      const spy = failWritesTo(suffix);
+      let warned: unknown[][] = [];
+      try {
+        warned = await warnsDuring(async () => {
+          await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+            FAULT,
+          );
+        });
+      } finally {
+        spy.mockRestore();
+      }
+
+      // Every restore this row needed LANDED. Without this the row is satisfied
+      // by a compensation that failed on every file: on the rows where the seed
+      // never got past the faulting write there is nothing to put back anyway,
+      // so silence is what separates "restored" from "never overwritten".
+      expect(warned.filter(([scope]) => scope === "wikis")).toEqual([]);
+      // Byte-identical, not merely equivalent: a re-seed through
+      // `putWorkspaceProfile` would re-stamp `updatedAt` and still leave the
+      // file different from what the owner had.
+      expect(await seededBytes(wiki.id)).toEqual(bytesBefore);
+      expect(await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8")).toBe(registryBefore);
+      expect((await getCurrentWiki(OWNER))?.scenario).toBe("business");
+      // …so the Schema and the profile still describe ONE template.
+      expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toContain(
+        "### Scenario conventions — Business",
+      );
+      expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("business");
+      // Nothing outside this wiki's own directory moved.
+      expect(await seededBytes(bystander.id)).toEqual(bystanderBefore);
+      await expectTenantTreesIntact();
+    });
+  }
+
+  it("snapshots exactly the files the seed goes on to write", async () => {
+    // `seededFilePaths` derives from `WIKI_ARTIFACT_FILES` while
+    // `seedWikiArtifacts` spells its writes out one call at a time, so the two
+    // can drift: a fourth seeded file added to the seeder alone would be
+    // overwritten with nothing to put it back, and every fault row above would
+    // still pass, because each only looks at the three files it already knows
+    // about. This compares the SETS on a successful re-template.
+    //
+    // The snapshot is every read that happens BEFORE the first write — that
+    // boundary is the point. `putWorkspaceProfile` reads the profile itself
+    // just before writing it, so a plain reads-vs-writes comparison stays
+    // green even with the profile dropped from the snapshot entirely.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const dir = `${wikiDirPath(OWNER, wiki.id)}/`;
+    const storage = getStorage();
+    const readFile = storage.readFile.bind(storage);
+    const writeFile = storage.writeFile.bind(storage);
+    const calls: { op: "read" | "write"; target: string }[] = [];
+    const reads = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (target: string) => {
+        calls.push({ op: "read", target });
+        return readFile(target);
+      });
+    const writes = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        calls.push({ op: "write", target });
+        return writeFile(target, content);
+      });
+
+    try {
+      expect(await applyScenarioTemplate(OWNER, wiki.id, "reading")).not.toBeNull();
+    } finally {
+      reads.mockRestore();
+      writes.mockRestore();
+    }
+
+    const firstWrite = calls.findIndex((call) => call.op === "write");
+    const inDir = (subset: typeof calls, op: "read" | "write") =>
+      [
+        ...new Set(
+          subset
+            .filter((call) => call.op === op && call.target.startsWith(dir))
+            .map((call) => call.target),
+        ),
+      ].sort();
+
+    expect(inDir(calls.slice(0, firstWrite), "read")).toEqual(inDir(calls, "write"));
+  });
+
+  it("restores the other two files when one file's restore also fails", async () => {
+    // The restore loop attempts each entry INDEPENDENTLY. Bailing out on the
+    // first failure would leave the files after it on the new template while
+    // the ones before it went back to the old — the compensation itself
+    // recreating the two-templates-in-one-wiki state it exists to prevent.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const [purposeBefore, schemaBefore, profileBefore] = await seededBytes(wiki.id);
+
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    let purposeWrites = 0;
+    const spy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        // The registry write faults, so the seed has already overwritten all
+        // three files by the time the compensation runs.
+        if (target.endsWith("wikis.json")) return Promise.reject(new Error(FAULT));
+        if (target.endsWith("purpose.md")) {
+          purposeWrites += 1;
+          // The SEED's write lands and the RESTORE's write is what fails —
+          // purpose.md is first in the loop, so a `break` there would strand
+          // schema.md and the profile on the reading template.
+          if (purposeWrites > 1) {
+            return Promise.reject(new Error("the artifact store is unavailable"));
+          }
+        }
+        return write(target, content);
+      });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let warned: unknown[][] = [];
+    try {
+      await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+        FAULT,
+      );
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      spy.mockRestore();
+      warn.mockRestore();
+    }
+
+    const [purposeAfter, schemaAfter, profileAfter] = await seededBytes(wiki.id);
+    // The two the loop had to carry on to are back to the business bytes.
+    expect(schemaAfter).toBe(schemaBefore);
+    expect(profileAfter).toBe(profileBefore);
+    // The blocked one is the injected damage, not a second defect — and it is
+    // exactly what the warn is for.
+    expect(purposeAfter).not.toBe(purposeBefore);
+    expect(
+      warned.some(
+        ([scope, message]) =>
+          scope === "wikis" && String(message).includes("purpose.md"),
+      ),
+    ).toBe(true);
+  });
+
+  it("seeds nothing at all when the pre-seed snapshot cannot be read", async () => {
+    // The snapshot is the ONE step in the compensation that is not fail-soft,
+    // and it must stay that way. Degrading an unreadable file to "absent"
+    // would make a later restore DELETE the owner's schema.md; warning and
+    // seeding anyway would overwrite it with no way back. The snapshot runs
+    // before the first write, so throwing costs only the operation.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const bytesBefore = await seededBytes(wiki.id);
+    const registryBefore = await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8");
+
+    const storage = getStorage();
+    const read = storage.readFile.bind(storage);
+    const reads = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (target: string) =>
+        target.endsWith("schema.md")
+          ? Promise.reject(new Error("the artifact store is unreadable"))
+          : read(target),
+      );
+    const writes = vi.spyOn(storage, "writeFile");
+
+    let writeTargets: string[] = [];
+    try {
+      await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+        "the artifact store is unreadable",
+      );
+      writeTargets = writes.mock.calls.map(([target]) => String(target));
+    } finally {
+      reads.mockRestore();
+      writes.mockRestore();
+    }
+
+    // Not "restored" — never written. The read failure is surfaced verbatim.
+    expect(writeTargets).toEqual([]);
+    expect(await seededBytes(wiki.id)).toEqual(bytesBefore);
+    expect(await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8")).toBe(registryBefore);
+    expect((await getCurrentWiki(OWNER))?.scenario).toBe("business");
+  });
+
+  it("deletes the profile again when the wiki had none before the re-template", async () => {
+    // "Did not exist" restores as a DELETE. Leaving the new template's profile
+    // (or an empty file) beside the old template's schema.md is exactly the
+    // two-templates-in-one-wiki state DW-143 names.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const profile = path.join(wikiDir(wiki.id), "workspace-profile.json");
+    await fs.rm(profile);
+    const bytesBefore = await seededBytes(wiki.id);
+
+    const spy = failWritesTo("wikis.json");
+    try {
+      await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+        FAULT,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(await exists(profile)).toBe(false);
+    expect(await seededBytes(wiki.id)).toEqual(bytesBefore);
+    expect((await getCurrentWiki(OWNER))?.scenario).toBe("business");
+  });
+
+  it("tolerates the missing profile silently when the seed never wrote one", async () => {
+    // The other half of "did not exist restores as a delete": here the seed
+    // faults BEFORE `putWorkspaceProfile`, so the undo's `deleteFile` finds
+    // nothing and its ENOENT is the expected outcome rather than a failure.
+    // Dropping the `isEnoent` guard leaves every byte assertion passing — the
+    // only symptom is a warn saying this wiki may now describe two templates,
+    // about a compensation that in fact succeeded completely. That warn is the
+    // one signal an operator would use to decide whether a wiki is damaged, so
+    // silence is the assertion.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const profile = path.join(wikiDir(wiki.id), "workspace-profile.json");
+    await fs.rm(profile);
+    const bytesBefore = await seededBytes(wiki.id);
+
+    const spy = failWritesTo("purpose.md");
+    let warned: unknown[][] = [];
+    try {
+      warned = await warnsDuring(async () => {
+        await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+          FAULT,
+        );
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(warned.filter(([scope]) => scope === "wikis")).toEqual([]);
+    expect(await exists(profile)).toBe(false);
+    expect(await seededBytes(wiki.id)).toEqual(bytesBefore);
+    expect((await getCurrentWiki(OWNER))?.scenario).toBe("business");
+  });
+
+  it("re-throws the registry error, not the restore error, when the restore also fails", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await fs.rm(path.join(wikiDir(wiki.id), "workspace-profile.json"));
+
+    const write = failWritesTo("wikis.json", "the registry store is unavailable");
+    // The profile's undo is a delete, so this is the restore step failing with
+    // something other than the ENOENT the restore already tolerates.
+    const remove = vi
+      .spyOn(getStorage(), "deleteFile")
+      .mockRejectedValue(new Error("the file is locked"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let warned: unknown[][] = [];
+    try {
+      await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+        "the registry store is unavailable",
+      );
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      write.mockRestore();
+      remove.mockRestore();
+      warn.mockRestore();
+    }
+
+    expect(
+      warned.some(
+        ([scope, message]) => scope === "wikis" && String(message).includes("restoring"),
+      ),
+    ).toBe(true);
+    // The registry never moved, so the wiki is still on its old template.
+    expect((await getCurrentWiki(OWNER))?.scenario).toBe("business");
   });
 });

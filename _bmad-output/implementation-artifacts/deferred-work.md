@@ -180,7 +180,8 @@ location: src/lib/wikis.ts
 source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: medium
 reason: `createWiki` runs `seedWikiArtifacts()` (purpose.md → schema.md → `saveWorkspaceProfile`) before `writeRegistry`, with no rollback. A failure part-way leaves `wikis/<id>/` on disk with no registry entry and a tenant profile already switched to the new template; in `applyScenarioTemplate` it can leave purpose.md from one template beside schema.md from another. The storage provider exposes no transaction, and `research-projects.ts` — the registry idiom the spec directs this module to mirror — has the same property, so this is an inherited architectural limit rather than a defect in this change. Closing it means a write-ahead or compensating-write facility in the storage layer.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-wiki-create-and-template-atomicity
 
 ### DW-21: Switching the active Wiki rewrites the tenant-global workspace profile with no confirm at all, unlike the template overwrite it is equivalent to.
 origin: spec-deferred 3671da5ea756
@@ -1206,7 +1207,8 @@ source_spec: `spec-per-wiki-workspace-profiles.md`
 location: src/lib/wikis.ts
 severity: low
 reason: The three writes are sequential and untransacted. Pre-existing ordering, not introduced here, and unreachable without a storage fault mid-seed.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-wiki-create-and-template-atomicity
 
 ### DW-144: A corrupt per-Wiki `workspace-profile.json` blocks the re-template that would have overwritten it.
 origin: spec-deferred 6e541a1b637d
@@ -1339,6 +1341,46 @@ status: open
 ### DW-160: Follow-up review still recommended for dw-single-owner-resolution-invariant after the damping cap was spent
 origin: review-budget-followup
 source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-161: `FilesystemStorageProvider.writeFile` is a bare `fs.writeFile`, not the write-to-tmp + rename that `StorageProvider`'s documented contract claims.
+origin: spec-deferred 0d5c376c507a
+source_spec: `spec-dw-20-wiki-create-and-template-atomicity.md`
+location: src/lib/storage/filesystem.ts:78
+severity: medium
+reason: `src/lib/storage/types.ts` states "`writeFile` must be atomic from the caller's perspective — partial writes should never be visible. The filesystem provider uses write-to-tmp + rename". `filesystem.ts` does `await fs.writeFile(abs, content, "utf-8")` with no tmp file. A torn write (ENOSPC, process death mid-write) therefore CAN leave a truncated file — including `wikis.json`, which `normalizeRegistry` then degrades to an empty registry. The compensation added for DW-20/DW-143 reasons from the interface contract and cannot detect a torn write; the comment at `applyScenarioTemplate`'s catch now says so explicitly. Pre-existing: both the implementation and the contradicting doc predate this change.
+status: open
+
+### DW-162: A half-created FIRST Wiki's directory is unreclaimable, because the orphan sweep bails on an empty registry and has no scheduled caller.
+origin: spec-deferred b2027da91fa3
+source_spec: `spec-dw-20-wiki-create-and-template-atomicity.md`
+location: src/lib/wikis.ts
+severity: low
+reason: `sweepOrphans` returns 0 whenever `registry.wikis.length === 0` (a deliberate guard against sweeping a lost registry), and `sweepOrphanWikiDirectories` is referenced only from `deleteWiki` and tests. So when `discardCreatedWikiDirectory` itself fails on a tenant's first-ever create, the bytes sit on disk until that tenant has at least one Wiki AND a delete runs. Pinned as a fact by the new `re-throws the seed error…` test. Pre-existing sweep design; the new code only made the gap visible.
+status: open
+
+### DW-163: Crash durability is still open — compensating cleanup only covers a rejected write, not process death between two writes.
+origin: spec-deferred 75712627a6a0
+source_spec: `spec-dw-20-wiki-create-and-template-atomicity.md`
+location: src/lib/wikis.ts
+severity: low
+reason: DW-20's own text proposes "a write-ahead or compensating-write facility in the storage layer"; the bundle intent chose compensating cleanup, which runs in the same process as the failure. A SIGKILL or power loss between any two of the four writes still produces exactly the states DW-20 and DW-143 describe, and nothing recovers on next start. Closing this needs an on-disk pending-restore marker plus a reconcile, i.e. the storage-layer route the intent did not take.
+status: open
+
+### DW-164: `research-projects.ts` still carries the same untransacted registry property DW-20 names, and was not given a compensation.
+origin: spec-deferred b087c7736364
+source_spec: `spec-dw-20-wiki-create-and-template-atomicity.md`
+location: src/lib/research-projects.ts
+severity: low
+reason: DW-20's reason cites `research-projects.ts` as "the registry idiom the spec directs this module to mirror — has the same property". `createResearchProject` is still an unguarded push-then-`writeProjects`. The bundle intent scoped the work to `src/lib/wikis.ts`'s two functions, so this was left alone deliberately; recording it so the divergence between the two registries is tracked rather than forgotten.
+status: open
+
+### DW-165: Follow-up review still recommended for dw-wiki-create-and-template-atomicity after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-dw-20-wiki-create-and-template-atomicity.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
