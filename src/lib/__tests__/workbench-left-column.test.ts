@@ -286,7 +286,13 @@ describe("WikiSwitcher", () => {
     // The sentence is still ANNOUNCED, just not as an alert: the <select> it
     // describes points at it, which is the whole affordance for a user who
     // cannot see that it sits directly below.
-    expect(source).toContain("aria-describedby={wikis.length > 0 ? scopeNoteId : undefined}");
+    // The scope id is still written from the SAME condition that renders the
+    // sentence, so a future edit cannot leave it dangling — it is now one entry
+    // in a space-separated list, because a read-only deployment appends the
+    // sentence that says a switch will be refused (DW-37).
+    expect(source).toContain("aria-describedby={selectDescribedBy}");
+    expect(source).toContain("wikis.length > 0 ? scopeNoteId : null");
+    expect(source).toContain("readOnly ? readOnlyNoteId : null");
     expect(source.slice(open, close)).toContain("id={scopeNoteId}");
   });
 

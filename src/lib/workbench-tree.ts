@@ -104,6 +104,23 @@ export const WIKI_SCOPE_COPY =
   "Switching wikis shows that wiki’s purpose.md and Schema. Pages and Sources are shared across your wikis.";
 
 /**
+ * The deployment refuses every Wiki write, so the switcher, New Wiki, Rename and
+ * Delete are all `aria-disabled` (DW-37). The sentence is what makes that state
+ * READABLE: an `aria-disabled` control announces "dimmed" and nothing about why,
+ * and a control the owner can still focus and still activate with no visible
+ * result is worse than one that says up front it will refuse.
+ *
+ * "cannot be" and "while this deployment is read-only" match the sentence
+ * `WorkspacePurposeSettings` already shows for the same fact, so one deployment
+ * does not describe itself two ways. It lives here with every other left-column
+ * sentence for the reason the module docstring gives: one owner per wording, so
+ * the claim cannot drift between the render site and the tests that pin it. Not
+ * `role="alert"` — nothing failed; this is the deployment's standing state.
+ */
+export const WIKI_READ_ONLY_COPY =
+  "Wikis cannot be created, switched, renamed or deleted while this deployment is read-only.";
+
+/**
  * The page index — not the registry — is what failed. Named separately because
  * the registry sentence would be a false statement here: the switcher above the
  * tree is at that moment happily listing the wikis it claims could not load.

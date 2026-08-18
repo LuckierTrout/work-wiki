@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { WikiSwitcher } from "@/components/workbench/WikiSwitcher";
-import { WIKI_SCOPE_COPY } from "@/lib/workbench-tree";
+import { WIKI_READ_ONLY_COPY, WIKI_SCOPE_COPY } from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -455,5 +455,131 @@ describe("the Wiki-scope sentence", () => {
     settle(answer({ wiki: OTHER }));
     await waitFor(() => expect(button("Rename Wiki").disabled).toBe(false));
     expect(screen.getByText(WIKI_SCOPE_COPY)).toBeTruthy();
+  });
+});
+
+describe("a read-only deployment (DW-37)", () => {
+  /**
+   * `POST /api/wikis`, `PUT /api/wikis/current` and `PATCH`/`DELETE
+   * /api/wikis/[id]` all answer 403 while `YOPEDIA_READONLY=1`, so every control
+   * here is an affordance in front of a refusal. The convention is
+   * `aria-disabled` plus a handler that returns early, NEVER `disabled`:
+   * read-only means read-only, not hidden — a keyboard user must still be able
+   * to reach the switcher and read which Wiki is active.
+   */
+  function mountReadOnly(wikis: readonly WikiRecord[] = [CURRENT, OTHER]) {
+    return render(
+      <WikiSwitcher wikis={wikis} currentWikiId={CURRENT.id} readOnly />,
+    );
+  }
+
+  it("keeps every control reachable and marks it aria-disabled, never disabled", () => {
+    mountReadOnly();
+    const select = screen.getByLabelText("Active wiki") as HTMLSelectElement;
+    const controls: HTMLElement[] = [
+      select,
+      button("New Wiki"),
+      button("Rename Wiki"),
+      button("Delete Wiki"),
+    ];
+    for (const control of controls) {
+      // `disabled` would take it out of the tab order, which is the whole bug:
+      // the owner could neither focus it nor read what it holds.
+      expect((control as HTMLButtonElement | HTMLSelectElement).disabled).toBe(false);
+      expect(control.hasAttribute("disabled")).toBe(false);
+      expect(control.getAttribute("aria-disabled")).toBe("true");
+      // Focusable in fact, not just in theory.
+      control.focus();
+      expect(document.activeElement).toBe(control);
+    }
+    // And it still REPORTS the active Wiki rather than going blank.
+    expect(select.value).toBe(CURRENT.id);
+  });
+
+  it("issues no request and opens no dialog from New, Rename or Delete", () => {
+    mountReadOnly();
+    for (const name of ["New Wiki", "Rename Wiki", "Delete Wiki"]) {
+      fireEvent.click(button(name));
+      // The dialog is the harm: Delete's confirm reads "for good" and the
+      // server was never going to run it.
+      expect(screen.queryByRole("dialog")).toBeNull();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("refuses a switch and puts the picker back on the active wiki", async () => {
+    mountReadOnly();
+    const select = screen.getByLabelText("Active wiki") as HTMLSelectElement;
+
+    fireEvent.change(select, { target: { value: OTHER.id } });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+    // The observable that matters: the control still names the active Wiki. The
+    // handler commits nothing and React re-applies the controlled value, so a
+    // refused pick never leaves the picker on "Shelf" while the app is on
+    // "Acme".
+    await waitFor(() => expect(select.value).toBe(CURRENT.id));
+    expect(select.value).not.toBe(OTHER.id);
+  });
+
+  it("says why, from the module that owns the sentence", () => {
+    mountReadOnly();
+    const note = screen.getByText(WIKI_READ_ONLY_COPY);
+    expect(note.tagName).toBe("P");
+    // Not an alert: nothing failed, this is the deployment's standing state.
+    expect(note.getAttribute("role")).toBeNull();
+    // The controls carry no `disabled` reason of their own, so the sentence is
+    // wired as their description — an `aria-disabled` control otherwise
+    // announces "dimmed" and nothing about why.
+    for (const name of ["New Wiki", "Rename Wiki", "Delete Wiki"]) {
+      expect(document.getElementById(button(name).getAttribute("aria-describedby")!)).toBe(
+        note,
+      );
+    }
+    // The <select> included — and it is the one that most needs it, because
+    // WIKI_READ_ONLY_COPY says wikis cannot be SWITCHED. It already describes
+    // itself with the scope sentence, so the read-only sentence is APPENDED:
+    // `aria-describedby` is a space-separated list, and both are true at once.
+    const select = screen.getByLabelText("Active wiki");
+    const described = (select.getAttribute("aria-describedby") ?? "").split(/\s+/);
+    expect(described).toHaveLength(2);
+    const announced = described.map((id) => document.getElementById(id));
+    expect(announced.every((element) => element !== null)).toBe(true);
+    expect(announced.map((element) => element!.textContent)).toEqual([
+      WIKI_SCOPE_COPY,
+      WIKI_READ_ONLY_COPY,
+    ]);
+  });
+
+  it("explains the New Wiki button even before the first wiki exists", () => {
+    // `New Wiki` renders with no switcher above it, so the sentence cannot be
+    // gated on `wikis.length` — it would leave the one visible control refusing
+    // silently.
+    render(<WikiSwitcher wikis={[]} currentWikiId={null} readOnly />);
+    expect(screen.getByText(WIKI_READ_ONLY_COPY)).toBeTruthy();
+    expect(button("New Wiki").getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("stays away on a writable deployment", () => {
+    mount();
+    expect(screen.queryByText(WIKI_READ_ONLY_COPY)).toBeNull();
+    // No stray `aria-disabled="false"`: the hover face keys off the attribute's
+    // presence, so a writable deployment must not carry it at all.
+    for (const control of [
+      screen.getByLabelText("Active wiki"),
+      button("New Wiki"),
+      button("Rename Wiki"),
+      button("Delete Wiki"),
+    ]) {
+      expect(control.hasAttribute("aria-disabled")).toBe(false);
+    }
+    // …and the switcher's description is the scope sentence ALONE, so the id
+    // list never names a paragraph that is not on screen.
+    const select = screen.getByLabelText("Active wiki");
+    expect(select.getAttribute("aria-describedby")).not.toContain(" ");
+    expect(document.getElementById(select.getAttribute("aria-describedby")!)?.textContent)
+      .toBe(WIKI_SCOPE_COPY);
   });
 });

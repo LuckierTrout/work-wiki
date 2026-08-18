@@ -4,7 +4,11 @@ import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CreateWikiDialog } from "@/components/CreateWikiDialog";
-import { TREE_UNAVAILABLE_COPY, WIKI_SCOPE_COPY } from "@/lib/workbench-tree";
+import {
+  TREE_UNAVAILABLE_COPY,
+  WIKI_READ_ONLY_COPY,
+  WIKI_SCOPE_COPY,
+} from "@/lib/workbench-tree";
 import { MAX_WIKI_NAME_CHARS, type CreatableScenario } from "@/lib/wiki-scenarios";
 import type { WikiRecord } from "@/lib/wikis";
 
@@ -37,6 +41,30 @@ export interface WikiSwitcherProps {
    * and New Wiki would invite a duplicate.
    */
   unavailable?: boolean;
+  /**
+   * `YOPEDIA_READONLY=1`, read on the server and carried here by
+   * `WorkbenchData`. All four controls below sit in front of routes that answer
+   * 403 on such a deployment (`POST /api/wikis`, `PUT /api/wikis/current`,
+   * `PATCH`/`DELETE /api/wikis/[id]`) — and Delete's refusal arrives only after
+   * the owner has confirmed an irreversible-sounding action.
+   *
+   * The convention is `aria-disabled` plus a handler that returns early, NEVER
+   * `disabled`: a `disabled` control leaves the tab order, so a keyboard user
+   * cannot reach it, cannot read which Wiki is active, and never hears the
+   * sentence that explains why it refuses. Read-only means read-only, not
+   * hidden. `disabled` stays for `switching`, which is transient.
+   *
+   * THE EARLY RETURN IS THE WHOLE REFUSAL — no handler here puts a control back
+   * by hand. React re-applies a controlled `<select>`'s (or checkbox's) value to
+   * the DOM after a change event whose handler committed no state: it is the
+   * same machinery behind the "you provided a `value` prop without an
+   * `onChange` handler" warning, and it is why a controlled input cannot be
+   * typed into at all without a handler that commits. So the picker is showing
+   * the active Wiki again by the time anyone looks. This paragraph is the one
+   * statement of that fact; the refused controls in `SettingsCanvas` follow the
+   * same convention and point back here rather than restating it.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -77,10 +105,12 @@ export function WikiSwitcher({
   wikis,
   currentWikiId,
   unavailable = false,
+  readOnly = false,
 }: WikiSwitcherProps) {
   const router = useRouter();
   const selectId = useId();
   const scopeNoteId = useId();
+  const readOnlyNoteId = useId();
   const renameInputId = useId();
   const deleteSelectId = useId();
   const [createOpen, setCreateOpen] = useState(false);
@@ -245,6 +275,16 @@ export function WikiSwitcher({
   // offers only the others, and a delete aimed at the selection is impossible
   // by construction rather than by a message after the round trip.
   const deletable = wikis.filter((wiki) => wiki.id !== value);
+  // `aria-describedby` takes a space-separated LIST, so the read-only sentence
+  // is APPENDED to the scope sentence rather than replacing it: both are true at
+  // once. Without it the switcher is the one refused control here with no reason
+  // in its description — it would announce as "Active wiki, combobox, dimmed"
+  // plus a sentence about what a switch shows, while `WIKI_READ_ONLY_COPY`
+  // (which says wikis cannot be SWITCHED) was never reached.
+  const selectDescribedBy =
+    [wikis.length > 0 ? scopeNoteId : null, readOnly ? readOnlyNoteId : null]
+      .filter(Boolean)
+      .join(" ") || undefined;
   const deleteTarget = deletable.find((wiki) => wiki.id === deleteTargetId) ?? null;
   const renameReady = renameName.trim().length > 0;
 
@@ -275,10 +315,21 @@ export function WikiSwitcher({
                   // Both are rendered under the same gate, so the id always
                   // resolves — but it is written from the same condition so a
                   // future edit cannot leave it dangling.
-                  aria-describedby={wikis.length > 0 ? scopeNoteId : undefined}
+                  aria-describedby={selectDescribedBy}
                   value={value}
                   disabled={switching}
-                  onChange={(event) => void switchWiki(event.target.value)}
+                  // `aria-disabled`, not `disabled`: the control keeps its place
+                  // in the tab order, so a keyboard user can still reach it and
+                  // still hear which Wiki is active. Omitted rather than set to
+                  // "false" on a writable deployment, so the hover face below
+                  // can key off the attribute's presence.
+                  aria-disabled={readOnly || undefined}
+                  onChange={(event) => {
+                    // Committing nothing IS the refusal — see the `readOnly`
+                    // prop's docstring for why the control puts itself back.
+                    if (readOnly) return;
+                    void switchWiki(event.target.value);
+                  }}
                 >
                   {wikis.map((wiki) => (
                     <option key={wiki.id} value={wiki.id}>
@@ -292,7 +343,13 @@ export function WikiSwitcher({
               type="button"
               ref={newRef}
               className="wb-wiki-switch-new"
+              aria-disabled={readOnly || undefined}
+              aria-describedby={readOnly ? readOnlyNoteId : undefined}
               onClick={() => {
+                // No dialog at all: the create it opens onto is a 403, and a
+                // form the owner fills in before being refused is worse than a
+                // control that says up front it will not run.
+                if (readOnly) return;
                 setCreateError(null);
                 setCreateOpen(true);
               }}
@@ -311,6 +368,18 @@ export function WikiSwitcher({
               {WIKI_SCOPE_COPY}
             </p>
           )}
+          {/* AFTER the scope sentence, and ungated on `wikis.length`: `New Wiki`
+              renders with or without a switcher and is refused either way, so
+              this is the only thing on screen that explains why. Not an alert —
+              nothing failed; it is the deployment's standing state. */}
+          {readOnly && (
+            <p
+              id={readOnlyNoteId}
+              className="wb-wiki-switch-note wb-wiki-switch-readonly"
+            >
+              {WIKI_READ_ONLY_COPY}
+            </p>
+          )}
         </>
       )}
 
@@ -324,7 +393,10 @@ export function WikiSwitcher({
             type="button"
             className="wb-wiki-switch-action"
             disabled={switching}
+            aria-disabled={readOnly || undefined}
+            aria-describedby={readOnly ? readOnlyNoteId : undefined}
             onClick={() => {
+              if (readOnly) return;
               setRenameName(current.name);
               setRenameError(null);
               setRenameOpen(true);
@@ -337,7 +409,14 @@ export function WikiSwitcher({
               type="button"
               className="wb-wiki-switch-action"
               disabled={switching}
+              aria-disabled={readOnly || undefined}
+              aria-describedby={readOnly ? readOnlyNoteId : undefined}
               onClick={() => {
+                // The one that matters most: without this the owner reads
+                // "This deletes that wiki's purpose.md, Schema and Workspace
+                // Purpose for good.", confirms it, and only then learns the
+                // deployment was never going to run it.
+                if (readOnly) return;
                 setDeleteTargetId(deletable[0]?.id ?? "");
                 setDeleteError(null);
                 setDeleteOpen(true);

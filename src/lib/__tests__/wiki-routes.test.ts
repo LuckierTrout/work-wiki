@@ -27,11 +27,19 @@ const mockedGetPrincipal = vi.mocked(getPrincipal);
 let tmpDir: string;
 let originalWikiDir: string | undefined;
 let originalRawDir: string | undefined;
+// Since DW-37, `PUT`/`PATCH`/`DELETE /api/wiki/[slug]` all answer 403 while
+// `YOPEDIA_READONLY=1`. Every describe below except the read-only one asserts
+// what an ORDINARY deployment does, so the variable is cleared per test rather
+// than inherited: exported in the shell it would turn ~20 assertions red on one
+// developer's machine and nowhere else. The read-only block sets it explicitly.
+let originalReadOnly: string | undefined;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wiki-routes-test-"));
   originalWikiDir = process.env.WIKI_DIR;
   originalRawDir = process.env.RAW_DIR;
+  originalReadOnly = process.env.YOPEDIA_READONLY;
+  delete process.env.YOPEDIA_READONLY;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   await ensureDirectories();
@@ -47,6 +55,11 @@ afterEach(async () => {
     delete process.env.RAW_DIR;
   } else {
     process.env.RAW_DIR = originalRawDir;
+  }
+  if (originalReadOnly === undefined) {
+    delete process.env.YOPEDIA_READONLY;
+  } else {
+    process.env.YOPEDIA_READONLY = originalReadOnly;
   }
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
@@ -1019,5 +1032,183 @@ describe("POST /api/wiki — service-token auth", () => {
     const page = await readWikiPageWithFrontmatter("clerk-created-page");
     expect(page).not.toBeNull();
     expect(page!.frontmatter.owner).toBe("test-user");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Read-only deployment — /api/wiki/[slug] (DW-37)
+// ---------------------------------------------------------------------------
+
+describe("read-only deployment — /api/wiki/[slug]", () => {
+  // `isReadOnly()` reads `process.env.YOPEDIA_READONLY` at CALL time, so the
+  // flag is flipped per test rather than at import — and cleared after each, or
+  // every suite that runs later in this file would inherit a read-only world.
+  let originalDataDir: string | undefined;
+  beforeEach(async () => {
+    // The outer `beforeEach` has already cleared `YOPEDIA_READONLY` and will
+    // put the shell's own value back, so each case here simply sets what it
+    // needs.
+    // `readDataVersion` reads the CONFIG store, which the outer setup does not
+    // isolate — and the assertions below are before/after comparisons, so a
+    // shared store would let another suite's write land between the two reads.
+    originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tmpDir;
+    const { _resetStorage } = await import("../storage");
+    _resetStorage();
+  });
+  afterEach(async () => {
+    if (originalDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = originalDataDir;
+    const { _resetStorage } = await import("../storage");
+    _resetStorage();
+  });
+
+  /** The Workbench's refresh counter — see `data-version.ts`. */
+  async function dataVersion(): Promise<number> {
+    const { readDataVersion } = await import("../data-version");
+    return readDataVersion();
+  }
+
+  const SEEDED_BODY = "Original content.";
+
+  /** A private page the mocked principal ("test-user") owns and may write. */
+  async function seed(slug: string) {
+    const today = new Date().toISOString().slice(0, 10);
+    const frontmatter: Frontmatter = {
+      created: today,
+      confidence: 0.5,
+      authors: ["test-user"],
+      owner: "test-user",
+      visibility: "private",
+      contributors: [],
+      expiry: "2099-01-01",
+      sources: [],
+    };
+    await writeWikiPageWithSideEffects({
+      slug,
+      title: slug,
+      content: serializeFrontmatter(frontmatter, `# ${slug}\n\n${SEEDED_BODY}`),
+      summary: "a test page",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+  }
+
+  async function put(slug: string) {
+    const { PUT } = await import("@/app/api/wiki/[slug]/route");
+    return PUT(
+      new Request(`http://localhost/api/wiki/${slug}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: `# ${slug}\n\nRewritten.` }),
+      }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+  async function patch(slug: string) {
+    const { PATCH } = await import("@/app/api/wiki/[slug]/route");
+    return PATCH(
+      new Request(`http://localhost/api/wiki/${slug}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metadata: { confidence: 0.99 } }),
+      }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+  async function del(slug: string) {
+    const { DELETE } = await import("@/app/api/wiki/[slug]/route");
+    return DELETE(
+      new Request(`http://localhost/api/wiki/${slug}`, { method: "DELETE" }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+
+  it("refuses a body write and leaves the bytes alone (PUT 403)", async () => {
+    await seed("ro-put");
+    process.env.YOPEDIA_READONLY = "1";
+
+    const before = await dataVersion();
+
+    const response = await put("ro-put");
+    expect(response.status).toBe(403);
+    const body = await response.json();
+    expect(typeof body.error).toBe("string");
+    // The refusal NAMES the deployment state; "forbidden" alone would leave the
+    // owner hunting a permission they do not lack.
+    expect(String(body.error)).toContain("read-only");
+
+    const page = await readWikiPageWithFrontmatter("ro-put");
+    expect(page!.body).toContain(SEEDED_BODY);
+    expect(page!.body).not.toContain("Rewritten.");
+    // The refresh counter is the observable a stale shell shows up in: a bump
+    // with no write behind it would send every open Workbench re-rendering for
+    // a change that never happened.
+    expect(await dataVersion()).toBe(before);
+  });
+
+  it("refuses a metadata write and leaves the frontmatter alone (PATCH 403)", async () => {
+    await seed("ro-patch");
+    const before = await readWikiPageWithFrontmatter("ro-patch");
+    const beforeVersion = await dataVersion();
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await patch("ro-patch");
+    expect(response.status).toBe(403);
+    expect(String((await response.json()).error)).toContain("read-only");
+
+    const after = await readWikiPageWithFrontmatter("ro-patch");
+    expect(after!.frontmatter).toEqual(before!.frontmatter);
+    expect(after!.frontmatter.confidence).not.toBe(0.99);
+    expect(await dataVersion()).toBe(beforeVersion);
+  });
+
+  it("refuses a delete and leaves the page in place (DELETE 403)", async () => {
+    await seed("ro-delete");
+    const before = await dataVersion();
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await del("ro-delete");
+    expect(response.status).toBe(403);
+    expect(String((await response.json()).error)).toContain("read-only");
+    expect(await readWikiPageWithFrontmatter("ro-delete")).not.toBeNull();
+    expect(await dataVersion()).toBe(before);
+  });
+
+  it("answers the same 403 for a slug that does not exist — no existence oracle", async () => {
+    await seed("ro-real");
+    process.env.YOPEDIA_READONLY = "1";
+
+    // The gate runs BEFORE the existence read, so a caller cannot learn what is
+    // stored here by comparing a known slug against an unknown one.
+    const [real, ghost] = await Promise.all([put("ro-real"), put("ro-ghost")]);
+    expect(real.status).toBe(403);
+    expect(ghost.status).toBe(403);
+    expect(await real.json()).toEqual(await ghost.json());
+  });
+
+  it("changes nothing on a writable deployment — the control case", async () => {
+    // The flag is UNSET here, which is the ordinary deployment: every existing
+    // status code and ACL outcome has to survive the three new gates.
+    delete process.env.YOPEDIA_READONLY;
+    await seed("rw-page");
+    const before = await dataVersion();
+
+    expect((await put("rw-page")).status).toBe(200);
+    expect((await patch("rw-page")).status).toBe(200);
+    expect((await readWikiPageWithFrontmatter("rw-page"))!.body).toContain(
+      "Rewritten.",
+    );
+    expect((await del("rw-page")).status).toBe(200);
+    expect(await readWikiPageWithFrontmatter("rw-page")).toBeNull();
+
+    // And the counter DID move — which is what makes the three "unchanged"
+    // assertions above evidence of the gate rather than of a counter that never
+    // moves in this fixture.
+    expect(await dataVersion()).toBeGreaterThan(before);
+
+    // And the 404 the write route answers for an unknown slug is still a 404 —
+    // the new gate must not have swallowed it.
+    expect((await put("rw-ghost")).status).toBe(404);
   });
 });

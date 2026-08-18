@@ -4,6 +4,7 @@ import { DataVersionWatcher } from "@/components/workbench/DataVersionWatcher";
 import { Workbench } from "@/components/workbench/Workbench";
 import { WorkbenchDataProvider } from "@/components/workbench/WorkbenchData";
 import { getPrincipal } from "@/lib/auth";
+import { isReadOnly } from "@/lib/config";
 import { readDataVersion } from "@/lib/data-version";
 import { logger } from "@/lib/logger";
 import type { IndexEntry } from "@/lib/types";
@@ -121,6 +122,11 @@ export default async function Home() {
         filesUnavailable: fileListing.unavailable || pageIndex.unavailable,
         filesTruncated: fileListing.truncated,
         dataVersion,
+        // An env fact, read here because this is a server component: no route
+        // and no client fetch is added for something the process already knows.
+        // It is what the Wiki lifecycle routes refuse on, so the controls that
+        // call them can say so before the owner reaches a confirm dialog.
+        readOnly: isReadOnly(),
       }}
     >
       {/* Renders nothing. Inside the provider because the version it compares

@@ -8,6 +8,7 @@ import {
 import { pagePath } from "@/lib/links";
 import { getPrincipal } from "@/lib/auth";
 import { canReadFrontmatter } from "@/lib/authz";
+import { isReadOnly } from "@/lib/config";
 import { aliasRedirectForMissing } from "@/lib/page-redirect";
 import { ArticleView } from "@/components/ArticleView";
 import { getPageEvidence } from "@/lib/evidence";
@@ -116,6 +117,11 @@ export default async function WikiPageView({ params }: WikiPageProps) {
       pageTenant={pageTenant}
       principal={principal}
       evidenceBundle={evidenceBundle}
+      // A server component, so the env fact is read here rather than through a
+      // route the client would have to call. `DELETE /api/wiki/[slug]` refuses
+      // on a read-only deployment (DW-37); the action bar says so before the
+      // owner answers an irreversible-sounding confirm.
+      readOnly={isReadOnly()}
     />
   );
 }

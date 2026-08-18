@@ -55,6 +55,18 @@ export interface WorkbenchData {
    * worst one wasted render rather than a loop.
    */
   dataVersion: number;
+  /**
+   * `YOPEDIA_READONLY=1` — the deployment refuses every write. An env fact the
+   * server already holds, so it travels this seam rather than through a new
+   * route and a client fetch. The shell hands it to `WikiSwitcher`, whose four
+   * controls all sit in front of routes that answer 403 on such a deployment;
+   * `SettingsCanvas` gets the same fact from its own payload's `readOnly`.
+   *
+   * Defaults to `false`: "not read-only" is the ordinary deployment, and a
+   * consumer outside the provider must not lock its controls on the strength of
+   * a missing provider.
+   */
+  readOnly: boolean;
 }
 
 const EMPTY_DATA: WorkbenchData = {
@@ -67,6 +79,7 @@ const EMPTY_DATA: WorkbenchData = {
   filesUnavailable: false,
   filesTruncated: false,
   dataVersion: 0,
+  readOnly: false,
 };
 
 const WorkbenchDataContext = createContext<WorkbenchData>(EMPTY_DATA);

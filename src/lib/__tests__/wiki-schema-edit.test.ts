@@ -877,15 +877,20 @@ describe("the two routes", () => {
     // and what the server will accept cannot drift.
     expect(source).toContain("isEditableArtifactFile(displayPath)");
     expect(source).toContain("...(artifact ? { artifact } : {})");
-    // The artifact half also carries `isReadOnly()`, so the affordance and the
-    // route that answers it refuse together rather than one offering what the
-    // other rejects. The executed test above pins the behaviour; this pins that
-    // the two conditions stay in ONE expression.
+    // BOTH halves carry `isReadOnly()`, so the affordance and the route that
+    // answers it refuse together rather than one offering what the other
+    // rejects. The artifact half has since Story 1.8; the page half since DW-37
+    // gave `PUT /api/wiki/[slug]` the read-only gate it had been missing — until
+    // then this half consulted nothing precisely BECAUSE that route refused
+    // nothing. The executed tests pin the behaviour; this pins that the
+    // conditions stay in ONE expression.
     expect(source).toMatch(
-      /editable:\s*\n?\s*format === "markdown" &&\s*\n?\s*\(slug !== undefined \|\|\s*\n?\s*\(artifact !== undefined && !isReadOnly\(\) && isOwnerHandle\(principal\.handle\)\)\)/,
+      /editable:\s*\n?\s*format === "markdown" &&\s*\n?\s*\(\(slug !== undefined && !isReadOnly\(\)\) \|\|\s*\n?\s*\(artifact !== undefined && !isReadOnly\(\) && isOwnerHandle\(principal\.handle\)\)\)/,
     );
-    // The page branch is untouched: a Page is still `editable: true`.
-    expect(source).toContain("editable: true,");
+    // The `kind=page` branch says the same thing about the same route — the two
+    // surfaces onto one Page must not disagree about whether it can be saved.
+    expect(source).toContain("editable: !isReadOnly(),");
+    expect(source).not.toContain("editable: true,");
   });
 
   it("expresses the artifact layout in exactly one module", async () => {

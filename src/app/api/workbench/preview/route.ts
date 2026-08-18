@@ -136,7 +136,12 @@ async function handle(request: Request) {
       truncated,
       // A compiled Page is the one thing this story makes editable: it is what
       // `PUT /api/wiki/[slug]` writes. Artifacts are Story 1.8, sources Epic 2.
-      editable: true,
+      //
+      // `isReadOnly()` is the SAME refusal that write route now answers 403 to
+      // (DW-37). Offering `Edit` where the save cannot land walks the owner
+      // through a full retype only to fail at `Save`. The bytes still render:
+      // read-only means read-only, not hidden.
+      editable: !isReadOnly(),
     };
     return json(payload);
   }
@@ -222,14 +227,16 @@ async function handle(request: Request) {
     // single-owner deployment: `isOwnerHandle` is false for EVERYONE when
     // `NEXT_PUBLIC_OWNER_HANDLE` is unset (`owner.ts`), while the Workbench
     // itself is only signed-in-gated (`page.tsx`), so without this the affordance
-    // is offered on a deployment where no save can ever land. The page half
-    // deliberately consults neither: `PUT /api/wiki/[slug]` has no read-only and
-    // no owner check at all, so a page save still lands for any signed-in
-    // principal on such a deployment, and pretending otherwise here would be the
-    // drift.
+    // is offered on a deployment where no save can ever land.
+    //
+    // The page half consults `isReadOnly()` and nothing else, because that is
+    // exactly the set of refusals `PUT /api/wiki/[slug]` answers beyond its
+    // realm-aware ACL: it is signed-in-gated, never owner-gated, so a page save
+    // still lands for any principal the ACL admits. DW-37 added the read-only
+    // gate to that route; this half now says what it says.
     editable:
       format === "markdown" &&
-      (slug !== undefined ||
+      ((slug !== undefined && !isReadOnly()) ||
         (artifact !== undefined && !isReadOnly() && isOwnerHandle(principal.handle))),
   };
   return json(payload);

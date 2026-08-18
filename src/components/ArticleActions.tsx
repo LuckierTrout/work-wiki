@@ -24,6 +24,14 @@ interface ArticleActionsProps {
   hasRawSource: boolean;
   /** Whether a source URL exists (gates the Reingest button). */
   hasSourceUrl: boolean;
+  /**
+   * `YOPEDIA_READONLY=1`. Passed straight through to {@link DeletePageButton},
+   * which is the only action here sitting in front of a route DW-37 gated
+   * (`DELETE /api/wiki/[slug]`). Reingest, Graphify and Save to vault write
+   * through routes this change did not touch, so they are deliberately left
+   * alone rather than dimmed on a guess.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -52,6 +60,7 @@ export function ArticleActions({
   isCuratable,
   hasRawSource,
   hasSourceUrl,
+  readOnly = false,
 }: ArticleActionsProps) {
   const { isLoaded, isSignedIn, user } = useUser();
   const [graphifyState, setGraphifyState] = useState<
@@ -134,7 +143,7 @@ export function ArticleActions({
         </Link>
       )}
       {canCurate && <SaveToVaultButton slug={slug} />}
-      {canDelete && <DeletePageButton slug={slug} />}
+      {canDelete && <DeletePageButton slug={slug} readOnly={readOnly} />}
       {graphifyError && (
         <p role="alert" style={{ width: "100%", margin: 0, color: "var(--rust)", fontSize: 12.5 }}>
           {graphifyError}

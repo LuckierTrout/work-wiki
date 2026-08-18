@@ -10,6 +10,7 @@ import {
 import { extractSummary } from "@/lib/ingest";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { canReadFrontmatter, canWriteFrontmatter } from "@/lib/authz";
+import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
 import { patchMetadata } from "@/lib/patch-metadata";
 
@@ -20,6 +21,16 @@ export async function DELETE(
   try {
     const { slug: encodedSlug } = await params;
     const slug = decodeSlug(encodedSlug);
+
+    // Deployment read-only, answered BEFORE anything is read. The answer is the
+    // same for every slug, so it is not an existence oracle — and it keeps the
+    // refusal cheap. The realm-aware 404-cloak below is untouched.
+    if (isReadOnly()) {
+      return NextResponse.json(
+        { error: "Pages cannot be deleted while this deployment is read-only." },
+        { status: 403 },
+      );
+    }
 
     // Realm-aware write ACL: a private page may be deleted only by its owner
     // (or their agents / the service principal); public commons pages stay
@@ -84,6 +95,18 @@ export async function PUT(
   try {
     const { slug: encodedSlug } = await params;
     const slug = decodeSlug(encodedSlug);
+
+    // Deployment read-only, answered BEFORE the body is parsed and before the
+    // page is read. Identical for every slug, so it leaks nothing about what
+    // exists. The Preview route consults the SAME `isReadOnly()` when it decides
+    // `editable`, so the owner is never offered `Edit` for a page this refuses.
+    if (isReadOnly()) {
+      return NextResponse.json(
+        { error: "Pages cannot be edited while this deployment is read-only." },
+        { status: 403 },
+      );
+    }
+
     let body: unknown;
     try {
       body = await req.json();
@@ -211,6 +234,19 @@ export async function PATCH(
   try {
     const { slug: encodedSlug } = await params;
     const slug = decodeSlug(encodedSlug);
+
+    // Deployment read-only, answered before the body is parsed and before
+    // `patchMetadata` reads the page. Same answer for every slug — no oracle.
+    if (isReadOnly()) {
+      return NextResponse.json(
+        {
+          error:
+            "Page metadata cannot be changed while this deployment is read-only.",
+        },
+        { status: 403 },
+      );
+    }
+
     let body: unknown;
     try {
       body = await req.json();

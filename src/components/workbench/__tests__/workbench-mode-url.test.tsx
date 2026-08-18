@@ -49,6 +49,7 @@ const DATA: WorkbenchData = {
   filesUnavailable: false,
   filesTruncated: false,
   dataVersion: 0,
+  readOnly: false,
 };
 
 /** The Wiki a restored selection has to still belong to. */

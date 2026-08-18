@@ -153,6 +153,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     filesUnavailable,
     filesTruncated,
     dataVersion,
+    readOnly,
   } = useWorkbenchData();
   const [mode, setModeState] = useState<WorkbenchModeId>(DEFAULT_WORKBENCH_MODE);
   const [collapsed, setCollapsed] = useState(false);
@@ -930,6 +931,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
             wikis={wikis}
             currentWikiId={currentWikiId}
             unavailable={registryUnavailable}
+            readOnly={readOnly}
           />
         </div>
         {settingsOpen ? (

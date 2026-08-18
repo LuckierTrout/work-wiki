@@ -115,12 +115,26 @@ export interface StructuredKnowledgeModelSettings {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns `true` when the instance should reject settings writes.
+ * Returns `true` when the deployment refuses writes.
  *
- * True only when `YOPEDIA_READONLY=1` is explicitly set. Cloud deployments
- * can safely persist non-secret provider preferences because every settings
- * write is independently owner-gated by the API route. Provider credentials
- * remain environment secrets and are never accepted by the settings API.
+ * True only when `YOPEDIA_READONLY=1` is explicitly set. This is the single
+ * deployment-wide refusal every gated route consults, and it is deliberately
+ * broader than its original settings-only scope: it now also gates the page
+ * write route (`PUT`/`PATCH`/`DELETE /api/wiki/[slug]`), the wiki lifecycle
+ * routes, and the Workbench Preview's `editable` contract (DW-37). A surface
+ * that offers one of those writes mirrors this same call rather than fetching
+ * the fact separately, so the affordance and the refusal cannot disagree.
+ *
+ * Not every page write consults it yet — `POST /api/wiki`, the revisions
+ * revert path, `DELETE /api/ingest/history`, `POST /api/ingest/reingest` and
+ * the stdio MCP server in `src/mcp.ts` all still write on a read-only
+ * deployment (recorded, not fixed). Check before assuming a new caller is
+ * covered.
+ *
+ * Cloud deployments leave it unset: non-secret provider preferences are safe
+ * to persist because every settings write is independently owner-gated by the
+ * API route, and provider credentials remain environment secrets the settings
+ * API never accepts.
  */
 export function isReadOnly(): boolean {
   return process.env.YOPEDIA_READONLY === "1";

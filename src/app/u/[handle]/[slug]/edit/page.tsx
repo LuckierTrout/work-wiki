@@ -5,6 +5,7 @@ import { readWikiPageWithFrontmatter, tenantForOwner } from "@/lib/wiki";
 import { pagePath, editPath } from "@/lib/links";
 import { canReadFrontmatter, canWriteFrontmatter } from "@/lib/authz";
 import { getPrincipal } from "@/lib/auth";
+import { isReadOnly } from "@/lib/config";
 import { WikiEditor } from "@/components/WikiEditor";
 
 interface EditPageProps {
@@ -107,6 +108,10 @@ export default async function EditWikiPage({ params }: EditPageProps) {
           tenant={pageTenant}
           initialContent={page.body}
           initialMetadata={initialMetadata}
+          // A server component, so the env fact is read here. `PUT`/`PATCH
+          // /api/wiki/[slug]` refuse on a read-only deployment (DW-37); the
+          // editor says so before the owner rewrites the page.
+          readOnly={isReadOnly()}
         />
       </section>
     </div>

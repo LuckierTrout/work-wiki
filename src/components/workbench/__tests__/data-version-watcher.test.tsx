@@ -45,6 +45,7 @@ function data(dataVersion: number): WorkbenchData {
     filesUnavailable: false,
     filesTruncated: false,
     dataVersion,
+    readOnly: false,
   };
 }
 

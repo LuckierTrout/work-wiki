@@ -1435,13 +1435,87 @@ describe("the Settings components stay inside the shell", () => {
     // is "leave the provider unset to inherit", which is what the blank option
     // in the picker means.
     expect(canvas).toContain('aria-describedby={hint ? hintId : undefined}');
-    expect(canvas).toContain('aria-describedby={field("vectorSearchEnabled-hint")}');
+    expect(canvas).toContain(
+      'aria-describedby={describedBy(field("vectorSearchEnabled-hint"))}',
+    );
     expect(canvas).toContain('id={field("vectorSearchEnabled-hint")}');
+    // Every control a read-only deployment refuses routes its description
+    // through `describedBy`, which APPENDS the save bar's read-only sentence to
+    // the control's own hint — `aria-describedby` takes a space-separated list,
+    // so the hint is kept rather than replaced. Three controls, three calls.
+    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(3);
+    expect(canvas).toContain('const readOnlyNoteId = field("bar-note");');
+    expect(canvas).toContain('<span className="wb-set-bar-note" id={readOnlyNoteId}>');
     // Each row builder wires its own hint; none of them renders a bare span.
     const hintSpans = [...canvas.matchAll(/<span className="wb-set-hint"/g)];
     const identified = [...canvas.matchAll(/<span className="wb-set-hint" id=/g)];
     expect(identified.length).toBe(hintSpans.length);
-    expect(canvas.match(/aria-describedby=\{hintId\}/g)?.length).toBe(2);
+    // One bare `hintId` left — the secret row, which a read-only deployment
+    // renders `readOnly` rather than `aria-disabled`, so it has no refusal to
+    // announce. The provider picker's went through `describedBy` above.
+    expect(canvas.match(/aria-describedby=\{hintId\}/g)?.length).toBe(1);
+    expect(canvas).toContain("aria-describedby={describedBy(hintId)}");
+  });
+
+  it("refuses a write with aria-disabled and a restoring handler, never `disabled` (DW-37)", async () => {
+    const canvas = await readComponent("SettingsCanvas.tsx");
+    // `disabled` takes a control OUT of the tab order, so a keyboard user on a
+    // read-only deployment could not reach the provider pickers at all — could
+    // not read which provider is stored, and never heard the hint that is wired
+    // as the vector switch's own description. Every refused control therefore
+    // carries `aria-disabled` instead. A node suite cannot mount this, so the
+    // wiring is pinned as source.
+    // The negative lookbehind is what makes these real: `aria-disabled={…}`
+    // CONTAINS `disabled={…}`, so a plain substring check would pass on the very
+    // attribute it is meant to forbid.
+    expect(canvas).not.toMatch(/(?<![-\w])disabled=\{stored\.readOnly/);
+    expect(canvas).not.toMatch(/(?<![-\w])disabled=\{vectorRefused/);
+    // The ONLY `disabled` left in the component is Save's — which is a
+    // deliberate exception, because `SETTINGS_READ_ONLY_COPY` already ships
+    // beside it and says why.
+    const disabledProps = [...canvas.matchAll(/(?<![-\w])disabled=\{/g)];
+    expect(disabledProps).toHaveLength(1);
+    expect(canvas).toContain("disabled={saving || payload.readOnly || !dirty}");
+
+    // Both provider pickers and the vector switch, each with the attribute…
+    expect(canvas.match(/aria-disabled=\{stored\.readOnly \|\| undefined\}/g)).toHaveLength(
+      2,
+    );
+    expect(canvas).toContain("aria-disabled={vectorRefused || undefined}");
+    // …and each with a handler that COMMITS NOTHING when the control is
+    // refused. That early return is the whole refusal: React re-applies a
+    // controlled value to the DOM after a change event that set no state, so no
+    // control needs putting back by hand. `settings-read-only.test.tsx` is what
+    // observes the result — this only pins that the handler still guards.
+    expect(canvas).not.toContain("event.currentTarget");
+    expect(canvas).toContain("if (stored.readOnly) return;");
+    expect(canvas).toContain("if (vectorRefused) return;");
+    // The checkbox refuses on its WHOLE predicate — read-only and
+    // provider-unsupported alike — named once so the attribute that announces
+    // the refusal and the handler that enforces it cannot drift apart.
+    expect(canvas).toMatch(
+      /const vectorRefused =\s*\n?\s*stored\.readOnly \|\| \(!vectorAllowed && !values\.vectorSearchEnabled\);/,
+    );
+  });
+
+  it("gives the aria-disabled faces a rule, and takes them off the hover face", async () => {
+    const css = await readFile(path.join(SRC, "app/globals.css"), "utf8");
+    // A control that refuses every activation must not light up on hover or show
+    // a pointer cursor — and `aria-disabled` gets none of the browser's own
+    // disabled treatment, so the stylesheet has to supply it.
+    expect(css).toMatch(/\.wb-set-select\[aria-disabled="true"\] \{[^}]*cursor: default;/);
+    expect(css).toMatch(
+      /\.wb-set-check input\[aria-disabled="true"\] \{[^}]*cursor: default;/,
+    );
+    // The switcher's controls keep `disabled` for the transient `switching`
+    // state, so the hover rule has to exclude BOTH.
+    expect(css).toContain(
+      '.wb-wiki-switch-action:hover:not([disabled]):not([aria-disabled="true"])',
+    );
+    expect(css).toContain('.wb-wiki-switch-new:hover:not([aria-disabled="true"])');
+    expect(css).toMatch(
+      /\.wb-wiki-switch-action\[aria-disabled="true"\] \{[^}]*cursor: default;/,
+    );
   });
 
   it("labels the embedding provider that is not an LLM provider", async () => {

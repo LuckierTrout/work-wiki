@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useCallback } from "react";
+import { useId, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { getErrorMessage } from "@/lib/errors";
 import { Alert } from "@/components/Alert";
@@ -20,12 +20,37 @@ export interface MetadataValues {
   supersedes: string;
 }
 
+/**
+ * Why Save refuses. One owner for the wording, phrased like every other
+ * read-only sentence in the app, and stated ABOVE the fields rather than only
+ * beside the button: the harm DW-149 names is retyping a whole page before
+ * finding out, so the owner has to meet this before they start typing.
+ */
+export const EDIT_PAGE_READ_ONLY_COPY =
+  "This page cannot be saved while this deployment is read-only. Your edits here will not be stored.";
+
 interface WikiEditorProps {
   slug: string;
   /** The page's tenant — where to navigate after a successful save. */
   tenant: string;
   initialContent: string;
   initialMetadata?: MetadataValues;
+  /**
+   * `YOPEDIA_READONLY=1`, read on the server by the edit page and threaded down.
+   *
+   * `PUT` and `PATCH /api/wiki/[slug]` both answer 403 on such a deployment
+   * (DW-37), and this form's Save fires both. Left ungated the owner rewrites an
+   * entire page and meets the refusal only at Save. The convention is the one
+   * the rest of DW-37 uses: `aria-disabled` rather than `disabled` (the button
+   * stays focusable, so the sentence explaining it can be announced), a handler
+   * that returns before either request, and the sentence on screen from the
+   * moment the form renders.
+   *
+   * The fields stay editable on purpose — read-only means the SERVER refuses a
+   * write, and a reader who wants to draft, copy out, or diff text in the box
+   * loses nothing the deployment was protecting.
+   */
+  readOnly?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +184,7 @@ export function WikiEditor({
   tenant,
   initialContent,
   initialMetadata,
+  readOnly = false,
 }: WikiEditorProps) {
   const router = useRouter();
 
@@ -175,6 +201,7 @@ export function WikiEditor({
 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const readOnlyNoteId = useId();
 
   const updateField = useCallback(
     <K extends keyof MetadataValues>(key: K, value: MetadataValues[K]) => {
@@ -187,6 +214,9 @@ export function WikiEditor({
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    // The guard lives HERE, not only on the button: a form with a text field
+    // submits on Enter, which would reach past an `aria-disabled` Save.
+    if (readOnly) return;
     if (!content.trim()) {
       setError("Content cannot be empty");
       return;
@@ -244,6 +274,20 @@ export function WikiEditor({
 
   return (
     <form onSubmit={handleSave} className="mt-6 space-y-6">
+      {/* FIRST, above every field: the harm this prevents is a whole page
+          retyped before the refusal arrives, so the sentence has to be met
+          before the typing starts — not discovered beside a dimmed Save. Not
+          `role="alert"`: nothing failed, this is the deployment's standing
+          state, and announcing it on every mount would interrupt. */}
+      {readOnly && (
+        <p
+          id={readOnlyNoteId}
+          className="rounded-lg border border-foreground/20 bg-foreground/5 p-3 text-sm text-foreground/70"
+        >
+          {EDIT_PAGE_READ_ONLY_COPY}
+        </p>
+      )}
+
       {/* ── Metadata section ── */}
       {initialMetadata && (
         <details className="rounded-lg border border-foreground/20 p-4" open>
@@ -429,8 +473,20 @@ export function WikiEditor({
       <div className="flex items-center gap-4">
         <button
           type="submit"
-          disabled={busy || !dirty}
-          className="inline-block rounded-lg bg-foreground px-6 py-3 text-sm font-medium text-background hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+          // `disabled` stays for the transient states it already covered, but
+          // NOT on a read-only deployment: `!dirty` is the state an owner who
+          // never types stays in, so leaving it on would take the button out
+          // of the tab order in exactly the case the refusal exists for, and
+          // the `aria-disabled` and `aria-describedby` below would never be
+          // reached. The standing refusal is `aria-disabled`, which keeps the
+          // button focusable so the sentence above is announced with it; the
+          // submit it lets through is caught by the guard in `handleSave`.
+          disabled={!readOnly && (busy || !dirty)}
+          aria-disabled={readOnly || undefined}
+          aria-describedby={readOnly ? readOnlyNoteId : undefined}
+          className={`inline-block rounded-lg bg-foreground px-6 py-3 text-sm font-medium text-background transition-opacity disabled:opacity-50 disabled:cursor-not-allowed ${
+            readOnly ? "opacity-50 cursor-default" : "hover:opacity-90"
+          }`}
         >
           {busy ? "Saving…" : "Save"}
         </button>

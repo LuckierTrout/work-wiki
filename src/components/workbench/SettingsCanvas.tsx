@@ -214,6 +214,13 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
   const vectorInputs = draftVectorInputs(draft, payload);
   const vectorAllowed = draftCanEnableVectorSearch(draft, payload);
   const vectorBlocked = vectorSearchMissingCopy(vectorInputs);
+  // The vector switch's WHOLE refusal predicate, named once so the attribute
+  // that announces it and the handler that enforces it cannot drift into
+  // disagreeing about when the toggle is refused. Turning it OFF is always
+  // allowed — an owner must be able to undo a switch whose legs have since
+  // gone missing — which is what the `!values.vectorSearchEnabled` term says.
+  const vectorRefused =
+    stored.readOnly || (!vectorAllowed && !values.vectorSearchEnabled);
   // Named only when the SELECTED provider is one the environment already
   // carries a key for — an `OPENAI_API_KEY` says nothing about a Google
   // selection, which is exactly the confusion a flat "a key is present" caused.
@@ -225,6 +232,23 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
 
   function field(suffix: string): string {
     return `${fieldId}-${suffix}`;
+  }
+
+  /** The save bar's standing sentence, which on a read-only deployment IS the
+   *  refusal — see `describedBy`. */
+  const readOnlyNoteId = field("bar-note");
+
+  /**
+   * `aria-describedby` for a control this deployment may refuse. The attribute
+   * takes a space-separated LIST, so the save bar's read-only sentence is
+   * APPENDED to the control's own hint rather than replacing it: the hint still
+   * says what the field means, and the appended sentence is the only place the
+   * refusal is stated at all. Without it `SETTINGS_READ_ONLY_COPY` sits
+   * unassociated in the save bar and the picker announces as "dimmed" with no
+   * reason — the same gap `aria-disabled` was adopted to close.
+   */
+  function describedBy(hintId: string): string {
+    return stored.readOnly ? `${hintId} ${readOnlyNoteId}` : hintId;
   }
 
   function textRow(
@@ -276,11 +300,22 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
           id={id}
           className="wb-set-select"
           value={values[key]}
-          onChange={(event) => set(key, event.target.value)}
-          disabled={stored.readOnly}
+          // `aria-disabled`, never `disabled`: a disabled <select> leaves the
+          // tab order, so a keyboard user cannot reach it and cannot read which
+          // provider this deployment is running on. Read-only means read-only,
+          // not hidden — the same rule the text rows already follow with
+          // `readOnly` (which <select> has no equivalent of). Committing
+          // nothing is the whole refusal, and React re-applies the controlled
+          // value to the DOM by itself — `WikiSwitcherProps.readOnly` owns the
+          // full explanation of the convention these three controls share.
+          aria-disabled={stored.readOnly || undefined}
+          onChange={(event) => {
+            if (stored.readOnly) return;
+            set(key, event.target.value);
+          }}
           // What the empty option MEANS is not in the label; a hint sitting
           // beside the control is invisible to a screen reader.
-          aria-describedby={hintId}
+          aria-describedby={describedBy(hintId)}
         >
           {/* The empty option is the inheritance rung, not a blank provider. */}
           <option value="">Inherit the primary provider</option>
@@ -389,9 +424,14 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
                 id={field("embeddingProvider")}
                 className="wb-set-select"
                 value={values.embeddingProvider}
-                onChange={(event) => set("embeddingProvider", event.target.value)}
-                disabled={stored.readOnly}
-                aria-describedby={field("embeddingProvider-hint")}
+                // Same convention as `providerRow`, same reason: focusable and
+                // readable on a read-only deployment.
+                aria-disabled={stored.readOnly || undefined}
+                onChange={(event) => {
+                  if (stored.readOnly) return;
+                  set("embeddingProvider", event.target.value);
+                }}
+                aria-describedby={describedBy(field("embeddingProvider-hint"))}
               >
                 <option value="">Auto-detect</option>
                 {EMBEDDING_PROVIDERS.map((option) => (
@@ -435,14 +475,24 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
                   id={field("vectorSearchEnabled")}
                   type="checkbox"
                   checked={values.vectorSearchEnabled}
-                  onChange={(event) => set("vectorSearchEnabled", event.target.checked)}
                   // The SAME predicate the route re-runs over the merged config.
                   // Two callers, one rule — the control is not the rule.
-                  disabled={stored.readOnly || (!vectorAllowed && !values.vectorSearchEnabled)}
-                  // A disabled control with the reason sitting beside it tells a
+                  //
+                  // `aria-disabled` over BOTH halves of that predicate, not just
+                  // the read-only one: the hint below is wired as this control's
+                  // `aria-describedby` precisely so the reason travels with it,
+                  // and a `disabled` control is not focusable, so that
+                  // description was never announced. The attribute is what makes
+                  // the comment below true rather than aspirational.
+                  aria-disabled={vectorRefused || undefined}
+                  onChange={(event) => {
+                    if (vectorRefused) return;
+                    set("vectorSearchEnabled", event.target.checked);
+                  }}
+                  // A refused control with the reason sitting beside it tells a
                   // screen-reader user nothing; the reason has to BE the
                   // description.
-                  aria-describedby={field("vectorSearchEnabled-hint")}
+                  aria-describedby={describedBy(field("vectorSearchEnabled-hint"))}
                 />
                 Enable vector search
               </label>
@@ -503,7 +553,10 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
           "unsaved edits do not apply" a promise the surface keeps rather than a
           behaviour the owner has to discover. */}
       <div className="wb-set-bar">
-        <span className="wb-set-bar-note">
+        {/* Identified so the refused controls above can point at it: on a
+            read-only deployment this sentence is the reason they refuse, and an
+            `aria-disabled` control with no description announces only "dimmed". */}
+        <span className="wb-set-bar-note" id={readOnlyNoteId}>
           {payload.readOnly ? SETTINGS_READ_ONLY_COPY : SETTINGS_SAVE_BAR_COPY}
         </span>
         {saveError && (

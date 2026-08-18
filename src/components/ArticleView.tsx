@@ -118,6 +118,12 @@ interface ArticleViewProps {
   principal: Principal | null;
   /** Owner-only, claim-level provenance. Public pages omit this private bundle. */
   evidenceBundle?: PageEvidenceBundle | null;
+  /**
+   * `YOPEDIA_READONLY=1`, read by the route page (a server component) and
+   * carried through to the action bar's Delete control — the one affordance
+   * here in front of a route DW-37 gated.
+   */
+  readOnly?: boolean;
 }
 
 function evidenceLocationLabel(location: EvidenceLocation): string {
@@ -144,6 +150,7 @@ export async function ArticleView({
   pageTenant,
   principal,
   evidenceBundle = null,
+  readOnly = false,
 }: ArticleViewProps) {
   // Slug→tenant map so in-content links and backlinks resolve to each target's
   // canonical owner-scoped URL `/u/<tenant>/<slug>` (falling back to this page's
@@ -480,6 +487,7 @@ export async function ArticleView({
             isCuratable={isCuratable}
             hasRawSource={hasRawSource}
             hasSourceUrl={hasSourceUrl}
+            readOnly={readOnly}
           />
         </div>
 

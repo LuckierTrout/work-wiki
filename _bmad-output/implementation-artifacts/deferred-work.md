@@ -330,7 +330,8 @@ location: src/app/api/wiki/[slug]/route.ts
 source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
 severity: low
 reason: Every other mutating route consults `isReadOnly()` and answers 403 — `api/wikis/route.ts`, `api/wikis/current`, `api/wikis/[id]/template`, `api/workspace-profile`. The page write route never has. On a read-only deployment the Preview therefore offers `Edit`, opens the dialog, and the save SUCCEEDS, because gating `editable` in the preview route would only hide a door that is still unlocked. The fix belongs at the write route, where it also covers the MCP and agent callers, not at the affordance that happens to have surfaced it.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-read-only-deployment-consistency
 
 ### DW-38: The page write path has no lost-update guard, so a save can silently overwrite a page rewritten since the Preview read it.
 origin: spec-deferred 0f0288cf1313
@@ -579,7 +580,8 @@ location: src/components/workbench/SettingsCanvas.tsx
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: low
 reason: Text inputs use `readOnly` (focusable, still readable) while selects and the vector checkbox use `disabled`, because HTML has no `readonly` for either. The accessible fix is `aria-disabled` plus a suppressed change handler, and it wants one decision applied to every control class in the shell rather than one made inside this surface.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-read-only-deployment-consistency
 
 ### DW-66: `hasCustomApiKey` / `hasFirecrawlApiKey` conflate an env-supplied key with a stored one, so `Remove` is offered for keys it cannot remove.
 origin: spec-deferred a152dc3b5b3f
@@ -1264,7 +1266,8 @@ source_spec: `spec-wiki-rename-and-delete.md`
 location: src/components/workbench/WikiSwitcher.tsx
 severity: low
 reason: All four routes gate on `isReadOnly()`, but the component renders New Wiki, the switcher, Rename and Delete unconditionally. Pre-existing for New Wiki and the switcher; the new controls inherit it. Other surfaces (PreviewColumn, WorkspacePurposeSettings) do carry a read-only signal.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-read-only-deployment-consistency
 
 ### DW-150: `withFileLock` is in-process only, so on a multi-isolate deployment the orphan sweep can delete the directory of a Wiki whose registry entry has not landed yet.
 origin: spec-deferred 11deb3958f5b
@@ -1560,4 +1563,44 @@ source_spec: `spec-dw-34-workbench-preview-announcements.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-187: A read-only deployment still accepts page CREATION, revision revert, and bulk ingest deletion — three page-write doors that never consulted isReadOnly().
+origin: spec-deferred 7a425c0e8357
+source_spec: `spec-dw-37-read-only-deployment-consistency.md`
+location: src/app/api/wiki/route.ts:51, src/app/api/wiki/[slug]/revisions/route.ts:98, src/app/api/ingest/history/route.ts:107
+severity: medium
+reason: DW-37 gated PUT/PATCH/DELETE /api/wiki/[slug]. `POST /api/wiki` (src/app/api/wiki/route.ts:51), `POST /api/wiki/[slug]/revisions` with {action:"revert"} (src/app/api/wiki/[slug]/revisions/route.ts:98) and `DELETE /api/ingest/history` (src/app/api/ingest/history/route.ts:107) all write or delete pages through the same kernel lifecycle with no isReadOnly() check — verified by grep: the string does not appear in any of the three files. So "read-only" currently means a page cannot be edited or deleted one at a time, but can still be created, reverted to an older body, or deleted in bulk. Pre-existing; none of the three is named by DW-37, DW-65 or DW-149, and the spec's Never clause records them as out of scope.
+status: open
+
+### DW-188: The stdio MCP server writes pages through the library directly, so no HTTP route gate can reach the agent callers DW-37's reason claims it covers.
+origin: spec-deferred a6adca8dbb43
+source_spec: `spec-dw-37-read-only-deployment-consistency.md`
+location: src/mcp.ts
+severity: low
+reason: DW-37's reason says the fix belongs at the write route "where it also covers the MCP and agent callers". src/mcp.ts calls writeWikiPageWithSideEffects / patchMetadata / deleteWikiPage directly and only MIRRORS the REST ACL in comments (src/mcp.ts:283, :381) — it never issues an HTTP request. A read-only deployment therefore still accepts every MCP write. Pre-existing and structural: the gate would have to move into the library, or be restated in src/mcp.ts.
+status: open
+
+### DW-189: WikiWorkbench's Change template control opens a confirm dialog onto a route that already answers 403 on a read-only deployment.
+origin: spec-deferred ed548e677477
+source_spec: `spec-dw-37-read-only-deployment-consistency.md`
+location: src/components/WikiWorkbench.tsx:193
+severity: low
+reason: `PUT /api/wikis/[id]/template` has consulted isReadOnly() since before this work (src/app/api/wikis/[id]/template/route.ts:24), but the canvas card's Change template button (src/components/WikiWorkbench.tsx:193) opens its confirm dialog unconditionally — the same confirm-then-403 shape DW-149 names, one card away from the switcher this bundle fixed. Pre-existing; the bundle names WikiSwitcher only, and the canvas card is not under the shell seam this change threaded readOnly through.
+status: open
+
+### DW-190: `POST /api/ingest/reingest` rewrites an entire page body with no isReadOnly() gate, and its control sits on the same article action bar as the Delete button this bundle just gated.
+origin: spec-deferred 948ef5e14a2f
+source_spec: `spec-dw-37-read-only-deployment-consistency.md`
+location: src/app/api/ingest/reingest/route.ts:9, src/components/ArticleActions.tsx:127
+severity: medium
+reason: src/app/api/ingest/reingest/route.ts has its own comment saying "re-ingest rewrites the page" and runs the realm-aware write ACL, but never consults isReadOnly() (verified by grep: the string appears nowhere under src/app/api/ingest/). On a read-only deployment the owner is refused a one-line edit through the editor while Reingest replaces the whole body. `ArticleActions.tsx` renders Reingest and Graphify beside the now-aria-disabled Delete, and article-actions-gate.test.ts deliberately pins that they are NOT dimmed — correctly, since the routes behind them answer no refusal to mirror. Distinct from DW-187, which names page create, revisions revert and ingest-history delete but not reingest. Pre-existing; not named by DW-37, DW-65 or DW-149.
+status: open
+
+### DW-191: WorkspacePurposeSettings wraps its whole form in a `disabled` fieldset on a read-only deployment, so the stored purpose text becomes unreachable by keyboard — the DW-65 defect at full form scale.
+origin: spec-deferred af274abf11df
+source_spec: `spec-dw-37-read-only-deployment-consistency.md`
+location: src/components/WorkspacePurposeSettings.tsx:223
+severity: medium
+reason: src/components/WorkspacePurposeSettings.tsx:223 is `<fieldset disabled={loading || saving || readOnly || !wiki}>` around every field and the Save button (:331 disables Save again). `disabled` on a fieldset removes every descendant from the tab order, so a keyboard or screen-reader user cannot read the stored Workspace Purpose at all — the exact harm DW-65 names for the Settings selects, on a surface the bundle did not name. The file already renders the read-only sentence at :344, so only the refusal mechanism is wrong. Pre-existing; the spec's Code Map cites this file only as the copy pattern to follow.
 status: open

@@ -49,8 +49,21 @@ vi.mock("@/lib/wiki", async (importOriginal) => ({
 // `() => null` so the writable cases can assert a positive: rendering nothing
 // would make "no denial screen" equally true of a "Page not found" render, an
 // empty render, or a throw — none of which is the branch under test.
+//
+// The stub also RECORDS its props. `readOnly` is a deployment fact only this
+// server component can read, and the seam that carries it is one JSX attribute:
+// delete it and the editor silently falls back to `false`, letting the owner
+// rewrite a page the routes will refuse (DW-37/DW-149). Mounted tests of the
+// editor cannot see that seam, because they hand the prop in themselves.
+const editorProps = vi.hoisted(() => ({
+  current: null as Record<string, unknown> | null,
+}));
+
 vi.mock("@/components/WikiEditor", () => ({
-  WikiEditor: () => <div data-testid="wiki-editor" />,
+  WikiEditor: (props: Record<string, unknown>) => {
+    editorProps.current = props;
+    return <div data-testid="wiki-editor" />;
+  },
 }));
 
 import EditWikiPage from "../page";
@@ -79,11 +92,17 @@ async function renderEditPage(): Promise<string> {
 const savedAdmin = process.env.ADMIN_HANDLES;
 const savedOwner = process.env.NEXT_PUBLIC_OWNER_HANDLE;
 
+const savedReadOnly = process.env.YOPEDIA_READONLY;
+
 beforeEach(() => {
   // Neither var may leak in: either one would make the principal an admin and
   // route every case below through the writable branch.
   delete process.env.ADMIN_HANDLES;
   delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  // A machine with this exported would otherwise make every case below assert
+  // against a read-only deployment.
+  delete process.env.YOPEDIA_READONLY;
+  editorProps.current = null;
   principal.current = { id: "user_alice", handle: "alice" };
   page.current = publicPage;
 });
@@ -96,6 +115,34 @@ afterEach(() => {
   else process.env.ADMIN_HANDLES = savedAdmin;
   if (savedOwner === undefined) delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
   else process.env.NEXT_PUBLIC_OWNER_HANDLE = savedOwner;
+  if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+  else process.env.YOPEDIA_READONLY = savedReadOnly;
+});
+
+describe("edit page — the read-only seam (DW-37, DW-149)", () => {
+  it("tells the editor the deployment refuses writes", async () => {
+    // `isReadOnly()` reads the variable at call time, so flipping it here is
+    // enough — no module reset needed.
+    process.env.YOPEDIA_READONLY = "1";
+    process.env.ADMIN_HANDLES = "alice";
+
+    const html = await renderEditPage();
+
+    // The writable branch rendered (the editor is on screen)…
+    expect(html).toContain('data-testid="wiki-editor"');
+    // …and it was told what the routes behind Save will do. Without this the
+    // owner rewrites a whole page and meets the 403 only at Save.
+    expect(editorProps.current?.readOnly).toBe(true);
+  });
+
+  it("says nothing of the sort on an ordinary deployment", async () => {
+    process.env.ADMIN_HANDLES = "alice";
+
+    const html = await renderEditPage();
+
+    expect(html).toContain('data-testid="wiki-editor"');
+    expect(editorProps.current?.readOnly).toBe(false);
+  });
 });
 
 describe("edit page — denial copy for a public knowledge page", () => {

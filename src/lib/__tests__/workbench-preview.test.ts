@@ -1205,6 +1205,11 @@ describe("GET /api/workbench/preview", () => {
   // the `schema.md` case below would assert `editable: true` in the one
   // configuration where no save can land.
   let originalOwner: string | undefined;
+  // Since DW-37 the page half of `editable` consults `isReadOnly()`, so every
+  // `editable: true` in this block is a claim about an ordinary deployment.
+  // Inherited from the shell, `YOPEDIA_READONLY=1` would turn them all red on
+  // one developer's machine and nowhere else.
+  let originalReadOnly: string | undefined;
 
   beforeAll(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "wb-preview-route-"));
@@ -1212,6 +1217,7 @@ describe("GET /api/workbench/preview", () => {
     originalWikiDir = process.env.WIKI_DIR;
     originalRawDir = process.env.RAW_DIR;
     originalOwner = process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    originalReadOnly = process.env.YOPEDIA_READONLY;
     process.env.DATA_DIR = root;
     process.env.WIKI_DIR = path.join(root, "wiki");
     process.env.RAW_DIR = path.join(root, "raw");
@@ -1227,6 +1233,7 @@ describe("GET /api/workbench/preview", () => {
       ["WIKI_DIR", originalWikiDir],
       ["RAW_DIR", originalRawDir],
       ["NEXT_PUBLIC_OWNER_HANDLE", originalOwner],
+      ["YOPEDIA_READONLY", originalReadOnly],
     ] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -1237,6 +1244,9 @@ describe("GET /api/workbench/preview", () => {
 
   beforeEach(() => {
     principal.current = { id: "u1", handle: OWNER };
+    // Every case starts from a writable deployment, whatever the shell exported
+    // and whatever the previous case set.
+    delete process.env.YOPEDIA_READONLY;
   });
 
   /**
@@ -1583,6 +1593,48 @@ describe("GET /api/workbench/preview", () => {
     const response = await get("kind=file&path=wiki%2Fblank.md");
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ body: "", truncated: false });
+  });
+
+  it("does not offer a Page for editing on a read-only deployment (DW-37)", async () => {
+    // The mirror of `wiki-schema-edit.test.ts`'s artifact-half case, for the
+    // half that used to be `slug !== undefined` unconditionally. The read
+    // decides whether `Edit` is on screen and the write decides whether a save
+    // lands: while `PUT /api/wiki/[slug]` had no read-only gate the two agreed,
+    // and the moment it got one they would have disagreed — the owner retyping
+    // a page and being refused at `Save`.
+    //
+    // `isReadOnly()` is read at CALL time, so the flag is flipped here and
+    // cleared in `finally` rather than at import.
+    await writePage("ro-page", "# Read Only\n\nstill served in full\n");
+    process.env.YOPEDIA_READONLY = "1";
+    try {
+      const response = await get("kind=page&slug=ro-page");
+      expect(response.status).toBe(200);
+      const payload = await response.json();
+      expect(payload.editable).toBe(false);
+      // Read-only means read-only, NOT hidden: the bytes are still served whole.
+      expect(payload.body).toBe("# Read Only\n\nstill served in full\n");
+      expect(payload).toMatchObject({ slug: "ro-page", truncated: false });
+
+      // The same page reached from the Files tab answers the same way — one
+      // rule, two surfaces, exactly as the editable-when-writable pair above.
+      const fromFiles = await (await get("kind=file&path=wiki%2Fro-page.md")).json();
+      expect(fromFiles).toMatchObject({ slug: "ro-page", editable: false });
+      expect(fromFiles.body.length).toBeGreaterThan(0);
+
+      // …and the flag is what made the difference: the same page is editable
+      // again once it is cleared. CLEARED, never "restored to what it was" — a
+      // machine with `YOPEDIA_READONLY=1` exported would otherwise put the
+      // deployment straight back into read-only and fail this half for a reason
+      // that has nothing to do with the code.
+      delete process.env.YOPEDIA_READONLY;
+      const writable = await (await get("kind=page&slug=ro-page")).json();
+      expect(writable.editable).toBe(true);
+    } finally {
+      // `beforeEach` clears it for the next case; the suite's `afterAll` puts
+      // the shell's own value back.
+      delete process.env.YOPEDIA_READONLY;
+    }
   });
 });
 

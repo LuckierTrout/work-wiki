@@ -133,6 +133,7 @@ function data(
     filesUnavailable: false,
     filesTruncated: false,
     dataVersion: 0,
+    readOnly: false,
   };
 }
 
