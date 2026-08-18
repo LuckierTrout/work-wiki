@@ -61,6 +61,7 @@ import {
   wikiProfilePath,
   wikisRootPath,
 } from "./wiki-paths";
+import { saveWikiArtifactRevision } from "./wiki-artifact-revisions";
 import { putWorkspaceProfile } from "./workspace-profile";
 import type { WorkspaceProfileInput } from "./workspace-profile-schema";
 
@@ -529,6 +530,44 @@ async function discardCreatedWikiDirectory(
 }
 
 /**
+ * Longest `reason` recorded for an artifact edit. Not a validation error — the
+ * value is app-supplied (the revert route's own sentence), never typed by a
+ * caller — so an over-long one is trimmed rather than refused.
+ */
+const MAX_ARTIFACT_EDIT_REASON_CHARS = 200;
+
+/**
+ * ONE canonical form of an edit `reason`, used for BOTH the revision sidecar and
+ * the activity-log details line.
+ *
+ * Two failures this closes, and both come from the two records being derived
+ * independently. (1) `wiki/log.md` is parsed by `readLog`'s
+ * `^## \[date\] op \|` line grammar, so a newline inside `reason` would inject a
+ * line into the log that the trail reads as STRUCTURE — a log-injection through
+ * a field nothing else validates. (2) A whitespace-only `reason` used to be
+ * written into the sidecar while `appendToLog` silently dropped it, so history
+ * and trail disagreed about whether the edit had a summary at all.
+ *
+ * Collapsing every whitespace run (newlines included) to a single space, then
+ * trimming, then capping, makes the value a single bounded line; an empty result
+ * is `undefined`, i.e. ABSENT in both records rather than empty in one.
+ */
+function normalizeArtifactEditReason(
+  reason: string | undefined,
+): string | undefined {
+  if (typeof reason !== "string") return undefined;
+  const collapsed = reason.replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) return undefined;
+  // CAPPED BY CODE POINT, not by UTF-16 unit: a plain `slice` can cut between
+  // the two halves of a surrogate pair and leave a LONE SURROGATE, which is not
+  // valid text — it would be written into the sidecar's JSON and into the
+  // tenant-global `wiki/log.md` and read back as a replacement character
+  // forever. Spreading the string iterates code points, so the cut can only
+  // fall between whole characters.
+  return [...collapsed].slice(0, MAX_ARTIFACT_EDIT_REASON_CHARS).join("");
+}
+
+/**
  * Overwrite one seeded artifact — the write half of Story 1.8's Schema editing.
  *
  * WHY THIS IS NOT `writeWikiPageWithSideEffects`. The epic's one-write-path rule
@@ -548,6 +587,16 @@ async function discardCreatedWikiDirectory(
  * takes them in. The bytes have already landed by then, which is what makes the
  * two effects fail-soft rather than transactional.
  *
+ * READ BEFORE WRITE (DW-59). Before the new bytes land, the current ones are
+ * snapshotted into `tenants/<t>/wikis/<id>/revisions/<file>/` — the same
+ * read-then-`saveRevision` that has always guarded a page write, for the one
+ * artifact that is executable. `reason` is {@link normalizeArtifactEditReason}d
+ * ONCE and then recorded in the snapshot's sidecar (with `owner` as the author)
+ * AND appended to the log line — one value in two places, which is what makes a
+ * revert distinguishable from an edit in the trail without the two records
+ * being able to disagree. Both are optional, and an omitted or
+ * whitespace-only `reason` reads exactly as this function did before.
+ *
  * FAIL-SOFT, in the same shape as the lifecycle pipeline's own tail: a log or
  * counter hiccup is warned about, never surfaced. A save that already reached
  * storage must not be reported as failed — a stale tree is recoverable by the
@@ -565,10 +614,67 @@ export async function writeWikiArtifact(
   wikiId: string,
   file: EditableArtifactFile,
   content: string,
+  reason?: string,
 ): Promise<void> {
-  await withFileLock(wikiLockKey(owner), () =>
-    putWikiArtifact(owner, wikiId, file, content),
-  );
+  // Normalized ONCE, here, so the sidecar and the log line below cannot record
+  // two different sentences for the same edit.
+  const editReason = normalizeArtifactEditReason(reason);
+
+  await withFileLock(wikiLockKey(owner), async () => {
+    // READ BEFORE WRITE (DW-59). The bytes about to be replaced are the
+    // owner's previous EXECUTABLE Schema, and this is the only moment they
+    // still exist. The snapshot is INSIDE this callback on purpose: the same
+    // `wikis:<tenant>` key owns both the artifact and its history, so history
+    // and bytes are serialized together without a second lock key — and
+    // `saveWikiArtifactRevision` takes none of its own for that reason.
+    //
+    // TWO CATCHES, NOT ONE, and the split is the whole point. A single
+    // `isEnoent`-filtered catch around both halves would silence a
+    // NOT-FOUND-shaped failure of the WRITE as well as of the read — and R2's
+    // not-found error carries `code = "ENOENT"`, so on that provider a failed
+    // revision write would drop the history entry with no warning at all. That
+    // is precisely the silent loss this story exists to end. So: the read
+    // reports "absent" as `null` ({@link readWikiArtifact} already owns that
+    // ENOENT → null shape, which is also why this is not a second raw spelling
+    // of the artifact read) and anything else is warned; the snapshot write
+    // warns UNCONDITIONALLY, because it has no legitimate absent case.
+    //
+    // BOTH ARE FAIL-SOFT, in the same spirit as `writeWikiPage`: the save
+    // proceeds either way. A save that reaches storage is never reported as
+    // failed because history could not be recorded — the alternative loses the
+    // owner's new bytes to protect their old ones.
+    let existing: string | null = null;
+    try {
+      existing = await readWikiArtifact(owner, wikiId, file);
+    } catch (error) {
+      logger.warn(
+        "wikis",
+        `reading "${file}" before overwriting it failed — the save proceeds, but the replaced bytes are not in this wiki's history`,
+        error,
+      );
+    }
+    // `null` is the FIRST WRITE: there is nothing to snapshot and nothing to
+    // warn about.
+    if (existing !== null) {
+      try {
+        await saveWikiArtifactRevision(
+          owner,
+          wikiId,
+          file,
+          existing,
+          owner,
+          editReason,
+        );
+      } catch (error) {
+        logger.warn(
+          "wikis",
+          `snapshotting "${file}" before overwriting it failed — the save proceeds, but the replaced bytes are not in this wiki's history`,
+          error,
+        );
+      }
+    }
+    await putWikiArtifact(owner, wikiId, file, content);
+  });
 
   try {
     // `wiki/log.md` is tenant-global while `schema.md` is PER WIKI, so the
@@ -576,7 +682,18 @@ export async function writeWikiArtifact(
     // the owner has. The id goes on the details line, where `appendToLog`
     // already puts the entry's payload, so the log can still answer "whose
     // Schema moved" once there is more than one.
-    await appendToLog("edit", `Schema — ${file}`, `Wiki: ${wikiId}`);
+    //
+    // `reason` rides the SAME line rather than a second entry: a revert is an
+    // edit — it snapshots what it replaces and moves the same counter — so what
+    // the trail needs is the sentence that tells the two apart, not a new
+    // operation the log's readers would have to learn.
+    await appendToLog(
+      "edit",
+      `Schema — ${file}`,
+      editReason === undefined
+        ? `Wiki: ${wikiId}`
+        : `Wiki: ${wikiId} · ${editReason}`,
+    );
   } catch (error) {
     logger.warn("wikis", `logging the artifact edit of "${file}" failed`, error);
   }

@@ -75,6 +75,51 @@ export function wikiArtifactPath(
 }
 
 /**
+ * `tenants/<tenant>/wikis/<wikiId>/revisions/<file>` — one artifact's history.
+ *
+ * THE NAMESPACE IS SPELLED ONCE, HERE. Everything an artifact revision needs to
+ * address hangs off {@link wikiDirPath}, which is what makes the whole feature
+ * free of new cleanup and new lock order: `deleteWiki`, the half-create discard
+ * and the orphan sweep all `deleteDirectory(wikiDirPath(...))`, so history is
+ * reclaimed with the Wiki it belongs to, and `wikis:<tenant>` — the key that
+ * already serializes artifact writes — serializes their snapshots too.
+ *
+ * NOT dot-prefixed like the page silo's `.revisions`: the dotfile filter in
+ * `workbench-files.ts` guards only the `raw/`/`wiki/` walk, while the
+ * Wiki-artifact branch intersects the listing with `WIKI_ARTIFACT_FILES` and
+ * skips directories outright — so this directory is already invisible to the
+ * Files tab without a naming trick.
+ *
+ * The `<file>` segment is a {@link WikiArtifactFile}, i.e. a compile-time
+ * constant from a two-entry union, never a caller-supplied name — the same
+ * property that lets {@link wikiArtifactPath} skip a traversal guard.
+ */
+export function wikiArtifactRevisionsDir(
+  owner: string,
+  wikiId: string,
+  file: WikiArtifactFile,
+): string {
+  return `${wikiDirPath(owner, wikiId)}/revisions/${file}`;
+}
+
+/**
+ * `tenants/<tenant>/wikis/<wikiId>/revisions/<file>/<name>` — one revision file.
+ *
+ * `name` is the caller's `<timestamp>.md` or `<timestamp>.meta.json` stem, built
+ * from a NUMBER in `wiki-artifact-revisions.ts` (the writer mints it, the
+ * readers parse the query parameter through `Number()` first), so no string a
+ * caller typed reaches this segment.
+ */
+export function wikiArtifactRevisionPath(
+  owner: string,
+  wikiId: string,
+  file: WikiArtifactFile,
+  name: string,
+): string {
+  return `${wikiArtifactRevisionsDir(owner, wikiId, file)}/${name}`;
+}
+
+/**
  * `tenants/<tenant>/wikis/<wikiId>/workspace-profile.json` — the third sibling
  * {@link wikiLockKey} covers, beside `purpose.md` and `schema.md`.
  *

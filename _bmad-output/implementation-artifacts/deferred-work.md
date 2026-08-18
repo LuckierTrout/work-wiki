@@ -537,7 +537,8 @@ location: src/lib/wikis.ts (writeWikiArtifact / putWikiArtifact), src/lib/revisi
 source_spec: `spec-1-8-edit-schema.md`
 severity: medium
 reason: `writeWikiPageWithSideEffects` calls `saveRevision(slug, existing, …)` (`src/lib/wiki.ts:442`) before it overwrites, and `GET/POST /api/wiki/[slug]/revisions` can revert a page. `writeWikiArtifact` writes through `putWikiArtifact` with no prior read and no snapshot, so the previous `schema.md` is simply gone. That was harmless while the file was seed-only and immutable; it is not once the file is editable, and this is the single file every ingest, chat and lint prompt reads. The story's Design Notes deliberately enumerate the artifact tail as log + bump, so this is a decided omission rather than a missed one — but revisioning is not an index/backlink concern the artifact class lacks, it is the recovery path, and closing it needs a decision about where artifact revisions live (the `revisions/` silo is slug-keyed) that this story does not own.
-status: open
+status: done 2026-08-18
+resolution: resolved by sweep bundle dw2-per-wiki-artifact-revisions
 decision: 2026-08-17 Per-Wiki artifact revisions — Snapshot artifacts under their own per-Wiki revision namespace (tenants/<t>/wikis/<id>/revisions/<file>/), read-before-write in writeWikiArtifact, and expose list/revert through the artifact route mirroring the page revisions API. Keeps the slug-keyed revisions silo untouched.
 decision: 2026-08-16 Per-Wiki artifact revisions — Snapshot artifacts under their own per-Wiki revision namespace (tenants/<t>/wikis/<id>/revisions/<file>/), read-before-write in writeWikiArtifact, and expose list/revert through the artifact route mirroring the page revisions API. Keeps the slug-keyed revisions silo untouched.
 
@@ -1783,4 +1784,36 @@ source_spec: `spec-dw-49-artifact-seed-data-version-bump.md`
 location: src/lib/data-version.ts:31 (DATA_VERSION_KEY), src/app/api/workbench/version/route.ts
 severity: low
 reason: `DATA_VERSION_KEY = "data-version"` (src/lib/data-version.ts:31) has no owner in it, and `GET /api/workbench/version` serves that single integer to everyone. Pre-existing — `writeWikiArtifact` and the page lifecycle already bump the same global key — but this change widens the set of operations that trigger a cross-tenant server re-render from "someone edited a page" to "someone anywhere created a Wiki". Not a correctness bug: a refresh is idempotent and each client re-renders its own tenant's data. The fix is a per-tenant key, which is a storage-layout change well outside this bundle.
+status: open
+
+### DW-213: A successful re-template overwrites an owner-edited `schema.md` with template bytes and takes no revision snapshot, so DW-59's recovery path does not cover the other operation that destroys the same f
+origin: spec-deferred 0847f138003a
+source_spec: `spec-dw-59-per-wiki-artifact-revisions.md`
+location: src/lib/wikis.ts (applyScenarioTemplate / seedWikiArtifacts)
+severity: medium
+reason: `applyScenarioTemplate` -> `seedWikiArtifacts` -> `putWikiArtifact` writes both artifacts with no prior read. `snapshotSeededFiles` holds the pre-seed bytes in memory and `restoreSeededFiles` is called only from the `catch`, so it is a rollback for a FAILED seed, not history: a re-template that COMMITS discards the snapshot and the owner's edited Schema is gone exactly as DW-59 describes. The recorded decision scopes read-before-write to `writeWikiArtifact`, so this is out of scope on the intent's own authority rather than a miss.
+status: open
+
+### DW-214: The artifact history API has no client — no Workbench surface lists or reverts artifact revisions, so the recovery path is unreachable from the running app.
+origin: spec-deferred d5925f928e90
+source_spec: `spec-dw-59-per-wiki-artifact-revisions.md`
+location: src/components/workbench/PreviewColumn.tsx, src/lib/workbench-preview.ts
+severity: medium
+reason: `grep -rn "artifact/revisions" src` returns only the route and its test. The page equivalent has both halves: `GET/POST /api/wiki/[slug]/revisions` plus `src/components/RevisionHistory.tsx` (expand -> list -> view -> revert), and `workbench-preview.ts` owns `ARTIFACT_WRITE_ROUTE`/`artifactWriteUrl` but gained no history helper. The intent named the route as the exposure surface and the spec's Never list excludes UI, so the API-only shape is correct for this story — the follow-up is wiring the Schema editor to it.
+status: open
+
+### DW-215: Artifact revisions accumulate with no cap or pruning and are walked by the backup scan, which throws rather than degrades at its safety limits.
+origin: spec-deferred 5d7e90742d9d
+source_spec: `spec-dw-59-per-wiki-artifact-revisions.md`
+location: src/lib/wiki-artifact-revisions.ts, src/lib/backups.ts:56-85
+severity: low
+reason: Every `writeWikiArtifact` writes a full copy under `tenants/<t>/wikis/<id>/revisions/<file>/` with no retention policy (deliberate — page revisions have none either), and `listWikiArtifactRevisions` stats every revision on each GET with an unbounded `Promise.all`. `src/lib/backups.ts` walks all of `tenants/<t>` against `MAX_BACKUP_FILES = 10_000` / `MAX_BACKUP_BYTES = 2 GB` and throws "Backup exceeds the safety limit" rather than degrading. Page revisions spread across slugs; these pile into one directory per artifact.
+status: open
+
+### DW-216: Follow-up review still recommended for dw2-per-wiki-artifact-revisions after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-dw-59-per-wiki-artifact-revisions.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
 status: open
