@@ -14,10 +14,22 @@ import { useWorkbenchData } from "./WorkbenchData";
  * The Workbench's refresh mechanism for KERNEL PAGE WRITES. Renders nothing.
  *
  * It is not the only `router.refresh()` in this directory, and deliberately so:
- * `WikiSwitcher.tsx` keeps its own, because switching or creating a Wiki is a
- * REGISTRY change rather than a kernel page write and so moves no `dataVersion`
- * at all. Every write that goes through `runPageLifecycleOp` — the Preview
- * editor's save included — arrives here instead.
+ * `WikiSwitcher.tsx` keeps its own, because the registry changes it drives —
+ * switching the current Wiki, renaming one, deleting one — are not kernel page
+ * writes and move no `dataVersion` at all. Renaming is the one of those three
+ * that also rewrites bytes (`purpose.md`'s heading) and still does not bump,
+ * which is a known gap rather than a decision — DW-209.
+ *
+ * CREATE AND RE-TEMPLATE ARE THE EXCEPTION (DW-49). Both SEED bytes as well as
+ * touching the registry — `purpose.md` and `schema.md` — so both now bump the
+ * counter and reach this watcher too, which is what un-stales a Preview left
+ * open on an artifact across a re-apply. The switcher's own refresh stays
+ * because the other three cases still move nothing; the two paths overlapping
+ * on create costs one redundant refresh, which is cheaper than the switcher
+ * guessing which of its four operations bumped.
+ *
+ * Every write that goes through `runPageLifecycleOp` — the Preview editor's
+ * save included — arrives here as well.
  *
  * `page.tsx` reads the `dataVersion` it rendered with and hands it down through
  * `WorkbenchDataProvider`; this compares it to what the gated route answers and,

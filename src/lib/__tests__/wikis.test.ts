@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { DATA_VERSION_KEY, readDataVersion } from "../data-version";
 import { ClientInputError } from "../errors";
 import { _resetLocks, withFileLock } from "../lock";
 import { logger } from "../logger";
@@ -289,6 +290,12 @@ describe("input validation", () => {
   });
 
   it("writes nothing when create is rejected", async () => {
+    // Seeded, not zero: a rejected input must leave a counter that was ALREADY
+    // counting exactly where it was, and against 0 this row would also pass
+    // with `readDataVersion` failing open.
+    await getStorage().putIndex(DATA_VERSION_KEY, 7);
+    const before = await readDataVersion();
+    expect(before).toBe(7);
     await expect(
       createWiki(OWNER, { name: "   ", scenario: "general" } as never),
     ).rejects.toThrow(ClientInputError);
@@ -299,6 +306,218 @@ describe("input validation", () => {
     expect(await listWikis(OWNER)).toEqual([]);
     await expect(fs.stat(abs("tenants", TENANT, "wikis.json"))).rejects.toThrow();
     await expect(fs.stat(abs("tenants", TENANT, "wikis"))).rejects.toThrow();
+    // "Writes nothing" includes the refresh signal: a rejected input never
+    // reaches the lock, so there is nothing for an open tab to refresh to.
+    expect(await readDataVersion()).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The refresh signal (DW-49, DW-57)
+// ---------------------------------------------------------------------------
+
+/**
+ * Seeding writes `purpose.md` and `schema.md` through the tail-less
+ * `putWikiArtifact`, so for a while neither create nor re-template moved
+ * `dataVersion` — and a re-template moves NOTHING else a Preview is keyed on
+ * (its fetch effect watches `[selection, dataVersion, editing]`, and a re-apply
+ * changes no selection and no mode). A Preview READING either artifact across a
+ * confirm-gated re-apply therefore kept the pre-template bytes until the owner
+ * reselected the row or reloaded. A Preview mid-EDIT is a different case and
+ * not this tail's job: `previewFetchPlan` defers the read while `editing` so
+ * the draft survives, and the If-Match precondition (DW-38) is what refuses the
+ * stale save.
+ *
+ * The tail lives at the two CALLERS, outside `wikis:<tenant>`, because
+ * `bumpDataVersion` takes `DATA_VERSION_LOCK` and `withFileLock` is not
+ * reentrant. These rows are the only guard against a refactor moving it back
+ * inside the lock or dropping it: every one of them would still pass with the
+ * bump deleted if it only asserted on bytes.
+ *
+ * EVERY ROW STARTS FROM A NON-ZERO COUNTER. `beforeEach` mints a fresh
+ * `DATA_DIR`, so an unseeded counter reads `0` — and `0` is also what
+ * `readDataVersion` answers when the store is unreadable. A `before` of `0`
+ * would let "bumps once" pass against an implementation that just STORES `1`,
+ * and let the "does not bump" rows pass against a counter that is failing open.
+ */
+describe("create and re-template move the refresh signal (DW-49, DW-57)", () => {
+  it("bumps exactly once per create, not once per seeded file", async () => {
+    // The FIRST create is what lifts the counter off zero, so the second one's
+    // `before + 1` is arithmetic on the stored value rather than a literal an
+    // implementation that simply stores `1` would also satisfy.
+    await createWiki(OWNER, { name: "First", scenario: "business" });
+    const before = await readDataVersion();
+    expect(before).toBe(1);
+
+    await createWiki(OWNER, { name: "Q3 planning", scenario: "business" });
+
+    // Exactly one: the seed writes three files and the registry, but the
+    // signal is monotonic and a consumer only needs "it moved forward".
+    expect(await readDataVersion()).toBe(before + 1);
+  });
+
+  it("bumps exactly once per re-template, which is the only signal a re-apply sends", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0); // the create's own bump
+
+    expect(await applyScenarioTemplate(OWNER, wiki.id, "reading")).not.toBeNull();
+
+    expect(await readDataVersion()).toBe(before + 1);
+    // …and the bytes the bump is telling an open Preview to refetch really did
+    // change, so the signal is not moving on its own.
+    expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toContain(
+      "### Scenario conventions — Reading",
+    );
+  });
+
+  it("does not bump for an unknown wiki id", async () => {
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0); // so "unchanged" is not "still zero"
+
+    expect(await applyScenarioTemplate(OWNER, "no-such-wiki", "reading")).toBeNull();
+
+    // The locked body returns before its first write, so there is nothing new
+    // to see and a refresh would be pure churn.
+    expect(await readDataVersion()).toBe(before);
+  });
+
+  it("does not bump when a re-template is rejected outright", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0);
+
+    await expect(
+      applyScenarioTemplate(OWNER, wiki.id, "custom" as never),
+    ).rejects.toThrow(ClientInputError);
+
+    expect(await readDataVersion()).toBe(before);
+  });
+
+  it("does not bump when create is capped", async () => {
+    const now = new Date().toISOString();
+    const wikis: WikiRecord[] = Array.from({ length: MAX_WIKIS }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      name: `Wiki ${index}`,
+      scenario: "general",
+      createdAt: now,
+      updatedAt: now,
+    }));
+    await fs.mkdir(abs("tenants", TENANT), { recursive: true });
+    await fs.writeFile(
+      abs(wikiRegistryPath(OWNER)),
+      JSON.stringify({ version: 1, wikis, currentId: wikis[0].id }),
+    );
+    // The registry was written straight to disk, so nothing has bumped yet.
+    // Seed the counter by hand: against a `before` of 0 this row would also
+    // pass with `readDataVersion` failing open.
+    await getStorage().putIndex(DATA_VERSION_KEY, 7);
+    const before = await readDataVersion();
+    expect(before).toBe(7);
+
+    await expect(
+      createWiki(OWNER, { name: "One too many", scenario: "general" }),
+    ).rejects.toThrow(ClientInputError);
+
+    expect(await readDataVersion()).toBe(before);
+  });
+
+  // -------------------------------------------------------------------------
+  // The counter store is down
+  // -------------------------------------------------------------------------
+
+  /**
+   * WHOSE warning to assert on, and why it is not the callers'.
+   *
+   * `bumpDataVersion` wraps its ENTIRE body, so a rejecting `putIndex` makes it
+   * answer `0` rather than throw — which means the `try/catch` in `createWiki`
+   * and `applyScenarioTemplate` never runs and their "the refresh signal did
+   * not move after …" wording never reaches the log. Those wrappers are
+   * redundant defence, kept deliberately so the tail reads identically at all
+   * three call sites (`writeWikiArtifact` included) and stays correct if
+   * `bumpDataVersion` ever stops swallowing; they are unreachable today.
+   *
+   * So these rows assert on `data-version`'s own warn. Asserting on the
+   * callers' sentence instead would be a test that passes with their `catch`
+   * deleted AND passes with it kept — it would pin nothing either way.
+   */
+  const BUMP_FAILED_WARN = "bump failed; the signal did not move";
+
+  it("still resolves a create when the counter store rejects putIndex", async () => {
+    // An existing wiki puts the counter at a non-zero value, so "did not move"
+    // below is an observation rather than a fresh store's 0.
+    await createWiki(OWNER, { name: "First", scenario: "business" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0);
+
+    const putIndex = vi
+      .spyOn(getStorage(), "putIndex")
+      .mockRejectedValue(new Error("kv is gone"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let wiki: WikiRecord;
+    let warned: unknown[][] = [];
+    try {
+      wiki = await createWiki(OWNER, { name: "Q3", scenario: "business" });
+      // Captured BEFORE the restore — `mockRestore` clears `mock.calls`.
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+      putIndex.mockRestore();
+    }
+
+    // The create resolved and every byte it owed is on disk…
+    expect(wiki.name).toBe("Q3");
+    expect((await listWikis(OWNER)).map((item) => item.name).sort()).toEqual([
+      "First",
+      "Q3",
+    ]);
+    expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toContain(
+      "## Page conventions",
+    );
+    // …while the signal genuinely did NOT move — read from the store, not
+    // inferred from the mock having been called.
+    expect(await readDataVersion()).toBe(before);
+    expect(
+      warned.some(
+        ([scope, message]) =>
+          scope === "data-version" && String(message).includes(BUMP_FAILED_WARN),
+      ),
+    ).toBe(true);
+  });
+
+  it("still resolves a re-template when the counter store rejects putIndex", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0);
+
+    const putIndex = vi
+      .spyOn(getStorage(), "putIndex")
+      .mockRejectedValue(new Error("kv is gone"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let applied: WikiRecord | null;
+    let warned: unknown[][] = [];
+    try {
+      applied = await applyScenarioTemplate(OWNER, wiki.id, "reading");
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+      putIndex.mockRestore();
+    }
+
+    expect(applied?.scenario).toBe("reading");
+    expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toContain(
+      "### Scenario conventions — Reading",
+    );
+    expect(await readDataVersion()).toBe(before);
+    expect(
+      warned.some(
+        ([scope, message]) =>
+          scope === "data-version" && String(message).includes(BUMP_FAILED_WARN),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -952,6 +1171,7 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
       const registryBefore = await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8");
       const entriesBefore = await wikisRootEntries();
       const bytesBefore = await seededBytes(existing.id);
+      const versionBefore = await readDataVersion();
 
       const spy = failWritesTo(suffix);
       try {
@@ -971,6 +1191,10 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
       expect(await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8")).toBe(registryBefore);
       expect(await seededBytes(existing.id)).toEqual(bytesBefore);
       await expectTenantTreesIntact();
+      // …and the refresh signal did not move either: the compensation discarded
+      // the bytes, so there is nothing new for an open tab to refetch. The bump
+      // tail sits after the lock on the SUCCESS path only.
+      expect(await readDataVersion()).toBe(versionBefore);
     });
   }
 
@@ -1041,6 +1265,7 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
       const bytesBefore = await seededBytes(wiki.id);
       const bystanderBefore = await seededBytes(bystander.id);
       const registryBefore = await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8");
+      const versionBefore = await readDataVersion();
 
       const spy = failWritesTo(suffix);
       let warned: unknown[][] = [];
@@ -1073,6 +1298,10 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
       // Nothing outside this wiki's own directory moved.
       expect(await seededBytes(bystander.id)).toEqual(bystanderBefore);
       await expectTenantTreesIntact();
+      // Including the refresh signal — the restore put the OLD bytes back, so
+      // telling an open Preview to refetch would be churn at best and, on the
+      // `warned` assertion above, a second story's bug at worst.
+      expect(await readDataVersion()).toBe(versionBefore);
     });
   }
 

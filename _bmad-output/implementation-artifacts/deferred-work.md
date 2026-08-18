@@ -443,7 +443,8 @@ location: src/lib/wikis.ts (seedWikiArtifacts), src/lib/lifecycle.ts (runPageLif
 source_spec: `spec-1-7-dataversion-workbench-refresh.md`
 severity: low
 reason: The bump is at the kernel pipeline's tail, which is what the story's `When` clause names, and `seedWikiArtifacts` (`wikis.ts:280`) writes through `storage.writeFile` instead. Creating a Wiki is covered because `WikiSwitcher` still calls `router.refresh()` itself, but a confirm-gated template RE-APPLY, and any later writer that lands bytes the Files tab renders, would leave a second open tab stale. Story 1.8 routes Schema edits through the kernel write path, at which point that half needs nothing; the open question is only whether seeding and template re-apply should bump too, and that belongs with whichever story owns those flows.
-status: open
+status: done 2026-08-18
+resolution: resolved by sweep bundle dw2-artifact-seed-data-version-bump
 
 ### DW-50: A silent same-row refresh swaps the Preview's body with no announcement, so a screen-reader user reading it is not told the content changed.
 origin: spec-deferred 6d3ef6e9607b
@@ -518,7 +519,8 @@ location: src/lib/wikis.ts (seedWikiArtifacts / applyScenarioTemplate), src/comp
 source_spec: `spec-1-8-edit-schema.md`
 severity: medium
 reason: `applyScenarioTemplate` rewrites `schema.md` through `seedWikiArtifacts`, which by this spec's own Never list does not bump `dataVersion` (DW-49). `PreviewPane`'s fetch effect re-runs only on `[selection, dataVersion, editing]`, and a re-apply moves none of the three — the Wiki id, the mode and the tree tab are unchanged, so `Workbench`'s selection-reset effect does not fire either. Before this story that stale column was read-only; it is now writable, so Edit → Save writes the pre-template Schema back over the freshly seeded one with a success message. Closing it means deciding whether seeding and re-apply bump the counter, which belongs with the story that owns those flows.
-status: open
+status: done 2026-08-18
+resolution: resolved by sweep bundle dw2-artifact-seed-data-version-bump
 
 ### DW-58: FR-34's other half is still unbuilt — `purpose.md` is editable from no surface, and the narrow allowlist now pins that shut.
 origin: spec-deferred d9e12a049e09
@@ -1749,4 +1751,36 @@ source_spec: `spec-dw-44-split-divider-target-and-responsiveness.md`
 location: src/components/workbench/TreePanel.tsx (the persist effect's cleanup)
 severity: low
 reason: The persist effect coalesces through one frame (`if (frame !== 0) return; frame = requestAnimationFrame(...)`) and its cleanup ends `if (frame !== 0) cancelAnimationFrame(frame);` - the queued `writeStoredTreeScroll(tab, panel.scrollTop)` never runs. The restore effect then re-runs on the same dep change and assigns the stored value, which is now one frame stale. Pre-existing for `tab` and `collapsed`; DW-47's `narrow` dep adds resizing as a third route into it. The fix is not a safe one-liner: at cleanup time React has already committed the DOM, so on a collapse the panel can be `display: none`, where `scrollTop` reads 0 - and the obvious guard does not help, because `treeBodyShowing(panel, collapsed)` closes over the STALE `collapsed` (still `false`) and `treeScrollActive` returns `!collapsed || rendered`, i.e. `true` regardless of the element. A correct flush has to ask the element directly (`panel.getClientRects().length > 0`), and jsdom answers for every attached element, so the g
+status: open
+
+### DW-209: `renameWiki` rewrites `purpose.md` under the tenant lock without moving `dataVersion`, so a Preview open on that artifact keeps the old heading.
+origin: spec-deferred 4e2733a570b3
+source_spec: `spec-dw-49-artifact-seed-data-version-bump.md`
+location: src/lib/wikis.ts (renameWiki / retitlePurpose)
+severity: low
+reason: `retitlePurpose` (src/lib/wikis.ts) writes the retitled `purpose.md` through the same tail-less `putWikiArtifact` the seeder uses, and `renameWiki` adds no bump. Renaming a NON-current Wiki changes no `currentWikiId`, so `Workbench`'s selection-reset effect does not fire either — the same DW-57 shape, one artifact over. Milder than DW-57 because `purpose.md` is not in `EditableArtifactFile`, so the stale column is read-only and there is no silent-revert half. Out of scope here: the bundle intent names the seeding and re-apply paths only.
+status: open
+
+### DW-210: A re-apply whose `restoreSeededFiles` compensation itself fails leaves changed bytes on disk with no `dataVersion` bump at all.
+origin: spec-deferred 6526deb5b008
+source_spec: `spec-dw-49-artifact-seed-data-version-bump.md`
+location: src/lib/wikis.ts (applyScenarioTemplate catch / restoreSeededFiles)
+severity: low
+reason: `restoreSeededFiles` is fail-soft per entry: it warns and swallows, so a restore that cannot write leaves the wiki with some NEW template bytes (the state its own warning calls "may now describe two different scenario templates") while `applyScenarioTemplate` re-throws and skips the tail. An open Preview then holds bytes that really did change with nothing to tell it so. Rare and already-degraded, but the one path where "no commit means nothing to refresh to" is not true.
+status: open
+
+### DW-211: DW-49's raw-source half is untouched — no writer under `tenants/<t>/raw/` exists yet, so it needs re-checking when Epic 2 Ingest lands one.
+origin: spec-deferred 376f1759e471
+source_spec: `spec-dw-49-artifact-seed-data-version-bump.md`
+location: src/lib/wikis.ts, src/lib/lifecycle.ts
+severity: low
+reason: DW-49 names three classes of bypassing writer: template seeding, raw source files, and "any later writer that lands bytes the Files tab renders". Only the first is closed here. A grep of `src/lib` finds no writer under `tenants/<t>/raw/` today, so there is nothing to bump; the guard test in `workbench-data-version.test.ts` will fail the moment a fourth bump site appears, which is the intended tripwire.
+status: open
+
+### DW-212: `dataVersion` is one global key with no tenant segment, so the two new bumps force a `router.refresh()` in every open Workbench of every other tenant too.
+origin: spec-deferred 1e08fbc6dc92
+source_spec: `spec-dw-49-artifact-seed-data-version-bump.md`
+location: src/lib/data-version.ts:31 (DATA_VERSION_KEY), src/app/api/workbench/version/route.ts
+severity: low
+reason: `DATA_VERSION_KEY = "data-version"` (src/lib/data-version.ts:31) has no owner in it, and `GET /api/workbench/version` serves that single integer to everyone. Pre-existing — `writeWikiArtifact` and the page lifecycle already bump the same global key — but this change widens the set of operations that trigger a cross-tenant server re-render from "someone edited a page" to "someone anywhere created a Wiki". Not a correctness bug: a refresh is idempotent and each client re-renders its own tenant's data. The fix is a per-tenant key, which is a storage-layout change well outside this bundle.
 status: open

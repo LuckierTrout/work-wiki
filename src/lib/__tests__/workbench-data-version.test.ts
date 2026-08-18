@@ -585,11 +585,12 @@ describe("the bump lives at exactly one site", () => {
         offenders.push(path.relative(SRC, file).split(path.sep).join("/"));
       }
     }
-    // The definition, the page pipeline's one call site, and — since Story 1.8
-    // — `writeWikiArtifact`, the ONE writer for a class of bytes the page
-    // pipeline cannot address at all (`schema.md` has no slug and no page-index
-    // entry). `seedWikiArtifacts` and every other writer that bypasses both are
-    // still deliberately absent.
+    // The definition, the page pipeline's one call site, and `lib/wikis.ts`,
+    // which owns a class of bytes the page pipeline cannot address at all
+    // (`schema.md` has no slug and no page-index entry). WHICH functions in
+    // that module bump is pinned by the next test, since this list is
+    // file-granular; `seedWikiArtifacts` is not one of them, and every other
+    // writer that bypasses both pipelines is still deliberately absent.
     expect(offenders.sort()).toEqual([
       "lib/data-version.ts",
       "lib/lifecycle.ts",
@@ -597,20 +598,89 @@ describe("the bump lives at exactly one site", () => {
     ]);
   });
 
-  it("has exactly one site inside wikis.ts, and it is the artifact writer", async () => {
-    // The list above is FILE-granular, so allowlisting `lib/wikis.ts` for
-    // `writeWikiArtifact` would otherwise buy a blanket exemption for the whole
-    // module — and `seedWikiArtifacts`, `createWiki` and `applyScenarioTemplate`
-    // all live in it and are all forbidden from bumping (DW-49's seeding half
-    // belongs to whichever story owns those flows). This pins the count the way
-    // the `lifecycle.ts` test above pins its own, so a second bump anywhere in
-    // the module fails here instead of passing as an already-known file.
-    const source = await readSource("lib/wikis.ts");
-    expect(source.match(/bumpDataVersion\(\)/g) ?? []).toHaveLength(1);
-    const bump = source.indexOf("await bumpDataVersion();");
-    const writer = source.indexOf("export async function writeWikiArtifact(");
-    expect(writer).toBeGreaterThan(-1);
-    expect(bump).toBeGreaterThan(writer);
+  it("has exactly three sites inside wikis.ts, each outside the tenant lock", async () => {
+    // The list above is FILE-granular, so allowlisting `lib/wikis.ts` would
+    // otherwise buy a blanket exemption for a module with seven exported
+    // writers in it. This pins WHICH of them bump, the way the `lifecycle.ts`
+    // test above pins its own count.
+    //
+    // Three, since DW-49: `writeWikiArtifact` (a Schema edit) plus `createWiki`
+    // and `applyScenarioTemplate`, because seeding writes `purpose.md` and
+    // `schema.md` through the tail-less `putWikiArtifact` and a re-template
+    // moves nothing else a Preview is keyed on — without the bump a Preview
+    // READING either artifact keeps the old template's bytes. `putWikiArtifact`,
+    // `seedWikiArtifacts`, `retitlePurpose`, `setCurrentWiki`, `renameWiki`,
+    // `sweepOrphanWikiDirectories` and `deleteWiki` are still deliberately
+    // absent — `renameWiki`'s omission is a known staleness gap (DW-209), the
+    // rest write nothing a Preview renders.
+
+    /**
+     * Comments removed, so a call QUOTED in a docblock is never counted as a
+     * call site nor attributed to the function whose body it precedes. Block
+     * comments go entirely; `//` counts as a comment only at the start of a
+     * line, which leaves a `https://` inside a string literal alone.
+     */
+    const stripComments = (text: string): string =>
+      text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+
+    const source = stripComments(await readSource("lib/wikis.ts"));
+
+    // BOTH forms, and both are load-bearing. The await form is what the
+    // ordering checks below navigate by. The IDENTIFIER form is what sees a
+    // bump that was moved inside the lock and fired unawaited — `void
+    // bumpDataVersion()`, or a `.then()` chain — which the await form cannot
+    // match at all and which would leave the count looking untouched.
+    expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(3);
+    expect(source.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(3);
+
+    /**
+     * One function's body, from its `export` line to the `}` that closes it.
+     *
+     * Bounded by the function's OWN close, not by the next `export`: the region
+     * between two exports also holds the NEXT one's JSDoc and any private
+     * helper declared in between, so slicing that far attributes their text to
+     * this function. A top-level declaration is the only thing in this file
+     * with a `}` in column 0.
+     */
+    const bodyOf = (name: string): string => {
+      const at = source.indexOf(`export async function ${name}(`);
+      expect(at).toBeGreaterThan(-1);
+      const close = source.indexOf("\n}\n", at);
+      expect(close).toBeGreaterThan(at);
+      return source.slice(at, close);
+    };
+
+    for (const name of ["writeWikiArtifact", "createWiki", "applyScenarioTemplate"]) {
+      const body = bodyOf(name);
+      const bump = body.indexOf("await bumpDataVersion();");
+      expect(bump).toBeGreaterThan(-1);
+      // OUTSIDE `wikis:<tenant>`. `withFileLock` is not reentrant and
+      // `bumpDataVersion` takes `DATA_VERSION_LOCK`, so a bump moved inside the
+      // callback would nest two lock keys in an order nothing else in the repo
+      // takes — a tenant-wide deadlock risk. The `withFileLock` call's own close
+      // at the function's top indent has to come first. Two closing forms,
+      // because one caller passes a one-line arrow and two pass a block.
+      const lock = body.indexOf("withFileLock(wikiLockKey(owner)");
+      expect(lock).toBeGreaterThan(-1);
+      const closes = ["\n  });\n", "\n  );\n"]
+        .map((close) => body.indexOf(close, lock))
+        .filter((at) => at > -1)
+        .sort((a, b) => a - b);
+      expect(closes.length).toBeGreaterThan(0);
+      expect(bump).toBeGreaterThan(closes[0]);
+    }
+
+    // The three counted above are now accounted for one apiece by three
+    // DISJOINT bodies, so no other function in the module has one — including
+    // `seedWikiArtifacts`, which is the whole reason the tails live at the
+    // callers: it always runs while `wikis:<tenant>` is held. Asserted directly
+    // as well, because that is the refactor this guard exists to catch and a
+    // count mismatch names no function.
+    const seederAt = source.indexOf("async function seedWikiArtifacts(");
+    expect(seederAt).toBeGreaterThan(-1);
+    const seederClose = source.indexOf("\n}\n", seederAt);
+    expect(seederClose).toBeGreaterThan(seederAt);
+    expect(source.slice(seederAt, seederClose)).not.toContain("bumpDataVersion");
   });
 
   it("introduces no second refresh paradigm anywhere in src", async () => {

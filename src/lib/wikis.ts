@@ -322,9 +322,22 @@ async function putWikiArtifact(
  * Write the two artifacts and the workspace profile for `wiki`.
  *
  * This is the whole footprint of create and of re-template: nothing under
- * `tenants/<t>/wiki/`, nothing under `tenants/<t>/raw/`, no page index entry,
- * no log line, and no `dataVersion` bump — seeding's half of that signal
- * belongs with whichever story owns create and re-template.
+ * `tenants/<t>/wiki/`, nothing under `tenants/<t>/raw/`, no page index entry
+ * and no log line — create and re-template are registry operations, not edits,
+ * and only {@link writeWikiArtifact}'s log tail names a Schema edit.
+ *
+ * NO `dataVersion` BUMP HERE, but the operation does bump: {@link createWiki}
+ * and {@link applyScenarioTemplate} each fire one fail-soft
+ * {@link bumpDataVersion} after releasing `wikis:<tenant>`. BOTH artifacts go
+ * stale across a re-apply — `purpose.md` is rewritten from the new template
+ * just as `schema.md` is — so a Preview reading either one refetches the newly
+ * seeded bytes instead of showing the old template's. It cannot be fired
+ * from in here for the same reason {@link putWikiArtifact} is unlocked: this
+ * function always runs while `wikis:<tenant>` is held, `bumpDataVersion` takes
+ * `DATA_VERSION_LOCK`, and nesting those two keys would invent a lock order
+ * nothing else in the repo takes. The callers own it also because only they
+ * know whether the whole operation COMMITTED — a run that reaches their
+ * compensation restored or discarded the bytes and must not move the signal.
  *
  * All three writes land in `tenants/<t>/wikis/<id>/`, so the footprint is
  * scoped to THIS Wiki: seeding one Wiki cannot touch another's hand-authored
@@ -604,13 +617,21 @@ export async function getCurrentWiki(owner: string): Promise<WikiRecord | null> 
  * `input` is re-parsed here with {@link parseCreateWikiInput} rather than
  * trusted from the route, so a rejected input never reaches the lock and never
  * writes anything — including when a non-route caller skips the parser.
+ *
+ * The `bumpDataVersion` tail is the same shape {@link writeWikiArtifact} uses,
+ * for the same reasons: OUTSIDE the lock, because `bumpDataVersion` takes
+ * `DATA_VERSION_LOCK` and `withFileLock` is not reentrant; fail-soft, because a
+ * create whose four writes landed must not be reported as failed just because
+ * the counter did not move; and only on the success path, because the
+ * `discardCreatedWikiDirectory` branch re-throws and there is then nothing new
+ * for a client to refresh to.
  */
 export async function createWiki(
   owner: string,
   input: CreateWikiInput,
 ): Promise<WikiRecord> {
   const { name, scenario } = parseCreateWikiInput(input);
-  return withFileLock(wikiLockKey(owner), async () => {
+  const created = await withFileLock(wikiLockKey(owner), async () => {
     const registry = await readRegistry(owner);
     if (registry.wikis.length >= MAX_WIKIS) {
       throw new ClientInputError(
@@ -641,6 +662,19 @@ export async function createWiki(
     }
     return wiki;
   });
+
+  // Only reached when the locked body committed — the compensation branch above
+  // re-throws, so a discarded create never moves the signal.
+  try {
+    await bumpDataVersion();
+  } catch (error) {
+    logger.warn(
+      "wikis",
+      `the refresh signal did not move after creating wiki "${created.id}"`,
+      error,
+    );
+  }
+  return created;
 }
 
 /**
@@ -650,6 +684,26 @@ export async function createWiki(
  * THIS Wiki's own `workspace-profile.json`. Every other Wiki's profile — and
  * Pages and Sources — are untouched. Returns null when the id is unknown, so
  * the route can answer 404.
+ *
+ * WHY THE TAIL MATTERS MOST HERE. A re-apply moves no selection, no mode and no
+ * tree tab, so `dataVersion` is the ONLY thing that can tell an already-open
+ * Preview its `purpose.md` or `schema.md` bytes are stale — the fetch effect is
+ * keyed on `[selection, dataVersion, editing]`, and a re-apply would otherwise
+ * touch none of the three. Without the bump a READING Preview goes on showing
+ * the old template's bytes until the owner reselects the row or reloads.
+ *
+ * WHAT THE BUMP DOES NOT DO. A Preview with an unsaved draft is deliberately
+ * NOT refetched: `previewFetchPlan` answers `{fetch:false}` while `editing`, so
+ * the bump is deferred to when the editor closes and the draft is never taken
+ * from the owner. What stops that draft being saved over the new template is
+ * the If-Match write precondition (DW-38), which answers 412 — not this tail.
+ *
+ * The tail is outside the lock, fail-soft, and skipped on both throwing or
+ * empty-handed paths: the unknown-id `null` (which writes nothing) and the
+ * `restoreSeededFiles` branch (which re-throws). "Re-throws" is not quite "wrote
+ * nothing", though: `restoreSeededFiles` is fail-soft PER ENTRY, so a restore
+ * that cannot write leaves some new template bytes on disk with no bump to
+ * announce them (DW-210) — rare, already-degraded, and out of scope here.
  */
 export async function applyScenarioTemplate(
   owner: string,
@@ -659,7 +713,7 @@ export async function applyScenarioTemplate(
   if (!isCreatableScenario(scenario)) {
     throw new ClientInputError("Choose one Scenario Template.");
   }
-  return withFileLock(wikiLockKey(owner), async () => {
+  const applied = await withFileLock(wikiLockKey(owner), async () => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
     if (!wiki) return null;
@@ -690,6 +744,19 @@ export async function applyScenarioTemplate(
     }
     return wiki;
   });
+
+  // Unknown id: nothing was written, so there is nothing to refresh to.
+  if (!applied) return null;
+  try {
+    await bumpDataVersion();
+  } catch (error) {
+    logger.warn(
+      "wikis",
+      `the refresh signal did not move after re-templating wiki "${applied.id}"`,
+      error,
+    );
+  }
+  return applied;
 }
 
 /**
@@ -727,8 +794,15 @@ export async function setCurrentWiki(
  *
  * UNLOCKED, like {@link putWikiArtifact}: the caller is already holding
  * `wikis:<tenant>`. Deliberately NOT `writeWikiArtifact`, which would take that
- * key again (deadlock) and fire a log line and a `dataVersion` bump the sibling
- * lifecycle operations do not have.
+ * key again (deadlock) and fire an activity-log line naming a Schema edit this
+ * is not.
+ *
+ * NO `dataVersion` BUMP EITHER, and since DW-49 that is no longer the whole
+ * family's rule: {@link createWiki} and {@link applyScenarioTemplate} grew tails
+ * because they SEED bytes, while {@link renameWiki} did not. So a Preview left
+ * open on `purpose.md` keeps the old heading across a rename until the owner
+ * reselects or reloads — logged as DW-209, out of scope for the bundle that
+ * added the other two tails.
  *
  * FAIL-SOFT, and that is the whole design of it. The registry is what the
  * switcher, the workbench heading and every id lookup read; `purpose.md`'s

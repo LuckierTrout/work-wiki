@@ -380,6 +380,15 @@ describe("editing the Schema", () => {
     );
   }
 
+  /**
+   * One Wiki, current, with both artifacts seeded.
+   *
+   * NOTE FOR THE ASSERTIONS BELOW: `createWiki` moves `dataVersion` itself
+   * (DW-49), so the post-seed counter is NOT zero. "This refused save moved
+   * nothing" is therefore a comparison against a baseline read right after the
+   * seed, never against a literal — the same before/after shape the two
+   * successful-write rows use.
+   */
   async function seed(): Promise<WikiRecord> {
     return createWiki(OWNER, { name: "Field notes", scenario: "research" });
   }
@@ -554,6 +563,7 @@ describe("editing the Schema", () => {
     // silently-inert save `hasPageConventions` exists to prevent, by another
     // door.
     const wiki = await seed();
+    const before = await readDataVersion();
     const seeded = await readSchema(wiki);
     principal.current = { id: "u2", handle: "somebody-else" };
 
@@ -562,12 +572,13 @@ describe("editing the Schema", () => {
     expect(typeof (await response.json()).error).toBe("string");
 
     expect(await readSchema(wiki)).toBe(seeded);
-    expect(await readDataVersion()).toBe(0);
+    expect(await readDataVersion()).toBe(before);
     expect(await readLog()).toBeNull();
   });
 
   it("refuses a signed-out save and writes nothing", async () => {
     const wiki = await seed();
+    const before = await readDataVersion();
     const seeded = await readSchema(wiki);
     principal.current = null;
 
@@ -575,11 +586,12 @@ describe("editing the Schema", () => {
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: "Sign in required." });
     expect(await readSchema(wiki)).toBe(seeded);
-    expect(await readDataVersion()).toBe(0);
+    expect(await readDataVersion()).toBe(before);
   });
 
   it("refuses every save on a read-only deployment", async () => {
     const wiki = await seed();
+    const before = await readDataVersion();
     const seeded = await readSchema(wiki);
     process.env.YOPEDIA_READONLY = "1";
 
@@ -587,7 +599,7 @@ describe("editing the Schema", () => {
     expect(response.status).toBe(403);
     expect(typeof (await response.json()).error).toBe("string");
     expect(await readSchema(wiki)).toBe(seeded);
-    expect(await readDataVersion()).toBe(0);
+    expect(await readDataVersion()).toBe(before);
   });
 
   // -------------------------------------------------------------------------
@@ -637,6 +649,7 @@ describe("editing the Schema", () => {
 
   it("refuses a save with NO precondition with 428 and writes nothing", async () => {
     const wiki = await seed();
+    const before = await readDataVersion();
     const seeded = await readSchema(wiki);
 
     const response = await put("?path=schema.md", { content: EDITED }, null);
@@ -646,12 +659,13 @@ describe("editing the Schema", () => {
       error: WRITE_PRECONDITION_REQUIRED_COPY,
     });
     expect(await readSchema(wiki)).toBe(seeded);
-    expect(await readDataVersion()).toBe(0);
+    expect(await readDataVersion()).toBe(before);
     expect(await readLog()).toBeNull();
   });
 
   it("refuses a save into a Schema that VANISHED — a missing file matches nothing", async () => {
     const wiki = await seed();
+    const before = await readDataVersion();
     const seeded = contentVersion(await readSchema(wiki));
     await getStorage().deleteFile(wikiArtifactPath(OWNER, wiki.id, "schema.md"));
 
@@ -660,7 +674,7 @@ describe("editing the Schema", () => {
     expect(response.status).toBe(412);
     expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
     expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toBeNull();
-    expect(await readDataVersion()).toBe(0);
+    expect(await readDataVersion()).toBe(before);
   });
 
   it("lets the editor save twice without a reload", async () => {
@@ -773,6 +787,7 @@ describe("editing the Schema", () => {
 
   it("answers ONE identical 400 for every path that is not the editable artifact", async () => {
     const wiki = await seed();
+    const before = await readDataVersion();
     const seeded = await readSchema(wiki);
 
     const answers = await Promise.all(
@@ -793,7 +808,7 @@ describe("editing the Schema", () => {
       expect(answer).toEqual(answers[0]);
     }
     expect(await readSchema(wiki)).toBe(seeded);
-    expect(await readDataVersion()).toBe(0);
+    expect(await readDataVersion()).toBe(before);
   });
 
   it("answers 404 when the registry names no current Wiki", async () => {
@@ -806,6 +821,7 @@ describe("editing the Schema", () => {
 
   it("refuses a Schema that would silently stop steering anything", async () => {
     const wiki = await seed();
+    const before = await readDataVersion();
     const seeded = await readSchema(wiki);
 
     for (const content of [
@@ -819,7 +835,7 @@ describe("editing the Schema", () => {
       expect((await response.json()).error).toContain(PAGE_CONVENTIONS_HEADING);
     }
     expect(await readSchema(wiki)).toBe(seeded);
-    expect(await readDataVersion()).toBe(0);
+    expect(await readDataVersion()).toBe(before);
   });
 
   it("refuses a Schema the Preview would then truncate and refuse to edit", async () => {
@@ -835,6 +851,7 @@ describe("editing the Schema", () => {
 
   it("refuses an empty, non-string or unparseable body", async () => {
     const wiki = await seed();
+    const before = await readDataVersion();
     const seeded = await readSchema(wiki);
 
     for (const body of [{ content: "" }, { content: "   " }, { content: 3 }, {}, "{"]) {
@@ -843,11 +860,12 @@ describe("editing the Schema", () => {
       expect(typeof (await response.json()).error).toBe("string");
     }
     expect(await readSchema(wiki)).toBe(seeded);
-    expect(await readDataVersion()).toBe(0);
+    expect(await readDataVersion()).toBe(before);
   });
 
   it("answers a failed storage write with 500, and moves nothing", async () => {
     const wiki = await seed();
+    const before = await readDataVersion();
     const seeded = await readSchema(wiki);
     vi.spyOn(getStorage(), "writeFile").mockRejectedValue(new Error("disk is gone"));
 
@@ -858,7 +876,7 @@ describe("editing the Schema", () => {
 
     vi.restoreAllMocks();
     expect(await readSchema(wiki)).toBe(seeded);
-    expect(await readDataVersion()).toBe(0);
+    expect(await readDataVersion()).toBe(before);
     expect(await readLog()).toBeNull();
   });
 
