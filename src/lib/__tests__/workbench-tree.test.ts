@@ -37,6 +37,7 @@ import {
   WORKBENCH_FILE_MAX_DEPTH,
   listWorkbenchFilePaths,
   readWorkbenchFile,
+  workbenchFileExists,
 } from "../workbench-files";
 import {
   WORKBENCH_TREE_TAB_KEY,
@@ -698,7 +699,7 @@ describe("listWorkbenchFilePaths", () => {
   it("lists only the pages the read gate returned, in either branch", async () => {
     // The Knowledge tab excludes agent-scoped and unreadable pages. A filename
     // in the Files tab is the same disclosure, so the same set governs both.
-    for (const name of ["mine.md", "theirs.md", "index.md", "notes.txt"]) {
+    for (const name of ["mine.md", "theirs.md", "index.md", "notes.txt", "dump.json"]) {
       await fs.writeFile(path.join(tmpDir, "wiki", name), "x", "utf-8");
     }
     const flat = await listWorkbenchFilePaths(OWNER, null, gate("mine"));
@@ -706,14 +707,127 @@ describe("listWorkbenchFilePaths", () => {
     expect(flat.paths).not.toContain("wiki/theirs.md");
     // The generated index is not a page and has no slug, so it does not survive.
     expect(flat.paths).not.toContain("wiki/index.md");
-    // Non-markdown under the root is not a page at all — it is not gated.
-    expect(flat.paths).toContain("wiki/notes.txt");
+    // Non-markdown under the root is refused by the READ gate, so listing it
+    // would put a row in the tab whose only possible Preview is the failure
+    // sentence (DW-41). The listing derives its set from that gate instead.
+    expect(flat.paths).not.toContain("wiki/notes.txt");
+    expect(flat.paths).not.toContain("wiki/dump.json");
 
     await writeSilo("wiki", "mine.md");
     await writeSilo("wiki", "theirs.md");
     const silo = await listWorkbenchFilePaths(OWNER, null, gate("mine"));
     expect(silo.paths).toContain("wiki/mine.md");
     expect(silo.paths).not.toContain("wiki/theirs.md");
+  });
+
+  it("lists a wiki leaf whose extension is cased oddly, if its slug is readable", async () => {
+    // The listing is case-insensitive on the extension for exactly the reason
+    // the read gate is: a filesystem need not be case-sensitive, so `cased.MD`
+    // is the same file as `cased.md`. Listed once, and readable.
+    await fs.writeFile(path.join(tmpDir, "wiki", "cased.MD"), "x", "utf-8");
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, gate("cased"));
+    expect(paths.filter((p) => p === "wiki/cased.MD")).toHaveLength(1);
+    await expect(
+      readWorkbenchFile(OWNER, null, "wiki/cased.MD", gate("cased")),
+    ).resolves.toEqual({ content: "x" });
+  });
+
+  it("does not list an odd-cased wiki leaf whose slug is not readable", async () => {
+    // The half the positive case above cannot pin: the OLD filter's first line
+    // was `if (!name.endsWith(".md")) return true`, and `cased.MD` does not end
+    // in `.md`, so it listed UNGATED — a row for another owner's page. Deriving
+    // from `readableWikiLeaf` (DW-41) is what subjects it to the slug set, and
+    // only a fixture whose slug is absent can tell the two implementations
+    // apart.
+    await fs.writeFile(path.join(tmpDir, "wiki", "cased.MD"), "x", "utf-8");
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, gate("other"));
+    expect(paths).not.toContain("wiki/cased.MD");
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.MD", gate("other"))).toBeNull();
+  });
+
+  it("shows a wiki subdirectory but none of its leaves, which the gate refuses", async () => {
+    // `query-history/` is real — `query-history.ts` writes `wiki/query-history/
+    // <key>.json` — and under the shared flat root its per-owner filenames were
+    // listed as clickable rows. The read gate serves only a DIRECT child of the
+    // wiki root, so no leaf below it lists, not even one whose basename is a
+    // readable slug. The DIRECTORY still lists: a directory is a disclosure,
+    // not a previewable row, so it cannot produce the refusal sentence.
+    await fs.mkdir(path.join(tmpDir, "wiki", "query-history"), { recursive: true });
+    await fs.writeFile(
+      path.join(tmpDir, "wiki", "query-history", "alice.json"),
+      "x",
+      "utf-8",
+    );
+    await fs.mkdir(path.join(tmpDir, "wiki", "archive"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, "wiki", "archive", "mine.md"), "x", "utf-8");
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, gate("mine", "alice"));
+    expect(paths).toContain("wiki/query-history/");
+    expect(paths).toContain("wiki/archive/");
+    expect(paths).not.toContain("wiki/query-history/alice.json");
+    expect(paths).not.toContain("wiki/archive/mine.md");
+    // And the gate agrees, which is the point: the row would have been a dead one.
+    expect(await readWorkbenchFile(OWNER, null, "wiki/archive/mine.md", gate("mine"))).toBeNull();
+  });
+
+  it("does not cry truncation over a wiki subtree at the depth cap holding only leaves", async () => {
+    // The truncation rule is unchanged: a directory that would have been SHOWN
+    // still counts, an all-filtered leaf set does not. Under the wiki root every
+    // leaf past level 1 is filtered, so this subtree omits nothing showable.
+    await fs.mkdir(path.join(tmpDir, "wiki", "a", "b"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, "wiki", "a", "b", "deep.md"), "x", "utf-8");
+
+    const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate("deep"));
+    expect(paths).toContain("wiki/a/b/");
+    expect(truncated).toBe(false);
+  });
+
+  it("still reports truncation over a wiki subtree hiding a directory at the cap", async () => {
+    // The other side of the same rule, and the only one left under `wiki/`:
+    // narrowing the leaf filter made `e.isDirectory` the sole surviving
+    // truncation trigger for this root, so without this case the term could be
+    // deleted and the suite would stay green while the owner stopped being told
+    // the tree is incomplete.
+    await fs.mkdir(path.join(tmpDir, "wiki", "a", "b", "c"), { recursive: true });
+
+    const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
+    expect(paths).toContain("wiki/a/b/");
+    expect(paths).not.toContain("wiki/a/b/c/");
+    expect(truncated).toBe(true);
+  });
+
+  it("never lists a wiki path the read gate would refuse", async () => {
+    // The DW-41 invariant, asserted directly rather than inferred from the two
+    // filters agreeing case by case: that is what keeps them from drifting
+    // apart again. Every `wiki/` FILE row the tab shows must be previewable —
+    // through BOTH doors the preview route opens into the resolver, since it
+    // calls `workbenchFileExists` for a format it will not buffer and
+    // `readWorkbenchFile` for the rest.
+    for (const name of ["mine.md", "theirs.md", "index.md", "notes.txt", "dump.json", "cased.MD"]) {
+      await fs.writeFile(path.join(tmpDir, "wiki", name), "x", "utf-8");
+    }
+    await fs.mkdir(path.join(tmpDir, "wiki", "query-history"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, "wiki", "query-history", "alice.json"), "x", "utf-8");
+    await fs.mkdir(path.join(tmpDir, "wiki", "archive"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, "wiki", "archive", "mine.md"), "x", "utf-8");
+
+    const readable = gate("mine", "cased", "alice");
+    const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, readable);
+    // Dropping a leaf for GATE reasons is not an omission the owner is owed a
+    // note about — the emit loop's `continue` deliberately leaves `truncated`
+    // alone. That rule now governs almost everything under `wiki/`, so pin it
+    // here: `FILES_TRUNCATED_COPY` under a complete tree would be a lie, and
+    // `selectionRefreshAction` short-circuits to "keep" whenever it is set.
+    expect(truncated).toBe(false);
+    const wikiFiles = paths.filter((p) => p.startsWith("wiki/") && !p.endsWith("/"));
+    // A guard on the guard: an empty set would satisfy the loop vacuously.
+    expect([...wikiFiles].sort()).toEqual(["wiki/cased.MD", "wiki/mine.md"]);
+    for (const displayPath of wikiFiles) {
+      expect(await readWorkbenchFile(OWNER, null, displayPath, readable)).not.toBeNull();
+      expect(await workbenchFileExists(OWNER, null, displayPath, readable)).toBe(true);
+    }
   });
 
   it("hides the filename of a page the Knowledge tab drops as agent-scoped", async () => {
@@ -749,11 +863,20 @@ describe("listWorkbenchFilePaths", () => {
   it("nests a per-source raw subdirectory", async () => {
     await fs.mkdir(path.join(tmpDir, "raw", "topic"), { recursive: true });
     await fs.writeFile(path.join(tmpDir, "raw", "topic", "abc.md"), "x", "utf-8");
+    await fs.writeFile(path.join(tmpDir, "raw", "scan.pdf"), "x", "utf-8");
 
     const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
     expect(paths).toContain("raw/topic/");
     expect(paths).toContain("raw/topic/abc.md");
+    // `raw/` holds sources, not pages: every visible leaf at any listable depth
+    // lists, whatever its extension. DW-41 narrowed the WIKI root only.
+    expect(paths).toContain("raw/scan.pdf");
     expect(truncated).toBe(false);
+    // And a nested raw leaf still READS: the read gate puts no depth bound on
+    // this root, so narrowing the wiki root's filter cannot have stranded one.
+    await expect(
+      readWorkbenchFile(OWNER, null, "raw/topic/abc.md", gate()),
+    ).resolves.toEqual({ content: "x" });
   });
 
   it("omits anything past the depth cap and reports the truncation", async () => {

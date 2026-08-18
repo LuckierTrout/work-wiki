@@ -1078,11 +1078,13 @@ describe("readWorkbenchFile", () => {
   });
 
   it("refuses a non-page leaf under wiki/, whose bytes need not be the caller's", async () => {
-    // `wikiLeafFilter` — the LISTING filter — passes anything not ending `.md`,
-    // which is right for a listing and wrong for a read: `resolveRoot` falls
-    // back to the SHARED flat `wiki/` root when the caller's silo is empty, so
-    // these bytes are not necessarily theirs. Story 1.4 disclosed such
-    // filenames; reading them would disclose their contents.
+    // `resolveRoot` falls back to the SHARED flat `wiki/` root when the caller's
+    // silo is empty, so these bytes are not necessarily theirs. Story 1.4
+    // disclosed such filenames; reading them would disclose their contents.
+    // `wikiLeafFilter` — the LISTING filter — no longer offers them either: it
+    // derives its admissible set from this same gate (DW-41), so the refusal is
+    // now the row's absence rather than a row that could only fail. The READ is
+    // gated regardless of what any listing showed, which is what this asserts.
     for (const name of ["scratch.txt", "dump.json", "notes.markdown", "secrets"]) {
       await fs.writeFile(path.join(tmpDir, "wiki", name), "not yours", "utf-8");
       expect(
@@ -1105,6 +1107,18 @@ describe("readWorkbenchFile", () => {
     ).resolves.toEqual({ content: "cased" });
     await fs.writeFile(path.join(tmpDir, "wiki", "Beta.md"), "cased slug", "utf-8");
     expect(await readWorkbenchFile(OWNER, null, "wiki/Beta.md", gate("beta"))).toBeNull();
+  });
+
+  it("refuses a nested wiki path, even one whose basename is a readable slug", async () => {
+    // `rest.length !== 1`: the gate serves only a DIRECT child of the wiki root.
+    // That half is load-bearing beyond this read now — `wikiLeafFilter` derives
+    // the LISTING's `depth === 1` from it (DW-41), so a last-segment check here
+    // would silently put every nested leaf back into the Files tab as a row the
+    // Preview refuses. `validateSlug` rejects `/`, so no page lives down there;
+    // what does is `wiki/query-history/<key>.json`, another owner's history.
+    await fs.mkdir(path.join(tmpDir, "wiki", "archive"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, "wiki", "archive", "mine.md"), "not yours", "utf-8");
+    expect(await readWorkbenchFile(OWNER, null, "wiki/archive/mine.md", gate("mine"))).toBeNull();
   });
 
   it("refuses a root it does not own", async () => {

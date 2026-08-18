@@ -365,7 +365,8 @@ location: src/lib/workbench-files.ts (wikiLeafFilter vs readableWikiLeaf)
 source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
 severity: low
 reason: `wikiLeafFilter` passes every name not ending in `.md`, so `wiki/notes.txt` and `wiki/dump.json` are rows the owner can see and click. The read gate `readableWikiLeaf` refuses them — deliberately, and for a reason the previous review pass recorded at length ("two filters, two reasons — do not re-unify them"), because `resolveRoot`'s flat fallback means those bytes need not be the caller's. The consequence is a visible row that cannot open, which reads as a broken Preview rather than as a gate. The coherent fix is at the LISTING — stop showing a leaf the Preview will refuse — which means editing the filter the previous pass froze on security grounds and re-deciding what the Files tab is for. That is a Story 1.4 surface decision, not a patch to this story's reader.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-workbench-file-listing-gate
 decision: 2026-08-17 List only openable leaves — Narrow the listing so the Files tab shows only leaves the read gate will serve: keep the two filters and their two reasons distinct, but derive the listing's admissible set from the same predicate the read gate applies, so no row can be shown that the Preview will refuse. Update the frozen comment at workbench-files.ts:326-339 to record the new rule.
 decision: 2026-08-16 List only openable leaves — Narrow the listing so the Files tab shows only leaves the read gate will serve: keep the two filters and their two reasons distinct, but derive the listing's admissible set from the same predicate the read gate applies, so no row can be shown that the Preview will refuse. Update the frozen comment at workbench-files.ts:326-339 to record the new rule.
 
@@ -1687,4 +1688,28 @@ source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-202: On a case-sensitive store, `wiki/cased.md` and `wiki/cased.MD` now both list as rows for the one slug `cased`, and an edit from either row writes `<slug>.md`.
+origin: spec-deferred 9fb5f09a4780
+source_spec: `spec-dw-41-workbench-file-listing-gate.md`
+location: src/lib/workbench-files.ts (wikiLeafSlug / wikiLeafFilter)
+severity: low
+reason: The listing became case-insensitive on the extension by deriving from `wikiLeafSlug` (`src/lib/workbench-files.ts`), which lowercases before testing `.md`. Both names therefore pass `readableWikiLeaf` for the same slug, and `resolveWorkbenchFile` builds a key from the name as written, so the two rows read two different objects. The preview route decides "is this the editable Page" from `wikiLeafSlug` alone, so a save reached from the `.MD` row lands on `wiki/cased.md` and the previewed bytes go stale. Pre-existing at the read and edit layers (the gate was already case-insensitive); this change adds the second visible door. Deciding what the tab should do when both exist — hide one, mark the pair, or refuse the slug — is a Files-tab surface decision beyond DW-41's recorded intent.
+status: open
+
+### DW-203: On a case-sensitive store, `wiki/cased.md` and `wiki/cased.MD` both list as rows for the one slug `cased`, and an edit from either row writes `<slug>.md`.
+origin: spec-deferred 83c76aec8291
+source_spec: `spec-dw-41-workbench-file-listing-gate.md`
+location: src/lib/workbench-files.ts (wikiLeafSlug / wikiLeafFilter); the save half is src/app/api/workbench/preview/route.ts (slug derivation) and the wiki write path
+severity: low
+reason: The listing is case-insensitive on the extension because it derives from `wikiLeafSlug` (`src/lib/workbench-files.ts`), which lowercases before testing `.md`. Both names therefore pass `readableWikiLeaf` for the same slug, and `resolveWorkbenchFile` builds a key from the name as written, so the two rows read two different objects. The preview route decides "is this the editable Page" from `wikiLeafSlug` alone (`src/app/api/workbench/preview/route.ts`), so a save reached from the `.MD` row lands on `wiki/cased.md` and the previewed bytes go stale. Wholly pre-existing, and NARROWED rather than introduced by DW-41: the old `wikiLeafFilter` opened with `if (!name.endsWith(".md")) return true`, and `cased.MD` does not end in `.md`, so it listed UNGATED next to `cased.md` before this change; deriving from the read gate now at least subjects it to the slug set. Deciding what the tab should do when both exist — hide one, mark the pair, or refuse the slug — is a Files-tab surface decision beyon
+status: open
+
+### DW-204: "A direct child of the wiki root" is now spelled three independent times, and only a test binds them together.
+origin: spec-deferred 0c82c718ee92
+source_spec: `spec-dw-41-workbench-file-listing-gate.md`
+location: src/lib/workbench-files.ts (wikiLeafFilter, resolveWorkbenchFile); src/app/api/workbench/preview/route.ts
+severity: low
+reason: `wikiLeafFilter` says `depth === 1` (`src/lib/workbench-files.ts`), `resolveWorkbenchFile` says `rest.length !== 1` in a different numbering, and the preview route says `segments.length === 2 && segments[0] === "wiki"`. DW-41 derived the NAME half from one predicate (`readableWikiLeaf`) precisely so it could not drift; the DEPTH half was left restated in each place, held together only by the new "never lists a wiki path the read gate would refuse" test and by prose warnings in three doc comments. Extracting a single shared predicate is not blocked by DW-41's Block If, which froze only the two FILTERS as distinct functions — but it touches the preview route's page/file disambiguation, which DW-41's intent puts out of bounds.
 status: open
