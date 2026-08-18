@@ -67,6 +67,7 @@ import {
   buildFileTree,
   restorableSelection,
   selectionExists,
+  selectionTab,
   type KnowledgeGroup,
 } from "../workbench-tree";
 
@@ -572,7 +573,14 @@ describe("restorableSelection", () => {
   const stored = { wikiId: "w1", selection: { kind: "page", slug: "alpha" } } as const;
 
   it("restores a row that belongs to the Wiki the registry still calls current", () => {
-    expect(restorableSelection(stored, "w1", KNOWLEDGE, FILES)).toEqual(stored.selection);
+    // The row AND the tab that can mark it (DW-46). The pair is one answer: a
+    // caller handed only the row has to derive the tab itself, and the one that
+    // did — the mount effect — derived it from STORAGE, which is how a stored
+    // page could dock a Preview onto the Files tab with nothing `aria-current`.
+    expect(restorableSelection(stored, "w1", KNOWLEDGE, FILES)).toEqual({
+      selection: stored.selection,
+      tab: "knowledge",
+    });
   });
 
   it("restores nothing for another Wiki's row", () => {
@@ -598,7 +606,41 @@ describe("restorableSelection", () => {
 
   it("restores a file row the walk still lists", () => {
     const file = { wikiId: "w1", selection: { kind: "file", path: "wiki/a.md" } } as const;
-    expect(restorableSelection(file, "w1", KNOWLEDGE, FILES)).toEqual(file.selection);
+    expect(restorableSelection(file, "w1", KNOWLEDGE, FILES)).toEqual({
+      selection: file.selection,
+      tab: "files",
+    });
+  });
+
+  it("names the tab the row can be marked on, never the one that was stored", () => {
+    // DW-46, and the decision the ledger records as "restore the tab, not reject
+    // the row": a stored page paired with a stored `files` tab is a pairing the
+    // LIVE shell produces on purpose (`wikilinkSelection` resolves a link to a
+    // page row while the Files tab shows), so refusing it would forget a pick
+    // the owner legitimately made. The stored tab is not even a parameter here —
+    // it cannot veto, and it cannot be read by mistake.
+    expect(restorableSelection(stored, "w1", KNOWLEDGE, FILES)?.tab).toBe("knowledge");
+    const file = { wikiId: "w1", selection: { kind: "file", path: "wiki/a.md" } } as const;
+    expect(restorableSelection(file, "w1", KNOWLEDGE, FILES)?.tab).toBe("files");
+  });
+});
+
+describe("selectionTab", () => {
+  it("names the one tab whose tree contains the row", () => {
+    // A page row exists only in the Knowledge tree and a file row only in the
+    // Files tree, so this is not a preference: it is the only tab on which the
+    // pick renders as a button that can carry `aria-current`.
+    expect(selectionTab({ kind: "page", slug: "alpha" })).toBe("knowledge");
+    expect(selectionTab({ kind: "file", path: "wiki/a.md" })).toBe("files");
+  });
+
+  it("agrees with `selectionExists` about which tree answers for a kind", () => {
+    // The two are halves of one rule. If this drifts, a row that exists is
+    // restored onto the tab that cannot render it — the DW-46 state exactly.
+    expect(selectionExists({ kind: "page", slug: "alpha" }, KNOWLEDGE, [])).toBe(true);
+    expect(selectionTab({ kind: "page", slug: "alpha" })).toBe("knowledge");
+    expect(selectionExists({ kind: "file", path: "wiki/a.md" }, [], FILES)).toBe(true);
+    expect(selectionTab({ kind: "file", path: "wiki/a.md" })).toBe("files");
   });
 });
 
@@ -949,7 +991,7 @@ describe("the shell wires the split without spelling any of it", () => {
     expect(source).toContain(
       "restorableSelection(readStoredSelection(), wikiId, groups, nodes)",
     );
-    expect(source).toContain("setSelection(restored)");
+    expect(source).toContain("setSelection(restored.selection)");
     expect(source).not.toContain("stored.wikiId === wikiId");
     // …and persists it, scoped to the Wiki it was made in.
     expect(source).toContain("writeStoredSelection(currentWikiId, selection)");
@@ -1012,6 +1054,81 @@ describe("the shell wires the split without spelling any of it", () => {
     expect(source).toMatch(
       /const pending = restoreSignatureRef\.current;\s*\n\s*if \(pending !== null\) \{\s*\n\s*if \(pending === layoutSignature\(mode, currentWikiId, treeTab\)\) \{\s*\n\s*restoreSignatureRef\.current = null;\s*\n\s*\}\s*\n\s*return;\s*\n\s*\}/,
     );
+    // …and it is armed with the tab the restore actually SWITCHES TO (DW-46),
+    // never the stored one. Armed with `restoredTab` while the restore corrects
+    // the tab, the signature the guard is waiting for never arrives: it returns
+    // forever, never re-arms, and stops clearing the selection for the rest of
+    // the session — so the next tab change leaves a Preview docked over a tree
+    // with nothing `aria-current` at all. Both halves are pinned because a
+    // correction with a stale signature is strictly worse than no correction.
+    expect(source).toContain(
+      "restoreSignatureRef.current = layoutSignature(restoredMode, wikiId, restored.tab)",
+    );
+    expect(source).toContain("if (restored.tab !== restoredTab) setTreeTab(restored.tab)");
+  });
+
+  it("corrects the restored tab without persisting it", async () => {
+    // The correction is a pure function of the restored ROW, so a reload
+    // reproduces it from nothing. Writing it down would overwrite the owner's
+    // last explicit tab choice with a value they never picked — and the only
+    // writer of that key is `selectTreeTab`, which this path does not call.
+    const source = await component("Workbench.tsx");
+    // `lastIndexOf`: a comment inside the same effect names `setMounted(true)`
+    // too, and slicing at the first hit would cut the restore block off.
+    const mount = source.slice(0, source.lastIndexOf("setMounted(true)"));
+    expect(mount).toContain("setTreeTab(restored.tab)");
+    expect(mount).not.toContain("writeStoredTreeTab(");
+    // `selectTreeTab` is still the one place a tab choice is written down.
+    expect(source).toMatch(
+      /const selectTreeTab = useCallback\(\(next: TreeTabId\) => \{\s*\n\s*setTreeTab\(next\);\s*\n\s*writeStoredTreeTab\(next\);/,
+    );
+  });
+
+  it("holds a pick behind the discard confirm while the editor is dirty (DW-36)", async () => {
+    // The pick site is the ONLY place a selection change can be held without
+    // touching the reset effect's frozen dependency array. Gutted to a direct
+    // `applySelection`, every assertion about announcements and docking stays
+    // green while a stray click goes back to destroying unsaved markdown.
+    const source = await component("Workbench.tsx");
+    expect(source).toMatch(
+      /if \(previewDirtyRef\.current\) \{\s*\n\s*setPendingSelection\(next\);\s*\n\s*return;\s*\n\s*\}\s*\n\s*applySelection\(next\);/,
+    );
+    // The dirty bit is a REF — nothing renders from it, and it is read inside a
+    // click handler. The held pick is STATE, because the dialog renders from it.
+    expect(source).toContain("const previewDirtyRef = useRef(false);");
+    expect(source).toContain(
+      "const [pendingSelection, setPendingSelection] = useState<TreeSelection | null>(null);",
+    );
+    // One boolean travels up, never the draft.
+    expect(source).toContain("onDirtyChange={reportPreviewDirty}");
+    expect(source).toMatch(
+      /const reportPreviewDirty = useCallback\(\(dirty: boolean\) => \{\s*\n\s*previewDirtyRef\.current = dirty;\s*\n\s*\}, \[\]\);/,
+    );
+    // Discard hands the held pick through the SAME body the direct path uses, so
+    // the two cannot announce different things.
+    expect(source).toMatch(
+      /const next = pendingSelection;\s*\n\s*setPendingSelection\(null\);\s*\n\s*if \(next\) applySelection\(next\);/,
+    );
+    // One dialog implementation, and one wording owner: every sentence comes
+    // from `workbench-preview`, none is typed into this JSX.
+    expect(source).toContain("open={pendingSelection !== null}");
+    expect(source).toContain("title={PREVIEW_DISCARD_CONFIRM_TITLE}");
+    expect(source).toContain("body={PREVIEW_DISCARD_CONFIRM_BODY}");
+    expect(source).toContain("confirmLabel={PREVIEW_DISCARD_CONFIRM_LABEL}");
+    expect(source).toContain("cancelLabel={PREVIEW_KEEP_EDITING_COPY}");
+  });
+
+  it("gates only the tree-selection path on the dirty check", async () => {
+    // The ledger defers the LEAVE paths to whichever story gives the editor a
+    // lifecycle. `previewDirtyRef` reaching `applyMode`, `selectTreeTab`,
+    // `toggleSettings` or `openPage` would put this dialog in front of
+    // navigation it was not designed for — and `openPage` cannot fire at all
+    // while the editor is open, since the editor replaces the body the wikilink
+    // is rendered in.
+    const source = await component("Workbench.tsx");
+    const reads = source.match(/previewDirtyRef\.current/g) ?? [];
+    // Exactly two: the guard's read and the reporter's write.
+    expect(reads.length).toBe(2);
   });
 
   it("spells no width, floor or step of its own", async () => {

@@ -283,8 +283,38 @@ export function selectionRefreshAction(input: {
 }
 
 /**
+ * WHICH tab can put `aria-current` on this row (DW-46).
+ *
+ * Not a preference and not a default: a page row exists only in the Knowledge
+ * tree and a file row only in the Files tree, so this names the one tab on which
+ * the pick is a visible, markable row. On the other one the selection is a
+ * Preview describing something the tree on screen cannot point at — exactly the
+ * state the shell's reset effect exists to prevent, and exactly what the mount
+ * restore was able to create on its own before this existed.
+ */
+export function selectionTab(selection: TreeSelection): TreeTabId {
+  return selection.kind === "page" ? "knowledge" : "files";
+}
+
+/**
+ * A restore the shell may actually perform: the row AND the tab that can mark
+ * it.
+ *
+ * The pair travels together because the two halves are one decision. A row
+ * restored onto the wrong tab is not half-restored — it is a Preview docked over
+ * a tree with nothing current in it, and the mount effect's restore signature
+ * then arms the reset effect's guard so that nothing will ever clear the
+ * mismatch. Returning the tab is what lets the caller arm that signature with
+ * the tab it is actually switching to.
+ */
+export interface RestorableSelection {
+  selection: TreeSelection;
+  tab: TreeTabId;
+}
+
+/**
  * The whole restore decision for a stored pick (Story 1.6): the row to select on
- * mount, or `null` for "restore nothing".
+ * mount together with the TAB that can mark it, or `null` for "restore nothing".
  *
  * Three conditions have to hold together, and spelling them inline in the mount
  * effect would leave them where only a grep could reach them — the Wiki half in
@@ -292,16 +322,26 @@ export function selectionRefreshAction(input: {
  * invisible until the Preview loads somebody else's page. `stored` is typed
  * structurally rather than imported from `workbench-state`, which imports THIS
  * module; the shape is `StoredSelection`.
+ *
+ * The stored TAB is deliberately not a parameter and never a veto (DW-46). A
+ * page/Files pairing is a state the live shell produces on purpose —
+ * {@link wikilinkSelection} resolves a link to a PAGE row while the Files tab is
+ * showing whenever the file form does not exist — so rejecting the row would
+ * forget a pick the owner legitimately made. The tab is CORRECTED instead, by
+ * {@link selectionTab}, which is a pure function of the row: a reload reproduces
+ * the same correction with nothing written down, so the owner's last explicit
+ * tab choice survives in storage untouched.
  */
 export function restorableSelection(
   stored: { wikiId: string; selection: TreeSelection } | null,
   currentWikiId: string | null,
   knowledge: readonly KnowledgeGroup[],
   files: readonly FileNode[],
-): TreeSelection | null {
+): RestorableSelection | null {
   if (!stored || currentWikiId === null) return null;
   if (stored.wikiId !== currentWikiId) return null;
-  return selectionExists(stored.selection, knowledge, files) ? stored.selection : null;
+  if (!selectionExists(stored.selection, knowledge, files)) return null;
+  return { selection: stored.selection, tab: selectionTab(stored.selection) };
 }
 
 /**
@@ -332,6 +372,12 @@ export function shouldDockPreview(
  * The file form is used only when that node actually exists — a page whose file
  * the walk did not list (truncated, gated, or a legacy flat-tree page) still
  * resolves to a page selection rather than to a row nobody can point at.
+ *
+ * That fallback is what makes the LIVE shell able to hold a page selection while
+ * the Files tab is showing, and it is why the RESTORE path corrects the tab
+ * rather than rejecting the row (DW-46): see {@link restorableSelection} and
+ * {@link selectionTab}. Nothing here changes — this function never switches the
+ * tab, because the shell's reset effect would clear the selection it just made.
  */
 export function wikilinkSelection(
   tab: TreeTabId,

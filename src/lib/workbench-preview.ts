@@ -136,6 +136,39 @@ export function canEditPreview(payload: PreviewPayload | null): boolean {
 }
 
 /**
+ * Is the open editor holding text that would be LOST (DW-36)?
+ *
+ * The one bit the column reports up to the shell, which needs it to decide
+ * whether a tree pick may be applied. A bit rather than the draft itself: a
+ * shell that could read the text would be a second owner of the editor's state,
+ * and the only question it has is "may I destroy this".
+ *
+ * `seed` is the string the editor was SEEDED with when it opened, captured at
+ * that moment rather than re-derived from the payload — a silent same-row
+ * refresh (Story 1.7) can replace the payload underneath an open editor, and
+ * comparing against the new bytes would report an owner who typed nothing as
+ * dirty and an owner who typed exactly the new bytes as clean.
+ *
+ * Both refusals are their own fact, not one condition wearing two names:
+ *
+ * - a CLOSED editor holds nothing at all, and a stale `draft` from the last
+ *   session of editing must never gate a pick made minutes later;
+ * - a `null` seed means the editor is open with nothing recorded to compare
+ *   against, which is not evidence of unsaved text. Answering `true` there would
+ *   put a discard confirm in front of a pick the owner has typed nothing into —
+ *   the one failure of this feature that costs a click on every single pick.
+ */
+export function previewDraftDirty(input: {
+  editing: boolean;
+  draft: string;
+  seed: string | null;
+}): boolean {
+  if (!input.editing) return false;
+  if (input.seed === null) return false;
+  return input.draft !== input.seed;
+}
+
+/**
  * Which of the five things the body area shows.
  *
  * The branch ORDER is the whole content of this decision — `loading` before
@@ -389,6 +422,29 @@ export const PREVIEW_EDIT_CONFIRM_LABEL = "Edit markdown";
 export const PREVIEW_EDIT_SCHEMA_CONFIRM_TITLE = "Edit this Wiki’s Schema?";
 export const PREVIEW_EDIT_SCHEMA_CONFIRM_BODY =
   "Preview is view-first. Editing opens the raw markdown — there is no rich-text editor. The Schema is executable: its Page conventions section is read by every ingest, chat and lint that runs after you save.";
+
+/**
+ * The OTHER gate, and the mirror image of the one above (DW-36): editing is a
+ * decision, so leaving an edit unsaved is a decision too.
+ *
+ * Shown when a tree pick arrives while the editor holds unsaved text. The pick
+ * is HELD behind this rather than applied, because applying it closes the editor
+ * — a stray click on a row used to destroy the owner's markdown with no dialog,
+ * no undo and nothing said.
+ *
+ * The body names the LOSS rather than the mechanism: which of the two ways the
+ * pick reaches the editor (another row, or the same row deselecting) is not a
+ * distinction the owner has to reason about, and both end with the textarea
+ * unmounted. "Discard" is the destructive word, on the destructive button, so
+ * the two labels can be told apart without reading the sentence above them.
+ */
+export const PREVIEW_DISCARD_CONFIRM_TITLE = "Discard your unsaved edits?";
+export const PREVIEW_DISCARD_CONFIRM_BODY =
+  "The Preview editor is holding text you haven’t saved. Changing what the Preview shows closes the editor, and that text is discarded.";
+export const PREVIEW_DISCARD_CONFIRM_LABEL = "Discard edits";
+
+/** The way back out of it — the pick is dropped and nothing at all changes. */
+export const PREVIEW_KEEP_EDITING_COPY = "Keep editing";
 
 /** Editor actions. `Cancel` is shared with the confirm dialog. */
 export const PREVIEW_CANCEL_COPY = "Cancel";

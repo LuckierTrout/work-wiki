@@ -31,6 +31,7 @@ import {
   canEditPreview,
   fetchPreview,
   previewBodyState,
+  previewDraftDirty,
   previewEditCopy,
   previewRefreshAnnouncement,
   previewRequestUrl,
@@ -96,6 +97,21 @@ export interface PreviewColumnProps {
    */
   dataVersion: number;
   /**
+   * Does the open editor hold text that has not been saved (DW-36)?
+   *
+   * Reported UP as one boolean and never as the draft: the shell's only question
+   * is whether a tree pick may be applied, and a shell that could read the text
+   * would become a second owner of this column's state. Required rather than
+   * optional — a shell that forgot to wire it would silently go back to
+   * destroying markdown on a stray click, which is the bug itself.
+   *
+   * Called from an effect, so it must be STABLE across renders; the shell
+   * satisfies that with a `useCallback` writing a ref. The effect's cleanup
+   * reports `false`, because an unmounted column has no draft and must not leave
+   * the shell gating picks on one.
+   */
+  onDirtyChange: (dirty: boolean) => void;
+  /**
    * Forwarded onto the `<aside>` so the SHELL can scroll the docked column into
    * view below 900px (DW-34), where it is a stacked fourth row rather than a
    * column beside the canvas. The shell owns the dock, so it owns the reveal;
@@ -118,6 +134,7 @@ export function PreviewColumn({
   files,
   onOpenPage,
   dataVersion,
+  onDirtyChange,
   ref,
 }: PreviewColumnProps) {
   // No selection, no column — the shell already decides this with
@@ -131,6 +148,7 @@ export function PreviewColumn({
       files={files}
       onOpenPage={onOpenPage}
       dataVersion={dataVersion}
+      onDirtyChange={onDirtyChange}
       ref={ref}
     />
   );
@@ -142,6 +160,7 @@ function PreviewPane({
   files,
   onOpenPage,
   dataVersion,
+  onDirtyChange,
   ref,
 }: PreviewColumnProps & { selection: TreeSelection }) {
   const [payload, setPayload] = useState<PreviewPayload | null>(null);
@@ -168,6 +187,17 @@ function PreviewPane({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  // The string the editor was SEEDED with, kept beside the draft it is compared
+  // against (DW-36). State rather than a ref because the dirty report is an
+  // effect and a ref write would not re-run it — the seed is set in the same
+  // commit as the draft, so a ref here would leave the first keystroke after an
+  // open comparing against the PREVIOUS row's bytes.
+  //
+  // `null` is "no editor was seeded", which is not the same as "seeded with an
+  // empty file": the empty file's draft is genuinely dirty the moment a
+  // character is typed, and `previewDraftDirty` is where that distinction is
+  // executed rather than inferred here.
+  const [draftSeed, setDraftSeed] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const editRef = useRef<HTMLButtonElement>(null);
@@ -242,6 +272,7 @@ function PreviewPane({
       // header is the state `save`'s target check also refuses.
       setEditing(false);
       editingTargetRef.current = null;
+      setDraftSeed(null);
       setConfirmOpen(false);
       setSaveError(null);
     }
@@ -309,6 +340,26 @@ function PreviewPane({
     }
   }, [editing]);
 
+  // WHETHER there is unsaved text is one executed function (`previewDraftDirty`),
+  // never a comparison typed here: this is the whole of what stands between a
+  // stray click on a tree row and the owner's markdown, and inline it could only
+  // ever be grepped for.
+  const dirty = previewDraftDirty({ editing, draft, seed: draftSeed });
+
+  // Reported UP in an effect rather than from the handlers that change it, so
+  // the shell sees the state of the render that is actually on screen — a report
+  // fired from `onChange` would be one keystroke behind on the path where React
+  // batches, and one keystroke is the whole of the loss this prevents.
+  //
+  // The cleanup reports `false` on EVERY run, not only on unmount. A column the
+  // shell just undocked (a mode, Wiki or tab change) takes its draft with it, and
+  // a shell left holding `true` would gate the next pick — in another Wiki, on
+  // another tab — behind a discard confirm for a textarea that no longer exists.
+  useEffect(() => {
+    onDirtyChange(dirty);
+    return () => onDirtyChange(false);
+  }, [dirty, onDirtyChange]);
+
   const startEditing = useCallback(() => {
     if (!payload) return;
     // The target is captured HERE, from the payload the body was rendered from
@@ -330,6 +381,11 @@ function PreviewPane({
     // YAML block before it ever reached the browser, and for an artifact there
     // is no block to strip.
     setDraft(payload.body);
+    // The same string, recorded as the thing "dirty" is measured against. Taken
+    // HERE and never re-derived: a silent same-row refresh can replace `payload`
+    // while the editor is open, and comparing the draft against the new bytes
+    // would call an owner who typed nothing dirty.
+    setDraftSeed(payload.body);
     editingTargetRef.current = target;
     setSaveError(null);
     setConfirmOpen(false);
@@ -370,6 +426,10 @@ function PreviewPane({
       setPayload((current) => (current ? { ...current, body: draft } : current));
       restoreEditFocus.current = true;
       setEditing(false);
+      // Saved text is not unsaved text: the seed is dropped on every path that
+      // closes the editor, or the shell would go on gating picks on a draft that
+      // is already on disk and no longer on screen.
+      setDraftSeed(null);
       // The trees carry the page's title and `updated`, both of which this write
       // may have changed — but this column does not refresh anything itself.
       // The write bumped `dataVersion` at the kernel's one tail like every other
@@ -554,6 +614,7 @@ function PreviewPane({
               onClick={() => {
                 restoreEditFocus.current = true;
                 setEditing(false);
+                setDraftSeed(null);
                 setSaveError(null);
               }}
               disabled={saving}

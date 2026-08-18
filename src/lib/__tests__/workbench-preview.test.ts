@@ -33,8 +33,16 @@ import { stripFrontmatterBlock } from "../markdown";
 import {
   ARTIFACT_WRITE_ROUTE,
   PAGE_WRITE_ROUTE,
+  PREVIEW_CANCEL_COPY,
   PREVIEW_CLOSED_COPY,
+  PREVIEW_DISCARD_CONFIRM_BODY,
+  PREVIEW_DISCARD_CONFIRM_LABEL,
+  PREVIEW_DISCARD_CONFIRM_TITLE,
+  PREVIEW_EDIT_CONFIRM_BODY,
+  PREVIEW_EDIT_CONFIRM_LABEL,
+  PREVIEW_EDIT_CONFIRM_TITLE,
   PREVIEW_FAILED_COPY,
+  PREVIEW_KEEP_EDITING_COPY,
   PREVIEW_MAX_CHARS,
   PREVIEW_REMOVED_COPY,
   PREVIEW_RETRY_COPY,
@@ -52,6 +60,7 @@ import {
   pageWriteUrl,
   previewBodyState,
   previewDockAnnouncement,
+  previewDraftDirty,
   previewFileKind,
   previewRefreshAnnouncement,
   previewRequestUrl,
@@ -527,6 +536,56 @@ describe("canEditPreview", () => {
   });
 });
 
+describe("previewDraftDirty", () => {
+  it("says nothing is at stake while the editor is closed", () => {
+    // `draft` outlives the editor — it is plain state that keeps whatever the
+    // last session of editing left in it. Read without the `editing` term, a
+    // pick made minutes after a save would still be gated behind a discard
+    // confirm for text that is already on disk.
+    expect(previewDraftDirty({ editing: false, draft: "typed", seed: "# Alpha" })).toBe(
+      false,
+    );
+    expect(previewDraftDirty({ editing: false, draft: "", seed: null })).toBe(false);
+  });
+
+  it("says nothing is at stake for an untouched draft", () => {
+    // The editor is seeded with exactly the bytes the body rendered, so an
+    // opened-and-not-typed-in editor holds nothing to lose. Answering `true`
+    // here would put a dialog in front of every pick made with the editor open.
+    expect(previewDraftDirty({ editing: true, draft: "# Alpha", seed: "# Alpha" })).toBe(
+      false,
+    );
+    expect(previewDraftDirty({ editing: true, draft: "", seed: "" })).toBe(false);
+  });
+
+  it("says text would be LOST once the draft moves off the seed", () => {
+    expect(previewDraftDirty({ editing: true, draft: "# Alpha!", seed: "# Alpha" })).toBe(
+      true,
+    );
+    // Deletion is a loss too — a cleared textarea is not "unedited".
+    expect(previewDraftDirty({ editing: true, draft: "", seed: "# Alpha" })).toBe(true);
+    // …and one character into an empty file is, which is why an empty-string
+    // seed cannot be folded into the `null` case below.
+    expect(previewDraftDirty({ editing: true, draft: "x", seed: "" })).toBe(true);
+    // Whitespace is text the owner typed. Nothing here trims: `Save` refuses a
+    // whitespace-only body, but refusing to SAVE it is not permission to
+    // silently throw it away.
+    expect(previewDraftDirty({ editing: true, draft: "# Alpha ", seed: "# Alpha" })).toBe(
+      true,
+    );
+  });
+
+  it("refuses to guess when no seed was recorded", () => {
+    // An open editor with no seed is a state nothing produces — the seed and
+    // `editing` are set in the same commit — and it is deliberately NOT read as
+    // dirty. Answering `true` on a missing comparison would gate every pick
+    // behind a confirm the moment the capture ever regressed, which costs a
+    // click on every single pick and reads as a broken tree.
+    expect(previewDraftDirty({ editing: true, draft: "typed", seed: null })).toBe(false);
+    expect(previewDraftDirty({ editing: true, draft: "", seed: null })).toBe(false);
+  });
+});
+
 describe("previewWriteTarget", () => {
   const editable: PreviewPayload = { ...PAYLOAD_SHAPE, editable: true, truncated: false };
 
@@ -823,11 +882,46 @@ describe("the announcement copy", () => {
       PREVIEW_UPDATED_COPY,
       PREVIEW_UNREACHABLE_COPY,
       PREVIEW_RETRY_COPY,
+      PREVIEW_DISCARD_CONFIRM_TITLE,
+      PREVIEW_DISCARD_CONFIRM_BODY,
+      PREVIEW_DISCARD_CONFIRM_LABEL,
+      PREVIEW_KEEP_EDITING_COPY,
       previewDockAnnouncement("Alpha"),
     ]) {
       expect(copy).not.toContain("'");
     }
     expect(PREVIEW_UNREACHABLE_COPY).toContain("’");
+  });
+});
+
+describe("the discard gate's copy (DW-36)", () => {
+  it("names the LOSS, not the mechanism", () => {
+    // The owner is being asked to authorise a deletion of their own text. A
+    // title that only named the pick ("Open another row?") would hide what the
+    // confirm actually costs.
+    expect(PREVIEW_DISCARD_CONFIRM_TITLE).toContain("unsaved");
+    expect(PREVIEW_DISCARD_CONFIRM_BODY).toContain("discarded");
+    // Not tied to "another row": the same dialog covers re-picking the row
+    // already showing, which undocks the column and unmounts the editor.
+    expect(PREVIEW_DISCARD_CONFIRM_BODY).not.toContain("another row");
+  });
+
+  it("keeps the two buttons tellable apart without reading the sentence", () => {
+    expect(PREVIEW_DISCARD_CONFIRM_LABEL).toBe("Discard edits");
+    expect(PREVIEW_KEEP_EDITING_COPY).toBe("Keep editing");
+    // …and neither is `Cancel`, which this surface already spends on leaving the
+    // editor. Two controls labelled `Cancel` one overlay apart, with opposite
+    // consequences, is the state this wording exists to avoid.
+    expect(PREVIEW_KEEP_EDITING_COPY).not.toBe(PREVIEW_CANCEL_COPY);
+    expect(PREVIEW_DISCARD_CONFIRM_LABEL).not.toBe(PREVIEW_CANCEL_COPY);
+  });
+
+  it("is not the EDIT gate's copy wearing a different name", () => {
+    // Two gates, opposite directions: one authorises opening the editor, the
+    // other authorises destroying what is in it.
+    expect(PREVIEW_DISCARD_CONFIRM_TITLE).not.toBe(PREVIEW_EDIT_CONFIRM_TITLE);
+    expect(PREVIEW_DISCARD_CONFIRM_BODY).not.toBe(PREVIEW_EDIT_CONFIRM_BODY);
+    expect(PREVIEW_DISCARD_CONFIRM_LABEL).not.toBe(PREVIEW_EDIT_CONFIRM_LABEL);
   });
 });
 

@@ -60,6 +60,10 @@ import {
 } from "@/lib/workbench-settings";
 import {
   PREVIEW_CLOSED_COPY,
+  PREVIEW_DISCARD_CONFIRM_BODY,
+  PREVIEW_DISCARD_CONFIRM_LABEL,
+  PREVIEW_DISCARD_CONFIRM_TITLE,
+  PREVIEW_KEEP_EDITING_COPY,
   PREVIEW_REMOVED_COPY,
   previewDockAnnouncement,
 } from "@/lib/workbench-preview";
@@ -74,6 +78,7 @@ import {
   type TreeSelection,
   type TreeTabId,
 } from "@/lib/workbench-tree";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { IconRail } from "./IconRail";
 import { ModeCanvas } from "./ModeCanvas";
 import { PreviewColumn } from "./PreviewColumn";
@@ -164,6 +169,12 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // the tree — so Story 1.6 has one place to restore it from and the Preview
   // dock is decided by the same component that owns the grid.
   const [selection, setSelection] = useState<TreeSelection | null>(null);
+  // A pick the owner made that has NOT been applied, because the Preview editor
+  // is holding unsaved text (DW-36). State rather than a ref: the discard dialog
+  // renders from it, and `null` is the whole of "no pick is being held". The
+  // held pick changes nothing else — no announcement, no `ownerPickedRef` write,
+  // no storage write — so cancelling leaves the shell byte-identical.
+  const [pendingSelection, setPendingSelection] = useState<TreeSelection | null>(null);
   // Stored layout state exists only in the browser. Rendering it during SSR
   // would hydrate a different tree than the server sent, so the first paint is
   // always the default and the restore lands in an effect.
@@ -231,6 +242,11 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // the reset effect owns the clear in that case — so this is how the
   // reconciliation recognises the commit it must stay out of.
   const reconciledSignatureRef = useRef<string | null>(null);
+  // Does the docked Preview's editor hold unsaved text (DW-36)? A ref, not
+  // state: nothing renders from it and it is read inside a click handler, the
+  // same split `sheetOpenRef` and `liveRef` already make. Written only by the
+  // column's own report, which an unmounting column ends with `false`.
+  const previewDirtyRef = useRef(false);
 
   const surface = workbenchMode(mode);
 
@@ -301,12 +317,25 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     const { currentWikiId: wikiId, knowledge: groups, files: nodes } = latestRef.current;
     const restored = restorableSelection(readStoredSelection(), wikiId, groups, nodes);
     if (restored) {
+      // …and it is restored onto the tab that can MARK it (DW-46). The stored
+      // row and the stored tab are two independent values, and `wikilinkSelection`
+      // deliberately produces a page/Files pairing — so the tab is corrected to
+      // `restored.tab` rather than the row being rejected. Not persisted: the
+      // correction is a pure function of the row, so a reload reproduces it, and
+      // writing it would overwrite the owner's last explicit tab choice.
+      if (restored.tab !== restoredTab) setTreeTab(restored.tab);
       // The EFFECTIVE mode, never the stored one. On a deep link the two differ,
       // and a signature naming a layout the shell is not in never arrives — so
       // the reset effect's guard returns forever and the Preview goes on
       // describing a row that has left the tree on screen.
-      restoreSignatureRef.current = layoutSignature(restoredMode, wikiId, restoredTab);
-      setSelection(restored);
+      //
+      // …and the EFFECTIVE tab, for exactly the same reason: a signature naming
+      // the tab that was stored rather than the one just switched to would never
+      // arrive either, so the reset effect would stop clearing forever and the
+      // very next tab change would leave a Preview docked over a tree with
+      // nothing current in it.
+      restoreSignatureRef.current = layoutSignature(restoredMode, wikiId, restored.tab);
+      setSelection(restored.selection);
     }
     // LAST, and deliberately after every storage READ above: a deep link that
     // beat storage writes itself down, and doing it earlier would make the reads
@@ -572,7 +601,13 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // changes with no focus move and no route change, so to a screen-reader user
   // a click on a tree row otherwise produces nothing at all: a panel appeared
   // somewhere below, or the one they were reading stopped existing.
-  const selectRow = useCallback((next: TreeSelection) => {
+  //
+  // Everything a pick DOES, with nothing said about whether it may happen. Split
+  // out of `selectRow` (DW-36) so the guard below can hold a pick without
+  // touching any of it, and so the discard confirm can hand the very same pick
+  // through unchanged — a second copy of this body is how the held path would
+  // start announcing something different from the direct one.
+  const applySelection = useCallback((next: TreeSelection) => {
     // Outside the state updater, the rule `toggleCollapsed` already follows —
     // React invokes updaters twice under StrictMode, and an announcement made
     // in there would be written twice and, worse, made by a function that is
@@ -590,12 +625,62 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     setSelection((current) => (isSameSelection(current, next) ? null : next));
   }, []);
 
+  // …and WHETHER it may happen. The Preview's fetch effect closes the editor on
+  // every new pick, so before DW-36 one stray click on a tree row silently
+  // destroyed unsaved markdown. The pick is HELD instead: nothing is announced,
+  // nothing is written, the selection does not move, and the row the owner was
+  // on keeps `aria-current` — so Cancel is genuinely a no-op rather than an undo.
+  //
+  // Re-picking the SHOWN row is held too. It would deselect, which unmounts the
+  // editor — the same loss by a different route, and the one case a guard
+  // written as "is this a different row?" would let through.
+  //
+  // Only the tree-selection path is gated. A mode switch, a Wiki switch, a tab
+  // switch and Settings all still discard silently: the ledger defers those to
+  // whichever story gives the editor a lifecycle, and gating them here would put
+  // this dialog in front of navigation it was not designed for.
+  const selectRow = useCallback(
+    (next: TreeSelection) => {
+      if (previewDirtyRef.current) {
+        setPendingSelection(next);
+        return;
+      }
+      applySelection(next);
+    },
+    [applySelection],
+  );
+
+  /** The column's one report, parked in a ref. Stable, because it is read from an effect. */
+  const reportPreviewDirty = useCallback((dirty: boolean) => {
+    previewDirtyRef.current = dirty;
+  }, []);
+
+  // Discard: the held pick applies exactly as it would have. The editor closes
+  // because the column's own fetch effect resets on a new row — the shell says
+  // nothing about the editor, which is the whole reason the report travels up as
+  // a boolean and the state stays down there.
+  const confirmDiscard = useCallback(() => {
+    const next = pendingSelection;
+    setPendingSelection(null);
+    if (next) applySelection(next);
+  }, [applySelection, pendingSelection]);
+
+  /** Keep editing — Cancel, Esc and the backdrop all land here. The pick is dropped. */
+  const cancelDiscard = useCallback(() => setPendingSelection(null), []);
+
   // Following a `[[wikilink]]` in the Preview. Deliberately NOT `selectRow`:
   // that one toggles, so a link pointing at the page already showing would
   // undock the column instead of staying on it. Which row it lands on depends on
   // the tab, which is `wikilinkSelection`'s whole job — and it never changes the
   // tab itself, because the reset effect above would clear the selection this
   // just made. No route change: the shell owns selection, and always has.
+  //
+  // Deliberately NOT gated on the dirty check (DW-36), and not because the loss
+  // would be acceptable: this path cannot fire while the editor is open at all.
+  // The editor REPLACES the rendered body in `PreviewColumn`, so there is no
+  // wikilink on screen to follow — the one control that calls this is unmounted
+  // for exactly as long as a draft exists. A guard here would be dead code
+  // asserting a condition nothing can reach.
   const openPage = useCallback(
     (slug: string) => {
       const next = wikilinkSelection(treeTab, files, slug);
@@ -942,12 +1027,35 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
           // the Preview's half of the same signal — the shell is where context
           // becomes props, and it stays router-free.
           dataVersion={dataVersion}
+          // One boolean UP, never the draft (DW-36): the shell decides whether a
+          // pick may be applied, which needs one bit, and a shell that could
+          // read the text would be a second owner of the editor's state.
+          onDirtyChange={reportPreviewDirty}
           // …and the shell keeps the geometry. Below 900px the column is a
           // stacked row the shell has to scroll to; the column itself never
           // reads the viewport.
           ref={previewRef}
         />
       )}
+
+      {/* The held pick's discard gate (DW-36). The SAME `ConfirmDialog` the
+          Preview's edit gate uses — one dialog implementation, one overlay level
+          (UX-DR17) — and the two can never coexist: this one opens only while
+          the editor is open, and the column's edit-confirm is reachable only
+          from an `Edit` button that renders `canEdit && !editing`.
+
+          No `fallbackFocusRef`: the opener is the tree row the owner clicked,
+          which is still mounted on both outcomes, so `useDialogA11y`'s own
+          restore puts focus back where they left it either way. */}
+      <ConfirmDialog
+        open={pendingSelection !== null}
+        title={PREVIEW_DISCARD_CONFIRM_TITLE}
+        body={PREVIEW_DISCARD_CONFIRM_BODY}
+        confirmLabel={PREVIEW_DISCARD_CONFIRM_LABEL}
+        cancelLabel={PREVIEW_KEEP_EDITING_COPY}
+        onConfirm={confirmDiscard}
+        onCancel={cancelDiscard}
+      />
 
       {/* Announces the surface the rail just switched to (accessibility floor).
           Polite, so it never interrupts an in-progress announcement — and empty
