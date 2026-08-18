@@ -1,49 +1,4 @@
 {
-  "DW-19": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Leave the getOwnerHandle() resolution in place and document it as an explicit single-owner invariant at src/lib/wikis.ts:540 and at each no-argument loadPageConventions() call site, naming what must change when a second tenant arrives. Add a test that pins the single-owner assumption so a multi-tenant change cannot land silently.",
-    "key": "1",
-    "label": "Keep, document the constraint",
-    "resolution": ""
-  },
-  "DW-27": {
-    "answered_at": "2026-08-16",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Mirror the active mode into a query param via shallow history updates (no shell unmount), accept it on load ahead of localStorage, and update the router-ban pin so deep-linking a mode and Back/Forward work.",
-    "key": "1",
-    "label": "Shallow ?mode= sync",
-    "resolution": ""
-  },
-  "DW-30": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Keep the tenant-flat storage and make the product honest about it: correct the acceptance wording and the Wiki-switch copy so a Wiki is understood as a lens over shared Pages and Sources plus its own purpose.md/schema.md, and document the invariant beside listWorkbenchFilePaths so no later story re-reads the AC as a partitioning promise.",
-    "key": "1",
-    "label": "Reword the AC, keep flat",
-    "resolution": ""
-  },
-  "DW-34": {
-    "answered_at": "2026-08-16",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Add dock/undock announcement sentences to the epic's Copy table, write them to the existing polite live region from the selection setters, and scroll the docked column into view at narrow widths.",
-    "key": "1",
-    "label": "Author and wire",
-    "resolution": ""
-  },
-  "DW-41": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Narrow the listing so the Files tab shows only leaves the read gate will serve: keep the two filters and their two reasons distinct, but derive the listing's admissible set from the same predicate the read gate applies, so no row can be shown that the Preview will refuse. Update the frozen comment at workbench-files.ts:326-339 to record the new rule.",
-    "key": "1",
-    "label": "List only openable leaves",
-    "resolution": ""
-  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",
@@ -69,33 +24,6 @@
     "intent": "Introduce a single exported breakpoint constant consumed by both the stylesheet build and TreePanel's matchMedia listener, add the listener to both scroll effects so the live 900px transition restores and records the offset, and retarget the workbench-split.test.ts ban to forbid ad-hoc duplicate literals rather than the shared constant.",
     "key": "1",
     "label": "Allow one shared breakpoint constant",
-    "resolution": ""
-  },
-  "DW-50": {
-    "answered_at": "2026-08-16",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Add a 'Preview updated'-style sentence to the epic's Copy table and announce it from the fetch effect's response handler when a silent same-row refresh replaces rendered content.",
-    "key": "1",
-    "label": "Author and wire",
-    "resolution": ""
-  },
-  "DW-53": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Reconcile a live selection against a refreshed tree: when the selected row is gone, undock the Preview and announce a new Copy-table sentence through the shell's existing polite live region, so the change is neither silent nor mistaken for a broken column. Thread the reconciliation without growing the reset effect's pinned deps.",
-    "key": "1",
-    "label": "Undock and announce",
-    "resolution": ""
-  },
-  "DW-54": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Have fetchPreview report 404 separately from transport and timeout failures. On a silent same-row refresh, a 404 replaces the body with the existing gone copy, while an unreachable answer keeps the last-good bytes and shows a transient, self-healing indicator with a retry. Author the one new sentence this needs in the epic's Copy table.",
-    "key": "1",
-    "label": "Separate gone from unreachable",
     "resolution": ""
   },
   "DW-58": {
