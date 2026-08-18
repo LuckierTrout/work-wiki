@@ -339,7 +339,8 @@ location: src/lib/lifecycle.ts, src/app/api/wiki/[slug]/route.ts
 source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
 severity: low
 reason: `savePreviewBody` PUTs `{ content }` with no `updated`, ETag or `If-Match`, and `writeWikiPageWithSideEffects` takes it. The storage provider already exposes `readFileWithEtag` and `writeFileIfMatch` (`src/lib/storage/types.ts:196,205`) and nothing in the kernel write path uses them. Not reachable in Epic 1 — one operator, no ingest — but Epic 2 gives the same pages a second writer, and Epic 8's loopback API a third, so whichever of those lands first is where the guard has a real reason to exist rather than a hypothetical one.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-write-preconditions-and-conflict-surface
 
 ### DW-39: Story 1.2's canvas card keeps saying `Select a file to preview.` while a Preview column is docked beside it showing exactly that file.
 origin: spec-deferred 6624dcbc2fe7
@@ -454,7 +455,8 @@ location: src/app/api/wiki/[slug]/route.ts (PUT), src/lib/workbench-preview.ts (
 source_spec: `spec-1-7-dataversion-workbench-refresh.md`
 severity: medium
 reason: Pre-existing — the write path has never had one — but this story makes the race visible for the first time by teaching the shell to notice other actors' writes, and it deliberately does NOT disturb an open editor, so the draft can now be knowingly stale. The read side already supports the primitive (`readFileWithEtag` / `writeFileIfMatch` in `storage/types.ts`); what is missing is a version on the preview payload, a precondition on the route, and a decision about what the column shows when it fails. That is a whole conflict-handling design, not a patch.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-write-preconditions-and-conflict-surface
 
 ### DW-52: The watcher's effect lifecycle — poll cadence, visibility gating, abort, teardown — is verified only by matching strings in its own source.
 origin: spec-deferred 90233d0f0577
@@ -501,7 +503,8 @@ location: src/app/api/workbench/artifact/route.ts, src/lib/wikis.ts (writeWikiAr
 source_spec: `spec-1-8-edit-schema.md`
 severity: medium
 reason: `PUT /api/workbench/artifact` carries no ETag, no `If-Match` and no `updatedAt` precondition, and `writeWikiArtifact` stores the body unconditionally. Story 1.7's refresh deliberately does not disturb an open editor, so a draft can legitimately outlive several bumps and then overwrite them. `PUT /api/wiki/[slug]` has the same property — this is the inherited pattern, not a new one — but the artifact is the single file every ingest, chat and lint prompt reads, so the blast radius is larger. The storage contract already exposes a compare-and-set write; what is missing is a version on the payload and a decision about what the column shows on conflict, which is the same conflict-surface design spec-1-7 deferred for the Preview.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-write-preconditions-and-conflict-surface
 
 ### DW-57: A Preview left open on `schema.md` across a Scenario Template re-apply shows pre-template bytes, and saving them silently reverts the re-apply.
 origin: spec-deferred a5eae62be08b
@@ -564,7 +567,8 @@ location: src/app/api/settings/route.ts, src/lib/config.ts (saveConfig)
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: Both the new surface and `/settings` read-modify-write the same `AppConfig` through `loadConfig` → merge → `saveConfig`, with no `If-Match`, no version and no lock. A draft seeded before the other surface (or another tab) saved will overwrite it silently on the next Save. This is the same lost-update shape already recorded for the page and artifact writes (DW-38, DW-51, DW-56) rather than a new mechanism, and closing it needs the conflict-surface design those entries are waiting on.
-status: open
+status: done 2026-08-17
+resolution: resolved by sweep bundle dw-write-preconditions-and-conflict-surface
 
 ### DW-64: The configured deadline bounds a whole STREAM on `callLLMStream`, and a deadline that fires surfaces raw transport vocabulary.
 origin: spec-deferred 0d779aa5cece
@@ -1603,4 +1607,84 @@ source_spec: `spec-dw-37-read-only-deployment-consistency.md`
 location: src/components/WorkspacePurposeSettings.tsx:223
 severity: medium
 reason: src/components/WorkspacePurposeSettings.tsx:223 is `<fieldset disabled={loading || saving || readOnly || !wiki}>` around every field and the Save button (:331 disables Save again). `disabled` on a fieldset removes every descendant from the tab order, so a keyboard or screen-reader user cannot read the stored Workspace Purpose at all — the exact harm DW-65 names for the Settings selects, on a surface the bundle did not name. The file already renders the read-only sentence at :344, so only the refusal mechanism is wrong. Pre-existing; the spec's Code Map cites this file only as the copy pattern to follow.
+status: open
+
+### DW-192: `loadConfig()` answers `{}` for an UNREADABLE config as well as an absent one, so the settings route can merge a patch into an empty object and `saveConfig` writes away every stored field.
+origin: spec-deferred 4b41f7d77923
+source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
+location: src/lib/config.ts:197, src/app/api/settings/route.ts:156
+severity: medium
+reason: `src/lib/config.ts:197-209` catches every read/parse error, logs a `logger.warn` for anything that is not ENOENT, and returns `{}`. The settings route uses that value as BOTH the precondition's merge base and the object it spreads into. If a transient storage error hits the `GET`, the surface is seeded with `objectVersion({})`; if the same failure hits the `PUT`, the header matches, the guard reports "no conflict", and the merge lands on an empty config. Pre-existing — the route merged into `{}` and wrote before this change too, and the precondition makes the case strictly rarer, not more likely. Closing it means teaching the config loader to distinguish "absent" from "unreadable", which is a kernel change no DW entry in this bundle names.
+status: open
+
+### DW-193: The artifact route reads current bytes OUTSIDE the very per-owner lock its own writer takes, so the one route that already holds a lock still leaves the concurrent-save window open.
+origin: spec-deferred f94acd1bd4a8
+source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
+location: src/app/api/workbench/artifact/route.ts:149, src/lib/wikis.ts:556
+severity: low
+reason: `src/app/api/workbench/artifact/route.ts` calls `readWikiArtifact` for the precondition, then `writeWikiArtifact`, which wraps its put in `withFileLock(wikiLockKey(owner))` (`src/lib/wikis.ts:556`). Moving the read and the check inside that same critical section would close the window at zero design cost — no new lock and no new lock ordering, which is what this spec's Never clause actually forbids. Not done here because it needs a precondition parameter threaded into `writeWikiArtifact` and an unlocked internal getter, and because the other two routes would then carry a weaker guarantee than this one.
+status: open
+
+### DW-194: Requiring `If-Match` is an undocumented wire-contract change for the service-token REST path, which `middleware.ts` still describes as an unconditional write.
+origin: spec-deferred 40d3b352a7ca
+source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
+location: src/middleware.ts:30, src/app/api/wiki/[slug]/route.ts:174
+severity: low
+reason: `src/middleware.ts:30-31` documents `/api/wiki/<slug>` mutations as authenticated by "Clerk session OR the system service token", and the PUT handler resolves `getServicePrincipal(req)` for exactly that caller. Any external agent issuing an unconditional `PUT` now receives a 428 carrying a sentence written for a human editor. No in-repo caller exists (verified: `tools/`, `scripts/`, `integrations/`, `workers/`, `skills/` carry no `api/wiki` or `api/settings` request), so nothing breaks in this tree — but no doc, and no test, covers the service-principal path against the guard. DW-38 names "Epic 8's loopback API" as a future third writer that would inherit this requirement.
+status: open
+
+### DW-195: `readWikiPage`'s in-process `pageCache` can serve the Preview a stale body and now a stale VERSION, producing a 412 against a write the reader was never shown.
+origin: spec-deferred e8332ca1afef
+source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
+location: src/lib/wiki.ts:334, src/app/api/workbench/preview/route.ts:142
+severity: low
+reason: `src/lib/wiki.ts:334-337` returns a cached page whenever `pageCache` is active, and `GET /api/workbench/preview` derives the version from exactly that value. The cache is ref-counted around bulk scans rather than held per-request, so no route in this bundle activates it today; the staleness is pre-existing for `body` and the version merely inherits it.
+status: open
+
+### DW-196: The kernel page writer stays unguarded, so the ~18 non-HTTP callers of `writeWikiPageWithSideEffects` — including the ingest and agent writers DW-38 names as the reason the guard is needed — still clo
+origin: spec-deferred cd37d8d20782
+source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
+location: src/lib/lifecycle.ts:731
+severity: medium
+reason: The guard sits at the HTTP boundary, which is what the intent's operative clause asks for ("enforce `If-Match` on the three routes"), but every DW entry's `location` field also names a kernel writer (`src/lib/lifecycle.ts`, `writeWikiArtifact`, `saveConfig`). `writeWikiPageWithSideEffects` is called unconditionally from `src/mcp.ts`, `src/cli.ts`, `src/lib/agents.ts`, `src/lib/lint-fix.ts`, `src/lib/query.ts`, `src/lib/search.ts`, `src/lib/memory-proposals.ts`, `src/lib/document-sources.ts`, `src/lib/patch-metadata.ts`, `src/app/api/wiki/route.ts` and the revisions route. DW-38's own justification for doing the work now is "Epic 2 gives the same pages a second writer" — and that writer is an ingest path that never travels the guarded route.
+status: open
+
+### DW-197: `stableSerialize` collapses every non-plain object to `{}` and has no cycle or depth bound, so `objectVersion` can report "no change" between two genuinely different values.
+origin: spec-deferred 2984302c303e
+source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
+location: src/lib/write-precondition.ts:130
+severity: low
+reason: `Object.entries(new Date(...))` is empty, so two different `Date`s, `Map`s, `Set`s or class instances all serialize identically; a cyclic object recurses until the stack blows, where `JSON.stringify` would at least throw a catchable `TypeError`. Only caller today is the settings route over a parsed-JSON `AppConfig`, where none of these shapes can occur — but `objectVersion` is exported as a general primitive with an inviting name.
+status: open
+
+### DW-198: The Settings write precondition is a hash of the STORED SECRETS, and it is served to the browser beside the comment asserting no secret material crosses that boundary.
+origin: spec-deferred d87cea3adf09
+source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
+location: src/app/api/settings/route.ts:52, src/lib/write-precondition.ts:150
+severity: medium
+reason: `GET /api/settings` computes `objectVersion(await loadConfig())` over the whole parsed `AppConfig` — `firecrawlApiKey`, `customApiKey` and the embedding key included — and ships that string twice, at the top level and on `workbench`, four lines below the comment stating that `getWorkbenchSettings()` reduces the three secrets to `has*ApiKey` booleans "(AD-23)". The version is not the secret and the route is owner-only, so this is a weak confirmation oracle rather than key recovery, but it is secret-DERIVED material on a surface whose stated invariant is that none leaves the kernel. It cannot be fixed by hashing a redacted projection: the `PUT` merges into the whole config, so a version blind to the secret fields would miss exactly the lost update it exists to catch. Closing it needs a different scheme — an opaque token stamped on save and stored beside the config — which the intent forecloses by naming "the stored `AppConfig`" as the version's input.
+status: open
+
+### DW-199: `isWorkbenchSettingsPayload` making `version` required turns a save that LANDED into a reported failure, and one absent field into a whole-canvas load failure.
+origin: spec-deferred 7dbd4c8d1bf2
+source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
+location: src/lib/workbench-settings.ts:359, src/lib/workbench-settings.ts:1028
+severity: low
+reason: `src/lib/workbench-settings.ts:359` now rejects a payload whose `version` is missing or empty, and `saveWorkbenchSettings` runs the 200 response through it — so a landed write would be answered `{ status: "error" }`, `SettingsCanvas` would keep its superseded version, and every later save would be refused 412 for a change the owner made themselves. `fetchWorkbenchSettings` fails the same way on read, taking every value off screen. Unreachable today: the route derives `version` from `objectVersion(fresh)`, which is always a non-empty string. Recorded because the two sibling clients deliberately chose the opposite tolerance (`isPreviewPayload` accepts absence, `useSettings` accepts a versionless 200), so the three payloads now answer the same question three ways and a fourth surface has no convention to follow.
+status: open
+
+### DW-200: A Schema draft held across an active-Wiki switch can still land on the OTHER Wiki's `schema.md` when both hold the identical seeded bytes.
+origin: spec-deferred 18037df81052
+source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
+location: src/app/api/workbench/artifact/route.ts:129
+severity: low
+reason: `PUT /api/workbench/artifact` resolves `currentId` from the registry at request time and checks the precondition against THAT Wiki's artifact. Two Wikis seeded from the same template hold byte-identical `schema.md`, so the version matches and the draft is written to a Wiki it was never read from. Pre-existing and strictly improved by this change — the write was unconditional before, so the same draft landed on the other Wiki whatever its bytes were — but the guard does not close it, because a content version cannot distinguish two files that genuinely hold the same content. Closing it means binding the seeded Wiki id to the request, which no DW entry in this bundle names.
+status: open
+
+### DW-201: Follow-up review still recommended for dw-write-preconditions-and-conflict-surface after the damping cap was spent
+origin: review-budget-followup
+source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
+location: n/a
+severity: low
+reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
 status: open

@@ -7,6 +7,7 @@ import { canReadFrontmatter, canWriteFrontmatter } from "@/lib/authz";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { WikiEditor } from "@/components/WikiEditor";
+import { contentVersion } from "@/lib/write-precondition";
 
 interface EditPageProps {
   params: Promise<{ handle: string; slug: string }>;
@@ -107,6 +108,11 @@ export default async function EditWikiPage({ params }: EditPageProps) {
           slug={slug}
           tenant={pageTenant}
           initialContent={page.body}
+          // The WHOLE stored file, not `page.body`: `PUT /api/wiki/[slug]`
+          // checks the precondition against `existing.content`, which still
+          // carries the YAML block the editor never sees. Two versions over two
+          // different strings would never match.
+          initialVersion={contentVersion(page.content)}
           initialMetadata={initialMetadata}
           // A server component, so the env fact is read here. `PUT`/`PATCH
           // /api/wiki/[slug]` refuse on a read-only deployment (DW-37); the

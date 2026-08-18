@@ -211,6 +211,14 @@ function PreviewPane({
   // disagree; it is a ref precisely so that "should" is not the only thing
   // holding.
   const editingTargetRef = useRef<PreviewWriteTarget | null>(null);
+  // The WRITE PRECONDITION the open editor was seeded with (DW-38/51/56), taken
+  // in the same breath as `draftSeed` and the target above and never re-derived
+  // at Save — which is the whole point: a silent same-row refresh (Story 1.7)
+  // deliberately leaves an open editor alone, so `payload.version` may already
+  // describe another actor's bytes by the time Save is pressed. Reading it there
+  // would send a version that matches, and the save would clobber exactly the
+  // write this guard exists to notice.
+  const editingVersionRef = useRef<string | null | undefined>(undefined);
   // Armed only when the owner LEAVES the editor themselves. A selection change
   // also closes the editor, and pulling focus back to `Edit` there would steal
   // it from the tree row they just clicked.
@@ -272,6 +280,7 @@ function PreviewPane({
       // header is the state `save`'s target check also refuses.
       setEditing(false);
       editingTargetRef.current = null;
+      editingVersionRef.current = undefined;
       setDraftSeed(null);
       setConfirmOpen(false);
       setSaveError(null);
@@ -387,6 +396,8 @@ function PreviewPane({
     // would call an owner who typed nothing dirty.
     setDraftSeed(payload.body);
     editingTargetRef.current = target;
+    // Captured WITH the seed, for the reason `editingVersionRef` documents.
+    editingVersionRef.current = payload.version;
     setSaveError(null);
     setConfirmOpen(false);
     setEditing(true);
@@ -411,6 +422,7 @@ function PreviewPane({
     const result = await savePreviewBody(target.url, draft, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       fallback: previewEditCopy(target).saveFallback,
+      version: editingVersionRef.current,
     });
     // Busy flag first, on every exit path including the superseded one below.
     setSaving(false);
@@ -422,10 +434,22 @@ function PreviewPane({
     if (previewWriteTarget(payloadRef.current)?.key !== target.key) return;
     if (result.status === "ok") {
       // Back to view-first showing what was saved. The body is the text that
-      // just went over the wire, so no second read is needed to be truthful.
-      setPayload((current) => (current ? { ...current, body: draft } : current));
+      // just went over the wire, so no second read is needed to be truthful —
+      // and the VERSION comes with it, so a second edit without a reload seeds
+      // from bytes and a precondition that agree. Without the stamp the next
+      // save would send the version this one just superseded and be refused as
+      // a conflict with itself.
+      //
+      // A save that answered NO version clears it rather than keeping the old
+      // one: what this column knows then is "the current version is unknown",
+      // and the next save saying so (428) is truthful where a stale version
+      // saying "somebody else changed this" (412) would not be.
+      setPayload((current) =>
+        current ? { ...current, body: draft, version: result.version } : current,
+      );
       restoreEditFocus.current = true;
       setEditing(false);
+      editingVersionRef.current = undefined;
       // Saved text is not unsaved text: the seed is dropped on every path that
       // closes the editor, or the shell would go on gating picks on a draft that
       // is already on disk and no longer on screen.
@@ -615,6 +639,14 @@ function PreviewPane({
                 restoreEditFocus.current = true;
                 setEditing(false);
                 setDraftSeed(null);
+                // Dropped here for the same reason the other two closing paths
+                // drop it (`:281` on a selection change, `:451` after a landed
+                // save): a version outlives the editor it was captured for
+                // otherwise. `startEditing` re-seeds it, so this changes no
+                // behaviour today — it keeps the ref's own invariant true on
+                // every path rather than on the two that happened to be
+                // written first.
+                editingVersionRef.current = undefined;
                 setSaveError(null);
               }}
               disabled={saving}

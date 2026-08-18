@@ -6,8 +6,13 @@ import { logger } from "@/lib/logger";
 import { isOwnerHandle } from "@/lib/owner";
 import { PAGE_CONVENTIONS_REQUIRED_COPY, hasPageConventions } from "@/lib/schema-source";
 import { isEditableArtifactFile } from "@/lib/wiki-scenarios";
-import { getWikiRegistry, writeWikiArtifact } from "@/lib/wikis";
+import { getWikiRegistry, readWikiArtifact, writeWikiArtifact } from "@/lib/wikis";
 import { PREVIEW_MAX_CHARS } from "@/lib/workbench-preview";
+import {
+  IF_MATCH_HEADER,
+  checkWritePrecondition,
+  contentVersion,
+} from "@/lib/write-precondition";
 
 /**
  * PUT /api/workbench/artifact?path=schema.md — the Schema edit (Story 1.8).
@@ -131,9 +136,32 @@ async function handle(request: Request) {
     return json({ error: "Wiki not found." }, 404);
   }
 
+  // THE WRITE PRECONDITION (DW-56). The Schema editor is exactly the surface
+  // this guard exists for: an owner can have it open for minutes while an
+  // ingest, a re-template or a second tab rewrites `schema.md` underneath them,
+  // and an unconditional save would replace the executable Schema with a draft
+  // seeded before that.
+  //
+  // The read is the SAME unlocked raw read the Preview served these bytes from
+  // (`readWorkbenchFile` → `readWikiArtifact`), so the two sides hash one
+  // string. `null` is an artifact that is GONE, and a missing file matches no
+  // version — a save into a hole is the lost update, not an exception to it.
+  const current = await readWikiArtifact(principal.handle, currentId, target);
+  const precondition = checkWritePrecondition(
+    request.headers.get(IF_MATCH_HEADER),
+    current === null ? null : contentVersion(current),
+  );
+  if (!precondition.ok) {
+    // Refused ABOVE the writer, so `writeWikiArtifact` is never reached: no
+    // bytes, no activity-log line, no `dataVersion` bump.
+    return json({ error: precondition.error }, precondition.status);
+  }
+
   // One writer, and it owns the tail: the bytes, then the activity log and the
   // `dataVersion` bump, both fail-soft. A log or counter hiccup after the bytes
   // landed must never be reported to the owner as a failed save.
   await writeWikiArtifact(principal.handle, currentId, target, content);
-  return json({ ok: true });
+  // The version of what landed — `content` is stored verbatim — so the editor
+  // can save again without a reload.
+  return json({ ok: true, version: contentVersion(content) });
 }

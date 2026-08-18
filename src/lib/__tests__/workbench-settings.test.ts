@@ -48,6 +48,12 @@ import {
   type AppConfig,
 } from "../config";
 import { EMBEDDING_PROVIDERS, PROVIDER_INFO, embeddingProviderLabel } from "../providers";
+import {
+  WRITE_CONFLICT_COPY,
+  WRITE_PRECONDITION_REQUIRED_COPY,
+  formatIfMatch,
+  objectVersion,
+} from "../write-precondition";
 import { _resetStorage } from "../storage";
 import {
   DEFAULT_SETTINGS_CATEGORY,
@@ -153,10 +159,23 @@ async function store(config: AppConfig): Promise<void> {
   await loadConfig();
 }
 
-function put(body: Record<string, unknown>): Request {
+/**
+ * `PUT /api/settings` REQUIRES the write precondition (DW-63), so the default is
+ * the version of what the store CURRENTLY holds — exactly what a surface seeded
+ * from `GET` would send back. Pass `ifMatch` to send a stale one, or `null` to
+ * send none, and exercise the two refusals.
+ */
+async function put(
+  body: Record<string, unknown>,
+  ifMatch?: string | null,
+): Promise<Request> {
+  const version = ifMatch === undefined ? objectVersion(await loadConfig()) : ifMatch;
   return new Request("http://localhost/api/settings", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(version === null ? {} : { "If-Match": formatIfMatch(version) }),
+    },
     body: JSON.stringify(body),
   });
 }
@@ -170,6 +189,10 @@ async function stored(): Promise<AppConfig> {
 /** A payload with every field at its "fresh deployment" value. */
 function emptyPayload(): WorkbenchSettingsPayload {
   return {
+    // The write precondition the surface sends back as `If-Match` (DW-63).
+    // Required on the payload: a draft seeded without one could only ever be
+    // refused, so `isWorkbenchSettingsPayload` rejects a body missing it.
+    version: "w1:2-0000000000000000",
     chatProvider: null,
     chatModel: null,
     ingestProvider: null,
@@ -813,7 +836,7 @@ describe("the editing payload serves the STORED vector flag", () => {
       (await (await GET()).json()) as { workbench: WorkbenchSettingsPayload }
     ).workbench;
     const draft = { ...settingsDraftFromPayload(payload), llmTimeoutSeconds: "90" };
-    const response = await PUT(put({ workbench: settingsSaveBody(draft) }));
+    const response = await PUT(await put({ workbench: settingsSaveBody(draft) }));
     expect(response.status).toBe(200);
     expect(await stored()).toMatchObject({
       vectorSearchEnabled: true,
@@ -1010,6 +1033,57 @@ describe("the settings client", () => {
     const result = await saveWorkbenchSettings({}, { fetchImpl: shapeless });
     expect(result.status).toBe("error");
   });
+
+  it("sends the seeded version as `If-Match` (DW-63)", async () => {
+    const payload = emptyPayload();
+    const { impl, calls } = stubFetch(() => ({
+      ok: true,
+      status: 200,
+      body: { saved: true, workbench: payload },
+    }));
+    await saveWorkbenchSettings({}, { fetchImpl: impl, version: "w1:2-abc" });
+    expect(calls[0].init?.headers).toEqual({
+      "Content-Type": "application/json",
+      "If-Match": '"w1:2-abc"',
+    });
+  });
+
+  it("relays the SERVER's conflict sentence, and keeps the draft's own state out of it", async () => {
+    // A refused save is a message, never a thrown error and never a cleared
+    // draft: the caller's only correct response is to keep every edit on screen
+    // — which is why this resolves rather than rejects.
+    const conflict = stubFetch(() => ({
+      ok: false,
+      status: 412,
+      body: { error: WRITE_CONFLICT_COPY },
+    })).impl;
+    await expect(
+      saveWorkbenchSettings({ chatModel: "gpt-4o" }, { fetchImpl: conflict, version: "w1:2-old" }),
+    ).resolves.toEqual({ status: "error", message: WRITE_CONFLICT_COPY });
+
+    // …and the 428 the route answers a missing precondition with, the same way.
+    const missing = stubFetch(() => ({
+      ok: false,
+      status: 428,
+      body: { error: WRITE_PRECONDITION_REQUIRED_COPY },
+    })).impl;
+    await expect(saveWorkbenchSettings({}, { fetchImpl: missing })).resolves.toEqual({
+      status: "error",
+      message: WRITE_PRECONDITION_REQUIRED_COPY,
+    });
+  });
+
+  it("refuses a GET body that carries no version, because a draft seeded from it could never save", async () => {
+    const { version: _dropped, ...withoutVersion } = emptyPayload();
+    const impl = stubFetch(() => ({
+      ok: true,
+      status: 200,
+      body: { workbench: withoutVersion },
+    })).impl;
+    await expect(fetchWorkbenchSettings({ fetchImpl: impl })).resolves.toEqual({
+      status: "failed",
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1093,13 +1167,47 @@ describe("GET /api/settings", () => {
     expect(body.readOnly).toBe(true);
     expect(body.workbench.readOnly).toBe(true);
   });
+
+  it("serves ONE write precondition, at the top level and on `workbench`", async () => {
+    // Two surfaces read this body — `/settings` takes the top-level field
+    // through `useSettings`, the canvas takes it off the object it seeds its
+    // draft from. One `objectVersion` call, served twice, so the two cannot
+    // drift into disagreeing about what the next save is conditional on.
+    await store({ provider: "openai", model: "gpt-4o" });
+    const { GET } = await import("@/app/api/settings/route");
+    const body = (await (await GET()).json()) as {
+      version: string;
+      workbench: WorkbenchSettingsPayload;
+    };
+
+    expect(typeof body.version).toBe("string");
+    expect(body.workbench.version).toBe(body.version);
+    expect(body.version).toBe(objectVersion({ provider: "openai", model: "gpt-4o" }));
+  });
+
+  it("serves the SAME version for a config re-serialized in another key order", async () => {
+    // `.llm-wiki-config.json` is hand-editable, so a text editor that re-orders
+    // the keys must not be reported as a change nobody made.
+    await store({ provider: "openai", model: "gpt-4o" });
+    const { GET } = await import("@/app/api/settings/route");
+    const first = (await (await GET()).json()) as { version: string };
+
+    await store({ model: "gpt-4o", provider: "openai" });
+    const second = (await (await GET()).json()) as { version: string };
+
+    expect(second.version).toBe(first.version);
+    // …and it still moves for a real change.
+    await store({ provider: "anthropic", model: "gpt-4o" });
+    const third = (await (await GET()).json()) as { version: string };
+    expect(third.version).not.toBe(first.version);
+  });
 });
 
 describe("PUT /api/settings", () => {
   it("persists a Chat model and an Ingest model on different providers", async () => {
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(
-      put({
+      await put({
         workbench: {
           chatProvider: "openai",
           chatModel: "gpt-4o",
@@ -1132,7 +1240,7 @@ describe("PUT /api/settings", () => {
 
   it("leaves a legacy save byte-identical to what it was before this story", async () => {
     const { PUT } = await import("@/app/api/settings/route");
-    const response = await PUT(put({ provider: "ollama-cloud", model: "gpt-oss:120b" }));
+    const response = await PUT(await put({ provider: "ollama-cloud", model: "gpt-oss:120b" }));
     expect(response.status).toBe(200);
     // Exactly the two keys, and nothing Story 1.9 added.
     expect(await stored()).toEqual({
@@ -1145,7 +1253,7 @@ describe("PUT /api/settings", () => {
     await store({ provider: "openai" });
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(
-      put({ workbench: { vectorSearchEnabled: true, embeddingProvider: "openai" } }),
+      await put({ workbench: { vectorSearchEnabled: true, embeddingProvider: "openai" } }),
     );
     expect(response.status).toBe(400);
     const body = (await response.json()) as { error: string };
@@ -1162,7 +1270,7 @@ describe("PUT /api/settings", () => {
   it("turns vector search on when the endpoint, the model and the key all arrive", async () => {
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(
-      put({
+      await put({
         workbench: {
           vectorSearchEnabled: true,
           embeddingProvider: "openai",
@@ -1186,7 +1294,7 @@ describe("PUT /api/settings", () => {
   it("writes the EXISTING embedding keys rather than a second embedding model", async () => {
     const { PUT } = await import("@/app/api/settings/route");
     await PUT(
-      put({
+      await put({
         workbench: {
           embeddingProvider: "openai",
           embeddingModel: "text-embedding-3-large",
@@ -1207,18 +1315,18 @@ describe("PUT /api/settings", () => {
     const { PUT, GET } = await import("@/app/api/settings/route");
 
     // Absent: the timeout moves and neither key is disturbed.
-    await PUT(put({ workbench: { llmTimeoutSeconds: 90 } }));
+    await PUT(await put({ workbench: { llmTimeoutSeconds: 90 } }));
     let config = await stored();
     expect(config.firecrawlApiKey).toBe("fc-1");
     expect(config.customApiKey).toBe("sk-1");
     expect(config.llmTimeoutSeconds).toBe(90);
 
-    await PUT(put({ workbench: { firecrawlApiKey: null } }));
+    await PUT(await put({ workbench: { firecrawlApiKey: null } }));
     config = await stored();
     expect("firecrawlApiKey" in config).toBe(false);
     expect(config.customApiKey).toBe("sk-1");
 
-    await PUT(put({ workbench: { customApiKey: "" } }));
+    await PUT(await put({ workbench: { customApiKey: "" } }));
     expect("customApiKey" in (await stored())).toBe(false);
 
     await loadConfig();
@@ -1239,7 +1347,7 @@ describe("PUT /api/settings", () => {
       { llmTimeoutSeconds: 1.5 },
     ];
     for (const workbench of refusals) {
-      const response = await PUT(put({ workbench }));
+      const response = await PUT(await put({ workbench }));
       expect(response.status).toBe(400);
       const body = (await response.json()) as { error: string };
       expect(typeof body.error).toBe("string");
@@ -1251,7 +1359,7 @@ describe("PUT /api/settings", () => {
   it("answers a read-only deployment with the route's existing 403", async () => {
     process.env.YOPEDIA_READONLY = "1";
     const { PUT } = await import("@/app/api/settings/route");
-    const response = await PUT(put({ workbench: { llmTimeoutSeconds: 60 } }));
+    const response = await PUT(await put({ workbench: { llmTimeoutSeconds: 60 } }));
     expect(response.status).toBe(403);
     expect(await stored()).toEqual({});
   });
@@ -1259,9 +1367,102 @@ describe("PUT /api/settings", () => {
   it("answers a non-owner with the route's existing 404", async () => {
     principal.current = null;
     const { PUT } = await import("@/app/api/settings/route");
-    const response = await PUT(put({ workbench: { llmTimeoutSeconds: 60 } }));
+    const response = await PUT(await put({ workbench: { llmTimeoutSeconds: 60 } }));
     expect(response.status).toBe(404);
     expect(await stored()).toEqual({});
+  });
+
+  it("lands the save when the precondition matches, and answers the NEW version", async () => {
+    await store({ provider: "openai" });
+    const { GET, PUT } = await import("@/app/api/settings/route");
+    const seeded = ((await (await GET()).json()) as { version: string }).version;
+
+    const response = await PUT(await put({ workbench: { chatModel: "gpt-4o" } }, seeded));
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      version: string;
+      workbench: WorkbenchSettingsPayload;
+    };
+    expect(await stored()).toMatchObject({ chatModel: "gpt-4o" });
+    // The version of what the store now HOLDS, read back after the save.
+    expect(body.version).toBe(objectVersion(await stored()));
+    expect(body.version).not.toBe(seeded);
+    // …and served on the object the canvas re-seeds its draft from, so a second
+    // save without a reload still lands.
+    expect(body.workbench.version).toBe(body.version);
+
+    const again = await PUT(
+      await put({ workbench: { chatModel: "gpt-4.1" } }, body.version),
+    );
+    expect(again.status).toBe(200);
+    expect(await stored()).toMatchObject({ chatModel: "gpt-4.1" });
+  });
+
+  it("refuses a save seeded before the OTHER surface saved (412), and keeps its value", async () => {
+    await store({});
+    const { GET, PUT } = await import("@/app/api/settings/route");
+    // Both surfaces read the same version…
+    const seeded = ((await (await GET()).json()) as { version: string }).version;
+    // …the first one saves…
+    expect((await PUT(await put({ workbench: { chatModel: "from-canvas" } }, seeded))).status).toBe(
+      200,
+    );
+
+    // …and the second's draft is now stale.
+    const response = await PUT(
+      await put({ workbench: { ingestModel: "from-legacy" } }, seeded),
+    );
+
+    expect(response.status).toBe(412);
+    expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    // The first surface's value survives, and the second's was not applied.
+    const config = await stored();
+    expect(config.chatModel).toBe("from-canvas");
+    expect(config.ingestModel).toBeUndefined();
+  });
+
+  it("refuses a save with no precondition (428) and writes nothing", async () => {
+    await store({ provider: "openai" });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(await put({ workbench: { chatModel: "gpt-4o" } }, null));
+
+    expect(response.status).toBe(428);
+    expect(await response.json()).toEqual({
+      error: WRITE_PRECONDITION_REQUIRED_COPY,
+    });
+    expect(await stored()).toEqual({ provider: "openai" });
+  });
+
+  it("treats `*` and an unquoted version as absent", async () => {
+    await store({ provider: "openai" });
+    const { GET, PUT } = await import("@/app/api/settings/route");
+    const seeded = ((await (await GET()).json()) as { version: string }).version;
+    for (const header of ["*", seeded, ""]) {
+      const response = await PUT(
+        new Request("http://localhost/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "If-Match": header },
+          body: JSON.stringify({ workbench: { chatModel: "gpt-4o" } }),
+        }),
+      );
+      expect(response.status).toBe(428);
+    }
+    expect(await stored()).toEqual({ provider: "openai" });
+  });
+
+  it("does not refuse a save over a config re-ordered underneath it", async () => {
+    // The config-re-order row of the matrix, end to end: same values, other key
+    // order, no false conflict.
+    await store({ provider: "openai", model: "gpt-4o" });
+    const { GET, PUT } = await import("@/app/api/settings/route");
+    const seeded = ((await (await GET()).json()) as { version: string }).version;
+    await store({ model: "gpt-4o", provider: "openai" });
+
+    const response = await PUT(await put({ workbench: { chatModel: "gpt-4o" } }, seeded));
+
+    expect(response.status).toBe(200);
   });
 
   it("counts an embedding model set by the LEGACY field in the same request", async () => {
@@ -1270,7 +1471,7 @@ describe("PUT /api/settings", () => {
     // model the flat way and the switch the nested way.
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(
-      put({
+      await put({
         embeddingModel: "text-embedding-3-small",
         workbench: {
           vectorSearchEnabled: true,

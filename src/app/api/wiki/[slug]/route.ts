@@ -13,6 +13,11 @@ import { canReadFrontmatter, canWriteFrontmatter } from "@/lib/authz";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
 import { patchMetadata } from "@/lib/patch-metadata";
+import {
+  IF_MATCH_HEADER,
+  checkWritePrecondition,
+  contentVersion,
+} from "@/lib/write-precondition";
 
 export async function DELETE(
   req: Request,
@@ -155,6 +160,28 @@ export async function PUT(
           );
     }
 
+    // THE WRITE PRECONDITION (DW-38, DW-51), against the bytes this route
+    // ALREADY READ for its own frontmatter merge — no second read, no lock, no
+    // new lock ordering. It sits AFTER the ACL cloak deliberately: a caller who
+    // may not write this page must not learn its version, or whether it exists,
+    // by comparing a 412 against a 404.
+    //
+    // The whole stored file is the merge base, YAML block included, which is
+    // what `GET /api/workbench/preview` and the edit page both hash. That makes
+    // a metadata-only `PATCH` by another actor refuse this body save too —
+    // conservative by design: the frontmatter this request is about to merge is
+    // exactly the frontmatter that changed underneath it.
+    const precondition = checkWritePrecondition(
+      req.headers.get(IF_MATCH_HEADER),
+      contentVersion(existing.content),
+    );
+    if (!precondition.ok) {
+      return NextResponse.json(
+        { error: precondition.error },
+        { status: precondition.status },
+      );
+    }
+
     // Derive title from the new body's first H1, falling back to the old title.
     const titleMatch = newBody.match(/^#\s+(.+)$/m);
     const title = titleMatch ? titleMatch[1].trim() : existing.title;
@@ -204,7 +231,15 @@ export async function PUT(
         `edited · updated ${ctx.updatedSlugs.length} cross-ref(s)`,
     });
 
-    return NextResponse.json(result);
+    // The version of what LANDED, so a surface that stays open can save again
+    // without a reload. `mergedContent` is written verbatim by the lifecycle
+    // pipeline (`writeWikiPage(slug, op.content, …)`) and the cross-ref step
+    // touches OTHER pages, never this one — so this is the file's new content,
+    // not a prediction of it.
+    return NextResponse.json({
+      ...result,
+      version: contentVersion(mergedContent),
+    });
   } catch (err) {
     const message = getErrorMessage(err);
     const status = message.toLowerCase().startsWith("invalid slug") ? 400 : 500;

@@ -8,6 +8,7 @@ import { isOwnerHandle } from "@/lib/owner";
 import { listReadableWikiPages, readWikiPage } from "@/lib/wiki";
 import { isEditableArtifactFile } from "@/lib/wiki-scenarios";
 import { getWikiRegistry } from "@/lib/wikis";
+import { contentVersion } from "@/lib/write-precondition";
 import { readWorkbenchFile, wikiLeafSlug, workbenchFileExists } from "@/lib/workbench-files";
 import {
   capPreviewBody,
@@ -134,6 +135,11 @@ async function handle(request: Request) {
       format: "markdown",
       body,
       truncated,
+      // The write precondition (DW-38/51), derived from the WHOLE stored file
+      // rather than from `body`: `PUT /api/wiki/[slug]` checks it against
+      // `existing.content`, which still carries the YAML block this payload
+      // stripped. Two versions over two different strings would never match.
+      version: contentVersion(page.content),
       // A compiled Page is the one thing this story makes editable: it is what
       // `PUT /api/wiki/[slug]` writes. Artifacts are Story 1.8, sources Epic 2.
       //
@@ -213,6 +219,13 @@ async function handle(request: Request) {
     format,
     body,
     truncated,
+    // The write precondition (DW-38/51/56), over the RAW bytes this route read
+    // — before `bodyFor` stripped anything and before the cap sliced anything,
+    // because those are the bytes the write routes hold. An `unsupported`
+    // format read nothing at all, so it carries no version: there is no editor
+    // for it, so no save can start from it, and inventing a version for the
+    // empty string would be a claim about a file nobody looked at.
+    ...(format === "unsupported" ? {} : { version: contentVersion(content) }),
     // Editable where a Page lives, or where the editable artifact does.
     // `purpose.md` and everything under `raw/` stay read-only: the first is
     // deliberately out of Story 1.8's scope (it has no runtime reader and its

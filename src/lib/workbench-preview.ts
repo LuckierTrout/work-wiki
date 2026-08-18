@@ -10,6 +10,7 @@
 
 import { isEditableArtifactFile, type EditableArtifactFile } from "./wiki-scenarios";
 import type { TreeSelection } from "./workbench-tree";
+import { IF_MATCH_HEADER, formatIfMatch } from "./write-precondition";
 
 // ---------------------------------------------------------------------------
 // What the body can be
@@ -115,6 +116,23 @@ export interface PreviewPayload {
   body: string;
   /** The body was longer than {@link PREVIEW_MAX_CHARS} and was sliced. */
   truncated: boolean;
+  /**
+   * The WRITE PRECONDITION for these bytes — `contentVersion` of the whole
+   * stored file, which for a page is the YAML block INCLUDED even though
+   * {@link PreviewPayload.body} strips it (DW-38/51/56).
+   *
+   * Optional because a payload can exist for bytes that were never read: an
+   * `unsupported` format is answered from a existence check alone, and there is
+   * no editor for it, so no save can start from it. Every payload the editor can
+   * open carries one, and {@link savePreviewBody} sends it back as `If-Match`.
+   *
+   * `null` is accepted as another spelling of ABSENT — a serializer, a proxy or
+   * a future route that normalizes an omitted optional to `null` must not take
+   * the whole column down to "unreachable" over a field the BODY does not
+   * depend on. Every consumer treats a falsy version as "no precondition to
+   * send", which is answered 428 rather than applied blindly.
+   */
+  version?: string | null;
   /** The confirm-gated editor is offered only when this is true. */
   editable: boolean;
 }
@@ -708,6 +726,14 @@ function isPreviewPayload(value: unknown): value is PreviewPayload {
     typeof payload.body === "string" &&
     typeof payload.truncated === "boolean" &&
     typeof payload.editable === "boolean" &&
+    // Optional, and checked only for TYPE when present: a payload without one
+    // is still a payload (an `unsupported` format never carries one), and
+    // `null` is that same absence spelled by a serializer. What is refused is a
+    // NUMBER or an object — something that would be sent back as `If-Match` and
+    // refused as a conflict the owner cannot explain.
+    (payload.version === undefined ||
+      payload.version === null ||
+      typeof payload.version === "string") &&
     (payload.format === "markdown" ||
       payload.format === "text" ||
       payload.format === "unsupported")
@@ -761,9 +787,17 @@ export async function fetchPreview(
   }
 }
 
-/** What a save produced. `message` is always something a person can act on. */
+/**
+ * What a save produced. `message` is always something a person can act on.
+ *
+ * `version` is the version of the bytes the write LANDED, answered by both write
+ * routes so a surface that stays open can save again without a reload
+ * (DW-38/51/56). Optional so a 200 from an older deployment, or a body that will
+ * not parse, is still a landed save rather than an error — the next save then
+ * refuses rather than clobbering, which is the safe direction.
+ */
 export type PreviewSaveResult =
-  | { status: "ok" }
+  | { status: "ok"; version?: string }
   | { status: "error"; message: string };
 
 /**
@@ -800,6 +834,18 @@ export async function savePreviewBody(
     signal?: AbortSignal;
     fetchImpl?: PreviewFetch;
     fallback?: string;
+    /**
+     * The {@link PreviewPayload.version} the editor was SEEDED with — never one
+     * re-derived at Save. Sent as `If-Match`; both write routes REQUIRE it and
+     * answer 428 without it, so omitting it is a refusal rather than an
+     * unconditional write.
+     *
+     * `null`, `undefined` and `""` are all "there is none". The empty string
+     * matters: `If-Match: ""` is a malformed header rather than an absent one,
+     * and sending it would be this client asserting a precondition it does not
+     * have.
+     */
+    version?: string | null;
   } = {},
 ): Promise<PreviewSaveResult> {
   const send = options.fetchImpl ?? fetch;
@@ -807,11 +853,26 @@ export async function savePreviewBody(
   try {
     const response = await send(url, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // Spread rather than a conditional value: a header whose value is
+        // `undefined` is still a header, and `fetch` stringifies it.
+        ...(options.version ? { [IF_MATCH_HEADER]: formatIfMatch(options.version) } : {}),
+      },
       body: JSON.stringify({ content }),
       ...(options.signal ? { signal: options.signal } : {}),
     });
-    if (response.ok) return { status: "ok" };
+    if (response.ok) {
+      // The landed version, so the surface can save again without a reload. A
+      // body that will not parse or carries none leaves it absent — the save
+      // still landed, and the NEXT one is refused rather than blind.
+      const landed = (await response.json().catch(() => null)) as {
+        version?: unknown;
+      } | null;
+      return typeof landed?.version === "string" && landed.version.length > 0
+        ? { status: "ok", version: landed.version }
+        : { status: "ok" };
+    }
     const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
     const served = typeof body?.error === "string" ? body.error.trim() : "";
     return { status: "error", message: served || fallback };

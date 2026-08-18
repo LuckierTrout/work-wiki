@@ -30,6 +30,8 @@ const principal = vi.hoisted(() => ({
 const page = vi.hoisted(() => ({
   current: null as {
     title: string;
+    /** The WHOLE stored file, YAML block included — what the version hashes. */
+    content: string;
     body: string;
     frontmatter: Record<string, unknown>;
   } | null,
@@ -67,6 +69,7 @@ vi.mock("@/components/WikiEditor", () => ({
 }));
 
 import EditWikiPage from "../page";
+import { contentVersion } from "@/lib/write-precondition";
 
 /**
  * The realm explanation, matched across whitespace: JSX joins the source lines
@@ -78,6 +81,11 @@ const REALM_REASON = /public\s+knowledge\s+pages\s+are\s+agent-maintained/i;
 /** A plain public knowledge page: `belongsInCommons` is true for it. */
 const publicPage = {
   title: "Transformers",
+  // `content` and `body` are two different strings on a real page, and the
+  // write precondition is derived from the FIRST — `PUT /api/wiki/[slug]`
+  // checks it against `existing.content` (DW-38, DW-51). A fixture that made
+  // them equal would let the two sides drift without failing anything.
+  content: "---\nowner: alice\n---\n\n# Transformers\n",
   body: "# Transformers\n",
   frontmatter: { owner: "alice", visibility: "public" },
 };
@@ -142,6 +150,25 @@ describe("edit page — the read-only seam (DW-37, DW-149)", () => {
 
     expect(html).toContain('data-testid="wiki-editor"');
     expect(editorProps.current?.readOnly).toBe(false);
+  });
+});
+
+describe("edit page — the write-precondition seam (DW-38, DW-51)", () => {
+  it("hands the editor the version of the WHOLE stored file", async () => {
+    process.env.ADMIN_HANDLES = "alice";
+
+    await renderEditPage();
+
+    // The same string `PUT /api/wiki/[slug]` hashes `existing.content` into —
+    // NOT the body the textarea is seeded with. This is the one seam that
+    // carries it, and a mounted test of the editor cannot see it, because it
+    // hands the prop in itself.
+    expect(editorProps.current?.initialVersion).toBe(
+      contentVersion(publicPage.content),
+    );
+    expect(editorProps.current?.initialVersion).not.toBe(
+      contentVersion(publicPage.body),
+    );
   });
 });
 

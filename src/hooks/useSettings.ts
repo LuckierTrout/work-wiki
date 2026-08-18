@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { providerLabel } from "@/lib/providers";
+import { IF_MATCH_HEADER, formatIfMatch } from "@/lib/write-precondition";
 
 // ---------------------------------------------------------------------------
 // Types matching the API responses
@@ -27,6 +28,16 @@ export interface EffectiveSettings {
   structuredKnowledgeModelSource: SettingSource;
   structuredKnowledgeConfigured: boolean;
   readOnly: boolean;
+  /**
+   * The WRITE PRECONDITION for the stored config these values came out of
+   * (DW-63). `GET /api/settings` serves it beside the legacy fields, and
+   * {@link useSettings} sends it back as `If-Match` on the save.
+   *
+   * Optional on the TYPE only because this interface is a hand-duplicated view
+   * of the route's body; the route always serves one, and a save without it is
+   * refused rather than applied blindly.
+   */
+  version?: string;
 }
 
 export interface ProviderStatus {
@@ -89,6 +100,16 @@ export function useSettings(): UseSettingsReturn {
   const [settings, setSettings] = useState<EffectiveSettings | null>(null);
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  /**
+   * The precondition the form's draft was SEEDED with, kept beside `settings`
+   * rather than derived at Save (DW-63). `/settings` and the Workbench's
+   * `SettingsCanvas` write the same `AppConfig`, so a form left open across the
+   * other surface's save would otherwise put every field it changed back.
+   *
+   * The `await fetchSettings()` a landed save already runs is what carries the
+   * new one forward, so a second save without a reload still lands.
+   */
+  const [version, setVersion] = useState<string | null>(null);
 
   // Form state
   const [provider, setProvider] = useState("");
@@ -111,12 +132,19 @@ export function useSettings(): UseSettingsReturn {
   // Fetch settings & status
   // ------------------------------------------
 
-  const fetchSettings = useCallback(async () => {
+  /**
+   * Returns whether the read LANDED, which the save path needs: a refresh that
+   * lands is the freshest thing anyone knows about the stored config, and one
+   * that does not must not be allowed to throw away what the save itself was
+   * told (see {@link handleSave}).
+   */
+  const fetchSettings = useCallback(async (): Promise<boolean> => {
     try {
       const res = await fetch("/api/settings");
       if (!res.ok) throw new Error("Failed to load settings");
       const data: EffectiveSettings = await res.json();
       setSettings(data);
+      setVersion(typeof data.version === "string" ? data.version : null);
 
       // Pre-fill form only with config-sourced values (not env)
       if (data.providerSource === "config" && data.provider) {
@@ -155,8 +183,17 @@ export function useSettings(): UseSettingsReturn {
       } else {
         setStructuredKnowledgeModel("");
       }
+      return true;
     } catch (err) {
+      // The version goes with the read that failed. Keeping the last one would
+      // let a save minutes later be conditional on a config nothing has
+      // confirmed is still there — and be refused 412 ("changed somewhere
+      // else") for a change nobody made. An UNKNOWN version must produce the
+      // truthful 428 instead, which is the same reasoning `PreviewColumn`
+      // applies when a landed save answers none.
+      setVersion(null);
       setLoadError(err instanceof Error ? err.message : "Unknown error");
+      return false;
     }
   }, []);
 
@@ -216,7 +253,10 @@ export function useSettings(): UseSettingsReturn {
 
       const res = await fetch("/api/settings", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(version ? { [IF_MATCH_HEADER]: formatIfMatch(version) } : {}),
+        },
         body: JSON.stringify(body),
       });
 
@@ -225,11 +265,27 @@ export function useSettings(): UseSettingsReturn {
         throw new Error(data?.error ?? `Save failed (${res.status})`);
       }
 
+      // What the store now holds, straight from the save that landed. Parsed
+      // with the same guard the error branch above uses.
+      const landed = (await res.json().catch(() => null)) as {
+        version?: unknown;
+      } | null;
+
       setSaveResult({ ok: true, message: "Settings saved." });
 
       // Refresh to pick up new effective values
-      await fetchSettings();
+      const refreshed = await fetchSettings();
       await fetchStatus();
+
+      // The refresh is the FRESHER source whenever it lands — another actor may
+      // have saved between this PUT and that GET — so it wins. When it does not
+      // land it clears the version, and THAT is the case this restores: without
+      // it a landed save followed by a failed refresh left no precondition at
+      // all, or worse, the superseded one, and the owner's very next save was
+      // refused for a change they had made themselves.
+      if (!refreshed && typeof landed?.version === "string" && landed.version.length > 0) {
+        setVersion(landed.version);
+      }
     } catch (err) {
       setSaveResult({
         ok: false,

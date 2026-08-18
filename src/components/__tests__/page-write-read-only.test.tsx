@@ -5,6 +5,10 @@ import {
   DeletePageButton,
 } from "@/components/DeletePageButton";
 import { EDIT_PAGE_READ_ONLY_COPY, WikiEditor } from "@/components/WikiEditor";
+import {
+  WRITE_CONFLICT_COPY,
+  WRITE_PRECONDITION_REQUIRED_COPY,
+} from "@/lib/write-precondition";
 
 /**
  * The two page-write affordances OUTSIDE the Workbench shell, mounted
@@ -102,13 +106,24 @@ describe("Delete page, on a read-only deployment", () => {
   });
 });
 
+/**
+ * The version the edit page derives from the WHOLE stored file and threads in.
+ * A literal, not `contentVersion(...)`: what these cases pin is that whatever
+ * the server computed reaches the wire unchanged, and re-deriving it here would
+ * pass even if the component sent a version of its own making.
+ */
+const SEEDED_VERSION = "w1:2b-0123456789abcdeffedcba9876543210";
+
 describe("Edit page, on a read-only deployment", () => {
-  function mountEditor(props: { readOnly?: boolean } = {}) {
+  function mountEditor(
+    props: { readOnly?: boolean; initialVersion?: string } = {},
+  ) {
     return render(
       <WikiEditor
         slug="alpha"
         tenant="alice"
         initialContent={"# Alpha\n\noriginal body\n"}
+        initialVersion={SEEDED_VERSION}
         {...props}
       />,
     );
@@ -200,5 +215,222 @@ describe("Edit page, on a read-only deployment", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/wiki/alpha");
     expect(init.method).toBe("PUT");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The write precondition on the edit page (DW-38, DW-51)
+// ---------------------------------------------------------------------------
+//
+// `PUT /api/wiki/[slug]` REQUIRES `If-Match` and answers 428 without one, so
+// "the form issued a PUT" is no longer enough: a PUT with no header is a save
+// that cannot land. Only a mount can see the header, because the seam between
+// the server component's `contentVersion` and the request is one prop and one
+// spread — a node suite reading the source could be satisfied by either being
+// deleted.
+
+describe("Edit page — the write precondition", () => {
+  const METADATA = {
+    confidence: null,
+    disputed: false,
+    tags: [],
+    aliases: [],
+    expiry: "",
+    valid_from: "",
+    supersedes: "",
+  };
+
+  function mountEditor(initialVersion = SEEDED_VERSION) {
+    return render(
+      <WikiEditor
+        slug="alpha"
+        tenant="alice"
+        initialContent={"# Alpha\n\noriginal body\n"}
+        initialVersion={initialVersion}
+        initialMetadata={METADATA}
+      />,
+    );
+  }
+
+  function save(): HTMLButtonElement {
+    return screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+  }
+
+  function rewriteBody(text = "# Alpha\n\nrewritten\n") {
+    fireEvent.change(screen.getByLabelText(/Markdown/), { target: { value: text } });
+  }
+
+  /** Make the metadata leg fire too — the PATCH must stay ungated. */
+  function touchMetadata() {
+    fireEvent.click(screen.getByRole("switch", { name: /Disputed/i }));
+  }
+
+  function headersOf(call: number): Record<string, string> {
+    const [, init] = fetchMock.mock.calls[call] as [string, RequestInit];
+    return (init.headers ?? {}) as Record<string, string>;
+  }
+
+  it("sends the seeded version on the PUT, and nothing of the sort on the PATCH", async () => {
+    mountEditor();
+    rewriteBody();
+    touchMetadata();
+
+    fireEvent.click(save());
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const [, put] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [, patch] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(put.method).toBe("PUT");
+    expect(headersOf(0)["If-Match"]).toBe(`"${SEEDED_VERSION}"`);
+    // The metadata leg is deliberately NOT gated by this story — a header here
+    // would be a precondition on a route nothing checks it against.
+    expect(patch.method).toBe("PATCH");
+    expect(headersOf(1)["If-Match"]).toBeUndefined();
+  });
+
+  it("retries on the version the LANDED save answered, not the one it superseded", async () => {
+    // A PUT that lands followed by a PATCH that fails leaves the form open with
+    // the body still dirty. Re-sending the original version there would be
+    // refused 412 — "changed somewhere else while you were editing" — about the
+    // owner's own save, with no way out but a reload.
+    const LANDED = "w1:2c-aaaaaaaabbbbbbbbccccccccdddddddd";
+    fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ slug: "alpha", version: LANDED }),
+        } as unknown as Response;
+      }
+      return {
+        ok: false,
+        status: 400,
+        json: async () => ({ error: "confidence must be a number" }),
+      } as unknown as Response;
+    });
+
+    mountEditor();
+    rewriteBody();
+    touchMetadata();
+    fireEvent.click(save());
+
+    // The PATCH failed, so the form stayed open and said why.
+    await waitFor(() =>
+      expect(screen.getByText("confidence must be a number")).toBeTruthy(),
+    );
+    expect(router.push).not.toHaveBeenCalled();
+    expect(headersOf(0)["If-Match"]).toBe(`"${SEEDED_VERSION}"`);
+
+    // The owner presses Save again without reloading.
+    fireEvent.click(save());
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(3));
+
+    // THE bug: the retry must carry the version the first PUT answered with.
+    expect(headersOf(2)["If-Match"]).toBe(`"${LANDED}"`);
+    expect(headersOf(2)["If-Match"]).not.toBe(`"${SEEDED_VERSION}"`);
+  });
+
+  it("keeps the seeded version when a landed save answers no version at all", async () => {
+    // The next save is then refused rather than blind, which is the safe
+    // direction — and the form must not have crashed on the unparseable body.
+    fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new SyntaxError("Unexpected token <");
+          },
+        } as unknown as Response;
+      }
+      return {
+        ok: false,
+        status: 400,
+        json: async () => ({ error: "nope" }),
+      } as unknown as Response;
+    });
+
+    mountEditor();
+    rewriteBody();
+    touchMetadata();
+    fireEvent.click(save());
+    await waitFor(() => expect(screen.getByText("nope")).toBeTruthy());
+
+    fireEvent.click(save());
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(3));
+    expect(headersOf(2)["If-Match"]).toBe(`"${SEEDED_VERSION}"`);
+  });
+
+  /**
+   * A REFUSED save, on the one surface where the draft is a whole page.
+   *
+   * The three sibling surfaces each pin this — `preview-dirty-guard` for the
+   * Preview, `settings-read-only` for the canvas, `useSettings.test` for
+   * `/settings`. This is the edit page's, and it is the surface where losing
+   * the draft costs the most: the owner may have retyped the entire article.
+   *
+   * `WikiEditor` reaches its message through `throw new Error(body.error ?? …)`
+   * and `getErrorMessage`, so the SERVER's sentence and a generic
+   * `body save failed (412)` are one `??` term apart. Nothing else fails if
+   * that term goes: the route suites never mount this component, the other
+   * cases here all answer `ok: true`, and `write-precondition.test.ts` only
+   * asserts the sentence is not TYPED in this file.
+   */
+  function refuseThePut(status: number, error: string) {
+    fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return {
+          ok: false,
+          status,
+          json: async () => ({ error }),
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+      } as unknown as Response;
+    });
+  }
+
+  const REWRITTEN = "# Alpha\n\nan entire page, retyped\n";
+
+  it("keeps the owner's whole draft and shows the SERVER's sentence on a 412", async () => {
+    refuseThePut(412, WRITE_CONFLICT_COPY);
+
+    mountEditor();
+    rewriteBody(REWRITTEN);
+    fireEvent.click(save());
+
+    await waitFor(() => expect(screen.getByText(WRITE_CONFLICT_COPY)).toBeTruthy());
+
+    // The draft survived the refusal, on screen and unedited.
+    expect((screen.getByLabelText(/Markdown/) as HTMLTextAreaElement).value).toBe(
+      REWRITTEN,
+    );
+    // Nothing navigated away from the text it is still holding.
+    expect(router.push).not.toHaveBeenCalled();
+    expect(router.refresh).not.toHaveBeenCalled();
+    // …and Save is pressable again, so reloading is the owner's choice and not
+    // the only way out of a form that latched.
+    expect(save().disabled).toBe(false);
+  });
+
+  it("relays the 428 sentence too, rather than a status code", async () => {
+    // Reachable whenever the seeded version did not survive to the wire — the
+    // page was served before this story shipped, or a proxy dropped the header.
+    refuseThePut(428, WRITE_PRECONDITION_REQUIRED_COPY);
+
+    mountEditor();
+    rewriteBody(REWRITTEN);
+    fireEvent.click(save());
+
+    await waitFor(() =>
+      expect(screen.getByText(WRITE_PRECONDITION_REQUIRED_COPY)).toBeTruthy(),
+    );
+    expect((screen.getByLabelText(/Markdown/) as HTMLTextAreaElement).value).toBe(
+      REWRITTEN,
+    );
+    expect(screen.queryByText(/428/)).toBeNull();
   });
 });

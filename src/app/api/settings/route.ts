@@ -20,6 +20,11 @@ import {
 import { getErrorMessage } from "@/lib/errors";
 import { getPrincipal } from "@/lib/auth";
 import { isOwnerHandle } from "@/lib/owner";
+import {
+  IF_MATCH_HEADER,
+  checkWritePrecondition,
+  objectVersion,
+} from "@/lib/write-precondition";
 
 async function requireOwner() {
   const principal = await getPrincipal();
@@ -34,8 +39,18 @@ export async function GET() {
   if (!(await requireOwner())) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
-  await loadConfig();
+  const config = await loadConfig();
   const settings = getEffectiveSettings();
+  // ONE call, served twice (DW-63). Both Settings surfaces write the same
+  // `AppConfig` through the same `PUT`, so both need the same precondition —
+  // `/settings` reads the top-level field through `useSettings`, the Workbench
+  // canvas reads it off the `workbench` object it already seeds its draft from.
+  // Two `objectVersion` calls here would be two expressions that agree today.
+  //
+  // The input is the PARSED config, not the file's bytes: `objectVersion` sorts
+  // keys, so a hand-edited `.llm-wiki-config.json` re-serialized in another
+  // order is not a conflict with itself.
+  const version = objectVersion(config);
   // ONE settings API. Story 1.9's fields ride under ONE nested `workbench` key
   // beside the frozen legacy object — widening `EffectiveSettings` would force
   // edits to `settings-route.test.ts`'s whole-object fixture and to
@@ -44,7 +59,11 @@ export async function GET() {
   // `getWorkbenchSettings()` builds that object, and it is the only thing that
   // may: no field it returns carries a stored API key — the three secrets become
   // `has*ApiKey` booleans (AD-23).
-  return Response.json({ ...settings, workbench: getWorkbenchSettings() });
+  return Response.json({
+    ...settings,
+    version,
+    workbench: { ...getWorkbenchSettings(), version },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +173,27 @@ export async function PUT(request: Request) {
 
     // Load existing config and merge with provided fields
     const existing = await loadConfig();
+
+    // THE WRITE PRECONDITION (DW-63), against the very object this request is
+    // about to merge into — no second read, and no lock. Two surfaces write this
+    // one file (`SettingsCanvas` and `/settings` through `useSettings`), so a
+    // draft seeded on either before the other saved would otherwise silently put
+    // back every field the other just changed.
+    //
+    // Checked HERE rather than at the top of the handler because this is the
+    // merge base: every branch above it refuses without writing, and moving the
+    // check earlier would only mean hashing a config the request never used.
+    const precondition = checkWritePrecondition(
+      request.headers.get(IF_MATCH_HEADER),
+      objectVersion(existing),
+    );
+    if (!precondition.ok) {
+      return Response.json(
+        { error: precondition.error },
+        { status: precondition.status },
+      );
+    }
+
     const updated: AppConfig = { ...existing };
 
     if (body.provider !== undefined) {
@@ -245,16 +285,22 @@ export async function PUT(request: Request) {
     // Re-prime the sync cache so the response and any immediate LLM request use
     // the newly selected provider rather than falling back to env detection.
     _resetConfigCache();
-    await loadConfig();
+    const fresh = await loadConfig();
+    // The version of what the store now HOLDS, read back rather than derived
+    // from `merged`: `saveConfig` is the only thing that decides what lands, and
+    // a surface that stays open saves again against this. Answering a predicted
+    // version would refuse the owner's very next save.
+    const version = objectVersion(fresh);
 
     // Return updated effective settings
     const effective = getEffectiveProvider();
     return Response.json({
       saved: true,
       effective,
+      version,
       // The fresh stored values, so a landed save re-seeds the surface's draft
       // from what the kernel actually holds rather than from what was sent.
-      workbench: getWorkbenchSettings(),
+      workbench: { ...getWorkbenchSettings(), version },
     });
   } catch (err) {
     const message = getErrorMessage(err);

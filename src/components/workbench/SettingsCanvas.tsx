@@ -112,6 +112,20 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
+  // The STORED payload the draft was seeded from, readable from `save` for the
+  // one field the draft does not carry: the write precondition (DW-63). Mirrored
+  // the same way and for the same reason as `draftRef` above — `save` must not
+  // take a dependency on the payload, and a render React discards must not leave
+  // a version behind that the screen never showed.
+  //
+  // Re-derived at Save it would be worthless: the point of the precondition is
+  // that it describes the config the owner's draft was seeded from, and the
+  // existing `setPayload(result.payload)` re-seed is what carries the NEXT one
+  // forward after a landed save.
+  const payloadRef = useRef<WorkbenchSettingsPayload | null>(null);
+  useEffect(() => {
+    payloadRef.current = payload;
+  }, [payload]);
   const fieldId = useId();
 
   // ONE read, on mount. The surface is not refetched on a category change: the
@@ -159,6 +173,7 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
     // a condition typed here.
     const result = await saveWorkbenchSettings(settingsSaveBody(current), {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      version: payloadRef.current?.version,
     });
     setSaving(false);
     if (result.status === "ok") {

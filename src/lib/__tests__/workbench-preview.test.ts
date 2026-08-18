@@ -81,6 +81,12 @@ import {
   wikilinkTargetFromHref,
 } from "../workbench-wikilinks";
 import { buildFileTree, wikilinkSelection } from "../workbench-tree";
+import {
+  WRITE_CONFLICT_COPY,
+  WRITE_PRECONDITION_REQUIRED_COPY,
+  contentVersion,
+  formatIfMatch,
+} from "../write-precondition";
 import { readWorkbenchFile } from "../workbench-files";
 import { wikiArtifactPath, wikiRegistryPath } from "../wikis";
 import { tenantForOwner, tenantRawRelPath, tenantWikiRelPath } from "../wiki";
@@ -1395,6 +1401,60 @@ describe("GET /api/workbench/preview", () => {
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
   });
 
+  it("serves the write precondition over the WHOLE stored file, not the body", async () => {
+    // `PUT /api/wiki/[slug]` checks `If-Match` against `existing.content`, which
+    // still carries the YAML block this payload stripped — so a version derived
+    // from `payload.body` would never match anything and every save would 412.
+    await writePage("versioned", "# Versioned\n\nbody text\n");
+    const stored = await fs.readFile(
+      path.join(root, "wiki", "versioned.md"),
+      "utf-8",
+    );
+    const payload = await (await get("kind=page&slug=versioned")).json();
+
+    expect(payload.version).toBe(contentVersion(stored));
+    expect(payload.version).not.toBe(contentVersion(payload.body));
+
+    // …and the SAME bytes reached from the Files tab carry the SAME version, or
+    // the two surfaces onto one Page would disagree about what a save conflicts
+    // with.
+    const asFile = await (await get("kind=file&path=wiki%2Fversioned.md")).json();
+    expect(asFile.version).toBe(payload.version);
+  });
+
+  it("moves the version when the file moves, and only then", async () => {
+    await writePage("moving", "# Moving\n\nfirst\n");
+    const first = (await (await get("kind=page&slug=moving")).json()).version;
+    expect((await (await get("kind=page&slug=moving")).json()).version).toBe(first);
+
+    await writePage("moving", "# Moving\n\nsecond\n");
+    expect((await (await get("kind=page&slug=moving")).json()).version).not.toBe(first);
+  });
+
+  it("serves a version for a raw source too, and NONE for bytes it never read", async () => {
+    await fs.writeFile(path.join(root, "raw", "versioned.md"), "# Raw\n", "utf-8");
+    const source = await (await get("kind=file&path=raw%2Fversioned.md")).json();
+    expect(source.version).toBe(contentVersion("# Raw\n"));
+
+    // An `unsupported` format is answered from an existence check alone — no
+    // bytes were read, so there is nothing to have a version OF, and there is no
+    // editor for it either way.
+    await fs.writeFile(path.join(root, "raw", "unread.pdf"), "%PDF-1.4", "utf-8");
+    const blob = await (await get("kind=file&path=raw%2Funread.pdf")).json();
+    expect(blob.format).toBe("unsupported");
+    expect("version" in blob).toBe(false);
+  });
+
+  it("versions the RAW bytes of a capped body, not the prefix it served", async () => {
+    // The editor is refused for a truncated payload anyway, but a version over
+    // the prefix would be a claim about a file the route did not serve.
+    await writePage("capped", `# Capped\n\n${"x".repeat(PREVIEW_MAX_CHARS + 500)}`);
+    const stored = await fs.readFile(path.join(root, "wiki", "capped.md"), "utf-8");
+    const payload = await (await get("kind=page&slug=capped")).json();
+    expect(payload.truncated).toBe(true);
+    expect(payload.version).toBe(contentVersion(stored));
+  });
+
   it("refuses a non-page leaf under wiki/ the same way it refuses a stranger", async () => {
     await fs.writeFile(path.join(root, "wiki", "scratch.txt"), "not yours", "utf-8");
     expect((await get("kind=file&path=wiki%2Fscratch.txt")).status).toBe(404);
@@ -1699,7 +1759,18 @@ describe("fetchPreview", () => {
     // …and it is `unreachable`, not `gone`: a proxy, an interstitial or a
     // future change to the route is not evidence that the row was removed, so
     // the bytes already on screen must survive it.
-    for (const body of [null, "a string", 42, {}, { ...PAYLOAD, body: 42 }, { ...PAYLOAD, format: "pdf" }]) {
+    for (const body of [
+      null,
+      "a string",
+      42,
+      {},
+      { ...PAYLOAD, body: 42 },
+      { ...PAYLOAD, format: "pdf" },
+      // A non-string version would be sent straight back as `If-Match` and
+      // refused as a conflict the owner could not explain.
+      { ...PAYLOAD, version: 42 },
+      { ...PAYLOAD, version: {} },
+    ]) {
       const { fetchImpl } = stubFetch(() => jsonResponse(200, body));
       await expect(
         fetchPreview(PREVIEW_ROUTE, new AbortController().signal, fetchImpl),
@@ -1710,6 +1781,30 @@ describe("fetchPreview", () => {
     await expect(
       fetchPreview(PREVIEW_ROUTE, new AbortController().signal, fetchImpl),
     ).resolves.toMatchObject({ status: "ok" });
+    // …and one with no `version` at all: an `unsupported` format never carries
+    // one, and it is still a payload the column must render.
+    const versionless = stubFetch(() => jsonResponse(200, PAYLOAD));
+    await expect(
+      fetchPreview(PREVIEW_ROUTE, new AbortController().signal, versionless.fetchImpl),
+    ).resolves.toEqual({ status: "ok", payload: PAYLOAD });
+    // …and `null`, which is that same absence as a serializer or a proxy spells
+    // it. Taking the WHOLE column down to "unreachable" over a metadata field
+    // the body does not depend on would be the DW-54 conflation all over again.
+    const nulled = stubFetch(() => jsonResponse(200, { ...PAYLOAD, version: null }));
+    await expect(
+      fetchPreview(PREVIEW_ROUTE, new AbortController().signal, nulled.fetchImpl),
+    ).resolves.toMatchObject({ status: "ok" });
+    // …while one that DOES carry a string version keeps it, because that string
+    // is the whole precondition the next save is conditional on.
+    const carried = stubFetch(() =>
+      jsonResponse(200, { ...PAYLOAD, version: "w1:8-0123456789abcdef" }),
+    );
+    await expect(
+      fetchPreview(PREVIEW_ROUTE, new AbortController().signal, carried.fetchImpl),
+    ).resolves.toEqual({
+      status: "ok",
+      payload: { ...PAYLOAD, version: "w1:8-0123456789abcdef" },
+    });
   });
 
   it("discards a response that arrives after the owner picked another row", async () => {
@@ -1964,6 +2059,72 @@ describe("savePreviewBody", () => {
     await expect(
       savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl, fallback: "Nope." }),
     ).resolves.toEqual({ status: "error", message: "Nope." });
+  });
+
+  // -------------------------------------------------------------------------
+  // The write precondition (DW-38, DW-51, DW-56)
+  // -------------------------------------------------------------------------
+
+  it("sends the seeded version as `If-Match`, on both write paths", async () => {
+    const version = contentVersion("---\nowner: alice\n---\n\n# Alpha\n");
+    for (const url of [pageWriteUrl("alpha"), artifactWriteUrl("schema.md")]) {
+      const { fetchImpl, calls } = stubFetch(() => jsonResponse(200, { ok: true }));
+      await savePreviewBody(url, "x", { fetchImpl, version });
+      expect(calls[0].init?.headers).toEqual({
+        "Content-Type": "application/json",
+        "If-Match": formatIfMatch(version),
+      });
+      // The precondition is a HEADER, not a body field: the routes check it
+      // before they parse a body at all.
+      expect(JSON.parse(calls[0].init?.body ?? "{}")).toEqual({ content: "x" });
+    }
+  });
+
+  it("returns the version the write LANDED with, so the surface can save again", async () => {
+    const { fetchImpl } = stubFetch(() =>
+      jsonResponse(200, { ok: true, version: "w1:5-1111111122222222" }),
+    );
+    await expect(
+      savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl, version: "w1:2-old" }),
+    ).resolves.toEqual({ status: "ok", version: "w1:5-1111111122222222" });
+  });
+
+  it("still reports a landed save when the answer carries no version", async () => {
+    // The next save is then refused rather than blind, which is the safe
+    // direction: a 200 that cannot be parsed is still a write that happened.
+    for (const body of [{ ok: true }, undefined, { ok: true, version: "" }]) {
+      const { fetchImpl } = stubFetch(() => jsonResponse(200, body));
+      await expect(
+        savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl }),
+      ).resolves.toEqual({ status: "ok" });
+    }
+  });
+
+  it("relays the SERVER's conflict sentence verbatim, and resolves", async () => {
+    // A refused save must never throw: the caller's only correct response is to
+    // keep the editor open with the owner's text and show this.
+    for (const [status, error] of [
+      [412, WRITE_CONFLICT_COPY],
+      [428, WRITE_PRECONDITION_REQUIRED_COPY],
+    ] as const) {
+      const { fetchImpl } = stubFetch(() => jsonResponse(status, { error }));
+      await expect(
+        savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl, version: "w1:2-old" }),
+      ).resolves.toEqual({ status: "error", message: error });
+    }
+  });
+
+  it("omits the header entirely when it has no version to send", async () => {
+    // Not an empty or wildcard `If-Match`, which the routes would have to
+    // decide about — the absence is the honest signal, and it is answered 428.
+    // `null` and `""` are the two other spellings of "there is none": `If-Match:
+    // ""` is a MALFORMED header rather than an absent one, and sending it would
+    // be this client asserting a precondition it does not have.
+    for (const version of [undefined, null, ""]) {
+      const { fetchImpl, calls } = stubFetch(() => jsonResponse(200, { ok: true }));
+      await savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl, version });
+      expect(calls[0].init?.headers).toEqual({ "Content-Type": "application/json" });
+    }
   });
 });
 

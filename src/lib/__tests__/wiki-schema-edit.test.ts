@@ -55,11 +55,18 @@ import {
 } from "../wiki-scenarios";
 import {
   createWiki,
+  getWikiRegistry,
   readWikiArtifact,
   wikiArtifactPath,
   writeWikiArtifact,
   type WikiRecord,
 } from "../wikis";
+import {
+  WRITE_CONFLICT_COPY,
+  WRITE_PRECONDITION_REQUIRED_COPY,
+  contentVersion,
+  formatIfMatch,
+} from "../write-precondition";
 import {
   PREVIEW_EDIT_CONFIRM_BODY,
   PREVIEW_EDIT_CONFIRM_TITLE,
@@ -336,13 +343,38 @@ describe("editing the Schema", () => {
     return GET(new Request(`http://localhost/api/workbench/preview?${query}`));
   }
 
-  /** The handler, imported lazily so the env above is in place first. */
-  async function put(query: string, body: unknown): Promise<Response> {
+  /**
+   * The handler, imported lazily so the env above is in place first.
+   *
+   * `If-Match` is REQUIRED by the route since DW-56, so the default is the
+   * artifact's CURRENT bytes — exactly what the Preview served the editor. Pass
+   * `ifMatch` to send something else (a stale version, or `null` for none) and
+   * exercise the refusals.
+   */
+  async function put(
+    query: string,
+    body: unknown,
+    ifMatch?: string | null,
+  ): Promise<Response> {
     const { PUT } = await import("@/app/api/workbench/artifact/route");
+    const wiki = (await getWikiRegistry(OWNER)).currentId;
+    const stored =
+      ifMatch === undefined && wiki
+        ? await readWikiArtifact(OWNER, wiki, "schema.md")
+        : null;
+    const version =
+      ifMatch === undefined
+        ? stored === null
+          ? null
+          : contentVersion(stored)
+        : ifMatch;
     return PUT(
       new Request(`http://localhost/api/workbench/artifact${query}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(version === null ? {} : { "If-Match": formatIfMatch(version) }),
+        },
         body: typeof body === "string" ? body : JSON.stringify(body),
       }),
     );
@@ -450,7 +482,12 @@ describe("editing the Schema", () => {
 
     const response = await put("?path=schema.md", { content: EDITED });
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ok: true });
+    // The version of what LANDED, so the editor can save again without a
+    // reload (DW-56).
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      version: contentVersion(EDITED),
+    });
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
 
     expect(await readSchema(wiki)).toBe(EDITED);
@@ -551,6 +588,114 @@ describe("editing the Schema", () => {
     expect(typeof (await response.json()).error).toBe("string");
     expect(await readSchema(wiki)).toBe(seeded);
     expect(await readDataVersion()).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // The write precondition (DW-56)
+  // -------------------------------------------------------------------------
+
+  it("lands the save when the precondition matches, and answers the NEW version", async () => {
+    const wiki = await seed();
+    const seeded = await readSchema(wiki);
+
+    const response = await put(
+      "?path=schema.md",
+      { content: EDITED },
+      contentVersion(seeded),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      version: contentVersion(EDITED),
+    });
+    expect(await readSchema(wiki)).toBe(EDITED);
+  });
+
+  it("refuses a STALE save with 412 and never reaches the writer", async () => {
+    const wiki = await seed();
+    // The version the editor was seeded with…
+    const seeded = contentVersion(await readSchema(wiki));
+    // …and then the Schema is rewritten underneath it.
+    const theirs = `${EDITED}\nWritten by somebody else.\n`;
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", theirs);
+    const versionAfterTheirs = await readDataVersion();
+
+    const response = await put("?path=schema.md", { content: EDITED }, seeded);
+
+    expect(response.status).toBe(412);
+    expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    // `writeWikiArtifact` owns the tail, so "never reached" is observable: the
+    // other actor's bytes are intact, the log gained no second entry, and the
+    // refresh counter did not move.
+    expect(await readSchema(wiki)).toBe(theirs);
+    expect(await readDataVersion()).toBe(versionAfterTheirs);
+    expect(((await readLog()) ?? "").match(/^## \[\d{4}-\d{2}-\d{2}\] edit \| /gm) ?? []).toHaveLength(
+      1,
+    );
+  });
+
+  it("refuses a save with NO precondition with 428 and writes nothing", async () => {
+    const wiki = await seed();
+    const seeded = await readSchema(wiki);
+
+    const response = await put("?path=schema.md", { content: EDITED }, null);
+
+    expect(response.status).toBe(428);
+    expect(await response.json()).toEqual({
+      error: WRITE_PRECONDITION_REQUIRED_COPY,
+    });
+    expect(await readSchema(wiki)).toBe(seeded);
+    expect(await readDataVersion()).toBe(0);
+    expect(await readLog()).toBeNull();
+  });
+
+  it("refuses a save into a Schema that VANISHED — a missing file matches nothing", async () => {
+    const wiki = await seed();
+    const seeded = contentVersion(await readSchema(wiki));
+    await getStorage().deleteFile(wikiArtifactPath(OWNER, wiki.id, "schema.md"));
+
+    const response = await put("?path=schema.md", { content: EDITED }, seeded);
+
+    expect(response.status).toBe(412);
+    expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toBeNull();
+    expect(await readDataVersion()).toBe(0);
+  });
+
+  it("lets the editor save twice without a reload", async () => {
+    const wiki = await seed();
+    const first = await put(
+      "?path=schema.md",
+      { content: EDITED },
+      contentVersion(await readSchema(wiki)),
+    );
+    expect(first.status).toBe(200);
+    const { version } = (await first.json()) as { version: string };
+
+    // The version the FIRST save answered with — no second read anywhere.
+    const again = `${EDITED}\nAnd one more line.\n`;
+    const second = await put("?path=schema.md", { content: again }, version);
+
+    expect(second.status).toBe(200);
+    expect(await readSchema(wiki)).toBe(again);
+  });
+
+  it("treats `*` and an unquoted version as absent", async () => {
+    const wiki = await seed();
+    const seeded = await readSchema(wiki);
+    const { PUT } = await import("@/app/api/workbench/artifact/route");
+    for (const header of ["*", contentVersion(seeded), ""]) {
+      const response = await PUT(
+        new Request("http://localhost/api/workbench/artifact?path=schema.md", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "If-Match": header },
+          body: JSON.stringify({ content: EDITED }),
+        }),
+      );
+      expect(response.status).toBe(428);
+    }
+    expect(await readSchema(wiki)).toBe(seeded);
   });
 
   it("does not offer the Schema for editing on a read-only deployment", async () => {

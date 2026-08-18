@@ -5,6 +5,7 @@ import { useId, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { getErrorMessage } from "@/lib/errors";
 import { Alert } from "@/components/Alert";
+import { IF_MATCH_HEADER, formatIfMatch } from "@/lib/write-precondition";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,6 +35,21 @@ interface WikiEditorProps {
   /** The page's tenant — where to navigate after a successful save. */
   tenant: string;
   initialContent: string;
+  /**
+   * The WRITE PRECONDITION for the page this form was seeded from (DW-38,
+   * DW-51) — `contentVersion` of the WHOLE stored file, computed on the server
+   * by the edit page and sent back as `If-Match` on the body `PUT`.
+   *
+   * Captured WITH the seed and never re-derived: this form can sit open for as
+   * long as it takes to rewrite a page, and an unconditional save would replace
+   * whatever another actor stored in the meantime.
+   *
+   * REQUIRED, so a call site that forgets it is a compile error rather than a
+   * form whose Save can only ever be answered 428. It is the SEED of the
+   * version state below, not the value that is sent: a landed `PUT` answers a
+   * new one, and the form adopts it.
+   */
+  initialVersion: string;
   initialMetadata?: MetadataValues;
   /**
    * `YOPEDIA_READONLY=1`, read on the server by the edit page and threaded down.
@@ -183,6 +199,7 @@ export function WikiEditor({
   slug,
   tenant,
   initialContent,
+  initialVersion,
   initialMetadata,
   readOnly = false,
 }: WikiEditorProps) {
@@ -201,6 +218,19 @@ export function WikiEditor({
 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /**
+   * The precondition the NEXT `PUT` is conditional on. Seeded from the prop and
+   * re-stamped from every landed save — the same move `PreviewColumn` makes
+   * with `result.version`.
+   *
+   * State rather than the prop directly, because this form does TWO writes and
+   * the second can fail on its own: a `PUT` that lands followed by a `PATCH`
+   * that does not leaves the form open with `bodyDirty` still true, and a retry
+   * holding the ORIGINAL version would be refused 412 — "changed somewhere
+   * else while you were editing", about a change the owner made themselves a
+   * second earlier, with no way out but a reload.
+   */
+  const [version, setVersion] = useState(initialVersion);
   const readOnlyNoteId = useId();
 
   const updateField = useCallback(
@@ -230,7 +260,12 @@ export function WikiEditor({
       if (bodyDirty) {
         const res = await fetch(`/api/wiki/${slug}`, {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            // The PUT leg only. `PATCH` is metadata, which this story
+            // deliberately does not gate — see `route.ts`.
+            ...(version ? { [IF_MATCH_HEADER]: formatIfMatch(version) } : {}),
+          },
           body: JSON.stringify({ content }),
         });
         if (!res.ok) {
@@ -238,6 +273,17 @@ export function WikiEditor({
             error?: string;
           };
           throw new Error(body.error ?? `body save failed (${res.status})`);
+        }
+        // The version of what LANDED, adopted before the PATCH leg can fail —
+        // otherwise a retry after a failed PATCH re-sends a version this very
+        // request superseded. Parsed with the same guard the error branch
+        // above uses: a body that will not parse leaves the old version in
+        // place, and the next save is refused rather than blind.
+        const landed = (await res.json().catch(() => null)) as {
+          version?: unknown;
+        } | null;
+        if (typeof landed?.version === "string" && landed.version.length > 0) {
+          setVersion(landed.version);
         }
       }
 

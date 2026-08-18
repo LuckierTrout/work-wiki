@@ -404,6 +404,22 @@ describe("PreviewColumn is view-first over a rendered body", () => {
     // is that the column reaches the write path only through that function and
     // never spells a request of its own.
     expect(source).toContain("savePreviewBody(target.url, draft");
+    // The write precondition rides with that one call (DW-38/51/56), and it is
+    // the version the editor was SEEDED with — never `payload.version` read at
+    // Save. A silent same-row refresh (Story 1.7) deliberately leaves an open
+    // editor alone, so the payload's version may already describe another
+    // actor's bytes: sending THAT would match, and the save would clobber
+    // exactly the write this guard exists to notice.
+    expect(source).toContain("version: editingVersionRef.current,");
+    expect(source).toContain("editingVersionRef.current = payload.version;");
+    expect(source).not.toContain("version: payload?.version");
+    expect(source).not.toContain("version: payloadRef.current?.version");
+    // …and a landed save stamps the version it answered with onto the payload,
+    // so a second edit without a reload is not refused as a conflict with
+    // itself.
+    expect(source).toContain(
+      "{ ...current, body: draft, version: result.version }",
+    );
     // Call sites, not the docblock that explains the route: the column issues
     // no request of its own at all now — both go through `workbench-preview`,
     // where a stubbed fetch executes them.

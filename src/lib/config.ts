@@ -10,8 +10,8 @@ import {
   SETTINGS_LANGUAGE_VALUE,
   canEnableVectorSearch,
   type WorkbenchSettingsPatch,
-  type WorkbenchSettingsPayload,
   type WorkbenchSettingsStored,
+  type WorkbenchSettingsValues,
 } from "./workbench-settings";
 
 // Re-export provider constants so existing consumers can import from config
@@ -636,7 +636,7 @@ export function getFirecrawlSettings(): FirecrawlSettings {
  * booleans. AD-23 puts the keys in the kernel store; it does not put them back
  * on the browser's screen.
  */
-export function getWorkbenchSettings(): WorkbenchSettingsPayload {
+export function getWorkbenchSettings(): WorkbenchSettingsValues {
   const cfg = loadConfigSync();
   const firecrawl = getFirecrawlSettings();
   const envProvider = envEmbeddingProvider();

@@ -15,10 +15,32 @@ import {
   serializeFrontmatter,
   writeWikiPageWithSideEffects,
 } from "../wiki";
+import {
+  WRITE_CONFLICT_COPY,
+  WRITE_PRECONDITION_REQUIRED_COPY,
+  contentVersion,
+  formatIfMatch,
+} from "../write-precondition";
 import type { Frontmatter } from "../frontmatter";
 import { getPrincipal } from "@/lib/auth";
 
 const mockedGetPrincipal = vi.mocked(getPrincipal);
+
+/**
+ * The write precondition `PUT /api/wiki/[slug]` now REQUIRES (DW-38, DW-51).
+ *
+ * Read from the page's own current bytes, which is exactly what every real
+ * caller does: the read that seeds an editor hashes the whole stored file, and
+ * the write checks the header against the same string. A test that hard-coded a
+ * version would pin the hash rather than the guard.
+ *
+ * A slug with no page answers `undefined` so the 404 and 403 cases can still be
+ * exercised with a well-formed header.
+ */
+async function currentIfMatch(slug: string): Promise<Record<string, string>> {
+  const page = await readWikiPageWithFrontmatter(slug);
+  return page ? { "If-Match": formatIfMatch(contentVersion(page.content)) } : {};
+}
 
 // ---------------------------------------------------------------------------
 // Temp directory setup — mirrors lifecycle.test.ts approach
@@ -224,7 +246,7 @@ describe("PUT /api/wiki/[slug] — contributors and updated", () => {
     const mod = await import("@/app/api/wiki/[slug]/route");
     const req = new Request(`http://localhost:3000/api/wiki/${slug}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await currentIfMatch(slug)) },
       body: JSON.stringify(body),
     });
     return mod.PUT(req, { params: Promise.resolve({ slug }) });
@@ -587,7 +609,7 @@ describe("realm-aware write ACL — /api/wiki/[slug]", () => {
     return PUT(
       new Request(`http://localhost/api/wiki/${slug}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await currentIfMatch(slug)) },
         body: JSON.stringify({ content: `# ${slug}\n\nEdited.` }),
       }),
       { params: Promise.resolve({ slug }) },
@@ -1099,7 +1121,7 @@ describe("read-only deployment — /api/wiki/[slug]", () => {
     return PUT(
       new Request(`http://localhost/api/wiki/${slug}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await currentIfMatch(slug)) },
         body: JSON.stringify({ content: `# ${slug}\n\nRewritten.` }),
       }),
       { params: Promise.resolve({ slug }) },
@@ -1210,5 +1232,181 @@ describe("read-only deployment — /api/wiki/[slug]", () => {
     // And the 404 the write route answers for an unknown slug is still a 404 —
     // the new gate must not have swallowed it.
     expect((await put("rw-ghost")).status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/wiki/[slug] — the write precondition (DW-38, DW-51)
+// ---------------------------------------------------------------------------
+//
+// The page write is a read-then-write across two requests, and the Workbench's
+// Story 1.7 refresh deliberately leaves an open editor alone — so a draft can
+// knowingly be minutes stale. These run the route against real bytes for each
+// of the three outcomes, and assert what is on DISK afterwards: a refused save
+// that still wrote would pass a status check and lose the other actor's work.
+
+describe("PUT /api/wiki/[slug] — the write precondition", () => {
+  const ORIGINAL = "# Precondition\n\nwhat the other actor stored.\n";
+
+  async function seed(slug: string): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    await writeWikiPageWithSideEffects({
+      slug,
+      title: slug,
+      content: serializeFrontmatter(
+        {
+          created: today,
+          confidence: 0.5,
+          authors: ["original-author"],
+          owner: "test-user",
+          visibility: "private",
+          contributors: [],
+          expiry: "2099-01-01",
+          sources: [],
+        },
+        ORIGINAL,
+      ),
+      summary: "a test page",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+  }
+
+  /** The route, with whatever `If-Match` the caller wants — or none. */
+  async function put(slug: string, ifMatch: string | null, body = "# Mine\n\nmy draft.\n") {
+    const { PUT } = await import("@/app/api/wiki/[slug]/route");
+    return PUT(
+      new Request(`http://localhost/api/wiki/${slug}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(ifMatch === null ? {} : { "If-Match": ifMatch }),
+        },
+        body: JSON.stringify({ content: body }),
+      }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+
+  async function storedBody(slug: string): Promise<string> {
+    return (await readWikiPageWithFrontmatter(slug))!.body;
+  }
+
+  it("lands the write when the precondition matches, and answers the NEW version", async () => {
+    await seed("pc-match");
+    const before = (await readWikiPageWithFrontmatter("pc-match"))!.content;
+
+    const response = await put("pc-match", formatIfMatch(contentVersion(before)));
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { slug: string; version: string };
+    expect(body.slug).toBe("pc-match");
+    expect(await storedBody("pc-match")).toContain("my draft.");
+    // The version of what LANDED — not of what was read. It is the file the
+    // route actually wrote, so a surface that stays open can save again.
+    const after = (await readWikiPageWithFrontmatter("pc-match"))!.content;
+    expect(body.version).toBe(contentVersion(after));
+    expect(body.version).not.toBe(contentVersion(before));
+  });
+
+  it("refuses a STALE save with 412 and writes nothing", async () => {
+    await seed("pc-stale");
+    // The version the editor was seeded with…
+    const seeded = contentVersion((await readWikiPageWithFrontmatter("pc-stale"))!.content);
+    // …and then another actor saves.
+    expect((await put("pc-stale", formatIfMatch(seeded), "# Theirs\n\ntheirs.\n")).status).toBe(
+      200,
+    );
+
+    const response = await put("pc-stale", formatIfMatch(seeded));
+
+    expect(response.status).toBe(412);
+    expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    // The other actor's bytes survive: the draft is refused, never merged and
+    // never silently dropped on top.
+    expect(await storedBody("pc-stale")).toContain("theirs.");
+    expect(await storedBody("pc-stale")).not.toContain("my draft.");
+  });
+
+  it("refuses a save with NO precondition with 428, and writes nothing", async () => {
+    await seed("pc-absent");
+
+    const response = await put("pc-absent", null);
+
+    expect(response.status).toBe(428);
+    expect(await response.json()).toEqual({
+      error: WRITE_PRECONDITION_REQUIRED_COPY,
+    });
+    expect(await storedBody("pc-absent")).toContain("what the other actor stored.");
+  });
+
+  it("treats `*`, an unquoted version and an empty header as absent", async () => {
+    await seed("pc-malformed");
+    const version = contentVersion(
+      (await readWikiPageWithFrontmatter("pc-malformed"))!.content,
+    );
+    // The wildcard is the unconditional write itself; it must never match.
+    for (const header of ["*", version, "", "   "]) {
+      const response = await put("pc-malformed", header);
+      expect(response.status).toBe(428);
+    }
+    expect(await storedBody("pc-malformed")).toContain("what the other actor stored.");
+  });
+
+  it("lets the SAME surface save twice without a reload", async () => {
+    await seed("pc-again");
+    const first = await put(
+      "pc-again",
+      formatIfMatch(contentVersion((await readWikiPageWithFrontmatter("pc-again"))!.content)),
+      "# One\n\nfirst.\n",
+    );
+    expect(first.status).toBe(200);
+    const { version } = (await first.json()) as { version: string };
+
+    // The version the FIRST save answered with — no second read anywhere.
+    const second = await put("pc-again", formatIfMatch(version), "# Two\n\nsecond.\n");
+
+    expect(second.status).toBe(200);
+    expect(await storedBody("pc-again")).toContain("second.");
+  });
+
+  it("refuses a body save after another actor PATCHed the frontmatter", async () => {
+    // Conservative by design: the whole stored file is the merge base, and the
+    // frontmatter this request is about to merge is exactly what changed.
+    await seed("pc-metadata");
+    const seeded = contentVersion(
+      (await readWikiPageWithFrontmatter("pc-metadata"))!.content,
+    );
+    const { PATCH } = await import("@/app/api/wiki/[slug]/route");
+    const patched = await PATCH(
+      new Request("http://localhost/api/wiki/pc-metadata", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metadata: { confidence: 0.9 } }),
+      }),
+      { params: Promise.resolve({ slug: "pc-metadata" }) },
+    );
+    // PATCH is deliberately NOT gated — it carried no `If-Match` and still
+    // landed.
+    expect(patched.status).toBe(200);
+
+    expect((await put("pc-metadata", formatIfMatch(seeded))).status).toBe(412);
+    expect(await storedBody("pc-metadata")).toContain("what the other actor stored.");
+  });
+
+  it("still cloaks before it ever mentions a version", async () => {
+    // A caller who may not write this page must not be able to learn its
+    // version, or whether it exists, by comparing a 412 against a 404.
+    await seed("pc-cloaked");
+    const seeded = contentVersion(
+      (await readWikiPageWithFrontmatter("pc-cloaked"))!.content,
+    );
+    mockedGetPrincipal.mockResolvedValueOnce({ id: "mallory", handle: "mallory" });
+    const denied = await put("pc-cloaked", formatIfMatch(seeded));
+    expect(denied.status).toBe(404);
+
+    // …and an unknown slug is a 404 whatever the header says.
+    expect((await put("pc-ghost", null)).status).toBe(404);
+    expect((await put("pc-ghost", formatIfMatch(seeded))).status).toBe(404);
   });
 });

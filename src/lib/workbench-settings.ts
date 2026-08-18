@@ -26,6 +26,7 @@ import {
   VALID_PROVIDERS,
 } from "./providers";
 import type { EmbeddingProvider, ProviderValue } from "./providers";
+import { IF_MATCH_HEADER, formatIfMatch } from "./write-precondition";
 
 // ---------------------------------------------------------------------------
 // The category vocabulary
@@ -230,6 +231,17 @@ export const SETTINGS_ROUTE = "/api/settings";
  * the suite asserts the serialized body contains none.
  */
 export interface WorkbenchSettingsPayload {
+  /**
+   * The WRITE PRECONDITION for the stored `AppConfig` these values came out of
+   * (DW-63) — `objectVersion` of the parsed config, so a re-ordered
+   * `.llm-wiki-config.json` is not a conflict with itself.
+   *
+   * REQUIRED, not optional: this surface's whole draft is re-seeded from a
+   * payload, and a payload without a version would seed an editor whose save
+   * can only ever be refused. `isWorkbenchSettingsPayload` therefore rejects
+   * one, which is the same reason it rejects a missing `language`.
+   */
+  version: string;
   chatProvider: ProviderValue | null;
   chatModel: string | null;
   ingestProvider: ProviderValue | null;
@@ -286,6 +298,17 @@ export interface WorkbenchSettingsPayload {
 }
 
 /**
+ * Everything the payload carries EXCEPT the write precondition.
+ *
+ * `getWorkbenchSettings()` builds the values from the config cache; only the
+ * route holds the config OBJECT the version is derived from, and it serves the
+ * same one string at the top level and here (DW-63). Splitting the type is what
+ * keeps that a single `objectVersion` call rather than a second derivation
+ * inside the resolver that would have to agree with it.
+ */
+export type WorkbenchSettingsValues = Omit<WorkbenchSettingsPayload, "version">;
+
+/**
  * What `PUT /api/settings` accepts under `workbench`.
  *
  * Every field is optional and ABSENT means "leave it alone". `null` and `""`
@@ -336,6 +359,11 @@ export function isWorkbenchSettingsPayload(
   const nullableString = (key: string) =>
     payload[key] === null || typeof payload[key] === "string";
   return (
+    // The precondition the next save sends back. A payload without one seeds a
+    // draft that can never be stored, which is worse than one indistinguishable
+    // load failure.
+    typeof payload.version === "string" &&
+    payload.version.length > 0 &&
     nullableString("chatProvider") &&
     nullableString("chatModel") &&
     nullableString("ingestProvider") &&
@@ -710,7 +738,7 @@ export interface SettingsDraft {
 export const SECRET_UNTOUCHED = "";
 
 export function settingsDraftFromPayload(
-  payload: WorkbenchSettingsPayload,
+  payload: WorkbenchSettingsValues,
 ): SettingsDraft {
   return {
     chatProvider: payload.chatProvider ?? "",
@@ -740,7 +768,7 @@ export function settingsDraftFromPayload(
  */
 export function settingsDirty(
   draft: SettingsDraft,
-  payload: WorkbenchSettingsPayload,
+  payload: WorkbenchSettingsValues,
 ): boolean {
   const seeded = settingsDraftFromPayload(payload);
   return (Object.keys(seeded) as Array<keyof SettingsDraft>).some(
@@ -823,7 +851,7 @@ function secretPatchValue(value: string | null): string | null | undefined {
  */
 export function draftCanEnableVectorSearch(
   draft: SettingsDraft,
-  payload: WorkbenchSettingsPayload,
+  payload: WorkbenchSettingsValues,
 ): boolean {
   return canEnableVectorSearch(draftVectorInputs(draft, payload));
 }
@@ -835,7 +863,7 @@ export function draftCanEnableVectorSearch(
  */
 export function draftVectorInputs(
   draft: SettingsDraft,
-  payload: WorkbenchSettingsPayload,
+  payload: WorkbenchSettingsValues,
 ): VectorSearchInputs {
   const provider = payload.envEmbeddingProvider ?? draftText(draft.embeddingProvider);
   const typed = secretPatchValue(draft.embeddingApiKey);
@@ -964,14 +992,29 @@ export type SettingsSaveResult =
  */
 export async function saveWorkbenchSettings(
   patch: WorkbenchSettingsPatch,
-  options: { signal?: AbortSignal; fetchImpl?: SettingsFetch; fallback?: string } = {},
+  options: {
+    signal?: AbortSignal;
+    fetchImpl?: SettingsFetch;
+    fallback?: string;
+    /**
+     * The {@link WorkbenchSettingsPayload.version} the draft was SEEDED from,
+     * sent as `If-Match` (DW-63). `PUT /api/settings` requires it and answers
+     * 428 without one, so omitting it is a refusal rather than a blind write —
+     * the two Settings surfaces write the same file and would otherwise put
+     * each other's fields back.
+     */
+    version?: string;
+  } = {},
 ): Promise<SettingsSaveResult> {
   const send = options.fetchImpl ?? fetch;
   const fallback = options.fallback ?? SETTINGS_SAVE_FAILED_COPY;
   try {
     const response = await send(SETTINGS_ROUTE, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.version ? { [IF_MATCH_HEADER]: formatIfMatch(options.version) } : {}),
+      },
       body: JSON.stringify({ workbench: patch }),
       ...(options.signal ? { signal: options.signal } : {}),
     });

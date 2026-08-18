@@ -12,7 +12,9 @@ import {
   PREVIEW_EDIT_CONFIRM_LABEL,
   PREVIEW_EDIT_COPY,
   PREVIEW_KEEP_EDITING_COPY,
+  PREVIEW_SAVE_COPY,
 } from "@/lib/workbench-preview";
+import { WRITE_CONFLICT_COPY } from "@/lib/write-precondition";
 import { buildFileTree } from "@/lib/workbench-tree";
 import {
   WORKBENCH_TREE_TAB_KEY,
@@ -442,5 +444,153 @@ describe("a restored row lands on the tab that can mark it (DW-46)", () => {
     expect(screen.getByRole("tab", { name: "Files" }).getAttribute("aria-selected")).toBe(
       "true",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A REFUSED save keeps the draft too (DW-38, DW-51)
+// ---------------------------------------------------------------------------
+//
+// The same property DW-36 protects from a stray tree click, protected from the
+// other direction: the server saying no. `savePreviewBody`'s "resolve, do not
+// throw" contract and the sentence-relaying rule are executed in
+// `workbench-preview.test.ts`; what only a mounted shell can show is that the
+// textarea still HOLDS the owner's text afterwards, with the server's sentence
+// beside it rather than in place of it.
+
+describe("a save the write precondition refuses (DW-38, DW-51)", () => {
+  const SEEDED_VERSION = "w1:8-0123456789abcdef";
+
+  /** The preview read carries a version; the write answers 412 with the copy. */
+  function stubConflict(writes: Array<{ url: string; headers: Record<string, string> }>) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: unknown, init?: { headers?: Record<string, string> }) => {
+        const href = String(url);
+        if (href.includes("/api/workbench/preview")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ ...payload("Alpha", "# Alpha"), version: SEEDED_VERSION }),
+          } as unknown as Response;
+        }
+        if (href.includes("/api/wiki/")) {
+          writes.push({ url: href, headers: init?.headers ?? {} });
+          return {
+            ok: false,
+            status: 412,
+            json: async () => ({ error: WRITE_CONFLICT_COPY }),
+          } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+          text: async () => "",
+        } as unknown as Response;
+      }),
+    );
+  }
+
+  it("keeps the owner's text on screen and shows the SERVER's sentence beside it", async () => {
+    const writes: Array<{ url: string; headers: Record<string, string> }> = [];
+    stubConflict(writes);
+    await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    await typeIntoEditor("# Alpha, rewritten by hand");
+
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_SAVE_COPY }));
+    await act(async () => {});
+
+    // The whole point: a refused save is not the thing that loses the draft.
+    expect(editor()?.value).toBe("# Alpha, rewritten by hand");
+    // …and the sentence is the SERVER's, relayed verbatim — the column types no
+    // conflict wording of its own.
+    expect(screen.getByText(WRITE_CONFLICT_COPY)).toBeTruthy();
+    // The editor is still open, so the owner can copy their text out.
+    expect(screen.getByRole("button", { name: PREVIEW_SAVE_COPY })).toBeTruthy();
+  });
+
+  it("lets the owner save AGAIN without a reload — the second save is not stale", async () => {
+    // A tiny store that enforces the precondition exactly as the route does, so
+    // "the second save succeeded" is evidence rather than a stub being lenient:
+    // a column that kept sending the version it was first seeded with would be
+    // refused here, which is the state this criterion exists to rule out.
+    let stored = { body: "# Alpha", version: SEEDED_VERSION };
+    const outcomes: number[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: unknown, init?: { headers?: Record<string, string>; body?: string }) => {
+        const href = String(url);
+        if (href.includes("/api/workbench/preview")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ ...payload("Alpha", stored.body), version: stored.version }),
+          } as unknown as Response;
+        }
+        if (href.includes("/api/wiki/")) {
+          const sent = init?.headers?.["If-Match"];
+          if (sent !== `"${stored.version}"`) {
+            outcomes.push(412);
+            return {
+              ok: false,
+              status: 412,
+              json: async () => ({ error: WRITE_CONFLICT_COPY }),
+            } as unknown as Response;
+          }
+          const content = JSON.parse(init?.body ?? "{}").content as string;
+          stored = { body: content, version: `${SEEDED_VERSION}-${outcomes.length}` };
+          outcomes.push(200);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ slug: "alpha", version: stored.version }),
+          } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+          text: async () => "",
+        } as unknown as Response;
+      }),
+    );
+    await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+
+    await typeIntoEditor("# Alpha, first");
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_SAVE_COPY }));
+    await act(async () => {});
+    // The editor closed on a landed save, so this is a genuine second round.
+    expect(editor()).toBeNull();
+
+    await typeIntoEditor("# Alpha, second");
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_SAVE_COPY }));
+    await act(async () => {});
+
+    expect(outcomes).toEqual([200, 200]);
+    expect(stored.body).toBe("# Alpha, second");
+    // No conflict sentence anywhere: the second save was not refused.
+    expect(screen.queryByText(WRITE_CONFLICT_COPY)).toBeNull();
+    expect(editor()).toBeNull();
+  });
+
+  it("sent the version the editor was SEEDED with", async () => {
+    const writes: Array<{ url: string; headers: Record<string, string> }> = [];
+    stubConflict(writes);
+    await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    await typeIntoEditor("# Alpha, rewritten by hand");
+
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_SAVE_COPY }));
+    await act(async () => {});
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0].url).toContain("/api/wiki/alpha");
+    expect(writes[0].headers["If-Match"]).toBe(`"${SEEDED_VERSION}"`);
   });
 });

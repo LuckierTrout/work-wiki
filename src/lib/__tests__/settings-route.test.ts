@@ -21,6 +21,12 @@ import {
   loadConfig,
   saveConfig,
 } from "@/lib/config";
+import {
+  WRITE_CONFLICT_COPY,
+  WRITE_PRECONDITION_REQUIRED_COPY,
+  formatIfMatch,
+  objectVersion,
+} from "@/lib/write-precondition";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedIsOwner = vi.mocked(isOwnerHandle);
@@ -30,10 +36,25 @@ const mockedSave = vi.mocked(saveConfig);
 const mockedEffectiveSettings = vi.mocked(getEffectiveSettings);
 const mockedEffectiveProvider = vi.mocked(getEffectiveProvider);
 
-function request(body: Record<string, unknown>) {
+/**
+ * `PUT /api/settings` REQUIRES the write precondition (DW-63). `config` is the
+ * object `loadConfig` is mocked to answer with, which is what the route hashes
+ * — so the default matches and the refusals are asked for explicitly.
+ */
+function request(
+  body: Record<string, unknown>,
+  precondition: { config?: unknown; ifMatch?: string | null } = {},
+) {
+  const version =
+    precondition.ifMatch !== undefined
+      ? precondition.ifMatch
+      : objectVersion(precondition.config ?? {});
   return new Request("http://localhost/api/settings", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(version === null ? {} : { "If-Match": formatIfMatch(version) }),
+    },
     body: JSON.stringify(body),
   });
 }
@@ -99,17 +120,18 @@ describe("/api/settings", () => {
   });
 
   it("persists an independent Structured Knowledge provider and model", async () => {
-    mockedLoad.mockResolvedValue({
-      provider: "ollama-cloud",
-      model: "gpt-oss:120b",
-    });
+    const existing = { provider: "ollama-cloud" as const, model: "gpt-oss:120b" };
+    mockedLoad.mockResolvedValue(existing);
     const { PUT } = await import("@/app/api/settings/route");
 
     const response = await PUT(
-      request({
-        structuredKnowledgeProvider: "openai",
-        structuredKnowledgeModel: "gpt-4o",
-      }),
+      request(
+        {
+          structuredKnowledgeProvider: "openai",
+          structuredKnowledgeModel: "gpt-4o",
+        },
+        { config: existing },
+      ),
     );
 
     expect(response.status).toBe(200);
@@ -119,6 +141,33 @@ describe("/api/settings", () => {
       structuredKnowledgeProvider: "openai",
       structuredKnowledgeModel: "gpt-4o",
     });
+  });
+
+  it("refuses a save whose precondition describes an older config (412)", async () => {
+    // Two surfaces write this one file. A draft seeded before the other saved
+    // would otherwise put every field the other changed back.
+    mockedLoad.mockResolvedValue({ provider: "openai" });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({ model: "gpt-4o" }, { config: { provider: "anthropic" } }),
+    );
+
+    expect(response.status).toBe(412);
+    expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("refuses a save with no precondition at all (428)", async () => {
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ model: "gpt-4o" }, { ifMatch: null }));
+
+    expect(response.status).toBe(428);
+    expect(await response.json()).toEqual({
+      error: WRITE_PRECONDITION_REQUIRED_COPY,
+    });
+    expect(mockedSave).not.toHaveBeenCalled();
   });
 
   it("honors the explicit deployment read-only switch", async () => {

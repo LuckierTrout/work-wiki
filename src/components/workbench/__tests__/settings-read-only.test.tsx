@@ -4,8 +4,11 @@ import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
 import {
   SETTINGS_MODEL_INHERIT_COPY,
   SETTINGS_READ_ONLY_COPY,
+  SETTINGS_SAVED_COPY,
+  SETTINGS_SAVE_COPY,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
+import { WRITE_CONFLICT_COPY } from "@/lib/write-precondition";
 
 /**
  * The Settings controls a read-only deployment refuses, MOUNTED (DW-37, DW-65).
@@ -23,6 +26,8 @@ import {
 /** The stored settings, as `GET /api/settings` serves them. */
 function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSettingsPayload {
   return {
+    // The write precondition `GET /api/settings` serves beside the values.
+    version: "w1:2-0000000000000000",
     chatProvider: "openai",
     chatModel: "gpt-4o",
     ingestProvider: "anthropic",
@@ -209,5 +214,104 @@ describe("a read-only deployment (DW-37, DW-65)", () => {
 
     fireEvent.click(checkbox);
     await waitFor(() => expect(checkbox.checked).toBe(false));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The write precondition on the Settings canvas (DW-63)
+// ---------------------------------------------------------------------------
+//
+// DW-63 is specifically about TWO surfaces writing one `AppConfig`, and the
+// only thing standing between them is one header built from a field of the
+// payload the draft was seeded from. `workbench-settings.test.ts` executes
+// `saveWorkbenchSettings` with a stubbed fetch and scans this component's
+// source; neither can see the seam between the two — that the version the
+// canvas SENDS is the one the read it is showing came with, and that a landed
+// save re-seeds it so the next one is not refused as a conflict with itself.
+
+describe("the Settings canvas sends the version it was seeded with (DW-63)", () => {
+  const SEEDED = "w1:2b-1111111122222222";
+  const LANDED = "w1:2b-3333333344444444";
+
+  /** Mount writable, with one response per call rather than one for all. */
+  async function mountWritable(responses: Array<() => unknown>) {
+    let call = 0;
+    fetchMock.mockImplementation(async () => {
+      const next = responses[Math.min(call, responses.length - 1)];
+      call += 1;
+      return next() as Response;
+    });
+    render(<SettingsCanvas category="llm-models" headingId="wb-set-heading" />);
+    await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
+  }
+
+  function read(version: string) {
+    return () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ workbench: payload({ readOnly: false, version }) }),
+    });
+  }
+
+  function saved(version: string) {
+    return () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        saved: true,
+        version,
+        workbench: payload({ readOnly: false, version, chatModel: "gpt-4.1" }),
+      }),
+    });
+  }
+
+  function typeChatModel(value: string) {
+    fireEvent.change(screen.getByLabelText("Chat model"), { target: { value } });
+  }
+
+  function ifMatchOf(call: number): string | undefined {
+    const [, init] = fetchMock.mock.calls[call] as [string, RequestInit];
+    return ((init.headers ?? {}) as Record<string, string>)["If-Match"];
+  }
+
+  it("puts the seeded payload's version on the save, and adopts the answered one", async () => {
+    await mountWritable([read(SEEDED), saved(LANDED), saved(LANDED)]);
+
+    typeChatModel("gpt-4.1");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVED_COPY)).toBeTruthy());
+
+    // Call 0 is the read; call 1 is the save.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [, put] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(put.method).toBe("PUT");
+    expect(ifMatchOf(1)).toBe(`"${SEEDED}"`);
+
+    // A second edit and save WITHOUT a reload rides the version the first save
+    // answered — the existing `setPayload(result.payload)` re-seed is what
+    // carries it, and this is the only place that can observe it.
+    typeChatModel("gpt-4.1-mini");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(ifMatchOf(2)).toBe(`"${LANDED}"`);
+  });
+
+  it("keeps every edit on screen and shows the SERVER's conflict sentence", async () => {
+    await mountWritable([
+      read(SEEDED),
+      () => ({
+        ok: false,
+        status: 412,
+        json: async () => ({ error: WRITE_CONFLICT_COPY }),
+      }),
+    ]);
+
+    typeChatModel("gpt-4.1");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+
+    await waitFor(() => expect(screen.getByText(WRITE_CONFLICT_COPY)).toBeTruthy());
+    // A refused save must never be the thing that loses the edit.
+    expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe("gpt-4.1");
+    expect(screen.queryByText(SETTINGS_SAVED_COPY)).toBeNull();
   });
 });
