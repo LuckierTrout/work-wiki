@@ -67,6 +67,57 @@ export const SPLIT_DEFAULT_PREVIEW = 360;
 export const SPLIT_KEY_STEP = 16;
 
 /**
+ * The COARSE keyboard step, derived rather than typed (DW-45).
+ *
+ * `SPLIT_KEY_STEP * 4` rather than `64`: crossing the tree's real range with the
+ * arrow step alone is ~30 presses, and a second literal would be a seventh magic
+ * number to keep on the stylesheet's pixel grid. Deriving it means the two steps
+ * cannot drift apart, and PageUp/PageDown always land on a width an arrow could
+ * also reach.
+ */
+export const SPLIT_KEY_PAGE_STEP = SPLIT_KEY_STEP * 4;
+
+/**
+ * `--wb-split-hit: 24px` — the grab strip a divider offers (DW-44).
+ *
+ * WCAG 2.2 AA SC 2.5.8 wants 24×24 CSS px, and the spacing exception does not
+ * apply here because the tree rows beside the divider are adjacent targets. The
+ * strip is asserted equal to the token declaration alongside the six widths, and
+ * it is also the clamp on `splitGrabOffset`: a press the browser reports from
+ * outside the strip cannot offset a drag by more than the strip is wide.
+ */
+export const SPLIT_HIT_WIDTH = 24;
+
+/**
+ * The one breakpoint at which the shell stops being three desktop columns
+ * (DW-47). Below it the rail becomes an off-canvas sheet, a collapsed left
+ * column is force-shown, and a docked Preview becomes a stacked fourth row.
+ *
+ * `globals.css` owns the media BLOCKS — four of them spell these widths out, and
+ * several node suites slice the stylesheet by those exact strings. What this
+ * module owns is the only copy any RUNTIME JavaScript is allowed to hold: the
+ * shell's sheet and dock-reveal effects and `TreePanel`'s scroll memory all read
+ * the constants below, so no component carries a breakpoint of its own to drift.
+ * Both queries are BUILT from the one number, and `workbench-split.test.ts` pins
+ * the result against the blocks in `globals.css` — the stylesheet is the
+ * authority, and this is the single pointer at it.
+ */
+export const SPLIT_STACK_BREAKPOINT = 900;
+
+/** Desktop and up: the rail is a column, not a sheet. */
+export const SPLIT_WIDE_QUERY = `(min-width: ${SPLIT_STACK_BREAKPOINT}px)`;
+
+/**
+ * …and below it. NOT an exact complement: at a fractional width — 899.5px,
+ * routine under browser zoom and fractional DPI scaling — neither query matches.
+ * That gap is inherited from the four `@media` blocks in `globals.css` these two
+ * constants exist to MIRROR, whose strings have to stay character-identical
+ * because other node suites slice the stylesheet by them; closing it is a
+ * stylesheet decision and would have to be made in both places at once.
+ */
+export const SPLIT_NARROW_QUERY = `(max-width: ${SPLIT_STACK_BREAKPOINT - 1}px)`;
+
+/**
  * `PointerEvent.button` for the primary button — the left button on a mouse, and
  * the only value touch and pen report on a press.
  */
@@ -103,7 +154,7 @@ export interface SplitKeyModifiers {
 /**
  * Is this press one the divider should take the pointer for?
  *
- * A right- or middle-click on the 9px strip would otherwise call
+ * A right- or middle-click on the grab strip would otherwise call
  * `setPointerCapture` and arm `data-resizing`, after which the divider follows a
  * pointer with no button held down for as long as the context menu is open.
  * `isPrimary` is the second half: on a multi-touch surface only the first
@@ -265,18 +316,51 @@ export function clampSplitWidths(
  *
  * Returns the raw derived width — the caller clamps it, so the pointer maths and
  * the bounds stay one decision each.
+ *
+ * `grabOffset` is where inside the 24px strip the press landed (DW-44), and it
+ * is SUBTRACTED in both directions because it was measured in the same width
+ * space this returns. It defaults to `0`, which is Story 1.6's behaviour exactly:
+ * the boundary jumps to the pointer. With a strip that is offset entirely to one
+ * side of the boundary that jump is up to 24px on the first `pointermove`, so the
+ * shell measures the grab once on `pointerdown` and hands it back here.
  */
 export function splitWidthFromPointer(
   id: SplitId,
   clientX: number,
   shellLeft: number,
   shellWidth: number,
+  grabOffset = 0,
 ): number {
   const raw =
     id === "tree"
       ? clientX - shellLeft - SPLIT_RAIL_WIDTH
       : shellLeft + shellWidth - clientX;
-  return Math.round(raw);
+  return Math.round(raw - grabOffset);
+}
+
+/**
+ * How far the press was from the boundary it grabbed, in width space.
+ *
+ * `splitWidthFromPointer(…) - current` works unchanged for BOTH ids because the
+ * raw function already flips direction for the Preview: on either divider a
+ * positive result means "this press asks for a wider column than the one on
+ * screen", and feeding it straight back in cancels out to `current`.
+ *
+ * Clamped to `±SPLIT_HIT_WIDTH` through the same `clampSplitWidth` every other
+ * bound goes through, rather than a second `Math.min`/`Math.max`: a press the
+ * browser reports from outside the strip — a synthetic event, a capture that
+ * arrived after the pointer had already moved — must not be able to offset the
+ * rest of the drag by an arbitrary amount.
+ */
+export function splitGrabOffset(
+  id: SplitId,
+  clientX: number,
+  shellLeft: number,
+  shellWidth: number,
+  current: number,
+): number {
+  const raw = splitWidthFromPointer(id, clientX, shellLeft, shellWidth) - current;
+  return clampSplitWidth(raw, { min: -SPLIT_HIT_WIDTH, max: SPLIT_HIT_WIDTH });
 }
 
 /**
@@ -289,6 +373,12 @@ export function splitWidthFromPointer(
  * cases the boundary itself moves the way the arrow points, which is the only
  * mapping a sighted keyboard user can predict. Home and End take the column to
  * the two numbers the same handle reports as `aria-valuemin` / `aria-valuemax`.
+ *
+ * PageDown/PageUp are the same rule at four times the step (DW-45): PageDown
+ * moves the boundary RIGHT and PageUp moves it LEFT at both dividers, so on the
+ * Preview handle PageDown narrows the Preview exactly as `ArrowRight` does. They
+ * clamp to the same bounds the arrows do, so a coarse press can never leave the
+ * range the separator announces.
  */
 export function nextSplitWidthFromKey(
   id: SplitId,
@@ -302,6 +392,10 @@ export function nextSplitWidthFromKey(
   const shrink = id === "tree" ? "ArrowLeft" : "ArrowRight";
   if (key === grow) return clampSplitWidth(current + SPLIT_KEY_STEP, bounds);
   if (key === shrink) return clampSplitWidth(current - SPLIT_KEY_STEP, bounds);
+  const pageGrow = id === "tree" ? "PageDown" : "PageUp";
+  const pageShrink = id === "tree" ? "PageUp" : "PageDown";
+  if (key === pageGrow) return clampSplitWidth(current + SPLIT_KEY_PAGE_STEP, bounds);
+  if (key === pageShrink) return clampSplitWidth(current - SPLIT_KEY_PAGE_STEP, bounds);
   return null;
 }
 

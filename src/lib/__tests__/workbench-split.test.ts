@@ -19,7 +19,7 @@
  *
  * The one number that must not drift is asserted against `globals.css` itself:
  * the TypeScript constants and the `--wb-*` token declarations are two copies of
- * six numbers, so the stylesheet is parsed and each pair compared.
+ * the same set, so the stylesheet is parsed and each pair compared.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
@@ -28,13 +28,18 @@ import {
   DEFAULT_SPLIT_WIDTHS,
   SPLIT_DEFAULT_PREVIEW,
   SPLIT_DEFAULT_TREE,
+  SPLIT_HIT_WIDTH,
+  SPLIT_KEY_PAGE_STEP,
   SPLIT_KEY_STEP,
   SPLIT_MIN_CANVAS,
   SPLIT_MIN_PREVIEW,
   SPLIT_MIN_TREE,
+  SPLIT_NARROW_QUERY,
   SPLIT_PREVIEW_LABEL,
   SPLIT_RAIL_WIDTH,
+  SPLIT_STACK_BREAKPOINT,
   SPLIT_TREE_LABEL,
+  SPLIT_WIDE_QUERY,
   clampSplitWidth,
   clampSplitWidths,
   isPrimarySplitPress,
@@ -44,6 +49,7 @@ import {
   nextSplitWidthFromKey,
   showSplitHandle,
   splitBounds,
+  splitGrabOffset,
   splitLabel,
   splitStyleVars,
   splitWidthFromPointer,
@@ -162,7 +168,7 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// The two copies of six numbers
+// The two copies of one set of numbers
 // ---------------------------------------------------------------------------
 
 describe("the geometry constants and the CSS tokens are one set of numbers", () => {
@@ -175,6 +181,11 @@ describe("the geometry constants and the CSS tokens are one set of numbers", () 
       ["--wb-split-min-tree", SPLIT_MIN_TREE],
       ["--wb-split-min-preview", SPLIT_MIN_PREVIEW],
       ["--wb-split-min-chat", SPLIT_MIN_CANVAS],
+      // The grab strip is the seventh (DW-44): the pointer target the stylesheet
+      // draws and the range `splitGrabOffset` clamps a press to are the same
+      // number, and a strip widened in one copy only would either re-expose the
+      // scrollbar it was offset away from or let a press outside it skew a drag.
+      ["--wb-split-hit", SPLIT_HIT_WIDTH],
       // The keyboard step is the same kind of claim: its docblock says it
       // restates the shell's largest spacing step, which is only true while
       // nothing moves either copy.
@@ -189,6 +200,46 @@ describe("the geometry constants and the CSS tokens are one set of numbers", () 
         declared: String(constant),
       });
     }
+  });
+
+  it("builds both breakpoint queries from one number the stylesheet also switches on", async () => {
+    // DW-47: the shell's sheet effect, its dock-reveal effect, `TreePanel`'s
+    // scroll memory and two mounted suites all used to hold their own copy of
+    // this string. Now there is one, and it is DERIVED from the same number.
+    //
+    // NOT complements, and deliberately not made into them: at a fractional
+    // width — 899.5px, routine under browser zoom and fractional DPI scaling —
+    // neither query matches. That gap is inherited from the four `@media` blocks
+    // in `globals.css`, which these two constants exist to MIRROR; the strings
+    // have to stay character-identical to those blocks, because other node
+    // suites slice the stylesheet by them. Closing the gap is a stylesheet
+    // decision, and it would have to be made in both places at once.
+    expect(SPLIT_WIDE_QUERY).toBe(`(min-width: ${SPLIT_STACK_BREAKPOINT}px)`);
+    expect(SPLIT_NARROW_QUERY).toBe(`(max-width: ${SPLIT_STACK_BREAKPOINT - 1}px)`);
+    // …and the number itself is pinned by the stylesheet rather than retyped
+    // here: the constant exists to observe blocks CSS already owns, so a change
+    // to `SPLIT_STACK_BREAKPOINT` alone stops matching any block in the file.
+    const css = await globals();
+    expect(css).toContain(`@media ${SPLIT_WIDE_QUERY}`);
+    expect(css).toContain(`@media ${SPLIT_NARROW_QUERY}`);
+  });
+
+  it("derives the coarse keyboard step from the fine one", async () => {
+    // `SPLIT_KEY_STEP * 4` rather than `64`: the two steps stay on one pixel
+    // grid, so every PageUp/PageDown lands on a width the arrows can also reach,
+    // and the module gains no eighth number to assert against the stylesheet.
+    expect(SPLIT_KEY_PAGE_STEP).toBe(SPLIT_KEY_STEP * 4);
+    const source = await readFile(path.join(SRC, "lib/workbench-split.ts"), "utf8");
+    expect(source).toContain("SPLIT_KEY_PAGE_STEP = SPLIT_KEY_STEP * 4");
+  });
+
+  it("keeps the grab strip at or above the target size DW-44 exists to reach", async () => {
+    // The pair test above only asserts the two copies AGREE — lowered together,
+    // they stay agreed and the suite stays green while the divider goes back
+    // under the floor. The MINIMUM is the contract: WCAG 2.2 AA SC 2.5.8 wants
+    // 24x24 CSS px, and the spacing exception does not rescue a narrower strip
+    // because the tree rows beside the divider are adjacent targets.
+    expect(SPLIT_HIT_WIDTH).toBeGreaterThanOrEqual(24);
   });
 
   it("declares --wb-split-min-chat so it finally has a reader", async () => {
@@ -349,6 +400,59 @@ describe("splitWidthFromPointer", () => {
       bounds.min,
     );
   });
+
+  it("leaves the grab offset at zero unless the caller measured one", () => {
+    // Story 1.6's behaviour exactly, and the reason the parameter is trailing
+    // with a default: an unmeasured shell must not become a silently skewed drag.
+    expect(splitWidthFromPointer("tree", 700, 0, 1400)).toBe(652);
+    expect(splitWidthFromPointer("tree", 700, 0, 1400, 0)).toBe(652);
+  });
+
+  it("subtracts a measured grab in both directions (DW-44)", () => {
+    expect(splitWidthFromPointer("tree", 1000, 0, 1400, 16)).toBe(1000 - 0 - 48 - 16);
+    // The Preview's raw width already runs the other way, so the SAME
+    // subtraction moves the boundary the same way relative to the pointer.
+    expect(splitWidthFromPointer("preview", 1100, 0, 1400, 16)).toBe(1400 - 1100 - 16);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The grab offset (DW-44)
+// ---------------------------------------------------------------------------
+
+describe("splitGrabOffset", () => {
+  it("reports how far a press inside the strip is from the boundary", () => {
+    // 350 raw against a 360 rendered Preview: the press landed 10px INSIDE the
+    // Preview, so the drag must run 10px behind the raw pointer width.
+    expect(splitGrabOffset("preview", 1050, 0, 1400, 360)).toBe(-10);
+  });
+
+  it("clamps a press the browser reports from outside the strip", () => {
+    // A press 672px right of the boundary, and one nowhere near it. Neither may
+    // offset the rest of the drag by more than the strip is wide, or a synthetic
+    // event — or a capture that arrived after the pointer had already moved —
+    // would skew every subsequent move.
+    expect(splitGrabOffset("tree", 1000, 0, 1400, 280)).toBe(SPLIT_HIT_WIDTH);
+    expect(splitGrabOffset("tree", 60, 0, 1400, 280)).toBe(-SPLIT_HIT_WIDTH);
+  });
+
+  it("cancels out, so the boundary does not jump to the pointer", () => {
+    // The whole point: feed the offset straight back into the same press and the
+    // width that comes out is the width already on screen. Without it a 24px
+    // strip offset entirely to one side snaps the divider up to 24px on the very
+    // first `pointermove`.
+    for (const [id, clientX, current] of [
+      ["tree", 1000, 940],
+      ["preview", 1050, 360],
+    ] as const) {
+      const grab = splitGrabOffset(id, clientX, 0, 1400, current);
+      expect(splitWidthFromPointer(id, clientX, 0, 1400, grab)).toBe(current);
+    }
+  });
+
+  it("is measured from the shell's own rect, like every other pointer answer", () => {
+    expect(splitGrabOffset("tree", 900, 200, 1400, 640)).toBe(900 - 200 - 48 - 640);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -379,6 +483,41 @@ describe("nextSplitWidthFromKey", () => {
     );
   });
 
+  it("moves the tree divider four steps at a time on PageDown/PageUp", () => {
+    // DW-45: with the arrow step alone, crossing the tree's real range is ~30
+    // presses. PageDown moves the BOUNDARY right, which widens the tree.
+    expect(nextSplitWidthFromKey("tree", "PageDown", 280, { min: 200, max: 900 })).toBe(
+      280 + SPLIT_KEY_PAGE_STEP,
+    );
+    expect(nextSplitWidthFromKey("tree", "PageUp", 280, { min: 200, max: 900 })).toBe(
+      280 - SPLIT_KEY_PAGE_STEP,
+    );
+  });
+
+  it("mirrors the coarse keys on the Preview, exactly as the arrows are mirrored", () => {
+    // PageDown moves the boundary right at BOTH dividers, which NARROWS the
+    // Preview — the same rule `ArrowRight` already follows. Getting this
+    // backwards is the mistake a sighted keyboard user notices immediately.
+    expect(
+      nextSplitWidthFromKey("preview", "PageDown", 360, { min: 200, max: 900 }),
+    ).toBe(360 - SPLIT_KEY_PAGE_STEP);
+    expect(nextSplitWidthFromKey("preview", "PageUp", 360, { min: 200, max: 900 })).toBe(
+      360 + SPLIT_KEY_PAGE_STEP,
+    );
+  });
+
+  it("clamps the coarse step to the same bounds the fine one obeys", () => {
+    // 210 - 64 is 146, which is under the floor the separator announces as
+    // `aria-valuemin`. A coarse step that could leave the range would be the
+    // same lie to a screen reader a drag past the clamp would be.
+    expect(nextSplitWidthFromKey("tree", "PageUp", 210, { min: 200, max: 900 })).toBe(
+      200,
+    );
+    expect(nextSplitWidthFromKey("tree", "PageDown", 880, { min: 200, max: 900 })).toBe(
+      900,
+    );
+  });
+
   it("takes the column to the ends of the range it announces", () => {
     for (const id of ["tree", "preview"] as const) {
       expect(nextSplitWidthFromKey(id, "Home", 400, bounds)).toBe(bounds.min);
@@ -400,13 +539,25 @@ describe("nextSplitWidthFromKey", () => {
       expect(nextSplitWidthFromKey("tree", key, 300, bounds)).toBeNull();
       expect(nextSplitWidthFromKey("preview", key, 300, bounds)).toBeNull();
     }
+    // The return TYPE is the whole signal: only a non-null answer makes the
+    // control call `preventDefault()`, so a claimed PageDown stops the browser
+    // scrolling the shell and an unclaimed Enter leaves every default intact.
+    expect(typeof nextSplitWidthFromKey("tree", "PageDown", 300, bounds)).toBe("number");
+    expect(nextSplitWidthFromKey("tree", "Enter", 300, bounds)).toBeNull();
   });
 
   it("moves to a width the same bounds would allow a drag to reach", () => {
     // One definition of the range: what a key press produces is inside what
     // `aria-valuemin`/`aria-valuemax` report, because both come from here.
     const live = splitBounds("tree", DEFAULTS, WIDE);
-    for (const key of ["ArrowLeft", "ArrowRight", "Home", "End"]) {
+    for (const key of [
+      "ArrowLeft",
+      "ArrowRight",
+      "PageUp",
+      "PageDown",
+      "Home",
+      "End",
+    ]) {
       const next = nextSplitWidthFromKey("tree", key, live.max, live);
       expect(next).not.toBeNull();
       expect(next as number).toBeGreaterThanOrEqual(live.min);
@@ -464,7 +615,7 @@ describe("treeScrollActive", () => {
   });
 
   it("runs for a collapsed column only while it is still rendered", () => {
-    // `@media (max-width: 899px)` force-shows a collapsed column: the tree is
+    // The narrow media block force-shows a collapsed column: the tree is
     // fully visible and scrollable there, and skipping it on the flag alone
     // would neither restore its offset nor remember it for every narrow load.
     expect(treeScrollActive(true, true)).toBe(true);
@@ -967,14 +1118,19 @@ describe("the shell wires the split without spelling any of it", () => {
 
   it("routes every drag and key press through the pure functions", async () => {
     const source = await component("Workbench.tsx");
-    expect(source).toContain("splitWidthFromPointer(id, clientX, rect.left, rect.width)");
+    expect(source).toMatch(
+      /splitWidthFromPointer\(\s*id,\s*clientX,\s*rect\.left,\s*rect\.width,\s*grabRef\.current,?\s*\)/,
+    );
     expect(source).toContain("nextSplitWidthFromKey(id, key, current, bounds)");
     expect(source).toContain("clampSplitWidth(raw, bounds)");
     expect(source).toContain("withSplitWidth(");
-    // The press ARMS the flag. Gutted to a no-op, `data-resizing` never turns
-    // on, `user-select: none` never applies, and every drag sweeps a text
-    // selection across the tree it passes over.
-    expect(source).toContain("const startResize = useCallback(() => setResizing(true), [])");
+    // The press ARMS the flag, and measures the grab (DW-44). Gutted to a
+    // no-op, `data-resizing` never turns on, `user-select: none` never applies,
+    // and every drag sweeps a text selection across the tree it passes over.
+    expect(source).toContain("setResizing(true);");
+    expect(source).toMatch(
+      /const beginResize = useCallback\(\s*\(id: SplitId, clientX: number, current: number\) => \{/,
+    );
     // The preference is written once per gesture, not once per pointermove:
     // localStorage is synchronous and a drag is ~60 events a second.
     expect(source).toMatch(
@@ -1131,16 +1287,61 @@ describe("the shell wires the split without spelling any of it", () => {
     expect(reads.length).toBe(2);
   });
 
-  it("spells no width, floor or step of its own", async () => {
+  it("spells no width, floor, step or breakpoint of its own", async () => {
     // Every number in this file is a JSX index, a token name or a comment. A
-    // bound typed here could only ever be grepped for.
+    // bound typed here could only ever be grepped for. `min-width` / `max-width`
+    // join the list for DW-47: the shell used to carry its own copy of the
+    // stacking query, which is how the stylesheet and the JavaScript were free
+    // to drift apart in the first place.
     const source = await component("Workbench.tsx");
-    for (const literal of ["200", "280", "320", "360", "1200", "1199", "48"]) {
-      expect({ literal, found: stripComments(source).includes(literal) }).toEqual({
+    const code = stripComments(source);
+    for (const literal of [
+      "200",
+      "280",
+      "320",
+      "360",
+      "1200",
+      "1199",
+      "900",
+      "899",
+      "48",
+      "min-width",
+      "max-width",
+    ]) {
+      expect({ literal, found: code.includes(literal) }).toEqual({
         literal,
         found: false,
       });
     }
+    // …and it observes the breakpoint through the one module that owns it.
+    expect(code).toContain("SPLIT_WIDE_QUERY");
+    expect(code).toContain("matchMedia(SPLIT_WIDE_QUERY)");
+  });
+
+  it("measures the grab once per press and replays it into every move (DW-44)", async () => {
+    // The shell owns the rect, so it owns the measurement — and `beginResize`
+    // is where the press's x becomes a grab. Dropping `grabRef.current` from the
+    // drag call is the failure this scan exists for: every assertion about the
+    // strip's width and position stays green while the boundary snaps up to
+    // 24px to the pointer on the first move.
+    const source = await component("Workbench.tsx");
+    expect(source).toContain("splitGrabOffset(id, clientX, rect.left, rect.width, current)");
+    expect(source).toContain("grabRef.current");
+    expect(source).toMatch(
+      /splitWidthFromPointer\(\s*id,\s*clientX,\s*rect\.left,\s*rect\.width,\s*grabRef\.current,?\s*\)/,
+    );
+    // Both handles report WHERE the press landed, and both name the element they
+    // resize (DW-45). An `aria-controls` on one divider and not the other is
+    // worse than neither.
+    expect(source).toContain('beginResize("tree", clientX, applied.tree)');
+    expect(source).toContain('beginResize("preview", clientX, applied.preview)');
+    expect(source).toContain("controls={LEFT_ID}");
+    expect(source).toContain("controls={PREVIEW_ID}");
+    // …and the id the Preview separator points at is on an element that exists
+    // whenever that separator does: `previewOpen` gates both.
+    expect(source).toContain("id={PREVIEW_ID}");
+    const preview = await component("PreviewColumn.tsx");
+    expect(preview).toContain('<aside id={id} className="wb-preview"');
   });
 });
 
@@ -1153,6 +1354,10 @@ describe("SplitHandle carries the semantics and none of the geometry", () => {
     expect(source).toContain("aria-valuenow={value}");
     expect(source).toContain("aria-valuemin={min}");
     expect(source).toContain("aria-valuemax={max}");
+    // DW-45: the ARIA window-splitter pattern names the pane a separator
+    // resizes. Required, not optional — see `SplitHandleProps`.
+    expect(source).toContain("aria-controls={controls}");
+    expect(source).toContain("controls: string;");
     expect(source).toContain("tabIndex={0}");
     expect(source).toContain("className={`wb-split-handle wb-split-handle--${id}`}");
   });
@@ -1164,6 +1369,11 @@ describe("SplitHandle carries the semantics and none of the geometry", () => {
       "if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;",
     );
     expect(source).toContain("onMove(event.clientX)");
+    // The press's x goes UP too (DW-44): the shell cannot compensate a grab it
+    // was never told the x of, and `onStart()` with no argument type-checks
+    // against a `(clientX: number) => void` prop.
+    expect(source).toContain("onStart(event.clientX)");
+    expect(source).toContain("onStart: (clientX: number) => void;");
     // `lostpointercapture` ALONE. The browser releases an implicit capture right
     // after dispatching `pointerup`, so wiring both to `onEnd` fires it twice on
     // every ordinary drag — two `setResizing(false)` calls and two synchronous
@@ -1222,14 +1432,14 @@ describe("TreePanel remembers where each tree was left", () => {
     expect(source).toContain("writeStoredTreeScroll(tab, panel.scrollTop)");
     // Both effects are keyed on the tab AND on the collapse, because showing a
     // hidden column is the moment the browser has just reset `scrollTop`.
-    expect(source.match(/\}, \[tab, collapsed\]\);/g) ?? []).toHaveLength(2);
+    expect(source.match(/\}, \[tab, collapsed, narrow\]\);/g) ?? []).toHaveLength(2);
   });
 
   it("asks the element whether it is showing, not the collapse flag", async () => {
     // A `display: none` column reports `scrollTop === 0` by the browser's own
     // rules, so a persist that ran there would overwrite the offset the owner is
     // about to come back to. But the FLAG is not that question: the
-    // `@media (max-width: 899px)` block force-shows a collapsed column, where the
+    // narrow media block force-shows a collapsed column, where the
     // tree is fully visible and scrollable — `if (collapsed) return;` would
     // neither restore nor remember its offset for every narrow load.
     const source = await component("TreePanel.tsx");
@@ -1243,12 +1453,29 @@ describe("TreePanel remembers where each tree was left", () => {
     expect(source).toContain(
       "return treeScrollActive(collapsed, panel.getClientRects().length > 0);",
     );
-    // No width comparison in JS: the breakpoint has one definition, in the
-    // stylesheet, and the element is what reports the outcome of it.
+    // No width comparison in JS, and no ad-hoc copy of the breakpoint: DW-47
+    // needs this panel to KNOW when the viewport crosses 900px, so a ban on
+    // `matchMedia` by name would forbid the fix itself. What stays banned is a
+    // literal — the query string has exactly one definition, in
+    // `workbench-split`, and the media BLOCK it mirrors has exactly one
+    // definition, in the stylesheet.
     const code = stripComments(source);
     expect(code).not.toContain("innerWidth");
-    expect(code).not.toContain("matchMedia");
     expect(code).not.toContain("899");
+    expect(code).not.toContain("900");
+    expect(code).not.toContain("max-width");
+    expect(code).toContain("matchMedia(SPLIT_NARROW_QUERY)");
+    // Guarded, because `TreePanel` renders on the server and a handful of
+    // embedded webviews ship no `matchMedia`: the listener returns early and the
+    // two effects keep running on the keys they always had.
+    expect(code).toContain(
+      'if (typeof window === "undefined" || !window.matchMedia) return;',
+    );
+    expect(code).toContain('query.addEventListener("change", onChange)');
+    expect(code).toContain('query.removeEventListener("change", onChange)');
+    // Seeded synchronously inside the effect rather than in `useState`, so the
+    // first render is the server's on both sides of the breakpoint.
+    expect(code).toContain("setNarrow(query.matches)");
     // …and the flag still reaches the panel, so both effects re-run on expand.
     const shell = await component("Workbench.tsx");
     expect(shell).toContain("collapsed={collapsed}");
@@ -1261,7 +1488,9 @@ describe("TreePanel remembers where each tree was left", () => {
     const css = await globals();
     // The FIRST 899px block — Story 1.3's, which owns the left column at this
     // width. The last one is Story 1.5's Preview dock.
-    const start = css.indexOf("@media (max-width: 899px)");
+    // Located through the shared constant, not a retyped literal: the block this
+    // reads and the query `TreePanel` listens to have to be the same one.
+    const start = css.indexOf(`@media ${SPLIT_NARROW_QUERY}`);
     expect(start).toBeGreaterThan(-1);
     const narrow = css.slice(start, css.indexOf("@media", start + 1));
     expect(narrow).toMatch(
@@ -1283,7 +1512,9 @@ describe("globals.css positions the divider from the grid's own properties", () 
     const css = await globals();
     expect(css.match(/^\.wb-shell \{$/gm) ?? []).toHaveLength(1);
     const tokens = tokenBlock(css);
-    expect(tokens).toContain("--wb-split-hit: 9px;");
+    // The VALUE is parsed against `SPLIT_HIT_WIDTH` above rather than retyped
+    // here — a literal in this file would be a third copy of the number.
+    expect(tokens).toMatch(/^\s*--wb-split-hit: \d+px;$/m);
     expect(tokens).toContain("position: relative;");
   });
 
@@ -1292,17 +1523,42 @@ describe("globals.css positions the divider from the grid's own properties", () 
     // reading the same custom property the track read makes the divider land on
     // the boundary by construction, inline override included.
     const css = await globals();
+    // Both strips start AT their boundary and extend RIGHT of it (DW-44), which
+    // is off `.wb-tree-body`'s scrollbar at the tree boundary and off
+    // `.wb-canvas`'s at the Preview boundary. A centred strip buries both; the
+    // Preview strip on the canvas side buries the canvas's under 24px of
+    // `z-index: 2` handle, which is a new regression rather than a fix.
     expect(css).toContain(
-      ".wb-split-handle--tree {\n  left: calc(var(--wb-rail) + var(--wb-tree) - var(--wb-split-hit) / 2);\n}",
+      ".wb-split-handle--tree {\n  left: calc(var(--wb-rail) + var(--wb-tree));\n}",
     );
+    // `right` is measured to the element's own right edge, so subtracting the
+    // strip width is what puts its LEFT edge on the boundary.
     expect(css).toContain(
-      ".wb-split-handle--preview {\n  right: calc(var(--wb-preview) - var(--wb-split-hit) / 2);\n}",
+      ".wb-split-handle--preview {\n  right: calc(var(--wb-preview) - var(--wb-split-hit));\n}",
     );
+    // …and the visible hairline stays exactly on the boundary, at the strip's
+    // leading edge. DW-44 asks for a wider TARGET, not a wider divider.
+    const beforeStart = css.indexOf(".wb-split-handle::before {");
+    expect(beforeStart).toBeGreaterThan(-1);
+    const before = css.slice(beforeStart, css.indexOf("}", beforeStart));
+    expect(before).toContain("left: 0;");
+    expect(before).toContain("width: 1px;");
+    // …EXCEPT at the Preview divider, where the boundary pixel is already
+    // painted by `.wb-preview`'s own `border-left: 1px solid var(--wb-border)` —
+    // same width, same colour. Left on the boundary the indicator would paint
+    // over a line that is always there, and focusing that separator would
+    // produce no visible change at all (WCAG 2.4.7). One pixel inside the border
+    // reads as the same 2px rule the tree side gets against `.wb-left`.
+    expect(css).toContain(".wb-preview {\n  grid-column: 4;");
+    expect(css.slice(css.indexOf(".wb-preview {"))).toMatch(
+      /^[\s\S]{0,400}?border-left: 1px solid var\(--wb-border\);/,
+    );
+    expect(css).toContain(".wb-split-handle--preview::before {\n  left: 1px;\n}");
     // SLICED, not searched whole-file: `cursor: col-resize;` is also declared on
     // `.wb-split-handle` itself, so an unscoped `toContain` stays green with
     // this rule emptied — and every drag then sweeps a text selection across
     // the tree labels it passes over, with the cursor reverting each time the
-    // pointer leaves the 9px strip. The prefixed form is asserted too: Safari
+    // pointer leaves the grab strip. The prefixed form is asserted too: Safari
     // only dropped `-webkit-` for this property in 17.4.
     const resizingStart = css.indexOf('.wb-shell[data-resizing="true"] {');
     expect(resizingStart).toBeGreaterThan(-1);

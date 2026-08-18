@@ -18,12 +18,14 @@ import {
 } from "@/lib/workbench-modes";
 import {
   DEFAULT_SPLIT_WIDTHS,
+  SPLIT_WIDE_QUERY,
   clampSplitWidth,
   clampSplitWidths,
   layoutSignature,
   nextSplitWidthFromKey,
   showSplitHandle,
   splitBounds,
+  splitGrabOffset,
   splitLabel,
   splitStyleVars,
   splitWidthFromPointer,
@@ -131,14 +133,19 @@ export interface WorkbenchProps {
   reviewCount?: number;
 }
 
-/** Below this the rail becomes an off-canvas sheet (DESIGN.md Layout). */
-const WIDE_QUERY = "(min-width: 900px)";
-
 /** Stable so the sheet trigger can name the rail it opens via `aria-controls`. */
 const RAIL_ID = "wb-mode-rail";
 
 /** Stable so the rail's collapse chevron can name the column it toggles. */
 const LEFT_ID = "wb-left-column";
+
+/**
+ * Stable so the Preview divider can name the column it resizes (DW-45). The
+ * `<aside>` is rendered only while `previewOpen`, and `shouldDockPreview` makes
+ * that the same condition `showSplitHandle("preview", …)` reports — so the id
+ * this separator points at exists for exactly as long as the separator does.
+ */
+const PREVIEW_ID = "wb-preview-column";
 
 export function Workbench({ children, todoCount = 0, reviewCount = 0 }: WorkbenchProps) {
   // The left column's working set is server-loaded in `page.tsx` and handed
@@ -762,7 +769,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // left open would sit over a rail that is already visible.
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
-    const query = window.matchMedia(WIDE_QUERY);
+    const query = window.matchMedia(SPLIT_WIDE_QUERY);
     const onChange = () => {
       // No focus restore on this path: the trigger is `display: none` above the
       // breakpoint, so focusing it would drop the keyboard user on <body>.
@@ -789,8 +796,26 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     }
   }, [sheetOpen]);
 
-  // The press begins; the shell suppresses text selection for its duration.
-  const startResize = useCallback(() => setResizing(true), []);
+  // Where inside the grab strip the press landed, in width space (DW-44).
+  // Measured ONCE on `pointerdown` and replayed into every `pointermove`, so the
+  // boundary tracks the pointer's displacement instead of jumping to it — which
+  // a 24px strip offset entirely to one side of the boundary would otherwise do
+  // by up to its own full width on the first move.
+  const grabRef = useRef(0);
+
+  // The press begins; the shell suppresses text selection for its duration, and
+  // records the grab. The shell owns the rect, so it owns the measurement; WHAT
+  // the measurement means — and the clamp that keeps a press reported from
+  // outside the strip from offsetting the drag arbitrarily — is
+  // `workbench-split`'s answer.
+  const beginResize = useCallback((id: SplitId, clientX: number, current: number) => {
+    const shell = shellRef.current;
+    const rect = shell?.getBoundingClientRect();
+    grabRef.current = rect
+      ? splitGrabOffset(id, clientX, rect.left, rect.width, current)
+      : 0;
+    setResizing(true);
+  }, []);
 
   // …and ends. The preference is written ONCE, here, rather than on every
   // pointermove: a drag is ~60 events a second, and localStorage is synchronous.
@@ -805,7 +830,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     const shell = shellRef.current;
     if (!shell) return;
     const rect = shell.getBoundingClientRect();
-    const raw = splitWidthFromPointer(id, clientX, rect.left, rect.width);
+    const raw = splitWidthFromPointer(id, clientX, rect.left, rect.width, grabRef.current);
     setWidths((current) => withSplitWidth(current, id, clampSplitWidth(raw, bounds)));
   }, []);
 
@@ -854,7 +879,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     // The WIDE layout already has the column on screen; scrolling there would
     // move a shell that does not scroll and, in a browser that honours it, jump
     // the canvas for no reason.
-    if (window.matchMedia(WIDE_QUERY).matches) return;
+    if (window.matchMedia(SPLIT_WIDE_QUERY).matches) return;
     // An optional CALL, not a feature test: jsdom ships no `scrollIntoView` and
     // neither do a few embedded webviews, and a dock that throws is strictly
     // worse than a dock the owner has to scroll to themselves.
@@ -983,7 +1008,8 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
           value={applied.tree}
           min={treeBounds.min}
           max={treeBounds.max}
-          onStart={startResize}
+          controls={LEFT_ID}
+          onStart={(clientX) => beginResize("tree", clientX, applied.tree)}
           onMove={(clientX) => dragTo("tree", clientX, treeBounds)}
           onEnd={endResize}
           onKey={(key) => pressResizeKey("tree", key, applied.tree, treeBounds)}
@@ -1008,7 +1034,8 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
           value={applied.preview}
           min={previewBounds.min}
           max={previewBounds.max}
-          onStart={startResize}
+          controls={PREVIEW_ID}
+          onStart={(clientX) => beginResize("preview", clientX, applied.preview)}
           onMove={(clientX) => dragTo("preview", clientX, previewBounds)}
           onEnd={endResize}
           onKey={(key) => pressResizeKey("preview", key, applied.preview, previewBounds)}
@@ -1019,6 +1046,8 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
           → canvas → Preview without a single `tabindex` (EXPERIENCE.md:165). */}
       {previewOpen && (
         <PreviewColumn
+          // The id the Preview separator's `aria-controls` names (DW-45).
+          id={PREVIEW_ID}
           selection={selection}
           knowledge={knowledge}
           files={files}

@@ -39,8 +39,22 @@ export interface SplitHandleProps {
   /** The range the parent's clamp enforces, in whole pixels. */
   min: number;
   max: number;
-  /** The press began — the shell arms `data-resizing`. */
-  onStart: () => void;
+  /**
+   * The id of the element this separator resizes (DW-45) — the left column for
+   * the tree divider, the docked Preview `<aside>` for the Preview one. The ARIA
+   * window-splitter pattern names the pane a separator governs, and a screen
+   * reader has no other way to learn which of the two boundaries it is on.
+   * Required rather than optional: an `aria-controls` pointing at nothing is
+   * worse than none, and a shell that forgot it is a compile error.
+   */
+  controls: string;
+  /**
+   * The press began — the shell arms `data-resizing`. The viewport x comes with
+   * it so the shell can measure WHERE inside the 24px strip the press landed and
+   * compensate the drag; without it the boundary jumps to the pointer by up to
+   * the strip's full width on the first move.
+   */
+  onStart: (clientX: number) => void;
   /** The pointer moved while captured. Raw viewport x; the shell does the maths. */
   onMove: (clientX: number) => void;
   /**
@@ -62,6 +76,7 @@ export function SplitHandle({
   value,
   min,
   max,
+  controls,
   onStart,
   onMove,
   onEnd,
@@ -75,6 +90,7 @@ export function SplitHandle({
       aria-valuenow={value}
       aria-valuemin={min}
       aria-valuemax={max}
+      aria-controls={controls}
       tabIndex={0}
       className={`wb-split-handle wb-split-handle--${id}`}
       onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
@@ -83,10 +99,10 @@ export function SplitHandle({
         // button held for as long as the context menu is open. The rule itself
         // lives in `workbench-split` so the suite can run it.
         if (!isPrimarySplitPress(event)) return;
-        // Capture keeps the drag alive when the pointer outruns the 9px strip,
+        // Capture keeps the drag alive when the pointer outruns the grab strip,
         // which it does on the very first move.
         event.currentTarget.setPointerCapture(event.pointerId);
-        onStart();
+        onStart(event.clientX);
       }}
       onPointerMove={(event: PointerEvent<HTMLDivElement>) => {
         // Capture is the drag state: without this the divider would follow a

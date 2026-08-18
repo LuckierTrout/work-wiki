@@ -5,6 +5,7 @@ import {
   WorkbenchDataProvider,
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
+import { SPLIT_WIDE_QUERY } from "@/lib/workbench-split";
 import {
   PREVIEW_CLOSED_COPY,
   PREVIEW_EDIT_CONFIRM_LABEL,
@@ -45,9 +46,6 @@ import { setMediaQuery } from "../../../../vitest.setup.dom";
 // calls it — `DataVersionWatcher` owns the only refresh in the shell.
 const { router } = vi.hoisted(() => ({ router: { refresh: vi.fn() } }));
 vi.mock("next/navigation", () => ({ useRouter: () => router }));
-
-/** The query the shell's breakpoint effects use. Module-private, so restated. */
-const WIDE_QUERY = "(min-width: 900px)";
 
 const WIKI_ID = "wiki-1";
 
@@ -380,9 +378,9 @@ describe("a docked column below 900px is reachable (DW-34)", () => {
 
   it("does not scroll when the column is already a column", async () => {
     await renderShell();
-    // `matchMedia(WIDE_QUERY)` has been observed by the shell's own breakpoint
+    // `matchMedia(SPLIT_WIDE_QUERY)` has been observed by the shell's own breakpoint
     // effect, so the shim will accept the move.
-    act(() => setMediaQuery(WIDE_QUERY, true));
+    act(() => setMediaQuery(SPLIT_WIDE_QUERY, true));
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
 
     fireEvent.click(row("Alpha"));

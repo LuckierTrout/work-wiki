@@ -393,7 +393,8 @@ location: src/app/globals.css (.wb-split-handle), src/lib/workbench-split.ts
 source_spec: `spec-1-6-drag-resize-and-durable-layout.md`
 severity: low
 reason: `--wb-split-hit: 9px` centred on the boundary puts ~4.5px of the strip over the tree column, which is exactly where `.wb-tree-body`'s scrollbar sits, and leaves the target far short of SC 2.5.8's 24×24 CSS px (the spacing exception does not apply — tree rows are adjacent targets). The epic's floor calls AA "a target", and 9px is the width every desktop splitter uses, so this is a deliberate trade rather than an oversight. Widening the strip to 24px is not the obvious fix either: it would cover the scrollbar entirely and eat 12px of the canvas edge. Deciding between a wider strip, an offset strip, and a documented exception is a chrome decision for whichever story revisits the shell's pointer targets.
-status: open
+status: done 2026-08-18
+resolution: resolved by sweep bundle dw2-split-divider-target-and-responsiveness
 decision: 2026-08-17 Offset the strip off the scrollbar — Keep the visual divider at its current width but move the hit strip fully onto the canvas side of the boundary and widen it toward 24px there, so the scrollbar stays reachable and the target grows. Verify against the tree's scrollbar at both collapsed and expanded widths.
 decision: 2026-08-16 Offset the strip off the scrollbar — Keep the visual divider at its current width but move the hit strip fully onto the canvas side of the boundary and widen it toward 24px there, so the scrollbar stays reachable and the target grows. Verify against the tree's scrollbar at both collapsed and expanded widths.
 
@@ -403,7 +404,8 @@ location: src/components/workbench/SplitHandle.tsx, src/lib/workbench-split.ts
 source_spec: `spec-1-6-drag-resize-and-durable-layout.md`
 severity: low
 reason: The ARIA window-splitter pattern names the pane a separator resizes via `aria-controls`. The tree divider could point at `LEFT_ID`, which the shell already declares — but the Preview divider would need an id on `.wb-preview`, and `PreviewColumn.tsx` is outside the set of existing files this story's Code Map allows it to edit. Wiring one and not the other is worse than wiring neither. The same applies to PageUp/PageDown: with `SPLIT_KEY_STEP = 16`, crossing the tree's real range is ~30 presses. Both belong with whichever story next opens the Preview column's markup.
-status: open
+status: done 2026-08-18
+resolution: resolved by sweep bundle dw2-split-divider-target-and-responsiveness
 
 ### DW-46: The restore validates a stored row against the two trees and the Wiki id, but never against the tree TAB it restores alongside it.
 origin: spec-deferred ce30a7341cbf
@@ -422,7 +424,8 @@ location: src/components/workbench/TreePanel.tsx (the two scroll effects)
 source_spec: `spec-1-6-drag-resize-and-durable-layout.md`
 severity: low
 reason: `treeScrollActive` correctly asks the element rather than the collapse flag, because `@media (max-width: 899px)` force-shows a collapsed column. But both effects are keyed `[tab, collapsed]`, and neither changes when the viewport crosses 900px mid-session — so an owner who is collapsed and narrows the window gets a fully visible, scrollable tree whose offset is neither restored nor recorded until they next switch tabs. A load at that width is fine; only the live transition is missed. Closing it needs a `matchMedia("(max-width: 899px)")` listener in `TreePanel`, which is a second copy of a breakpoint this story deliberately keeps in the stylesheet (and which `workbench-split.test.ts` bans by name). Whether that trade is worth making belongs with whichever story revisits the left column's responsive behaviour.
-status: open
+status: done 2026-08-18
+resolution: resolved by sweep bundle dw2-split-divider-target-and-responsiveness
 decision: 2026-08-17 Allow one shared breakpoint constant — Introduce a single exported breakpoint constant consumed by both the stylesheet build and TreePanel's matchMedia listener, add the listener to both scroll effects so the live 900px transition restores and records the offset, and retarget the workbench-split.test.ts ban to forbid ad-hoc duplicate literals rather than the shared constant.
 decision: 2026-08-16 Allow one shared breakpoint constant — Introduce a single exported breakpoint constant consumed by both the stylesheet build and TreePanel's matchMedia listener, add the listener to both scroll effects so the live 900px transition restores and records the offset, and retarget the workbench-split.test.ts ban to forbid ad-hoc duplicate literals rather than the shared constant.
 
@@ -1714,4 +1717,36 @@ source_spec: `spec-dw-41-workbench-file-listing-gate.md`
 location: src/lib/workbench-files.ts (wikiLeafFilter, resolveWorkbenchFile); src/app/api/workbench/preview/route.ts
 severity: low
 reason: `wikiLeafFilter` says `depth === 1` (`src/lib/workbench-files.ts`), `resolveWorkbenchFile` says `rest.length !== 1` in a different numbering, and the preview route says `segments.length === 2 && segments[0] === "wiki"`. DW-41 derived the NAME half from one predicate (`readableWikiLeaf`) precisely so it could not drift; the DEPTH half was left restated in each place, held together only by the new "never lists a wiki path the read gate would refuse" test and by prose warnings in three doc comments. Extracting a single shared predicate is not blocked by DW-41's Block If, which froze only the two FILTERS as distinct functions — but it touches the preview route's page/file disambiguation, which DW-41's intent puts out of bounds.
+status: open
+
+### DW-205: The widened 24px grab strip now overlays the leftmost 24px of the canvas and of the docked Preview, so a click, text selection or touch-pan that starts there hits the divider instead of the content.
+origin: spec-deferred 2f67eae2f508
+source_spec: `spec-dw-44-split-divider-target-and-responsiveness.md`
+location: src/app/globals.css (.wb-split-handle--tree, .wb-split-handle--preview)
+severity: low
+reason: `.wb-split-handle` is `z-index: 2`, `cursor: col-resize`, `touch-action: none` and full height, and both modifiers now start AT their boundary and extend 24px right. `.wb-canvas-pad` and `.wb-preview-body` are both `padding: ... var(--wb-space-4)` = 16px, so the strip covers the whole gutter plus ~8px of real content in each pane: the first characters of a line, and a wikilink sitting at the left margin, are unclickable and unselectable, and on a touchscreen at 1200px+ that band cannot be panned. DW-44's ledger named "eat 12px of the canvas edge" as the known cost of widening and its decision took the trade anyway, so this is authorised rather than accidental - but the decision reasoned about scrollbars, never about what the strip would cover, and 24px offset to one side eats twice what the entry quantified. Choosing between a narrower strip that misses SC 2.5.8, matching left padding on both panes, and a documented exception is the same chrome decision DW-44 was, one boundary further
+status: open
+
+### DW-206: One stored tree scroll offset per tab is shared across the 900px breakpoint, where `.wb-tree-body` is capped at 40vh - so crossing into the narrow layout restores a desktop offset the browser clamps,
+origin: spec-deferred d620d0a1c5f8
+source_spec: `spec-dw-44-split-divider-target-and-responsiveness.md`
+location: src/components/workbench/TreePanel.tsx (the two scroll effects), src/lib/workbench-state.ts (WORKBENCH_TREE_SCROLL_KEY)
+severity: low
+reason: `globals.css` caps `.wb-tree-body` at `max-height: 40vh` below 900px, a far shorter scroll range than the desktop column. The restore effect assigns `panel.scrollTop = readStoredTreeScroll()[tab]`; a value past the narrow maximum is clamped by the browser, the clamp fires a `scroll` event, and the persist effect writes the clamped number back - so widening again lands the tree somewhere it never was. This is pre-existing in kind: a narrow LOAD already does exactly this, because `WORKBENCH_TREE_SCROLL_KEY` stores one offset per tab and not one per width. DW-47's listener does not create it, but it adds a second route into it (resizing) that used to be inert. Closing it means keying the stored offset by width band, or skipping the persist for a write the restore itself provoked - either is a storage-shape decision, not a patch.
+status: open
+
+### DW-207: A divider's hover and focus-visible states paint an identical 1px `var(--wb-border)` line, so keyboard focus is visually indistinguishable from hover, and a border-token hairline is unlikely to clear
+origin: spec-deferred 7afb956d7e51
+source_spec: `spec-dw-44-split-divider-target-and-responsiveness.md`
+location: src/app/globals.css (.wb-split-handle:hover::before, .wb-split-handle:focus-visible::before)
+severity: low
+reason: `globals.css` declares one rule for both states: `.wb-split-handle:hover::before, .wb-split-handle:focus-visible::before { background: var(--wb-border); }`. Two separate problems sit on it. First, SC 1.4.11 wants a focus indicator at 3:1 against adjacent colours, and `--wb-border` is chosen to be a quiet separator colour against exactly the panel surfaces it now has to stand out from - the last pass's `--wb-split-hit--preview::before { left: 1px }` patch made the indicator VISIBLE (WCAG 2.4.7) without touching whether it is visible ENOUGH. Second, the two states are pixel-identical, so a keyboard user cannot tell focus from a stray pointer, and DW-44's widening enlarges the hover region that produces the focus appearance from 9px to 24px. This is pre-existing from Story 1.6 in kind - neither the colour nor the shared rule changed here - but the widened strip is what makes the ambiguity routine. Fixing it means choosing an indicator token (an outline, a second colour, a wider rule) agai
+status: open
+
+### DW-208: TreePanel's persist effect cancels a pending requestAnimationFrame write in its cleanup without flushing it, so a scroll in the last frame before a tab switch, a collapse, or now a breakpoint crossing
+origin: spec-deferred 246ae7a17f3f
+source_spec: `spec-dw-44-split-divider-target-and-responsiveness.md`
+location: src/components/workbench/TreePanel.tsx (the persist effect's cleanup)
+severity: low
+reason: The persist effect coalesces through one frame (`if (frame !== 0) return; frame = requestAnimationFrame(...)`) and its cleanup ends `if (frame !== 0) cancelAnimationFrame(frame);` - the queued `writeStoredTreeScroll(tab, panel.scrollTop)` never runs. The restore effect then re-runs on the same dep change and assigns the stored value, which is now one frame stale. Pre-existing for `tab` and `collapsed`; DW-47's `narrow` dep adds resizing as a third route into it. The fix is not a safe one-liner: at cleanup time React has already committed the DOM, so on a collapse the panel can be `display: none`, where `scrollTop` reads 0 - and the obvious guard does not help, because `treeBodyShowing(panel, collapsed)` closes over the STALE `collapsed` (still `false`) and `treeScrollActive` returns `!collapsed || rendered`, i.e. `true` regardless of the element. A correct flush has to ask the element directly (`panel.getClientRects().length > 0`), and jsdom answers for every attached element, so the g
 status: open

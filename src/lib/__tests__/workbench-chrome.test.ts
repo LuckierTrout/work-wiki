@@ -283,7 +283,10 @@ describe("Workbench shell", () => {
     expect(source).toContain("wb-backdrop");
     expect(source).toContain("closeSheet");
     expect(source).toContain("matchMedia(");
-    expect(source).toContain('"(min-width: 900px)"');
+    // The subject is that the shell OBSERVES the breakpoint, not where the
+    // string is typed. DW-47 moved the query into `workbench-split` so the
+    // stylesheet's blocks and every JavaScript reader of them share one number.
+    expect(source).toContain("matchMedia(SPLIT_WIDE_QUERY)");
   });
 });
 

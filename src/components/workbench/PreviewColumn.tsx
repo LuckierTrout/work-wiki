@@ -112,10 +112,21 @@ export interface PreviewColumnProps {
    */
   onDirtyChange: (dirty: boolean) => void;
   /**
+   * The DOM id the `<aside>` carries (DW-45).
+   *
+   * The Preview divider is a `role="separator"`, and the ARIA window-splitter
+   * pattern names the pane a separator resizes through `aria-controls`. The shell
+   * owns both the handle and this column, so it owns the id that ties them
+   * together — required rather than optional, because an `aria-controls` that
+   * resolves to nothing is worse than none and a shell that forgot to pass it
+   * should not compile.
+   */
+  id: string;
+  /**
    * Forwarded onto the `<aside>` so the SHELL can scroll the docked column into
-   * view below 900px (DW-34), where it is a stacked fourth row rather than a
-   * column beside the canvas. The shell owns the dock, so it owns the reveal;
-   * this column never reads the viewport and never scrolls itself.
+   * view below the stacking breakpoint (DW-34), where it is a stacked fourth row
+   * rather than a column beside the canvas. The shell owns the dock, so it owns
+   * the reveal; this column never reads the viewport and never scrolls itself.
    */
   ref?: Ref<HTMLElement>;
 }
@@ -135,6 +146,7 @@ export function PreviewColumn({
   onOpenPage,
   dataVersion,
   onDirtyChange,
+  id,
   ref,
 }: PreviewColumnProps) {
   // No selection, no column — the shell already decides this with
@@ -149,6 +161,7 @@ export function PreviewColumn({
       onOpenPage={onOpenPage}
       dataVersion={dataVersion}
       onDirtyChange={onDirtyChange}
+      id={id}
       ref={ref}
     />
   );
@@ -161,6 +174,7 @@ function PreviewPane({
   onOpenPage,
   dataVersion,
   onDirtyChange,
+  id,
   ref,
 }: PreviewColumnProps & { selection: TreeSelection }) {
   const [payload, setPayload] = useState<PreviewPayload | null>(null);
@@ -531,7 +545,7 @@ function PreviewPane({
   }
 
   return (
-    <aside className="wb-preview" aria-label="Preview" ref={ref}>
+    <aside id={id} className="wb-preview" aria-label="Preview" ref={ref}>
       <header className="wb-preview-head">
         <strong className="wb-preview-title">Preview</strong>
         <span className="wb-preview-name">{name}</span>

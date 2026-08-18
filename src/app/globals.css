@@ -2376,11 +2376,15 @@ textarea.studio-input { resize: vertical; }
      indent — `mockups/chat-cited.html:108` and `mockups/todos.html:111`. */
   --wb-preview: 360px;
   --wb-tree-indent: 12px;
-  /* Story 1.6: the grab strip a divider offers. The only geometry token this
-     story adds — every width and floor it clamps to is already above, and
-     `workbench-split.ts` restates exactly those six. Wider than the 1px hairline
-     it draws, because a 1px pointer target is not one. */
-  --wb-split-hit: 9px;
+  /* Story 1.6: the grab strip a divider offers, widened to WCAG 2.2 AA SC
+     2.5.8's 24x24 CSS px minimum (DW-44). The only geometry token this story
+     adds — every width and floor it clamps to is already above, and
+     `workbench-split.ts` restates those six plus this one, which DW-44's widened
+     target makes load-bearing in both copies. Wider than the 1px hairline
+     it draws, because a 1px pointer target is not one; the spacing exception
+     does not rescue 9px here, since the tree rows beside the divider are
+     adjacent targets. */
+  --wb-split-hit: 24px;
 
   /* Type — DESIGN.md `typography.ui` / `ui-strong` / `title` / `mono`. */
   --wb-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -3653,16 +3657,20 @@ body:has(.wb-shell) {
      and pointer capture never sees the moves. */
   touch-action: none;
 }
-/* The visible hairline is a pseudo-element centred in the grab strip, so the
-   target can be 9px wide while the divider still reads as a 1px rule. It is
-   invisible at rest: the columns already have borders, and a second permanent
-   line beside them would be chrome the layout does not need. */
+/* The visible hairline is a pseudo-element at the strip's LEADING edge, so the
+   target can be 24px wide while the divider still reads as a 1px rule sitting
+   exactly on the boundary. Both modifiers below start AT the boundary and extend
+   to its right, so `left: 0` is the boundary for both — DW-44 asks to keep the
+   visual divider at its current width, and this is what keeps the widened target
+   from also widening the line. It is invisible at rest: the columns already have
+   borders, and a second permanent line beside them would be chrome the layout
+   does not need. */
 .wb-split-handle::before {
   content: "";
   position: absolute;
   top: 0;
   bottom: 0;
-  left: calc((var(--wb-split-hit) - 1px) / 2);
+  left: 0;
   width: 1px;
   background: transparent;
 }
@@ -3670,15 +3678,39 @@ body:has(.wb-shell) {
 .wb-split-handle:focus-visible::before {
   background: var(--wb-border);
 }
+/* Both strips start AT their boundary and extend RIGHT of it (DW-44), which is
+   off the scrollbar in both cases and so collapses to one rule. `.wb-tree-body`
+   is `overflow: auto`, so the tree's scrollbar sits at the tree/canvas boundary;
+   `.wb-canvas` is `overflow: auto` too, so ITS scrollbar sits at the
+   canvas/Preview boundary. Centring a 24px strip would bury both, and putting
+   the Preview's strip on the canvas side would bury the canvas's under 24px of
+   `z-index: 2` handle — unscrollable by mouse wherever the platform draws
+   classic scrollbars. Offsetting rightwards keeps every scrollbar clickable. */
 .wb-split-handle--tree {
-  left: calc(var(--wb-rail) + var(--wb-tree) - var(--wb-split-hit) / 2);
+  left: calc(var(--wb-rail) + var(--wb-tree));
 }
+/* `right` is measured to the element's own right edge, so subtracting the strip
+   width puts its LEFT edge on the boundary — the same relationship the tree's
+   `left` states directly. */
 .wb-split-handle--preview {
-  right: calc(var(--wb-preview) - var(--wb-split-hit) / 2);
+  right: calc(var(--wb-preview) - var(--wb-split-hit));
+}
+/* …and its indicator steps ONE pixel inside that boundary. The boundary pixel
+   at this divider is already painted: `.wb-preview` carries
+   `border-left: 1px solid var(--wb-border)`, the same width and the same colour
+   this pseudo-element draws. Left at `left: 0` the focus and hover states would
+   paint over a line that is always there, so focusing the Preview separator
+   would produce no visible change at all (WCAG 2.4.7). Offsetting by the
+   border's own width puts the indicator immediately inside it, which reads as
+   the same 2px rule the tree side already produces against `.wb-left`'s
+   `border-right`. The tree side needs no override: nothing paints the canvas's
+   first pixel. */
+.wb-split-handle--preview::before {
+  left: 1px;
 }
 /* A drag that selects the tree labels it passes over is a drag the owner has to
    undo afterwards, and the cursor must not revert every time the pointer leaves
-   the 9px strip mid-gesture. */
+   the grab strip mid-gesture. */
 .wb-shell[data-resizing="true"] {
   cursor: col-resize;
   /* Prefixed too: Safari only dropped `-webkit-` for this property in 17.4, and

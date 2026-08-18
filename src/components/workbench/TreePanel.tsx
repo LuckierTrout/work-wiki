@@ -8,7 +8,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { treeScrollActive } from "@/lib/workbench-split";
+import { SPLIT_NARROW_QUERY, treeScrollActive } from "@/lib/workbench-split";
 import { readStoredTreeScroll, writeStoredTreeScroll } from "@/lib/workbench-state";
 import {
   FILES_EMPTY_COPY,
@@ -120,15 +120,42 @@ export function TreePanel({
 
   const panelId = `${baseId}-panel`;
 
+  // Is the viewport below the stacking breakpoint (DW-47)?
+  //
+  // Crossing it is the ONE transition that changes whether this panel is on
+  // screen without `tab` or `collapsed` moving: the stylesheet force-shows a
+  // collapsed left column there, so an owner who is collapsed and narrows the
+  // window gets a fully visible, scrollable tree whose offset would otherwise be
+  // neither restored nor recorded until the next tab switch. The query itself is
+  // `workbench-split`'s single copy of the breakpoint — this component spells no
+  // width and reads no `innerWidth`; it only re-runs the two effects below, which
+  // still ask the ELEMENT whether it is showing.
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    // SSR, and the handful of embedded webviews without the API: the effect
+    // returns early and the two effects keep their original keys, which is
+    // exactly Story 1.6's behaviour.
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const query = window.matchMedia(SPLIT_NARROW_QUERY);
+    // Seeded synchronously here rather than in `useState`, so the first render is
+    // the server's on both sides of the breakpoint.
+    setNarrow(query.matches);
+    const onChange = (event: MediaQueryListEvent) => setNarrow(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+
   // Where the owner left this tab. Restored per tab because the two trees are
   // different lengths — one shared offset would drop them somewhere arbitrary on
   // whichever tab they did not leave. Keyed on `collapsed` too: showing a column
-  // again is the moment the browser has just reset `scrollTop` to 0.
+  // again is the moment the browser has just reset `scrollTop` to 0. And on
+  // `narrow`, because the stylesheet force-shows a collapsed column below the
+  // breakpoint — the same moment, reached by resizing rather than by clicking.
   useEffect(() => {
     const panel = bodyRef.current;
     if (!panel || !treeBodyShowing(panel, collapsed)) return;
     panel.scrollTop = readStoredTreeScroll()[tab];
-  }, [tab, collapsed]);
+  }, [tab, collapsed, narrow]);
 
   // …and remembering it. Coalesced through `requestAnimationFrame` because a
   // scroll fires far faster than localStorage writes synchronously, and skipped
@@ -151,7 +178,7 @@ export function TreePanel({
       panel.removeEventListener("scroll", onScroll);
       if (frame !== 0) cancelAnimationFrame(frame);
     };
-  }, [tab, collapsed]);
+  }, [tab, collapsed, narrow]);
 
   function body() {
     if (unavailable) {

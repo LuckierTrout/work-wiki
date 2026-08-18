@@ -5,6 +5,7 @@ import {
   WorkbenchDataProvider,
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
+import { SPLIT_WIDE_QUERY } from "@/lib/workbench-split";
 import { setMediaQuery } from "../../../../vitest.setup.dom";
 
 /**
@@ -22,9 +23,6 @@ import { setMediaQuery } from "../../../../vitest.setup.dom";
 // every re-render.
 const { router } = vi.hoisted(() => ({ router: { refresh: vi.fn() } }));
 vi.mock("next/navigation", () => ({ useRouter: () => router }));
-
-/** Mirrors `Workbench.tsx`'s module-private `WIDE_QUERY`. */
-const WIDE_QUERY = "(min-width: 900px)";
 
 const DATA: WorkbenchData = {
   wikis: [],
@@ -150,7 +148,7 @@ describe("Workbench sheet", () => {
     const { trigger, rail } = await openSheet();
     const focused = document.activeElement;
 
-    act(() => setMediaQuery(WIDE_QUERY, true));
+    act(() => setMediaQuery(SPLIT_WIDE_QUERY, true));
 
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     // The trigger is `display: none` above the breakpoint, so restoring focus
