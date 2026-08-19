@@ -39,7 +39,16 @@ const CONFIG_KEY = "_idx:email-ingest-config";
 const MAX_RAW_EMAIL_BYTES = 10 * 1024 * 1024;
 const MAX_EMAIL_CONTENT_CHARS = 100_000;
 const TRUNCATION_MARKER = "\n\n[Email body truncated]";
-const SUPPORTED_EXTENSIONS = new Set([
+/**
+ * Duplicates the app extractor's allowlist (`SUPPORTED_DOCUMENT_EXTENSIONS` and
+ * `SUPPORTED_DOCUMENT_MIME_TYPES` in `src/lib/document-extract.ts`). The
+ * duplication is forced: this module is bundled for Cloudflare and cannot import
+ * from `src/lib`. Both sets are exported so
+ * `src/lib/__tests__/email-ingest-allowlist-parity.test.ts` can pin them against
+ * the extractor's own lists — a format added on either side fails that test
+ * until it is added on the other.
+ */
+export const SUPPORTED_EXTENSIONS: ReadonlySet<string> = new Set([
   "md",
   "markdown",
   "txt",
@@ -51,25 +60,55 @@ const SUPPORTED_EXTENSIONS = new Set([
   "xlsx",
   "csv",
   "zip",
+  "odt",
+  "ods",
+  "odp",
+  "epub",
+  "org",
+  "rtf",
+  "mobi",
 ]);
-const SUPPORTED_MIME_TYPES = new Set([
+export const SUPPORTED_MIME_TYPES: ReadonlySet<string> = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "text/csv",
   "application/csv",
   "text/markdown",
+  "text/x-markdown",
   "text/plain",
   "text/html",
   "application/xhtml+xml",
   "application/pdf",
   "application/zip",
   "application/x-zip-compressed",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.oasis.opendocument.presentation",
+  "application/epub+zip",
+  "text/org",
+  "application/rtf",
+  "text/rtf",
+  "application/x-mobipocket-ebook",
 ]);
+/**
+ * Supported attachments forwarded from one email. Must equal the route's
+ * `MAX_EMAIL_DOCUMENTS`, which rejects anything above it with a 400 — pinned by
+ * the parity test, since this module cannot import the constant.
+ */
+export const MAX_EMAIL_ATTACHMENTS = 10;
 
-function supportedAttachment(filename: string | null, mimeType: string): boolean {
-  const ext = filename?.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
-  return SUPPORTED_EXTENSIONS.has(ext) || SUPPORTED_MIME_TYPES.has(mimeType.toLowerCase());
+export function supportedAttachment(filename: string | null, mimeType: string): boolean {
+  // `.trim()` mirrors `extension()` in `src/lib/document-extract.ts`. Without it
+  // a folded or quoted `filename` parameter that arrives as `"report.pdf "` is
+  // rejected here and accepted there — an allowlist divergence one surface below
+  // where a set-equality comparison can see it.
+  const ext = filename?.trim().toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
+  if (SUPPORTED_EXTENSIONS.has(ext)) return true;
+  // `Content-Type: text/csv; charset=utf-8` is one of ours; matching the whole
+  // header value rejected it. The app extractor strips parameters the same way.
+  const mime = mimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  return mime.length > 0 && SUPPORTED_MIME_TYPES.has(mime);
 }
 
 function normalizeAddress(value: string): string {
@@ -192,13 +231,13 @@ export default {
     }
     const supportedAttachments = parsed.attachments
       .filter((attachment) => supportedAttachment(attachment.filename, attachment.mimeType))
-      .slice(0, 10);
+      .slice(0, MAX_EMAIL_ATTACHMENTS);
     if (!rawContent && supportedAttachments.length === 0) {
       await reply(
         message,
         subject,
         parsed.attachments.length
-          ? "work-wiki found no email text or supported document attachment. Supported attachments: Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, and ZIP."
+          ? "work-wiki found no email text or supported document attachment. Supported attachments: Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI, Org, and RTF."
           : "work-wiki found no email text to ingest.",
       );
       return;

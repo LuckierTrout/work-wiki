@@ -63,6 +63,33 @@ const MIME_FORMATS: Record<string, DocumentFormat> = {
   "application/x-mobipocket-ebook": "mobi",
 };
 
+/**
+ * Extensions that are not themselves `DocumentFormat` members but name one.
+ * Lifted out of `detectDocumentFormat` so the exported extension allowlist below
+ * is derived from the same table the detector consults — a hand-copied list
+ * would drift silently the moment an alias is added here.
+ */
+const EXTENSION_ALIASES: Record<string, DocumentFormat> = {
+  markdown: "md",
+  htm: "html",
+};
+
+/**
+ * Every filename extension `detectDocumentFormat` accepts, and every content
+ * type it accepts. Exported so `email-ingest-allowlist-parity.test.ts` can pin
+ * the Cloudflare Worker's duplicate allowlist against the extractor's real
+ * behaviour: the Worker bundle cannot import `src/lib`, so the two lists must
+ * stay duplicated in source and the test is what keeps them in agreement.
+ */
+export const SUPPORTED_DOCUMENT_EXTENSIONS: readonly string[] = [
+  // Deduped: promoting an alias key into `DOCUMENT_FORMATS` (plausible for
+  // `htm`) would otherwise fail the parity test on a length mismatch for a
+  // reason that has nothing to do with the two allowlists drifting apart.
+  ...new Set<string>([...DOCUMENT_FORMATS, ...Object.keys(EXTENSION_ALIASES)]),
+];
+export const SUPPORTED_DOCUMENT_MIME_TYPES: readonly string[] =
+  Object.keys(MIME_FORMATS);
+
 export interface ExtractedDocument {
   format: DocumentFormat;
   title: string;
@@ -100,18 +127,35 @@ function extension(filename: string): string {
   return match?.[1] ?? "";
 }
 
+/**
+ * Look a key up in one of the format tables WITHOUT walking the prototype
+ * chain.
+ *
+ * A bare `TABLE[key]` answers `"constructor"`, `"valueOf"`, `"toString"` and
+ * every other `Object.prototype` member with an inherited function, and `?? null`
+ * does NOT rescue it — the inherited value is neither `null` nor `undefined`.
+ * `detectDocumentFormat("weird.constructor")` therefore returned `Object` (a
+ * truthy non-format), `isSupportedDocument` returned true for it, and the
+ * "Unsupported document type" 400 gate in `src/app/api/ingest/document/route.ts`
+ * stopped firing. `hasOwnProperty.call` rather than `Object.hasOwn` because the
+ * build targets ES2018.
+ */
+function ownLookup<T>(table: Record<string, T>, key: string): T | null {
+  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null;
+}
+
 export function detectDocumentFormat(
   filename: string,
   contentType?: string,
 ): DocumentFormat | null {
   const ext = extension(filename);
-  if (ext === "markdown") return "md";
-  if (ext === "htm") return "html";
+  const alias = ownLookup(EXTENSION_ALIASES, ext);
+  if (alias) return alias;
   if (DOCUMENT_FORMATS.includes(ext as DocumentFormat)) {
     return ext as DocumentFormat;
   }
   const mime = contentType?.split(";", 1)[0]?.trim().toLowerCase();
-  return mime ? MIME_FORMATS[mime] ?? null : null;
+  return mime ? ownLookup(MIME_FORMATS, mime) : null;
 }
 
 export function isSupportedDocument(filename: string, contentType?: string): boolean {
@@ -491,7 +535,7 @@ function openOfficeArchive(
 
 function mediaTypeFor(filename: string): string | null {
   const ext = filename.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
-  return IMAGE_MEDIA_TYPES[ext] ?? null;
+  return ownLookup(IMAGE_MEDIA_TYPES, ext);
 }
 
 function assetFromArchive(

@@ -205,7 +205,10 @@ export function EmailIngestSettings() {
               <li>Email subject becomes the page title.</li>
               <li>Body text and links are synthesized.</li>
               <li>Progress appears under Recent ingests.</li>
-              <li>Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, and ZIP attachments are included.</li>
+              <li>
+                Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, ZIP, ODT/ODS/ODP, EPUB,
+                MOBI, Org, and RTF attachments are included.
+              </li>
               <li>A final receipt reports success or failure.</li>
             </ul>
           </div>

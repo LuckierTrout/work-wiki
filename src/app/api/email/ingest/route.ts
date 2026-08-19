@@ -9,6 +9,7 @@ import { stageBytes, stageText } from "@/lib/ingest-staging";
 import type { Task } from "@/lib/tasks";
 import {
   MAX_EMAIL_CONTENT_CHARS,
+  MAX_EMAIL_DOCUMENTS,
   emailJobId,
   loadEmailIngestConfig,
   normalizeEmailAddress,
@@ -26,7 +27,6 @@ import {
 import { addToVault, getVault, vaultOwnedBy } from "@/lib/vault";
 
 const MAX_INLINE_CONTENT_CHARS = 96_000;
-const MAX_EMAIL_DOCUMENTS = 10;
 
 interface EmailPayload {
   from: string;

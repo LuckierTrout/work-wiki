@@ -36,8 +36,9 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 - Reshape the existing Next.js web app toward nashsu/llm_wiki UX parity; do not start a desktop or Tauri rewrite.
 - Match nashsu Workbench density and layout from the captured screenshots; do not invent a restyle of the shell. Type is locked: system sans (SF) for chrome and Chat; Georgia for Preview page body and headings.
 - Prefer BMAD Fast path (draft with assumption tags) over Coaching when a working mode is offered.
-- Prefer Claude Opus 5 at high effort for bmad-loop adapter (dev and triage). Independent review is off during deferred-work culls; when review is on, use Codex (`gpt-5.6-terra`), one cycle, and enforce the session budget. ChatGPT-auth Codex cannot use `gpt-5-codex`.
+- Prefer Claude Opus 5 at high effort for bmad-loop adapter (dev and triage). Independent review is off during deferred-work culls; do not re-arm a finished bundle just because the ledger was dirty. When review is on, use Codex (`gpt-5.6-terra`), one cycle, and enforce the session budget (2.5M weighted tokens, 60-minute timeout). ChatGPT-auth Codex cannot use `gpt-5-codex`.
 - Prefer bmad-loop sweep commit/finalize to proceed automatically so remaining deferred-work items can be culled.
+- Do not use Cursor IDE chat as a bmad-loop adapter; there is no shipped cursor profile.
 
 ## Learned Workspace Facts
 

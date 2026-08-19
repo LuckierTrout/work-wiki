@@ -20,7 +20,18 @@ vi.mock("@/lib/ingest-jobs", () => ({
 }));
 vi.mock("@/lib/ingest-staging", () => ({
   stageText: vi.fn(),
-  stageBytes: vi.fn(async (_jobId: string, filename: string) => `raw/uploads/job/${filename}`),
+  // Four parameters, not two: `bytes` is the whole point of the staging call,
+  // and a mock that never names it leaves `bytes: await file.arrayBuffer()`
+  // free to become `new ArrayBuffer(0)` with the suite green -- every emailed
+  // document would then stage empty.
+  stageBytes: vi.fn(
+    async (
+      _jobId: string,
+      filename: string,
+      _fallback: string,
+      _bytes: ArrayBuffer,
+    ) => `raw/uploads/job/${filename}`,
+  ),
 }));
 vi.mock("@/lib/email-ingest", async (original) => ({
   ...(await original<typeof import("@/lib/email-ingest")>()),
@@ -29,6 +40,7 @@ vi.mock("@/lib/email-ingest", async (original) => ({
 
 import { getServicePrincipal } from "@/lib/auth";
 import { enqueueOrInline } from "@/lib/ingest-async";
+import { stageBytes } from "@/lib/ingest-staging";
 import { createIngestJob, getIngestJob } from "@/lib/ingest-jobs";
 import { loadEmailIngestConfig } from "@/lib/email-ingest";
 import { getAgent } from "@/lib/agents";
@@ -42,6 +54,7 @@ const mockedLoadConfig = vi.mocked(loadEmailIngestConfig);
 const mockedGetAgent = vi.mocked(getAgent);
 const mockedGetVault = vi.mocked(getVault);
 const mockedVaultOwnedBy = vi.mocked(vaultOwnedBy);
+const mockedStageBytes = vi.mocked(stageBytes);
 
 function request(overrides: Record<string, unknown> = {}) {
   return new Request("http://localhost/api/email/ingest", {
@@ -59,17 +72,31 @@ function request(overrides: Record<string, unknown> = {}) {
   });
 }
 
-function multipartRequest(options: { content?: string; file?: File } = {}) {
+function multipartRequest(
+  options: {
+    content?: string;
+    file?: File;
+    files?: File[];
+    /** Names with no file part -- what the Worker sends for attachments it would not forward. */
+    unforwardedNames?: string[];
+    messageId?: string;
+  } = {},
+) {
   const form = new FormData();
   form.append("from", "owner@example.com");
   form.append("to", "ingest@example.com");
   form.append("subject", "Quarterly review");
-  form.append("messageId", "<message-attachment@example.com>");
+  form.append("messageId", options.messageId ?? "<message-attachment@example.com>");
   if (options.content !== undefined) form.append("content", options.content);
-  if (options.file) {
-    form.append("attachmentName", options.file.name);
-    form.append("attachments", options.file, options.file.name);
+  // Merged, not either/or: a helper that silently dropped `file` whenever
+  // `files` was also given would let a test believe it posted an attachment it
+  // never sent.
+  const files = [...(options.file ? [options.file] : []), ...(options.files ?? [])];
+  for (const file of files) {
+    form.append("attachmentName", file.name);
+    form.append("attachments", file, file.name);
   }
+  for (const name of options.unforwardedNames ?? []) form.append("attachmentName", name);
   return new Request("http://localhost/api/email/ingest", { method: "POST", body: form });
 }
 
@@ -212,6 +239,97 @@ describe("POST /api/email/ingest", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  // Two supported files with distinct payloads, plus a name for an attachment
+  // the Worker did NOT forward -- the shape the Worker actually produces when
+  // some of what the sender attached failed the allowlist.
+  const FIRST_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x00, 0xff]);
+  const SECOND_BYTES = new Uint8Array([0x6e, 0x61, 0x6d, 0x65, 0x2c, 0x74, 0x6f, 0x74, 0x61, 0x6c]);
+
+  function mixedAttachmentRequest() {
+    return multipartRequest({
+      messageId: "<message-mixed-attachments@example.com>",
+      files: [
+        new File([FIRST_BYTES], "report.pdf", { type: "application/pdf" }),
+        new File([SECOND_BYTES], "metrics.csv", { type: "text/csv" }),
+      ],
+      unforwardedNames: ["archive.exe"],
+    });
+  }
+
+  it("stages each attachment's own bytes under its own indexed key", async () => {
+    const { POST } = await import("@/app/api/email/ingest/route");
+    const response = await POST(mixedAttachmentRequest());
+    expect(response.status).toBe(200);
+
+    expect(mockedStageBytes).toHaveBeenCalledTimes(2);
+    // Call order is array order: `attachmentBytes.map(async (...) => ({ key:
+    // await stageBytes(...) }))` invokes `stageBytes` synchronously inside each
+    // callback, before the first `await` yields, so call index IS attachment
+    // index and the pairing can be read straight off `mock.calls`.
+    const staged = mockedStageBytes.mock.calls.map(
+      ([jobId, filename, fallback, bytes]) => ({
+        jobId,
+        filename,
+        fallback,
+        bytes: new Uint8Array(bytes as ArrayBuffer),
+      }),
+    );
+    expect(staged[0]).toMatchObject({
+      filename: "1-report.pdf",
+      fallback: "attachment-1",
+      bytes: FIRST_BYTES,
+    });
+    expect(staged[1]).toMatchObject({
+      filename: "2-metrics.csv",
+      fallback: "attachment-2",
+      bytes: SECOND_BYTES,
+    });
+    // One job, both attachments.
+    expect(new Set(staged.map((call) => call.jobId)).size).toBe(1);
+  });
+
+  /**
+   * The receiving half of the `attachmentName` handoff. DW-100's stated harm is
+   * names vanishing from ingest job metadata, and a name only reaches the job
+   * through the multipart `attachmentName` read at `parsePayload`: for a
+   * *supported* file the union at the top of `POST` recovers the name from
+   * `payload.attachments` anyway, so a fixture of supported files alone leaves
+   * that read contributing nothing observable. `archive.exe` has no file part,
+   * so it exists in the job only if the read happened.
+   */
+  it("carries an unforwarded attachment name into the job metadata and the skipped count", async () => {
+    const { POST } = await import("@/app/api/email/ingest/route");
+    const response = await POST(mixedAttachmentRequest());
+    expect(response.status).toBe(200);
+
+    const expectedNames = ["report.pdf", "metrics.csv", "archive.exe"];
+    expect(mockedCreateJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "email",
+        email: expect.objectContaining({ attachmentNames: expectedNames }),
+      }),
+    );
+    expect(mockedEnqueue).toHaveBeenCalledWith(
+      expect.stringMatching(/^email-/),
+      expect.objectContaining({
+        email: expect.objectContaining({ attachmentNames: expectedNames }),
+        attachments: [
+          expect.objectContaining({ filename: "report.pdf", contentType: "application/pdf" }),
+          expect.objectContaining({ filename: "metrics.csv", contentType: "text/csv" }),
+        ],
+      }),
+      expect.any(Function),
+    );
+    // Three names recorded, two of them forwarded and staged -- so exactly one
+    // is reported back as skipped. Nothing else in the repo asserts
+    // `skippedAttachmentCount`.
+    expect(await response.json()).toMatchObject({
+      accepted: true,
+      supportedAttachmentCount: 2,
+      skippedAttachmentCount: 1,
+    });
   });
 
   it("rejects attachment-only email when its file type is unsupported", async () => {
