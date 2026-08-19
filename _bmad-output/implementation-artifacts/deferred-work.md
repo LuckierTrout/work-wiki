@@ -1399,7 +1399,9 @@ source_spec: `spec-dw-20-wiki-create-and-template-atomicity.md`
 location: src/lib/wikis.ts
 severity: low
 reason: DW-20's own text proposes "a write-ahead or compensating-write facility in the storage layer"; the bundle intent chose compensating cleanup, which runs in the same process as the failure. A SIGKILL or power loss between any two of the four writes still produces exactly the states DW-20 and DW-143 describe, and nothing recovers on next start. Closing this needs an on-disk pending-restore marker plus a reconcile, i.e. the storage-layer route the intent did not take.
-status: open
+status: done 2026-08-19
+resolution: closed by human decision: Compensating cleanup covers the rejected-write case, which is the reachable one for a single-process deployment; crash-window states are left to the orphan sweep and recorded as a known limit.
+decision: 2026-08-19 Accept in-process compensation — Compensating cleanup covers the rejected-write case, which is the reachable one for a single-process deployment; crash-window states are left to the orphan sweep and recorded as a known limit.
 
 ### DW-164: `research-projects.ts` still carries the same untransacted registry property DW-20 names, and was not given a compensation.
 origin: spec-deferred b087c7736364
