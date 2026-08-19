@@ -89,6 +89,15 @@
     "label": "Add a browser project",
     "resolution": ""
   },
+  "DW-188": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Enforce `isReadOnly()` inside the kernel writers (`writeWikiPageWithSideEffects`, `patchMetadata`, `deleteWikiPage`, `writeWikiArtifact`) so every caller inherits it, and reduce the HTTP-layer checks to the ones that shape the response, resolving DW-196 in the same move.",
+    "key": "2",
+    "label": "Move the gate into the library",
+    "resolution": ""
+  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",

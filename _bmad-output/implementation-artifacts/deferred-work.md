@@ -1608,6 +1608,7 @@ location: src/mcp.ts
 severity: low
 reason: DW-37's reason says the fix belongs at the write route "where it also covers the MCP and agent callers". src/mcp.ts calls writeWikiPageWithSideEffects / patchMetadata / deleteWikiPage directly and only MIRRORS the REST ACL in comments (src/mcp.ts:283, :381) — it never issues an HTTP request. A read-only deployment therefore still accepts every MCP write. Pre-existing and structural: the gate would have to move into the library, or be restated in src/mcp.ts.
 status: open
+decision: 2026-08-19 Move the gate into the library — Enforce `isReadOnly()` inside the kernel writers (`writeWikiPageWithSideEffects`, `patchMetadata`, `deleteWikiPage`, `writeWikiArtifact`) so every caller inherits it, and reduce the HTTP-layer checks to the ones that shape the response, resolving DW-196 in the same move.
 
 ### DW-189: WikiWorkbench's Change template control opens a confirm dialog onto a route that already answers 403 on a read-only deployment.
 origin: spec-deferred ed548e677477
