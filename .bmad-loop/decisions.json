@@ -35,6 +35,15 @@
     "label": "Backfill then remove",
     "resolution": ""
   },
+  "DW-150": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Skip any directory whose newest entry is younger than a grace window (minutes, not seconds) so an in-flight create can never be swept, document the window beside `sweepOrphans`, and add a test that pins a freshly seeded directory as unsweepable.",
+    "key": "1",
+    "label": "mtime grace period",
+    "resolution": ""
+  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",

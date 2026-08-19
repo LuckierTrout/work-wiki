@@ -1294,6 +1294,7 @@ location: src/lib/wikis.ts (sweepOrphans) / src/lib/lock.ts
 severity: low
 reason: `src/lib/lock.ts` documents the lock as in-process ("does not protect against multiple server processes"), and `createWiki` seeds `wikis/<id>/` BEFORE pushing the entry and writing the registry — both inside the lock, so a single Node process is safe. Under `build:cloudflare` / `open-next.config.ts` two isolates can hold the "same" lock at once: isolate A is mid-create with the directory on disk and no entry, isolate B deletes an unrelated Wiki and its sweep sees A's directory as an orphan. Every other registry operation has the same exposure, but this is the first one whose consequence is byte removal rather than a lost entry. A mtime grace period on sweep candidates, or a cross-process lock, would close it; both are design decisions past DW-18.
 status: open
+decision: 2026-08-19 mtime grace period — Skip any directory whose newest entry is younger than a grace window (minutes, not seconds) so an in-flight create can never be swept, document the window beside `sweepOrphans`, and add a test that pins a freshly seeded directory as unsweepable.
 
 ### DW-151: Follow-up review still recommended for dw-wiki-rename-and-delete after the damping cap was spent
 origin: review-budget-followup
