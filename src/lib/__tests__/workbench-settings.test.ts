@@ -73,6 +73,7 @@ import {
   SETTINGS_CATEGORIES,
   canEnableVectorSearch,
   draftCanEnableVectorSearch,
+  draftVectorInputs,
   fetchWorkbenchSettings,
   isWorkbenchSettingsPayload,
   saveWorkbenchSettings,
@@ -311,14 +312,101 @@ describe("canEnableVectorSearch", () => {
     // `getOllamaBaseUrl()` / the Cloudflare `AI` binding. Demanding an endpoint
     // and a key would make vector search unreachable for half the supported
     // providers, and would store an endpoint no code path reads.
-    for (const provider of ["ollama", "workers-ai"]) {
-      expect(
-        canEnableVectorSearch({ provider, baseUrl: null, model: "m", hasKey: false }),
-      ).toBe(true);
+    // The model must still sit in the provider's own namespace, which is why
+    // `workers-ai` is fed a `@cf/` id here rather than the bare `"m"` Ollama
+    // takes (DW-73).
+    for (const [provider, model] of [
+      ["ollama", "m"],
+      ["workers-ai", "@cf/baai/bge-m3"],
+    ] as const) {
+      expect(canEnableVectorSearch({ provider, baseUrl: null, model, hasKey: false })).toBe(
+        true,
+      );
       expect(
         canEnableVectorSearch({ provider, baseUrl: null, model: null, hasKey: false }),
       ).toBe(false);
     }
+  });
+
+  it("refuses a model id from the WRONG namespace, in both directions", () => {
+    // `resolveEmbeddingModelName` honours an override only when
+    // `id.startsWith("@cf/")` matches `provider === "workers-ai"`, and silently
+    // falls back to the provider default otherwise. Accepting the mismatch here
+    // would turn the switch on and then embed with a model nobody selected.
+    expect(
+      canEnableVectorSearch({
+        provider: "workers-ai",
+        baseUrl: null,
+        model: "text-embedding-3-small",
+        hasKey: false,
+      }),
+    ).toBe(false);
+    expect(
+      canEnableVectorSearch({
+        provider: "openai",
+        baseUrl: "https://e",
+        model: "@cf/baai/bge-m3",
+        hasKey: true,
+      }),
+    ).toBe(false);
+    // Both matching cases still pass — the rule is an equality, not a ban.
+    expect(
+      canEnableVectorSearch({
+        provider: "workers-ai",
+        baseUrl: null,
+        model: "@cf/baai/bge-m3",
+        hasKey: false,
+      }),
+    ).toBe(true);
+    expect(
+      canEnableVectorSearch({
+        provider: "openai",
+        baseUrl: "https://e",
+        model: "text-embedding-3-small",
+        hasKey: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("applies the namespace leg to EVERY embedding provider, not just openai", () => {
+    // Ollama is the case where the namespace leg stands ALONE: it is
+    // self-transporting, so there is no endpoint or key leg beside it to make
+    // the sentence non-empty for the wrong reason.
+    expect(
+      canEnableVectorSearch({
+        provider: "ollama",
+        baseUrl: null,
+        model: "@cf/baai/bge-m3",
+        hasKey: false,
+      }),
+    ).toBe(false);
+    expect(
+      vectorSearchMissingCopy({
+        provider: "ollama",
+        baseUrl: null,
+        model: "@cf/baai/bge-m3",
+        hasKey: false,
+      }),
+    ).toBe(
+      "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
+    );
+    // Google is a keyed provider, and gets the same answer OpenAI does.
+    expect(
+      canEnableVectorSearch({
+        provider: "google",
+        baseUrl: "https://e",
+        model: "@cf/baai/bge-m3",
+        hasKey: true,
+      }),
+    ).toBe(false);
+    expect(
+      canEnableVectorSearch({
+        provider: "google",
+        baseUrl: "https://e",
+        model: "gemini-embedding-001",
+        hasKey: true,
+      }),
+    ).toBe(true);
   });
 
   it("treats the empty string as unset, not as set to nothing", () => {
@@ -378,6 +466,60 @@ describe("canEnableVectorSearch", () => {
         baseUrl: "https://e",
         model: "m",
         hasKey: true,
+      }),
+    ).toBe("");
+  });
+
+  it("names the NAMESPACE rather than repeating \"a model\" (DW-73)", () => {
+    expect(
+      vectorSearchMissingCopy({
+        provider: "workers-ai",
+        baseUrl: null,
+        model: "text-embedding-3-small",
+        hasKey: false,
+      }),
+    ).toBe(
+      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+    );
+    expect(
+      vectorSearchMissingCopy({
+        provider: "openai",
+        baseUrl: "https://e",
+        model: "@cf/baai/bge-m3",
+        hasKey: true,
+      }),
+    ).toBe(
+      "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
+    );
+    // A leg, not a separate sentence: it composes with the others in leg order
+    // instead of hiding them.
+    expect(
+      vectorSearchMissingCopy({
+        provider: "openai",
+        baseUrl: "https://e",
+        model: "@cf/baai/bge-m3",
+        hasKey: false,
+      }),
+    ).toBe(
+      "Vector search needs a model id outside the Workers AI @cf/ namespace and an API key before it can be turned on.",
+    );
+    // No model at all is still just "a model" — the namespace clause needs a
+    // value to complain about.
+    expect(
+      vectorSearchMissingCopy({
+        provider: "workers-ai",
+        baseUrl: null,
+        model: null,
+        hasKey: false,
+      }),
+    ).toBe("Vector search needs a model before it can be turned on.");
+    // And an id that matches its provider is not named at all.
+    expect(
+      vectorSearchMissingCopy({
+        provider: "workers-ai",
+        baseUrl: null,
+        model: "@cf/baai/bge-m3",
+        hasKey: false,
       }),
     ).toBe("");
   });
@@ -796,6 +938,70 @@ describe("the client and the route read the same vector rule", () => {
     expect(payload.envEmbeddingModel).toBe("text-embedding-3-small");
     expect(draftCanEnableVectorSearch(settingsDraftFromPayload(payload), payload)).toBe(
       true,
+    );
+  });
+
+  it("applies the namespace leg to a mismatch that arrives from EMBEDDING_MODEL", async () => {
+    // All three feeders take the env override AHEAD of anything stored or typed
+    // (`mergedVectorInputs`, `draftVectorInputs`, `config.ts`'s
+    // `getVectorSearchSettings`), so the env value is a first-class input to the
+    // namespace leg — the mismatch can arrive without the owner ever touching
+    // the model box, which is exactly the stale-override case
+    // `resolveEmbeddingModelName` was written for.
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+    await store({ embeddingProvider: "workers-ai", vectorSearchEnabled: true });
+
+    const payload = getWorkbenchSettings();
+    expect(payload.envEmbeddingModel).toBe("text-embedding-3-small");
+
+    // The browser refuses, and says why…
+    const draft = settingsDraftFromPayload(payload);
+    expect(draftCanEnableVectorSearch(draft, payload)).toBe(false);
+    expect(vectorSearchMissingCopy(draftVectorInputs(draft, payload))).toBe(
+      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+    );
+    // …the already-stored `true` reads as off…
+    expect(getVectorSearchSettings().enabled).toBe(false);
+    // …and the route refuses the save with the same sentence.
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(
+      await put({
+        workbench: { vectorSearchEnabled: true, embeddingProvider: "workers-ai" },
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+    );
+  });
+
+  it("does not let a TYPED matching id lift a refusal the env override owns", async () => {
+    // Today's intended answer, pinned rather than smoothed over: the override
+    // WINS over the box in every feeder, so typing a `@cf/` id fixes nothing
+    // until `EMBEDDING_MODEL` is unset. Pinning it is what keeps a later
+    // "helpful" change to the precedence from passing unnoticed.
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+    await store({ embeddingProvider: "workers-ai" });
+
+    const payload = getWorkbenchSettings();
+    const typed = {
+      ...settingsDraftFromPayload(payload),
+      embeddingModel: "@cf/baai/bge-m3",
+    };
+    // The typed value is not what the gate reads — the override is.
+    expect(draftVectorInputs(typed, payload).model).toBe("text-embedding-3-small");
+    expect(draftCanEnableVectorSearch(typed, payload)).toBe(false);
+
+    // The route answers identically for the very patch that draft would send.
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(
+      await put({
+        workbench: { ...settingsSaveBody(typed), vectorSearchEnabled: true },
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
     );
   });
 });
@@ -1265,6 +1471,89 @@ describe("PUT /api/settings", () => {
     expect(await stored()).toEqual({ provider: "openai" });
     await loadConfig();
     expect(getVectorSearchSettings().enabled).toBe(false);
+  });
+
+  it("refuses vector-on for a non-Workers-AI id under Workers AI", async () => {
+    // DW-73: the gate used to accept any non-empty model, and
+    // `resolveEmbeddingModelName` then discarded this one for `@cf/baai/bge-m3`
+    // without a word. Now the route says so and writes nothing.
+    await store({ provider: "openai" });
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(
+      await put({
+        workbench: {
+          vectorSearchEnabled: true,
+          embeddingProvider: "workers-ai",
+          embeddingModel: "text-embedding-3-small",
+        },
+      }),
+    );
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toBe(
+      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+    );
+    expect(await stored()).toEqual({ provider: "openai" });
+  });
+
+  it("refuses vector-on for a Workers AI id under a keyed provider", async () => {
+    // The MIRROR of the case above, in its own `it` so a regression in one
+    // cannot hide behind the other: this direction is just as silently
+    // overridden at embed time, and just as refused here.
+    await store({ provider: "openai" });
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(
+      await put({
+        workbench: {
+          vectorSearchEnabled: true,
+          embeddingProvider: "openai",
+          embeddingBaseUrl: "https://embed.example",
+          embeddingModel: "@cf/baai/bge-m3",
+          embeddingApiKey: "sk-embed",
+        },
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
+    );
+    expect(await stored()).toEqual({ provider: "openai" });
+  });
+
+  it("turns vector search on for a Workers AI id under Workers AI", async () => {
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(
+      await put({
+        workbench: {
+          vectorSearchEnabled: true,
+          embeddingProvider: "workers-ai",
+          embeddingModel: "@cf/baai/bge-m3",
+        },
+      }),
+    );
+    expect(response.status).toBe(200);
+    await loadConfig();
+    expect(getVectorSearchSettings().enabled).toBe(true);
+  });
+
+  it("reads a STORED namespace mismatch as vector-off", async () => {
+    // Bytes that arrived another way (a hand-edited config, an older release)
+    // get the same answer as a save would: off, with the Settings sentence
+    // saying why — not an embed with a model the owner never chose.
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "text-embedding-3-small",
+    });
+    expect(getVectorSearchSettings().enabled).toBe(false);
+    const payload = getWorkbenchSettings();
+    expect(
+      vectorSearchMissingCopy(
+        draftVectorInputs(settingsDraftFromPayload(payload), payload),
+      ),
+    ).toBe(
+      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+    );
   });
 
   it("turns vector search on when the endpoint, the model and the key all arrive", async () => {

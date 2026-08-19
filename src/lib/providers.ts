@@ -55,6 +55,31 @@ export function isEmbeddingProvider(p: string): p is EmbeddingProvider {
 }
 
 /**
+ * The Workers AI model-id namespace (`@cf/baai/bge-m3`,
+ * `@cf/baai/bge-large-en-v1.5`). Declared here rather than in `embeddings.ts`
+ * because {@link embeddingModelMatchesProvider} is read from client-safe code.
+ */
+export const WORKERS_AI_MODEL_PREFIX = "@cf/";
+
+/**
+ * Does a model id belong to the namespace of the provider that will run it?
+ *
+ * The ONE statement of the rule, so its two readers cannot drift into two
+ * subtly different rules: `embeddings.ts`'s `resolveEmbeddingModelName` DROPS
+ * an embedding-model override that fails this (falling back to the provider
+ * default), and `workbench-settings.ts`'s vector gate REFUSES the same mismatch
+ * at the Settings surface rather than accepting it and letting the resolver
+ * silently override the owner's choice later (DW-73).
+ *
+ * It is an equality, not a ban, and that matters in both directions: a Workers
+ * AI id under OpenAI/Google/Ollama is exactly as wrong as an OpenAI id under
+ * Workers AI, and half the rule would leave the mirror case unguarded.
+ */
+export function embeddingModelMatchesProvider(provider: string, model: string): boolean {
+  return model.startsWith(WORKERS_AI_MODEL_PREFIX) === (provider === "workers-ai");
+}
+
+/**
  * Default model for each provider.
  *
  * `custom` is deliberately absent: an owner-supplied OpenAI-compatible endpoint

@@ -8,7 +8,12 @@ import type { Ai } from "./storage/cloudflare-types";
 import { listWikiPages, readWikiPage } from "./wiki";
 import { getStorage } from "./storage";
 import { loadConfigSync, getEmbeddingModelOverride, getOllamaBaseUrl } from "./config";
-import { EMBEDDING_PROVIDERS, isEmbeddingProvider, type EmbeddingProvider } from "./providers";
+import {
+  EMBEDDING_PROVIDERS,
+  embeddingModelMatchesProvider,
+  isEmbeddingProvider,
+  type EmbeddingProvider,
+} from "./providers";
 import { withFileLock } from "./lock";
 import { MAX_EMBED_CHARS } from "./constants";
 import { logger } from "./logger";
@@ -36,9 +41,6 @@ export const WORKERS_AI_EMBEDDING_DIMENSIONS: Readonly<Record<string, number>> =
   "@cf/baai/bge-large-en-v1.5": 1024,
   "@cf/baai/bge-m3": 1024,
 };
-
-/** Workers AI model ids are namespaced with this prefix (e.g. @cf/baai/...). */
-const WORKERS_AI_MODEL_PREFIX = "@cf/";
 
 /**
  * Return the Cloudflare Workers AI binding if available, else null.
@@ -178,10 +180,10 @@ function resolveEmbeddingModelName(
 ): string {
   const override = getEmbeddingModelOverride() ?? cfg.embeddingModel;
   if (override) {
-    const overrideIsWorkersAi = override.startsWith(WORKERS_AI_MODEL_PREFIX);
-    const providerIsWorkersAi = provider === "workers-ai";
-    if (overrideIsWorkersAi === providerIsWorkersAi) return override;
+    if (embeddingModelMatchesProvider(provider, override)) return override;
     // Namespace mismatch — ignore the override and use the provider default.
+    // The Settings gate refuses this combination outright (DW-73); reaching
+    // here means bytes that arrived some other way, so the fallback stays.
   }
   return DEFAULT_EMBEDDING_MODELS[provider] ?? provider;
 }
