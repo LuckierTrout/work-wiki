@@ -62,6 +62,15 @@
     "label": "Give Settings a URL",
     "resolution": ""
   },
+  "DW-179": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Render the `Active wiki` label visibly above the switcher within the 280px column (a small-caps field label in the existing left-column type scale), drop the `wb-sr-only` class, and update the chrome tests that pin the current markup.",
+    "key": "1",
+    "label": "Make the label visible",
+    "resolution": ""
+  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",

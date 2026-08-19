@@ -1533,6 +1533,7 @@ location: src/components/workbench/WikiSwitcher.tsx:262-264
 severity: low
 reason: The retired card control carried a VISIBLE `Active wiki` label; the survivor's is clipped (`WikiSwitcher.tsx:262-264`), justified on the 280px column width. The accessibility floor is still met — the input is labelled beyond a placeholder — but that tradeoff was made while a visible label existed elsewhere on the same viewport, and it has not been re-examined now that it does not.
 status: open
+decision: 2026-08-19 Make the label visible — Render the `Active wiki` label visibly above the switcher within the 280px column (a small-caps field label in the existing left-column type scale), drop the `wb-sr-only` class, and update the chrome tests that pin the current markup.
 
 ### DW-180: Hiding the preview note leaves the canvas grid's second track empty, so a docked Preview strands the card at 320px beside blank space.
 origin: spec-deferred 08dd131042c7
