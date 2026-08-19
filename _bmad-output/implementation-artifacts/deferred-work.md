@@ -776,7 +776,8 @@ source_spec: `spec-owner-scoped-linking.md`
 location: vitest.config.ts
 severity: medium
 reason: vitest.config.ts runs node-only with include src/**/__tests__/**/*.test.ts (no .tsx), and package.json carries no jsdom or @testing-library dependency, so no test can render the six converted "use client" components; ChatWorkspace's saved-banner url fallback and VaultExplorer's owner-direct link are likewise unasserted. The hook's render contract is now pinned via react-dom/server, but per-component adoption above it is not. Surfaced by this story's review; the missing client-component harness pre-dates the story and adopting one is a project-level decision.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-dom-tests-polling-and-shell
 
 ### DW-87: loadSlugTenants caches a non-OK response's empty map for the whole session (no retry) while a rejected fetch is retried, so one transient 401/429/500 from /api/wiki/routes pins DEFAULT_TENANT fallback
 origin: spec-deferred e1b670ffa4b7
@@ -991,7 +992,8 @@ source_spec: `spec-dom-test-environment.md`
 location: src/components/workbench/__tests__/data-version-watcher.test.tsx
 severity: low
 reason: `data-version-watcher.test.tsx` covers `ok: false` but not a transport failure or `{ dataVersion: "4" }`; `useSidecarStatus.test.tsx` covers a rejection but not a non-2xx answer or the `SIDECAR_PROBE_TIMEOUT_MS` race. The pure halves are executed by the node suite, so this is about the effect's handling of them, not the parsing.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-dom-tests-polling-and-shell
 
 ### DW-111: The new `*.test.tsx` ⇒ jsdom / `*.test.ts` ⇒ node convention is documented only in a `vitest.config.ts` comment.
 origin: spec-deferred 781ee7265273
@@ -1056,7 +1058,8 @@ source_spec: `spec-retire-zh-cn-locale.md`
 location: src/app/layout.tsx
 severity: medium
 reason: `src/app/layout.tsx` is re-nested by hand whenever a provider is added or removed, but no suite imports it — the only assertions that touch it are `readFile` scans in `brand-copy.test.ts` and `english-only.test.ts`. If `<ClerkProvider>` or `<ClientProviders>` were dropped along with a wrapper, `npx tsc --noEmit`, `npx eslint` and the full Vitest run all stay green. The same holds for `NavHeader`, which no test renders. Pre-existing: the shell has never had a mounted test. The repo already has a jsdom vitest project (`vitest.config.ts`, `name: "dom"`) with four mounted suites, so the missing coverage is a gap, not a constraint.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-dom-tests-polling-and-shell
 
 ### DW-119: Follow-up review still recommended for dw-retire-zh-cn-locale after the damping cap was spent
 origin: review-budget-followup
@@ -2193,4 +2196,44 @@ source_spec: `spec-dw-105-109-dom-tests-dialogs-and-rail.md`
 location: src/components/workbench/Workbench.tsx:1095
 severity: low
 reason: DW-109's "live-region announcement" resolved to `IconRail`'s `role="status"` sidecar dot, which is now mounted. `Workbench.tsx`'s own `<p className="wb-sr-only" aria-live="polite">` and its interesting half — a RESTORED mode must not be announced, only a changed one — remain covered by `workbench-chrome.test.ts` greps for `useState("")` and `setAnnouncement(...)`.
+status: open
+
+### DW-259: Three of the six converted client components -- RecentIngests, ActionInbox and BulkDocumentImport -- still have no rendered-anchor coverage, so reverting any of their hrefForSlug call sites to slugPat
+origin: spec-deferred 8332b2aa4a3f
+source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
+location: src/components/RecentIngests.tsx:487
+severity: medium
+reason: DW-86's verbatim reason names "the six converted use client components"; the bundle intent's prose named only four (ArticleView, VaultExplorer, ChatWorkspace, KnowledgeStudio) and this story covered those four. `src/components/RecentIngests.tsx:487,568`, `src/components/ActionInbox.tsx:387` and `src/components/BulkDocumentImport.tsx:532` call `hrefForSlug(...)` from the same conversion, and no `*.test.ts`/`*.test.tsx` under `src/` references any of the three. The harness they would need now exists, so this is a remaining gap rather than a constraint.
+status: open
+
+### DW-260: NavHeader conveys the active route only through inline fontWeight, with no aria-current, so the current page is announced to assistive tech not at all.
+origin: spec-deferred 22cbe3585ae4
+source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
+location: src/components/NavHeader.tsx:39
+severity: low
+reason: `getActiveHref` (src/components/NavHeader.tsx:39) drives `fontWeight`, colour and background on the active link and nothing else; there is no `aria-current="page"` anywhere in the file. The new mounted assertions therefore have to match `link.style.fontWeight === "600"`, which couples the suite to styling because it is the only observable signal the component emits. Pre-existing; adding the attribute is a production change this coverage-only story walled off.
+status: open
+
+### DW-261: layout.tsx's metadata export and its inline theme script are still guarded only by source scans, even though the file now has a mounted suite.
+origin: spec-deferred 8326245b9bba
+source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
+location: src/app/layout.tsx:58
+severity: low
+reason: `src/app/layout.tsx:37-56` (title template, metadataBase, OG/Twitter) and the `themeScript` at :58-70 (which applies the `light`/`dark` class before paint) live only in this file. `app-shell.test.tsx` mounts the layout but asserts neither; the metadata half is pure data and needs no mount at all. Deleting the theme script leaves the whole suite green.
+status: open
+
+### DW-262: loadSlugTenants has no exported reset, so no mounted suite can express "map still loading" or "/api/wiki/routes failed" -- the DEFAULT_TENANT fallback every converted component is built to survive is
+origin: spec-deferred 91b84f773caf
+source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
+location: src/hooks/useSlugTenants.ts
+severity: low
+reason: The map is cached in a module-level singleton in `src/hooks/useSlugTenants.ts`, warmed once per file by `await loadSlugTenants()` in `beforeEach`. Once warmed it cannot be un-warmed, so `owner-scoped-anchors.test.tsx` can only ever assert the resolved-map branch. `renderer-slug-tenant-adoption.test.tsx` covers the unknown-slug fallback via a slug absent from the map, but the degraded-map path (session fetch failed) has no component witness.
+status: open
+
+### DW-263: ChatWorkspace's save-failure and slug-less-response banner paths are untested; only the happy path and the url-absent fallback are pinned.
+origin: spec-deferred 3149502ae75b
+source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
+location: src/components/ChatWorkspace.tsx:232
+severity: low
+reason: `saveAnswer` (src/components/ChatWorkspace.tsx:219-238) keeps the banner hidden when the response carries no slug and surfaces an error alert when the request fails. The new suite always answers `/api/query/save` with an ok body carrying a slug, so a regression rendering "Saved as undefined" -- the exact state the comment at :232 says the guard exists to avoid -- would pass.
 status: open

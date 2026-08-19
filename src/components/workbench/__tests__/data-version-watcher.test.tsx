@@ -217,6 +217,108 @@ describe("DataVersionWatcher lifecycle", () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
+  it("swallows a transport failure and keeps polling on the next tick", async () => {
+    // `fetchDataVersion` maps a throw to `unavailable`, and the effect returns
+    // on `result.status !== "ok"`. Nothing here is observable from the source:
+    // a rewrite that let the rejection escape `run()` would leave an unhandled
+    // rejection AND stop the loop, and both are only visible mounted.
+    fetchMock = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mountWatcher(3);
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(refresh).not.toHaveBeenCalled();
+
+    // The interval survived the failure: the next tick issues a fresh poll…
+    await settle(DATA_VERSION_POLL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // …and a recovered route still refreshes, so the failure cost one tick and
+    // not the whole loop.
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ dataVersion: 4 }),
+    }));
+    await settle(DATA_VERSION_POLL_MS);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not refresh on a 200 whose dataVersion is not an integer", async () => {
+    // A 200 is not a promise about SHAPE. `"4" > 3` is `true` in JS, so a
+    // watcher that trusted the body would refresh here — and `"10" > 9` is
+    // `false`, so the same bug would also stop refreshing at the ten-boundary.
+    // `servedVersion` rejects the string, and the effect's `status !== "ok"`
+    // guard is what turns that into no refresh.
+    fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ dataVersion: "4" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    mountWatcher(3);
+    await settle();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(refresh).not.toHaveBeenCalled();
+
+    // And it is not merely deferred to the next tick either.
+    await settle(DATA_VERSION_POLL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("supersedes a wedged poll every tick and still refreshes once it answers", async () => {
+    // A route that accepts the connection and never answers. `run()` aborts the
+    // PREVIOUS controller before issuing its own, so the stalled request is
+    // SUPERSEDED rather than left waiting on an answer that can no longer
+    // matter — and a late reply from it can never reach `router.refresh()`,
+    // because the effect returns on `controller.signal.aborted`.
+    //
+    // What is asserted below is exactly that: which signals are aborted, and
+    // that a fresh request goes out each tick. NOT that fewer requests are in
+    // flight — this stub ignores its signal (as a transport that has stopped
+    // honouring abort would), so every one of them stays pending either way.
+    const signals: AbortSignal[] = [];
+    fetchMock = vi.fn(async (_url: string, init?: { signal?: AbortSignal }) => {
+      if (init?.signal) signals.push(init.signal);
+      return new Promise<never>(() => {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mountWatcher(3);
+    await settle();
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(false);
+
+    // Each tick issues a FRESH request and aborts the stalled one before it.
+    await settle(DATA_VERSION_POLL_MS);
+    expect(signals).toHaveLength(2);
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[1].aborted).toBe(false);
+
+    await settle(DATA_VERSION_POLL_MS);
+    expect(signals).toHaveLength(3);
+    expect(signals[1].aborted).toBe(true);
+    expect(refresh).not.toHaveBeenCalled();
+
+    // The route recovers. A forward answer still lands — the wedge cost ticks,
+    // not the watcher.
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ dataVersion: 4 }),
+    }));
+    await settle(DATA_VERSION_POLL_MS);
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    // Exactly once: `refreshedFor` still holds across the wedge, so the same
+    // answer on the following tick is not a second render.
+    await settle(DATA_VERSION_POLL_MS);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
   it("checks now when something asks for an immediate check", async () => {
     fetchMock = answering(4);
     vi.stubGlobal("fetch", fetchMock);

@@ -103,6 +103,20 @@ export default defineConfig({
           include: [DOM_INCLUDE],
           setupFiles: ["./vitest.setup.ts", "./vitest.setup.dom.ts"],
         },
+        // `src/app/layout.tsx` imports `./globals.css` and
+        // `katex/dist/katex.min.css`, so mounting the shell makes vite process
+        // CSS — and processing CSS makes it load the repo's ROOT
+        // `postcss.config.mjs`, which is Tailwind v4's
+        // `{ plugins: ["@tailwindcss/postcss"] }` STRING form. Vite's own
+        // postcss loader does not resolve string plugin ids, so the suite dies
+        // at collection with `Invalid PostCSS Plugin found at: plugins[0]`
+        // rather than failing an assertion. An explicit empty plugin list stops
+        // the config file from being looked up at all; the stylesheets still
+        // resolve and evaluate to nothing, which is all a jsdom mount can use
+        // (there is no layout engine to apply them to — see the fidelity notes
+        // in `vitest.setup.dom.ts`). Scoped to the `dom` project so the `node`
+        // project, which imports no CSS, is untouched.
+        css: { postcss: { plugins: [] } },
         // The repo's tsconfig is `"jsx": "preserve"` (Next transforms it), so
         // JSX inside a test file would otherwise reach esbuild untransformed.
         // This is the whole plugin requirement — no `@vitejs/plugin-react`.

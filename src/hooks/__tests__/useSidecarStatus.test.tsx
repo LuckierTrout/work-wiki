@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { useSidecarStatus } from "@/hooks/useSidecarStatus";
-import { SIDECAR_HEALTH_URL } from "@/lib/sidecar";
+import { SIDECAR_HEALTH_URL, SIDECAR_PROBE_TIMEOUT_MS } from "@/lib/sidecar";
 import { fireVisibilityChange, setVisibilityState } from "../../../vitest.setup.dom";
 
 /**
@@ -18,6 +18,15 @@ import { fireVisibilityChange, setVisibilityState } from "../../../vitest.setup.
  * `POLL_MS` is module-private in `useSidecarStatus.ts` on purpose, so the
  * cadence is driven by advancing wall-clock time rather than by importing the
  * number the implementation uses — a rewrite that changes it fails here.
+ *
+ * `SIDECAR_PROBE_TIMEOUT_MS` is imported instead, and the difference is not an
+ * inconsistency: it is EXPORTED from `sidecar.ts`, which documents the budget
+ * as part of the probe's contract ("a wedged port must not stall the rail"),
+ * and `probeSidecar` takes a `timeoutMs` override so callers can pick their
+ * own. Restating it as a literal here would pin a number that is explicitly
+ * allowed to move, and would go stale silently the day it does. The cadence has
+ * no such contract — nothing outside the hook may know it — so it is the one
+ * that gets spelled out.
  */
 const FIFTEEN_SECONDS = 15_000;
 
@@ -76,6 +85,52 @@ describe("useSidecarStatus", () => {
     await settle();
 
     expect(status()).toBe("down");
+  });
+
+  it("reports down when the probe answers a non-2xx", async () => {
+    // A sidecar that ACCEPTS the connection and answers 503 is up as a process
+    // and unusable as a service. `probeSidecar` is `response.ok ? "up" : "down"`
+    // — weaken it to a bare `"up"` and the rejection case above still passes,
+    // because nothing else here ever gets a response object at all.
+    fetchMock.mockResolvedValue({ ok: false, status: 503 } as unknown as Response);
+
+    render(<Harness />);
+    await settle();
+
+    expect(status()).toBe("down");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls closed once the timeout budget elapses on a probe that never answers", async () => {
+    // The wedged port: the connection is accepted and nothing comes back. The
+    // probe's timeout is a RACE against the fetch, not merely an abort signal,
+    // because a transport that ignores abort would otherwise leave the rail on
+    // `"unknown"` forever — which reads as "still checking", not the
+    // fail-closed answer the owner is owed.
+    //
+    // The budget is spent in WALL-CLOCK TIME rather than shortened through
+    // `timeoutMs`: the hook does not pass that option, so overriding it would
+    // test a probe the rail never makes.
+    fetchMock.mockImplementation(async () => new Promise<never>(() => {}));
+
+    render(<Harness />);
+    await settle(SIDECAR_PROBE_TIMEOUT_MS - 1);
+    // Still inside the budget: claiming "down" here would accuse a sidecar
+    // that is merely slow to answer.
+    expect(status()).toBe("unknown");
+
+    await settle(1);
+    expect(status()).toBe("down");
+
+    // …and the LOOP survived the timeout. A hook that treated a timed-out probe
+    // as terminal would sit on `down` forever, so a sidecar started a minute
+    // later would never be noticed — the dot would be permanently wrong in the
+    // one direction nobody checks.
+    fetchMock.mockResolvedValue({ ok: true } as unknown as Response);
+    await settle(FIFTEEN_SECONDS);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(status()).toBe("up");
   });
 
   it("re-probes on the poll cadence and moves the status with the answer", async () => {

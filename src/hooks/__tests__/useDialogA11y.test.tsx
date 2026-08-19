@@ -211,8 +211,17 @@ describe("opening and closing", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(opener.isConnected).toBe(false);
     const heading = screen.getByRole("heading", { name: "Wiki" });
-    expect(document.activeElement).toBe(heading);
-    expect(document.activeElement).not.toBe(document.body);
+    // The restore is the dialog effect's CLEANUP — a passive effect, which
+    // React runs in a task scheduled AFTER the commit that removed the dialog.
+    // This close is driven by a settled fetch rather than by the click, so it
+    // happens outside `act` and the two land in separate turns: "the dialog is
+    // gone" becomes observable strictly before focus has moved. Reading
+    // `activeElement` immediately after the wait above therefore catches
+    // `<body>` whenever the scheduler is busy enough to slip a poll between
+    // them (a parallel `--project dom` run is enough). Waiting for the focus
+    // itself is the SAME assertion made where the behaviour actually finishes:
+    // focus that never lands on the heading still fails here.
+    await waitFor(() => expect(document.activeElement).toBe(heading));
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 });
