@@ -44,6 +44,15 @@
     "label": "mtime grace period",
     "resolution": ""
   },
+  "DW-159": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add an `isOwnerHandle(principal.handle)` gate to `POST /api/wikis` so a non-owner cannot create a Wiki no surface will honour, answering the same 403 shape the artifact route already uses, and pin it with a route test alongside the existing sign-in and read-only cases.",
+    "key": "1",
+    "label": "Gate creation on ownership",
+    "resolution": ""
+  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",

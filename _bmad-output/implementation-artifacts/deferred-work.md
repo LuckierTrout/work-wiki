@@ -1367,6 +1367,7 @@ location: src/app/api/wikis/route.ts:37
 severity: low
 reason: `src/app/api/wikis/route.ts` checks `getPrincipal()` and `isReadOnly()`, then calls `createWiki(principal.handle, …)` — no `isOwnerHandle` gate. The resulting Wiki's Schema is never resolved (`readActiveWikiSchema()` reads `NEXT_PUBLIC_OWNER_HANDLE`) and its Schema edits are 403'd at `src/app/api/workbench/artifact/route.ts:82`, whose own comment reasons about exactly this inertness for the save path. So the "second tenant" state DW-19 treats as hypothetical is reachable in production today; the creation path is the one door left open. Pre-existing, and a product decision (gate creation, or accept inert non-owner Wikis) rather than a defect of this change.
 status: open
+decision: 2026-08-19 Gate creation on ownership — Add an `isOwnerHandle(principal.handle)` gate to `POST /api/wikis` so a non-owner cannot create a Wiki no surface will honour, answering the same 403 shape the artifact route already uses, and pin it with a route test alongside the existing sign-in and read-only cases.
 
 ### DW-160: Follow-up review still recommended for dw-single-owner-resolution-invariant after the damping cap was spent
 origin: review-budget-followup
