@@ -1522,7 +1522,9 @@ source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
 location: src/app/globals.css:2645 with src/components/workbench/WikiSwitcher.tsx
 severity: low
 reason: `globals.css:2645-2647` sets `.wb-shell[data-collapsed="true"] .wb-left { display: none }`, and `collapsed` is durable. Before DW-33 the canvas card's own switcher and `New wiki` survived the collapse; now every Wiki control lives in the hidden column. The rail's collapse chevron is always visible, so nothing is a dead end and this is arguably just what "collapse" means — but it is a reachability change the retirement caused, and whether the rail should carry a Wiki affordance in that state is a UX decision.
-status: open
+status: done 2026-08-19
+resolution: closed by human decision: Collapse is an explicit, durable user action and the chevron that restores it is always visible; hiding the Wiki controls is what collapsing the column means.
+decision: 2026-08-19 Accept the collapsed state — Collapse is an explicit, durable user action and the chevron that restores it is always visible; hiding the Wiki controls is what collapsing the column means.
 
 ### DW-179: The only Wiki switcher's label is `wb-sr-only`, so a sighted user now meets a bare combobox.
 origin: spec-deferred 7677137abba0
