@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
 import {
   SETTINGS_VECTOR_HINT_COPY,
@@ -104,6 +104,8 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     // control rather than sitting unassociated beside it.
     expect(checkbox.getAttribute("aria-disabled")).toBe("true");
     expect(announcedFor(checkbox)).toBe(IN_NAMESPACE);
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(checkbox.checked).toBe(false));
     // The old sentence is the regression this guards: "needs a model" beside a
     // model box that visibly holds one sent the owner nowhere.
     expect(announcedFor(checkbox)).not.toContain("needs a model before");
@@ -130,5 +132,7 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     // no endpoint, no key, and no refusal.
     expect(checkbox.getAttribute("aria-disabled")).toBeNull();
     expect(announcedFor(checkbox)).toBe(SETTINGS_VECTOR_HINT_COPY);
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(checkbox.checked).toBe(true));
   });
 });

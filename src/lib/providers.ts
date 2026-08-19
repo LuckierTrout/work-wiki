@@ -62,7 +62,7 @@ export function isEmbeddingProvider(p: string): p is EmbeddingProvider {
 export const WORKERS_AI_MODEL_PREFIX = "@cf/";
 
 /**
- * Does a model id belong to the namespace of the provider that will run it?
+ * Does a model id sit on the correct side of the Workers AI namespace boundary?
  *
  * The ONE statement of the rule, so its two readers cannot drift into two
  * subtly different rules: `embeddings.ts`'s `resolveEmbeddingModelName` DROPS
@@ -73,7 +73,9 @@ export const WORKERS_AI_MODEL_PREFIX = "@cf/";
  *
  * It is an equality, not a ban, and that matters in both directions: a Workers
  * AI id under OpenAI/Google/Ollama is exactly as wrong as an OpenAI id under
- * Workers AI, and half the rule would leave the mirror case unguarded.
+ * Workers AI, and half the rule would leave the mirror case unguarded. This is
+ * deliberately not a model-catalog validator for OpenAI versus Google versus
+ * Ollama; the resolver itself distinguishes only Workers AI's `@cf/` namespace.
  */
 export function embeddingModelMatchesProvider(provider: string, model: string): boolean {
   return model.startsWith(WORKERS_AI_MODEL_PREFIX) === (provider === "workers-ai");

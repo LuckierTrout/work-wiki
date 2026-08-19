@@ -52,13 +52,16 @@ You only need **one** provider. The app auto-detects which key is set.
 |---|---|---|
 | `LLM_WIKI_PROVIDER` | Force a specific provider (`anthropic`, `openai`, `google`, `ollama`) | Auto-detected |
 | `LLM_WIKI_MODEL` | Override the default model name | Provider default |
-| `EMBEDDING_MODEL` | Override the embedding model name — must be in the selected embedding provider's namespace (see below) | Provider default |
+| `EMBEDDING_PROVIDER` | Force the embedding provider (`openai`, `google`, `ollama`, `workers-ai`) | Settings selection, then auto-detected |
+| `EMBEDDING_MODEL` | Override the embedding model name — must use `@cf/` exactly when the embedding provider is `workers-ai` (see below) | Provider default |
 | `PORT` | Server port inside the container | `3000` |
 
-**`EMBEDDING_MODEL` must match the embedding provider.** Cloudflare Workers AI
-model ids live in the `@cf/` namespace (`@cf/baai/bge-m3`); every other
-embedding provider's ids do not. An id from the wrong namespace is not merely
-ignored in favour of the provider default — **vector search is refused**:
+**`EMBEDDING_MODEL` must respect the Workers AI namespace boundary.** Cloudflare
+Workers AI model ids live in the `@cf/` namespace (`@cf/baai/bge-m3`); every
+other embedding provider's ids must sit outside it. This check does not validate
+one non-Workers-AI provider's model catalog against another's. An id on the
+wrong side of the boundary is not merely ignored in favour of the provider
+default — **vector search is refused**:
 Settings will not let the switch be turned on, and a deployment that already had
 it on reads as off until the mismatch is resolved. The Settings page names the
 namespace it expects, so an unexplained "vector search is off" after setting this

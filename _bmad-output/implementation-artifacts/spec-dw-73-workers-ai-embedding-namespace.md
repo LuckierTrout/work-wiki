@@ -160,23 +160,26 @@ baseline_revision: 'da113a34d74406bad6e684f073a507325729a5d8'
 
 ## Code Map
 
-- `src/lib/workbench-settings.ts` — the change site. `VectorSearchInputs` (:403), `SELF_TRANSPORTING_EMBEDDING_PROVIDERS` (:418), `canEnableVectorSearch` (:450), `vectorSearchMissingLegs` (:455 — the `if (!v.model) missing.push("a model")` line is what grows the namespace branch), `vectorSearchMissingCopy` (:476, joins legs into one sentence). Module header declares it client-safe and Node-import-free; it already imports `EMBEDDING_PROVIDERS`, `PROVIDER_INFO`, `isEmbeddingProvider`, `VALID_PROVIDERS` from `./providers`.
-- `src/lib/providers.ts` — client-safe constants module (96 lines, no Node imports by design). New home for the exported `WORKERS_AI_MODEL_PREFIX`; sits naturally beside `EMBEDDING_PROVIDERS` and `embeddingProviderLabel`.
-- `src/lib/embeddings.ts:41` — current private `const WORKERS_AI_MODEL_PREFIX = "@cf/"`; its only reader is `resolveEmbeddingModelName` (:176-186), whose behaviour must not change. Already imports from `./providers` at :11.
+- `src/lib/workbench-settings.ts` — the change site. `VectorSearchInputs`, `canEnableVectorSearch`, `vectorSearchMissingLegs`, and `vectorSearchMissingCopy` form the client-safe vector gate. It imports both the shared predicate and the prefix used in refusal copy from `./providers`.
+- `src/lib/providers.ts` — client-safe provider constants module and home of both `WORKERS_AI_MODEL_PREFIX` and `embeddingModelMatchesProvider`, so the resolver and vector gate cannot encode different namespace rules.
+- `src/lib/embeddings.ts` — `resolveEmbeddingModelName` calls the shared `embeddingModelMatchesProvider` predicate while preserving its existing provider-default fallback behaviour.
 - `src/components/workbench/SettingsCanvas.tsx:231,519` — renders `vectorSearchMissingCopy(vectorInputs)` as the vector switch's `aria-describedby` hint whenever the gate refuses. Read-only for this change: the new sentence surfaces here with no edit.
 - `src/lib/workbench-settings.ts:640-694` — `validateWorkbenchSettingsPatch` + `mergedVectorInputs`: the route's half, env model wins over the patch. Read-only.
 - `src/lib/workbench-settings.ts:846-882` — `draftCanEnableVectorSearch` / `draftVectorInputs`: the browser's half. Read-only; both feeders already trim, so `model` arrives trimmed or null.
 - `src/lib/config.ts:506-518` — `getVectorSearchSettings` intersects the stored flag with the same predicate: the third caller, which is why the last matrix row holds. Read-only.
 - `src/lib/__tests__/workbench-settings.test.ts:278-380` — `describe("canEnableVectorSearch")`. Line 314's "needs only a model from a provider that carries its own transport" loop feeds `model: "m"` for both `ollama` and `workers-ai`; `workers-ai` must move to a `@cf/` id or it fails. The copy assertions live at :336-378.
+- `src/components/workbench/__tests__/settings-vector-namespace.test.tsx` — mounts the real Embeddings settings category, verifies the namespace sentence is the switch's accessible description, and exercises refused and allowed clicks.
 - `src/lib/__tests__/settings-runtime-wiring.test.ts:455-472` and `workbench-settings.test.ts:1255-1290` — existing route/runtime vector cases, all `openai` + `text-embedding-3-small`; unaffected by the symmetric rule.
 
 ## Tasks & Acceptance
 
 **Execution:**
-- `src/lib/providers.ts` — export `WORKERS_AI_MODEL_PREFIX = "@cf/"` with a one-line comment naming it as the Workers AI id namespace both the embedding resolver and the vector gate read — the constant must be reachable from client-safe code.
-- `src/lib/embeddings.ts` — delete the private declaration at :41 and import the constant from `./providers` (extend the existing import at :11); `resolveEmbeddingModelName` keeps its current behaviour verbatim.
-- `src/lib/workbench-settings.ts` — import the constant from `./providers`; in `vectorSearchMissingLegs`, keep `!v.model → "a model"` and add an `else if` that pushes the namespace leg when `v.model.startsWith(WORKERS_AI_MODEL_PREFIX) !== (v.provider === "workers-ai")` — `a model id in the Workers AI ${WORKERS_AI_MODEL_PREFIX} namespace` for `workers-ai`, `a model id outside the Workers AI ${WORKERS_AI_MODEL_PREFIX} namespace` otherwise. Update the `canEnableVectorSearch` doc block's leg list so the documented rule matches the code.
+- `src/lib/providers.ts` — export `WORKERS_AI_MODEL_PREFIX = "@cf/"` and the client-safe `embeddingModelMatchesProvider(provider, model)` helper that states the resolver/vector-gate biconditional once.
+- `src/lib/embeddings.ts` — delete the private prefix declaration and call the shared helper from `resolveEmbeddingModelName`; keep its provider-default fallback behaviour verbatim.
+- `src/lib/workbench-settings.ts` — import the helper and the prefix used in copy; in `vectorSearchMissingLegs`, keep `!v.model → "a model"` and otherwise push the namespace leg when the shared helper returns false — `a model id in the Workers AI ${WORKERS_AI_MODEL_PREFIX} namespace` for `workers-ai`, `a model id outside the Workers AI ${WORKERS_AI_MODEL_PREFIX} namespace` otherwise. Update the `canEnableVectorSearch` doc block's leg list so the documented rule matches the code.
 - `src/lib/__tests__/workbench-settings.test.ts` — change the `workers-ai` arm of the self-transporting loop to a `@cf/` id (leave `ollama` on `"m"`), and add cases for every I/O matrix row: both mismatch directions, the composed sentence, the unchanged "a model" sentence, the in-namespace pass, and a `getVectorSearchSettings().enabled === false` case for a stored mismatched config.
+- `src/components/workbench/__tests__/settings-vector-namespace.test.tsx` — mount the Embeddings settings category and prove a mismatched switch stays unchecked when clicked while a matching Workers AI selection can be enabled.
+- `DEPLOY.md` — document `EMBEDDING_PROVIDER` and describe `EMBEDDING_MODEL` as the binary Workers AI `@cf/` namespace boundary the resolver actually enforces.
 
 **Acceptance Criteria:**
 - Given the Settings surface with embedding provider `Cloudflare Workers AI` and embedding model `text-embedding-3-small`, when the owner reads the vector switch, then it is refused and its description is the namespace sentence naming `@cf/` — not "needs a model".
@@ -201,14 +204,30 @@ baseline_revision: 'da113a34d74406bad6e684f073a507325729a5d8'
   - `[medium]` `[patch]` The spec's first acceptance criterion is a rendering statement but coverage stopped at the library seam. Added `src/components/workbench/__tests__/settings-vector-namespace.test.tsx`, which mounts the embeddings category and asserts the vector checkbox is refused and its accessible description IS the namespace sentence, for both directions plus the passing case.
   - `[low]` `[patch]` `DEPLOY.md:55` still described `EMBEDDING_MODEL` as merely falling back to the provider default. Amended the row and added a note that a wrong-namespace id now refuses vector search outright.
 
+### 2026-08-18 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 4: (high 0, medium 1, low 3)
+- defer: 0
+- reject: 24: (high 4, medium 6, low 14)
+- addressed_findings:
+  - `[medium]` `[patch]` The mounted Settings test asserted `aria-disabled` and the refusal copy but never exercised the checkbox handler. It now clicks a mismatched switch and proves it stays unchecked, then clicks the matching Workers AI case and proves it can be enabled.
+  - `[low]` `[patch]` The new helper and deployment copy could be read as validating every provider's full model catalog even though the resolver rule is only the Workers AI `@cf/` boundary. Clarified both without changing behaviour.
+  - `[low]` `[patch]` `DEPLOY.md` told operators that `EMBEDDING_MODEL` depends on the selected embedding provider but omitted the `EMBEDDING_PROVIDER` override that can select it. Added the variable and its supported values to the table.
+  - `[low]` `[patch]` The canonical Code Map, execution tasks, design example, and targeted verification command still described the pre-review inline rule. Synchronized those non-contract sections with the shared helper, mounted interaction test, and deployment documentation.
+
 ## Design Notes
 
-The namespace test is written as one equality rather than two branches so it reads as the same rule `resolveEmbeddingModelName` states (`overrideIsWorkersAi === providerIsWorkersAi`) rather than as a second, independently maintained rule:
+The namespace test is one equality in the client-safe `embeddingModelMatchesProvider` helper rather than two branches or two independently maintained copies. Both `resolveEmbeddingModelName` and the vector gate call it:
 
 ```ts
+export function embeddingModelMatchesProvider(provider: string, model: string): boolean {
+  return model.startsWith(WORKERS_AI_MODEL_PREFIX) === (provider === "workers-ai");
+}
+
 if (!v.model) {
   missing.push("a model");
-} else if (v.model.startsWith(WORKERS_AI_MODEL_PREFIX) !== (v.provider === "workers-ai")) {
+} else if (!embeddingModelMatchesProvider(v.provider, v.model)) {
   missing.push(
     v.provider === "workers-ai"
       ? `a model id in the Workers AI ${WORKERS_AI_MODEL_PREFIX} namespace`
@@ -224,7 +243,7 @@ The gate widens for an already-stored mismatched config, which is deliberate: `g
 ## Verification
 
 **Commands:** (run through `npx`: `pnpm test` / `pnpm vitest` fail in this checkout with a pre-existing `ERROR packages field missing or empty` workspace error, unrelated to this change.)
-- `npx vitest run src/lib/__tests__/workbench-settings.test.ts src/lib/__tests__/embeddings.test.ts src/lib/__tests__/settings-runtime-wiring.test.ts src/lib/__tests__/config.test.ts` — expected: all pass, including the new namespace cases.
+- `npx vitest run src/lib/__tests__/workbench-settings.test.ts src/lib/__tests__/embeddings.test.ts src/lib/__tests__/settings-runtime-wiring.test.ts src/lib/__tests__/config.test.ts src/components/workbench/__tests__/settings-vector-namespace.test.tsx` — expected: all pass, including the namespace cases and mounted switch interaction.
 - `npx vitest run` — expected: no new failures against the pre-change baseline.
 - `npx eslint` — expected: clean (exit 0; the `jsx-ast-utils` `TSNonNullExpression` notices are pre-existing).
 - `npx tsc --noEmit` — expected: no new type errors.
@@ -233,68 +252,51 @@ The gate widens for an already-stored mismatched config, which is deliberate: `g
 
 Status: done
 
-**Implemented change.** The vector-search gate now applies the same
-provider/namespace rule `resolveEmbeddingModelName` applies, so a model id that
-belongs to the wrong provider is refused at the Settings surface with an
-explanatory sentence instead of enabling the switch and being silently replaced
-at embed time (DW-73). The rule is stated once, in client-safe code, and read by
-both the resolver and the gate.
+**Implemented change.** The vector-search gate applies the same Workers AI
+`@cf/` namespace boundary as `resolveEmbeddingModelName`, so a mismatched model
+is refused at the Workbench Settings switch, by the nested settings route, and
+when reading the effective vector-search state instead of being silently
+replaced at embed time. This follow-up review added direct switch-interaction
+proof and tightened the operator/spec documentation without changing runtime
+behaviour.
 
 **Files changed**
-- `src/lib/providers.ts` — new `WORKERS_AI_MODEL_PREFIX` and
-  `embeddingModelMatchesProvider(provider, model)`: the one statement of the
-  namespace rule, in the module both a client component and the server can import.
-- `src/lib/embeddings.ts` — dropped the private prefix constant and the inline
-  comparison; `resolveEmbeddingModelName` now calls the shared predicate.
-  Behaviour unchanged.
-- `src/lib/workbench-settings.ts` — `vectorSearchMissingLegs` grew a namespace
-  leg beside the model leg, so `vectorSearchMissingCopy` names the namespace and
-  composes with the other legs; `canEnableVectorSearch`'s doc block documents it.
-- `src/lib/__tests__/workbench-settings.test.ts` — namespace cases for the
-  predicate, the copy (including the composed sentence), the route in both
-  directions, the env-override path, all four embedding providers, and a stored
-  mismatch reading as vector-off.
-- `src/components/workbench/__tests__/settings-vector-namespace.test.tsx` (new) —
-  the surface criterion: the vector checkbox is refused and its accessible
-  description is the namespace sentence.
-- `DEPLOY.md` — `EMBEDDING_MODEL` must match the embedding provider's namespace;
-  a mismatch refuses vector search rather than quietly falling back.
+- `src/lib/providers.ts` — owns the shared prefix and namespace predicate; the
+  predicate documentation now states its deliberately binary scope.
+- `src/lib/embeddings.ts` — reads the shared predicate while preserving its
+  provider-default fallback.
+- `src/lib/workbench-settings.ts` — refuses both directions of the namespace
+  mismatch and produces the shared Settings/route sentence.
+- `src/lib/__tests__/workbench-settings.test.ts` — covers the predicate, copy,
+  route, environment-override, and stored-runtime paths.
+- `src/components/workbench/__tests__/settings-vector-namespace.test.tsx` —
+  mounts the Settings surface, checks the accessible description, and now proves
+  refused clicks stay off while an allowed click turns the switch on.
+- `DEPLOY.md` — documents `EMBEDDING_PROVIDER` and the precise Workers AI
+  namespace boundary enforced for `EMBEDDING_MODEL`.
+- `_bmad-output/implementation-artifacts/spec-dw-73-workers-ai-embedding-namespace.md`
+  — records this review pass and synchronizes its non-contract implementation
+  notes with the reviewed code.
 
-**Review findings.** 5 patches applied (2 medium, 3 low), 7 deferred (3 medium,
-4 low — see frontmatter `deferred`), 7 rejected (case-sensitivity of the prefix,
-which the gate and resolver already agree on; `VISION_MODEL` having no namespace
-check; an unexported-defaults invariant test; the model field's missing
-placeholder; test placement inside the PUT describe; cross-provider model-name
-validity for openai/google/ollama, which no layer checks; and echoing the typed
-id back in the copy). No intent gaps, no spec repairs, no loopbacks.
+**Review findings.** 4 patches applied (1 medium, 3 low), 0 newly deferred, and
+24 rejected. The seven previously recorded deferred items remain unchanged in
+frontmatter and were not reopened or copied into the deferred-work ledger.
 
-**Follow-up review recommended: true.** Patched findings only: high 0, medium 2,
-low 3 → 3 × 2 + 3 = 9, which is ≥ 5.
+**Follow-up review recommended: true.** Patched findings only: high 0, medium 1,
+low 3 → `3 × 1 + 3 = 6`, which is at least 5.
 
-**Verification** (through `npx`; `pnpm test`/`pnpm vitest` fail in this checkout
-with a pre-existing `ERROR packages field missing or empty` workspace error):
-- `npx vitest run` — 228 files, 4793 tests, all passing (baseline before the
-  change: 227 files, 4786 tests).
-- `npx vitest run` over the five affected suites — 288 tests, all passing.
-- `npx tsc --noEmit` — clean.
-- `npx eslint` — exit 0 (only the pre-existing `jsx-ast-utils`
-  `TSNonNullExpression` notices).
-- Every row of the I/O & Edge-Case Matrix is covered by a test that ran and
-  passed in that output.
+**Verification**
+- Targeted Vitest command from `## Verification` — 5 files, 288 tests, all
+  passing.
+- `npx vitest run` — 228 files, 4,793 tests, all passing. Logged stderr is from
+  tests that deliberately exercise failure paths; the command exited 0.
+- `npx eslint` — exit 0; only the documented `jsx-ast-utils`
+  `TSNonNullExpression` notices appeared.
+- `npx tsc --noEmit` — exit 0 with no output.
 
-**Residual risks**
-- The rule is applied by all three callers of `canEnableVectorSearch`, so an
-  existing deployment storing a mismatch reads as vector-off at runtime rather
-  than embedding with a substituted model. That is the recorded decision's
-  intent, but it is a behaviour change for installs that were quietly working.
-- The intent's example names only the `workers-ai` direction; the implemented
-  rule is the resolver's biconditional, so a `@cf/` id under OpenAI/Google/Ollama
-  is now refused too. Refusing half the rule would have left the same silent
-  substitution intact in mirror image, so the wider reading was taken
-  deliberately and is stated in the spec's Boundaries.
-- A copy improvement (calling the provider what the picker calls it) was
-  implemented during review and reverted, because the intent-contract's matrix
-  pins the sentence text verbatim and that block is read-only. It is recorded in
-  `deferred` instead.
-- The legacy flat `/api/settings` branch still writes `embeddingModel` without
-  the gate; the highest-severity deferred item.
+**Residual risks.** The seven already-recorded deferred observations remain for
+orchestrator-owned follow-up, including the legacy flat settings write path.
+This run did not modify, reopen, rewrite, or commit any existing deferred-work
+ledger entry. The working copy also contains unrelated orchestrator-owned
+artifacts; the final cleanliness gate determines whether they prevent a terminal
+`done` result.
