@@ -69,6 +69,17 @@ function button(name: string): HTMLButtonElement {
   return screen.getByRole("button", { name }) as HTMLButtonElement;
 }
 
+/**
+ * The switch requests only. Filtered by URL rather than counted off the whole
+ * spy, so a suite that also creates or renames cannot make a re-entry claim on
+ * the strength of somebody else's POST.
+ */
+function currentWrites(): Array<[string, RequestInit]> {
+  return fetchMock.mock.calls.filter(
+    ([url]) => url === "/api/wikis/current",
+  ) as Array<[string, RequestInit]>;
+}
+
 function mount(wikis: readonly WikiRecord[] = [CURRENT, OTHER]) {
   return render(<WikiSwitcher wikis={wikis} currentWikiId={CURRENT.id} />);
 }
@@ -356,6 +367,82 @@ describe("an in-flight switch", () => {
     await waitFor(() => expect(button("Rename Wiki").disabled).toBe(false));
     expect(button("Delete Wiki").disabled).toBe(false);
   });
+
+  it("starts exactly ONE PUT, and takes the next switch once that one settles", async () => {
+    // `switchWiki`'s `if (switching) return`. A second PUT started here could
+    // settle out of ORDER, leaving the shell on a wiki the owner had already
+    // left — and `router.refresh()` would then refetch the tree for it.
+    const THIRD: WikiRecord = { ...OTHER, id: "wiki 5/6", name: "Third" };
+    let settle!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () => new Promise<Response>((resolve) => (settle = resolve)),
+    );
+    render(
+      <WikiSwitcher wikis={[CURRENT, OTHER, THIRD]} currentWikiId={CURRENT.id} />,
+    );
+    const select = screen.getByLabelText("Active wiki") as HTMLSelectElement;
+
+    fireEvent.change(select, { target: { value: OTHER.id } });
+    // A DIFFERENT wiki, so the picker's value really moves and React really
+    // fires a second change — re-picking the value it already holds would be a
+    // no-op event and the guard would never be asked anything.
+    fireEvent.change(select, { target: { value: THIRD.id } });
+
+    expect(currentWrites()).toHaveLength(1);
+    expect(JSON.parse(String(currentWrites()[0][1].body))).toEqual({ id: OTHER.id });
+
+    settle(answer({}));
+    await waitFor(() => expect(select.disabled).toBe(false));
+
+    // Refused while one was in flight, taken the moment it is not — the guard
+    // is a queue of one, not a control that stays shut.
+    fireEvent.change(select, { target: { value: THIRD.id } });
+
+    await waitFor(() => expect(currentWrites()).toHaveLength(2));
+    expect(JSON.parse(String(currentWrites()[1][1].body))).toEqual({ id: THIRD.id });
+  });
+
+  /**
+   * `send` arms `AbortSignal.timeout`, and BOTH abort flavours reach the catch
+   * as an error whose `name` is the whole signal: the message names the
+   * mechanism ("signal timed out", "This operation was aborted") rather than
+   * the thing the owner was trying to do. One line in `failureMessage` maps the
+   * pair, so both are driven here.
+   *
+   * Built with `Object.assign(new Error(...), { name })` and NOT with a real
+   * `DOMException`: jsdom's DOMException does not inherit from Error, so
+   * `failureMessage`'s `cause instanceof Error` would be false and the sentence
+   * below would arrive from the function's last line whatever the abort branch
+   * did — a test that passes for the wrong reason.
+   */
+  const ABORTS: ReadonlyArray<readonly [string, string]> = [
+    ["TimeoutError", "signal timed out"],
+    ["AbortError", "This operation was aborted"],
+  ];
+
+  for (const [name, mechanismMessage] of ABORTS) {
+    it(`names what failed, not the mechanism, on a ${name}`, async () => {
+      fetchMock.mockRejectedValueOnce(
+        Object.assign(new Error(mechanismMessage), { name }),
+      );
+      mount();
+
+      fireEvent.change(screen.getByLabelText("Active wiki"), {
+        target: { value: OTHER.id },
+      });
+
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toBe("Couldn’t switch wiki.");
+      expect(refresh).not.toHaveBeenCalled();
+      // The optimistic pick is rolled back, so the control names the wiki that
+      // is actually live rather than the one the owner failed to reach.
+      await waitFor(() =>
+        expect((screen.getByLabelText("Active wiki") as HTMLSelectElement).value).toBe(
+          CURRENT.id,
+        ),
+      );
+    });
+  }
 });
 
 describe("the controls' gates", () => {

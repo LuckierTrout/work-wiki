@@ -227,4 +227,68 @@ describe("Create Wiki", () => {
     // owner is looking at is stale until it is refetched.
     expect(refresh).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps the dialog open and shows the failure inside it", async () => {
+    // `create()`'s catch. The overlay's backdrop covers everything this
+    // component renders behind it, so a message put anywhere else is a message
+    // the owner cannot read — they would see the spinner stop and nothing else.
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "A wiki with that name already exists." }, { ok: false, status: 409 }),
+    );
+    render(<WikiWorkbench initialWikis={[]} initialCurrentId={null} />);
+    fireEvent.click(screen.getByRole("button", { name: "Create Wiki" }));
+
+    fireEvent.click(button("Create"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("A wiki with that name already exists.");
+    expect(screen.getByRole("dialog", { name: "Create Wiki" }).contains(alert)).toBe(true);
+    // Nothing was seeded, so the empty state is still the truth behind it.
+    expect(screen.getByText("No wiki yet.")).toBeTruthy();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("guards a 2xx whose body carries no wiki at all", async () => {
+    // Pushing `undefined` into `wikis` here crashes the very next render on
+    // `wiki.id`, which is a BLANK PAGE rather than the message below — the one
+    // failure mode a green request makes look like success.
+    fetchMock.mockResolvedValueOnce(answer({}));
+    render(<WikiWorkbench initialWikis={[]} initialCurrentId={null} />);
+    fireEvent.click(screen.getByRole("button", { name: "Create Wiki" }));
+
+    fireEvent.click(button("Create"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Couldn’t create the wiki.");
+    expect(screen.getByRole("dialog", { name: "Create Wiki" }).contains(alert)).toBe(true);
+    // The canvas behind it is intact: no blank render, no wiki card.
+    expect(screen.getByText("No wiki yet.")).toBeTruthy();
+    expect(screen.queryByText(WIKI.name)).toBeNull();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("the read-failure branch", () => {
+  it("says the read failed even when it was handed wikis and a current id", () => {
+    // The degraded render's hard case. `initialWikis` is a PLACEHOLDER when the
+    // flag is up, not an observation — so a card built from it would describe a
+    // wiki the server never confirmed, and `unavailable` has to outrank the
+    // whole `current` branch rather than merely stand in for an empty list.
+    render(
+      <WikiWorkbench initialWikis={[WIKI]} initialCurrentId={WIKI.id} unavailable />,
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe("Your wikis couldn’t be loaded. Reload to try again.");
+    // Not the empty state: "No wiki yet." is a claim about the registry this
+    // render cannot make, and its Create Wiki button would seed a duplicate
+    // wiki and move every prompt onto its template on a transient read error.
+    expect(screen.queryByText("No wiki yet.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create Wiki" })).toBeNull();
+    // …and not the wiki card either, which is the half an empty-list render
+    // cannot ask about at all.
+    expect(screen.queryByText(WIKI.name)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change template" })).toBeNull();
+    expect(screen.queryByText("Select a file to preview.")).toBeNull();
+  });
 });

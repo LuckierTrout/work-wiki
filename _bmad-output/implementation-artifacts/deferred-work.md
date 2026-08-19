@@ -947,7 +947,8 @@ source_spec: `spec-dom-test-environment.md`
 location: src/hooks/useDialogA11y.ts
 severity: medium
 reason: Esc dismissal, the deliberate "an open <select> eats its own Esc" carve-out, Tab trapping and pull-back, the `document.body.style.overflow` lock/restore, and the `fallbackFocusRef` path (whose own comment names the case: confirming Create Wiki unmounts the button that opened it) are all invisible to a source scan and all still pinned only by `create-wiki-ui.test.ts`'s greps. The DOM environment this pass established is what makes them testable.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-dom-tests-dialogs-and-rail
 
 ### DW-106: WikiWorkbench's other write paths have no mounted coverage — switchWiki's rollback and re-entry guard, the degraded `unavailable` render, and create()'s failure branch.
 origin: spec-deferred 684689c6d8cd
@@ -955,7 +956,8 @@ source_spec: `spec-dom-test-environment.md`
 location: src/components/WikiWorkbench.tsx:108
 severity: medium
 reason: `switchWiki` exists because overlapping PUTs settle out of order and roll the selection back to a stale id; the `unavailable` branch must NOT show "No wiki yet." or a Create button; the `!wiki?.id` guard's comment says the alternative is "a blank page rather than the error message"; and `create()`'s catch has no equivalent of the template flow's "keeps the dialog open and shows the failure inside it". None of these are observable from a source scan, and this pass covered only the confirm gate the bundle intent named.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-dom-tests-dialogs-and-rail
 
 ### DW-107: Nothing pins the `busy` gate on either dialog, so a double-submit would issue two destructive writes with the suite green.
 origin: spec-deferred d8fb9fb38bc8
@@ -963,7 +965,8 @@ source_spec: `spec-dom-test-environment.md`
 location: src/components/ConfirmDialog.tsx:93
 severity: medium
 reason: No test clicks `Overwrite` or `Create` twice before the first request settles. Dropping `disabled={busy}` from `ConfirmDialog` would double-apply a template overwrite; the labels ("Working…", "Creating…") and the mid-flight refusal of Cancel/Esc are likewise unasserted.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-dom-tests-dialogs-and-rail
 
 ### DW-108: Seventeen source files still tell the reader this repository has no DOM test environment, and several use that as the stated justification for their design.
 origin: spec-deferred bca5238bf2c5
@@ -979,7 +982,8 @@ source_spec: `spec-dom-test-environment.md`
 location: src/components/workbench/IconRail.tsx
 severity: medium
 reason: DW-24 enumerates more surfaces than the bundle intent's shortlist. The shortlist (sheet open/close/Esc/focus-restore) is now mounted and exceeded, but `workbench-chrome.test.ts` is still the only thing covering the rest, by `readFile` + `toContain`. Each is now cheaply mountable against the environment this pass added.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-dom-tests-dialogs-and-rail
 
 ### DW-110: The two polling suites have no mounted case for a rejecting fetch, a malformed body, or a wedged (never-settling) probe.
 origin: spec-deferred 71d48dcc2b92
@@ -2157,4 +2161,36 @@ source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: src/lib/document-extract.ts:522
 severity: low
 reason: Closing the `EXTENSION_ALIASES`/`MIME_FORMATS` prototype-chain holes surfaced the identical defect in `mediaTypeFor` (`IMAGE_MEDIA_TYPES[ext] ?? null`) in `src/lib/document-extract.ts`, which reads filenames from *inside* uploaded archives and is therefore attacker-reachable the same way. It was fixed with the same helper, but reverting that third fix fails nothing: `mediaTypeFor` is module-private and reachable only by crafting an archive containing an image entry named e.g. `logo.constructor`.
+status: open
+
+### DW-255: `ConfirmDialog`'s `busy` gate is pinned at one consumer only — `WikiSwitcher`'s Rename and Delete confirms reach the same gate with nothing asserting it.
+origin: spec-deferred 304df609e829
+source_spec: `spec-dw-105-109-dom-tests-dialogs-and-rail.md`
+location: src/components/workbench/WikiSwitcher.tsx:236
+severity: medium
+reason: `dialog-busy-gate.test.tsx` drives the gate through `WikiWorkbench` (template overwrite and create), which is enough to fail on a dropped `disabled={busy}`. But `rename()` and `remove()` in `WikiSwitcher.tsx` have no handler-level `if (busy) return` behind the button's `disabled`, unlike `CreateWikiDialog.submit`. Delete is the irreversible one, and a double-submit there is exactly the failure DW-107 describes.
+status: open
+
+### DW-256: Only `create()`'s `!wiki?.id` malformed-2xx guard is tested; the identical guards in `applyTemplate`, `rename` and `remove` are not.
+origin: spec-deferred 63ffcaa5467c
+source_spec: `spec-dw-105-109-dom-tests-dialogs-and-rail.md`
+location: src/components/WikiWorkbench.tsx:121
+severity: low
+reason: `create-wiki-flow.test.tsx` now answers `create` with `{}` and 200 and asserts the message rather than a blank render. `applyTemplate` (WikiWorkbench.tsx:121) and `rename`/`remove` (WikiSwitcher.tsx:225, :244) carry the same guard against the same failure — a 2xx whose body is not the documented shape — and deleting any of them leaves the suite green.
+status: open
+
+### DW-257: `IconRail`'s "exactly one `aria-current` control" rule and its mode-select callbacks have no mounted pin.
+origin: spec-deferred 336890cf909d
+source_spec: `spec-dw-105-109-dom-tests-dialogs-and-rail.md`
+location: src/components/workbench/IconRail.tsx:101
+severity: low
+reason: `icon-rail.test.tsx` mounts the rail with `settingsActive: false` throughout and passes inert stubs for `onSelect`/`onToggleSettings`, so a rail that marked both a mode and Settings current (the case the component's own comment forbids: "two current controls would describe two surfaces the owner cannot both be looking at"), or wired every mode button to the same id, passes. Rail ORDER is likewise unasserted, though UX-DR3 fixes the ten modes top to bottom.
+status: open
+
+### DW-258: `Workbench`'s `aria-live="polite"` mode announcement — the OTHER live region — is still pinned only by source scan.
+origin: spec-deferred 39bb6b0f1e10
+source_spec: `spec-dw-105-109-dom-tests-dialogs-and-rail.md`
+location: src/components/workbench/Workbench.tsx:1095
+severity: low
+reason: DW-109's "live-region announcement" resolved to `IconRail`'s `role="status"` sidecar dot, which is now mounted. `Workbench.tsx`'s own `<p className="wb-sr-only" aria-live="polite">` and its interesting half — a RESTORED mode must not be announced, only a changed one — remain covered by `workbench-chrome.test.ts` greps for `useState("")` and `setAnnouncement(...)`.
 status: open
