@@ -26,6 +26,15 @@
     "label": "Make dry actually dry",
     "resolution": ""
   },
+  "DW-137": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Write a one-time backfill that copies the legacy tenant profile onto every Wiki that lacks its own, run it on read or via a maintenance op, then delete the read-through and `legacyProfilePath` along with their tests.",
+    "key": "1",
+    "label": "Backfill then remove",
+    "resolution": ""
+  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",

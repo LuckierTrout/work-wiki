@@ -1187,6 +1187,7 @@ location: src/lib/workspace-profile.ts
 severity: low
 reason: `getWorkspaceProfile` falls back to `tenants/<t>/workspace-profile.json` whenever a Wiki has no file of its own. Intentional and documented for the migration window, but it has no end date, no backfill, and no removal milestone.
 status: open
+decision: 2026-08-19 Backfill then remove — Write a one-time backfill that copies the legacy tenant profile onto every Wiki that lacks its own, run it on read or via a maintenance op, then delete the read-through and `legacyProfilePath` along with their tests.
 
 ### DW-138: `docs/llm-wiki-functional-parity-roadmap.md` still describes the Workspace Purpose editor as owner-scoped rather than per-Wiki.
 origin: spec-deferred c3c9cc846535
