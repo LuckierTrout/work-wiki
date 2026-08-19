@@ -787,7 +787,9 @@ source_spec: `spec-owner-scoped-linking.md`
 location: src/lib/alias-index.ts:107
 severity: low
 reason: buildAliasIndex sets cachedIndex only after a complete scan (src/lib/alias-index.ts:100) and getAliasIndex re-invokes it whenever cachedIndex is null, so a mid-loop parse throw leaves nothing cached and the next miss-path request re-scans. The cache-only-on-success behavior pre-dates this story; the owner route's miss path is merely its first routing caller, and the proper fix (failure caching or a cooldown) lives in alias-index.ts, which the intent walls off ("Never: Change resolveAlias / alias-index semantics"). Consequence is bounded: the scan is one readdir plus frontmatter parses, aborts at the corrupt file, and each failure is now logger.warn-visible.
-status: open
+status: done 2026-08-19
+resolution: closed by human decision: The cost is one directory scan per missing-slug request, only while a page file is malformed, and honouring the frozen instruction is worth more than the saving.
+decision: 2026-08-19 Accept the rescan — The cost is one directory scan per missing-slug request, only while a page file is malformed, and honouring the frozen instruction is worth more than the saving.
 
 ### DW-89: SlugTenantMap lookups use plain inherited-prototype indexing, so a slug naming an Object.prototype member (a page titled "Constructor" slugifies to "constructor") resolves to the inherited function an
 origin: spec-deferred 8c3a40745345
