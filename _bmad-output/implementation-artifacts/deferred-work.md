@@ -2196,7 +2196,8 @@ source_spec: `spec-dw-105-109-dom-tests-dialogs-and-rail.md`
 location: src/components/workbench/Workbench.tsx:1095
 severity: low
 reason: DW-109's "live-region announcement" resolved to `IconRail`'s `role="status"` sidecar dot, which is now mounted. `Workbench.tsx`'s own `<p className="wb-sr-only" aria-live="polite">` and its interesting half — a RESTORED mode must not be announced, only a changed one — remain covered by `workbench-chrome.test.ts` greps for `useState("")` and `setAnnouncement(...)`.
-status: open
+status: done 2026-08-19
+resolution: already resolved: src/components/workbench/__tests__/workbench-mode-url.test.tsx:164 mounts the shell and reads `.wb-shell > .wb-sr-only[aria-live="polite"]`; :214 pins that a RESTORED mode is not announced and :284/:312/:487 pin the changed-mode announcement, so the region is no longer covered by source scan alone.
 
 ### DW-259: Three of the six converted client components -- RecentIngests, ActionInbox and BulkDocumentImport -- still have no rendered-anchor coverage, so reverting any of their hrefForSlug call sites to slugPat
 origin: spec-deferred 8332b2aa4a3f
