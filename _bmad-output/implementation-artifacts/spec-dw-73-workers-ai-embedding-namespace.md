@@ -2,7 +2,7 @@
 title: 'DW-73 — Workers AI embedding model namespace at the vector gate'
 type: 'bugfix'
 created: '2026-08-18'
-status: 'done' # draft | ready-for-dev | in-progress | in-review | done | blocked
+status: 'blocked' # draft | ready-for-dev | in-progress | in-review | done | blocked
 review_loop_iteration: 0
 followup_review_recommended: true
 context: []
@@ -250,7 +250,9 @@ The gate widens for an already-stored mismatched config, which is deliberate: `g
 
 ## Auto Run Result
 
-Status: done
+Status: blocked
+Blocking condition: finalization left repository dirty
+Reviewed commit: `d40dae9e05fd08468c0223751a0222527e69fd1b`
 
 **Implemented change.** The vector-search gate applies the same Workers AI
 `@cf/` namespace boundary as `resolveEmbeddingModelName`, so a mismatched model

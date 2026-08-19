@@ -656,7 +656,8 @@ location: src/lib/workbench-settings.ts:427-440, src/lib/embeddings.ts (resolveE
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: low
 reason: `canEnableVectorSearch` asks `workers-ai` for a provider and a model only (it is keyless and self-transporting), so `{ provider: "workers-ai", model: "text-embedding-3-small" }` turns the switch on. `resolveEmbeddingModelName` then rejects the same value for a namespace mismatch and falls back to `@cf/baai/bge-m3`. The owner's model choice is replaced without a word. The namespace guard is pre-existing; teaching the gate about it means deciding whether the surface refuses the model, rewrites it, or narrows the picker.
-status: open
+status: done 2026-08-18
+resolution: resolved by sweep bundle dw2-workers-ai-embedding-namespace
 decision: 2026-08-17 Validate at the surface — Teach canEnableVectorSearch the provider's namespace rule so a workers-ai model outside @cf/ fails validation with an explanatory message on the Settings surface, instead of enabling the switch and being discarded later at resolution time.
 decision: 2026-08-16 Validate at the surface — Teach canEnableVectorSearch the provider's namespace rule so a workers-ai model outside @cf/ fails validation with an explanatory message on the Settings surface, instead of enabling the switch and being discarded later at resolution time.
 
@@ -1814,4 +1815,60 @@ source_spec: `spec-dw-59-per-wiki-artifact-revisions.md`
 location: n/a
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 0) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260817-125533-fe6b; this entry preserves the lingering recommendation for a deliberate later review.
+status: open
+
+### DW-217: The legacy flat `PUT /api/settings` branch writes `embeddingModel` without running the vector gate, so a flat-only save can now silently switch effective vector search off.
+origin: spec-deferred be65cc16b535
+source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
+location: src/app/api/settings/route.ts:243-270
+severity: medium
+reason: `src/app/api/settings/route.ts:243-256` writes `body.embeddingModel` unconditionally; the gate runs only inside `if (body.workbench !== undefined)` at :270. The live `/settings` page sends exactly that flat shape (`src/hooks/useSettings.ts:245`) and DW-61's 2026-08-18 decision keeps that page. Verified against the real route: store `{ vectorSearchEnabled: true, embeddingProvider: "workers-ai", embeddingModel: "@cf/baai/bge-m3" }`, then PUT `{ embeddingModel: "text-embedding-3-small" }` with no `workbench` key -> 200, and `getVectorSearchSettings().enabled` drops to false. Before DW-73 the same write was harmless (the resolver fell back). The flat branch has never validated anything by explicit design ("a body with no `workbench` produces byte-identically the same saved object"), so closing it is a decision about legacy compatibility, not a patch.
+status: open
+
+### DW-218: An `EMBEDDING_MODEL` env override in the wrong namespace refuses vector search with a sentence the owner cannot act on from the Settings box.
+origin: spec-deferred 9cfdb86b9ca5
+source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
+location: src/lib/workbench-settings.ts (vectorSearchMissingCopy) with src/lib/config.ts:512
+severity: medium
+reason: All three feeders take the env value ahead of anything typed or stored (`mergedVectorInputs`, `draftVectorInputs`, `src/lib/config.ts:512`), so the refusal stands even after the owner types a `@cf/` id and saves — pinned by the new test "does not let a TYPED matching id lift a refusal the env override owns". The copy names the namespace but never names the variable, and `VectorSearchInputs` carries no origin field, so an origin-aware sentence ("unset EMBEDDING_MODEL") is a shape change to the predicate's inputs rather than a wording fix. Pre-DW-73 that deployment ran with the provider default instead.
+status: open
+
+### DW-219: A deployment already storing a namespace mismatch with vector search on now gets a 400 on EVERY Workbench settings save, including edits to unrelated fields.
+origin: spec-deferred 1eee0ecfc70f
+source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
+location: src/lib/workbench-settings.ts (validateWorkbenchSettingsPatch)
+severity: medium
+reason: `settingsSaveBody` always carries `vectorSearchEnabled` (`src/lib/workbench-settings.ts`), and `validateWorkbenchSettingsPatch` re-runs the vector rule whenever the resulting flag is true, so a chat-model or timeout edit is refused with the namespace sentence until the model is fixed or the switch unchecked. The mechanism is pre-existing and identical for the endpoint/key legs; DW-73 adds one more state that triggers it. The owner can recover (the switch may always be turned OFF), so this is friction, not a trap.
+status: open
+
+### DW-220: The gate checks the namespace but not that the id is a usable Workers AI EMBEDDING model, so a bare `@cf/` or a vision id passes.
+origin: spec-deferred 90d558e058af
+source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
+location: src/lib/providers.ts (embeddingModelMatchesProvider)
+severity: low
+reason: `"@cf/".startsWith("@cf/")` is true, and `@cf/llava-hf/llava-1.5-7b-hf` (`src/lib/vision.ts:19`) satisfies the leg for `workers-ai`; both fail at `ai.run()` instead. `WORKERS_AI_EMBEDDING_DIMENSIONS` (`src/lib/embeddings.ts:35-43`) already enumerates the four supported ids and could back a membership check, but it is unexported and lives in a module client-safe code cannot import. Pre-existing: both inputs were accepted before DW-73 too.
+status: open
+
+### DW-221: The gate reads a trimmed model while `resolveEmbeddingModelName` reads the raw stored string, so a stored id with leading whitespace passes the gate and is still dropped at resolution.
+origin: spec-deferred a3c81a10def4
+source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
+location: src/app/api/settings/route.ts:247 with src/lib/embeddings.ts:180-186
+severity: low
+reason: `getVectorSearchSettings` reads `nonEmpty(cfg.embeddingModel)` (`src/lib/config.ts:512`, trims) and both feeders trim, while `resolveEmbeddingModelName` tests `override.startsWith(...)` on the raw value (`src/lib/embeddings.ts:180-186`). The legacy flat branch stores `body.embeddingModel` untrimmed (`src/app/api/settings/route.ts:247`), so a stored `" @cf/baai/bge-m3"` under `workers-ai` satisfies the gate and is then replaced by the default — the exact substitution DW-73 exists to prevent. Reachable only by a direct API call, since both UIs trim.
+status: open
+
+### DW-222: The refusal calls the provider "Workers AI" while the picker two rows above calls the same selection "Cloudflare Workers AI".
+origin: spec-deferred 1b9ba6bd81b9
+source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
+location: src/lib/workbench-settings.ts (vectorSearchMissingLegs)
+severity: low
+reason: `embeddingProviderLabel("workers-ai")` returns "Cloudflare Workers AI" and populates the embedding-provider `<option>` (`SettingsCanvas.tsx:451-455`), while the namespace sentence types "Workers AI". Deriving the name from `embeddingProviderLabel` was implemented during review and then reverted: the frozen I/O matrix in this spec's intent-contract pins the sentence text verbatim, and step-03's matrix audit forbids editing an expectation to match changed code. Worth doing as its own change, matrix text included.
+status: open
+
+### DW-223: The namespace complaint is announced on the vector checkbox, not on the embedding-model field that actually holds the wrong value.
+origin: spec-deferred abe456693455
+source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
+location: src/components/workbench/SettingsCanvas.tsx (textRow "embeddingModel")
+severity: low
+reason: `SettingsCanvas.tsx:519` renders `vectorSearchMissingCopy` as the checkbox's `aria-describedby` hint; the model input built by `textRow` has no `aria-invalid` and no description tying the failure to it. Changing the provider select (`:445-448`) leaves the model untouched, so the ordinary way into this state is an edit to a control that shows no error at all.
 status: open
