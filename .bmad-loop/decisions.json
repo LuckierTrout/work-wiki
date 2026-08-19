@@ -8,6 +8,15 @@
     "label": "Raise the raw cap",
     "resolution": ""
   },
+  "DW-113": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give the DOM setup a configurable `getBoundingClientRect`/`offsetWidth` harness so a test can declare a shell width, replace the FIDELITY LIMIT note with the new contract, and add mounted cases for the width-derived shell decisions including the resize listener.",
+    "key": "1",
+    "label": "Stub configurable rects",
+    "resolution": ""
+  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",

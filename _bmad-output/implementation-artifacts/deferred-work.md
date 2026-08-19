@@ -993,6 +993,7 @@ location: vitest.setup.dom.ts
 severity: low
 reason: The DOM setup file shims `getClientRects()` to a fixed 1x1 but deliberately leaves `getBoundingClientRect()` as jsdom's all-zeros, so every `workbench-split` decision the mounted shell makes — the clamp, the divider bounds, whether a `SplitHandle` renders at all — runs at a width no browser reports, and the window `resize` listener is never exercised. The split RULES have their own node-project suite; what stays unpinned is the shell's reaction to a width. A `getBoundingClientRect` shim would open this up, and needs its own fidelity argument rather than being added in passing.
 status: open
+decision: 2026-08-19 Stub configurable rects — Give the DOM setup a configurable `getBoundingClientRect`/`offsetWidth` harness so a test can declare a shell width, replace the FIDELITY LIMIT note with the new contract, and add mounted cases for the width-derived shell decisions including the resize listener.
 
 ### DW-114: Follow-up review still recommended for dw-dom-test-environment after the damping cap was spent
 origin: review-budget-followup
