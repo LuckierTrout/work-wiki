@@ -148,11 +148,24 @@ export type SlugTenantMap = Record<string, string>;
  * `/u/<tenant>/<slug>`, via the {@link SlugTenantMap} (and `fallbackTenant` for
  * dangling/missing targets). The global `/wiki/<slug>` commons form is retired,
  * so there is no longer a public branch to take.
+ *
+ * The lookup is OWN-PROPERTY-ONLY and string-typed. The map is parsed response
+ * JSON (`/api/wiki/routes`) or a server-built plain object, so its real entries
+ * are always own string properties — while a page legitimately titled
+ * "Constructor" slugifies to `constructor`, which a plain `map[slug]` would
+ * answer with `Object.prototype.constructor`, a FUNCTION. That value is not a
+ * tenant, and {@link tenantSegment}'s `.trim()` would throw a TypeError in the
+ * middle of a render. Anything that isn't an own string entry falls back to
+ * `fallbackTenant` — fall back, never throw.
  */
 export function resolveSlugPath(
   slug: string,
   slugTenants: SlugTenantMap | undefined,
   fallbackTenant: string,
 ): string {
-  return pagePath(slugTenants?.[slug] ?? fallbackTenant, slug);
+  const own =
+    slugTenants && Object.prototype.hasOwnProperty.call(slugTenants, slug)
+      ? (slugTenants as Record<string, unknown>)[slug]
+      : undefined;
+  return pagePath(typeof own === "string" ? own : fallbackTenant, slug);
 }

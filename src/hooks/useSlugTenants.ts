@@ -12,18 +12,43 @@ let inflight: Promise<SlugTenantMap> | null = null;
  * Fetch the readability-gated slug→tenant map from `/api/wiki/routes`.
  * Concurrent callers share the in-flight request and later callers get the
  * cached map. Any failure resolves to `{}` so link building degrades to the
- * DEFAULT_TENANT fallback href instead of breaking — but the two failure
- * modes cache differently: a non-OK response's `{}` is cached for the whole
- * session (no retry), while a rejected fetch leaves the cache unset so the
- * next caller retries. Exported (rather than kept as a private closure) so
- * the caching contract is directly testable.
+ * DEFAULT_TENANT fallback href instead of breaking, and ALL failure modes are
+ * SYMMETRIC: a rejected fetch, a non-OK response and a malformed body each
+ * return `{}` WITHOUT caching it, so the next caller retries. A non-OK response
+ * therefore throws into the shared `.catch` rather than substituting `{}`
+ * inside the chain — otherwise one transient 401/429/500 would pin every
+ * in-content link to the DEFAULT_TENANT form (and its extra 308 hop) until a
+ * full page reload.
+ *
+ * Only a successful map is cached; that also means an empty map from a viewer
+ * with no readable pages is a legitimate `{}` and caches normally. Exported
+ * (rather than kept as a private closure) so the caching contract is directly
+ * testable.
  */
 export function loadSlugTenants(): Promise<SlugTenantMap> {
   if (cache) return Promise.resolve(cache);
   if (!inflight) {
     inflight = fetch("/api/wiki/routes")
-      .then((r) => (r.ok ? r.json() : {}))
-      .then((m: SlugTenantMap) => {
+      .then((r) => {
+        if (!r.ok) throw new Error(`/api/wiki/routes responded ${r.status}`);
+        return r.json();
+      })
+      .then((parsed: unknown) => {
+        // `r.json()` is `any` — the response body is not a typed map just
+        // because the route declares one. A `null` body would cache falsy, so
+        // `if (cache)` would miss it and EVERY caller would re-fetch forever;
+        // an array or a scalar would cache and be handed to every renderer,
+        // where `resolveSlugPath`'s own-property guard is the only thing left
+        // standing between it and the page. Treat anything that isn't a plain
+        // object like the other failure modes: `{}` back, nothing cached.
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          Array.isArray(parsed)
+        ) {
+          throw new Error("/api/wiki/routes returned a non-object body");
+        }
+        const m = parsed as SlugTenantMap;
         cache = m;
         return m;
       })

@@ -4,6 +4,7 @@ import { decodeSlug } from "@/lib/slugify";
 import { readWikiPageWithFrontmatter, tenantForOwner } from "@/lib/wiki";
 import { pagePath, editPath } from "@/lib/links";
 import { canReadFrontmatter, canWriteFrontmatter } from "@/lib/authz";
+import { aliasTargetForMissing } from "@/lib/page-redirect";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { WikiEditor } from "@/components/WikiEditor";
@@ -21,6 +22,16 @@ export default async function EditWikiPage({ params }: EditPageProps) {
 
   // A private page the viewer can't read is indistinguishable from missing.
   if (!page || !canReadFrontmatter(page.frontmatter, principal)) {
+    // A merged-away/renamed slug's EDIT bookmark forwards (one 308) to the
+    // survivor's edit URL — the page route already did this for the read view,
+    // and forwarding to `pagePath` here would drop an editor onto the article.
+    // Same principal-aware, fail-closed gate, so it never becomes a
+    // private-page existence oracle; `null` keeps the copy below unchanged.
+    // This runs BEFORE the handle-canonicalization 308 further down (which is
+    // unreachable on this branch anyway), so a miss lands on the survivor in
+    // one hop rather than bouncing through DEFAULT_TENANT first.
+    const target = await aliasTargetForMissing(slug, principal);
+    if (target) permanentRedirect(editPath(target.tenant, target.canonical));
     return (
       <div className="mx-auto max-w-3xl px-6 py-12">
         <h1 className="text-3xl font-bold">Page not found</h1>

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { readLog, listWikiPages } from "@/lib/wiki";
 import { canReadEntry } from "@/lib/authz";
 import { getPrincipal } from "@/lib/auth";
+import { ownerToTenant, type SlugTenantMap } from "@/lib/links";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 
 // The production log can contain private-page references, so authorization is
@@ -17,11 +18,32 @@ export default async function LogPage() {
   // log records titles/slugs, which would otherwise leak. Skipped entirely in
   // the common case where there are no hidden pages.
   let logContent = raw;
+  // slug→tenant for the log's in-content `](slug.md)` links, so they resolve to
+  // the canonical `/u/<owner>/<slug>` rather than taking a DEFAULT_TENANT 308.
+  //
+  // Built from the READABLE half of the same listing the redaction partitions —
+  // never from `buildSlugTenantMap()`, which is ungated and one call shorter.
+  // Two reasons the gate is load-bearing rather than belt-and-braces:
+  //
+  //   - The map is derived from the SAME listing the redaction partitions, so
+  //     an ungated one would contradict the redaction entry by entry: this page
+  //     would hold a slug→owner pairing for exactly the pages it just stripped
+  //     from the prose.
+  //   - `MarkdownRenderer` carries no `"use client"` directive today, so on
+  //     this server-rendered path the map stays server-side. That is a property
+  //     of the renderer, not of this page — the moment it or any child of it
+  //     becomes a client component, this value is serialized into the payload.
+  //     The gate is what makes that change safe instead of a leak.
+  const slugTenants: SlugTenantMap = {};
   if (raw) {
     const principal = await getPrincipal();
-    const hidden = (await listWikiPages()).filter(
-      (p) => !canReadEntry(p, principal),
-    );
+    // ONE listing, ONE `canReadEntry` pass, partitioned — the two halves are
+    // complements, so re-listing or re-checking could only let them disagree.
+    const hidden: Awaited<ReturnType<typeof listWikiPages>> = [];
+    for (const p of await listWikiPages()) {
+      if (canReadEntry(p, principal)) slugTenants[p.slug] = ownerToTenant(p.owner);
+      else hidden.push(p);
+    }
     if (hidden.length > 0) {
       // Match the slug in the forms the log actually uses — `](slug.md)`
       // links, `slug: <slug>` ingest details, and `"<slug>"` dedup details —
@@ -63,7 +85,7 @@ export default async function LogPage() {
 
       {logContent ? (
         <article style={{ maxWidth: 900, borderTop: "1px solid var(--rule)", paddingTop: 28 }}>
-          <MarkdownRenderer content={logContent} />
+          <MarkdownRenderer content={logContent} slugTenants={slugTenants} />
         </article>
       ) : (
         <p className="text-foreground/60">

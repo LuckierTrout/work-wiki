@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { SrcChip } from "@/components/folio/primitives";
+import { useSlugTenants } from "@/hooks/useSlugTenants";
+import type { SlugTenantMap } from "@/lib/links";
 import type { SourceEntry } from "@/lib/types";
 
 /** One selectable source in the raw browser. */
@@ -85,9 +87,15 @@ function looksLikeMarkdown(s: string): boolean {
 }
 
 /** Render raw content: markdown when it's structured, else faithful plaintext. */
-function RawContent({ text }: { text: string }) {
+function RawContent({
+  text,
+  slugTenants,
+}: {
+  text: string;
+  slugTenants?: SlugTenantMap;
+}) {
   if (looksLikeMarkdown(text)) {
-    return <MarkdownRenderer content={text} />;
+    return <MarkdownRenderer content={text} slugTenants={slugTenants} />;
   }
   return (
     <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-foreground/80">
@@ -103,6 +111,9 @@ export function RawSourceBrowser({
   initialContent,
   backHref,
 }: Props) {
+  // Raw markdown can contain `[x](slug.md)` wikilinks; without the map they
+  // resolve through DEFAULT_TENANT and take a wrong-handle 308 hop.
+  const { slugTenants } = useSlugTenants();
   const [selectedKey, setSelectedKey] = useState(initialKey);
   // Per-item content cache: undefined = not loaded, null = errored/empty.
   const [cache, setCache] = useState<Record<string, string | null>>(() =>
@@ -254,10 +265,13 @@ export function RawSourceBrowser({
                       </a>{" "}
                       for the full content.
                     </div>
-                    <RawContent text={content.slice(0, MAX_INLINE)} />
+                    <RawContent
+                      text={content.slice(0, MAX_INLINE)}
+                      slugTenants={slugTenants}
+                    />
                   </>
                 ) : (
-                  <RawContent text={content} />
+                  <RawContent text={content} slugTenants={slugTenants} />
                 )}
               </div>
             </>

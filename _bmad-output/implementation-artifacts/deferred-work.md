@@ -749,7 +749,8 @@ source_spec: `spec-owner-scoped-linking.md`
 location: src/components/QueryResultPanel.tsx:182
 severity: medium
 reason: QueryResultPanel.tsx:182 renders query answers (which cite [Title](slug.md) per src/lib/query.ts:62) without passing slugTenants even though the component already calls useSlugTenants for its source chips — a one-line adoption; RawSourceBrowser.tsx:90, SlidePreview.tsx:61,77, AgentApiContent.tsx:45 and src/app/wiki/log/page.tsx:66 render with no map either. All pre-date this change; the intent's component list (union of DW-2 and the bundle intent) does not include them.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-owner-scoped-link-and-notfound-hardening
 
 ### DW-84: The edit and raw owner-scoped routes do not alias-forward merged-away slugs, so an old /u/<handle>/<slug>/edit bookmark 404s where the page-view URL now forwards.
 origin: spec-deferred 7e750d1a36d0
@@ -757,7 +758,8 @@ source_spec: `spec-owner-scoped-linking.md`
 location: src/app/u/[handle]/[slug]/edit/page.tsx
 severity: low
 reason: aliasRedirectForMissing is wired only into src/app/u/[handle]/[slug]/page.tsx; the edit and raw routes keep their pre-existing hard-404 miss behavior. Pre-existing asymmetry surfaced by this change; the intent names only the owner route's page-view miss path.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-owner-scoped-link-and-notfound-hardening
 
 ### DW-85: The owner route's "Page not found" UI is rendered as a normal HTTP 200 response instead of signalling notFound(), so dead slugs (including alias candidates that fail the forwarding guard) are indexabl
 origin: spec-deferred 7952daea88ca
@@ -765,7 +767,8 @@ source_spec: `spec-owner-scoped-linking.md`
 location: src/app/u/[handle]/[slug]/page.tsx:75
 severity: low
 reason: The miss branch of src/app/u/[handle]/[slug]/page.tsx returns JSX directly rather than calling next/navigation notFound(); pre-existing behavior that this change extends but did not introduce.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-owner-scoped-link-and-notfound-hardening
 
 ### DW-86: Converted components' rendered anchors have no executable coverage: reverting any one call site to slugPath (or dropping a slugTenants renderer prop) passes the whole suite, so the story's component-s
 origin: spec-deferred 7eeab2ede4b6
@@ -781,7 +784,8 @@ source_spec: `spec-owner-scoped-linking.md`
 location: src/hooks/useSlugTenants.ts
 severity: low
 reason: In src/hooks/useSlugTenants.ts the non-OK branch's {} flows into the .then that assigns cache, so cache = {} permanently; the .catch path returns {} without assigning cache, so the next caller re-fetches. Byte-identical logic pre-dates this story (only renamed/exported here). Links still work via the 308 fallback, so the consequence is a session of wrong-handle hrefs, not breakage.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-owner-scoped-link-and-notfound-hardening
 
 ### DW-88: getAliasIndex caches only successful builds, so while any page file has malformed frontmatter every missing-slug request re-runs the full wiki scan behind aliasRedirectForMissing before failing closed
 origin: spec-deferred 30b195a5eb4f
@@ -799,7 +803,8 @@ source_spec: `spec-owner-scoped-linking.md`
 location: src/lib/links.ts:157
 severity: low
 reason: resolveSlugPath does slugTenants?.[slug] ?? fallbackTenant (src/lib/links.ts:157) and the map is parsed response JSON, whose objects inherit Object.prototype — map["constructor"] is a function, which ?? does not filter, so pagePath receives it and tenantSegment calls .trim() on a function (TypeError) wherever such a slug renders as a link. The lookup idiom is byte-identical to the pre-story hook and MarkdownRenderer paths; this story only spread the same map to more call sites. Requires a page slug colliding with an Object.prototype member, hence low.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-owner-scoped-link-and-notfound-hardening
 
 ### DW-90: Follow-up review still recommended for dw-owner-scoped-linking after the damping cap was spent
 origin: review-budget-followup
@@ -1948,4 +1953,36 @@ source_spec: `spec-dw-75-76-lint-check-parity-and-disputed-surface.md`
 location: src/lib/patch-metadata.ts:173
 severity: medium
 reason: `ensureReconciliationThread` (`src/lib/talk.ts:203-229`) is still called on every disputed false->true transition from `src/lib/ingest.ts`, `src/lib/merge.ts` and `src/lib/patch-metadata.ts:173-181`, while the talk HTTP surfaces 404 via `src/lib/retired.ts`. Threads accumulate on disk unreadable. Pre-existing and outside DW-75/DW-76, but it is the other half of the loop the DW-76 decision describes.
+status: open
+
+### DW-231: The edit route answers a dead slug with a rendered "Page not found — nothing to edit" body at HTTP 200, the same defect DW-85 fixed on the page view, and this story's tests now pin that 200 in place.
+origin: spec-deferred 08fb49a7fb70
+source_spec: `spec-dw-83-89-owner-scoped-link-and-notfound-hardening.md`
+location: src/app/u/[handle]/[slug]/edit/page.tsx:24
+severity: low
+reason: src/app/u/[handle]/[slug]/edit/page.tsx returns JSX from its miss branch rather than calling notFound(). DW-85's intent text scopes the 200->404 conversion to the page-view route only, so this story deliberately left it; DW-84's own ledger text is inaccurate here, asserting both non-page routes "keep their pre-existing hard-404 miss behavior" when only /raw/ does. The edit/ segment also has no not-found.tsx of its own, so an honest 404 there needs one carrying the surface-specific copy (the sibling [slug]/ and raw/[slug]/ segments each have one). Pre-existing; surfaced by this change's review.
+status: open
+
+### DW-232: tenantForSlug still resolves a slug through inherited-prototype indexing, the exact defect DW-89 fixed in resolveSlugPath, one file over.
+origin: spec-deferred 2a3579814c9e
+source_spec: `spec-dw-83-89-owner-scoped-link-and-notfound-hardening.md`
+location: src/lib/wiki.ts:126
+severity: low
+reason: src/lib/wiki.ts:130 does `pageIdx[slug]` and :136 does `map[slug] ?? tenantForOwner(undefined)`, both over plain object literals — so a page titled "Constructor" would short-circuit the fast path on Object.prototype.constructor, or return that function as a tenant. Currently inert: the function's only callers are in tenant-paths.test.ts, no production path. The structural fix is to build these maps with a null prototype at their construction sites (buildSlugTenantMap, /api/wiki/routes, the log page's literal) rather than guarding each lookup. Byte-identical to the pre-story idiom; this story hardened only the link path.
+status: open
+
+### DW-233: The machine surfaces GET /api/wiki/[slug] and /api/raw/[slug] still hard-404 a merged-away slug, so agents and MCP clients now get a different answer than the UI for the same bookmark.
+origin: spec-deferred f09cb6af046e
+source_spec: `spec-dw-83-89-owner-scoped-link-and-notfound-hardening.md`
+location: src/app/api/wiki/[slug]/route.ts
+severity: low
+reason: This story wired aliasTargetForMissing into all three /u/ routes, so the page, edit and raw views forward. The JSON routes were never in scope — the intent names only the edit and raw owner-scoped routes — and were already hard-404 before it. The asymmetry is new even though neither side changed: forwarding the HTML surfaces is what made the API's behavior a divergence rather than the uniform rule. Either forward there too, or return the canonical slug in the 404 envelope so a client can follow it.
+status: open
+
+### DW-234: A component mounted while /api/wiki/routes was failing keeps DEFAULT_TENANT hrefs for its whole lifetime, because useSlugTenants has no refresh path after its mount effect.
+origin: spec-deferred 9d5e0be11183
+source_spec: `spec-dw-83-89-owner-scoped-link-and-notfound-hardening.md`
+location: src/hooks/useSlugTenants.ts:56
+severity: low
+reason: src/hooks/useSlugTenants.ts's effect has an empty dependency array, so it loads once per mount. DW-87's fix makes the SESSION recover — the next cold caller re-fetches and caches a good map — but a component already mounted during the outage never re-reads it. Links still work through the 308 fallback, so the consequence is a stale wrong-handle hop on one component until it remounts, not breakage. The empty-dep mount effect pre-dates this story; DW-87 only changed what the cache holds.
 status: open

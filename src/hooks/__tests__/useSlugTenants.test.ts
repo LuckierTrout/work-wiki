@@ -74,6 +74,27 @@ describe("loadSlugTenants", () => {
     expect(await loadSlugTenants()).toEqual({});
   });
 
+  it("does NOT cache the empty map from a non-OK response — the next call retries", async () => {
+    // DW-87: the non-OK branch used to substitute `{}` INSIDE the chain, so it
+    // reached the cache-assigning `.then` and pinned every link to the
+    // DEFAULT_TENANT form for the rest of the session. One transient
+    // 401/429/500 was enough, and only a full reload cleared it. The rejected
+    // fetch never cached; the two failure modes are symmetric now.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ a: "alice" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const { loadSlugTenants } = await importCold();
+
+    expect(await loadSlugTenants()).toEqual({});
+    expect(await loadSlugTenants()).toEqual({ a: "alice" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // And the recovered map IS cached, so the retry is not a per-call refetch.
+    expect(await loadSlugTenants()).toEqual({ a: "alice" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("resolves to an empty map when the fetch rejects", async () => {
     vi.stubGlobal(
       "fetch",
@@ -83,6 +104,44 @@ describe("loadSlugTenants", () => {
     );
     const { loadSlugTenants } = await importCold();
     expect(await loadSlugTenants()).toEqual({});
+  });
+
+  it.each([
+    ["null", null],
+    ["an array", [{ a: "alice" }]],
+    ["a string", "alice"],
+    ["a number", 7],
+  ])(
+    "treats an OK response whose body is %s as a failure: {} back, nothing cached",
+    async (_label, body) => {
+      // `r.json()` is `any`, so the body is not a typed map just because the
+      // route declares one. `null` is the worst of these: it caches FALSY, so
+      // `if (cache)` misses and every caller re-fetches forever. An array or a
+      // scalar caches and reaches every renderer.
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, json: async () => body })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ a: "alice" }) });
+      vi.stubGlobal("fetch", fetchMock);
+      const { loadSlugTenants } = await importCold();
+
+      expect(await loadSlugTenants()).toEqual({});
+      // Not cached — the next caller retries and gets the real map.
+      expect(await loadSlugTenants()).toEqual({ a: "alice" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("caches a legitimately empty map from an OK response", async () => {
+    // A viewer with no readable pages gets `{}` — a real answer, not a
+    // failure. Making the non-OK branch uncached must not turn every empty
+    // map into a per-call refetch.
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { loadSlugTenants } = await importCold();
+    expect(await loadSlugTenants()).toEqual({});
+    expect(await loadSlugTenants()).toEqual({});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

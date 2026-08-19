@@ -191,4 +191,56 @@ describe("resolveSlugPath", () => {
       expect(resolveSlugPath(slug, map, "yuanhao")).not.toContain("/wiki/");
     }
   });
+
+  // A slug is user-controlled text: a page titled "Constructor" slugifies to
+  // `constructor`, "To String" to `to-string`, and so on. An inherited-member
+  // lookup (`map[slug]`) answers those from `Object.prototype` — with a
+  // FUNCTION, which `tenantSegment`'s `.trim()` then throws a TypeError on,
+  // in the middle of rendering the page. The map only ever holds OWN string
+  // entries (parsed response JSON / a server-built plain object), so anything
+  // else must fall back rather than be treated as a tenant.
+  it.each([
+    ["constructor", "Object.prototype.constructor (a function)"],
+    ["toString", "Object.prototype.toString (a function)"],
+    ["hasOwnProperty", "Object.prototype.hasOwnProperty (a function)"],
+    ["valueOf", "Object.prototype.valueOf (a function)"],
+    ["__proto__", "the prototype accessor (an object)"],
+  ])(
+    "falls back for the prototype-collision slug %s instead of resolving %s",
+    (slug) => {
+      expect(() => resolveSlugPath(slug, map, "yuanhao")).not.toThrow();
+      expect(resolveSlugPath(slug, map, "yuanhao")).toBe(`/u/yuanhao/${slug}`);
+      // Also with no map at all, and with the empty fallback the hook passes.
+      expect(resolveSlugPath(slug, undefined, "yuanhao")).toBe(
+        `/u/yuanhao/${slug}`,
+      );
+      expect(resolveSlugPath(slug, {}, "")).toBe(`/u/yopedia/${slug}`);
+    },
+  );
+
+  it("still honours an OWN entry whose key collides with a prototype member", () => {
+    // The guard is own-property-only, not a blocklist: a real page whose slug
+    // happens to be `constructor` still resolves to its owner.
+    expect(resolveSlugPath("constructor", { constructor: "alice" }, "yuanhao")).toBe(
+      "/u/alice/constructor",
+    );
+  });
+
+  it("falls back for an own value that is not a string", () => {
+    // A malformed/hostile `/api/wiki/routes` body is parsed JSON, not a typed
+    // map — a number, null, or nested object must degrade to the fallback
+    // href, never reach `tenantSegment` and throw.
+    const malformed = {
+      num: 7,
+      nul: null,
+      obj: { handle: "alice" },
+      arr: ["alice"],
+    } as unknown as Record<string, string>;
+    for (const slug of ["num", "nul", "obj", "arr"]) {
+      expect(() => resolveSlugPath(slug, malformed, "yuanhao")).not.toThrow();
+      expect(resolveSlugPath(slug, malformed, "yuanhao")).toBe(
+        `/u/yuanhao/${slug}`,
+      );
+    }
+  });
 });

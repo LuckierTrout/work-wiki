@@ -40,7 +40,10 @@ export function QueryResultPanel({
   readOnly = false,
   format = "prose",
 }: QueryResultPanelProps) {
-  const { hrefForSlug } = useSlugTenants();
+  // `slugTenants` too, not just `hrefForSlug`: the answer body can cite other
+  // pages as in-content `[T](slug.md)` links, and without the map those render
+  // through DEFAULT_TENANT and take a wrong-handle 308 hop.
+  const { hrefForSlug, slugTenants } = useSlugTenants();
   const [saveState, setSaveState] = useState<SaveState>({ status: "idle" });
   const [saveTitle, setSaveTitle] = useState("");
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
@@ -179,7 +182,7 @@ export function QueryResultPanel({
         ) : !streaming && isMarp ? (
           <SlidePreview content={result.answer} />
         ) : (
-          <MarkdownRenderer content={result.answer} />
+          <MarkdownRenderer content={result.answer} slugTenants={slugTenants} />
         )}
         {streaming && !isHtmlAnswer && (
           <span className="inline-block w-2 h-4 bg-foreground/60 animate-pulse ml-0.5 align-text-bottom" />

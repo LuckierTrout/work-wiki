@@ -38,7 +38,7 @@ import {
 import { resetAliasIndex } from "../alias-index";
 import type { Frontmatter } from "../frontmatter";
 import { getPrincipal } from "@/lib/auth";
-import { permanentRedirect } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
 import WikiPageView from "@/app/u/[handle]/[slug]/page";
 
 let tmpDir: string;
@@ -137,16 +137,20 @@ describe("/u/<handle>/<slug> alias forwarding for missing slugs", () => {
     ).rejects.toThrow("REDIRECT:/u/alice/survivor");
   });
 
-  it("still renders the 404 UI for a missing slug with no alias", async () => {
+  it("404s a missing slug with no alias", async () => {
     await seedPage("unrelated", { owner: "alice" });
-    // As above: the node environment has no JSX runtime, so reaching the 404
-    // render throws its own (non-REDIRECT) error — which is the proof control
-    // took the 404 branch rather than being diverted by a 308.
+    // `notFound()`, asserted by name (DW-85). This used to be the weaker
+    // "did not throw a REDIRECT", which the OLD behavior — returning a
+    // rendered "Page not found" body at HTTP 200 — also satisfied, since the
+    // node project has no JSX runtime and the render threw for its own
+    // reasons. A dead slug must be a real 404, or it stays indexable and no
+    // client can tell a miss from a hit.
     await expect(
       WikiPageView({
         params: Promise.resolve({ handle: "yopedia", slug: "ghost" }),
       }),
-    ).rejects.not.toThrow(/^REDIRECT:/);
+    ).rejects.toThrow("NOT_FOUND");
+    expect(vi.mocked(notFound)).toHaveBeenCalled();
     expect(vi.mocked(permanentRedirect)).not.toHaveBeenCalled();
   });
 
@@ -162,8 +166,7 @@ describe("/u/<handle>/<slug> alias forwarding for missing slugs", () => {
         params: Promise.resolve({ handle: "yopedia", slug: "gone-slug" }),
       }),
     ).rejects.toThrow("REDIRECT:/u/owner/secret-survivor");
-    // Anonymous → the neutral 404 UI (no JSX runtime here, so the 404 render
-    // throws its own non-REDIRECT error), indistinguishable from missing.
+    // Anonymous → a real 404, indistinguishable from missing.
     // Clear the owner half's recorded redirect call so the mock assertion
     // below is as strong as the neighboring tests'.
     vi.mocked(permanentRedirect).mockClear();
@@ -172,11 +175,11 @@ describe("/u/<handle>/<slug> alias forwarding for missing slugs", () => {
       WikiPageView({
         params: Promise.resolve({ handle: "yopedia", slug: "gone-slug" }),
       }),
-    ).rejects.not.toThrow(/^REDIRECT:/);
+    ).rejects.toThrow("NOT_FOUND");
     expect(vi.mocked(permanentRedirect)).not.toHaveBeenCalled();
   });
 
-  it("renders the 404 UI for an existing-but-unreadable page instead of self-redirecting", async () => {
+  it("404s an existing-but-unreadable page instead of self-redirecting", async () => {
     // An existing private page the viewer can't read takes the miss branch,
     // and the alias index maps every live slug to itself — without the
     // `canonical !== slug` guard this would 308 to its own URL forever.
@@ -185,7 +188,7 @@ describe("/u/<handle>/<slug> alias forwarding for missing slugs", () => {
       WikiPageView({
         params: Promise.resolve({ handle: "yopedia", slug: "locked" }),
       }),
-    ).rejects.not.toThrow(/^REDIRECT:/);
+    ).rejects.toThrow("NOT_FOUND");
     expect(vi.mocked(permanentRedirect)).not.toHaveBeenCalled();
   });
 });

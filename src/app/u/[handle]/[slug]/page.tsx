@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { permanentRedirect } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
 import { decodeSlug } from "@/lib/slugify";
 import {
   readWikiPageWithFrontmatter,
@@ -79,14 +79,15 @@ export default async function WikiPageView({ params }: WikiPageProps) {
     // forwarding never becomes a private-page existence oracle.
     const target = await aliasRedirectForMissing(slug, principal);
     if (target) permanentRedirect(target);
-    return (
-      <div className="mx-auto max-w-3xl px-6 py-12">
-        <h1 className="text-3xl font-bold">Page not found</h1>
-        <p className="mt-4 text-foreground/60">
-          No wiki page exists for &ldquo;{slug}&rdquo;.
-        </p>
-      </div>
-    );
+    // `notFound()`, not a rendered "Page not found" body: returning JSX here
+    // answered a dead slug with HTTP 200, so the STATUS said "here it is" while
+    // the body said the opposite. Nothing that reads status rather than prose —
+    // a link checker, an API/`fetch` client, a cache deciding what to keep —
+    // could tell a miss from a hit. (Indexing was never the issue: middleware
+    // stamps `X-Robots-Tag: noindex` on every response.) The sibling
+    // `not-found.tsx` is what Next's 404 handling renders, and it carries the
+    // copy this branch used to inline.
+    notFound();
   }
 
   // The page is addressed by slug (globally unique pre-P5); the handle segment
