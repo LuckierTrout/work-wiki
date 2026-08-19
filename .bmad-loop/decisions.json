@@ -98,6 +98,15 @@
     "label": "Move the gate into the library",
     "resolution": ""
   },
+  "DW-196": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "keep-open",
+    "intent": "",
+    "key": "3",
+    "label": "Decide with the Epic 2 ingest writer",
+    "resolution": ""
+  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",

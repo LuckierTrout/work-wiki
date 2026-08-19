@@ -1673,6 +1673,7 @@ location: src/lib/lifecycle.ts:731
 severity: medium
 reason: The guard sits at the HTTP boundary, which is what the intent's operative clause asks for ("enforce `If-Match` on the three routes"), but every DW entry's `location` field also names a kernel writer (`src/lib/lifecycle.ts`, `writeWikiArtifact`, `saveConfig`). `writeWikiPageWithSideEffects` is called unconditionally from `src/mcp.ts`, `src/cli.ts`, `src/lib/agents.ts`, `src/lib/lint-fix.ts`, `src/lib/query.ts`, `src/lib/search.ts`, `src/lib/memory-proposals.ts`, `src/lib/document-sources.ts`, `src/lib/patch-metadata.ts`, `src/app/api/wiki/route.ts` and the revisions route. DW-38's own justification for doing the work now is "Epic 2 gives the same pages a second writer" — and that writer is an ingest path that never travels the guarded route.
 status: open
+decision: 2026-08-19 Decide with the Epic 2 ingest writer
 
 ### DW-197: `stableSerialize` collapses every non-plain object to `{}` and has no cycle or depth bound, so `objectVersion` can report "no change" between two genuinely different values.
 origin: spec-deferred 2984302c303e
