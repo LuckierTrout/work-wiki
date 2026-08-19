@@ -1,4 +1,13 @@
 {
+  "DW-104": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Raise `MAX_RAW_EMAIL_BYTES` to about 13.4 MB so a `MAX_DOCUMENT_SIZE` attachment survives base64 expansion, derive it from `MAX_DOCUMENT_SIZE` with a comment naming the expansion factor, and add a test that fails if the two caps drift apart.",
+    "key": "1",
+    "label": "Raise the raw cap",
+    "resolution": ""
+  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",

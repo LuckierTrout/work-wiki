@@ -920,6 +920,7 @@ location: workers/email-ingest/index.ts:39
 severity: low
 reason: The worker rejects on `message.rawSize > MAX_RAW_EMAIL_BYTES` (10 MB, `index.ts:39/147`) — a raw-message measurement taken *before* MIME decoding. Base64 inflates payloads by roughly a third, so the effective per-attachment ceiling over email is about 7.5 MB, while `MAX_DOCUMENT_SIZE` in `src/lib/constants.ts` is 10 MB. The gap is undocumented and untested in both directions.
 status: open
+decision: 2026-08-19 Raise the raw cap — Raise `MAX_RAW_EMAIL_BYTES` to about 13.4 MB so a `MAX_DOCUMENT_SIZE` attachment survives base64 expansion, derive it from `MAX_DOCUMENT_SIZE` with a comment naming the expansion factor, and add a test that fails if the two caps drift apart.
 
 ### DW-105: The shared dialog hook `useDialogA11y` — the richest DOM-only behaviour in reach — still has no mounted coverage.
 origin: spec-deferred 1fd2c04cc42e
