@@ -714,6 +714,14 @@ export async function fixLintIssue(
       throw new FixValidationError(
         "Incomplete coverage cannot be auto-fixed. Re-ingest the source URL to refresh the page content.",
       );
+    case "disputed-page":
+      // Explicit, not a fall-through to the generic default: clearing `disputed`
+      // asserts that a human read the conflicting claims and decided the page is
+      // now correct. An auto-fix would clear the flag without that review, which
+      // is exactly the state the flag exists to prevent.
+      throw new FixValidationError(
+        `Disputed pages cannot be auto-fixed. Reconcile the conflicting claims in "${slug}", then clear the Disputed toggle in the page editor (PATCH /api/wiki/${slug} with metadata { disputed: false }).`,
+      );
     default:
       throw new FixValidationError(
         "Auto-fix not supported for this issue type",

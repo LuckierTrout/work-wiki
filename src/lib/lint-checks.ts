@@ -11,23 +11,16 @@ import { parseSources } from "./sources";
 import { listRawSources, readRawSource } from "./raw";
 import { getPageIndex } from "./page-index";
 
-/** All known lint check types (const tuple for Zod enum compatibility). */
-export const ALL_CHECK_TYPES = [
-  "orphan-page",
-  "stale-index",
-  "empty-page",
-  "missing-crossref",
-  "broken-link",
-  "contradiction",
-  "missing-concept-page",
-  "stale-page",
-  "low-confidence",
-  "unmigrated-page",
-  "duplicate-entity",
-  "uncited-claims",
-  "supersedes-dangling",
-  "incomplete-coverage",
-] as const satisfies readonly LintIssue["type"][];
+/**
+ * All known lint check types (const tuple for Zod enum compatibility).
+ *
+ * Declared in `./lint-types` — a pure, client-safe module — and re-exported
+ * here so every existing `@/lib/lint-checks` importer keeps working. Do NOT
+ * reintroduce a second declaration: this module imports `./storage`, `./llm`
+ * and `./wiki`, so a client component cannot import it, and the copy that used
+ * to live in `LintFilterControls` for that reason drifted three entries behind.
+ */
+export { ALL_CHECK_TYPES } from "./lint-types";
 
 // Files that are part of the wiki infrastructure, not content pages.
 export const INFRASTRUCTURE_FILES = new Set(["index.md", "log.md"]);
@@ -692,6 +685,47 @@ export async function checkLowConfidence(): Promise<LintIssue[]> {
         suggestion: `Ingest additional sources about "${entry.title}" to improve confidence`,
       });
     }
+  }
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
+// Disputed-page check — flags pages whose `disputed` frontmatter flag is set.
+// ---------------------------------------------------------------------------
+
+/**
+ * Check for disputed pages — pages whose `disputed` frontmatter flag is `true`.
+ *
+ * Ingest sets the flag when a merge contradicts the existing page, and nothing
+ * clears it automatically, so without this check the flag is close to one-way:
+ * the `ArticleView` banner tells a *reader* the page is contested, but nothing
+ * hands an owner a worklist. (A dataview query can already list them —
+ * `queryByFrontmatter` in `./dataview` filters on arbitrary frontmatter fields
+ * — but only if someone thinks to ask; this is the first surface that reports
+ * them unprompted, as actionable lint issues alongside the other checks.)
+ *
+ * This is deliberately NOT the version that was deleted with the talk surface:
+ * the old one called `getDiscussionStats()` to describe open threads. Talk is
+ * retired, so the message states the flag and the suggestion names the
+ * surviving clear path — the Disputed toggle in the page editor, which is a
+ * `PATCH /api/wiki/<slug>` metadata write. Clearing stays an owner decision;
+ * there is no auto-fix (see the `disputed-page` branch in `./lint-fix`).
+ */
+export async function checkDisputedPages(): Promise<LintIssue[]> {
+  const pages = await listWikiPages();
+  const issues: LintIssue[] = [];
+
+  for (const entry of pages) {
+    const page = await readWikiPageWithFrontmatter(entry.slug);
+    if (!page) continue;
+    if (page.frontmatter.disputed !== true) continue;
+    issues.push({
+      type: "disputed-page",
+      slug: entry.slug,
+      message: `Page is flagged disputed — its sources disagree and no review has cleared it`,
+      severity: "warning",
+      suggestion: `Review "${entry.slug}", reconcile the conflicting claims in the page body, then clear the Disputed toggle in the page editor (PATCH /api/wiki/${entry.slug} with metadata { disputed: false })`,
+    });
   }
   return issues;
 }

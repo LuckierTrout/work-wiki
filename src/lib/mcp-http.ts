@@ -413,7 +413,7 @@ export const MCP_TOOLS: ToolDef[] = [
   {
     name: "maintenance_scan",
     description:
-      "Scan the wiki for maintenance tasks (disputed pages, expired sources, orphans, broken links). Read-only — returns candidates; does not enqueue or execute work.",
+      "Scan the wiki for maintenance tasks (expired sources, unmigrated pages, dangling supersedes, orphans, broken links). Read-only — returns candidates; does not enqueue or execute work. Disputed pages are not scanned here — list them with lint_wiki (check type 'disputed-page'); clearing the flag is a human review.",
     inputSchema: schema({
       cap: { type: "number", description: "Max tasks to return (default 10)" },
     }),

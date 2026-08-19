@@ -16,6 +16,7 @@ import {
   checkUnmigratedPages,
   checkUncitedClaims,
   checkSupersededDangling,
+  checkDisputedPages,
   LOW_CONFIDENCE_THRESHOLD,
   STALE_VERIFICATION_DAYS,
   buildSummary,
@@ -903,16 +904,139 @@ describe("checkSupersededDangling", () => {
 });
 
 // ---------------------------------------------------------------------------
+// checkDisputedPages
+// ---------------------------------------------------------------------------
+describe("checkDisputedPages", () => {
+  it("flags a page whose disputed flag is true", async () => {
+    await createPageWithIndex("contested-page", "Contested Page", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDisputedPages();
+    expect(issues).toHaveLength(1);
+    expect(issues[0].type).toBe("disputed-page");
+    expect(issues[0].slug).toBe("contested-page");
+    expect(issues[0].severity).toBe("warning");
+    expect(issues[0].message).toContain("disputed");
+  });
+
+  it("names the surviving clear path in the suggestion, not a talk thread", async () => {
+    await createPageWithIndex("contested-page", "Contested Page", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+
+    const [issue] = await checkDisputedPages();
+    // The check exists so an owner can ACT on the flag. A message that only
+    // restates "this is disputed" repeats what the ArticleView banner already
+    // says; the clear path is what the retired talk-based version used to
+    // supply and what this replaces.
+    expect(issue.suggestion).toBeDefined();
+    expect(issue.suggestion).toContain("/api/wiki/contested-page");
+    expect(issue.suggestion).toContain("disputed: false");
+    // Talk is retired — no reconciliation thread may be advertised.
+    expect(issue.suggestion?.toLowerCase()).not.toContain("discussion");
+    expect(issue.suggestion?.toLowerCase()).not.toContain("talk");
+  });
+
+  it("does NOT flag a page with disputed: false", async () => {
+    await createPageWithIndex("settled-page", "Settled Page", {
+      disputed: false,
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDisputedPages();
+    expect(issues).toEqual([]);
+  });
+
+  it("does NOT flag a page with no disputed key at all", async () => {
+    await createPageWithIndex("plain-page", "Plain Page", {
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDisputedPages();
+    expect(issues).toEqual([]);
+  });
+
+  it("flags only the disputed page when both kinds are present", async () => {
+    await createPageWithIndex("settled-page", "Settled Page", {
+      disputed: false,
+      created: "2025-01-01",
+    });
+    await createPageWithIndex("contested-page", "Contested Page", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDisputedPages();
+    expect(issues.map((i) => i.slug)).toEqual(["contested-page"]);
+  });
+
+  it("skips an index entry with no readable page file and keeps checking", async () => {
+    await createPageWithIndex("contested-page", "Contested Page", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+    // An index entry pointing at a page that was never written — the stale-index
+    // condition. The disputed check must not throw on it, or one bad row would
+    // hide every disputed page behind it.
+    _testIndexEntries.push({
+      slug: "ghost-page",
+      title: "Ghost Page",
+      summary: "Indexed but never written",
+    });
+    await updateIndex(_testIndexEntries);
+
+    const issues = await checkDisputedPages();
+    expect(issues.map((i) => i.slug)).toEqual(["contested-page"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Retired discussion checks
 // ---------------------------------------------------------------------------
 
 describe("retired discussion checks", () => {
-  it("ALL_CHECK_TYPES no longer offers the talk-surface checks", () => {
-    // The talk surface is retired; these types drove the lint_wiki /
+  it("ALL_CHECK_TYPES no longer offers the talk-surface check", () => {
+    // The talk surface is retired. This type drove the lint_wiki /
     // fix_lint_issue MCP schemas and the API's check-type validation via this
-    // const.
+    // const, so its absence here is what keeps it out of all three.
+    //
+    // Only the talk-shaped check is asserted here. `disputed-page` is NOT part
+    // of this retirement — the `disputed` frontmatter flag outlived talk — and
+    // pinning its presence in a block named "retired" would make the block
+    // assert the opposite of its own name. The roster lives in its own describe
+    // below, so deleting this one when talk is finally forgotten cannot take
+    // the roster pin with it.
     expect(ALL_CHECK_TYPES).not.toContain("unresolved-discussions");
-    expect(ALL_CHECK_TYPES).not.toContain("disputed-page");
-    expect(ALL_CHECK_TYPES).toHaveLength(14);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The check-type roster
+// ---------------------------------------------------------------------------
+
+describe("ALL_CHECK_TYPES roster", () => {
+  it("has one entry per shipped check", () => {
+    // A bare length pin, deliberately: the roster's single runtime home
+    // (`src/lib/lint-types.ts`) is what both the lint UI and the MCP/API
+    // schemas read, so a silent addition or removal is worth one deliberate
+    // update here.
+    expect(ALL_CHECK_TYPES).toHaveLength(15);
+  });
+
+  it("includes disputed-page", () => {
+    // DW-76: ingest still sets the `disputed` frontmatter flag and ArticleView
+    // still renders its banner, so the flag needs a surface that lists the
+    // flagged pages for an owner. That surface is this check, and it only
+    // reaches the UI toggles and the MCP enum by being in this list.
+    expect(ALL_CHECK_TYPES).toContain("disputed-page");
+  });
+
+  it("declares each check type exactly once", () => {
+    // A duplicated entry would render a duplicate UI toggle and would inflate
+    // the length assertion above into a false pass.
+    expect(new Set<string>(ALL_CHECK_TYPES).size).toBe(ALL_CHECK_TYPES.length);
   });
 });

@@ -591,16 +591,22 @@ describe("dispatchMcp — reconcile_page (retired)", () => {
     expect(r.content[0].text).toMatch(/unknown tool/i);
   });
 
-  it("lint_wiki rejects the retired discussion check types", async () => {
-    // The two discussion checks retired with reconcile-from-talk must not be
-    // accepted by the shared handler either (schema here is free-form strings).
+  it("lint_wiki rejects the retired discussion check type", async () => {
+    // `unresolved-discussions` retired with reconcile-from-talk and must not be
+    // accepted by the shared handler either (the schema here is free-form
+    // strings, so only the handler's own validation stands between a retired
+    // type and a silently empty result).
+    //
+    // Passed ALONE on purpose: paired with a second invalid type, the assertion
+    // passes whichever of the two the validator caught, so it would keep
+    // passing even after `unresolved-discussions` was quietly re-admitted.
     const res = await dispatchMcp(
       {
         id: 1,
         method: "tools/call",
         params: {
           name: "lint_wiki",
-          arguments: { checks: ["unresolved-discussions", "disputed-page"] },
+          arguments: { checks: ["unresolved-discussions"] },
         },
       },
       ALICE,
@@ -608,6 +614,29 @@ describe("dispatchMcp — reconcile_page (retired)", () => {
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toMatch(/invalid check type/i);
+    expect(r.content[0].text).toMatch(/unresolved-discussions/);
+  });
+
+  it("lint_wiki accepts disputed-page as a valid check type", async () => {
+    // The other half of the retirement: `disputed` outlived talk, so
+    // `disputed-page` is a live check (DW-76) and this handler must let it
+    // through. Without this, the rejection test above is the only thing
+    // describing the handler's view of the roster, and it would read as though
+    // both types were retired.
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "lint_wiki",
+          arguments: { checks: ["disputed-page"] },
+        },
+      },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBeFalsy();
+    expect(r.content[0].text).not.toMatch(/invalid check type/i);
   });
 });
 

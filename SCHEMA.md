@@ -68,7 +68,7 @@ These were added in Phase 1 of the work-wiki pivot.
 | `authors` | string array | the acting user (`["system"]` for legacy/MCP) | Initial ingest from the session actor; preserved on re-ingest (never reset) | `/wiki/contributors` page, `ContributorBadge` component, contributor profiles API |
 | `contributors` | string array | `[]` | Re-ingest / edit appends the acting identity (session principal) if not already present | `/wiki/contributors` page, `ContributorBadge` component, contributor profiles API |
 | `content_hash` | string (FNV-1a hex) | hash of the ingested content | Set on ingest | Ingest dedup (`source_index`): identical content attaches to the existing page instead of re-synthesizing |
-| `disputed` | boolean | `false` | Set by ingest when a merge contradicts the existing page (or manually); nothing clears it automatically; preserved on re-ingest | Wiki page view warning badge (the `ArticleView` disputed banner) |
+| `disputed` | boolean | `false` | Set by ingest when a merge contradicts the existing page (or manually); nothing clears it automatically; preserved on re-ingest | Wiki page view warning badge (the `ArticleView` disputed banner); `disputed-page` lint check (lists the flagged pages for an owner to reconcile) |
 | `supersedes` | string (slug) | `""` (empty) | Set manually when a page replaces another; preserved on re-ingest | Future redirect system |
 | `aliases` | string array | `[]` | Set manually for alternative names; preserved on re-ingest | Alias index for entity deduplication at ingest time; `duplicate-entity` lint check; search resolution |
 | `sources` | JSON string (SourceEntry[]) | `"[]"` | Ingest appends a new entry; re-ingest appends if the source URL is new | Wiki page view provenance section; parseSources() in `src/lib/sources.ts` |
@@ -605,6 +605,15 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
   source on disk. Requires an LLM key; skipped when no key is configured.
   No auto-fix — requires re-ingesting with an updated prompt or manually
   adding the missing content.
+- **`disputed-page`** (warning) — page's `disputed` frontmatter flag is `true`:
+  a merge contradicted the existing page (or someone set the flag by hand) and
+  no review has cleared it. The flag is never cleared automatically, and this
+  is the first surface to report the flagged pages unprompted as actionable
+  issues (a dataview `queryByFrontmatter` filter can also list them on
+  request). No auto-fix —
+  clearing `disputed` asserts a human reconciled the conflicting claims, done
+  via the Disputed toggle in the page editor (`PATCH /api/wiki/<slug>` with
+  metadata `{ disputed: false }`).
 
 ## Provider configuration
 
@@ -636,7 +645,7 @@ sessions should pick from this list:
   via RRF. Batch rebuild of the full vector index is available via the Settings
   page (`/api/settings/rebuild-embeddings`).
   Anthropic-only users see no regression (pure BM25 fallback).
-- Lint auto-fix handles ten of fourteen checks (`orphan-page`, `stale-index`,
+- Lint auto-fix handles ten of fifteen checks (`orphan-page`, `stale-index`,
   `empty-page`, `broken-link`, `missing-crossref`, `contradiction`,
   `missing-concept-page`, `stale-page`, `unmigrated-page`,
   `supersedes-dangling`) via `POST /api/lint/fix`.
@@ -649,11 +658,12 @@ sessions should pick from this list:
   expiry 90 days out, authors `["system"]`).
   The `supersedes-dangling` fix clears the dead reference (re-verified
   missing before clearing).
-  The four exceptions without auto-fix are: `low-confidence` (requires
+  The five exceptions without auto-fix are: `low-confidence` (requires
   ingesting additional sources), `duplicate-entity` (requires human judgment
   to merge), `uncited-claims` (requires adding citations or ingesting
-  sources), and `incomplete-coverage` (requires ingesting additional sources
-  to improve topic coverage).
+  sources), `incomplete-coverage` (requires ingesting additional sources
+  to improve topic coverage), and `disputed-page` (requires an owner to
+  reconcile the conflicting claims and clear the flag).
 - Long documents are chunked at ingest time (12K chars per chunk ≈ 3K
   tokens) so they fit within provider context windows. Token counting is
   character-based (not tokenizer-exact), which is conservative but not

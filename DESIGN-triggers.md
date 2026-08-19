@@ -138,7 +138,7 @@ a lint issue that matches a trigger's rule.
 | **Latency** | Negligible — lint checks are fast (except contradiction/missing-concept, which use LLM but are already budgeted) |
 | **Reliability** | Deterministic — same input always produces same result |
 | **Complexity** | Low — trigger is a filter over lint results + page events |
-| **Fit with work-wiki** | Direct — work-wiki has 14 lint check types, frontmatter fields, revision history, and talk pages. These already detect the conditions users care about. |
+| **Fit with work-wiki** | Direct — work-wiki has 15 lint check types, frontmatter fields, revision history, and talk pages. These already detect the conditions users care about. |
 
 **Verdict:** The right first step. Covers 80% of use cases at near-zero
 marginal cost by leveraging infrastructure that already exists.
@@ -396,7 +396,7 @@ that conflicts with where MCP is heading.
 
 ### Rationale
 
-1. **The building blocks already exist.** work-wiki has 14 lint check types
+1. **The building blocks already exist.** work-wiki has 15 lint check types
    that detect the most valuable change conditions (stale, low-confidence,
    disputed, contradictions, broken links, etc.), a revision system that
    tracks who changed what, talk pages for discussions, and a unified

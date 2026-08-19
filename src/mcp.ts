@@ -3127,7 +3127,7 @@ export function createMcpServer(): McpServer {
   // maintenance_scan — Scan for wiki maintenance tasks (read-only health check)
   server.registerTool("maintenance_scan", {
     description:
-      "Scan the wiki for maintenance tasks — disputed pages needing reconciliation, expired pages needing reingest, orphan/stale entries, broken links, and more. Returns candidate tasks the agent can act on using existing tools. Does NOT enqueue or execute any work.",
+      "Scan the wiki for maintenance tasks — expired pages needing reingest, unmigrated pages, dangling supersedes references, orphan/stale index entries, broken links, and more. Returns candidate tasks the agent can act on using existing tools. Does NOT enqueue or execute any work. Disputed pages are NOT scanned here — list them with lint_wiki (check type 'disputed-page'), since clearing the flag needs a human review rather than an automated fix.",
     inputSchema: {
       cap: z
         .number()

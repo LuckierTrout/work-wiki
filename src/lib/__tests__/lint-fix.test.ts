@@ -961,6 +961,26 @@ describe("fixLintIssue", () => {
     );
   });
 
+  it("throws helpful FixValidationError for disputed-page type", async () => {
+    // Explicit branch, not the generic default: clearing `disputed` asserts a
+    // human reviewed the conflicting claims, so the error has to name that
+    // action rather than say "not supported".
+    await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
+      FixValidationError,
+    );
+    await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
+      "Disputed pages cannot be auto-fixed.",
+    );
+    await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
+      "clear the Disputed toggle in the page editor",
+    );
+    // The slug is interpolated, not a literal `<slug>` placeholder, so the
+    // PATCH the message names can be copy-pasted as-is.
+    await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
+      "PATCH /api/wiki/contested-page with metadata { disputed: false }",
+    );
+  });
+
   it("dispatches unmigrated-page to fixUnmigratedPage", async () => {
     mockedReadWikiPageWithFrontmatter.mockResolvedValue({
       slug: "old-page",

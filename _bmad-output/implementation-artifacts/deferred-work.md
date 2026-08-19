@@ -675,7 +675,8 @@ source_spec: `spec-retire-dead-machinery.md`
 location: src/components/LintFilterControls.tsx:5
 severity: medium
 reason: Pre-existing drift, not introduced here: src/components/LintFilterControls.tsx:5-16 lacks uncited-claims, supersedes-dangling, incomplete-coverage; src/lib/lint-checks.ts ALL_CHECK_TYPES has 14 entries; no parity test ties the two constants together.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-lint-check-parity-and-disputed-surface
 
 ### DW-76: The disputed frontmatter flag is now one-way — ingest still sets disputed: true on contradicting merges and ArticleView still renders the disputed banner, but with reconcile-from-talk and the disputed
 origin: spec-deferred 78f255fc65a4
@@ -683,7 +684,8 @@ source_spec: `spec-retire-dead-machinery.md`
 location: src/lib/ingest.ts
 severity: medium
 reason: src/lib/ingest.ts parseDisputedMarker still sets the flag; src/components/ArticleView.tsx still renders the "This page is disputed" banner; the bundle intent explicitly directed deleting checkDisputedPages, so the surfacing gap is a knowing consequence to revisit with whatever story owns disputed-page semantics.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-lint-check-parity-and-disputed-surface
 decision: 2026-08-17 Re-surface disputed pages — Give the flag a read model and a way out: a lint check or Workbench view listing disputed pages, and an owner action that clears the flag after review. Restores the loop that reconcile-from-talk used to close, without reviving talk.
 decision: 2026-08-16 Re-surface disputed pages — Give the flag a read model and a way out: a lint check or Workbench view listing disputed pages, and an owner action that clears the flag after review. Restores the loop that reconcile-from-talk used to close, without reviving talk.
 
@@ -1930,4 +1932,20 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/components/workbench/__tests__/settings-vector-namespace.test.tsx
 severity: low
 reason: `payload()`, the `fetchMock` `beforeEach`/`afterEach`, `announcedFor()` and `mount()` are copied word for word — doc comments included — from `src/components/workbench/__tests__/settings-read-only.test.tsx:26-101`. Two independently maintained copies of a screen-reader assertion helper is the same drift the shared `embeddingModelMatchesProvider` predicate exists to prevent on the production side. Extracting a shared workbench test helper edits a passing test file outside this story's surface, so it is a focused cleanup rather than an in-pass patch.
+status: open
+
+### DW-229: LintIssueCard's hand-copied `fixableTypes` set omits `supersedes-dangling`, so one of the ten auto-fixable lint checks renders with no Fix button.
+origin: spec-deferred f19a42b24e75
+source_spec: `spec-dw-75-76-lint-check-parity-and-disputed-surface.md`
+location: src/components/LintIssueCard.tsx:25
+severity: medium
+reason: `src/components/LintIssueCard.tsx:25-35` lists nine types. `fixLintIssue` auto-fixes `supersedes-dangling` via `fixSupersededDangling` (`src/lib/lint-fix.ts:710-712`), and `SCHEMA.md` advertises it as one of the ten fixable checks. This is the same hand-copied-list drift class as DW-75, in the sibling list this story did not touch; nothing observes it.
+status: open
+
+### DW-230: Disputed transitions still write talk reconciliation threads that no surface can read, since talk's HTTP routes are retired.
+origin: spec-deferred 7895126181f4
+source_spec: `spec-dw-75-76-lint-check-parity-and-disputed-surface.md`
+location: src/lib/patch-metadata.ts:173
+severity: medium
+reason: `ensureReconciliationThread` (`src/lib/talk.ts:203-229`) is still called on every disputed false->true transition from `src/lib/ingest.ts`, `src/lib/merge.ts` and `src/lib/patch-metadata.ts:173-181`, while the talk HTTP surfaces 404 via `src/lib/retired.ts`. Threads accumulate on disk unreadable. Pre-existing and outside DW-75/DW-76, but it is the other half of the loop the DW-76 decision describes.
 status: open
