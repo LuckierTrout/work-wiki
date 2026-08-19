@@ -107,6 +107,15 @@
     "label": "Decide with the Epic 2 ingest writer",
     "resolution": ""
   },
+  "DW-198": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Replace the content-derived version with an opaque token generated on each successful `saveConfig` and stored beside the config, served as the precondition and compared on `PUT`. This restores the AD-23 boundary and keeps the guard's coverage of the secret fields; update `write-precondition.ts`'s docs so `objectVersion` is no longer presented as the settings scheme.",
+    "key": "1",
+    "label": "Stamp an opaque token",
+    "resolution": ""
+  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",
