@@ -1915,3 +1915,19 @@ location: src/lib/embeddings.ts:180-192
 severity: low
 reason: `resolveEmbeddingProvider` emits a `logger.warn` naming the bad value when `EMBEDDING_PROVIDER` is not embedding-capable (`src/lib/embeddings.ts:93-99`), but the namespace fallback one function below is silent. Since DW-73 the fallback is reached only on paths the gate does not cover (the legacy flat route branch, an env override, a vector-off deployment), which is exactly where a one-line warn naming the dropped id and the model actually used would be diagnosable. Pre-existing silence; the spec's Never list also pins the fallback's behaviour, and a log is not behaviour.
 status: open
+
+### DW-227: A whitespace-only `EMBEDDING_MODEL` is handed to the provider verbatim as the embedding model name, while the vector gate reads the same value as absent.
+origin: spec-deferred bebc4469f137
+source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
+location: src/lib/config.ts:175-177 with src/lib/embeddings.ts:180-183
+severity: low
+reason: `getEmbeddingModelOverride()` returns `process.env.EMBEDDING_MODEL` raw (`src/lib/config.ts:175-177`) with no `nonEmpty`, and `resolveEmbeddingModelName` guards on truthiness only, so `" "` is truthy. `embeddingModelMatchesProvider(provider, " ")` is TRUE for every non-`workers-ai` provider (`" ".startsWith("@cf/")` is false, which equals `provider !== "workers-ai"`), so the blank string is returned as the model name and reaches the provider call. `getVectorSearchSettings` reads the same env var through `nonEmpty` (`src/lib/config.ts:512`), which trims it to null, so the gate reports "a model" missing while the resolver embeds with a blank id. Pre-existing: the pre-DW-73 resolver used the same truthiness guard. Distinct from the leading-whitespace item above — that one substitutes the provider default, this one sends an empty name.
+status: open
+
+### DW-228: The new mounted settings test duplicates about sixty lines of an existing workbench test's harness verbatim.
+origin: spec-deferred 29c84000c317
+source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
+location: src/components/workbench/__tests__/settings-vector-namespace.test.tsx
+severity: low
+reason: `payload()`, the `fetchMock` `beforeEach`/`afterEach`, `announcedFor()` and `mount()` are copied word for word — doc comments included — from `src/components/workbench/__tests__/settings-read-only.test.tsx:26-101`. Two independently maintained copies of a screen-reader assertion helper is the same drift the shared `embeddingModelMatchesProvider` predicate exists to prevent on the production side. Extracting a shared workbench test helper edits a passing test file outside this story's surface, so it is a focused cleanup rather than an in-pass patch.
+status: open
