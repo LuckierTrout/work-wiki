@@ -91,6 +91,6 @@ If version control is unavailable, set `{spec_file}` frontmatter `status: done`,
 If version control is available, write `status: done` into `{spec_file}` frontmatter, then:
 
 1. Commit any reviewed-diff files that remain uncommitted, including `{spec_file}` when it is tracked in that working copy. Keep commits already created during this run. Verify every reviewed-diff file appears in the change set after `{baseline_revision}` and none remains uncommitted. Do not push.
-2. Verify the version-controlled working copy is clean. Otherwise HALT with status `blocked` and blocking condition `finalization left repository dirty`.
+2. Verify the version-controlled working copy is clean of everything except orchestrator-owned bookkeeping. Ignore uncommitted changes to `{implementation_artifacts}/deferred-work.md` (and any other file this run was explicitly forbidden to edit, reopen, rewrite, stage, commit, or revert). The orchestrator harvests deferred findings into that ledger and squashes it into the story commit after this session exits. Do not HALT, revert, or rewrite those files. If any *other* file remains uncommitted, HALT with status `blocked` and blocking condition `finalization left repository dirty`.
 
 HALT with status `done`.

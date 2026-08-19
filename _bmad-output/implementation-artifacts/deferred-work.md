@@ -1872,3 +1872,27 @@ location: src/components/workbench/SettingsCanvas.tsx (textRow "embeddingModel")
 severity: low
 reason: `SettingsCanvas.tsx:519` renders `vectorSearchMissingCopy` as the checkbox's `aria-describedby` hint; the model input built by `textRow` has no `aria-invalid` and no description tying the failure to it. Changing the provider select (`:445-448`) leaves the model untouched, so the ordinary way into this state is an edit to a control that shows no error at all.
 status: open
+
+### DW-224: The path that actually embeds is untaught about the namespace rule, so the owner's model choice is still replaced without a word wherever the gate is not consulted.
+origin: spec-deferred 29b372e0cc6c
+source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
+location: src/lib/embeddings.ts (hasEmbeddingSupport) with src/lib/ingest.ts:989
+severity: medium
+reason: `getVectorSearchSettings()` has no production consumer — grepping `src/` returns only its own definition (`src/lib/config.ts:506`) and two comments. Ingest embeds on `hasEmbeddingSupport()` (`src/lib/ingest.ts:989`), which `src/lib/workbench-settings.ts:452` deliberately leaves untaught, so a mismatched deployment keeps embedding under the substituted provider default. DW-73 refuses the mismatch at the Settings surface, which is what the ledger decision asked for; the substitution the ledger described as the harm survives on the embed path. Out of scope on the intent's own authority ("the namespace guard is pre-existing"; the decision names the surface, not the resolver), and now documented in `DEPLOY.md` rather than hidden.
+status: open
+
+### DW-225: The vector gate has no Cloudflare-binding leg, so `workers-ai` with a matching `@cf/` id passes on a deployment where nothing can ever embed.
+origin: spec-deferred cd8a690ae5d7
+source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
+location: src/lib/workbench-settings.ts (vectorSearchMissingLegs) with src/lib/embeddings.ts:55-72
+severity: medium
+reason: `resolveEmbeddingProvider` returns `getWorkersAiBinding() ? override : null` (`src/lib/embeddings.ts:100-102`), and `getWorkersAiBinding()` returns null off the Workers runtime — silently, by design. `vectorSearchMissingLegs` treats `workers-ai` as self-transporting and asks only for a provider and an in-namespace model, so on Docker the switch turns on and every embed resolves to no provider at all. Pre-existing: the same was true before DW-73 with any model id. Teaching the gate would mean giving a client-safe predicate a runtime-only fact, which is a shape change rather than a leg.
+status: open
+
+### DW-226: `resolveEmbeddingModelName` drops a mismatched override with no log, while its sibling misconfiguration warns.
+origin: spec-deferred 75c0edb48a0f
+source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
+location: src/lib/embeddings.ts:180-192
+severity: low
+reason: `resolveEmbeddingProvider` emits a `logger.warn` naming the bad value when `EMBEDDING_PROVIDER` is not embedding-capable (`src/lib/embeddings.ts:93-99`), but the namespace fallback one function below is silent. Since DW-73 the fallback is reached only on paths the gate does not cover (the legacy flat route branch, an env override, a vector-off deployment), which is exactly where a one-line warn naming the dropped id and the model actually used would be diagnosable. Pre-existing silence; the spec's Never list also pins the fallback's behaviour, and a log is not behaviour.
+status: open
