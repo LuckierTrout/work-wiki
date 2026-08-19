@@ -1434,6 +1434,7 @@ location: src/components/workbench/Workbench.tsx (toggleSettings)
 severity: low
 reason: DW-27 is scoped to the mode by its own ledger text ("the active mode has no URL representation"), and Settings is a surface, not a mode — so this is not a regression: Back left the app before this change too, on every surface. What changed is that modes now have a Back that stays, which makes Settings the one surface where it still does not. Worth an explicit decision alongside whatever story owns the Settings draft lifecycle.
 status: open
+decision: 2026-08-19 Give Settings a URL — Represent the open Settings surface in the URL alongside `?mode=` (a `settings=1` param or a `mode=settings` value), accept it on load through the same ordering as the mode restore, and make Back close Settings before it leaves the app — reusing `src/lib/workbench-url.ts` rather than adding a second convention.
 
 ### DW-168: A deep link followed by a signed-out browser loses its `?mode=` at the sign-in redirect, which is the case a shared or bookmarked link is most likely to be in.
 origin: spec-deferred e025aeb56769

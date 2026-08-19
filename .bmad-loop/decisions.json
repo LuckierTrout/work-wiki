@@ -53,6 +53,15 @@
     "label": "Gate creation on ownership",
     "resolution": ""
   },
+  "DW-167": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Represent the open Settings surface in the URL alongside `?mode=` (a `settings=1` param or a `mode=settings` value), accept it on load through the same ordering as the mode restore, and make Back close Settings before it leaves the app \u2014 reusing `src/lib/workbench-url.ts` rather than adding a second convention.",
+    "key": "1",
+    "label": "Give Settings a URL",
+    "resolution": ""
+  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",
