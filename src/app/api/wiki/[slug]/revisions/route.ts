@@ -5,6 +5,7 @@ import { extractSummary } from "@/lib/ingest";
 import { serializeFrontmatter } from "@/lib/frontmatter";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { canReadSlug, canWriteFrontmatter, canReadFrontmatter } from "@/lib/authz";
+import { resolveWriteDenial } from "@/lib/write-denial";
 import { getErrorMessage } from "@/lib/errors";
 import { isReadOnlyError } from "@/lib/read-only";
 
@@ -145,7 +146,11 @@ export async function POST(req: Request, { params }: RouteParams) {
     if (!canWriteFrontmatter(existing.frontmatter, principal, "body")) {
       return canReadFrontmatter(existing.frontmatter, principal)
         ? NextResponse.json(
-            { error: "You don't have permission to revert this page." },
+            {
+              // Readable (the cloak ran first); the resolver adds the realm
+              // explanation only when the realm gate is what refused.
+              error: resolveWriteDenial("revert", existing.frontmatter, "body"),
+            },
             { status: 403 },
           )
         : NextResponse.json(

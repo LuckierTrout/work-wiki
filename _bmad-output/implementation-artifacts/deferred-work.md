@@ -1034,7 +1034,9 @@ source_spec: `spec-retire-zh-cn-locale.md`
 location: /Users/christianlee/pnpm-workspace.yaml
 severity: medium
 reason: `pnpm test` exits with `ERROR packages field missing or empty`. The cause is a stray `/Users/christianlee/pnpm-workspace.yaml` (an `allowBuilds:` stub with no `packages:` key) that pnpm picks up as a workspace root for every project under the home directory. Pre-existing and machine-local — not introduced by this change. Verification here ran the verbatim script bodies (`npx vitest run`, `npx eslint`) instead.
-status: open
+status: done 2026-08-19
+resolution: closed by human decision: Delete or repair /Users/christianlee/pnpm-workspace.yaml yourself (add a `packages:` key or remove the file); the documented pnpm commands then work unchanged and nothing in the repo needs to move.
+decision: 2026-08-19 You delete the stray file — Delete or repair /Users/christianlee/pnpm-workspace.yaml yourself (add a `packages:` key or remove the file); the documented pnpm commands then work unchanged and nothing in the repo needs to move.
 
 ### DW-116: `<html lang>` is now unconditionally `"en"` while the wiki deliberately stores CJK and other non-English source content, so assistive technology announces those pages as English.
 origin: spec-deferred 98df4f306e4c
@@ -1075,7 +1077,8 @@ source_spec: `spec-authz-commons-realm-cleanup.md`
 location: src/components/ArticleActions.tsx:82
 severity: medium
 reason: `src/components/ArticleActions.tsx:82` computes `canDelete = isOwner || isSiteOwner` and renders `DeletePageButton` at :137. For a page where `belongsInCommons` is true, `canWritePage(meta, principal, "delete")` returns false for any non-service, non-admin principal — so a non-admin page owner sees the button and gets "You don't have permission to delete this page." from `src/app/api/wiki/[slug]/route.ts:39-49`, the same vague copy this pass replaced on the edit surface. The comment above the gate calls `isOwner || isSiteOwner` "the effective server outcome", which holds only for the site owner (who is an admin). Its pin, `src/lib/__tests__/article-actions-gate.test.ts:22-26`, reads ArticleActions.tsx as TEXT and asserts the literal source string, so it cannot observe the divergence from `canWritePage`. This is DW-77's second clause; the bundle intent scoped this pass to documentation and copy, so no behaviour was changed here.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-authz-realm-parity-and-copy
 
 ### DW-121: The edit page gates the whole editor — including the seven metadata fields — on writeKind "body", withholding metadata patches that canWritePage still permits.
 origin: spec-deferred fbcd3507e87a
@@ -1084,6 +1087,7 @@ location: src/app/u/[handle]/[slug]/edit/page.tsx:34
 severity: medium
 reason: `src/app/u/[handle]/[slug]/edit/page.tsx:34` denies on `"body"` and returns before building `initialMetadata` (:69-79), yet `canWritePage(..., "metadata")` returns true for the same principal and `src/lib/patch-metadata.ts:91-106` admits the PATCH. The rewritten authz docblock now states that "metadata patches are still collectively editable", while the only UI reaching them is the screen that just refused. The bundle intent explicitly scoped a metadata-only editing surface out of this pass.
 status: open
+decision: 2026-08-19 Narrow the authz rule — Make canWritePage refuse "metadata" wherever it refuses "body" for the commons realm, so the docblock's "collectively editable" claim is retired and the edit page's single gate becomes the accurate one; update patch-metadata.ts and the authz tests to match.
 
 ### DW-122: Seven other call sites of the same realm deny still emit a generic permission message with no realm explanation.
 origin: spec-deferred 8ef6b4ff69c9
@@ -1091,7 +1095,8 @@ source_spec: `spec-authz-commons-realm-cleanup.md`
 location: src/app/api/wiki/[slug]/route.ts:126
 severity: low
 reason: `src/mcp.ts:295` and `:395`, `src/app/api/wiki/[slug]/route.ts:39` and `:123`, `src/app/api/wiki/[slug]/revisions/route.ts:144`, `src/app/api/ingest/reingest/route.ts:39`, `src/app/api/ingest/history/route.ts:195`, and `src/lib/mcp-http.ts:407` all return "You don't have permission to edit/delete this page." for the same deny the edit page now explains. `WikiEditor` renders the API's raw `error` string, so a human who read the new explanation on load would get the old generic one on save. The bundle intent named only `edit/page.tsx:50`, so the other surfaces were left alone.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-authz-realm-parity-and-copy
 
 ### DW-123: The edit page's write denial returns before the canonical-tenant redirect, so a non-canonical edit URL renders the refusal instead of its 308.
 origin: spec-deferred 20dcb006b261
@@ -1099,7 +1104,8 @@ source_spec: `spec-authz-commons-realm-cleanup.md`
 location: src/app/u/[handle]/[slug]/edit/page.tsx:33
 severity: low
 reason: `src/app/u/[handle]/[slug]/edit/page.tsx` runs the `canWriteFrontmatter` denial branch (:33) before the `permanentRedirect(editPath(pageTenant, slug))` at :65-67. A non-admin opening `/u/bob/transformers/edit` for alice's public knowledge page therefore gets a 200 "Cannot edit" screen whose "← Back to page" link points at `/u/alice/transformers`, while the writable path for the same URL 308s to the canonical handle first. The asymmetry predates this pass — the branch and the redirect were already in this order at `{baseline_revision}`; this pass only rewrote the sentence inside the branch, so the ordering was left alone.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-authz-realm-parity-and-copy
 
 ### DW-124: Follow-up review still recommended for dw-authz-commons-realm-cleanup after the damping cap was spent
 origin: review-budget-followup
@@ -1116,6 +1122,7 @@ location: src/lib/contributors.ts:278
 severity: low
 reason: `src/lib/contributors.ts` exports `buildContributorProfile` (:278) and `listContributors` (:331). Their only remaining callers are `src/lib/__tests__/contributors.test.ts` and `src/lib/__tests__/contributor-index.test.ts:13`; the production call sites in `src/mcp.ts` (`handleListContributors` / `handleGetContributor`) were deleted in this pass. The sibling `buildContributorProfiles` (:313) is in the same test-only state, which predates this pass. The module itself must stay: `src/lib/contributor-index.ts:37-43` imports `computeScanData` and `computeTrustScore` from it, and `lifecycle.ts:33`, `talk.ts:46`, `maintenance.ts:231` keep the index live. The spec's Code Map called this residue explicitly out of scope ("record as deferred, do not delete") because deleting the scan functions would mean deciding whether the trust-score surface returns, which is a product call rather than a cleanup.
 status: open
+decision: 2026-08-19 Retire the scan functions — Delete buildContributorProfile, buildContributorProfiles and listContributors along with their now-orphaned tests, keeping computeScanData and computeTrustScore for contributor-index.ts. Resolve DW-126 the same way by dropping the contributors step from rebuildDerivedIndexes.
 
 ### DW-126: The daily maintenance scan still rebuilds the contributor index, but after this pass no production code reads what it builds.
 origin: spec-deferred 38e4600a3ab5
@@ -1124,6 +1131,7 @@ location: src/lib/maintenance.ts:231
 severity: low
 reason: `src/lib/maintenance.ts:231` registers `["contributors", () => rebuildContributorIndex()]`, and `lifecycle.ts:33` / `talk.ts:46` still write into the index. The read side (`profilesFromIndex`, `contributorProfileFromIndex`) is reached only through `src/lib/contributors.ts`'s fast paths, whose own callers are now test-only. So the cron pays for a full-wiki scan whose output nothing consumes. Removing it is not a cleanup decision: it depends on whether the contributor trust surface returns, the same product call recorded in the entry above.
 status: open
+decision: 2026-08-19 Drop the contributors step — Remove the ["contributors", rebuildContributorIndex] entry from rebuildDerivedIndexes and the now-dead index writes from lifecycle.ts:33 and talk.ts:46, together with the DW-125 scan functions, and pin that the daily scan no longer walks the wiki for contributor data.
 
 ### DW-127: `src/lib/maintenance.ts`'s module header documents only three deterministic `fix` lint types while the scan emits eight.
 origin: spec-deferred 3045ad1557a2
@@ -1164,6 +1172,7 @@ location: src/app/wiki/graph/page.tsx:161
 severity: medium
 reason: `src/app/wiki/graph/page.tsx:161` sets `aria-label="Wiki page relationship graph. Visit the wiki index for a text-based list of all pages."` and the canvas fallback text (`:164`) repeats it, but `/wiki` is listed in `RETIRED_SURFACES` (`src/lib/retired.ts:23`) and 404s. Deleting `HomeGraph.tsx` in this pass made this the only remaining graph canvas, so it is now the sole accessibility escape hatch for the visualization and it leads nowhere. The file was not touched by this pass and fixing it means choosing a live replacement target, which is a product call.
 status: open
+decision: 2026-08-19 Point at the Workbench Knowledge tree — Retarget the graph canvas's aria-label and fallback text at the Workbench's Knowledge tree (the live text-based list of the active Wiki's pages), updating the copy to name that surface and linking to it, and pin the new target so it cannot rot into another retired route.
 
 ### DW-132: Two more hand-maintained tool/task inventories have no test pinning them against their source of truth.
 origin: spec-deferred b45716b28e31
@@ -1337,6 +1346,7 @@ location: src/components/KnowledgeStudio.tsx:213, src/components/VaultExplorer.t
 severity: low
 reason: `src/components/KnowledgeStudio.tsx:213` (`.studio-main`) sits between `<aside className="studio-nav" aria-label="Knowledge Studio sections">` and `<aside className="studio-evidence" aria-label="Evidence and actions">`. `src/components/VaultExplorer.tsx:369` is the same shape: after the sweep the grid's only landmark children are `<aside aria-label="Vault explorer">` and `<aside aria-label="Document preview">`. A screen-reader user can jump to both rails but not to the substance between them. Three independent reviewers raised it. Not patched here for two reasons: DW-11's intent authorises `<div>` OR `<section>` without selecting between them per site and promises nothing about region navigability, and this spec's frozen intent-contract says "Do not add ARIA roles, headings or landmarks to compensate". Restoring the region means a named `<section>` (or `role="region"` + `aria-label`) on those two wrappers — a deliberate a11y decision, not a mechanical follow-on to the sweep. Note that
 status: open
+decision: 2026-08-19 Name the KnowledgeStudio region — Give KnowledgeStudio's .studio-main wrapper a named `<section>` (or role="region" with aria-label) matching the shape VaultExplorer already uses, restoring region navigability between the two rails, and update the landmark scan and mounted tests to expect it. Record in the spec record that the frozen "do not add landmarks" clause was deliberately renegotiated for this one wrapper.
 
 ### DW-153: The DW-152 entry in the deferred-work ledger is truncated mid-sentence, losing the clause that scopes it away from PrivateWorkspaceNotice.
 origin: spec-deferred b0e8da54231b
@@ -1533,6 +1543,7 @@ location: src/components/WikiWorkbench.tsx:160 with src/lib/workbench-tree.ts:71
 severity: low
 reason: The canvas empty state inlines the literal while the left column's tree renders `TREE_NO_WIKI_COPY` (`src/lib/workbench-tree.ts:71`) — the same string, on two surfaces, at the same moment. Same class of defect as DW-33, and the new mounted suite scopes its assertion to `.wb-canvas` to work around it. Deciding which surface owns the sentence is a UX call, not a mechanical de-duplication.
 status: open
+decision: 2026-08-19 Canvas owns the sentence — Keep the canvas empty state as the one place that says "No wiki yet." (rendering the shared TREE_NO_WIKI_COPY constant rather than an inline literal) and let the tree render a quieter row-level placeholder, then drop the .wb-canvas scoping workaround from the mounted suite.
 
 ### DW-177: `Select a file to preview.` is still an inline literal restated in three files while every sibling sentence is an exported constant.
 origin: spec-deferred 1099d47dbb87
@@ -1752,6 +1763,7 @@ location: src/lib/workbench-files.ts (wikiLeafSlug / wikiLeafFilter)
 severity: low
 reason: The listing became case-insensitive on the extension by deriving from `wikiLeafSlug` (`src/lib/workbench-files.ts`), which lowercases before testing `.md`. Both names therefore pass `readableWikiLeaf` for the same slug, and `resolveWorkbenchFile` builds a key from the name as written, so the two rows read two different objects. The preview route decides "is this the editable Page" from `wikiLeafSlug` alone, so a save reached from the `.MD` row lands on `wiki/cased.md` and the previewed bytes go stale. Pre-existing at the read and edit layers (the gate was already case-insensitive); this change adds the second visible door. Deciding what the tab should do when both exist — hide one, mark the pair, or refuse the slug — is a Files-tab surface decision beyond DW-41's recorded intent.
 status: open
+decision: 2026-08-19 List only the canonical file — When two leaves collide on the same wikiLeafSlug, list only the canonical `<slug>.md` row and drop the variant-cased sibling from the Files tab, so every visible row reads and writes the same object; add a test seeding both names on a case-sensitive store.
 
 ### DW-203: On a case-sensitive store, `wiki/cased.md` and `wiki/cased.MD` both list as rows for the one slug `cased`, and an edit from either row writes `<slug>.md`.
 origin: spec-deferred 83c76aec8291
@@ -1776,6 +1788,7 @@ location: src/app/globals.css (.wb-split-handle--tree, .wb-split-handle--preview
 severity: low
 reason: `.wb-split-handle` is `z-index: 2`, `cursor: col-resize`, `touch-action: none` and full height, and both modifiers now start AT their boundary and extend 24px right. `.wb-canvas-pad` and `.wb-preview-body` are both `padding: ... var(--wb-space-4)` = 16px, so the strip covers the whole gutter plus ~8px of real content in each pane: the first characters of a line, and a wikilink sitting at the left margin, are unclickable and unselectable, and on a touchscreen at 1200px+ that band cannot be panned. DW-44's ledger named "eat 12px of the canvas edge" as the known cost of widening and its decision took the trade anyway, so this is authorised rather than accidental - but the decision reasoned about scrollbars, never about what the strip would cover, and 24px offset to one side eats twice what the entry quantified. Choosing between a narrower strip that misses SC 2.5.8, matching left padding on both panes, and a documented exception is the same chrome decision DW-44 was, one boundary further
 status: open
+decision: 2026-08-19 Widen the content padding to match — Raise .wb-canvas-pad and .wb-preview-body left padding to at least the hit-strip width so the strip covers only gutter, never text, keeping the 24px target that satisfies SC 2.5.8; pin the relationship between the padding and --wb-split-hit so they cannot drift.
 
 ### DW-206: One stored tree scroll offset per tab is shared across the 900px breakpoint, where `.wb-tree-body` is capped at 40vh - so crossing into the narrow layout restores a desktop offset the browser clamps,
 origin: spec-deferred d620d0a1c5f8
@@ -1872,6 +1885,7 @@ location: src/app/api/settings/route.ts:243-270
 severity: medium
 reason: `src/app/api/settings/route.ts:243-256` writes `body.embeddingModel` unconditionally; the gate runs only inside `if (body.workbench !== undefined)` at :270. The live `/settings` page sends exactly that flat shape (`src/hooks/useSettings.ts:245`) and DW-61's 2026-08-18 decision keeps that page. Verified against the real route: store `{ vectorSearchEnabled: true, embeddingProvider: "workers-ai", embeddingModel: "@cf/baai/bge-m3" }`, then PUT `{ embeddingModel: "text-embedding-3-small" }` with no `workbench` key -> 200, and `getVectorSearchSettings().enabled` drops to false. Before DW-73 the same write was harmless (the resolver fell back). The flat branch has never validated anything by explicit design ("a body with no `workbench` produces byte-identically the same saved object"), so closing it is a decision about legacy compatibility, not a patch.
 status: open
+decision: 2026-08-19 Validate the flat branch too — Run the vector gate on the resulting config in the flat branch as well, so a flat PUT that would turn effective vector search off is refused 400 with the same sentence the Workbench surface shows; pin the reproduction above as a route test.
 
 ### DW-218: An `EMBEDDING_MODEL` env override in the wrong namespace refuses vector search with a sentence the owner cannot act on from the Settings box.
 origin: spec-deferred 9cfdb86b9ca5
@@ -1912,6 +1926,7 @@ location: src/lib/workbench-settings.ts (vectorSearchMissingLegs)
 severity: low
 reason: `embeddingProviderLabel("workers-ai")` returns "Cloudflare Workers AI" and populates the embedding-provider `<option>` (`SettingsCanvas.tsx:451-455`), while the namespace sentence types "Workers AI". Deriving the name from `embeddingProviderLabel` was implemented during review and then reverted: the frozen I/O matrix in this spec's intent-contract pins the sentence text verbatim, and step-03's matrix audit forbids editing an expectation to match changed code. Worth doing as its own change, matrix text included.
 status: open
+decision: 2026-08-19 Derive the label, update the matrix — Derive the provider name in vectorSearchMissingLegs from embeddingProviderLabel so the refusal and the picker always agree, and update spec-dw-73's frozen I/O matrix text in the same change, recording that the frozen expectation was renegotiated deliberately for copy consistency.
 
 ### DW-223: The namespace complaint is announced on the vector checkbox, not on the embedding-model field that actually holds the wrong value.
 origin: spec-deferred abe456693455
@@ -1976,6 +1991,7 @@ location: src/lib/patch-metadata.ts:173
 severity: medium
 reason: `ensureReconciliationThread` (`src/lib/talk.ts:203-229`) is still called on every disputed false->true transition from `src/lib/ingest.ts`, `src/lib/merge.ts` and `src/lib/patch-metadata.ts:173-181`, while the talk HTTP surfaces 404 via `src/lib/retired.ts`. Threads accumulate on disk unreadable. Pre-existing and outside DW-75/DW-76, but it is the other half of the loop the DW-76 decision describes.
 status: open
+decision: 2026-08-19 Stop writing the threads — Remove the ensureReconciliationThread calls from ingest.ts, merge.ts and patch-metadata.ts so a disputed transition no longer writes a thread nothing can read, leaving the DW-76 disputed-pages view and clear action as the whole loop; keep the talk module for the surfaces that still read existing threads.
 
 ### DW-231: The edit route answers a dead slug with a rendered "Page not found — nothing to edit" body at HTTP 200, the same defect DW-85 fixed on the page view, and this story's tests now pin that 200 in place.
 origin: spec-deferred 08fb49a7fb70
@@ -2280,4 +2296,28 @@ source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
 location: src/lib/config.ts:139
 severity: low
 reason: The flag appears only in code docstrings and spec artifacts — not in README.md and not under docs/. It now means "no page or artifact write through any caller, including MCP and the CLI", while settings, the wikis registry, vaults, agent profiles, tasks, monitors, structured knowledge, `raw/`, the ingest ledger and the revision store all still mutate. An operator setting the flag has nowhere to read that boundary; the new `isReadOnly()` docstring in src/lib/config.ts states it, but only to a reader already in the code.
+status: open
+
+### DW-269: The Re-ingest and Revert client affordances are still offered where the same commons-realm gate refuses them — the exact shape DW-120 fixed for Delete.
+origin: spec-deferred 58361bfa045c
+source_spec: `spec-dw-120-122-123-authz-realm-parity-and-copy.md`
+location: src/components/ArticleActions.tsx:161
+severity: medium
+reason: `src/components/ArticleActions.tsx` renders `<ReingestButton>` on `hasSourceUrl && ownsOrContributes` with no realm term, while `POST /api/ingest/reingest` denies through `canWriteFrontmatter(fm, principal, "body")` — the same realm branch and the same write kind. `RevisionHistory` renders Revert for every viewer with no ownership or realm gate, and the revert route now answers `WRITE_DENIAL_REALM.revert`. Both predate this pass (unchanged at `ffbebf4`), and the bundle intent named only the Delete gate, so both were left alone — but this pass makes the divergence louder by giving those doors the realm sentence to shout. Consequence: on an ordinary URL-ingested public knowledge page, the owner presses a live-looking Re-ingest button and meets the refusal as a red error string.
+status: open
+
+### DW-270: The `jobIds` path of `DELETE /api/ingest/history` reaches the delete ACL holding a page the caller was never read-gated on.
+origin: spec-deferred b1232cb9f27f
+source_spec: `spec-dw-120-122-123-authz-realm-parity-and-copy.md`
+location: src/app/api/ingest/history/route.ts
+severity: medium
+reason: The route preflights `ingestIds` against `listReadableWikiPages(principal)` and 404s unreadable ones, but the `jobIds` path checks only `job.owner !== principal.handle`; the job's `slug` page is never read-checked. This pass made the *sentence* safe there (the resolver only speaks of a realm it evaluated, pinned by the rewritten leak test), but the missing read-gate itself is a separate authz question this pass did not touch.
+status: open
+
+### DW-271: `src/lib/commons.ts` imports two client-safe predicates through `./wiki`, so every route test that mocks `@/lib/wiki` must stub them or get a 500 where it means 403.
+origin: spec-deferred 431f1d62b7a4
+source_spec: `spec-dw-120-122-123-authz-realm-parity-and-copy.md`
+location: src/lib/commons.ts:17
+severity: low
+reason: `commons.ts` imports `isAgentScopedType`/`isArtifactType` from `./wiki`, which merely re-exports them from the client-safe `./page-types`. Because `belongsInCommons` is now on the 403 path, two suites (`ingest-history-delete-route.test.ts`, `ingest-routes.test.ts`) had to widen their `vi.mock("@/lib/wiki")` factories to keep the predicate from calling `undefined`. Importing from `./page-types` directly would remove the trap for every future route suite at no behavioural cost. The import is pre-existing and unchanged by this pass.
 status: open

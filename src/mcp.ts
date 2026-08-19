@@ -65,6 +65,7 @@ import {
   type Frontmatter,
 } from "./lib/wiki";
 import { canReadFrontmatter, canWriteFrontmatter } from "./lib/authz";
+import { resolveWriteDenial } from "./lib/write-denial";
 import type { Principal } from "./lib/auth";
 import { extractSummary, ingest, ingestUrl, ingestImage, ingestPdf, ingestXMention, reingest, readLedger, type LedgerEntry, type IngestOptions } from "./lib/ingest";
 import { query, saveAnswerToWiki, type QueryFormat } from "./lib/query";
@@ -291,7 +292,11 @@ export async function handleUpdatePage(args: {
       : { id: "service:mcp", handle: args.author ?? "system" };
   if (!canWriteFrontmatter(existingPage.frontmatter, principal, "body")) {
     if (canReadFrontmatter(existingPage.frontmatter, principal)) {
-      throw new Error("You don't have permission to edit this page.");
+      // Readable (the cloak below runs otherwise), so the resolver may name
+      // the realm — and does so only where the realm gate applies.
+      throw new Error(
+        resolveWriteDenial("edit", existingPage.frontmatter, "body"),
+      );
     }
     throw new Error(`Page not found: ${args.slug}`);
   }
@@ -391,7 +396,11 @@ export async function handleDeletePage(args: {
   }
   if (!canWriteFrontmatter(existing.frontmatter, principal, "delete")) {
     if (canReadFrontmatter(existing.frontmatter, principal)) {
-      throw new Error("You don't have permission to delete this page.");
+      // Readable (the cloak below runs otherwise), so the resolver may name
+      // the realm — and does so only where the realm gate applies.
+      throw new Error(
+        resolveWriteDenial("delete", existing.frontmatter, "delete"),
+      );
     }
     throw new Error(`page not found: ${args.slug}`);
   }

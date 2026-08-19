@@ -7,6 +7,7 @@ import {
   readWikiPageWithFrontmatter,
 } from "@/lib/wiki";
 import { canWriteFrontmatter } from "@/lib/authz";
+import { resolveWriteDenial } from "@/lib/write-denial";
 import {
   deleteIngestJob,
   getIngestJob,
@@ -208,8 +209,26 @@ export async function DELETE(request: NextRequest) {
       const page = await readWikiPageWithFrontmatter(slug);
       if (!page) continue; // Already gone: clear its terminal UI record below.
       if (!canWriteFrontmatter(page.frontmatter, principal, "delete")) {
+        // The one deny site that is only HALF read-cloaked, which is why the
+        // sentence has to be resolved rather than fixed.
+        //
+        // `ingestIds` are safe: the preflight above 404s any entry whose page is
+        // outside `listReadableWikiPages`, so those slugs are readable by the
+        // time they reach here. `jobIds` are NOT: the only gate they pass is
+        // `job.owner !== principal.handle`, a check on the JOB record, and the
+        // job's `slug` page is never read-gated. A caller who owns a job whose
+        // page they may not read therefore lands on this ACL with an unreadable
+        // page in hand.
+        //
+        // So the resolver's realm check is what keeps this sentence from
+        // describing that page to someone who was never allowed to learn it
+        // exists: a public knowledge page gets the realm explanation, anything
+        // else — including that private page — keeps the generic selection
+        // sentence.
         return NextResponse.json(
-          { error: "You don't have permission to delete one or more selected pages." },
+          {
+            error: resolveWriteDenial("bulkDelete", page.frontmatter, "delete"),
+          },
           { status: 403 },
         );
       }

@@ -3,6 +3,7 @@ import { reingest } from "@/lib/ingest";
 import { readWikiPageWithFrontmatter } from "@/lib/wiki";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { canReadFrontmatter, canWriteFrontmatter } from "@/lib/authz";
+import { resolveWriteDenial } from "@/lib/write-denial";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { isReadOnly } from "@/lib/config";
@@ -57,7 +58,11 @@ export async function POST(request: NextRequest) {
     if (!canWriteFrontmatter(page.frontmatter, principal, "body")) {
       return canReadFrontmatter(page.frontmatter, principal)
         ? NextResponse.json(
-            { error: "You don't have permission to re-ingest this page." },
+            {
+              // Readable (the cloak ran first); the resolver adds the realm
+              // explanation only when the realm gate is what refused.
+              error: resolveWriteDenial("reingest", page.frontmatter, "body"),
+            },
             { status: 403 },
           )
         : NextResponse.json(

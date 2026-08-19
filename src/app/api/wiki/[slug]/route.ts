@@ -10,6 +10,7 @@ import {
 import { extractSummary } from "@/lib/ingest";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { canReadFrontmatter, canWriteFrontmatter } from "@/lib/authz";
+import { resolveWriteDenial } from "@/lib/write-denial";
 import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { getErrorMessage } from "@/lib/errors";
@@ -56,7 +57,12 @@ export async function DELETE(
     if (!canWriteFrontmatter(existing.frontmatter, principal, "delete")) {
       return canReadFrontmatter(existing.frontmatter, principal)
         ? NextResponse.json(
-            { error: "You don't have permission to delete this page." },
+            {
+              // The cloak above already ran, so this page is readable — the
+              // resolver names its realm only when the realm gate is what
+              // denied the delete.
+              error: resolveWriteDenial("delete", existing.frontmatter, "delete"),
+            },
             { status: 403 },
           )
         : NextResponse.json(
@@ -160,7 +166,11 @@ export async function PUT(
     if (!canWriteFrontmatter(existing.frontmatter, principal, "body")) {
       return canReadFrontmatter(existing.frontmatter, principal)
         ? NextResponse.json(
-            { error: "You don't have permission to edit this page." },
+            {
+              // Readable (the cloak ran first), so the resolver may state the
+              // realm — and states it only where the realm gate applies.
+              error: resolveWriteDenial("edit", existing.frontmatter, "body"),
+            },
             { status: 403 },
           )
         : NextResponse.json(

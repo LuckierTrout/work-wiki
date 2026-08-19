@@ -50,6 +50,7 @@ import { _resetStorage } from "../storage";
 import { _resetConfigCache } from "../config";
 import { parseFrontmatter } from "../frontmatter";
 import { registerAgent } from "../agents";
+import { WRITE_DENIAL_REALM } from "../write-denial";
 
 // ---------------------------------------------------------------------------
 // Mock fetchUrlContent, fetchImageBytes, and storeImageBytes so no test makes
@@ -4316,7 +4317,9 @@ describe("MCP write ACL", () => {
           author: "alice",
           principal: { id: "user_alice", handle: "alice" },
         }),
-      ).rejects.toThrow("You don't have permission to edit this page.");
+        // The realm sentence, owned by `src/lib/write-denial.ts` — the same one
+        // `PUT /api/wiki/[slug]` and the edit screen answer for this deny.
+      ).rejects.toThrow(WRITE_DENIAL_REALM.edit);
     });
 
     it("allows body write on commons page when principal is a service", async () => {
@@ -4425,7 +4428,8 @@ describe("MCP write ACL", () => {
           author: "alice",
           principal: { id: "user_alice", handle: "alice" },
         }),
-      ).rejects.toThrow("You don't have permission to delete this page.");
+        // Same table, delete verb: one deny, one sentence, every surface.
+      ).rejects.toThrow(WRITE_DENIAL_REALM.delete);
     });
 
     it("allows deletion when no principal provided (stdio MCP fallback)", async () => {

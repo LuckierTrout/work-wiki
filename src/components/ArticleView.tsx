@@ -6,6 +6,7 @@ import type { WikiPage } from "@/lib/types";
 import { findBacklinks, findSimilarPages, buildSlugTenantMap } from "@/lib/wiki";
 import { resolveSlugPath } from "@/lib/links";
 import { isVaultEligible } from "@/lib/commons";
+import { isRealmRestrictedWrite } from "@/lib/authz";
 import type { Principal } from "@/lib/auth";
 import { parseSources, dedupeSourcesForDisplay, sourceLabel } from "@/lib/sources";
 import { stripLeadingH1 } from "@/lib/markdown";
@@ -181,9 +182,10 @@ export async function ArticleView({
     ? (page.frontmatter.contributors as string[])
     : [];
 
-  // Curatable into a vault: public + non-agent, INCLUDING artifacts. Gates the
-  // "Save to vault" button.
-  const isCuratable = isVaultEligible({
+  // The realm facts about this page, coerced once from frontmatter. Both
+  // predicates below are pure and read the same two fields, so they share one
+  // coercion rather than each re-deriving it.
+  const realmMeta = {
     visibility:
       typeof page.frontmatter.visibility === "string"
         ? page.frontmatter.visibility
@@ -192,7 +194,20 @@ export async function ArticleView({
       typeof page.frontmatter.type === "string"
         ? page.frontmatter.type
         : undefined,
-  });
+  };
+
+  // Curatable into a vault: public + non-agent, INCLUDING artifacts. Gates the
+  // "Save to vault" button.
+  const isCuratable = isVaultEligible(realmMeta);
+
+  // The realm half of the Delete gate, evaluated HERE because it has to be.
+  // `isRealmRestrictedWrite` reaches `belongsInCommons` (`@/lib/commons`),
+  // whose import graph pulls storage, locks and `wiki.ts` — none of which may
+  // enter the `"use client"` island below. So the server answers the question
+  // it alone can answer and hands down one boolean; the island supplies the
+  // identity half, which only the browser's Clerk session knows. This is the
+  // SAME expression `canWritePage`'s realm branch decides on, not a copy of it.
+  const realmDeniesDelete = isRealmRestrictedWrite(realmMeta, "delete");
 
   // Dedup by URL for display so a page whose sources predate the write-time
   // URL dedup (or were recorded under two types) never shows the same link twice.
@@ -488,6 +503,7 @@ export async function ArticleView({
             owner={pageOwner}
             contributors={pageContributors}
             isCuratable={isCuratable}
+            realmDeniesDelete={realmDeniesDelete}
             hasRawSource={hasRawSource}
             hasSourceUrl={hasSourceUrl}
             readOnly={readOnly}

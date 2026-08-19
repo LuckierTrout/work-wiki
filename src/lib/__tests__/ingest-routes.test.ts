@@ -19,9 +19,24 @@ vi.mock("@/lib/ingest-staging", () => ({
   stageText: vi.fn(async () => "raw/uploads/job/text.md"),
 }));
 
-vi.mock("@/lib/wiki", () => ({
-  readWikiPageWithFrontmatter: vi.fn(),
-}));
+/**
+ * Stubbed down to the one function these routes call — plus the two pure `type`
+ * predicates `belongsInCommons` re-exports from `wiki.ts`. Those are needed
+ * because the re-ingest route's 403 sentence is resolved through the REAL realm
+ * predicate (DW-122): on a PUBLIC page `belongsInCommons` calls them, and with
+ * them missing the route would answer 500 where it means 403. (A private page
+ * short-circuits before either is reached, which is why the pre-existing cloak
+ * case never needed them.) They come from `@/lib/page-types`, the client-safe
+ * module `wiki.ts` itself re-exports them from, so no logic is restated here.
+ */
+vi.mock("@/lib/wiki", async () => {
+  const { isAgentScopedType, isArtifactType } = await import("@/lib/page-types");
+  return {
+    readWikiPageWithFrontmatter: vi.fn(),
+    isAgentScopedType,
+    isArtifactType,
+  };
+});
 
 vi.mock("@/lib/fetch", () => ({
   isUrl: (s: string) => s.startsWith("http://") || s.startsWith("https://"),
@@ -64,6 +79,7 @@ import { POST as POST_BATCH } from "@/app/api/ingest/batch/route";
 import { POST as POST_REINGEST } from "@/app/api/ingest/reingest/route";
 import type { IngestResult } from "@/lib/types";
 import { ClientInputError } from "@/lib/errors";
+import { WRITE_DENIAL_REALM } from "@/lib/write-denial";
 
 const mockedIngest = vi.mocked(ingest);
 const mockedIngestUrl = vi.mocked(ingestUrl);
@@ -1035,6 +1051,96 @@ describe("POST /api/ingest/reingest — service token auth", () => {
     );
     // A private page the caller can't read is "not found" (no existence oracle).
     expect(res.status).toBe(404);
+    // The cloak is the BODY too: it must read like a missing page and carry
+    // none of the realm wording its sibling 403 now uses (DW-122), or it tells
+    // a viewer who may not read this page what kind of page it is.
+    const cloak = await res.json();
+    expect(cloak.error).toMatch(/not found/i);
+    expect(cloak.error).not.toMatch(/public knowledge/i);
+    expect(cloak.error).not.toMatch(/agent-maintained/i);
+    expect(mockedReingest).not.toHaveBeenCalled();
+  });
+
+  it("explains the realm re-ingesting a PUBLIC knowledge page (403), never calling reingest", async () => {
+    // The other side of the same door (DW-122). A public knowledge page is
+    // READABLE by this caller, so there is nothing to cloak — and a bare
+    // "You don't have permission to re-ingest this page." would leave the page
+    // owner hunting a permission they do not lack. The realm sentence names
+    // why, and comes from the shared table so this pin tracks the copy every
+    // other surface answers.
+    mockedGetPrincipal.mockResolvedValue({ id: "clerk-user", handle: "alice" });
+    mockedGetServicePrincipal.mockReturnValue(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const publicKnowledgePage: any = {
+      content: "# Transformers",
+      frontmatter: {
+        title: "Transformers",
+        source_url: "https://example.com/source",
+        owner: "alice",
+        visibility: "public",
+      },
+    };
+    mockedReadWikiPage.mockResolvedValue(publicKnowledgePage);
+
+    const res = await POST_REINGEST(
+      makeRequest("http://localhost:3000/api/ingest/reingest", {
+        slug: "transformers",
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe(WRITE_DENIAL_REALM.reingest);
+    // The refusal lands BEFORE the source re-fetch and both LLM calls.
+    expect(mockedReingest).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Why there is NO "generic sentence" case for this route.
+   *
+   * `resolveWriteDenial` has two branches, and only one of them is reachable
+   * here. The route asks `canWriteFrontmatter(fm, p, "body")`, which fails in
+   * exactly two ways: the commons realm refused a public knowledge page (the
+   * case above), or the page is PRIVATE and `p` cannot read it — and that
+   * second case takes the 404 cloak before any sentence is chosen. There is no
+   * third shape, because a READABLE private page is writable by precisely the
+   * principals that could read it, and every other public page passes the gate
+   * outright (an `html` artifact and an `agent-` page both fail
+   * `belongsInCommons` and fall through to the public `return true`).
+   *
+   * So `WRITE_DENIAL.reingest` cannot be produced through this door at all. It
+   * is pinned where it IS reachable — at the resolver, in
+   * `src/lib/__tests__/write-denial.test.ts` — and what this case pins instead
+   * is the cloak's silence on the one page class that could leak.
+   */
+  it("cloaks another user's PRIVATE artifact (404) — no sentence is chosen at all", async () => {
+    mockedGetPrincipal.mockResolvedValue({ id: "clerk-user", handle: "alice" });
+    mockedGetServicePrincipal.mockReturnValue(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bobArtifact: any = {
+      content: "<h1>Chart</h1>",
+      frontmatter: {
+        title: "Chart",
+        source_url: "https://example.com/source",
+        owner: "bob",
+        visibility: "private",
+        type: "html",
+      },
+    };
+    mockedReadWikiPage.mockResolvedValue(bobArtifact);
+
+    const res = await POST_REINGEST(
+      makeRequest("http://localhost:3000/api/ingest/reingest", {
+        slug: "bob-chart",
+      }),
+    );
+
+    // Private + unreadable → the cloak, reached BEFORE the resolver runs, so it
+    // carries neither the realm explanation nor any hint of the page's type.
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toMatch(/not found/i);
+    expect(body.error).not.toMatch(/public knowledge/i);
+    expect(body.error).not.toMatch(/agent-maintained/i);
     expect(mockedReingest).not.toHaveBeenCalled();
   });
 });

@@ -3,12 +3,37 @@ import { NextRequest } from "next/server";
 
 vi.mock("@/lib/ingest", () => ({ readLedger: vi.fn() }));
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
-vi.mock("@/lib/wiki", () => ({
-  deleteWikiPage: vi.fn(),
-  listReadableWikiPages: vi.fn(),
-  readWikiPageWithFrontmatter: vi.fn(),
+/**
+ * `@/lib/wiki` is stubbed down to the three functions this route calls — plus
+ * the two pure `type` predicates `belongsInCommons` re-exports from it. Those
+ * are needed because the route's 403 sentence is now resolved through the REAL
+ * realm predicate (below): with them missing, `belongsInCommons` would call
+ * `undefined` and this route would answer 500 where it means 403. They are
+ * taken from `@/lib/page-types`, the client-safe module `wiki.ts` itself
+ * re-exports them from, so no logic is restated here.
+ */
+vi.mock("@/lib/wiki", async () => {
+  const { isAgentScopedType, isArtifactType } = await import("@/lib/page-types");
+  return {
+    deleteWikiPage: vi.fn(),
+    listReadableWikiPages: vi.fn(),
+    readWikiPageWithFrontmatter: vi.fn(),
+    isAgentScopedType,
+    isArtifactType,
+  };
+});
+/**
+ * PARTIAL, not total: `canWriteFrontmatter` is the gate each case below drives,
+ * but `isRealmRestrictedWrite` — which `resolveWriteDenial` consults to decide
+ * whether this route's 403 may name the page's realm — must stay REAL. This is
+ * the one deny site with no read cloak, so a stubbed realm predicate could let
+ * the route describe a private page the caller may not read, and the suite
+ * would never notice.
+ */
+vi.mock("@/lib/authz", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/authz")>()),
+  canWriteFrontmatter: vi.fn(),
 }));
-vi.mock("@/lib/authz", () => ({ canWriteFrontmatter: vi.fn() }));
 vi.mock("@/lib/ingest-jobs", () => ({
   deleteIngestJob: vi.fn(),
   getIngestJob: vi.fn(),
@@ -27,6 +52,7 @@ import {
 import { canWriteFrontmatter } from "@/lib/authz";
 import { deleteIngestJob, getIngestJob } from "@/lib/ingest-jobs";
 import { DELETE } from "@/app/api/ingest/history/route";
+import { WRITE_DENIAL, WRITE_DENIAL_REALM } from "@/lib/write-denial";
 
 const mockedReadLedger = vi.mocked(readLedger);
 const mockedGetPrincipal = vi.mocked(getPrincipal);
@@ -57,9 +83,19 @@ function request(body: unknown): NextRequest {
 }
 
 let originalReadOnly: string | undefined;
+// The leak case below runs the REAL `canWriteFrontmatter`, and `isAdmin` reads
+// both of these at call time. Either exported on a developer's machine would
+// make the test principal an admin, turn its 403 into a delete, and hide the
+// leak this suite exists to guard — on that machine only.
+let originalAdmin: string | undefined;
+let originalOwnerHandle: string | undefined;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  originalAdmin = process.env.ADMIN_HANDLES;
+  originalOwnerHandle = process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  delete process.env.ADMIN_HANDLES;
+  delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
   // Cleared rather than inherited: every case but the read-only one asserts
   // what an ordinary deployment does, so a value exported in a developer's
   // shell would turn this file red there and nowhere else.
@@ -91,6 +127,10 @@ beforeEach(() => {
 afterEach(() => {
   if (originalReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
   else process.env.YOPEDIA_READONLY = originalReadOnly;
+  if (originalAdmin === undefined) delete process.env.ADMIN_HANDLES;
+  else process.env.ADMIN_HANDLES = originalAdmin;
+  if (originalOwnerHandle === undefined) delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  else process.env.NEXT_PUBLIC_OWNER_HANDLE = originalOwnerHandle;
 });
 
 describe("DELETE /api/ingest/history", () => {
@@ -134,6 +174,81 @@ describe("DELETE /api/ingest/history", () => {
 
     const response = await DELETE(request({ ingestIds: ["ing-a"] }));
     expect(response.status).toBe(403);
+    expect(mockedDeletePage).not.toHaveBeenCalled();
+  });
+
+  /**
+   * DW-122 — the sentence this door answers, and the one it must not.
+   *
+   * Every other realm deny read-cloaks the page before the ACL runs, which is
+   * what makes "this page is public knowledge" provable there. This door is
+   * cloaked on only ONE of its two selection paths:
+   *
+   *   - `ingestIds` are preflighted against `listReadableWikiPages` and 404 for
+   *     a page the caller cannot read, so they arrive readable.
+   *   - `jobIds` pass only `job.owner !== principal.handle` — a check on the
+   *     JOB record — and the job's `slug` page is never read-gated. A caller
+   *     who owns a job whose page they may not read reaches the delete ACL
+   *     holding an unreadable page.
+   *
+   * So the realm explanation has to be earned per page, from the realm
+   * predicate, rather than assumed from the fact that a delete was refused —
+   * and the second case below drives the `jobIds` path specifically, because it
+   * is the only one where the leak is actually reachable.
+   */
+  it("explains the realm when a selected page really is public knowledge", async () => {
+    mockedCanWrite.mockReturnValue(false);
+    mockedReadPage.mockResolvedValue({
+      slug: "page-a",
+      title: "Page A",
+      content: "---\nowner: alice\n---\n# Page A",
+      path: "/test/wiki/page-a.md",
+      body: "# Page A",
+      frontmatter: { owner: "alice", visibility: "public" },
+    });
+
+    const response = await DELETE(request({ ingestIds: ["ing-a"] }));
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toBe(WRITE_DENIAL_REALM.bulkDelete);
+  });
+
+  it("says nothing about the realm of a private page the caller cannot read", async () => {
+    // THE ACTUAL LEAK PATH, driven end to end.
+    //
+    // `owner` owns job-a, so it clears the only gate the `jobIds` path has —
+    // but the job's page belongs to BOB and is private, and nothing read-gates
+    // it before the delete ACL. The real `canWriteFrontmatter` is restored for
+    // this case (the shared stub is what makes the other cases synthetic), so
+    // the 403 here is the predicate's own answer for `(bob's private page,
+    // owner)` rather than a forced one. What must not come back is any word
+    // about what kind of page it is — or that it exists.
+    const actualAuthz =
+      await vi.importActual<typeof import("@/lib/authz")>("@/lib/authz");
+    mockedCanWrite.mockImplementation(actualAuthz.canWriteFrontmatter);
+    mockedGetJob.mockResolvedValue({
+      jobId: "job-a",
+      owner: "owner",
+      status: "done",
+      slug: "bob-secret",
+      createdAt: "2026-08-06T10:00:00.000Z",
+      updatedAt: "2026-08-06T10:01:00.000Z",
+    });
+    mockedReadPage.mockResolvedValue({
+      slug: "bob-secret",
+      title: "Bob Secret",
+      content: "---\nowner: bob\nvisibility: private\n---\n# Bob Secret",
+      path: "/test/wiki/bob-secret.md",
+      body: "# Bob Secret",
+      frontmatter: { owner: "bob", visibility: "private" },
+    });
+
+    const response = await DELETE(request({ jobIds: ["job-a"] }));
+    expect(response.status).toBe(403);
+    const { error } = await response.json();
+    expect(error).toBe(WRITE_DENIAL.bulkDelete);
+    expect(error).not.toMatch(/public knowledge/i);
+    expect(error).not.toMatch(/agent-maintained/i);
+    expect(error).not.toMatch(/bob-secret/);
     expect(mockedDeletePage).not.toHaveBeenCalled();
   });
 

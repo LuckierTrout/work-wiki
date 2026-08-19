@@ -105,7 +105,17 @@ export async function patchMetadata(
   const { canReadFrontmatter, canWriteFrontmatter } = await import("./authz");
   if (!canWriteFrontmatter(existing.frontmatter, principal)) {
     if (canReadFrontmatter(existing.frontmatter, principal)) {
-      const err = new Error("You don't have permission to edit this page.");
+      // Routed through the shared resolver like every other write denial —
+      // but this call site is `writeKind: "metadata"`, and the commons-realm
+      // branch of `canWritePage` gates only `"body"` and `"delete"`. So the
+      // realm can NEVER be what refuses a metadata patch, and the resolver
+      // returns the generic sentence by construction rather than by this site
+      // remembering to omit the realm copy. If the realm ever starts gating
+      // metadata, the explanation appears here on its own.
+      const { resolveWriteDenial } = await import("./write-denial");
+      const err = new Error(
+        resolveWriteDenial("edit", existing.frontmatter, "metadata"),
+      );
       (err as NodeJS.ErrnoException).code = "NOT_OWNER";
       throw err;
     }

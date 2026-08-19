@@ -20,6 +20,19 @@ interface ArticleActionsProps {
   /** Whether the page may be curated into a vault: public + non-agent, INCLUDING
    *  artifacts (gates the "Save to vault" button). */
   isCuratable: boolean;
+  /**
+   * The REALM half of the Delete gate: whether `canWritePage`'s commons-realm
+   * branch refuses a delete of this page — i.e. it is public, not agent-scoped
+   * and not an artifact, so its prose is agent- and admin-maintained.
+   *
+   * Computed on the server by {@link import("./ArticleView").ArticleView} with
+   * the very predicate that branch decides on (`isRealmRestrictedWrite`), and
+   * threaded rather than re-derived here: the predicate reaches
+   * `@/lib/commons`, whose import graph pulls storage, locks and `wiki.ts`, and
+   * this file is a client island. Required, not optional — a defaulted `false`
+   * would silently widen the gate the moment the seam is dropped.
+   */
+  realmDeniesDelete: boolean;
   /** Whether a raw source exists (gates the View-source link). */
   hasRawSource: boolean;
   /** Whether a source URL exists (gates the Reingest button). */
@@ -47,7 +60,8 @@ interface ArticleActionsProps {
  *   - View raw        — when a raw source exists.
  *   - Reingest        — owner/contributor, when a source URL exists.
  *   - Graphify page   — page owner only; refreshes derived private knowledge.
- *   - Delete          — page owner or site owner/admin.
+ *   - Delete          — the site owner, or the page owner on a page the
+ *                       commons realm does not reserve for agents.
  *   - Save to vault    — any signed-in viewer on a curatable page (owners and
  *                       contributors included; gated by `isCuratable`).
  *
@@ -63,6 +77,7 @@ export function ArticleActions({
   owner,
   contributors,
   isCuratable,
+  realmDeniesDelete,
   hasRawSource,
   hasSourceUrl,
   readOnly = false,
@@ -90,10 +105,26 @@ export function ArticleActions({
   const ownsOrContributes =
     !!handleLc &&
     (isOwner || contributors.some((c) => c.toLowerCase() === handleLc));
-  // In this single-owner deployment the owner IS the site admin, so "page
-  // owner or site owner/admin" is the effective server outcome for delete.
-  // This is a convenience gate only — the server re-authorizes every request.
-  const canDelete = isOwner || isSiteOwner;
+  // The Delete gate, split the way the knowledge is split.
+  //
+  // WHAT THE CLIENT KNOWS: who the viewer is. Only the browser holds the Clerk
+  // session, so `isOwner`/`isSiteOwner` can only be decided here.
+  // WHAT THE SERVER KNOWS: the page's realm. `belongsInCommons` reaches
+  // storage/lock/wiki, so `realmDeniesDelete` arrives as a prop from
+  // `ArticleView` — the same predicate `canWritePage`'s realm branch decides
+  // on, never a second guess at it.
+  // WHAT NEITHER SIDE CAN KNOW HERE: `ADMIN_HANDLES`. It is a server-only var,
+  // so an admin who is NOT the site owner passes the server's delete check and
+  // is still not offered the button.
+  //
+  // That asymmetry is deliberate and one-directional: this gate may be
+  // NARROWER than the server's answer (an under-offered button is a missing
+  // convenience) but must never be WIDER (an offered button the server refuses
+  // is the bug this replaced — a page owner was shown Delete on a public
+  // knowledge page the realm gate always refused). The server re-authorizes
+  // every request regardless; `article-actions-delete-gate.test.tsx` pins the
+  // inequality against `canWritePage` itself.
+  const canDelete = isSiteOwner || (isOwner && !realmDeniesDelete);
   // Any signed-in user can curate a curatable page (public + non-agent, incl.
   // artifacts) into their vault — including owners and contributors (owned/
   // contributed pages are NOT automatically in vaults, so excluding them created

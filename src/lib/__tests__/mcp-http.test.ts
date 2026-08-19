@@ -17,6 +17,7 @@ import { createVault, vaultSlugs } from "../vault";
 import { registerAgent } from "../agents";
 import type { Principal } from "../auth";
 import type { Frontmatter } from "../frontmatter";
+import { WRITE_DENIAL_REALM } from "../write-denial";
 
 const ALICE: Principal = { id: "agent:a--yoyo", handle: "alice" };
 const BOB: Principal = { id: "user:bob", handle: "bob" };
@@ -206,6 +207,50 @@ describe("dispatchMcp — tools/call auth gating", () => {
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toMatch(/not found or you don't have permission/i);
+  });
+
+  /**
+   * DW-122 — the one place the merged cloak may be broken, and only there.
+   *
+   * This tool answers a single sentence for "missing" and "denied" alike, on
+   * purpose: a distinguishable denial would make it a private-page existence
+   * oracle. The commons realm is the exception, because a realm-denied page is
+   * PUBLIC — naming it reveals nothing a `read_page` would not. So the realm
+   * explanation replaces the cloak exactly when a page was read AND the realm
+   * predicate holds for it, and the cloak stands everywhere else.
+   */
+  it("reingest explains the realm on a readable public knowledge page", async () => {
+    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
+    const fm = { title: "Realm Page", owner: "alice", created: "2025-01-01", visibility: "public" };
+    await writeWikiPage("realm-reingest", serializeFrontmatter(fm as Frontmatter, "# Realm Page\n\nPublic knowledge."));
+
+    const res = await dispatchMcp(
+      { id: 1, method: "tools/call", params: { name: "reingest", arguments: { slug: "realm-reingest" } } },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    // `dispatchMcp` prefixes a thrown error with "Error: " on its way into the
+    // tool result, so the sentence is asserted as a suffix rather than
+    // re-spelled with the prefix baked in.
+    expect(r.content[0].text).toContain(WRITE_DENIAL_REALM.reingest);
+  });
+
+  it("reingest keeps the cloak on another user's private page", async () => {
+    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
+    const fm = { title: "Alice Private", owner: "alice", created: "2025-01-01", visibility: "private" };
+    await writeWikiPage("private-reingest", serializeFrontmatter(fm as Frontmatter, "# Alice Private\n\nSecret."));
+
+    const res = await dispatchMcp(
+      { id: 1, method: "tools/call", params: { name: "reingest", arguments: { slug: "private-reingest" } } },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    // Indistinguishable from the missing-slug case above — and, critically,
+    // carrying no word about what kind of page it is.
+    expect(r.content[0].text).toMatch(/not found or you don't have permission/i);
+    expect(r.content[0].text).not.toMatch(/public knowledge/i);
   });
 
   it("every write tool is gated and every read tool is open", () => {

@@ -1,12 +1,28 @@
 /**
- * DW-6 retirement pin — the collapsed delete gate, pinned by source scan.
+ * DW-120 — the SEAM that carries the realm fact into the Delete gate.
  *
- * Vitest runs `environment: "node"` and only `src/**\/__tests__/**\/*.test.ts`:
- * no jsdom, no testing-library (the create-wiki-ui.test.ts convention). So the
- * gate is pinned as text: with the commons realm branch retired, the client
- * delete gate must stay exactly `isOwner || isSiteOwner` — the effective server
- * outcome in this single-owner deployment — and no commons realm computation
- * may return to ArticleActions or ArticleView.
+ * What the gate DECIDES is pinned by mounting it:
+ * `src/components/__tests__/article-actions-delete-gate.test.tsx` renders
+ * `ArticleActions` across the page/viewer matrix and compares the rendered
+ * affordance against `canWritePage(meta, principal, "delete")` itself. This
+ * file pins what a mounted test cannot see — the hop that gets the fact there.
+ *
+ * `realmDeniesDelete` is computed on the SERVER (`ArticleView`) because
+ * `belongsInCommons` reaches storage, locks and `wiki.ts`, and `ArticleActions`
+ * is a `"use client"` island. That makes the seam exactly one JSX attribute
+ * across one hop: delete it and the mounted suite still passes (it hands the
+ * prop in itself) while every page owner is offered Delete on a public
+ * knowledge page the server always refuses — the DW-120 bug, restored.
+ *
+ * The island's side of the boundary is pinned as a source scan on purpose: a
+ * server-only module entering this file's import graph is a BUILD-time fact
+ * (`@/lib/commons` → storage/lock/wiki in a browser bundle), which no mounted
+ * render can observe — vitest resolves those modules happily under jsdom.
+ *
+ * Vitest runs this project as `environment: "node"` over
+ * `src/**\/__tests__/**\/*.test.ts` only — no jsdom, no testing-library (the
+ * create-wiki-ui.test.ts convention), which is why the mounted half lives in a
+ * `.test.tsx` sibling under `src/components/__tests__`.
  */
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
@@ -18,19 +34,121 @@ function read(component: string): Promise<string> {
   return readFile(path.join(COMPONENTS, component), "utf8");
 }
 
-describe("ArticleActions delete gate (commons realm branch retired)", () => {
-  it("gates Delete on exactly isOwner || isSiteOwner", async () => {
-    const source = await read("ArticleActions.tsx");
-    expect(source).toContain("const canDelete = isOwner || isSiteOwner;");
-    expect(source).not.toContain("isCommonsPage");
+/**
+ * The source text of one JSX element, from `<Name` to the `/>` that closes it.
+ *
+ * Used instead of a `<Name\b[^>]*attr` regex because such a scan stops at the
+ * first `>` — including one INSIDE a prop value — and would then fail for a
+ * reason unrelated to what it pins. Throws rather than returning `""` so a
+ * renamed or deleted element fails as a missing element, not as a missing
+ * attribute.
+ */
+function elementText(source: string, name: string): string {
+  const start = source.indexOf(`<${name}`);
+  if (start === -1) throw new Error(`<${name}> is not rendered in this file`);
+  const end = source.indexOf("/>", start);
+  if (end === -1) throw new Error(`<${name}> has no self-closing tag`);
+  return source.slice(start, end + 2);
+}
+
+/** Every module specifier `source` imports, static or dynamic. */
+function importSpecifiers(source: string): string[] {
+  return [
+    ...source.matchAll(/\bfrom\s+["']([^"']+)["']/g),
+    ...source.matchAll(/\bimport\s*\(\s*["']([^"']+)["']/g),
+  ].map((m) => m[1]);
+}
+
+/**
+ * The client island's own file plus every component it renders.
+ *
+ * The boundary is a property of the whole client SUBTREE, not of one file: a
+ * server-only module pulled into `DeletePageButton` reaches the browser bundle
+ * just as surely as one imported by `ArticleActions`, and a scan of the parent
+ * alone would never see it.
+ */
+const ISLAND_SUBTREE = [
+  "ArticleActions.tsx",
+  "ReingestButton.tsx",
+  "DeletePageButton.tsx",
+  "SaveToVaultButton.tsx",
+];
+
+describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
+  it("is computed on the server from the predicate canWritePage decides on", async () => {
+    const view = await read("ArticleView.tsx");
+    // The exported predicate, not a re-spelling of its body: a local
+    // `visibility !== "private" && …` here would pass a naive "computes the
+    // realm" check and drift the moment the realm gate changes.
+    expect(view).toContain(
+      'import { isRealmRestrictedWrite } from "@/lib/authz";',
+    );
+    expect(view).toMatch(
+      /const realmDeniesDelete = isRealmRestrictedWrite\(realmMeta, "delete"\)/,
+    );
+    // Anchored to the ELEMENT, not to the attribute: a bare
+    // `toContain("realmDeniesDelete={realmDeniesDelete}")` would keep passing
+    // the moment any other element in this file grew the same attribute, and
+    // the one hop this pins could then be deleted with the suite still green.
+    //
+    // Sliced rather than regex-matched: a `[^>]*` scan cannot cross a `>`, so
+    // it would break the day any prop on this element contained one (a
+    // comparison, an arrow function, a generic) — failing for a reason that has
+    // nothing to do with the seam. `elementText` takes the element's real span.
+    expect(elementText(view, "ArticleActions")).toContain(
+      "realmDeniesDelete={realmDeniesDelete}",
+    );
+    // Save-to-vault gating shares the coerced frontmatter and is untouched.
+    expect(view).toContain("isCuratable={isCuratable}");
   });
 
-  it("threads no commons realm flag from ArticleView", async () => {
-    const view = await read("ArticleView.tsx");
-    expect(view).not.toContain("isCommonsPage");
-    expect(view).not.toContain("belongsInCommons");
-    // Save-to-vault gating survives the retirement untouched.
-    expect(view).toContain("isCuratable={isCuratable}");
+  it("is consumed by the island as a prop, and gates Delete with it", async () => {
+    const actions = await read("ArticleActions.tsx");
+    // Received, not defaulted: an optional prop with a `false` default would
+    // widen the gate silently the moment the seam above is dropped.
+    expect(actions).toContain("realmDeniesDelete: boolean;");
+    expect(actions).not.toMatch(/realmDeniesDelete\s*=\s*false/);
+    // The gate itself. `isSiteOwner` stays an OR — the site owner is an admin
+    // and passes the server's check on a realm page — while the page owner is
+    // now gated on the realm, which is the divergence DW-120 names.
+    expect(actions).toContain(
+      "const canDelete = isSiteOwner || (isOwner && !realmDeniesDelete);",
+    );
+  });
+
+  it("keeps the island SUBTREE free of the server-only realm modules", async () => {
+    // `belongsInCommons` lives in `@/lib/commons`, whose import graph reaches
+    // storage, locks and `wiki.ts`. Pulling any of those into a `"use client"`
+    // file is the failure this seam exists to avoid — and it is a BUNDLING
+    // fact, invisible to a mounted render, which resolves them happily.
+    //
+    // Asserted over the parsed import specifiers rather than over the files'
+    // text: the module names appear in this suite's own prose (explaining why
+    // they are absent), so a substring scan would fail on a comment while still
+    // passing an `await import("@/lib/commons")` written on one line.
+    const actions = await read("ArticleActions.tsx");
+    expect(actions).toContain('"use client"');
+    // The list is the parent plus what it renders — checked against the file,
+    // so a NEW child added to the action bar and left off the list fails here
+    // instead of quietly escaping the scan.
+    for (const child of ISLAND_SUBTREE.slice(1)) {
+      expect(actions).toContain(`<${child.replace(".tsx", "")} `);
+    }
+
+    for (const component of ISLAND_SUBTREE) {
+      const specifiers = importSpecifiers(await read(component));
+      // Sanity, per file: the scan finds real imports, so an empty match set
+      // can never make the exclusions below vacuously true.
+      expect(specifiers.length).toBeGreaterThan(0);
+      for (const serverOnly of ["@/lib/commons", "@/lib/authz", "@/lib/wiki"]) {
+        expect(specifiers).not.toContain(serverOnly);
+      }
+    }
+    // The parent's own identity imports, named explicitly: these are what make
+    // the client half of the Delete gate decidable in the browser at all.
+    const actionSpecifiers = importSpecifiers(actions);
+    expect(actionSpecifiers).toContain("@/lib/owner");
+    expect(actionSpecifiers).toContain("@clerk/nextjs");
   });
 });
 

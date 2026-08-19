@@ -23,6 +23,7 @@ import {
 } from "../write-precondition";
 import type { Frontmatter } from "../frontmatter";
 import { getPrincipal } from "@/lib/auth";
+import { WRITE_DENIAL_REALM } from "../write-denial";
 
 const mockedGetPrincipal = vi.mocked(getPrincipal);
 
@@ -640,6 +641,15 @@ describe("realm-aware write ACL — /api/wiki/[slug]", () => {
     // can't read is 404 (indistinguishable from missing), not a 403 oracle.
     const res = await put("alice-secret");
     expect(res.status).toBe(404);
+    // The cloak is a BODY as much as a status: it must read exactly like a
+    // missing page, and — since DW-122 gave the sibling 403 a sentence naming
+    // the page's realm — must carry none of that wording. A realm word here
+    // would tell a viewer who may not read this page what kind of page it is,
+    // and that it exists at all.
+    const body = await res.json();
+    expect(body.error).toBe("page not found: alice-secret");
+    expect(body.error).not.toMatch(/public knowledge/i);
+    expect(body.error).not.toMatch(/agent-maintained/i);
     const page = await readWikiPageWithFrontmatter("alice-secret");
     expect(page!.body).toContain("Original secret.");
   });
@@ -648,6 +658,10 @@ describe("realm-aware write ACL — /api/wiki/[slug]", () => {
     await seed("alice-secret-del", { owner: "alice", visibility: "private" });
     const res = await del("alice-secret-del");
     expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe("page not found: alice-secret-del");
+    expect(body.error).not.toMatch(/public knowledge/i);
+    expect(body.error).not.toMatch(/agent-maintained/i);
     expect(await readWikiPageWithFrontmatter("alice-secret-del")).not.toBeNull();
   });
 
@@ -677,12 +691,20 @@ describe("realm-aware write ACL — /api/wiki/[slug]", () => {
     await seed("shared-public", { owner: "alice", visibility: "public" });
     const res = await put("shared-public"); // principal = test-user (non-owner)
     expect(res.status).toBe(403);
+    // …and the caller is told WHY (DW-122). A 403 whose body says only
+    // "You don't have permission" leaves a page owner hunting a permission
+    // they do not lack; this deny is the commons realm, and the sentence names
+    // it. Read from the shared table rather than retyped, so this pin tracks
+    // the copy every other surface answers instead of freezing one snapshot
+    // of it.
+    expect((await res.json()).error).toBe(WRITE_DENIAL_REALM.edit);
   });
 
   it("blocks deletion by a human on a PUBLIC commons page (DELETE 403)", async () => {
     await seed("shared-public-del", { owner: "alice", visibility: "public" });
     const res = await del("shared-public-del");
     expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe(WRITE_DENIAL_REALM.delete);
     // Page should still exist.
     expect(await readWikiPageWithFrontmatter("shared-public-del")).not.toBeNull();
   });
@@ -927,6 +949,9 @@ describe("realm-aware ACL — discussion and revision-revert routes", () => {
 
     const res = await postRevert("pub-revert", revs[0].timestamp);
     expect(res.status).toBe(403);
+    // The revert door's own sentence from the shared table (DW-122): the same
+    // realm deny as PUT, worded for the verb the caller actually used.
+    expect((await res.json()).error).toBe(WRITE_DENIAL_REALM.revert);
   });
 });
 

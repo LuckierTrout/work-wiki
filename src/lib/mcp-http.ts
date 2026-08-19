@@ -62,7 +62,8 @@ import {
 } from "@/mcp";
 import { mergePages } from "@/lib/merge";
 import { readWikiPageWithFrontmatter } from "@/lib/wiki";
-import { canWriteFrontmatter } from "@/lib/authz";
+import { canWriteFrontmatter, isRealmRestrictedFrontmatterWrite } from "@/lib/authz";
+import { resolveWriteDenial } from "@/lib/write-denial";
 import { addToVault, vaultOwnedBy } from "@/lib/vault";
 import { getAgent, agentIdFor, assertCanMutateAgent } from "@/lib/agents";
 import { logger } from "@/lib/logger";
@@ -403,6 +404,21 @@ export const MCP_TOOLS: ToolDef[] = [
       const slug = typeof a.slug === "string" ? a.slug : "";
       const page = slug ? await readWikiPageWithFrontmatter(slug) : null;
       if (!page || !canWriteFrontmatter(page.frontmatter, p, "body")) {
+        // WHETHER THIS TOOL MAY SPEAK AT ALL is a cloak decision, and it is the
+        // predicate — not the copy table — that settles it: only a page that was
+        // actually read and is realm-restricted is public, non-agent-scoped and
+        // non-artifact, so naming it leaks nothing. Every other denial — missing
+        // slug, missing page, another user's private page — keeps the
+        // deliberately merged cloak below, which is what stops this tool from
+        // being a private-page existence oracle.
+        //
+        // Once it may speak, the WORDS still come from `resolveWriteDenial`,
+        // like every other door (see the rule in `write-denial.ts`).
+        if (page && isRealmRestrictedFrontmatterWrite(page.frontmatter, "body")) {
+          throw new Error(
+            resolveWriteDenial("reingest", page.frontmatter, "body"),
+          );
+        }
         throw new Error(
           `Page not found or you don't have permission to re-ingest it: ${slug || "(missing slug)"}`,
         );

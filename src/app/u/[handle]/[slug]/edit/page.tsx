@@ -4,6 +4,7 @@ import { decodeSlug } from "@/lib/slugify";
 import { readWikiPageWithFrontmatter, tenantForOwner } from "@/lib/wiki";
 import { pagePath, editPath } from "@/lib/links";
 import { canReadFrontmatter, canWriteFrontmatter } from "@/lib/authz";
+import { resolveWriteDenial } from "@/lib/write-denial";
 import { aliasTargetForMissing } from "@/lib/page-redirect";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -42,41 +43,6 @@ export default async function EditWikiPage({ params }: EditPageProps) {
     );
   }
 
-  // Readable but not writable — show a clear message instead of the editor.
-  // This is a body editor, so pass "body" to enforce the commons realm gate.
-  //
-  // The copy below may state the page's realm outright because this branch is
-  // reachable for exactly one kind of page: the read cloak above already
-  // returned "Page not found" for an unreadable private page, and a READABLE
-  // private page is writable by the same principals that could read it. So a
-  // denial here means a public, non-agent-scoped, non-artifact page — the class
-  // `belongsInCommons` names. Keep that ordering, or the sentence stops
-  // being true (and would leak a private page's realm).
-  if (!canWriteFrontmatter(page.frontmatter, principal, "body")) {
-    const backHref = pagePath(tenantForOwner(
-      typeof page.frontmatter.owner === "string"
-        ? page.frontmatter.owner
-        : undefined,
-    ), slug);
-    return (
-      <div className="mx-auto max-w-3xl px-6 py-12">
-        <Link
-          href={backHref}
-          className="text-sm text-foreground/60 hover:text-foreground transition-colors"
-        >
-          ← Back to page
-        </Link>
-        <h1 className="mt-6 text-3xl font-bold">Cannot edit</h1>
-        <p className="mt-4 text-foreground/60">
-          This page is public knowledge, and public knowledge pages are agent-maintained
-          — their prose is written and curated by agents, so it can&rsquo;t be
-          rewritten or deleted here. Only an agent or a site admin can revise
-          this page&rsquo;s text.
-        </p>
-      </div>
-    );
-  }
-
   // Canonical owner segment; 308 to the canonical edit URL on mismatch.
   const pageTenant = tenantForOwner(
     typeof page.frontmatter.owner === "string"
@@ -85,6 +51,52 @@ export default async function EditWikiPage({ params }: EditPageProps) {
   );
   if (decodeSlug(encodedHandle).toLowerCase() !== pageTenant) {
     permanentRedirect(editPath(pageTenant, slug));
+  }
+
+  // Readable but not writable — show a clear message instead of the editor.
+  // This is a body editor, so pass "body" to enforce the commons realm gate.
+  //
+  // ORDERING, AND WHAT EACH POSITION BUYS (read cloak → canonical 308 → this):
+  //
+  //   - The read cloak MUST stay first. Moving the 308 above it would turn the
+  //     redirect into a private-page existence oracle: a viewer who may not
+  //     read the page would learn its canonical owner from the Location header.
+  //   - This denial MUST stay after the 308. Rendered before it, a
+  //     non-canonical URL like `/u/bob/transformers/edit` answered a refusal
+  //     whose "← Back to page" link pointed at `/u/alice/transformers` — a
+  //     screen that belongs to a different handle than the one in the address
+  //     bar. After the 308 the refusal always describes the URL the viewer is
+  //     actually on, and `pageTenant` above is the one it was canonicalized to
+  //     (computed once, not re-derived for the back-link).
+  //
+  // The copy may state the page's realm outright because this branch is
+  // reachable for exactly one kind of page: the read cloak already returned
+  // "Page not found" for an unreadable private page, and a READABLE private
+  // page is writable by the same principals that could read it. So a denial
+  // here means a public, non-agent-scoped, non-artifact page — the class
+  // `belongsInCommons` names. Keep that ordering, or the sentence stops being
+  // true (and would leak a private page's realm). The sentence itself comes
+  // from `resolveWriteDenial`, the same call the nine server denies make, so
+  // this screen and the 403 behind Save cannot word the refusal differently —
+  // and the realm claim is re-derived from THIS page rather than asserted by
+  // the reachability argument above. (Given that argument the resolver always
+  // answers the realm sentence here; routing through it is what keeps that a
+  // fact about the page instead of a comment about the ordering.)
+  if (!canWriteFrontmatter(page.frontmatter, principal, "body")) {
+    return (
+      <div className="mx-auto max-w-3xl px-6 py-12">
+        <Link
+          href={pagePath(pageTenant, slug)}
+          className="text-sm text-foreground/60 hover:text-foreground transition-colors"
+        >
+          ← Back to page
+        </Link>
+        <h1 className="mt-6 text-3xl font-bold">Cannot edit</h1>
+        <p className="mt-4 text-foreground/60">
+          {resolveWriteDenial("edit", page.frontmatter, "body")}
+        </p>
+      </div>
+    );
   }
 
   // Extract the 7 patchable metadata fields from frontmatter for the editor.

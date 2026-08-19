@@ -7,6 +7,7 @@ import { ensureDirectories, writeWikiPage } from "../wiki";
 import { serializeFrontmatter } from "../frontmatter";
 import { resetAliasIndex } from "../alias-index";
 import { listThreads, RECONCILE_THREAD_TITLE } from "../talk";
+import { WRITE_DENIAL, resolveWriteDenial } from "../write-denial";
 
 // ---------------------------------------------------------------------------
 // Temp directory setup
@@ -87,6 +88,16 @@ describe("patchMetadata — visibility guard", () => {
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
       expect(e.code).toBe("NOT_OWNER");
+      // WHICH `NOT_OWNER`. `patchMetadata` throws that code from two places:
+      // the write-ACL cloak near the top, and this owner-only visibility guard.
+      // The page here is PUBLIC, so the ACL admits the metadata patch and it is
+      // the guard below it that refuses — pinned by its sentence, so a later
+      // change that made the ACL fire instead would surface as a different
+      // message rather than as an identical-looking pass.
+      expect(e.message).toBe("Only the page owner can make it private.");
+      // And it says nothing about the commons realm, which is not what refused
+      // this and never can be (see the suite below).
+      expect(e.message).not.toMatch(/public knowledge/i);
     }
   });
 
@@ -117,6 +128,95 @@ describe("patchMetadata — visibility guard", () => {
       const e = err as NodeJS.ErrnoException;
       expect(e.code).toBe("LIFECYCLE_FIELD");
     }
+  });
+});
+
+// ===========================================================================
+// write-ACL denial copy (DW-122)
+// ===========================================================================
+
+/**
+ * `patchMetadata`'s ACL denial, and why it stays GENERIC by construction.
+ *
+ * Every other write door routes its refusal through `resolveWriteDenial`, and
+ * on a public knowledge page that resolver answers the commons-realm
+ * explanation. This door routes through the same resolver — but passes
+ * `writeKind: "metadata"`, and `canWritePage`'s realm branch gates only `body`
+ * and `delete`. So the realm can never be what refuses a metadata patch, and
+ * the generic sentence is produced by the predicate rather than by this call
+ * site remembering to omit the realm copy.
+ *
+ * That is asserted two ways here, because the branch itself is currently
+ * UNREACHABLE end-to-end and a test pretending otherwise would be fiction:
+ * `canWriteFrontmatter(fm, p)` (metadata) returns false only for a private page
+ * `p` cannot read — and for exactly those pages `canReadFrontmatter` is false
+ * too, so control goes to the NOT_FOUND cloak instead. The invariant is
+ * therefore pinned at the resolver call the site makes, plus the outcome a
+ * caller can actually observe.
+ */
+describe("patchMetadata — the ACL denial sentence", () => {
+  it("resolves to the GENERIC sentence for the arguments this site passes", () => {
+    // The exact call `patch-metadata.ts` makes on a public knowledge page —
+    // the one page class that WOULD earn the realm explanation at any body or
+    // delete door. `"metadata"` is what keeps it generic. (`owner` is omitted:
+    // the realm predicate reads `visibility` and `type` only, and the resolver
+    // types its parameter to exactly those two.)
+    const publicKnowledge = { visibility: "public" };
+    expect(resolveWriteDenial("edit", publicKnowledge, "metadata")).toBe(
+      WRITE_DENIAL.edit,
+    );
+    // The contrast that gives the line above its meaning: same page, same
+    // action, a realm-gated write kind.
+    expect(resolveWriteDenial("edit", publicKnowledge, "body")).not.toBe(
+      WRITE_DENIAL.edit,
+    );
+  });
+
+  it("cloaks a non-owner patching another user's PRIVATE page, with no realm wording", async () => {
+    // The observable half: the case that fails `canWriteFrontmatter` takes the
+    // NOT_FOUND cloak, never the NOT_OWNER sentence — which is precisely why
+    // the NOT_OWNER branch is unreachable today.
+    const content = serializeFrontmatter(
+      {
+        title: "Alice Secret",
+        created: "2025-01-01",
+        visibility: "private",
+        owner: "alice",
+      },
+      "# Alice Secret\n\nPrivate.\n",
+    );
+    await writeWikiPage("alice-secret-meta", content);
+
+    try {
+      await patchMetadata({
+        slug: "alice-secret-meta",
+        metadata: { confidence: 0.9 },
+        principal: { id: "u_bob", handle: "bob" },
+      });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      expect(e.code).toBe("NOT_FOUND");
+      expect(e.message).toBe("page not found: alice-secret-meta");
+      // The cloak must read like a missing page — no realm, no hint that the
+      // page exists or what kind of page it is.
+      expect(e.message).not.toMatch(/public knowledge/i);
+      expect(e.message).not.toMatch(/agent-maintained/i);
+    }
+  });
+
+  it("keeps PUBLIC pages collectively patchable, so no denial fires at all", async () => {
+    // The positive that bounds the two negatives above: the realm gates body
+    // and delete, NOT metadata, so a non-owner really can patch a public
+    // knowledge page's metadata. If this ever starts throwing, the "generic by
+    // construction" argument above is what needs revisiting.
+    await seedPage("shared-knowledge", "alice");
+    const result = await patchMetadata({
+      slug: "shared-knowledge",
+      metadata: { confidence: 0.9 },
+      principal: { id: "u_bob", handle: "bob" },
+    });
+    expect(result.updated).toBe(true);
   });
 });
 

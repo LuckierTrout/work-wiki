@@ -17,6 +17,42 @@
     "label": "Stub configurable rects",
     "resolution": ""
   },
+  "DW-121": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Make canWritePage refuse \"metadata\" wherever it refuses \"body\" for the commons realm, so the docblock's \"collectively editable\" claim is retired and the edit page's single gate becomes the accurate one; update patch-metadata.ts and the authz tests to match.",
+    "key": "2",
+    "label": "Narrow the authz rule",
+    "resolution": ""
+  },
+  "DW-125": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Delete buildContributorProfile, buildContributorProfiles and listContributors along with their now-orphaned tests, keeping computeScanData and computeTrustScore for contributor-index.ts. Resolve DW-126 the same way by dropping the contributors step from rebuildDerivedIndexes.",
+    "key": "1",
+    "label": "Retire the scan functions",
+    "resolution": ""
+  },
+  "DW-126": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Remove the [\"contributors\", rebuildContributorIndex] entry from rebuildDerivedIndexes and the now-dead index writes from lifecycle.ts:33 and talk.ts:46, together with the DW-125 scan functions, and pin that the daily scan no longer walks the wiki for contributor data.",
+    "key": "1",
+    "label": "Drop the contributors step",
+    "resolution": ""
+  },
+  "DW-131": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Retarget the graph canvas's aria-label and fallback text at the Workbench's Knowledge tree (the live text-based list of the active Wiki's pages), updating the copy to name that surface and linking to it, and pin the new target so it cannot rot into another retired route.",
+    "key": "1",
+    "label": "Point at the Workbench Knowledge tree",
+    "resolution": ""
+  },
   "DW-134": {
     "answered_at": "2026-08-19",
     "bundle_name": "",
@@ -44,6 +80,15 @@
     "label": "mtime grace period",
     "resolution": ""
   },
+  "DW-152": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give KnowledgeStudio's .studio-main wrapper a named `<section>` (or role=\"region\" with aria-label) matching the shape VaultExplorer already uses, restoring region navigability between the two rails, and update the landmark scan and mounted tests to expect it. Record in the spec record that the frozen \"do not add landmarks\" clause was deliberately renegotiated for this one wrapper.",
+    "key": "1",
+    "label": "Name the KnowledgeStudio region",
+    "resolution": ""
+  },
   "DW-159": {
     "answered_at": "2026-08-19",
     "bundle_name": "",
@@ -60,6 +105,15 @@
     "intent": "Represent the open Settings surface in the URL alongside `?mode=` (a `settings=1` param or a `mode=settings` value), accept it on load through the same ordering as the mode restore, and make Back close Settings before it leaves the app \u2014 reusing `src/lib/workbench-url.ts` rather than adding a second convention.",
     "key": "1",
     "label": "Give Settings a URL",
+    "resolution": ""
+  },
+  "DW-176": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Keep the canvas empty state as the one place that says \"No wiki yet.\" (rendering the shared TREE_NO_WIKI_COPY constant rather than an inline literal) and let the tree render a quieter row-level placeholder, then drop the .wb-canvas scoping workaround from the mounted suite.",
+    "key": "1",
+    "label": "Canvas owns the sentence",
     "resolution": ""
   },
   "DW-179": {
@@ -114,6 +168,51 @@
     "intent": "Replace the content-derived version with an opaque token generated on each successful `saveConfig` and stored beside the config, served as the precondition and compared on `PUT`. This restores the AD-23 boundary and keeps the guard's coverage of the secret fields; update `write-precondition.ts`'s docs so `objectVersion` is no longer presented as the settings scheme.",
     "key": "1",
     "label": "Stamp an opaque token",
+    "resolution": ""
+  },
+  "DW-202": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "When two leaves collide on the same wikiLeafSlug, list only the canonical `<slug>.md` row and drop the variant-cased sibling from the Files tab, so every visible row reads and writes the same object; add a test seeding both names on a case-sensitive store.",
+    "key": "1",
+    "label": "List only the canonical file",
+    "resolution": ""
+  },
+  "DW-205": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Raise .wb-canvas-pad and .wb-preview-body left padding to at least the hit-strip width so the strip covers only gutter, never text, keeping the 24px target that satisfies SC 2.5.8; pin the relationship between the padding and --wb-split-hit so they cannot drift.",
+    "key": "1",
+    "label": "Widen the content padding to match",
+    "resolution": ""
+  },
+  "DW-217": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Run the vector gate on the resulting config in the flat branch as well, so a flat PUT that would turn effective vector search off is refused 400 with the same sentence the Workbench surface shows; pin the reproduction above as a route test.",
+    "key": "1",
+    "label": "Validate the flat branch too",
+    "resolution": ""
+  },
+  "DW-222": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Derive the provider name in vectorSearchMissingLegs from embeddingProviderLabel so the refusal and the picker always agree, and update spec-dw-73's frozen I/O matrix text in the same change, recording that the frozen expectation was renegotiated deliberately for copy consistency.",
+    "key": "1",
+    "label": "Derive the label, update the matrix",
+    "resolution": ""
+  },
+  "DW-230": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Remove the ensureReconciliationThread calls from ingest.ts, merge.ts and patch-metadata.ts so a disputed transition no longer writes a thread nothing can read, leaving the DW-76 disputed-pages view and clear action as the whole loop; keep the talk module for the surfaces that still read existing threads.",
+    "key": "1",
+    "label": "Stop writing the threads",
     "resolution": ""
   },
   "DW-58": {

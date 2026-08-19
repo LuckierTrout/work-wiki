@@ -68,8 +68,44 @@ vi.mock("@/components/WikiEditor", () => ({
   },
 }));
 
+/**
+ * `permanentRedirect` is a CONTROL-FLOW throw in Next: it never returns, and
+ * the framework catches the thrown digest upstream. Rendering here has no such
+ * upstream, so the redirect is captured instead of escaping as a test failure —
+ * and captured as a RECORDED TARGET, because DW-123 is about which URL the 308
+ * points at, not merely that one happened.
+ *
+ * The module is mocked wholesale rather than partially: `next/navigation`'s
+ * real entry point is a client/server dual export whose other members this
+ * page never touches, and a partial mock would drag them into a jsdom run for
+ * nothing.
+ */
+const redirected = vi.hoisted(() => ({ to: [] as string[] }));
+
+class RedirectSignal extends Error {
+  constructor(readonly to: string) {
+    super(`NEXT_REDIRECT ${to}`);
+    this.name = "RedirectSignal";
+  }
+}
+
+vi.mock("next/navigation", () => ({
+  permanentRedirect: (url: string) => {
+    redirected.to.push(url);
+    throw new RedirectSignal(url);
+  },
+  redirect: (url: string) => {
+    redirected.to.push(url);
+    throw new RedirectSignal(url);
+  },
+  notFound: () => {
+    throw new Error("notFound()");
+  },
+}));
+
 import EditWikiPage from "../page";
 import { contentVersion } from "@/lib/write-precondition";
+import { WRITE_DENIAL_REALM } from "@/lib/write-denial";
 
 /**
  * The realm explanation, matched across whitespace: JSX joins the source lines
@@ -90,11 +126,26 @@ const publicPage = {
   frontmatter: { owner: "alice", visibility: "public" },
 };
 
-async function renderEditPage(): Promise<string> {
+async function renderEditPage(handle = "alice"): Promise<string> {
   const element = await EditWikiPage({
-    params: Promise.resolve({ handle: "alice", slug: "transformers" }),
+    params: Promise.resolve({ handle, slug: "transformers" }),
   });
   return renderToStaticMarkup(element);
+}
+
+/**
+ * Render and report the 308 instead of the markup. Returns `null` when the page
+ * rendered normally, so "no redirect" is a value a test can assert rather than
+ * the absence of a throw.
+ */
+async function renderExpectingRedirect(handle: string): Promise<string | null> {
+  try {
+    await renderEditPage(handle);
+    return null;
+  } catch (err) {
+    if (err instanceof RedirectSignal) return err.to;
+    throw err;
+  }
 }
 
 const savedAdmin = process.env.ADMIN_HANDLES;
@@ -111,6 +162,7 @@ beforeEach(() => {
   // against a read-only deployment.
   delete process.env.YOPEDIA_READONLY;
   editorProps.current = null;
+  redirected.to = [];
   principal.current = { id: "user_alice", handle: "alice" };
   page.current = publicPage;
 });
@@ -258,4 +310,110 @@ describe("edit page — denial copy for a public knowledge page", () => {
       expect(html).toContain('data-testid="wiki-editor"');
     },
   );
+});
+
+/**
+ * DW-123 — the ORDER the three gates run in: read cloak → canonical 308 →
+ * write denial.
+ *
+ * The denial branch used to run BEFORE the handle-canonicalization redirect, so
+ * `/u/bob/transformers/edit` for alice's page rendered a refusal whose
+ * "← Back to page" link pointed at `/u/alice/transformers` — a screen naming a
+ * handle that was not the one in the address bar, and a URL the viewer never
+ * asked for. Moving the denial after the 308 makes every rendered refusal
+ * belong to the URL it was served from.
+ *
+ * The read cloak must NOT move with it. It stays first because the 308 leaks
+ * the canonical owner in a `Location` header: run before the cloak, a viewer
+ * who cannot read a private page would learn whose it is (and that it exists)
+ * from the redirect alone. So the ordering is pinned from both sides — the 308
+ * must beat the denial, and the cloak must beat the 308.
+ */
+describe("edit page — gate ordering on a non-canonical handle (DW-123)", () => {
+  it("308s a realm-denied page to the canonical edit URL instead of refusing", async () => {
+    // The exact bug: alice's public knowledge page, opened at bob's handle by a
+    // non-admin. Before the reorder this rendered "Cannot edit".
+    expect(await renderExpectingRedirect("bob")).toBe("/u/alice/transformers/edit");
+    expect(redirected.to).toEqual(["/u/alice/transformers/edit"]);
+  });
+
+  it("still refuses on the CANONICAL url, with a back-link to that same handle", async () => {
+    const html = await renderEditPage("alice");
+
+    expect(redirected.to).toEqual([]);
+    expect(html).toContain("Cannot edit");
+    expect(html).toMatch(REALM_REASON);
+    // The back-link belongs to the URL the viewer is on — which, after the 308
+    // above, is the only URL this screen is ever served from.
+    expect(html).toContain('href="/u/alice/transformers"');
+  });
+
+  it("cloaks an unreadable private page BEFORE any redirect could name its owner", async () => {
+    // bob's private page, opened by alice at bob's handle. Not-found, and — the
+    // part that matters — no 308: a redirect here would be an existence oracle
+    // whether or not the body said "Page not found".
+    page.current = {
+      ...publicPage,
+      frontmatter: { owner: "bob", visibility: "private" },
+    };
+    const html = await renderEditPage("bob");
+
+    expect(html).toContain("Page not found");
+    expect(redirected.to).toEqual([]);
+    expect(html).not.toMatch(REALM_REASON);
+  });
+
+  it("cloaks it at a THIRD handle too, where the 308 would be the only tell", async () => {
+    // `/u/carol/transformers/edit` for bob's private page: the requested handle
+    // matches neither the owner nor the viewer, so a canonicalizing 308 would
+    // hand over the owner's identity with nothing else on screen to do it.
+    page.current = {
+      ...publicPage,
+      frontmatter: { owner: "bob", visibility: "private" },
+    };
+    const html = await renderEditPage("carol");
+
+    expect(html).toContain("Page not found");
+    expect(redirected.to).toEqual([]);
+  });
+
+  it("308s a WRITABLE page from a non-canonical handle, as it always did", async () => {
+    // The reorder must not have moved the redirect itself: the writable path
+    // still canonicalizes before rendering the editor.
+    process.env.ADMIN_HANDLES = "alice";
+    expect(await renderExpectingRedirect("bob")).toBe("/u/alice/transformers/edit");
+    expect(editorProps.current).toBeNull();
+  });
+
+  it("renders the editor, not a redirect, once the handle is canonical", async () => {
+    process.env.ADMIN_HANDLES = "alice";
+    const html = await renderEditPage("alice");
+
+    expect(redirected.to).toEqual([]);
+    expect(html).toContain('data-testid="wiki-editor"');
+  });
+});
+
+/**
+ * DW-122 — the refusal on this screen and the refusal behind Save are ONE
+ * sentence.
+ *
+ * The screen used to spell its paragraph inline while the nine server denies
+ * answered a generic "You don't have permission to …", so the same refusal read
+ * two ways depending on whether the owner opened the editor or hit the route.
+ * Sourcing the paragraph from `write-denial.ts` is what makes that impossible;
+ * this pins that it is actually sourced, not merely similar.
+ */
+describe("edit page — the denial paragraph is the shared one", () => {
+  it("renders the realm sentence the server routes answer, verbatim", async () => {
+    const html = await renderEditPage();
+
+    // React escapes `&` `<` `>` `"` `'` in text; the sentence's typographic
+    // apostrophes and em dash pass through unchanged, so an exact substring
+    // match is the right assertion here.
+    expect(html).toContain(WRITE_DENIAL_REALM.edit);
+    // And the table's sentence really is the realm explanation, not a generic
+    // one that happens to be shared.
+    expect(WRITE_DENIAL_REALM.edit).toMatch(REALM_REASON);
+  });
 });

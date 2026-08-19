@@ -153,6 +153,56 @@ export async function canReadSlug(
 // ---------------------------------------------------------------------------
 
 /**
+ * The **realm gate**, as a pure predicate over the page alone — no principal.
+ *
+ * This is the exact condition {@link canWritePage}'s realm branch denies on:
+ * a body replacement or a delete against a page {@link belongsInCommons}
+ * selects (public, not agent-scoped, not an artifact). It is exported so that
+ * the surfaces which have to *talk about* that deny — the Delete gate threaded
+ * into `ArticleActions`, and every server refusal sentence in
+ * `src/lib/write-denial.ts` — read the same expression the gate decides on
+ * instead of a copy of it that can drift.
+ *
+ * It answers "would the realm deny this write?", NOT "is this write denied?":
+ * a service principal and an admin pass {@link canWritePage} above this branch,
+ * so a `true` here does not mean the caller was refused. Callers that need the
+ * real answer must still call {@link canWritePage}.
+ *
+ * `writeKind` is REQUIRED here, unlike on {@link canWritePage}, whose
+ * `"metadata"` default is long-standing API. Omitting it would return `false`
+ * — "the realm does not restrict this" — which is the permissive answer at
+ * every consumer: a wider client Delete gate, and a generic sentence where the
+ * realm explanation was owed. A predicate whose accidental answer is the unsafe
+ * one has no safe default, so it takes none.
+ */
+export function isRealmRestrictedWrite(
+  meta: PageReadMeta,
+  writeKind: WriteKind,
+): boolean {
+  return (
+    (writeKind === "body" || writeKind === "delete") && belongsInCommons(meta)
+  );
+}
+
+/**
+ * {@link isRealmRestrictedWrite} over a parsed frontmatter record.
+ *
+ * `writeKind` is required for the same reason as above — see that docblock.
+ */
+export function isRealmRestrictedFrontmatterWrite(
+  fm: { visibility?: unknown; type?: unknown },
+  writeKind: WriteKind,
+): boolean {
+  return isRealmRestrictedWrite(
+    {
+      visibility: typeof fm.visibility === "string" ? fm.visibility : undefined,
+      type: typeof fm.type === "string" ? fm.type : undefined,
+    },
+    writeKind,
+  );
+}
+
+/**
  * True iff `principal` may perform a write of kind `writeKind` on a page,
  * mirroring the realm model and staying symmetric with {@link canReadPage}:
  *
@@ -195,10 +245,10 @@ export function canWritePage(
   // principal from overwriting or deleting a curated public page. Service
   // principals (agents, cron) and admins pass above; metadata patches on the
   // same page stay collectively editable below.
-  if (
-    (writeKind === "body" || writeKind === "delete") &&
-    belongsInCommons(meta)
-  ) {
+  //
+  // The condition itself lives in `isRealmRestrictedWrite` so the client Delete
+  // gate and every refusal sentence read THIS expression rather than a copy.
+  if (isRealmRestrictedWrite(meta, writeKind)) {
     return false;
   }
 
