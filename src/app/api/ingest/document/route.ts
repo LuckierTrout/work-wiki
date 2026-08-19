@@ -8,6 +8,8 @@ import { enqueueOrInline } from "@/lib/ingest-async";
 import { createIngestJob } from "@/lib/ingest-jobs";
 import { stageBytes } from "@/lib/ingest-staging";
 import { logger } from "@/lib/logger";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { addToVault, vaultOwnedBy } from "@/lib/vault";
 
 /** POST /api/ingest/document — upload a supported document or safe archive. */
@@ -16,6 +18,23 @@ export async function POST(request: NextRequest) {
     const principal = (await getPrincipal()) ?? getServicePrincipal(request);
     if (!principal) {
       return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+    }
+
+    // Deployment read-only (DW-187). Answered HERE — after the 401, before any
+    // work — and not left to the kernel writer, because this door meets BOTH
+    // halves of the rule:
+    //   - IRREVERSIBLE WORK ALREADY COMMITTED: the uploaded bytes are staged to
+    //     R2 and an ingest-job record is created before anything is enqueued,
+    //     so a kernel-only refusal strands both on every attempt.
+    //   - EXPENSIVE, FAILABLE WORK FIRST: extraction and two LLM calls run
+    //     ahead of the page write.
+    // Ordered after `getPrincipal()` so an unauthenticated caller still learns
+    // it is unauthenticated, matching `DELETE /api/ingest/history`.
+    if (isReadOnly()) {
+      return NextResponse.json(
+        { error: READ_ONLY_REFUSAL.ingest },
+        { status: 403 },
+      );
     }
     if (!(request.headers.get("content-type") || "").includes("multipart/form-data")) {
       return NextResponse.json(
@@ -117,6 +136,15 @@ export async function POST(request: NextRequest) {
       },
     );
   } catch (error) {
+    // Mid-request flag flip: the gate above already answered for a deployment
+    // that was read-only on arrival, so a `ReadOnlyError` here came from the
+    // kernel page writer. It is a refusal, not a server fault.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json(
+        { error: getErrorMessage(error) },
+        { status: 403 },
+      );
+    }
     const message = getErrorMessage(error);
     if (error instanceof ClientInputError) {
       logger.warn("ingest", `document ingest rejected: ${message}`);

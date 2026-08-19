@@ -14,6 +14,8 @@ import {
 } from "@/lib/ingest-jobs";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 
 const MAX_BULK_DELETE = 50;
 
@@ -108,6 +110,19 @@ export async function DELETE(request: NextRequest) {
   const principal = await getPrincipal();
   if (!principal) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Deployment read-only (DW-187), answered BEFORE any mutation — and this is
+  // the one door where the kernel's own refusal arrives too late to be correct.
+  // `deleteWikiPage` failures are swallowed per-slug into `failed` below and the
+  // handler still returns 200, and `deleteIngestJob` is NOT a kernel writer, so
+  // a kernel-only refusal would clear every selected ingest job and answer 200
+  // with a `failed` list. An early refusal is what keeps the batch atomic.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.bulkPageDelete },
+      { status: 403 },
+    );
   }
 
   let body: unknown;
@@ -255,6 +270,15 @@ export async function DELETE(request: NextRequest) {
       rawSourcesRetained: true,
     });
   } catch (error) {
+    // The flag can only have flipped mid-request to reach here, but the answer
+    // still belongs at 403 rather than 500 — the outer catch is the only thing
+    // standing between the kernel's refusal and a server-error page.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json(
+        { error: getErrorMessage(error) },
+        { status: 403 },
+      );
+    }
     logger.error("ingest", "Bulk ingest delete failed", error);
     return NextResponse.json(
       { error: getErrorMessage(error) },

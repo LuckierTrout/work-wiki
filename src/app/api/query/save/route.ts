@@ -4,9 +4,28 @@ import { getPrincipal } from "@/lib/auth";
 import { slugPath, pagePath, ownerToTenant } from "@/lib/links";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 
 export async function POST(request: NextRequest) {
   try {
+    // Deployment read-only (DW-187). Answered first — this route has no auth
+    // branch of its own for the markdown path (middleware gates it), so there is
+    // no 401 to order behind. It keeps a route-level check because it meets BOTH
+    // halves of the rule:
+    //   - IRREVERSIBLE WORK ALREADY COMMITTED: `saveAnswerToWiki` runs
+    //     `bakeYoyoIllustrations` before the page write, which GENERATES
+    //     illustrations and stores them in R2. A kernel-only refusal would leave
+    //     an orphaned asset behind for every refused save.
+    //   - EXPENSIVE, FAILABLE WORK FIRST: those illustrations are model calls,
+    //     paid for before the write is refused.
+    if (isReadOnly()) {
+      return NextResponse.json(
+        { error: READ_ONLY_REFUSAL.savedAnswer },
+        { status: 403 },
+      );
+    }
+
     const body = await request.json();
 
     const { title, content, sources, format } = body;
@@ -86,6 +105,14 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ slug: result.slug, url, success: true });
   } catch (error) {
+    // Mid-request flag flip: the kernel page writer's refusal, which this
+    // catch would otherwise answer 500.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json(
+        { error: getErrorMessage(error) },
+        { status: 403 },
+      );
+    }
     logger.error("query", "Save answer error", error);
     return NextResponse.json(
       {

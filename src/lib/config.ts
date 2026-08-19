@@ -125,11 +125,42 @@ export interface StructuredKnowledgeModelSettings {
  * that offers one of those writes mirrors this same call rather than fetching
  * the fact separately, so the affordance and the refusal cannot disagree.
  *
- * Not every page write consults it yet — `POST /api/wiki`, the revisions
- * revert path, `DELETE /api/ingest/history`, `POST /api/ingest/reingest` and
- * the stdio MCP server in `src/mcp.ts` all still write on a read-only
- * deployment (recorded, not fixed). Check before assuming a new caller is
- * covered.
+ * WHAT IT REFUSES BY ITSELF (DW-187, DW-188): PAGE AND SCHEMA WRITES, AND
+ * NOTHING ELSE. The four kernel writers —
+ * `writeWikiPageWithSideEffects`, `deleteWikiPage`, `patchMetadata` and
+ * `writeWikiArtifact` — call `assertWritable` in `read-only.ts`, so every page
+ * create, edit, revert, delete, metadata patch and artifact save is refused no
+ * matter which caller reaches it: REST, the stdio MCP server in `src/mcp.ts`,
+ * the CLI, agents, ingest, lint-fix, merge and `deleteTenant` all inherit it.
+ * Every API route that can reach one of those writers classifies the resulting
+ * `ReadOnlyError` as 403 — pinned by `read-only-door-coverage.test.ts`.
+ *
+ * WHAT IT DOES *NOT* REFUSE, AND THIS LIST IS THE POINT OF THIS PARAGRAPH. The
+ * gate is four functions, not a deployment-wide write lock, so a new caller
+ * MUST CHECK before assuming coverage. Still writable with the flag set, unless
+ * a route spells its own `isReadOnly()`: the settings store, the Wiki registry
+ * and workspace profile (`/api/wikis*`, `/api/workspace-profile` — each gated
+ * separately at its route), vaults, agent profiles and tokens, tasks and the
+ * queue, source monitors and digests, structured knowledge and the graph, the
+ * ingest ledger, ingest-job records and staged uploads, `raw/` snapshots, the
+ * revision store, the operation ledger, the integration outbox, backups, and
+ * `bumpDataVersion`. None of those flows through a kernel writer.
+ *
+ * A ROUTE SPELLS ITS OWN CHECK ONLY WHERE THE KERNEL REFUSAL ARRIVES TOO LATE
+ * to shape the response — irreversible side effects already committed, or
+ * expensive/failable work whose own error would mask the refusal. That is why
+ * `DELETE /api/ingest/history` (swallows per-page failures and would still
+ * clear ingest jobs), every `/api/ingest/*` door plus the email, agent-ingest
+ * and `tasks/run` consumers (staged bytes, job records, `raw/` snapshots and
+ * two LLM calls all precede the write), `POST /api/query/save` (bakes and
+ * stores illustrations first) and `POST /api/lint/fix` (an LLM rewrite first)
+ * each keep one. Every other door relies on the kernel plus a catch that maps
+ * `isReadOnlyError` to 403. The three `/api/wiki/[slug]` gates stay because
+ * each answers BEFORE the existence read, which is what keeps "unknown slug →
+ * 403, no existence oracle" true (DW-37).
+ *
+ * DELIBERATELY OUT OF SCOPE: the `If-Match` write-precondition guard is a
+ * separate open decision (DW-196).
  *
  * Cloud deployments leave it unset: non-secret provider preferences are safe
  * to persist because every settings write is independently owner-gated by the

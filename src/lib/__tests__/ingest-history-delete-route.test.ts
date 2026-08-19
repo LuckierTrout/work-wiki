@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@/lib/ingest", () => ({ readLedger: vi.fn() }));
@@ -56,8 +56,15 @@ function request(body: unknown): NextRequest {
   });
 }
 
+let originalReadOnly: string | undefined;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // Cleared rather than inherited: every case but the read-only one asserts
+  // what an ordinary deployment does, so a value exported in a developer's
+  // shell would turn this file red there and nowhere else.
+  originalReadOnly = process.env.YOPEDIA_READONLY;
+  delete process.env.YOPEDIA_READONLY;
   mockedGetPrincipal.mockResolvedValue({ id: "owner-id", handle: "owner" });
   mockedReadLedger.mockResolvedValue([ledgerEntry("ing-a", "page-a")]);
   mockedListReadable.mockResolvedValue([
@@ -79,6 +86,11 @@ beforeEach(() => {
   });
   mockedGetJob.mockResolvedValue(null);
   mockedDeleteJob.mockResolvedValue(true);
+});
+
+afterEach(() => {
+  if (originalReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+  else process.env.YOPEDIA_READONLY = originalReadOnly;
 });
 
 describe("DELETE /api/ingest/history", () => {
@@ -123,6 +135,37 @@ describe("DELETE /api/ingest/history", () => {
     const response = await DELETE(request({ ingestIds: ["ing-a"] }));
     expect(response.status).toBe(403);
     expect(mockedDeletePage).not.toHaveBeenCalled();
+  });
+
+  it("refuses the whole batch on a read-only deployment (DW-187)", async () => {
+    // This door KEEPS a route-level check after the kernel writers were gated
+    // (DW-188), and atomicity is the reason. `deleteWikiPage` failures are
+    // swallowed per-slug into `failed` and the handler still returns 200, and
+    // `deleteIngestJob` is not a kernel writer at all — so a kernel-only refusal
+    // would clear every selected ingest JOB, answer 200, and leave the owner
+    // with a half-applied batch.
+    process.env.YOPEDIA_READONLY = "1";
+    mockedGetJob.mockResolvedValue({
+      jobId: "job-done",
+      owner: "owner",
+      status: "done",
+      slug: "page-b",
+      createdAt: "2026-08-06T10:00:00.000Z",
+      updatedAt: "2026-08-06T10:01:00.000Z",
+    });
+
+    const response = await DELETE(
+      request({ ingestIds: ["ing-a"], jobIds: ["job-done"] }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(String((await response.json()).error)).toContain("read-only");
+    // Both halves of the batch survive — the page AND the ingest job.
+    expect(mockedDeletePage).not.toHaveBeenCalled();
+    expect(mockedDeleteJob).not.toHaveBeenCalled();
+    // Answered before any preflight read, so nothing about the ledger leaks
+    // either.
+    expect(mockedReadLedger).not.toHaveBeenCalled();
   });
 
   it("deletes unique generated pages, clears terminal jobs, and retains raw provenance", async () => {

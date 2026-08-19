@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 // ---------------------------------------------------------------------------
@@ -74,6 +74,8 @@ const mockedGetServicePrincipal = vi.mocked(getServicePrincipal);
 const mockedEnqueue = vi.mocked(enqueueTask);
 const mockedCreateJob = vi.mocked(createIngestJob);
 const mockedVaultOwnedBy = vi.mocked(vaultOwnedBy);
+import { stageText } from "@/lib/ingest-staging";
+const mockedStageText = vi.mocked(stageText);
 
 function makeRequest(url: string, body: unknown, token?: string): NextRequest {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -724,6 +726,204 @@ describe("POST /api/ingest/reingest — direct re-synthesis", () => {
     );
     expect(res.status).toBe(400);
     expect(mockedReingest).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// POST /api/ingest — read-only deployment (DW-187)
+// ===========================================================================
+//
+// The primary ingest door keeps a route-level gate because it meets BOTH halves
+// of the rule: an ingest-job record is created and oversized text is staged to
+// R2 before `ingest()` is reached, `ingest()` itself writes `raw/<slug>.md`
+// before the page write, and a source fetch plus two LLM calls run in between.
+// A kernel-only refusal would accumulate an orphaned raw file and a `failed`
+// job on every attempt, and pay for the model calls first.
+
+describe("POST /api/ingest — read-only deployment", () => {
+  let originalReadOnly: string | undefined;
+
+  beforeEach(() => {
+    // Cleared rather than inherited: every other describe in this file asserts
+    // what an ordinary deployment does.
+    originalReadOnly = process.env.YOPEDIA_READONLY;
+    delete process.env.YOPEDIA_READONLY;
+    // This file shares module-level mocks across describes and never clears
+    // them, so the call COUNTERS carry over. Every assertion below is
+    // "not.toHaveBeenCalled", which would be satisfied by an earlier suite's
+    // calls rather than by this route's behaviour. `clearAllMocks` resets the
+    // counters only — the `vi.mock` factory implementations survive it.
+    vi.clearAllMocks();
+    mockedGetPrincipal.mockResolvedValue({ id: "u", handle: "yuanhao" });
+    mockedGetServicePrincipal.mockReturnValue(null);
+    mockedVaultOwnedBy.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    if (originalReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = originalReadOnly;
+  });
+
+  it("answers 403 with no job record, no staged bytes and no ingest", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await POST(
+      makeRequest("http://localhost/api/ingest", {
+        title: "A note",
+        content: "some pasted text",
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(String((await res.json()).error)).toContain("read-only");
+    // The three irreversible things that precede the page write, none of them
+    // kernel writers, none of them reached.
+    expect(mockedCreateJob).not.toHaveBeenCalled();
+    expect(mockedStageText).not.toHaveBeenCalled();
+    // `ingest` owns `raw/<slug>.md` and both LLM calls.
+    expect(mockedIngest).not.toHaveBeenCalled();
+    expect(mockedIngestUrl).not.toHaveBeenCalled();
+  });
+
+  it("refuses the URL path the same way", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await POST(
+      makeRequest("http://localhost/api/ingest", {
+        url: "https://example.com/page",
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(mockedIngestUrl).not.toHaveBeenCalled();
+    expect(mockedCreateJob).not.toHaveBeenCalled();
+  });
+
+  it("still answers 401 to an unauthenticated caller — the gate sits below it", async () => {
+    // Ordering, matching every other ingest door and `DELETE /api/ingest/history`:
+    // a caller with no credential learns that first, and the deployment's write
+    // posture is not disclosed to it.
+    mockedGetPrincipal.mockResolvedValue(null);
+    mockedGetServicePrincipal.mockReturnValue(null);
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await POST(
+      makeRequest("http://localhost/api/ingest", { title: "t", content: "c" }),
+    );
+
+    expect(res.status).toBe(401);
+  });
+
+  it("refuses a batch before a single URL is touched", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await POST_BATCH(
+      makeRequest("http://localhost/api/ingest/batch", {
+        urls: ["https://example.com/a", "https://example.com/b"],
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(String((await res.json()).error)).toContain("read-only");
+    expect(mockedIngestUrl).not.toHaveBeenCalled();
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("ingests exactly as before with the flag unset — the control case", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    mockedIngest.mockResolvedValue({
+      rawPath: "raw/a.md",
+      primarySlug: "a-note",
+      relatedUpdated: [],
+      wikiPages: ["a-note"],
+      indexUpdated: true,
+    });
+
+    const res = await POST(
+      makeRequest("http://localhost/api/ingest", {
+        title: "A note",
+        content: "some pasted text",
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockedIngest).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ===========================================================================
+// POST /api/ingest/reingest — read-only deployment (DW-187)
+// ===========================================================================
+//
+// This is one of the two doors that KEEPS a route-level check after the kernel
+// writers were gated (DW-188), and the reason is the reason it is tested here:
+// `reingest()` re-fetches the source URL and runs two LLM calls BEFORE it
+// reaches `writeWikiPageWithSideEffects`. A kernel-only refusal would pay for
+// all of that first, and a fetch or model failure along the way would answer
+// 500 in place of the refusal — so what this pins is that `reingest` is never
+// entered at all.
+
+describe("POST /api/ingest/reingest — read-only deployment", () => {
+  const fakeResult: IngestResult = {
+    rawPath: "",
+    primarySlug: "p",
+    relatedUpdated: [],
+    wikiPages: ["p"],
+    indexUpdated: true,
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ownedPage: any = {
+    content: "# P",
+    frontmatter: {
+      title: "P",
+      source_url: "https://example.com/s",
+      owner: "yuanhao",
+      visibility: "private",
+    },
+  };
+  let originalReadOnly: string | undefined;
+
+  beforeEach(() => {
+    // Cleared rather than inherited: every OTHER describe in this file asserts
+    // what an ordinary deployment does, and a value exported in one developer's
+    // shell would turn them red there and nowhere else.
+    originalReadOnly = process.env.YOPEDIA_READONLY;
+    delete process.env.YOPEDIA_READONLY;
+    mockedGetPrincipal.mockResolvedValue({ id: "u", handle: "yuanhao" });
+    mockedReadWikiPage.mockResolvedValue(ownedPage);
+    mockedReingest.mockResolvedValue(fakeResult);
+  });
+
+  afterEach(() => {
+    if (originalReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = originalReadOnly;
+  });
+
+  it("answers 403 before the source fetch and the LLM calls", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await POST_REINGEST(
+      makeRequest("http://localhost/api/ingest/reingest", { slug: "p" }),
+    );
+
+    expect(res.status).toBe(403);
+    // The refusal NAMES the deployment state; "forbidden" alone would leave the
+    // owner hunting a permission they do not lack.
+    expect(String((await res.json()).error)).toContain("read-only");
+    // `reingest` owns the fetch and both LLM calls, so "never called" is the
+    // whole claim: not one network round trip and not one token was spent.
+    expect(mockedReingest).not.toHaveBeenCalled();
+    // Answered before the page is even read — the same shape as the three
+    // `/api/wiki/[slug]` gates, so it is no existence oracle either.
+    expect(mockedReadWikiPage).not.toHaveBeenCalled();
+  });
+
+  it("re-ingests exactly as before on a writable deployment — the control case", async () => {
+    const res = await POST_REINGEST(
+      makeRequest("http://localhost/api/ingest/reingest", { slug: "p" }),
+    );
+    expect(res.status).toBe(200);
+    expect(mockedReingest).toHaveBeenCalledTimes(1);
   });
 });
 

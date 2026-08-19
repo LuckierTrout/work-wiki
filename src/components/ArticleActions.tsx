@@ -25,11 +25,16 @@ interface ArticleActionsProps {
   /** Whether a source URL exists (gates the Reingest button). */
   hasSourceUrl: boolean;
   /**
-   * `YOPEDIA_READONLY=1`. Passed straight through to {@link DeletePageButton},
-   * which is the only action here sitting in front of a route DW-37 gated
-   * (`DELETE /api/wiki/[slug]`). Reingest, Graphify and Save to vault write
-   * through routes this change did not touch, so they are deliberately left
-   * alone rather than dimmed on a guess.
+   * `YOPEDIA_READONLY=1`. Passed through to the two actions here that sit in
+   * front of a gated write: {@link DeletePageButton} (`DELETE /api/wiki/[slug]`,
+   * DW-37) and {@link ReingestButton} (`POST /api/ingest/reingest`, DW-187 —
+   * and the kernel page writer behind it, DW-188).
+   *
+   * Graphify and Save to vault are deliberately NOT dimmed and must not be:
+   * Graphify posts to `/api/knowledge`, which rebuilds derived structured
+   * knowledge and writes no wiki page, and Save to vault curates a reference.
+   * Neither reaches a kernel writer, so dimming them would be a refusal the
+   * server never answers — the mirror of the bug this fixes.
    */
   readOnly?: boolean;
 }
@@ -122,7 +127,9 @@ export function ArticleActions({
           View raw
         </Link>
       )}
-      {hasSourceUrl && ownsOrContributes && <ReingestButton slug={slug} />}
+      {hasSourceUrl && ownsOrContributes && (
+        <ReingestButton slug={slug} readOnly={readOnly} />
+      )}
       {isOwner && (
         <button
           type="button"

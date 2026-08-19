@@ -1058,10 +1058,17 @@ describe("POST /api/wiki — service-token auth", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Read-only deployment — /api/wiki/[slug] (DW-37)
+// Read-only deployment — the page write doors (DW-37, DW-187, DW-188)
 // ---------------------------------------------------------------------------
+//
+// DW-37 gated `PUT`/`PATCH`/`DELETE /api/wiki/[slug]` at the route. DW-187 adds
+// the two doors it left open on this surface — `POST /api/wiki` (create) and
+// `POST /api/wiki/[slug]/revisions {action:"revert"}` — which are refused by the
+// KERNEL writer (DW-188) and mapped back to 403 by each route's catch. So the
+// create and revert cases below are also what pins that the mapping exists at
+// all: without it both would answer 500 with the same sentence.
 
-describe("read-only deployment — /api/wiki/[slug]", () => {
+describe("read-only deployment — the page write doors", () => {
   // `isReadOnly()` reads `process.env.YOPEDIA_READONLY` at CALL time, so the
   // flag is flipped per test rather than at import — and cleared after each, or
   // every suite that runs later in this file would inherit a read-only world.
@@ -1145,6 +1152,37 @@ describe("read-only deployment — /api/wiki/[slug]", () => {
       { params: Promise.resolve({ slug }) },
     );
   }
+  /** `POST /api/wiki` — create, DW-187's first named door. */
+  async function create(slug: string) {
+    const { POST } = await import("@/app/api/wiki/route");
+    return POST(
+      new Request("http://localhost/api/wiki", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, content: `# ${slug}\n\nBrand new.` }),
+      }),
+    );
+  }
+  /** `POST /api/wiki/[slug]/revisions {action:"revert"}` — a full body rewrite. */
+  async function revert(slug: string, timestamp: number) {
+    const { POST } = await import("@/app/api/wiki/[slug]/revisions/route");
+    return POST(
+      new Request(`http://localhost/api/wiki/${slug}/revisions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "revert", timestamp }),
+      }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+  /** Store one revision of `slug` and hand back its timestamp. */
+  async function stashRevision(slug: string): Promise<number> {
+    const { saveRevision, listRevisions } = await import("@/lib/revisions");
+    await saveRevision(slug, `# ${slug}\n\nAn older body.`);
+    const revisions = await listRevisions(slug);
+    expect(revisions.length).toBeGreaterThan(0);
+    return revisions[0].timestamp;
+  }
 
   it("refuses a body write and leaves the bytes alone (PUT 403)", async () => {
     await seed("ro-put");
@@ -1207,6 +1245,75 @@ describe("read-only deployment — /api/wiki/[slug]", () => {
     expect(real.status).toBe(403);
     expect(ghost.status).toBe(403);
     expect(await real.json()).toEqual(await ghost.json());
+  });
+
+  it("refuses a page create and stores nothing (POST /api/wiki 403)", async () => {
+    const before = await dataVersion();
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await create("ro-create");
+    // 403, not the 500 the create route's catch answers everything else with —
+    // the kernel's `ReadOnlyError` has to be classified on the way out.
+    expect(response.status).toBe(403);
+    expect(String((await response.json()).error)).toContain("read-only");
+
+    expect(await readWikiPageWithFrontmatter("ro-create")).toBeNull();
+    expect(await dataVersion()).toBe(before);
+  });
+
+  it("still answers 409 for a slug that already exists — the conflict is true either way", async () => {
+    await seed("ro-conflict");
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await create("ro-conflict");
+    // The existence read costs nothing and its answer does not depend on the
+    // flag, so the caller gets the accurate reason rather than a refusal that
+    // would send them off to re-check the deployment.
+    expect(response.status).toBe(409);
+    expect(String((await response.json()).error)).toContain("already exists");
+  });
+
+  it("refuses a revert and leaves the stored bytes alone (POST revisions 403)", async () => {
+    await seed("ro-revert");
+    const timestamp = await stashRevision("ro-revert");
+    const before = await dataVersion();
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await revert("ro-revert", timestamp);
+    expect(response.status).toBe(403);
+    expect(String((await response.json()).error)).toContain("read-only");
+
+    const page = await readWikiPageWithFrontmatter("ro-revert");
+    expect(page!.body).toContain(SEEDED_BODY);
+    expect(page!.body).not.toContain("An older body.");
+    expect(await dataVersion()).toBe(before);
+  });
+
+  it("still answers 404 for a revision that was never stored", async () => {
+    await seed("ro-no-revision");
+    process.env.YOPEDIA_READONLY = "1";
+
+    // Same reasoning as the 409 above: a read the flag does not change.
+    const response = await revert("ro-no-revision", 1_000_000);
+    expect(response.status).toBe(404);
+  });
+
+  it("creates and reverts exactly as before on a writable deployment", async () => {
+    // The control for the two NEW doors. Without it, every "403 / unchanged"
+    // assertion above would also pass against a route that simply stopped
+    // working.
+    delete process.env.YOPEDIA_READONLY;
+
+    expect((await create("rw-create")).status).toBe(201);
+    expect(await readWikiPageWithFrontmatter("rw-create")).not.toBeNull();
+
+    await seed("rw-revert");
+    const timestamp = await stashRevision("rw-revert");
+    const response = await revert("rw-revert", timestamp);
+    expect(response.status).toBe(200);
+    expect((await readWikiPageWithFrontmatter("rw-revert"))!.body).toContain(
+      "An older body.",
+    );
   });
 
   it("changes nothing on a writable deployment — the control case", async () => {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { isOwnerHandle } from "@/lib/owner";
@@ -123,7 +124,7 @@ async function gate(
     return {
       ok: false,
       response: json(
-        { error: "The Schema cannot be edited while this deployment is read-only." },
+        { error: READ_ONLY_REFUSAL.artifactEdit },
         403,
       ),
     };
@@ -173,6 +174,13 @@ function parseTimestamp(value: number | string): number | null {
  * a throw escapes as a framework 500 whose body is not `{ error }`.
  */
 function fail(error: unknown, where: string) {
+  // Mid-request flag flip: `gate` already answered for a deployment that was
+  // read-only when the POST arrived, so a `ReadOnlyError` here came from
+  // `writeWikiArtifact`. It is the owner's refusal, not a server fault — and
+  // both verbs share this helper, so it is stated once.
+  if (isReadOnlyError(error)) {
+    return json({ error: getErrorMessage(error) }, 403);
+  }
   const status = error instanceof ClientInputError ? 400 : 500;
   if (status === 500) {
     logger.error("workbench-artifact-revisions", where, error);

@@ -1625,7 +1625,8 @@ source_spec: `spec-dw-37-read-only-deployment-consistency.md`
 location: src/app/api/wiki/route.ts:51, src/app/api/wiki/[slug]/revisions/route.ts:98, src/app/api/ingest/history/route.ts:107
 severity: medium
 reason: DW-37 gated PUT/PATCH/DELETE /api/wiki/[slug]. `POST /api/wiki` (src/app/api/wiki/route.ts:51), `POST /api/wiki/[slug]/revisions` with {action:"revert"} (src/app/api/wiki/[slug]/revisions/route.ts:98) and `DELETE /api/ingest/history` (src/app/api/ingest/history/route.ts:107) all write or delete pages through the same kernel lifecycle with no isReadOnly() check — verified by grep: the string does not appear in any of the three files. So "read-only" currently means a page cannot be edited or deleted one at a time, but can still be created, reverted to an older body, or deleted in bulk. Pre-existing; none of the three is named by DW-37, DW-65 or DW-149, and the spec's Never clause records them as out of scope.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-read-only-write-doors
 
 ### DW-188: The stdio MCP server writes pages through the library directly, so no HTTP route gate can reach the agent callers DW-37's reason claims it covers.
 origin: spec-deferred a6adca8dbb43
@@ -1633,7 +1634,8 @@ source_spec: `spec-dw-37-read-only-deployment-consistency.md`
 location: src/mcp.ts
 severity: low
 reason: DW-37's reason says the fix belongs at the write route "where it also covers the MCP and agent callers". src/mcp.ts calls writeWikiPageWithSideEffects / patchMetadata / deleteWikiPage directly and only MIRRORS the REST ACL in comments (src/mcp.ts:283, :381) — it never issues an HTTP request. A read-only deployment therefore still accepts every MCP write. Pre-existing and structural: the gate would have to move into the library, or be restated in src/mcp.ts.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-read-only-write-doors
 decision: 2026-08-19 Move the gate into the library — Enforce `isReadOnly()` inside the kernel writers (`writeWikiPageWithSideEffects`, `patchMetadata`, `deleteWikiPage`, `writeWikiArtifact`) so every caller inherits it, and reduce the HTTP-layer checks to the ones that shape the response, resolving DW-196 in the same move.
 
 ### DW-189: WikiWorkbench's Change template control opens a confirm dialog onto a route that already answers 403 on a read-only deployment.
@@ -1650,7 +1652,8 @@ source_spec: `spec-dw-37-read-only-deployment-consistency.md`
 location: src/app/api/ingest/reingest/route.ts:9, src/components/ArticleActions.tsx:127
 severity: medium
 reason: src/app/api/ingest/reingest/route.ts has its own comment saying "re-ingest rewrites the page" and runs the realm-aware write ACL, but never consults isReadOnly() (verified by grep: the string appears nowhere under src/app/api/ingest/). On a read-only deployment the owner is refused a one-line edit through the editor while Reingest replaces the whole body. `ArticleActions.tsx` renders Reingest and Graphify beside the now-aria-disabled Delete, and article-actions-gate.test.ts deliberately pins that they are NOT dimmed — correctly, since the routes behind them answer no refusal to mirror. Distinct from DW-187, which names page create, revisions revert and ingest-history delete but not reingest. Pre-existing; not named by DW-37, DW-65 or DW-149.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-read-only-write-doors
 
 ### DW-191: WorkspacePurposeSettings wraps its whole form in a `disabled` fieldset on a read-only deployment, so the stored purpose text becomes unreachable by keyboard — the DW-65 defect at full form scale.
 origin: spec-deferred af274abf11df
@@ -2237,4 +2240,44 @@ source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
 location: src/components/ChatWorkspace.tsx:232
 severity: low
 reason: `saveAnswer` (src/components/ChatWorkspace.tsx:219-238) keeps the banner hidden when the response carries no slug and surfaces an error alert when the request fails. The new suite always answers `/api/query/save` with an ok body carrying a slug, so a regression rendering "Saved as undefined" -- the exact state the comment at :232 says the guard exists to avoid -- would pass.
+status: open
+
+### DW-264: `/wiki/new` still lets the owner compose an entire page before `POST /api/wiki` refuses it, now that the route answers 403.
+origin: spec-deferred ee147ee7465e
+source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
+location: src/app/wiki/new/page.tsx:45
+severity: medium
+reason: This change is what makes `POST /api/wiki` refuse on a read-only deployment (src/app/api/wiki/route.ts, catch maps ReadOnlyError to 403). `src/app/wiki/new/page.tsx:45` is a client page that fetches that route on submit with no read-only signal, so the owner types a title and a full body and meets the refusal only afterwards — the DW-149 confirm-then-403 harm, on a door this bundle opened. It was left alone because it is not a surface the bundle intent names (DW-190 names only ArticleActions) and it sits on no existing `readOnly` seam: the page is `"use client"`, so the fact would have to arrive through a new server wrapper rather than the ArticleView thread the Re-ingest and Revert mirrors reuse.
+status: open
+
+### DW-265: The `/ingest` page's bulk-delete control confirms an irreversible delete in front of a `DELETE /api/ingest/history` that now answers 403.
+origin: spec-deferred 2f18f66dd0d3
+source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
+location: src/components/RecentIngests.tsx:229
+severity: medium
+reason: `src/components/RecentIngests.tsx:229` raises a `window.confirm` naming permanent removal, then calls the route this change gated at `src/app/api/ingest/history/route.ts:121`. Same confirm-then-403 shape as the Re-ingest and Revert controls that WERE mirrored here. Left alone for the same two reasons: not named by the bundle intent, and `/ingest` (src/app/ingest/page.tsx:414) carries no `readOnly` prop today — though it is a server component, so the thread is one attribute plus a prop, cheaper than `/wiki/new`.
+status: open
+
+### DW-266: `putWikiArtifact` writes `schema.md` and `purpose.md` without the gate `writeWikiArtifact` now carries, so wiki seeding still writes.
+origin: spec-deferred 41aab9652a70
+source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
+location: src/lib/wikis.ts (putWikiArtifact)
+severity: low
+reason: `assertWritable` was added to `writeWikiArtifact` (src/lib/wikis.ts), but the unlocked seeder `putWikiArtifact` — used by `createWiki` inside the registry lock — takes the wider `ArtifactFile` type and has no gate. The residual hole is narrow because `POST /api/wikis` has consulted `isReadOnly()` since before this change, so only a direct library caller (CLI, a future MCP tool) can reach it; it is nonetheless a caller that does not inherit the refusal the module docstring claims every caller inherits.
+status: open
+
+### DW-267: `POST /api/tasks/run` answering 403 changes Cloudflare Queue semantics from retry-then-DLQ to ack-and-drop, and the trade-off deserves a human call.
+origin: spec-deferred d73cd0e4de4b
+source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
+location: src/app/api/tasks/run/route.ts:78
+severity: medium
+reason: The route's own status contract maps 4xx to "ack and drop" and 5xx to "retry, DLQ after max_retries". Before this change an ungated write simply succeeded; the new uniform 403 means work queued against a deployment that is read-only for a maintenance window is discarded rather than parked in the DLQ for replay. 403 is what the intent asks for ("the refusal shape the existing gated routes answer") and retrying cannot succeed while the flag is set, so it was implemented and documented in the route comment with the operational note "drain or pause the queue before setting YOPEDIA_READONLY". Whether the queue consumer should instead answer 503 and preserve the work is an operational decision, not a code defect.
+status: open
+
+### DW-268: `YOPEDIA_READONLY` has no operator-facing documentation, and this change materially redefines what it refuses.
+origin: spec-deferred 726f9f7ae0c5
+source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
+location: src/lib/config.ts:139
+severity: low
+reason: The flag appears only in code docstrings and spec artifacts — not in README.md and not under docs/. It now means "no page or artifact write through any caller, including MCP and the CLI", while settings, the wikis registry, vaults, agent profiles, tasks, monitors, structured knowledge, `raw/`, the ingest ledger and the revision store all still mutate. An operator setting the flag has nowhere to read that boundary; the new `isReadOnly()` docstring in src/lib/config.ts states it, but only to a reader already in the code.
 status: open

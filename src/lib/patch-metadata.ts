@@ -11,6 +11,7 @@ import {
 } from "./wiki";
 import { extractSummary } from "./ingest";
 import type { Principal } from "./auth";
+import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 
 /** Frontmatter keys that PATCH is allowed to set. */
 export const PATCHABLE_KEYS = new Set([
@@ -50,11 +51,19 @@ export interface PatchMetadataResult {
  * - Appends `author` to `contributors` (deduplicated) when provided.
  * - Does NOT modify the page body.
  *
- * Throws on invalid input, lifecycle key violation, or missing page.
+ * Throws on a read-only deployment (DW-188), invalid input, lifecycle key
+ * violation, or missing page.
  */
 export async function patchMetadata(
   args: PatchMetadataArgs,
 ): Promise<PatchMetadataResult> {
+  // Deployment read-only (DW-188), answered at the very top — before the
+  // lifecycle-key rejection and before the ACL. `writeWikiPageWithSideEffects`
+  // below would refuse this anyway; gating here is what makes the MESSAGE right
+  // (metadata, not a page body) and keeps the refusal deployment-wide rather
+  // than ordered behind a permission answer the caller does not actually lack.
+  assertWritable(READ_ONLY_REFUSAL.pageMetadata);
+
   const { slug, metadata, author, principal = null } = args;
 
   // Reject lifecycle-managed keys.

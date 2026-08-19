@@ -6,6 +6,8 @@ import { enqueueTask } from "@/lib/tasks";
 import { MAX_BATCH_URLS } from "@/lib/constants";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { addToVault, vaultOwnedBy } from "@/lib/vault";
 
 /** A batch URL that couldn't be enqueued (queue absent) and was run inline. */
@@ -22,6 +24,23 @@ export async function POST(request: NextRequest) {
     const principal = (await getPrincipal()) ?? getServicePrincipal(request);
     if (!principal) {
       return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+    }
+
+    // Deployment read-only (DW-187). Answered HERE — after the 401, before any
+    // work — and not left to the kernel writer, because this door meets BOTH
+    // halves of the rule:
+    //   - IRREVERSIBLE WORK ALREADY COMMITTED: every URL is either enqueued as
+    //     a task or run inline, and each inline run writes its own
+    //     `raw/<slug>.md` before the page write.
+    //   - EXPENSIVE, FAILABLE WORK FIRST: one fetch plus two LLM calls PER URL,
+    //     up to the batch cap, all ahead of the first refusal.
+    // Ordered after `getPrincipal()` so an unauthenticated caller still learns
+    // it is unauthenticated, matching `DELETE /api/ingest/history`.
+    if (isReadOnly()) {
+      return NextResponse.json(
+        { error: READ_ONLY_REFUSAL.ingest },
+        { status: 403 },
+      );
     }
     const body = await request.json();
     const { urls, tags } = body;
@@ -167,6 +186,15 @@ export async function POST(request: NextRequest) {
       ...(failed > 0 ? { failed } : {}),
     });
   } catch (error) {
+    // Mid-request flag flip: the gate above already answered for a deployment
+    // that was read-only on arrival, so a `ReadOnlyError` here came from the
+    // kernel page writer. It is a refusal, not a server fault.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json(
+        { error: getErrorMessage(error) },
+        { status: 403 },
+      );
+    }
     logger.error("ingest", "Batch ingest error", error);
     return NextResponse.json(
       {

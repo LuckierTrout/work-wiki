@@ -10,6 +10,7 @@ import type { UpdateAgentOptions } from "@/lib/agents";
 import { listReadableWikiPages } from "@/lib/wiki";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
+import { isReadOnlyError } from "@/lib/read-only";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -263,6 +264,13 @@ export async function PUT(req: Request, { params }: RouteParams) {
 
     return NextResponse.json({ agent: updated });
   } catch (err) {
+    // Deployment read-only (DW-188). NO route-level gate: `updateAgent` writes
+    // the agent's identity PAGE through the kernel before it persists the
+    // profile with `registerAgent`, so the refusal aborts with neither written.
+    // The catch only has to classify it.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     if (err instanceof AgentOwnershipError) {
       return NextResponse.json({ error: err.message }, { status: 403 });
     }

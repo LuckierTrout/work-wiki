@@ -24,6 +24,7 @@ import { getStorage } from "./storage";
 import { withFileLock } from "./lock";
 import { escapeRegex } from "./links";
 import { getErrorMessage } from "./errors";
+import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 import { mapWithConcurrency } from "./concurrency";
 import { removeAliasForPage, updateAliasIndexForPage } from "./alias-index";
 import { removeSourceForPage } from "./source-index";
@@ -688,6 +689,14 @@ export async function deleteWikiPage(
   slug: string,
   author?: string,
 ): Promise<DeletePageResult> {
+  // Deployment read-only (DW-188), answered BEFORE `validateSlug` and before
+  // the read below. This is the ENFORCEMENT POINT, not a convenience: REST,
+  // the stdio MCP handlers, the CLI, the agent runtime and the bulk ingest
+  // delete all arrive here, and none of them can be reached by an HTTP gate.
+  // Refusing ahead of the slug check keeps the answer identical for every
+  // slug, so it leaks nothing about what is stored.
+  assertWritable(READ_ONLY_REFUSAL.pageDelete);
+
   validateSlug(slug);
 
   // Capture the title BEFORE unlinking so the log entry is human-readable.
@@ -731,6 +740,13 @@ export async function deleteWikiPage(
 export async function writeWikiPageWithSideEffects(
   opts: WritePageOptions,
 ): Promise<WritePageResult> {
+  // Deployment read-only (DW-188), answered before anything is read, validated
+  // or written. Every page create, edit, revert, re-ingest, lint-fix and merge
+  // in the codebase funnels through here, so this one line is what makes the
+  // refusal deployment-wide instead of door-by-door. See `read-only.ts` for why
+  // it throws rather than returning.
+  assertWritable(READ_ONLY_REFUSAL.pageWrite);
+
   const { slug, title, content, summary, logOp, logDetails } = opts;
 
   const result = await runPageLifecycleOp(

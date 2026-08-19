@@ -6,19 +6,29 @@ import {
 } from "@/components/DeletePageButton";
 import { EDIT_PAGE_READ_ONLY_COPY, WikiEditor } from "@/components/WikiEditor";
 import {
+  REINGEST_READ_ONLY_COPY,
+  ReingestButton,
+} from "@/components/ReingestButton";
+import {
+  REVERT_READ_ONLY_COPY,
+  RevisionHistory,
+} from "@/components/RevisionHistory";
+import {
   WRITE_CONFLICT_COPY,
   WRITE_PRECONDITION_REQUIRED_COPY,
 } from "@/lib/write-precondition";
 
 /**
- * The two page-write affordances OUTSIDE the Workbench shell, mounted
- * (DW-37, DW-149).
+ * The page-write affordances OUTSIDE the Workbench shell, mounted
+ * (DW-37, DW-149, DW-187).
  *
- * `PUT`/`PATCH`/`DELETE /api/wiki/[slug]` refuse on a read-only deployment.
- * Before these gates existed both surfaces succeeded, so neither had a reason
- * to ask — and adding the gates without them is precisely the harm DW-149
- * names: the owner accepts "Delete this page? This cannot be undone.", or
- * rewrites an entire page, and meets the 403 only afterwards.
+ * `PUT`/`PATCH`/`DELETE /api/wiki/[slug]`, `POST /api/ingest/reingest` and
+ * `POST /api/wiki/[slug]/revisions {action:"revert"}` all refuse on a read-only
+ * deployment. Before these gates existed every one of these surfaces succeeded,
+ * so none had a reason to ask — and adding the gates without them is precisely
+ * the harm DW-149 names: the owner accepts "Delete this page? This cannot be
+ * undone.", rewrites an entire page, or answers a revert dialog, and meets the
+ * 403 only afterwards.
  *
  * Every assertion is made on the outermost surface: what is on screen, whether
  * `window.confirm` was ever raised, and what requests were issued. A component
@@ -432,5 +442,134 @@ describe("Edit page — the write precondition", () => {
       REWRITTEN,
     );
     expect(screen.queryByText(/428/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-ingest (DW-187)
+// ---------------------------------------------------------------------------
+
+describe("Re-ingest, on a read-only deployment", () => {
+  const label = "Re-ingest source content";
+
+  it("issues no request, and says why", () => {
+    render(<ReingestButton slug="alpha" readOnly />);
+    const button = screen.getByRole("button", { name: label });
+
+    // `disabled` would take the control out of the tab order, so the owner
+    // could neither reach it nor be told why it will not run.
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    expect(button.hasAttribute("disabled")).toBe(false);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    button.focus();
+    expect(document.activeElement).toBe(button);
+
+    fireEvent.click(button);
+
+    // The route answers 403 before it fetches the source or calls the model, so
+    // an issued request would buy the owner a wait and a red error string in
+    // place of a sentence that was available before they pressed.
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const note = screen.getByText(REINGEST_READ_ONLY_COPY);
+    expect(note.getAttribute("role")).toBeNull();
+    expect(document.getElementById(button.getAttribute("aria-describedby")!)).toBe(note);
+  });
+
+  it("re-ingests as before on a writable deployment", async () => {
+    render(<ReingestButton slug="alpha" />);
+    const button = screen.getByRole("button", { name: label });
+    expect(button.hasAttribute("aria-disabled")).toBe(false);
+    expect(screen.queryByText(REINGEST_READ_ONLY_COPY)).toBeNull();
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/ingest/reingest");
+    expect(init.method).toBe("POST");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Revert a revision (DW-187, DW-149)
+// ---------------------------------------------------------------------------
+
+describe("Revert, on a read-only deployment", () => {
+  const TIMESTAMP = 1_700_000_000_000;
+  const REVERT_LABEL = `Restore revision from ${new Date(TIMESTAMP).toLocaleString()}`;
+
+  /** The history panel loads its rows on expand, so every case starts there. */
+  async function openHistory(readOnly: boolean) {
+    fetchMock.mockImplementation(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            revisions: [
+              {
+                timestamp: TIMESTAMP,
+                date: new Date(TIMESTAMP).toISOString(),
+                slug: "alpha",
+                sizeBytes: 2048,
+                author: "yuanhao",
+              },
+            ],
+          }),
+        }) as unknown as Response,
+    );
+    render(<RevisionHistory slug="alpha" readOnly={readOnly} />);
+    fireEvent.click(screen.getByRole("button", { name: /History/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: REVERT_LABEL })).toBeTruthy(),
+    );
+    return screen.getByRole("button", { name: REVERT_LABEL });
+  }
+
+  it("raises no dialog and issues no revert request", async () => {
+    const button = await openHistory(true);
+
+    // `disabled` is reserved for the transient `reverting` state; the standing
+    // refusal has to leave the control reachable so its reason is announceable.
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    expect(button.hasAttribute("disabled")).toBe(false);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    button.focus();
+    expect(document.activeElement).toBe(button);
+
+    const note = screen.getByText(REVERT_READ_ONLY_COPY);
+    expect(note.getAttribute("role")).toBeNull();
+    expect(document.getElementById(button.getAttribute("aria-describedby")!)).toBe(note);
+
+    // One call so far: the GET that loaded the list. Reading history is not a
+    // write and stays available on a read-only deployment.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(button);
+
+    // The dialog is the harm — "The current content will be saved as a revision
+    // first" is a promise the deployment cannot keep.
+    expect(confirmMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(router.refresh).not.toHaveBeenCalled();
+  });
+
+  it("reverts as before on a writable deployment", async () => {
+    const button = await openHistory(false);
+    expect(button.hasAttribute("aria-disabled")).toBe(false);
+    expect(screen.queryByText(REVERT_READ_ONLY_COPY)).toBeNull();
+
+    fireEvent.click(button);
+
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe("/api/wiki/alpha/revisions");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      action: "revert",
+      timestamp: TIMESTAMP,
+    });
   });
 });

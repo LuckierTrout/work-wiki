@@ -36,6 +36,7 @@ import { ClientInputError, isEnoent } from "./errors";
 import { withFileLock } from "./lock";
 import { logger } from "./logger";
 import { getOwnerHandle } from "./owner";
+import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 import { readEnginePageConventions } from "./schema-source";
 import { getStorage } from "./storage";
 import { appendToLog } from "./wiki-log";
@@ -616,6 +617,13 @@ export async function writeWikiArtifact(
   content: string,
   reason?: string,
 ): Promise<void> {
+  // Deployment read-only (DW-188), answered BEFORE the lock is taken and before
+  // a single byte is read. The Schema is EXECUTABLE at runtime, so a read-only
+  // deployment must not rewrite it through any caller — both of today's callers
+  // are already-gated routes, which makes this a backstop rather than a
+  // behaviour change, and a backstop is exactly what the next caller will need.
+  assertWritable(READ_ONLY_REFUSAL.artifactEdit);
+
   // Normalized ONCE, here, so the sidecar and the log line below cannot record
   // two different sentences for the same edit.
   const editReason = normalizeArtifactEditReason(reason);

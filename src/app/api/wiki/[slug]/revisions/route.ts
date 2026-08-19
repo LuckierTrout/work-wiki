@@ -6,6 +6,7 @@ import { serializeFrontmatter } from "@/lib/frontmatter";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { canReadSlug, canWriteFrontmatter, canReadFrontmatter } from "@/lib/authz";
 import { getErrorMessage } from "@/lib/errors";
+import { isReadOnlyError } from "@/lib/read-only";
 
 type RouteParams = { params: Promise<{ slug: string }> };
 
@@ -205,6 +206,14 @@ export async function POST(req: Request, { params }: RouteParams) {
 
     return NextResponse.json(result);
   } catch (err) {
+    // Deployment read-only (DW-187). A revert is a full body rewrite behind a
+    // confirm; `writeWikiPageWithSideEffects` refuses it, and this is what turns
+    // that refusal into the 403 the caller can act on. The 404s above still win
+    // — a missing page and a missing revision are reads the flag does not
+    // change.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     const message = getErrorMessage(err);
     const status = message.toLowerCase().startsWith("invalid slug") ? 400 : 500;
     return NextResponse.json({ error: message }, { status });

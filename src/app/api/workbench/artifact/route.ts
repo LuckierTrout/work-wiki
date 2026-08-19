@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { isOwnerHandle } from "@/lib/owner";
@@ -60,6 +61,13 @@ export async function PUT(request: Request) {
   try {
     return await handle(request);
   } catch (error) {
+    // Mid-request flag flip: the gate in `handle` already answered for a
+    // deployment that was read-only when the request arrived, so reaching here
+    // means `writeWikiArtifact` refused instead. 500 would report the owner's
+    // refused save as a server fault.
+    if (isReadOnlyError(error)) {
+      return json({ error: getErrorMessage(error) }, 403);
+    }
     // A `ClientInputError` is the caller's input — `wikis.ts` throws it for an
     // unparseable owner or Wiki id — and everything else is ours. Without this
     // wrap a throw escapes as a framework 500 whose body is not `{ error }`,
@@ -89,7 +97,7 @@ async function handle(request: Request) {
   }
   if (isReadOnly()) {
     return json(
-      { error: "The Schema cannot be edited while this deployment is read-only." },
+      { error: READ_ONLY_REFUSAL.artifactEdit },
       403,
     );
   }

@@ -8,6 +8,8 @@ import { stageBytes } from "@/lib/ingest-staging";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { MAX_RESPONSE_SIZE } from "@/lib/constants";
 import { addToVault, vaultOwnedBy } from "@/lib/vault";
 
@@ -28,6 +30,22 @@ export async function POST(request: NextRequest) {
     const principal = (await getPrincipal()) ?? getServicePrincipal(request);
     if (!principal) {
       return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+    }
+
+    // Deployment read-only (DW-187). Answered HERE — after the 401, before any
+    // work — and not left to the kernel writer, because this door meets BOTH
+    // halves of the rule:
+    //   - IRREVERSIBLE WORK ALREADY COMMITTED: an ingest-job record is created
+    //     and the image bytes are stored before the work is enqueued.
+    //   - EXPENSIVE, FAILABLE WORK FIRST: a vision call plus two LLM calls run
+    //     ahead of the page write.
+    // Ordered after `getPrincipal()` so an unauthenticated caller still learns
+    // it is unauthenticated, matching `DELETE /api/ingest/history`.
+    if (isReadOnly()) {
+      return NextResponse.json(
+        { error: READ_ONLY_REFUSAL.ingest },
+        { status: 403 },
+      );
     }
 
     // Attribution comes from the session, never the request body.
@@ -175,6 +193,15 @@ export async function POST(request: NextRequest) {
       },
     );
   } catch (error) {
+    // Mid-request flag flip: the gate above already answered for a deployment
+    // that was read-only on arrival, so a `ReadOnlyError` here came from the
+    // kernel page writer. It is a refusal, not a server fault.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json(
+        { error: getErrorMessage(error) },
+        { status: 403 },
+      );
+    }
     const msg = getErrorMessage(error);
     // Bad-input failures (unsafe/oversized/non-image URL) are tagged
     // ClientInputError by the store helpers → 400. Anything else is a real

@@ -18,6 +18,8 @@ import {
   senderIsAllowed,
 } from "@/lib/email-ingest";
 import { getErrorMessage } from "@/lib/errors";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { logger } from "@/lib/logger";
 import { addAgentLearningPage, getAgent } from "@/lib/agents";
 import {
@@ -82,6 +84,20 @@ export async function POST(request: Request) {
   const principal = getServicePrincipal(request);
   if (!principal) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Deployment read-only (DW-187). Answered here, after the 401 and before the
+  // payload is parsed, because this door meets BOTH halves of the rule:
+  //   - IRREVERSIBLE WORK ALREADY COMMITTED: an ingest-job record is created and
+  //     every supported attachment is staged to R2 before `ingest()` is reached,
+  //     so a kernel-only refusal strands both on every inbound message.
+  //   - EXPENSIVE, FAILABLE WORK FIRST: document extraction and two LLM calls
+  //     run ahead of the page write.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.ingest },
+      { status: 403 },
+    );
   }
 
   try {
@@ -268,6 +284,15 @@ export async function POST(request: Request) {
       skippedAttachmentCount: Math.max(0, attachmentNames.length - attachments.length),
     }, { status: response.status });
   } catch (error) {
+    // Mid-request flag flip: the gate above already answered for a deployment
+    // that was read-only on arrival, so a `ReadOnlyError` here came from the
+    // kernel page writer. It is a refusal, not a server fault.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json(
+        { error: getErrorMessage(error) },
+        { status: 403 },
+      );
+    }
     logger.error("email-ingest", "email ingest request failed", error);
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }

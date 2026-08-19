@@ -11,6 +11,7 @@ import {
 import { extractSummary } from "@/lib/ingest";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
+import { isReadOnlyError } from "@/lib/read-only";
 
 /**
  * GET /api/wiki
@@ -155,6 +156,15 @@ export async function POST(req: Request) {
     // `/u/<tenant>/<slug>` URL after creation (tenant-silos P2).
     return NextResponse.json({ ...result, owner: authorStr }, { status: 201 });
   } catch (err) {
+    // Deployment read-only (DW-187). `writeWikiPageWithSideEffects` is the
+    // enforcement point — this maps its refusal to the 403 the sibling
+    // `/api/wiki/[slug]` routes already answer, instead of the 500 the
+    // fall-through below would give it. The 409 above still wins for a slug
+    // that already exists: that conflict is true regardless of the flag, and
+    // the read costs nothing.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     const message = getErrorMessage(err);
     const status = message.toLowerCase().startsWith("invalid slug") ? 400 : 500;
     return NextResponse.json({ error: message }, { status });

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/owner", () => ({ isOwnerHandle: vi.fn() }));
@@ -70,5 +70,85 @@ describe("POST /api/lint/fix — disputed-page", () => {
     const res = await postFix({ type: "disputed-page", slug: "contested-page" });
 
     expect(res.status).toBe(403);
+  });
+});
+
+/**
+ * A read-only deployment refuses a lint fix (DW-187).
+ *
+ * This door keeps a route-level gate for the rule's SECOND half only:
+ * `fixContradiction` and `fixMissingConceptPage` each run a `callLLM` rewrite
+ * before touching the page, so a kernel-only refusal would pay for a model call
+ * whose output is thrown away — and an LLM failure would answer 500 in place of
+ * the refusal.
+ *
+ * `fixLintIssue` stays unmocked here, as it is above: what is being pinned is
+ * that the route never reaches the real dispatcher at all, which a mock would
+ * make unfalsifiable.
+ */
+describe("POST /api/lint/fix — read-only deployment", () => {
+  let originalReadOnly: string | undefined;
+
+  beforeEach(() => {
+    originalReadOnly = process.env.YOPEDIA_READONLY;
+    delete process.env.YOPEDIA_READONLY;
+  });
+
+  afterEach(() => {
+    if (originalReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = originalReadOnly;
+  });
+
+  it("answers 403 before the fix dispatcher runs", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await postFix({ type: "orphan-page", slug: "some-page" });
+
+    expect(res.status).toBe(403);
+    expect(String(((await res.json()) as { error?: string }).error)).toContain(
+      "read-only",
+    );
+  });
+
+  it("refuses an LLM-backed fix with the SAME answer, not a model failure", async () => {
+    // The door's whole reason for keeping a route gate. Un-gated, this case
+    // reaches `callLLM` with no key configured and answers 400/500 about the
+    // model — a refusal the owner would read as a broken integration.
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await postFix({
+      type: "contradiction",
+      slug: "page-a",
+      targetSlug: "page-b",
+      message: "they disagree",
+    });
+
+    expect(res.status).toBe(403);
+    expect(String(((await res.json()) as { error?: string }).error)).toContain(
+      "read-only",
+    );
+  });
+
+  it("still answers 403-Forbidden to a non-owner, before the read-only gate", async () => {
+    // Ordering: the owner gate stays first, so a signed-out caller is not told
+    // about the deployment's write posture.
+    mockedIsOwner.mockReturnValue(false);
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await postFix({ type: "orphan-page", slug: "some-page" });
+
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error?: string }).error).toBe("Forbidden");
+  });
+
+  it("reaches the dispatcher as before with the flag unset — the control case", async () => {
+    // `disputed-page` is the branch the file already pins: a real dispatcher
+    // answer, which proves the new gate did not swallow the request.
+    const res = await postFix({ type: "disputed-page", slug: "contested-page" });
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error?: string }).error).toContain(
+      "cannot be auto-fixed",
+    );
   });
 });

@@ -12,6 +12,8 @@ import {
   listAgentsForOwner,
 } from "@/lib/agents";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { logger } from "@/lib/logger";
 import { addToVault } from "@/lib/vault";
 import {
@@ -55,6 +57,29 @@ export async function POST(req: Request) {
   const principal = getServicePrincipal(req);
   if (!principal) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Deployment read-only (DW-187). Answered here, after the 401 and before the
+  // body is parsed, because this door meets BOTH halves of the rule: the ingest
+  // handler stages/creates job records and writes `raw/<slug>.md`, and the
+  // source fetch plus two LLM calls (or a whole `fixLintIssue` rewrite) run
+  // ahead of the page write. Without it the catch below marks the tracked job
+  // `failed` and records a failed operation for a refusal the deployment could
+  // have stated for free.
+  //
+  // THIS CHANGES QUEUE SEMANTICS, and the status contract above is why it has
+  // to be said out loud: 4xx means the consumer ACKS AND DROPS the message,
+  // where the un-gated 500 would have been retried and eventually parked in the
+  // DLQ. On a read-only deployment retrying cannot succeed — the refusal is
+  // deployment-wide, not transient to this message — so failing fast is the
+  // honest answer, but it does mean work queued against a read-only deployment
+  // is discarded rather than replayable. Drain or pause the queue before
+  // setting `YOPEDIA_READONLY`.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.queuedWork },
+      { status: 403 },
+    );
   }
 
   let body: unknown;
@@ -429,6 +454,13 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ ok: true, slug: result.primarySlug });
   } catch (err) {
+    // Mid-request flag flip: the gate above already answered for a deployment
+    // that was read-only on arrival. Answered BEFORE the job-failure recording
+    // below, so a refusal never writes `status: "failed"` onto the caller's
+    // tracked job — the work was not attempted, it was declined.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     const message = getErrorMessage(err);
     // Record the failure on a tracked async job so the user sees the reason
     // (a later retry that succeeds will overwrite this back to "done"). Guarded:

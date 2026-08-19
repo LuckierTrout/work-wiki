@@ -18,6 +18,21 @@ export interface RevisionItemProps {
   viewContent: string | null;
   viewLoading: boolean;
   reverting: boolean;
+  /**
+   * `YOPEDIA_READONLY=1`, threaded down from the article page. Revert is the
+   * control that opens the irreversible-sounding confirm and then rewrites the
+   * whole body through `POST /api/wiki/[slug]/revisions`, which now answers 403
+   * (DW-187). `aria-disabled`, never `disabled`: the transient `reverting`
+   * state owns `disabled`, and a control taken out of the tab order could not
+   * carry the sentence explaining itself.
+   */
+  readOnly?: boolean;
+  /**
+   * The id of the read-only sentence {@link import("./RevisionHistory").RevisionHistory}
+   * renders once for the whole list. One sentence, many Revert buttons — each
+   * points at it rather than repeating it under every row.
+   */
+  readOnlyNoteId?: string;
   onView: (timestamp: number) => void;
   onRevert: (timestamp: number) => void;
 }
@@ -34,6 +49,8 @@ export function RevisionItem({
   viewContent,
   viewLoading,
   reverting,
+  readOnly = false,
+  readOnlyNoteId,
   onView,
   onRevert,
 }: RevisionItemProps) {
@@ -73,8 +90,14 @@ export function RevisionItem({
             type="button"
             onClick={() => onRevert(rev.timestamp)}
             disabled={reverting}
+            aria-disabled={readOnly || undefined}
+            aria-describedby={readOnly ? readOnlyNoteId : undefined}
             aria-label={`Restore revision from ${new Date(rev.timestamp).toLocaleString()}`}
-            className="rounded border border-amber-500/30 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-500/20 dark:bg-amber-900/20 dark:text-amber-300 dark:hover:bg-amber-900/30 transition-colors"
+            className={`rounded border border-amber-500/30 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 disabled:opacity-50 dark:border-amber-500/20 dark:bg-amber-900/20 dark:text-amber-300 transition-colors ${
+              readOnly
+                ? "opacity-50 cursor-default"
+                : "hover:bg-amber-100 dark:hover:bg-amber-900/30"
+            }`}
           >
             {reverting ? "Reverting…" : "Revert"}
           </button>

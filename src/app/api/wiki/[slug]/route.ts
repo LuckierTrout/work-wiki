@@ -11,6 +11,7 @@ import { extractSummary } from "@/lib/ingest";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { canReadFrontmatter, canWriteFrontmatter } from "@/lib/authz";
 import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { getErrorMessage } from "@/lib/errors";
 import { patchMetadata } from "@/lib/patch-metadata";
 import {
@@ -32,7 +33,7 @@ export async function DELETE(
     // refusal cheap. The realm-aware 404-cloak below is untouched.
     if (isReadOnly()) {
       return NextResponse.json(
-        { error: "Pages cannot be deleted while this deployment is read-only." },
+        { error: READ_ONLY_REFUSAL.pageDelete },
         { status: 403 },
       );
     }
@@ -67,6 +68,14 @@ export async function DELETE(
     const result = await deleteWikiPage(slug, principal?.handle);
     return NextResponse.json(result);
   } catch (err) {
+    // The gate above already answered for a deployment that was read-only when
+    // the request arrived; this is the flag flipping mid-request, where
+    // `deleteWikiPage`'s refusal surfaces here instead. Without the branch the
+    // fall-through below calls it a 400 — a refusal naming read-only, reported
+    // as the caller's malformed request.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     const message = getErrorMessage(err);
     const status = message.startsWith("page not found") ? 404 : 400;
     return NextResponse.json({ error: message }, { status });
@@ -107,7 +116,7 @@ export async function PUT(
     // `editable`, so the owner is never offered `Edit` for a page this refuses.
     if (isReadOnly()) {
       return NextResponse.json(
-        { error: "Pages cannot be edited while this deployment is read-only." },
+        { error: READ_ONLY_REFUSAL.pageEdit },
         { status: 403 },
       );
     }
@@ -241,6 +250,14 @@ export async function PUT(
       version: contentVersion(mergedContent),
     });
   } catch (err) {
+    // The gate above already answered for a deployment that was read-only when
+    // the request arrived; this is the flag flipping mid-request, where the
+    // kernel writer's refusal surfaces here instead. Without the branch the
+    // `invalid slug` classifier below decides it, and a refusal naming
+    // read-only would be answered as a 400 about the slug.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     const message = getErrorMessage(err);
     const status = message.toLowerCase().startsWith("invalid slug") ? 400 : 500;
     return NextResponse.json({ error: message }, { status });
@@ -274,10 +291,7 @@ export async function PATCH(
     // `patchMetadata` reads the page. Same answer for every slug — no oracle.
     if (isReadOnly()) {
       return NextResponse.json(
-        {
-          error:
-            "Page metadata cannot be changed while this deployment is read-only.",
-        },
+        { error: READ_ONLY_REFUSAL.pageMetadata },
         { status: 403 },
       );
     }
@@ -319,6 +333,11 @@ export async function PATCH(
 
     return NextResponse.json(result);
   } catch (err) {
+    // Mid-request flag flip: `patchMetadata` refuses at its top, and its error
+    // carries no `code`, so the ladder below would answer 500.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     const message = getErrorMessage(err);
     const code = (err as NodeJS.ErrnoException).code;
     let status = 500;

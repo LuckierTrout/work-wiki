@@ -731,6 +731,132 @@ describe("MCP write tools", () => {
 });
 
 // ---------------------------------------------------------------------------
+// MCP write tools on a read-only deployment (DW-188)
+// ---------------------------------------------------------------------------
+//
+// THE CLAIM NO HTTP TEST CAN MAKE. The stdio MCP server calls the kernel
+// writers directly, so no route gate ever sees these calls — which is exactly
+// why `isReadOnly()` being enforced door-by-door at the HTTP layer left every
+// MCP write running on a read-only deployment. The gate now lives in
+// `writeWikiPageWithSideEffects`, `deleteWikiPage` and `patchMetadata`, and
+// these four handlers inherit it without a line of their own.
+
+describe("MCP write tools on a read-only deployment", () => {
+  let originalReadOnly: string | undefined;
+
+  beforeEach(() => {
+    // Cleared rather than inherited: every other suite in this file writes
+    // pages through these same handlers, so an exported value would turn
+    // hundreds of assertions red on one machine and nowhere else.
+    originalReadOnly = process.env.YOPEDIA_READONLY;
+    delete process.env.YOPEDIA_READONLY;
+  });
+
+  afterEach(() => {
+    if (originalReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = originalReadOnly;
+  });
+
+  /** Every byte under the temp wiki dir, keyed by filename. */
+  async function wikiFiles(): Promise<Record<string, string>> {
+    const dir = path.join(tmpDir, "wiki");
+    const names = await fs.readdir(dir);
+    const out: Record<string, string> = {};
+    for (const name of names) {
+      out[name] = await fs.readFile(path.join(dir, name), "utf-8");
+    }
+    return out;
+  }
+
+  /** A refusal names read-only — "forbidden" alone would misdirect the agent. */
+  async function expectReadOnlyRejection(op: () => Promise<unknown>) {
+    await expect(op()).rejects.toThrow(/read-only/);
+  }
+
+  it("create_page is rejected and writes no file", async () => {
+    const before = await wikiFiles();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectReadOnlyRejection(() =>
+      handleCreatePage({ slug: "ro-mcp-create", content: "# RO\n\nBody." }),
+    );
+
+    expect(await wikiFiles()).toEqual(before);
+  });
+
+  it("update_page is rejected and leaves the stored bytes alone", async () => {
+    await handleCreatePage({
+      slug: "ro-mcp-update",
+      content: "# RO Update\n\nOriginal body.",
+    });
+    const before = await wikiFiles();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectReadOnlyRejection(() =>
+      handleUpdatePage({
+        slug: "ro-mcp-update",
+        content: "# RO Update\n\nRewritten body.",
+      }),
+    );
+
+    expect(await wikiFiles()).toEqual(before);
+  });
+
+  it("update_metadata is rejected and leaves the frontmatter alone", async () => {
+    await handleCreatePage({
+      slug: "ro-mcp-meta",
+      content: "# RO Meta\n\nBody.",
+    });
+    const before = await wikiFiles();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectReadOnlyRejection(() =>
+      handleUpdateMetadata({
+        slug: "ro-mcp-meta",
+        metadata: { confidence: 0.99 },
+      }),
+    );
+
+    expect(await wikiFiles()).toEqual(before);
+    expect(
+      (await readWikiPageWithFrontmatter("ro-mcp-meta"))!.frontmatter.confidence,
+    ).not.toBe(0.99);
+  });
+
+  it("delete_page is rejected and the page survives", async () => {
+    await handleCreatePage({
+      slug: "ro-mcp-delete",
+      content: "# RO Delete\n\nBody.",
+    });
+    const before = await wikiFiles();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectReadOnlyRejection(() =>
+      handleDeletePage({ slug: "ro-mcp-delete" }),
+    );
+
+    expect(await wikiFiles()).toEqual(before);
+    expect(await readWikiPageWithFrontmatter("ro-mcp-delete")).not.toBeNull();
+  });
+
+  it("all four still work with the flag unset — the control case", async () => {
+    // Without this, every "rejected / unchanged" assertion above would also
+    // pass against handlers that had simply stopped working.
+    await handleCreatePage({ slug: "rw-mcp", content: "# RW\n\nBody." });
+    expect(
+      (await handleUpdatePage({ slug: "rw-mcp", content: "# RW\n\nEdited." }))
+        .updated,
+    ).toBe(true);
+    expect(
+      (await handleUpdateMetadata({ slug: "rw-mcp", metadata: { confidence: 0.9 } }))
+        .updated,
+    ).toBe(true);
+    expect((await handleDeletePage({ slug: "rw-mcp" })).slug).toBe("rw-mcp");
+    expect(await readWikiPageWithFrontmatter("rw-mcp")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // MCP cross-referencing tests
 // ---------------------------------------------------------------------------
 

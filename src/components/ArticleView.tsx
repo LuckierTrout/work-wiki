@@ -120,8 +120,11 @@ interface ArticleViewProps {
   evidenceBundle?: PageEvidenceBundle | null;
   /**
    * `YOPEDIA_READONLY=1`, read by the route page (a server component) and
-   * carried through to the action bar's Delete control — the one affordance
-   * here in front of a route DW-37 gated.
+   * carried through to every affordance here that sits in front of a gated
+   * write: the action bar's Delete and Re-ingest controls, and each Revert
+   * button in the revision history. This is the ONE seam — no client island
+   * below fetches the fact separately, so the affordance and the refusal cannot
+   * disagree.
    */
   readOnly?: boolean;
 }
@@ -477,7 +480,7 @@ export async function ArticleView({
             </section>
           )}
 
-          <RevisionHistory slug={slug} />
+          <RevisionHistory slug={slug} readOnly={readOnly} />
 
           <ArticleActions
             slug={slug}

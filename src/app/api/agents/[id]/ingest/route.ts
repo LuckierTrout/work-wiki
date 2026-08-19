@@ -13,6 +13,9 @@ import { createIngestJob } from "@/lib/ingest-jobs";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { stageText } from "@/lib/ingest-staging";
 import { logger } from "@/lib/logger";
+import { getErrorMessage } from "@/lib/errors";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { addToVault, vaultOwnedBy } from "@/lib/vault";
 
 interface RouteParams {
@@ -115,6 +118,22 @@ export async function POST(req: Request, { params }: RouteParams) {
       }
     } else {
       return NextResponse.json({ error: "Invalid token." }, { status: 401 });
+    }
+
+    // Deployment read-only (DW-187). Answered here, after every credential
+    // branch has settled and before any work, because this door meets BOTH
+    // halves of the rule:
+    //   - IRREVERSIBLE WORK ALREADY COMMITTED: an ingest-job record is created
+    //     and oversized text is staged to R2 before `ingest()` runs, and
+    //     `addAgentLearningPage` mutates the agent profile after it.
+    //   - EXPENSIVE, FAILABLE WORK FIRST: the source fetch (or vision call) and
+    //     two LLM calls run ahead of the page write, and this route's catch
+    //     answers a flat "Ingest failed." that would bury the reason entirely.
+    if (isReadOnly()) {
+      return NextResponse.json(
+        { error: READ_ONLY_REFUSAL.ingest },
+        { status: 403 },
+      );
     }
 
     let body: {
@@ -294,6 +313,12 @@ export async function POST(req: Request, { params }: RouteParams) {
       return result;
     });
   } catch (err) {
+    // Mid-request flag flip. This catch answers a FLAT "Ingest failed." with no
+    // detail at all, so without the branch the refusal would not merely be
+    // mis-statused — its sentence would never reach the caller.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     logger.error("agents", "agent ingest failed:", err);
     return NextResponse.json({ error: "Ingest failed." }, { status: 500 });
   }
