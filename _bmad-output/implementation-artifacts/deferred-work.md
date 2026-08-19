@@ -1583,6 +1583,7 @@ location: vitest.config.ts (no browser project); src/lib/__tests__/workbench-lef
 severity: low
 reason: `vitest.config.ts` has exactly two projects, `node` and `dom` (jsdom), and jsdom has no layout engine; there is no Playwright config, no `e2e/` directory and no browser project anywhere. So DW-34's user-visible payoff — "a docked column below 900px is reachable" — is pinned by `workbench-left-column.test.ts` asserting that declaration strings appear inside a slice of the stylesheet. That scan cannot show the new rule wins the cascade, that the released clamp actually makes the row reachable, or that the `[data-sheet-open]` counter-rule outranks the docked selectors. The mounted suite observes only that the shell ASKS the platform to scroll. Pre-existing and repo-wide: every earlier Workbench story verified its stylesheet half the same way. Closing it means adding a browser test project, which is a project-level decision rather than a fix to this change.
 status: open
+decision: 2026-08-19 Add a browser project — Add a real browser test project (Playwright, or Vitest browser mode) covering the layout claims the stylesheet scans currently stand in for — the 900px docked-column reachability, the split-handle geometry, and the sheet counter-rule — and mark the corresponding scan assertions as structural rather than behavioural once a real check exists.
 
 ### DW-186: Follow-up review still recommended for dw-workbench-preview-announcements after the damping cap was spent
 origin: review-budget-followup

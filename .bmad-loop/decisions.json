@@ -80,6 +80,15 @@
     "label": "Reflow to full width",
     "resolution": ""
   },
+  "DW-185": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a real browser test project (Playwright, or Vitest browser mode) covering the layout claims the stylesheet scans currently stand in for \u2014 the 900px docked-column reachability, the split-handle geometry, and the sheet counter-rule \u2014 and mark the corresponding scan assertions as structural rather than behavioural once a real check exists.",
+    "key": "1",
+    "label": "Add a browser project",
+    "resolution": ""
+  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",
