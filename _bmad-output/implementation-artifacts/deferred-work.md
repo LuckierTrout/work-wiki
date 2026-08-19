@@ -820,7 +820,8 @@ source_spec: `spec-maintainer-brand-sweep.md`
 location: tools/WORKWIKI_SYNC.md
 severity: low
 reason: DW-10's bundle intent authorized renaming only the sync script file. Nothing references the doc's path anywhere (repo-wide grep), so renaming it is safe whenever a wider filename cut is taken; until then it is the last maintainer-visible old-brand filename and the content-only scan can never flag it.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-brand-scan-coverage-and-residue
 
 ### DW-92: workers/sandbox-runner/README.md H1 still reads "Yopedia sandbox runner" — stale display prose invisible to both brand scans.
 origin: spec-deferred 25a5969a3d48
@@ -828,7 +829,8 @@ source_spec: `spec-maintainer-brand-sweep.md`
 location: workers/sandbox-runner/README.md:1
 severity: low
 reason: DW-10 covers only "WorkWiki" strings. Workers markdown is scanned only by the new WorkWiki-only maintainer scan, and the yopedia-identifier test walks workers *.ts only, so this heading can never fail a test.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-brand-scan-coverage-and-residue
 
 ### DW-93: AGENTS.md's frozen-identifier list omits the WORKWIKI_* operator family.
 origin: spec-deferred 082aa1c5ca08
@@ -836,7 +838,8 @@ source_spec: `spec-maintainer-brand-sweep.md`
 location: AGENTS.md:12
 severity: low
 reason: AGENTS.md enumerates only yopedia/YOPEDIA_* identifiers as frozen. WORKWIKI_* env vars, .workwiki-source-sync.json, the workwiki-*.zip archive prefix, and the workwiki.app origin are equally load-bearing for existing operator setups, and a future brand sweep could "fix" them and silently break every operator's environment.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-brand-scan-coverage-and-residue
 
 ### DW-94: public/ served static copy (e.g. public/agent-api.md) is outside both brand scans.
 origin: spec-deferred b6515946b4ea
@@ -844,7 +847,8 @@ source_spec: `spec-maintainer-brand-sweep.md`
 location: public/agent-api.md
 severity: low
 reason: public/agent-api.md is served at the production origin and carries brand-adjacent strings (workwiki.app base URL, yopedia identifier examples), but neither scannedSources() nor maintainerSources() reads public/, so a stale display-brand regression there would ship unseen. Pre-existing coverage gap, not introduced by this change.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-brand-scan-coverage-and-residue
 
 ### DW-95: DW-91's recorded premise ("nothing references the doc's path") is now stale — the sweep's vacuity-guard test pins tools/WORKWIKI_SYNC.md by literal path.
 origin: spec-deferred 153d65f75801
@@ -852,7 +856,8 @@ source_spec: `spec-maintainer-brand-sweep.md`
 location: src/lib/__tests__/brand-copy.test.ts
 severity: low
 reason: The pin-by-name test in brand-copy.test.ts asserts maintainerSources() contains tools/WORKWIKI_SYNC.md, so the future filename cut DW-91 anticipates must also update that pin list. The failure would be loud and self-locating, but the ledger entry's "safe to rename, nothing references it" evidence no longer holds as written. Existing ledger entries are orchestrator-owned, so this is recorded here instead of amending DW-91.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-brand-scan-coverage-and-residue
 
 ### DW-96: Maintainer-facing surfaces outside the four scan roots remain unscanned: scripts/, journal-site/, and .opencode/commands/*.md.
 origin: spec-deferred 7d14595dc7b0
@@ -860,7 +865,8 @@ source_spec: `spec-maintainer-brand-sweep.md`
 location: src/lib/__tests__/brand-copy.test.ts
 severity: low
 reason: maintainerSources() covers tools/, root markdown, docs/ markdown, and workers/ markdown per the bundle intent. scripts/*.sh|*.mjs, journal-site/*.mjs, and .opencode/commands markdown are the same class of maintainer tooling and are clean today (repo-wide grep), but a "WorkWiki" reintroduced there would be invisible to every test — same class of gap as the public/ item already ledgered from this spec.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw2-brand-scan-coverage-and-residue
 
 ### DW-97: A stray empty ~/pnpm-workspace.yaml (outside the repo) breaks every `pnpm <cmd>` on this dev machine, including all of this spec's documented verification commands.
 origin: spec-deferred 6a474b2bad10
@@ -1985,4 +1991,92 @@ source_spec: `spec-dw-83-89-owner-scoped-link-and-notfound-hardening.md`
 location: src/hooks/useSlugTenants.ts:56
 severity: low
 reason: src/hooks/useSlugTenants.ts's effect has an empty dependency array, so it loads once per mount. DW-87's fix makes the SESSION recover — the next cold caller re-fetches and caches a good map — but a component already mounted during the outage never re-reads it. Links still work through the 308 fallback, so the consequence is a stale wrong-handle hop on one component until it remounts, not breakage. The empty-dep mount effect pre-dates this story; DW-87 only changed what the cache holds.
+status: open
+
+### DW-235: scripts/setup-cloudflare.sh:113 prints the stale display brand "yopedia — Cloudflare Infrastructure Setup" to the operator's terminal.
+origin: spec-deferred 0ccea9511710
+source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
+location: scripts/setup-cloudflare.sh:113
+severity: low
+reason: Same class as the `# Yopedia sandbox runner` heading this bundle fixed, but in a root the intent authorized scanning, not editing. The surrounding `yopedia-raw`, `yopedia-embeddings-bge-m3` etc. on lines 119-163 are Cloudflare resource names and must stay frozen; only the line-113 banner is display copy.
+status: open
+
+### DW-236: DW-92's fix has no regression guard — "Yopedia" display prose can return to any maintainer surface with CI green.
+origin: spec-deferred 28803e5d8656
+source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
+location: src/lib/__tests__/brand-copy.test.ts
+severity: medium
+reason: Both maintainer scans test only `workwiki` spellings. Confirmed during review by restoring `# Yopedia sandbox runner` at workers/sandbox-runner/README.md:1 and by planting `<title>Yopedia Growth Journal</title>` in journal-site/build.mjs and `# Using Yopedia as an agent` in public/agent-api.md: all 12 tests still passed. A Yopedia dimension over maintainer roots needs per-path exemptions for the prose in README.md:186,208, BACKLOG.md:1,3, docs/trusted-memory-roadmap.md:4,94 and workers/email-ingest/README.md:1,5,19, which this bundle's intent does not authorize.
+status: open
+
+### DW-237: workers/email-ingest/README.md still says "Yopedia", so the two Worker READMEs in workers/ now disagree on the product name.
+origin: spec-deferred bd43323d6e3a
+source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
+location: workers/email-ingest/README.md:1
+severity: low
+reason: Lines 1, 5 and 19. Out of this bundle's scope — the intent names only workers/sandbox-runner/README.md:1 — but the pair now reads half-renamed.
+status: open
+
+### DW-238: The stronger stray-workwiki rule guards only maintainer docs; the shipped app tree still uses the case-sensitive literal check.
+origin: spec-deferred f5f2a244a9e7
+source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
+location: src/lib/__tests__/brand-copy.test.ts
+severity: medium
+reason: `hasStrayWorkwiki` runs over `maintainerSources()` only, while `scannedSources()` (src/app, src/components, workers/, the browser clipper) keeps `saysStaleDisplayName` alone. Confirmed by planting `// Workwiki local sync` in src/components/LocalSyncPanel.tsx: suite stayed green. Extending the predicate to `scannedSources()` needs three more allowlist entries for real identifiers found there: `workwikiDefaultTags` (integrations/browser-clipper/popup.js:12,13,25), `save-to-workwiki` (integrations/browser-clipper/service-worker.js:3), and the `https://hooks.example.com/workwiki` placeholder (src/components/IntegrationDesk.tsx:114).
+status: open
+
+### DW-239: This spec's stated reason for keeping the four new roots out of scannedSources() is wrong for three of them.
+origin: spec-deferred ff31b1fa5979
+source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
+location: src/lib/__tests__/brand-copy.test.ts
+severity: low
+reason: The intent-contract says they "carry capital-Y Yopedia prose and yologdev/yopedia links that would fail the yopedia-identifier test". Running IDENTIFIER_ALLOWLIST over each root during review gave zero offenders for public/, journal-site/ and .opencode/commands/ — journal-site/build.mjs:11-12's yologdev/yopedia links are already allowlisted. Only scripts/setup-cloudflare.sh actually offends. The exclusion still stands on the intent's authority (it says extend maintainerSources()), but public/ and journal-site/ could be folded into scannedSources() today at no cost.
+status: open
+
+### DW-240: skills/work-wiki-mcp/SKILL.md is hand-authored, brand-named, and read by no scan.
+origin: spec-deferred 970d96b7a1a8
+source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
+location: skills/work-wiki-mcp/SKILL.md
+severity: low
+reason: Tracked in git and literally named for the product, yet skills/ is in neither scannedSources() nor maintainerSources(). Same class as the public/ gap this bundle closed; the root simply was not named in the intent.
+status: open
+
+### DW-241: AGENTS.md's frozen list still omits four live WORKWIKI_* family members.
+origin: spec-deferred 4cafc2bd11e4
+source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
+location: AGENTS.md:12
+severity: low
+reason: `workwiki-actions.ics` (src/app/api/integrations/calendar/route.ts:28), the export filename prefix (src/app/api/archive/export/route.ts:14), the clipper's `workwikiDefaultTags` storage key and `save-to-workwiki` context-menu id (integrations/browser-clipper/), and the `www.workwiki.app` variant. The intent enumerated four items; `workwiki-portable-archive` was patched in during review because a rename there breaks re-import of archives already on disk. The rest need per-item verification before being frozen in prose.
+status: open
+
+### DW-242: The DW-93 freeze fact lives inside a managed block whose own header says inside-block edits are replaced on refresh.
+origin: spec-deferred bc5d931b1066
+source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
+location: AGENTS.md:2
+severity: low
+reason: AGENTS.md:2 reads "edits inside this block are replaced on refresh. Keep anything you want preserved outside the markers", while bmad-project-context's Refresh step re-verifies existing lines rather than regenerating. The intent asked for the managed block, so placement follows the intent; but whether the fact survives depends on which behavior the next refresh actually has. The machine-checked WORKWIKI_IDENTIFIER_ALLOWLIST is the durable half of the guard.
+status: open
+
+### DW-243: wrangler.jsonc files and root non-markdown are unscanned though AGENTS.md freezes their resource names.
+origin: spec-deferred 49b6ba9ef745
+source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
+location: src/lib/__tests__/brand-copy.test.ts
+severity: low
+reason: maintainerSources() walks workers/ for markdown only, and the root listing is markdown-only, so wrangler.jsonc, workers/*/wrangler.jsonc, package.json, mcp.json and Dockerfile are read by nothing. AGENTS.md explicitly calls "every resource name in both wrangler.jsonc files" frozen.
+status: open
+
+### DW-244: Three overlapping extension filters with no shared definition; each omits types the others cover.
+origin: spec-deferred cdc2c1304d4b
+source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
+location: src/lib/__tests__/brand-copy.test.ts:116
+severity: low
+reason: TEXT_SOURCES covers .svg but not .tsx/.mdx/.webmanifest/.toml; CLIPPER_SOURCES covers .js/.html but not .svg, so a clipper icon carrying brand text goes unread. Because the pin test anchors only one file per root, adding a file of an uncovered type shrinks coverage with no test failure.
+status: open
+
+### DW-245: tools/work-wiki-sync.md is reachable from nothing but the test's pin list.
+origin: spec-deferred 18ccb7a475e4
+source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
+location: tools/work-wiki-sync.md
+severity: low
+reason: No README, DEPLOY.md, AGENTS.md or UI surface links to the operator sync doc; src/components/LocalSyncPanel.tsx:42-44 emits the env commands inline and points nowhere. Pre-existing under the old filename too, but the rename was the natural moment to add the one link that makes it discoverable.
 status: open

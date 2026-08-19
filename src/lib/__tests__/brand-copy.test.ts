@@ -45,14 +45,25 @@ const TS_SOURCES = /\.tsx?$/;
  */
 const CLIPPER_SOURCES = /\.(html|js|json|css|md)$/;
 
-async function walk(dir: string, include: RegExp = TS_SOURCES): Promise<string[]> {
+/**
+ * `skipDirs` is per-call on purpose. A globally-skipped directory name would
+ * silently shrink `scannedSources()` too — a future `dist/` under `src/`,
+ * `integrations/` or `workers/` would drop out of the brand scan without any
+ * test noticing, which is the quiet vacuity the pin tests exist to prevent.
+ */
+async function walk(
+  dir: string,
+  include: RegExp = TS_SOURCES,
+  skipDirs: string[] = [],
+): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const out: string[] = [];
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === "__tests__" || entry.name === "node_modules") continue;
-      out.push(...(await walk(full, include)));
+      if (skipDirs.includes(entry.name)) continue;
+      out.push(...(await walk(full, include, skipDirs)));
     } else if (include.test(entry.name)) {
       out.push(full);
     }
@@ -104,6 +115,54 @@ async function scannedSources(): Promise<string[]> {
 const ROOT = path.resolve(SRC, "..");
 const MARKDOWN = /\.md$/;
 const ANY_FILE = /(?:)/;
+/**
+ * Human-authored text under `public/` and `journal-site/`. Those trees also
+ * carry fonts and images, which `readFile(..., "utf8")` would happily decode
+ * into mojibake — so gate them by extension rather than reading everything.
+ */
+const TEXT_SOURCES = /\.(?:md|mjs|cjs|js|ts|json|jsonc|css|html|svg|txt|ya?ml|sh)$/;
+
+/**
+ * Every `workwiki` spelling that is a frozen operator identifier, not display
+ * copy. Renaming any of them breaks an existing operator setup: the env names
+ * are read by `tools/work-wiki-sync.mjs`, the origin is production, and the
+ * lowercase-hyphen family names on-disk backup state.
+ */
+const WORKWIKI_IDENTIFIER_ALLOWLIST = [
+  // Env/secret names, which all carry the underscore. Requiring it matters now
+  // that markdown roots are scanned: bare all-caps is ordinary heading style
+  // there ("## WORKWIKI SETUP"), so `WORKWIKI[A-Z0-9_]*` would wave prose through.
+  /\bWORKWIKI_[A-Z0-9_]*\b/g,
+  /workwiki\.app/g, // the production origin
+  // The lowercase-hyphen family: on-disk state and archive names. Anchored to the
+  // documented artifacts, so display prose ("workwiki-first") is NOT swallowed.
+  /\.?workwiki-(?:source-sync|backups|portable-archive|archive|[*.$0-9])/g,
+];
+
+/**
+ * The two scan rules as pure predicates over text, so what "clean" means is
+ * itself pinned by a test. Without this, the only evidence that either scan
+ * catches a regression is a plant-and-revert done once by hand.
+ */
+function saysStaleDisplayName(text: string): boolean {
+  return text.includes("WorkWiki");
+}
+
+/**
+ * The surviving `workwiki` tokens after every frozen-identifier spelling is
+ * stripped. Returning the tokens rather than a bare boolean is what makes a
+ * failure actionable: the offender list names the word that tripped the scan,
+ * instead of handing the reader a filename to re-grep by hand.
+ */
+function strayWorkwiki(text: string): string[] {
+  let rest = text;
+  for (const pattern of WORKWIKI_IDENTIFIER_ALLOWLIST) rest = rest.replace(pattern, "");
+  return rest.match(/\S*workwiki\S*/gi) ?? [];
+}
+
+function hasStrayWorkwiki(text: string): boolean {
+  return strayWorkwiki(text).length > 0;
+}
 
 /**
  * Maintainer-facing surfaces the DW-10 sweep covered: operator tooling and the
@@ -117,6 +176,11 @@ const ANY_FILE = /(?:)/;
  * under `_bmad-output/` (historical specs, the deferred-work ledger)
  * legitimately carry the old "WorkWiki" string, so a recursive walk would fail
  * the suite for a non-obvious reason.
+ *
+ * `public/`, `scripts/`, `journal-site/` and `.opencode/commands/` are operator
+ * and owner-facing too — the served API guide, the Cloudflare setup script, the
+ * journal static site, and the slash-command docs — and none of them were read
+ * by the DW-10 sweep, so brand drift there was invisible.
  */
 async function maintainerSources(): Promise<string[]> {
   const rootMarkdown = (await readdir(ROOT, { withFileTypes: true }))
@@ -127,6 +191,18 @@ async function maintainerSources(): Promise<string[]> {
     ...rootMarkdown,
     ...(await walk(path.join(ROOT, "docs"), MARKDOWN)),
     ...(await walk(path.join(ROOT, "workers"), MARKDOWN)),
+    // Served to users and agents (`public/agent-api.md` is the published API
+    // guide), so its copy is as brand-visible as anything in the app tree.
+    ...(await walk(path.join(ROOT, "public"), TEXT_SOURCES)),
+    // Operator scripts, read like `tools/` — every file, whatever the extension.
+    ...(await walk(path.join(ROOT, "scripts"), ANY_FILE)),
+    // The journal static site's generator (`build.mjs`) emits the site's
+    // headings; its CSS and JS carry no brand string today, and are read so a
+    // future one can't land unseen. `dist/` is gitignored build output —
+    // present on a developer's machine, absent in CI — so scanning it would
+    // make the result depend on whether someone happened to run a build.
+    ...(await walk(path.join(ROOT, "journal-site"), TEXT_SOURCES, ["dist"])),
+    ...(await walk(path.join(ROOT, ".opencode", "commands"), MARKDOWN)),
   ];
 }
 
@@ -144,7 +220,7 @@ describe("no stale brand strings in rendered copy", () => {
   it('no scanned source says "WorkWiki"', async () => {
     const offenders: string[] = [];
     for (const file of await scannedSources()) {
-      if ((await readFile(file, "utf8")).includes("WorkWiki")) {
+      if (saysStaleDisplayName(await readFile(file, "utf8"))) {
         offenders.push(path.relative(SRC, file));
       }
     }
@@ -152,29 +228,89 @@ describe("no stale brand strings in rendered copy", () => {
   });
 
   it("actually reads every surface the maintainer sweep covered", async () => {
-    // Same vacuousness guard as the clipper canary above: pin the five swept
-    // files by name so a relocated file or a filter that stops matching fails
-    // here instead of silently shrinking the scan.
+    // Same vacuousness guard as the clipper canary above: pin one file per
+    // scanned root by name so a relocated file or a filter that stops matching
+    // fails here instead of silently shrinking the scan.
     const scanned = (await maintainerSources()).map((f) => path.relative(ROOT, f));
     for (const file of [
       path.join("tools", "work-wiki-sync.mjs"),
-      path.join("tools", "WORKWIKI_SYNC.md"),
+      path.join("tools", "work-wiki-sync.md"),
       "BACKLOG.md",
       path.join("docs", "llm-wiki-functional-parity-roadmap.md"),
       path.join("workers", "sandbox-runner", "README.md"),
+      path.join("public", "agent-api.md"),
+      path.join("scripts", "setup-cloudflare.sh"),
+      path.join("journal-site", "build.mjs"),
     ]) {
       expect(scanned).toContain(file);
     }
+    // `.opencode/commands/` holds only BMAD-installer-generated docs, so
+    // pinning one by name would fail this suite on an upstream rename for a
+    // reason with nothing to do with branding. Assert the root contributes.
+    const opencode = scanned.filter((f) => f.startsWith(path.join(".opencode", "commands") + path.sep));
+    expect(
+      opencode.length,
+      "maintainerSources() must read .opencode/commands — the root went vacuous",
+    ).toBeGreaterThan(0);
   });
 
   it('no maintainer-facing file says "WorkWiki"', async () => {
     const offenders: string[] = [];
     for (const file of await maintainerSources()) {
-      if ((await readFile(file, "utf8")).includes("WorkWiki")) {
+      if (saysStaleDisplayName(await readFile(file, "utf8"))) {
         offenders.push(path.relative(ROOT, file));
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it('every maintainer-facing "workwiki" is a frozen operator identifier', async () => {
+    // Strictly stronger than the literal "WorkWiki" check above: it also
+    // catches case variants ("Workwiki", "workwiki" as prose). The literal
+    // check stays because it gives the common regression a crisper message.
+    const offenders: string[] = [];
+    for (const file of await maintainerSources()) {
+      const stray = strayWorkwiki(await readFile(file, "utf8"));
+      if (stray.length > 0) {
+        offenders.push(`${path.relative(ROOT, file)}: ${[...new Set(stray)].join(", ")}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("tells a frozen operator identifier apart from a display-brand slip", () => {
+    // The scans above only prove the tree is clean today. These cases fix what
+    // "clean" means, so a widened allowlist that stops catching regressions
+    // fails here rather than passing quietly.
+    for (const frozen of [
+      "> Base URL in these examples: `https://workwiki.app`",
+      "WORKWIKI_SYNC_INTERVAL_MINUTES=360 WORKWIKI_SYNC_KEEP=30",
+      'const SOURCE_STATE_FILE = ".workwiki-source-sync.json";',
+      'join(process.cwd(), "workwiki-backups")',
+      "/^workwiki-.*\\.zip$/",
+      "const name = `workwiki-${new Date().toISOString()}.zip`;",
+      "workwiki-2026-08-19T12-00-00-000Z.zip",
+      "workwiki-archive.zip",
+      "workwiki-*.zip",
+      'format: "workwiki-portable-archive",',
+    ]) {
+      expect(hasStrayWorkwiki(frozen), frozen).toBe(false);
+      expect(saysStaleDisplayName(frozen), frozen).toBe(false);
+    }
+    for (const slip of [
+      "keeping WorkWiki cloud-first",
+      "the Workwiki worker",
+      // The regression guard for the anchored lowercase-hyphen pattern: a
+      // wildcard `workwiki-[a-z-]*` would swallow this prose silently.
+      "the workwiki-first approach",
+    ]) {
+      expect(hasStrayWorkwiki(slip), slip).toBe(true);
+    }
+    // The literal check is a STRICT SUBSET of the stray check: it catches the
+    // exact "WorkWiki" casing only, and must stay blind to the variants above.
+    expect(saysStaleDisplayName("keeping WorkWiki cloud-first")).toBe(true);
+    expect(saysStaleDisplayName("the Workwiki worker")).toBe(false);
+    expect(saysStaleDisplayName("the workwiki-first approach")).toBe(false);
   });
 
   it('every remaining "yopedia" is a runtime identifier', async () => {

@@ -9,7 +9,7 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 
 - `llm-wiki.md` is the immutable founding prompt — never edit it.
 - Treat `.github/` and `.yoyo/yoyo.toml` as protected (declared in `.yoyo/yoyo.toml`); change only when explicitly asked.
-- The rebrand is display-only: runtime identifiers stay `yopedia` — `DEFAULT_TENANT` (src/lib/links.ts), `BASE_AGENT_OWNER` (src/lib/agents.ts), `AUTOMATION_ACTORS`, the MCP server name, localStorage keys, `YOPEDIA_*` env/secret names, and every resource name in both wrangler.jsonc files. Renaming any of them orphans production data — new work uses work-wiki in copy, `yopedia` in identifiers.
+- The rebrand is display-only: runtime identifiers stay `yopedia` — `DEFAULT_TENANT` (src/lib/links.ts), `BASE_AGENT_OWNER` (src/lib/agents.ts), `AUTOMATION_ACTORS`, the MCP server name, localStorage keys, `YOPEDIA_*` env/secret names, and every resource name in both wrangler.jsonc files. Renaming any of them orphans production data — new work uses work-wiki in copy, `yopedia` in identifiers. The same freeze covers the operator-facing `WORKWIKI_*` family: the env/secret names (`WORKWIKI_URL`, `WORKWIKI_API_TOKEN`, `WORKWIKI_SYNC_*`, `WORKWIKI_SOURCE_*`), the `workwiki.app` origin, the `.workwiki-source-sync.json` state file, the `workwiki-backups` directory, the `workwiki-*.zip` archive prefix together with the prune regex that matches it, and the `workwiki-portable-archive` manifest `format` string (src/lib/portable-archive.ts), which is written into every exported archive and validated on import — renaming it breaks re-import of archives already on operators' disks. A sweep that "fixes" any of these breaks existing operator setups and strands local backups.
 
 ## Where things are
 
