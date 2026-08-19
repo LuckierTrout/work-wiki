@@ -81,6 +81,13 @@ export const WORKERS_AI_MODEL_PREFIX = "@cf/";
  * callers already hold a narrowed value — and an unnarrowed one would make a
  * typo read as "not workers-ai, therefore this id must not be `@cf/`", which is
  * a confident wrong answer rather than a type error.
+ *
+ * The prefix test is CASE-SENSITIVE by design: `@CF/baai/bge-m3` is not in the
+ * namespace, so under `workers-ai` it is refused by a sentence naming `@cf/`.
+ * That is not a rough edge to smooth over — `resolveEmbeddingModelName` would
+ * drop the same id for the provider default, and the gate exists to agree with
+ * the resolver exactly. Lower-casing here would let the gate accept an id the
+ * resolver then silently replaces, which is the bug this predicate prevents.
  */
 export function embeddingModelMatchesProvider(
   provider: EmbeddingProvider,

@@ -1534,6 +1534,41 @@ describe("PUT /api/settings", () => {
     expect(await stored()).toEqual({ provider: "openai" });
   });
 
+  it("refuses an UNRELATED edit while the STORED config holds a mismatch", async () => {
+    // Every other route case here puts the offending model IN the request. This
+    // one does not: the mismatch is already in the store and the patch touches
+    // only `chatModel`. `validateWorkbenchSettingsPatch` takes the flag from the
+    // patch when present and from the STORE otherwise, then re-runs the whole
+    // rule over the merged inputs — so the namespace leg is not scoped to the
+    // fields being edited. Narrowing it to the patch would leave every other
+    // route test in this file green, which is the regression this case exists
+    // to catch.
+    //
+    // It is also the friction this spec's `deferred` list records: until the
+    // model is fixed or the switch turned off, unrelated Workbench saves are
+    // refused with the namespace sentence. Recovery is always available (the
+    // switch may be turned OFF), so the behaviour is pinned, not softened.
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "text-embedding-3-small",
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(await put({ workbench: { chatModel: "gpt-4o" } }));
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+    );
+    // The unrelated edit did NOT land — the refusal precedes `saveConfig`, so
+    // the store is byte-for-byte what it was.
+    expect(await stored()).toEqual({
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "text-embedding-3-small",
+    });
+  });
+
   it("turns vector search on for a Workers AI id under Workers AI", async () => {
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(
@@ -1789,6 +1824,44 @@ describe("PUT /api/settings", () => {
       embeddingModel: "text-embedding-3-small",
       vectorSearchEnabled: true,
     });
+  });
+
+  it("lets a FLAT-ONLY body store a namespace mismatch the gate never runs on", async () => {
+    // CHARACTERIZATION, not endorsement. The case above passes only because its
+    // body also carries `workbench`, which is what makes the route enter the
+    // validated branch at all. A body with NO `workbench` key skips it entirely
+    // — by explicit design, so that "a body with no `workbench` produces
+    // byte-identically the same saved object" stays true — and the flat
+    // `embeddingModel` branch has never validated anything.
+    //
+    // The consequence since DW-73 is recorded as the FIRST entry in this spec's
+    // `deferred` list: a flat-only save can now switch effective vector search
+    // off, where before it was harmless because the resolver simply fell back.
+    // Closing it is a decision about legacy compatibility, not a patch, so this
+    // test pins TODAY'S answer. When that decision is taken, this expectation
+    // should be updated deliberately rather than tripped over.
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "@cf/baai/bge-m3",
+    });
+    await loadConfig();
+    expect(getVectorSearchSettings().enabled).toBe(true);
+
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(await put({ embeddingModel: "text-embedding-3-small" }));
+
+    // Accepted, because the vector gate is never consulted on this path.
+    expect(response.status).toBe(200);
+    expect(await stored()).toMatchObject({
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "text-embedding-3-small",
+    });
+    // And the effective accessor now disagrees with the stored flag: the switch
+    // still reads on in the store while vector search is off in fact.
+    await loadConfig();
+    expect(getVectorSearchSettings().enabled).toBe(false);
   });
 });
 

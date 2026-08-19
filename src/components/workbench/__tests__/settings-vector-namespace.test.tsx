@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
 import {
+  SETTINGS_LOADING_COPY,
   SETTINGS_VECTOR_HINT_COPY,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
@@ -79,6 +80,23 @@ function announcedFor(control: HTMLElement): string {
     .join(" ");
 }
 
+/**
+ * No PUT was attempted — the only `fetch` so far is the surface's single
+ * on-mount read.
+ *
+ * The refusal is enforced in `onChange` (`SettingsCanvas.tsx:503-506`), which
+ * returns early rather than calling `set`, so nothing this file clicks should
+ * ever reach the network. Save is a separate button here, so this is a
+ * belt-and-braces pin rather than the primary assertion: `checked` is bound to
+ * the DRAFT (`checked={values.vectorSearchEnabled}`), so a handler that stopped
+ * consulting `vectorRefused` would already flip `checked` above. What this adds
+ * is the guarantee that a refused control never writes — the property that would
+ * matter if the switch ever gained an autosave.
+ */
+function expectNoSaveAttempted(): void {
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+}
+
 /** Mount the embeddings category and let the single on-mount read settle. */
 async function mount(stored: WorkbenchSettingsPayload) {
   fetchMock.mockResolvedValue({
@@ -87,7 +105,7 @@ async function mount(stored: WorkbenchSettingsPayload) {
     json: async () => ({ workbench: stored }),
   } as unknown as Response);
   const view = render(<SettingsCanvas category="embeddings" headingId="wb-set-heading" />);
-  await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
+  await waitFor(() => expect(screen.queryByText(SETTINGS_LOADING_COPY)).toBeNull());
   return view;
 }
 
@@ -106,6 +124,7 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     expect(announcedFor(checkbox)).toBe(IN_NAMESPACE);
     fireEvent.click(checkbox);
     await waitFor(() => expect(checkbox.checked).toBe(false));
+    expectNoSaveAttempted();
     // The old sentence is the regression this guards: "needs a model" beside a
     // model box that visibly holds one sent the owner nowhere.
     expect(announcedFor(checkbox)).not.toContain("needs a model before");
@@ -128,6 +147,7 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     // direction passing even if `onChange` stopped consulting `vectorRefused`.
     fireEvent.click(checkbox);
     await waitFor(() => expect(checkbox.checked).toBe(false));
+    expectNoSaveAttempted();
   });
 
   it("leaves an ALREADY-ON switch checked, refused, and turn-off-able", async () => {
@@ -139,10 +159,12 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
     expect(checkbox.checked).toBe(true);
     // NOT `aria-disabled`, which is deliberate rather than an oversight:
-    // `vectorRefused` is `!vectorAllowed && !values.vectorSearchEnabled`, so a
-    // switch that is already on stays operable. An owner must be able to undo a
-    // switch whose legs have since gone missing, and marking it disabled here
-    // would strand them with a control they cannot turn off.
+    // `vectorRefused` is `stored.readOnly || (!vectorAllowed &&
+    // !values.vectorSearchEnabled)` (`SettingsCanvas.tsx:237-238`), and this
+    // payload is writable — so a switch that is already on stays operable. An
+    // owner must be able to undo a switch whose legs have since gone missing,
+    // and marking it disabled here would strand them with a control they cannot
+    // turn off.
     expect(checkbox.getAttribute("aria-disabled")).toBeNull();
     // The refusal is still what gets announced, so "checked" never reads as
     // "working".
@@ -156,6 +178,9 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     fireEvent.click(checkbox);
     await waitFor(() => expect(checkbox.checked).toBe(false));
     expect(announcedFor(checkbox)).toBe(IN_NAMESPACE);
+    // Neither the allowed turn-OFF nor the refused turn-back-ON went near the
+    // network: this surface saves from its own button, never from the switch.
+    expectNoSaveAttempted();
   });
 
   it("shows the ordinary hint once the id matches the provider", async () => {

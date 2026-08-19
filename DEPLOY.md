@@ -64,6 +64,13 @@ is dropped **silently** — embeddings are then disabled entirely, with no error
 the logs. On Docker, set this to `openai`, `google`, or `ollama`, or leave it
 unset and let the app auto-detect.
 
+Those are not safe answers by themselves, though: `openai` and `google` are
+dropped just as silently when the matching key is missing (`OPENAI_API_KEY` /
+`GOOGLE_GENERATIVE_AI_API_KEY`, or the key stored in Settings → Embeddings).
+Forcing a provider also switches OFF the auto-detection fallback, so an override
+that cannot resolve leaves embeddings disabled rather than picking a provider
+that would have worked. Set the variable only alongside the credential it needs.
+
 **`EMBEDDING_MODEL` must respect the Workers AI namespace boundary.** Cloudflare
 Workers AI model ids live in the `@cf/` namespace (`@cf/baai/bge-m3`,
 `@cf/baai/bge-large-en-v1.5`); every other embedding provider's ids must sit
@@ -71,17 +78,31 @@ outside it. This check does not validate one non-Workers-AI provider's model
 catalog against another's. Two separate things happen to an id on the wrong side
 of the boundary:
 
-- **The Settings surface refuses it.** The Workbench vector-search switch cannot
-  be turned on while the provider and the model id disagree, and a save that
-  tries is rejected with a message naming the namespace it expected.
+- **The Workbench Settings surface refuses it.** The vector-search switch in the
+  Workbench's Embeddings settings cannot be turned on while the model id and the
+  **explicitly selected** embedding provider disagree, and a save that tries is
+  rejected with a message naming the namespace it expected. Two limits are worth
+  knowing before you rely on it. The older `/settings` page saves the embedding
+  model through a flat request that never runs this check, so a mismatch entered
+  there is accepted silently. And the namespace is only named once an embedding
+  provider has actually been chosen — with the provider left to auto-detection
+  the switch refuses for the missing provider instead, and never mentions `@cf/`
+  at all.
 - **The embedding path substitutes the provider default.** The mismatched id is
   ignored and embedding continues with the default for the resolved provider
-  (`@cf/baai/bge-m3` for Workers AI, `text-embedding-3-small` for OpenAI), so
-  content is still embedded — just not with the model named here.
+  (`@cf/baai/bge-m3` for Workers AI, `text-embedding-3-small` for OpenAI,
+  `gemini-embedding-001` for Google, `nomic-embed-text` for Ollama), so content
+  is still embedded — just not with the model named here.
 
-So a mismatch does not stop embeddings; it silently changes which model does the
-embedding. If the model you set here does not appear to be in use, check that it
-is on the same side of the `@cf/` boundary as the selected embedding provider.
+That substitution is the expensive half. Different embedding models generally
+produce vectors of different widths, and every stored vector is tagged with the
+model that produced it. Once a store holds vectors from two models, queries
+either fail outright on a dimension mismatch or have every hit discarded by the
+model filter — either way vector search returns nothing until the whole corpus
+is re-embedded. So a mismatch does not stop embeddings; it silently changes
+which model does them, and can cost you the index you already built. If the
+model you set here does not appear to be in use, check that it is on the same
+side of the `@cf/` boundary as the selected embedding provider.
 
 ## Volume Mounts
 

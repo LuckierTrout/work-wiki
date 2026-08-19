@@ -3,6 +3,8 @@ import {
   PROVIDER_INFO,
   VALID_PROVIDERS,
   DEFAULT_MODELS,
+  WORKERS_AI_MODEL_PREFIX,
+  embeddingModelMatchesProvider,
   providerLabel,
 } from "../providers";
 
@@ -143,5 +145,77 @@ describe("providerLabel", () => {
 
   it("is case-sensitive — 'Anthropic' is unknown", () => {
     expect(providerLabel("Anthropic")).toBe("Anthropic");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// embeddingModelMatchesProvider — the Workers AI namespace boundary (DW-73)
+// ---------------------------------------------------------------------------
+
+describe("embeddingModelMatchesProvider", () => {
+  // This helper is the SINGLE statement of a rule two modules depend on:
+  // `embeddings.ts`'s `resolveEmbeddingModelName` drops an override that fails
+  // it, and `workbench-settings.ts`'s vector gate refuses the same combination
+  // at the Settings surface. Everything else that covers it reaches it through
+  // one of those two callers, which means the boundary inputs below — the empty
+  // string, the bare prefix, a differently-cased prefix — have no home anywhere
+  // else. They live here, in the suite for the module that owns the rule.
+
+  it("accepts a Workers AI id under workers-ai", () => {
+    expect(embeddingModelMatchesProvider("workers-ai", "@cf/baai/bge-m3")).toBe(true);
+    expect(embeddingModelMatchesProvider("workers-ai", "@cf/baai/bge-large-en-v1.5")).toBe(
+      true,
+    );
+  });
+
+  it("accepts a non-Workers-AI id under every keyed or self-hosted provider", () => {
+    expect(embeddingModelMatchesProvider("openai", "text-embedding-3-small")).toBe(true);
+    expect(embeddingModelMatchesProvider("google", "gemini-embedding-001")).toBe(true);
+    expect(embeddingModelMatchesProvider("ollama", "nomic-embed-text")).toBe(true);
+  });
+
+  it("refuses BOTH directions — it is an equality, not a ban on @cf/", () => {
+    expect(embeddingModelMatchesProvider("workers-ai", "text-embedding-3-small")).toBe(
+      false,
+    );
+    expect(embeddingModelMatchesProvider("openai", "@cf/baai/bge-m3")).toBe(false);
+    expect(embeddingModelMatchesProvider("google", "@cf/baai/bge-m3")).toBe(false);
+    expect(embeddingModelMatchesProvider("ollama", "@cf/baai/bge-m3")).toBe(false);
+  });
+
+  it("treats the empty string as OUT of the namespace", () => {
+    // Not a judgement about emptiness: `"".startsWith("@cf/")` is false, so ""
+    // is out-of-namespace and matches every provider except workers-ai. Callers
+    // never pass it — the gate checks `!v.model` first and the resolver only
+    // reaches here for a truthy override — but the answer is pinned so a future
+    // caller cannot discover it by accident.
+    expect(embeddingModelMatchesProvider("openai", "")).toBe(true);
+    expect(embeddingModelMatchesProvider("workers-ai", "")).toBe(false);
+  });
+
+  it("accepts the BARE prefix under workers-ai — this is a namespace test, not a catalog", () => {
+    // `"@cf/"` is in the namespace and nothing more is claimed: the helper says
+    // where an id lives, not whether Workers AI serves it. A bare prefix fails
+    // later, at `ai.run()`, which is the documented boundary of this rule.
+    expect(embeddingModelMatchesProvider("workers-ai", WORKERS_AI_MODEL_PREFIX)).toBe(true);
+    expect(embeddingModelMatchesProvider("openai", WORKERS_AI_MODEL_PREFIX)).toBe(false);
+  });
+
+  it("is CASE-SENSITIVE, deliberately", () => {
+    // `@CF/…` is not in the namespace, so under workers-ai it is refused by a
+    // sentence naming `@cf/`. That is the point rather than a rough edge:
+    // `resolveEmbeddingModelName` applies this same helper and would drop the id
+    // for the provider default, so accepting it here would let the gate approve
+    // a model the resolver silently replaces — the exact bug DW-73 fixes.
+    expect(embeddingModelMatchesProvider("workers-ai", "@CF/baai/bge-m3")).toBe(false);
+    expect(embeddingModelMatchesProvider("openai", "@CF/baai/bge-m3")).toBe(true);
+  });
+
+  it("is the prefix constant, not a second copy of the literal", () => {
+    // If the prefix ever moves, this is the assertion that fails first.
+    expect(WORKERS_AI_MODEL_PREFIX).toBe("@cf/");
+    expect(
+      embeddingModelMatchesProvider("workers-ai", `${WORKERS_AI_MODEL_PREFIX}baai/bge-m3`),
+    ).toBe(true);
   });
 });

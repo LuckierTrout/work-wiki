@@ -60,6 +60,16 @@ vi.mock("ai", () => ({
   embed: vi.fn(async () => ({ embedding: [0.1] })),
   embedMany: vi.fn(async () => ({ embeddings: [[0.1]] })),
 }));
+// The Cloudflare context `embeddings.ts` reads for the Workers AI binding. The
+// default THROWS, which is precisely what the real one does off the Workers
+// runtime — so every case in this file that was written without it behaves
+// exactly as before, and the Workers AI case opts in by handing back a binding.
+// Restored in `beforeEach`, because `clearAllMocks` keeps implementations.
+vi.mock("@opennextjs/cloudflare", () => ({
+  getCloudflareContext: vi.fn(() => {
+    throw new Error("no cloudflare context");
+  }),
+}));
 
 import {
   _resetConfigCache,
@@ -86,6 +96,14 @@ import {
   hasLLMKey,
 } from "../llm";
 import { _resetStorage } from "../storage";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
+
+const mockGetCfContext = getCloudflareContext as ReturnType<typeof vi.fn>;
+
+/** Off the Workers runtime, which is where every case here runs by default. */
+function noCloudflareContext(): never {
+  throw new Error("no cloudflare context");
+}
 
 let tmpDir: string;
 let savedEnv: Record<string, string | undefined>;
@@ -127,6 +145,7 @@ beforeEach(async () => {
   createGoogleMock.mockImplementation(provider);
   createOllamaMock.mockImplementation(provider);
   generateTextMock.mockImplementation(async () => ({ text: "ok" }));
+  mockGetCfContext.mockImplementation(noCloudflareContext);
   _resetConfigCache();
   _resetStorage();
 });
@@ -470,6 +489,44 @@ describe("the stored embedding credential and endpoint are read", () => {
     // The two answers agree: the gate is not on for a key nothing can reach.
     expect(getVectorSearchSettings().enabled).toBe(true);
     expect(hasEmbeddingSupport()).toBe(true);
+  });
+
+  it("lets an ENABLED Workers AI gate imply the owner's own model embeds (DW-73)", async () => {
+    // The end-to-end form of what `embeddingModelMatchesProvider` exists to
+    // guarantee. `workbench-settings.test.ts` pins the gate and
+    // `embeddings.test.ts` pins the resolver, but nothing crossed the two for
+    // `workers-ai` over a real stored config — which is the ONE provider where
+    // the namespace rule can bite, and the one this file had no case for.
+    //
+    // The id is deliberately NOT `@cf/baai/bge-m3`: that is the Workers AI
+    // DEFAULT, so a resolver that dropped the stored value would still return
+    // it and the assertion would pass while the bug shipped.
+    mockGetCfContext.mockReturnValue({ env: { AI: { run: vi.fn() } } });
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "@cf/baai/bge-large-en-v1.5",
+    });
+
+    expect(getVectorSearchSettings().enabled).toBe(true);
+    expect(getEmbeddingModelName()).toBe("@cf/baai/bge-large-en-v1.5");
+  });
+
+  it("keeps the gate and the resolver agreeing when the namespace does NOT match", async () => {
+    // The other half of the same equivalence, and the state DW-73 exists for:
+    // the gate reads off, and the resolver substitutes the provider default
+    // rather than embedding with the id the owner typed. Both halves come from
+    // the one shared predicate, so a change to it breaks this pair together
+    // instead of letting the two surfaces drift apart quietly.
+    mockGetCfContext.mockReturnValue({ env: { AI: { run: vi.fn() } } });
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "text-embedding-3-small",
+    });
+
+    expect(getVectorSearchSettings().enabled).toBe(false);
+    expect(getEmbeddingModelName()).toBe("@cf/baai/bge-m3");
   });
 
   it("does the same for Google", async () => {

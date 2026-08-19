@@ -4,7 +4,7 @@ type: 'bugfix'
 created: '2026-08-18'
 status: 'done' # draft | ready-for-dev | in-progress | in-review | done | blocked
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: []
 warnings: ['oversized']
 deferred:
@@ -68,8 +68,9 @@ deferred:
       (`src/lib/vision.ts:19`) satisfies the leg for `workers-ai`; both fail at
       `ai.run()` instead. `WORKERS_AI_EMBEDDING_DIMENSIONS`
       (`src/lib/embeddings.ts:35-43`) already enumerates the four supported ids
-      and could back a membership check, but it is unexported and lives in a
-      module client-safe code cannot import. Pre-existing: both inputs were
+      and could back a membership check, but although it IS exported
+      (`export const` at `src/lib/embeddings.ts:38`) it lives in a module
+      client-safe code cannot import. Pre-existing: both inputs were
       accepted before DW-73 too.
     location: >-
       src/lib/providers.ts (embeddingModelMatchesProvider)
@@ -165,7 +166,42 @@ deferred:
     location: >-
       src/lib/embeddings.ts:180-192
     severity: low
-baseline_revision: 'da113a34d74406bad6e684f073a507325729a5d8'
+  - summary: >-
+      A whitespace-only `EMBEDDING_MODEL` is handed to the provider verbatim as
+      the embedding model name, while the vector gate reads the same value as
+      absent.
+    evidence: |-
+      `getEmbeddingModelOverride()` returns `process.env.EMBEDDING_MODEL` raw
+      (`src/lib/config.ts:175-177`) with no `nonEmpty`, and
+      `resolveEmbeddingModelName` guards on truthiness only, so `"   "` is
+      truthy. `embeddingModelMatchesProvider(provider, "   ")` is TRUE for every
+      non-`workers-ai` provider (`"   ".startsWith("@cf/")` is false, which
+      equals `provider !== "workers-ai"`), so the blank string is returned as
+      the model name and reaches the provider call. `getVectorSearchSettings`
+      reads the same env var through `nonEmpty` (`src/lib/config.ts:512`), which
+      trims it to null, so the gate reports "a model" missing while the resolver
+      embeds with a blank id. Pre-existing: the pre-DW-73 resolver used the same
+      truthiness guard. Distinct from the leading-whitespace item above — that
+      one substitutes the provider default, this one sends an empty name.
+    location: >-
+      src/lib/config.ts:175-177 with src/lib/embeddings.ts:180-183
+    severity: low
+  - summary: >-
+      The new mounted settings test duplicates about sixty lines of an existing
+      workbench test's harness verbatim.
+    evidence: |-
+      `payload()`, the `fetchMock` `beforeEach`/`afterEach`, `announcedFor()`
+      and `mount()` are copied word for word — doc comments included — from
+      `src/components/workbench/__tests__/settings-read-only.test.tsx:26-101`.
+      Two independently maintained copies of a screen-reader assertion helper is
+      the same drift the shared `embeddingModelMatchesProvider` predicate exists
+      to prevent on the production side. Extracting a shared workbench test
+      helper edits a passing test file outside this story's surface, so it is a
+      focused cleanup rather than an in-pass patch.
+    location: >-
+      src/components/workbench/__tests__/settings-vector-namespace.test.tsx
+    severity: low
+baseline_revision: '1a19dfdde7b067534c069032f59ff9cf642ffcac'
 ---
 
 <intent-contract>
@@ -239,6 +275,79 @@ baseline_revision: 'da113a34d74406bad6e684f073a507325729a5d8'
 ## Spec Change Log
 
 ## Review Triage Log
+
+### 2026-08-19 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 14: (high 0, medium 7, low 7)
+- defer: 2: (high 0, medium 0, low 2)
+- reject: 18: (high 0, medium 6, low 12)
+- addressed_findings:
+  - `[medium]` `[patch]` `.env.example` — the file operators actually copy was never
+    updated for DW-73 and taught the opposite of the shipped rule: the gate
+    sentence omitted the namespace leg, `EMBEDDING_PROVIDER` offered
+    `workers-ai` with no Workers-only caveat, and `EMBEDDING_MODEL` showed
+    `text-embedding-3-small` with nothing about the `@cf/` boundary. All three
+    corrected in the file's own comment voice.
+  - `[medium]` `[patch]` `DEPLOY.md` stated "The Settings surface refuses it"
+    unqualified, which is wrong twice: it is the WORKBENCH surface only (the
+    legacy `/settings` page sends a flat body the route writes past the gate),
+    and the namespace is only named when an explicit provider is selected —
+    under auto-detect the switch refuses for the missing provider instead.
+    Both limits now stated.
+  - `[medium]` `[patch]` `DEPLOY.md` stopped the substitution bullet at "content is
+    still embedded", which reads as harmless. Added the expensive half: a
+    different effective model generally means a different vector width, and a
+    store holding two returns nothing until a full re-embed.
+  - `[medium]` `[patch]` No route test drove the new leg from a mismatch that lives
+    only in the STORED config, so narrowing the leg to fields present in the
+    patch would have left every existing route case green. Added a case where
+    the patch touches only `chatModel`: 400 with the namespace sentence and a
+    byte-identical store.
+  - `[medium]` `[patch]` Nothing pinned the flat-only `PUT` (no `workbench` key) —
+    the existing legacy-field test passes only because its body also carries
+    `workbench`, so it never reaches the branch skip. Added a characterization
+    test recording today's answer (200, mismatch stored, effective vector
+    search drops to false), commented as the first `deferred` entry so the
+    future fix updates it deliberately. Route behaviour unchanged.
+  - `[medium]` `[patch]` `settings-runtime-wiring.test.ts` is the one suite that
+    cross-checks the gate and the resolver over a real stored config, and it
+    had no `workers-ai` case at all, so the equivalence the shared predicate
+    exists to guarantee was never asserted end to end. Added both halves, using
+    `@cf/baai/bge-large-en-v1.5` rather than the Workers AI default so a
+    resolver that dropped the stored value could not pass vacuously.
+  - `[medium]` `[patch]` The mounted refusal tests asserted the control but never
+    that a refused click writes nothing. Added that assertion. (The finding's
+    stated mechanism was wrong — the switch edits draft state and saving is a
+    separate button, so the existing assertions were not vacuous. The pin was
+    kept anyway and its comment states the real mechanism.)
+  - `[low]` `[patch]` `DEPLOY.md`'s `workers-ai` caveat was one-sided: it named
+    `openai`/`google` as the safe Docker answer without saying they disable
+    embeddings just as silently when their key is absent, since a forced
+    provider does not fall back to auto-detect. Added.
+  - `[low]` `[patch]` `DEPLOY.md` named two of the four provider defaults in a
+    sentence sitting two lines under a table listing all four. Added the Google
+    and Ollama defaults.
+  - `[low]` `[patch]` `embeddingModelMatchesProvider` is the single statement of the
+    rule and had no test in its own module's suite — every assertion reached it
+    through `canEnableVectorSearch` or the route. Added seven direct cases in
+    `providers.test.ts`, including `""`, the bare prefix, and a differently
+    cased id.
+  - `[low]` `[patch]` The mounted test's comment stated `vectorRefused` as
+    `!vectorAllowed && !values.vectorSearchEnabled`, dropping the real
+    predicate's leading `stored.readOnly ||`. Corrected.
+  - `[low]` `[patch]` The mounted test's `mount()` waiter hardcoded `"Loading…"`
+    though `SETTINGS_LOADING_COPY` is exported from a module the file already
+    imports. Switched to the constant; the refusal sentences stay hardcoded,
+    since asserting those against their own constant would be tautological.
+  - `[low]` `[patch]` The `@cf/` comparison is case-sensitive — `@CF/…` under
+    `workers-ai` is refused by a sentence naming `@cf/` — and nothing said so.
+    Behaviour is correct (it mirrors the resolver exactly, which is the whole
+    invariant); added the note to the `providers.ts` JSDoc.
+  - `[low]` `[patch]` This spec's fourth `deferred` item claimed
+    `WORKERS_AI_EMBEDDING_DIMENSIONS` "is unexported". It is `export const` at
+    `src/lib/embeddings.ts:38`; only the client-safety half was true. Evidence
+    corrected, every other item left byte-identical.
 
 ### 2026-08-18 — Review pass
 - intent_gap: 0
@@ -328,58 +437,92 @@ The gate widens for an already-stored mismatched config, which is deliberate: `g
 ## Auto Run Result
 
 Status: done
-Baseline revision: `da113a34d74406bad6e684f073a507325729a5d8`
+Baseline revision: `1a19dfdde7b067534c069032f59ff9cf642ffcac`
 
-**Implemented change.** The reviewed implementation keeps the Workers AI
-`@cf/` namespace rule in one client-safe predicate and applies it at the
-Workbench vector gate, nested settings-route validation, and effective
-vector-settings accessor while preserving the embedding resolver's existing
-provider-default fallback. This fresh review changed no runtime code; it
-corrected the spec's explanation of the accessor, stored Workbench flag, and
-embedding path, and removed an end-of-file whitespace defect.
+**Implemented change.** The DW-73 story surface — the Workers AI `@cf/`
+namespace rule stated once in a client-safe predicate and applied at the
+Workbench vector gate, the settings route's nested validation, and the effective
+vector-settings accessor, with `resolveEmbeddingModelName`'s provider-default
+fallback preserved — was already present in full at the recorded baseline. This
+run re-audited it against the working tree, then reviewed the whole story
+surface since `da113a34` and applied fourteen patches. None of them changed gate
+behaviour: every expectation in the frozen I/O matrix still holds verbatim, and
+the only non-test, non-documentation edit is a JSDoc paragraph.
 
-**Files changed** (story surface since the baseline)
-- `src/lib/providers.ts` — owns `WORKERS_AI_MODEL_PREFIX` and the shared
-  `embeddingModelMatchesProvider` predicate.
-- `src/lib/embeddings.ts` — uses the shared predicate while preserving fallback
-  to the resolved provider's default model.
-- `src/lib/workbench-settings.ts` — refuses both namespace-mismatch directions
-  and composes the namespace leg into the shared refusal sentence.
-- `src/lib/__tests__/workbench-settings.test.ts` — covers the predicate, copy,
-  route, environment override, and stored-runtime cases.
+The substantive gains were in the two places the earlier passes had not reached:
+the operator-facing documentation, which told a partly false story about which
+surfaces refuse a mismatch and what a substitution actually costs, and the test
+suite, where three real verification holes let the new leg be narrowed or
+bypassed without a failure.
+
+**Files changed** (story surface this pass)
+- `.env.example` — the copied-from template now states the namespace leg, marks
+  `workers-ai` as Workers-only, and names the `@cf/` boundary beside
+  `EMBEDDING_MODEL`.
+- `DEPLOY.md` — scopes the refusal to the Workbench surface and to an explicitly
+  selected provider, adds the vector-width/re-embed cost of a substitution, the
+  matching key requirement for `openai`/`google`, and the two missing provider
+  defaults.
+- `src/lib/providers.ts` — JSDoc records that the prefix test is case-sensitive
+  by design, matching the resolver. Comment-only.
+- `src/lib/__tests__/providers.test.ts` — seven direct cases for
+  `embeddingModelMatchesProvider`, the rule's single statement, including the
+  empty string, the bare prefix, and a differently cased id.
+- `src/lib/__tests__/workbench-settings.test.ts` — a stored-only mismatch
+  refusing an unrelated `chatModel` edit, and a characterization test for the
+  legacy flat-only `PUT`.
+- `src/lib/__tests__/settings-runtime-wiring.test.ts` — the first `workers-ai`
+  cases in the one suite that cross-checks gate and resolver over a real stored
+  config, in both directions.
 - `src/components/workbench/__tests__/settings-vector-namespace.test.tsx` —
-  exercises refused and allowed switch interactions on the mounted Settings
-  surface.
-- `DEPLOY.md` — documents the Workers-only binding requirement and the distinct
-  Settings-versus-embedding-path effects of a mismatch.
+  pins that a refused click writes nothing, uses the exported loading constant,
+  and corrects a comment that misquoted `vectorRefused`.
 - `_bmad-output/implementation-artifacts/spec-dw-73-workers-ai-embedding-namespace.md`
-  — records this review pass and corrects its runtime-surface explanation.
+  — corrects one `deferred` item's evidence, records this pass, and adds two new
+  deferred observations.
 
-**Review findings.** This pass applied 2 spec patches (medium 1, low 1), added
-0 deferred items, and rejected 18 findings. Most rejected findings were exact
-repeats of the ten observations already preserved in this spec's `deferred`
-list, or concerned unrelated orchestration artifacts in the baseline diff. The
-existing deferred list remains one YAML list with all 10 items unchanged; no
-deferred-work ledger entry was modified, reopened, or rewritten.
+**Review findings.** Four review layers ran in parallel over the story surface
+since `da113a34`. 14 findings were patched (high 0, medium 7, low 7), 2 deferred
+(both low), and 18 rejected. No intent gap and no bad-spec loopback: the
+intent-alignment audit found the diff faithfully implements the intent's
+prescription — teach the gate the namespace rule, share the constant — and that
+the gap between that prescription and the ledger's stated harm is declined on
+the intent's own authority and documented rather than hidden. Most rejections
+were exact repeats of observations already held in this spec's `deferred` list.
+`deferred-work.md` was not modified, reopened, or rewritten.
 
-**Follow-up review recommended: false.** Patched findings only: high 0, medium
-1, low 1 → `3 × 1 + 1 = 4`, below the threshold of 5.
+One patched finding's stated mechanism was wrong and is recorded as such: the
+vector switch edits draft state rather than saving on click, so the existing
+mounted assertions were not vacuous. The assertion was added anyway, with a
+comment stating the real mechanism.
 
-**Verification** (run first-hand after the review patches)
-- Targeted Vitest command from `## Verification` — 5 files, 289 tests, all
-  passing, exit 0.
-- `npx vitest run` — 228 files, 4,794 tests, all passing, exit 0; expected
-  failure-path diagnostics appeared on stderr inside passing tests.
+**Follow-up review recommended: true.** Patched findings this pass: high 0,
+medium 7, low 7 → `3 × 7 + 7 = 28`, at or above the threshold of 5.
+
+**Verification** (run first-hand after the patches)
+- Targeted Vitest command from `## Verification` — 5 files, 293 tests, all
+  passing, exit 0 (289 before this pass).
+- `npx vitest run` — 228 files, 4,805 tests, all passing, exit 0 (4,794 before;
+  the 11 new tests are the additions listed above).
 - `npx tsc --noEmit` — exit 0, no output.
 - `npx eslint` — exit 0; only the documented pre-existing `jsx-ast-utils`
-  `TSNonNullExpression` notices.
-- `git diff --check da113a34d74406bad6e684f073a507325729a5d8 --` — exit 0.
-- Frontmatter YAML parse — `deferred` is one list containing 10 well-formed
-  items.
+  `TSNonNullExpression` notices on stderr.
+- `git diff --check 1a19dfdde7b067534c069032f59ff9cf642ffcac --` — exit 0.
+- Matrix test audit — all six I/O matrix rows covered by named tests that ran
+  and passed; no expectation was edited.
+- Frontmatter YAML parse — `deferred` is one list of 12 well-formed items, the
+  original 10 plus 2.
 
-**Residual risks.** The ten previously recorded observations remain for
-orchestrator-owned follow-up. The most consequential are that the live legacy
-flat settings write can create a mismatch without consulting the Workbench gate,
-and actual embedding does not consume `getVectorSearchSettings()`, so supported
-paths outside that gate can still substitute the provider default. Those risks
-were not duplicated or reopened during this pass.
+**Residual risks.**
+- The re-arm set `baseline_revision` to a commit that already contained the
+  story surface, so a diff-since-baseline review of this spec sees only
+  documentation, tests and the spec itself. This pass was reviewed against
+  `da113a34`, the story's original baseline, so the runtime code was not skipped
+  — but the frontmatter value alone would understate what was examined.
+- Twelve observations remain in `deferred` for orchestrator-owned follow-up. The
+  two that still matter most are unchanged: the legacy flat `PUT /api/settings`
+  branch writes `embeddingModel` without consulting the gate — now pinned by a
+  characterization test rather than merely described — and the embed path runs
+  on `hasEmbeddingSupport()` rather than `getVectorSearchSettings()`, so
+  supported paths outside the Settings gate still substitute the provider
+  default. `DEPLOY.md` documents both.
