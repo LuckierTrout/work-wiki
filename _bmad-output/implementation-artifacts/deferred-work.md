@@ -1542,6 +1542,7 @@ location: src/components/WikiWorkbench.tsx:172 with src/app/globals.css:2696
 severity: low
 reason: The card's wrapper is `grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]` (`WikiWorkbench.tsx:172`). `display: none` removes the second child from layout but not the track it sat in, so at the `lg:` breakpoint with `data-preview="true"` the receipt card stays pinned at 320px and the `1fr` column renders empty — space the sentence used to fill. The intent authorized a visibility change only ("Only its visibility while a Preview is docked changes"), so the diff is spec-compliant; whether the card should reflow to the full canvas width when the Preview docks is a UX call, not a mechanical fix. Adding a `grid-template-columns` override to the DW-39 rule would be cascade-safe (`workbench-split.test.ts:1247` keys on `lastIndexOf`, and this rule sits far ahead of the docked grid variants), so the blocker is the design decision, not the mechanism.
 status: open
+decision: 2026-08-19 Reflow to full width — Extend the DW-39 docked-preview rule with a `grid-template-columns` override so the canvas card takes the full canvas width when a Preview is docked, verifying it sits ahead of the docked grid variants the way `workbench-split.test.ts:1247`'s `lastIndexOf` check expects.
 
 ### DW-181: The `Edit` control stays live over a body a 404 has replaced, so the confirm dialog and then a `PUT` can be reached for a page the route says is not there.
 origin: spec-deferred 42b15c1d03b0
