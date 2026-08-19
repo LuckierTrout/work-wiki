@@ -1162,6 +1162,7 @@ location: src/app/api/tasks/scan/route.ts:57
 severity: low
 reason: `src/app/api/tasks/scan/route.ts:57` calls `rebuildDerivedIndexes()` and `:60` calls `purgeStaleJobs()` before the `dry` branch is consulted — both write. `workers/task-consumer/README.md` defines dry-run as "logs/returns what it *would* enqueue and enqueues nothing" without noting them, which matters for the "inspect what it would do" step it recommends. Pre-existing route behavior; documenting it accurately means first deciding whether those two calls should move behind the flag, which is beyond a doc correction.
 status: open
+decision: 2026-08-19 Make dry actually dry — Move `rebuildDerivedIndexes()` and `purgeStaleJobs()` behind the `!dry` branch so a dry run performs no writes at all, and add a test asserting no storage write occurs when `dry=1`.
 
 ### DW-135: Follow-up review still recommended for dw-retire-dead-machinery-round-2 after the damping cap was spent
 origin: review-budget-followup

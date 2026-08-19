@@ -17,6 +17,15 @@
     "label": "Stub configurable rects",
     "resolution": ""
   },
+  "DW-134": {
+    "answered_at": "2026-08-19",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Move `rebuildDerivedIndexes()` and `purgeStaleJobs()` behind the `!dry` branch so a dry run performs no writes at all, and add a test asserting no storage write occurs when `dry=1`.",
+    "key": "1",
+    "label": "Make dry actually dry",
+    "resolution": ""
+  },
   "DW-44": {
     "answered_at": "2026-08-17",
     "bundle_name": "",
