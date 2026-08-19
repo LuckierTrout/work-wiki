@@ -116,33 +116,6 @@
     "label": "Stamp an opaque token",
     "resolution": ""
   },
-  "DW-44": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Keep the visual divider at its current width but move the hit strip fully onto the canvas side of the boundary and widen it toward 24px there, so the scrollbar stays reachable and the target grows. Verify against the tree's scrollbar at both collapsed and expanded widths.",
-    "key": "1",
-    "label": "Offset the strip off the scrollbar",
-    "resolution": ""
-  },
-  "DW-46": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "When a restored selection's kind disagrees with the restored tab, switch the tab to the one that can mark the row rather than dropping the selection. This keeps the wikilink cross-tab pairing restorable and still guarantees the docked Preview always has a row carrying aria-current.",
-    "key": "1",
-    "label": "Restore the tab, not reject the row",
-    "resolution": ""
-  },
-  "DW-47": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Introduce a single exported breakpoint constant consumed by both the stylesheet build and TreePanel's matchMedia listener, add the listener to both scroll effects so the live 900px transition restores and records the offset, and retarget the workbench-split.test.ts ban to forbid ad-hoc duplicate literals rather than the shared constant.",
-    "key": "1",
-    "label": "Allow one shared breakpoint constant",
-    "resolution": ""
-  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
@@ -150,15 +123,6 @@
     "intent": "",
     "key": "2",
     "label": "Wait for DW-14",
-    "resolution": ""
-  },
-  "DW-59": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Snapshot artifacts under their own per-Wiki revision namespace (tenants/<t>/wikis/<id>/revisions/<file>/), read-before-write in writeWikiArtifact, and expose list/revert through the artifact route mirroring the page revisions API. Keeps the slug-keyed revisions silo untouched.",
-    "key": "1",
-    "label": "Per-Wiki artifact revisions",
     "resolution": ""
   },
   "DW-61": {
@@ -177,24 +141,6 @@
     "intent": "Change g s to select the Workbench's Settings mode instead of pushing /settings, so the keyboard path matches the rail control and never unmounts the shell, and retarget the keyboard-shortcuts.test.ts pins at :102-105 and :203. Consistent with retiring the legacy page under DW-61.",
     "key": "1",
     "label": "Retarget to the in-shell surface",
-    "resolution": ""
-  },
-  "DW-73": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Teach canEnableVectorSearch the provider's namespace rule so a workers-ai model outside @cf/ fails validation with an explanatory message on the Settings surface, instead of enabling the switch and being discarded later at resolution time.",
-    "key": "1",
-    "label": "Validate at the surface",
-    "resolution": ""
-  },
-  "DW-76": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Give the flag a read model and a way out: a lint check or Workbench view listing disputed pages, and an owner action that clears the flag after review. Restores the loop that reconcile-from-talk used to close, without reviving talk.",
-    "key": "1",
-    "label": "Re-surface disputed pages",
     "resolution": ""
   }
 }
