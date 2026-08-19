@@ -182,8 +182,14 @@ function resolveEmbeddingModelName(
   if (override) {
     if (embeddingModelMatchesProvider(provider, override)) return override;
     // Namespace mismatch — ignore the override and use the provider default.
-    // The Settings gate refuses this combination outright (DW-73); reaching
-    // here means bytes that arrived some other way, so the fallback stays.
+    //
+    // The WORKBENCH settings gate refuses this combination (DW-73), but that is
+    // only one of the ways a value reaches here: the legacy flat
+    // `PUT /api/settings` branch writes `embeddingModel` without running the
+    // gate, an `EMBEDDING_MODEL` env override bypasses the store entirely, and
+    // a vector-off deployment never consults the gate at all. So the fallback
+    // is not dead code for stray bytes — it is the live behaviour on every
+    // supported path the gate does not cover, and it stays.
   }
   return DEFAULT_EMBEDDING_MODELS[provider] ?? provider;
 }

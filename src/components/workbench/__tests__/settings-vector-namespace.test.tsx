@@ -123,6 +123,39 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
     expect(checkbox.getAttribute("aria-disabled")).toBe("true");
     expect(announcedFor(checkbox)).toBe(OUT_OF_NAMESPACE);
+    // Clicked, not merely inspected: "the owner cannot turn it on" is a claim
+    // about the HANDLER, and asserting `aria-disabled` alone would leave this
+    // direction passing even if `onChange` stopped consulting `vectorRefused`.
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(checkbox.checked).toBe(false));
+  });
+
+  it("leaves an ALREADY-ON switch checked, refused, and turn-off-able", async () => {
+    // The state the deployment documentation is about, and the most confusing
+    // one this change produces: the payload serves the STORED flag rather than
+    // the intersected one (`config.ts:652-656`), so the switch renders CHECKED
+    // while the gate refuses the combination underneath it.
+    await mount(payload({ vectorSearchEnabled: true }));
+    const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    // NOT `aria-disabled`, which is deliberate rather than an oversight:
+    // `vectorRefused` is `!vectorAllowed && !values.vectorSearchEnabled`, so a
+    // switch that is already on stays operable. An owner must be able to undo a
+    // switch whose legs have since gone missing, and marking it disabled here
+    // would strand them with a control they cannot turn off.
+    expect(checkbox.getAttribute("aria-disabled")).toBeNull();
+    // The refusal is still what gets announced, so "checked" never reads as
+    // "working".
+    expect(announcedFor(checkbox)).toBe(IN_NAMESPACE);
+    // Off is allowed...
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(checkbox.checked).toBe(false));
+    // ...and the door closes behind it: with the flag now off, the same
+    // mismatch refuses the way back on.
+    expect(checkbox.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(checkbox.checked).toBe(false));
+    expect(announcedFor(checkbox)).toBe(IN_NAMESPACE);
   });
 
   it("shows the ordinary hint once the id matches the provider", async () => {

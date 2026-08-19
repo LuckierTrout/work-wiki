@@ -503,6 +503,20 @@ describe("canEnableVectorSearch", () => {
     ).toBe(
       "Vector search needs a model id outside the Workers AI @cf/ namespace and an API key before it can be turned on.",
     );
+    // THREE legs, which is what pins the new leg's POSITION: it is the middle
+    // clause, between the endpoint and the key, because that is the order
+    // `vectorSearchMissingLegs` pushes them in. A two-leg case alone cannot
+    // tell "second" from "last".
+    expect(
+      vectorSearchMissingCopy({
+        provider: "openai",
+        baseUrl: null,
+        model: "@cf/baai/bge-m3",
+        hasKey: false,
+      }),
+    ).toBe(
+      "Vector search needs an endpoint, a model id outside the Workers AI @cf/ namespace and an API key before it can be turned on.",
+    );
     // No model at all is still just "a model" — the namespace clause needs a
     // value to complain about.
     expect(

@@ -2,7 +2,7 @@
 title: 'DW-73 — Workers AI embedding model namespace at the vector gate'
 type: 'bugfix'
 created: '2026-08-18'
-status: 'blocked' # draft | ready-for-dev | in-progress | in-review | done | blocked
+status: 'done' # draft | ready-for-dev | in-progress | in-review | done | blocked
 review_loop_iteration: 0
 followup_review_recommended: true
 context: []
@@ -116,6 +116,55 @@ deferred:
     location: >-
       src/components/workbench/SettingsCanvas.tsx (textRow "embeddingModel")
     severity: low
+  - summary: >-
+      The path that actually embeds is untaught about the namespace rule, so the
+      owner's model choice is still replaced without a word wherever the gate is
+      not consulted.
+    evidence: |-
+      `getVectorSearchSettings()` has no production consumer — grepping `src/`
+      returns only its own definition (`src/lib/config.ts:506`) and two comments.
+      Ingest embeds on `hasEmbeddingSupport()` (`src/lib/ingest.ts:989`), which
+      `src/lib/workbench-settings.ts:452` deliberately leaves untaught, so a
+      mismatched deployment keeps embedding under the substituted provider
+      default. DW-73 refuses the mismatch at the Settings surface, which is what
+      the ledger decision asked for; the substitution the ledger described as the
+      harm survives on the embed path. Out of scope on the intent's own
+      authority ("the namespace guard is pre-existing"; the decision names the
+      surface, not the resolver), and now documented in `DEPLOY.md` rather than
+      hidden.
+    location: >-
+      src/lib/embeddings.ts (hasEmbeddingSupport) with src/lib/ingest.ts:989
+    severity: medium
+  - summary: >-
+      The vector gate has no Cloudflare-binding leg, so `workers-ai` with a
+      matching `@cf/` id passes on a deployment where nothing can ever embed.
+    evidence: |-
+      `resolveEmbeddingProvider` returns `getWorkersAiBinding() ? override : null`
+      (`src/lib/embeddings.ts:100-102`), and `getWorkersAiBinding()` returns null
+      off the Workers runtime — silently, by design. `vectorSearchMissingLegs`
+      treats `workers-ai` as self-transporting and asks only for a provider and
+      an in-namespace model, so on Docker the switch turns on and every embed
+      resolves to no provider at all. Pre-existing: the same was true before
+      DW-73 with any model id. Teaching the gate would mean giving a client-safe
+      predicate a runtime-only fact, which is a shape change rather than a leg.
+    location: >-
+      src/lib/workbench-settings.ts (vectorSearchMissingLegs) with src/lib/embeddings.ts:55-72
+    severity: medium
+  - summary: >-
+      `resolveEmbeddingModelName` drops a mismatched override with no log, while
+      its sibling misconfiguration warns.
+    evidence: |-
+      `resolveEmbeddingProvider` emits a `logger.warn` naming the bad value when
+      `EMBEDDING_PROVIDER` is not embedding-capable (`src/lib/embeddings.ts:93-99`),
+      but the namespace fallback one function below is silent. Since DW-73 the
+      fallback is reached only on paths the gate does not cover (the legacy flat
+      route branch, an env override, a vector-off deployment), which is exactly
+      where a one-line warn naming the dropped id and the model actually used
+      would be diagnosable. Pre-existing silence; the spec's Never list also
+      pins the fallback's behaviour, and a log is not behaviour.
+    location: >-
+      src/lib/embeddings.ts:180-192
+    severity: low
 baseline_revision: 'da113a34d74406bad6e684f073a507325729a5d8'
 ---
 
@@ -179,7 +228,7 @@ baseline_revision: 'da113a34d74406bad6e684f073a507325729a5d8'
 - `src/lib/workbench-settings.ts` — import the helper and the prefix used in copy; in `vectorSearchMissingLegs`, keep `!v.model → "a model"` and otherwise push the namespace leg when the shared helper returns false — `a model id in the Workers AI ${WORKERS_AI_MODEL_PREFIX} namespace` for `workers-ai`, `a model id outside the Workers AI ${WORKERS_AI_MODEL_PREFIX} namespace` otherwise. Update the `canEnableVectorSearch` doc block's leg list so the documented rule matches the code.
 - `src/lib/__tests__/workbench-settings.test.ts` — change the `workers-ai` arm of the self-transporting loop to a `@cf/` id (leave `ollama` on `"m"`), and add cases for every I/O matrix row: both mismatch directions, the composed sentence, the unchanged "a model" sentence, the in-namespace pass, and a `getVectorSearchSettings().enabled === false` case for a stored mismatched config.
 - `src/components/workbench/__tests__/settings-vector-namespace.test.tsx` — mount the Embeddings settings category and prove a mismatched switch stays unchecked when clicked while a matching Workers AI selection can be enabled.
-- `DEPLOY.md` — document `EMBEDDING_PROVIDER` and describe `EMBEDDING_MODEL` as the binary Workers AI `@cf/` namespace boundary the resolver actually enforces.
+- `DEPLOY.md` — document `EMBEDDING_PROVIDER` (including that `workers-ai` needs the Cloudflare `AI` binding and so is unavailable in the Docker deployment this document describes) and describe `EMBEDDING_MODEL` as the binary Workers AI `@cf/` namespace boundary, naming both of its effects: the Settings surface refuses the mismatch, and the embedding path substitutes the provider default.
 
 **Acceptance Criteria:**
 - Given the Settings surface with embedding provider `Cloudflare Workers AI` and embedding model `text-embedding-3-small`, when the owner reads the vector switch, then it is refused and its description is the namespace sentence naming `@cf/` — not "needs a model".
@@ -216,12 +265,30 @@ baseline_revision: 'da113a34d74406bad6e684f073a507325729a5d8'
   - `[low]` `[patch]` `DEPLOY.md` told operators that `EMBEDDING_MODEL` depends on the selected embedding provider but omitted the `EMBEDDING_PROVIDER` override that can select it. Added the variable and its supported values to the table.
   - `[low]` `[patch]` The canonical Code Map, execution tasks, design example, and targeted verification command still described the pre-review inline rule. Synchronized those non-contract sections with the shared helper, mounted interaction test, and deployment documentation.
 
+### 2026-08-18 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 7: (high 0, medium 3, low 4)
+- defer: 3: (high 0, medium 2, low 1)
+- reject: 19: (high 0, medium 4, low 15)
+- addressed_findings:
+  - `[medium]` `[patch]` `DEPLOY.md`'s new `EMBEDDING_PROVIDER` row offered `workers-ai` with no caveat, in a document whose whole subject is Docker/compose self-hosting. `resolveEmbeddingProvider` returns `getWorkersAiBinding() ? override : null` and the binding never resolves off the Workers runtime, so an operator following the table disabled embeddings entirely and silently. Marked the value Workers-only and added the `wrangler.jsonc` `AI`-binding paragraph with the Docker alternatives.
+  - `[medium]` `[patch]` `DEPLOY.md`'s namespace paragraph promised a runtime consequence that does not occur: `getVectorSearchSettings()` has no production consumer (grep returns only its definition and two comments) and the embed path runs on `hasEmbeddingSupport()`, so a mismatched deployment keeps embedding under the substituted default. Rewrote the paragraph to split the two real effects and deleted the false "reads as off" symptom.
+  - `[medium]` `[patch]` No mounted test covered stored `vectorSearchEnabled: true` with a mismatch — the state the deployment docs are about, where the payload serves the STORED flag so the switch renders checked while the gate refuses. Added it. The predicted assertion was wrong about the product and the real behaviour was pinned instead: `vectorRefused` is `!vectorAllowed && !values.vectorSearchEnabled`, so an already-on switch stays operable by design; the test proves it is checked, announces the refusal, can be turned off, and cannot be turned back on.
+  - `[low]` `[patch]` The new comment in `resolveEmbeddingModelName` claimed the Settings gate refuses the combination outright, so reaching the fallback meant bytes that arrived some other way. The legacy flat `PUT /api/settings` branch, an `EMBEDDING_MODEL` override, and any vector-off deployment all reach it through supported paths. Reworded to name them and to state that the fallback is live behaviour.
+  - `[low]` `[patch]` `embeddingModelMatchesProvider` took a bare `string` for a value both callers had already narrowed (`isEmbeddingProvider` at the gate, a typed parameter at the resolver), so a typo would read as a confident "not workers-ai" rather than a type error. Narrowed the parameter to `EmbeddingProvider`.
+  - `[low]` `[patch]` The mirror-case mounted test asserted `aria-disabled` but never clicked, leaving "the owner cannot turn it on" proven in one direction only. Added the click and the `checked === false` assertion.
+  - `[low]` `[patch]` Only the two-leg composition was asserted, which cannot tell the new leg's middle position from a trailing one. Added the three-leg case (`an endpoint, a model id outside … and an API key`), verified against real output before writing the expectation.
+
 ## Design Notes
 
 The namespace test is one equality in the client-safe `embeddingModelMatchesProvider` helper rather than two branches or two independently maintained copies. Both `resolveEmbeddingModelName` and the vector gate call it:
 
 ```ts
-export function embeddingModelMatchesProvider(provider: string, model: string): boolean {
+export function embeddingModelMatchesProvider(
+  provider: EmbeddingProvider,
+  model: string,
+): boolean {
   return model.startsWith(WORKERS_AI_MODEL_PREFIX) === (provider === "workers-ai");
 }
 
@@ -248,57 +315,81 @@ The gate widens for an already-stored mismatched config, which is deliberate: `g
 - `npx eslint` — expected: clean (exit 0; the `jsx-ast-utils` `TSNonNullExpression` notices are pre-existing).
 - `npx tsc --noEmit` — expected: no new type errors.
 
+
 ## Auto Run Result
 
-Status: blocked
-Blocking condition: finalization left repository dirty
-Reviewed commit: `d40dae9e05fd08468c0223751a0222527e69fd1b`
+Status: done
+Baseline revision: `da113a34d74406bad6e684f073a507325729a5d8`
 
-**Implemented change.** The vector-search gate applies the same Workers AI
-`@cf/` namespace boundary as `resolveEmbeddingModelName`, so a mismatched model
-is refused at the Workbench Settings switch, by the nested settings route, and
-when reading the effective vector-search state instead of being silently
-replaced at embed time. This follow-up review added direct switch-interaction
-proof and tightened the operator/spec documentation without changing runtime
-behaviour.
+**Implemented change.** The vector-search gate now applies the same Workers AI
+`@cf/` namespace boundary that `resolveEmbeddingModelName` applies, so a
+provider/model mismatch is refused at the Workbench Settings switch, by the
+nested settings route, and when reading the effective vector-search state —
+instead of turning the switch on and having the owner's model silently replaced
+at embed time. Both directions of the mismatch are refused, because the resolver
+discards both. This run was a re-drive of the story from the same baseline: the
+implementation was already at HEAD (`1b6fc28`, `d40dae9`) and was re-verified
+rather than rewritten; the review pass then applied seven patches, all of them
+to documentation, comments, one type signature, and test coverage.
 
-**Files changed**
-- `src/lib/providers.ts` — owns the shared prefix and namespace predicate; the
-  predicate documentation now states its deliberately binary scope.
-- `src/lib/embeddings.ts` — reads the shared predicate while preserving its
-  provider-default fallback.
-- `src/lib/workbench-settings.ts` — refuses both directions of the namespace
-  mismatch and produces the shared Settings/route sentence.
-- `src/lib/__tests__/workbench-settings.test.ts` — covers the predicate, copy,
-  route, environment-override, and stored-runtime paths.
+**Files changed** (since `da113a3`)
+- `src/lib/providers.ts` — owns `WORKERS_AI_MODEL_PREFIX` and the shared
+  `embeddingModelMatchesProvider` predicate, now taking `EmbeddingProvider`
+  rather than a bare `string`.
+- `src/lib/embeddings.ts` — `resolveEmbeddingModelName` reads the shared
+  predicate; its fallback comment now names the supported paths that legitimately
+  reach it instead of implying only stray bytes do.
+- `src/lib/workbench-settings.ts` — refuses both directions of the mismatch and
+  composes the namespace leg into the shared Settings/route sentence.
+- `src/lib/__tests__/workbench-settings.test.ts` — covers the predicate, the
+  copy in both directions, two- and three-leg composition, the route, the
+  `EMBEDDING_MODEL` override, and the stored-runtime read.
 - `src/components/workbench/__tests__/settings-vector-namespace.test.tsx` —
-  mounts the Settings surface, checks the accessible description, and now proves
-  refused clicks stay off while an allowed click turns the switch on.
-- `DEPLOY.md` — documents `EMBEDDING_PROVIDER` and the precise Workers AI
-  namespace boundary enforced for `EMBEDDING_MODEL`.
+  mounts the real Settings surface: refused clicks in both directions, an allowed
+  click, and the already-on switch that stays checked, announces the refusal, and
+  can only be turned off.
+- `DEPLOY.md` — documents `EMBEDDING_PROVIDER` (including that `workers-ai`
+  needs the Cloudflare `AI` binding and is therefore unavailable in the Docker
+  deployment the document describes) and both real effects of a namespace
+  mismatch.
 - `_bmad-output/implementation-artifacts/spec-dw-73-workers-ai-embedding-namespace.md`
-  — records this review pass and synchronizes its non-contract implementation
-  notes with the reviewed code.
+  — records this pass and syncs its non-contract sections with the reviewed code.
 
-**Review findings.** 4 patches applied (1 medium, 3 low), 0 newly deferred, and
-24 rejected. The seven previously recorded deferred items remain unchanged in
-frontmatter and were not reopened or copied into the deferred-work ledger.
+**Review findings.** 7 patches applied (medium 3, low 4), 3 newly deferred
+(medium 2, low 1), 19 rejected. The seven previously recorded deferred items were
+preserved unchanged; the deferred list now holds ten. No deferred-work ledger
+entry was read, written, or reopened by this run.
 
-**Follow-up review recommended: true.** Patched findings only: high 0, medium 1,
-low 3 → `3 × 1 + 3 = 6`, which is at least 5.
+**Follow-up review recommended: true.** Patched findings only: high 0, medium 3,
+low 4 → `3 × 3 + 4 = 13`, which is at least 5.
 
-**Verification**
-- Targeted Vitest command from `## Verification` — 5 files, 288 tests, all
+**Verification** (run first-hand in this session, after the patches)
+- Targeted Vitest command from `## Verification` — 5 files, 289 tests, all
   passing.
-- `npx vitest run` — 228 files, 4,793 tests, all passing. Logged stderr is from
-  tests that deliberately exercise failure paths; the command exited 0.
-- `npx eslint` — exit 0; only the documented `jsx-ast-utils`
-  `TSNonNullExpression` notices appeared.
-- `npx tsc --noEmit` — exit 0 with no output.
+- `npx vitest run` — 228 files, 4,794 tests, all passing, exit 0.
+- `npx tsc --noEmit` — exit 0, no output.
+- `npx eslint` — exit 0; only the documented pre-existing `jsx-ast-utils`
+  `TSNonNullExpression` notices.
+- Matrix test audit — all six I/O matrix rows are covered by tests that ran and
+  passed, with no skipped, filtered, or unregistered cases in the covering files.
 
-**Residual risks.** The seven already-recorded deferred observations remain for
-orchestrator-owned follow-up, including the legacy flat settings write path.
-This run did not modify, reopen, rewrite, or commit any existing deferred-work
-ledger entry. The working copy also contains unrelated orchestrator-owned
-artifacts; the final cleanliness gate determines whether they prevent a terminal
-`done` result.
+**Residual risks.** Ten deferred observations remain for orchestrator-owned
+follow-up. Two are load-bearing for how much this change actually buys: the
+legacy flat `PUT /api/settings` branch still writes `embeddingModel` without
+consulting the gate (and the live `/settings` page sends exactly that shape), and
+the embed path is gated by `hasEmbeddingSupport()`, which is deliberately
+untaught about the namespace rule — so the silent substitution DW-73 describes
+survives wherever the gate is not consulted. `DEPLOY.md` now states this rather
+than implying a mismatch stops embeddings. Both are out of scope on the intent's
+own authority, which names the Settings surface and treats the resolver's guard
+as pre-existing.
+
+**Run note.** This dispatch began with the working tree carrying one
+orchestrator-owned modification: the story's own spec file, re-armed at the
+dispatch timestamp (status reset to `ready-for-dev`, prior `## Auto Run Result`
+stripped) following the human escalation resolution "re-drive from current HEAD
+without rolling back the review". That file is this workflow's own output and was
+rewritten here, so the run proceeded rather than halting on a dirty tree. The
+review diff was taken over this story's files only; `deferred-work.md` and
+`spec-dw-66-72-settings-credential-fidelity.md`, committed by the orchestrator in
+`ee382ec`, belong to other stories and were neither reviewed nor touched.

@@ -52,21 +52,36 @@ You only need **one** provider. The app auto-detects which key is set.
 |---|---|---|
 | `LLM_WIKI_PROVIDER` | Force a specific provider (`anthropic`, `openai`, `google`, `ollama`) | Auto-detected |
 | `LLM_WIKI_MODEL` | Override the default model name | Provider default |
-| `EMBEDDING_PROVIDER` | Force the embedding provider (`openai`, `google`, `ollama`, `workers-ai`) | Settings selection, then auto-detected |
+| `EMBEDDING_PROVIDER` | Force the embedding provider (`openai`, `google`, `ollama`; `workers-ai` **only on Cloudflare Workers** — see below) | Settings selection, then auto-detected |
 | `EMBEDDING_MODEL` | Override the embedding model name — must use `@cf/` exactly when the embedding provider is `workers-ai` (see below) | Provider default |
 | `PORT` | Server port inside the container | `3000` |
 
+**`EMBEDDING_PROVIDER=workers-ai` requires the Cloudflare Workers runtime.** The
+provider reaches Cloudflare through the `AI` binding declared in
+`wrangler.jsonc`, which does not exist in the Docker/compose deployment this
+document describes. Off Workers the binding resolves to nothing and the override
+is dropped **silently** — embeddings are then disabled entirely, with no error in
+the logs. On Docker, set this to `openai`, `google`, or `ollama`, or leave it
+unset and let the app auto-detect.
+
 **`EMBEDDING_MODEL` must respect the Workers AI namespace boundary.** Cloudflare
-Workers AI model ids live in the `@cf/` namespace (`@cf/baai/bge-m3`); every
-other embedding provider's ids must sit outside it. This check does not validate
-one non-Workers-AI provider's model catalog against another's. An id on the
-wrong side of the boundary is not merely ignored in favour of the provider
-default — **vector search is refused**:
-Settings will not let the switch be turned on, and a deployment that already had
-it on reads as off until the mismatch is resolved. The Settings page names the
-namespace it expects, so an unexplained "vector search is off" after setting this
-variable is usually a Workers AI deployment carrying an OpenAI model id, or the
-reverse.
+Workers AI model ids live in the `@cf/` namespace (`@cf/baai/bge-m3`,
+`@cf/baai/bge-large-en-v1.5`); every other embedding provider's ids must sit
+outside it. This check does not validate one non-Workers-AI provider's model
+catalog against another's. Two separate things happen to an id on the wrong side
+of the boundary:
+
+- **The Settings surface refuses it.** The Workbench vector-search switch cannot
+  be turned on while the provider and the model id disagree, and a save that
+  tries is rejected with a message naming the namespace it expected.
+- **The embedding path substitutes the provider default.** The mismatched id is
+  ignored and embedding continues with the default for the resolved provider
+  (`@cf/baai/bge-m3` for Workers AI, `text-embedding-3-small` for OpenAI), so
+  content is still embedded — just not with the model named here.
+
+So a mismatch does not stop embeddings; it silently changes which model does the
+embedding. If the model you set here does not appear to be in use, check that it
+is on the same side of the `@cf/` boundary as the selected embedding provider.
 
 ## Volume Mounts
 

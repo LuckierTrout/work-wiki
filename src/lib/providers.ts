@@ -76,8 +76,16 @@ export const WORKERS_AI_MODEL_PREFIX = "@cf/";
  * Workers AI, and half the rule would leave the mirror case unguarded. This is
  * deliberately not a model-catalog validator for OpenAI versus Google versus
  * Ollama; the resolver itself distinguishes only Workers AI's `@cf/` namespace.
+ *
+ * `provider` is an {@link EmbeddingProvider}, not a `string`, because both
+ * callers already hold a narrowed value — and an unnarrowed one would make a
+ * typo read as "not workers-ai, therefore this id must not be `@cf/`", which is
+ * a confident wrong answer rather than a type error.
  */
-export function embeddingModelMatchesProvider(provider: string, model: string): boolean {
+export function embeddingModelMatchesProvider(
+  provider: EmbeddingProvider,
+  model: string,
+): boolean {
   return model.startsWith(WORKERS_AI_MODEL_PREFIX) === (provider === "workers-ai");
 }
 
