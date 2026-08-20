@@ -92,10 +92,12 @@ import {
   type AppConfig,
 } from "../config";
 import {
+  _resetEmbeddingWarnings,
   getEmbeddingModel,
   getEmbeddingModelName,
   hasEmbeddingSupport,
 } from "../embeddings";
+import { logger } from "../logger";
 import {
   callLLM,
   callLLMStream,
@@ -677,6 +679,52 @@ describe("the stored embedding credential and endpoint are read", () => {
     mockGetCfContext.mockReturnValue({ env: { AI: { run: vi.fn() } } });
     const bound = await PUT(await turnVectorSearchOn());
     expect(bound.status).toBe(200);
+  });
+
+  it("says the unbound-binding line ONCE across repeated GET and PUT (DW-278)", async () => {
+    // The AMPLIFYING SEAM. `route.ts` calls `getWorkersAiBinding()`
+    // unconditionally once per request in both `GET` (:90) and `PUT` (:127), so
+    // an unbound Workers deployment logged one WARN per settings request on a
+    // path that previously logged nothing at all. `settings-route.test.ts`
+    // structurally cannot cover this — it `vi.mock`s the whole embeddings
+    // module — but this file imports the real route and drives the Cloudflare
+    // context, so the assertion belongs here.
+    //
+    // Reset first: the guard is module state that outlives a test, and nothing
+    // in this file's `beforeEach` clears it.
+    _resetEmbeddingWarnings();
+    // ON the Workers runtime with `AI` absent — the misconfiguration, as
+    // distinct from `noCloudflareContext` (not on Workers), which stays silent.
+    mockGetCfContext.mockReturnValue({ env: {} });
+
+    const { GET, PUT } = await import("@/app/api/settings/route");
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const first = await GET();
+      const second = await GET();
+      // The switch is refused without a binding (DW-225), which is beside the
+      // point here: `PUT` reads the binding at the top of the handler, before
+      // any validation, so the seam is exercised either way.
+      await PUT(await turnVectorSearchOn());
+      await PUT(await turnVectorSearchOn());
+
+      const unbound = warn.mock.calls.filter(
+        (call) =>
+          call[0] === "embeddings" &&
+          String(call[1]).includes("AI binding is not bound"),
+      );
+      expect(unbound).toHaveLength(1);
+
+      // Four reads of the runtime fact, and the throttle changed none of them.
+      for (const response of [first, second]) {
+        const body = (await response.json()) as {
+          workbench: { hasWorkersAiBinding: boolean };
+        };
+        expect(body.workbench.hasWorkersAiBinding).toBe(false);
+      }
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("names the VARIABLE when EMBEDDING_PROVIDER forces the unbound selection (DW-281)", async () => {

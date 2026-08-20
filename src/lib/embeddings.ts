@@ -24,6 +24,62 @@ import { logger } from "./logger";
 // ---------------------------------------------------------------------------
 
 /**
+ * Misconfiguration identities this process has already spoken about.
+ *
+ * The three warnings below describe *standing* misconfiguration — a stale
+ * `EMBEDDING_MODEL`, an override that cannot embed, an unbound `AI` binding.
+ * Every embed door re-enters the resolvers (`getEmbeddingModelName`,
+ * `getEmbeddingModel`, `embedText`, `embedTexts`, `runWorkersAiEmbedding`), and
+ * `getWorkersAiBinding` is reached from several seams, not one: `GET`/`PUT
+ * /api/settings` call it once per request (DW-278), `vision.ts` calls it per
+ * vision request, and `resolveEmbeddingProvider`'s Workers AI auto-detect calls
+ * it from every embed door in turn. Unthrottled, a single `logger.warn`
+ * therefore repeats the same sentence per page of a rebuild and per request
+ * served (DW-273) — noise that buries the one line an operator needs to read.
+ *
+ * The state is module-level on purpose: one process (one Workers isolate) is
+ * exactly the lifetime over which "you have this misconfigured" is one piece
+ * of news. Keys carry the misconfiguration's *identity*, not its call site, so
+ * a CHANGED misconfiguration is a new key and speaks again — the guard
+ * suppresses repetition, never information.
+ *
+ * The trade-off that buys, stated plainly: a misconfiguration fixed and then
+ * re-introduced with the IDENTICAL value stays silent for the rest of the
+ * process. The key is the identity and nothing clears it; re-arming a key when
+ * a misconfiguration goes away is deliberately out of scope — it would mean
+ * carrying "resolved" state through every resolution for a case a restart (or
+ * a new isolate) already fixes.
+ *
+ * Two warnings in this module are left UNGUARDED on purpose and should stay
+ * that way: `runWorkersAiEmbedding`'s unexpected-response-shape line and
+ * `searchByVector`'s model-drift breadcrumb report a per-call/per-query event
+ * rather than standing state, so throttling them would hide real failures
+ * instead of repetition.
+ */
+const warnedMisconfigurations = new Set<string>();
+
+/** Emit `message` the first time `key` is seen; later repeats are silent. */
+function warnOnceAbout(key: string, message: string): void {
+  if (warnedMisconfigurations.has(key)) return;
+  warnedMisconfigurations.add(key);
+  logger.warn("embeddings", message);
+}
+
+/**
+ * Forget every recorded misconfiguration so the next occurrence warns again.
+ *
+ * Mirrors `_resetStorage`/`_resetLocks`/`_resetConfigCache`: without it the
+ * first test to assert a warning would silence it for every test after. There
+ * is no central reset registry in `vitest.setup.ts`, so it is wired into the
+ * `beforeEach` of each suite that asserts these warnings — a suite that asserts
+ * one without calling it is order-dependent.
+ * @internal
+ */
+export function _resetEmbeddingWarnings(): void {
+  warnedMisconfigurations.clear();
+}
+
+/**
  * Default embedding models per provider. Can be overridden with the
  * `EMBEDDING_MODEL` env var.
  */
@@ -62,8 +118,11 @@ export function getWorkersAiBinding(): Ai | null {
     return null;
   }
   if (!env.AI) {
-    logger.warn(
-      "embeddings",
+    // One fixed key: there is only one way for the binding to be missing, and
+    // the off-Workers `catch` above returns before reaching here, so a silent
+    // local run never consumes it — a later real Workers miss can still speak.
+    warnOnceAbout(
+      "binding:workers-ai",
       "On the Workers runtime but the AI binding is not bound — embeddings " +
         "will fall back to the LLM provider or be disabled. Check the `ai` " +
         "binding in wrangler.jsonc.",
@@ -93,8 +152,10 @@ function resolveEmbeddingProvider(
   const override = process.env.EMBEDDING_PROVIDER ?? cfg.embeddingProvider;
   if (override) {
     if (!isEmbeddingProvider(override)) {
-      logger.warn(
-        "embeddings",
+      // Keyed on the rejected string: swapping one bad override for another
+      // bad one is a different misconfiguration and gets its own warning.
+      warnOnceAbout(
+        `provider-override:${override}`,
         `EMBEDDING_PROVIDER="${override}" is not embedding-capable ` +
           `(valid: ${EMBEDDING_PROVIDERS.join(", ")}); embeddings are disabled. ` +
           "Fix the override or unset it to auto-detect.",
@@ -214,8 +275,13 @@ function resolveEmbeddingModelName(
   // mirroring the warning `resolveEmbeddingProvider` already emits when it
   // refuses an override. The log is not behaviour: the default is still
   // returned, exactly as before.
-  logger.warn(
-    "embeddings",
+  //
+  // Said ONCE per distinct `(provider, override)` pair (DW-273), because every
+  // one of those doors would otherwise repeat it — a rebuild over N pages
+  // logged it ~2N times. `fallback` is a pure function of `provider`, so it
+  // adds nothing to the key.
+  warnOnceAbout(
+    `model:${provider}:${override}`,
     `Embedding model "${override}" cannot be served by the "${provider}" ` +
       `embedding provider; embedding with "${fallback}" instead. ` +
       "Vectors are tagged with the model that produced them, so a corpus " +

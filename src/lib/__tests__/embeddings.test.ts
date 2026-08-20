@@ -54,6 +54,8 @@ import {
   embedTexts,
   rebuildVectorStore,
   WORKERS_AI_EMBEDDING_DIMENSIONS,
+  getWorkersAiBinding,
+  _resetEmbeddingWarnings,
 } from "../embeddings";
 import {
   EMBEDDING_PROVIDERS,
@@ -118,6 +120,10 @@ beforeEach(() => {
   mockGetCfContext.mockImplementation(() => {
     throw new Error("no cloudflare context");
   });
+  // Misconfiguration warnings are said once per process (DW-273/DW-278), and
+  // the module outlives each test — forget them so every test that asserts a
+  // warning still hears it.
+  _resetEmbeddingWarnings();
 });
 
 afterEach(() => {
@@ -142,6 +148,25 @@ function mockWorkersAi(vectors: number[][]) {
     .mockResolvedValue({ shape: [vectors.length, vectors[0]?.length ?? 0], data: vectors });
   mockGetCfContext.mockReturnValue({ env: { AI: { run } } });
   return run;
+}
+
+/**
+ * Spy on `logger.warn`, capturing calls BEFORE the restore clears them.
+ * Shared by the model-resolution and warn-once suites.
+ */
+async function withWarnSpy<T>(
+  body: () => T | Promise<T>,
+): Promise<{ result: T; warnings: string[] }> {
+  const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+  try {
+    const result = await body();
+    const warnings = warn.mock.calls
+      .filter((call) => call[0] === "embeddings")
+      .map((call) => String(call[1]));
+    return { result, warnings };
+  } finally {
+    warn.mockRestore();
+  }
 }
 
 /** Build a valid 1,024-dimension bge-m3/bge-large test vector. */
@@ -1027,6 +1052,32 @@ describe("rebuildVectorStore", () => {
     expect(await storage.getEmbeddingById("page-b")).not.toBeNull();
   });
 
+  it("warns ONCE about a mismatched EMBEDDING_MODEL across all N pages", async () => {
+    // DW-273: `rebuildVectorStore` resolves the name once and then calls
+    // `embedText` per page, so a stale override logged ~2N identical lines.
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3"; // openai cannot serve it
+    const slugs = ["p1", "p2", "p3"];
+    mockListWikiPages.mockResolvedValue(
+      slugs.map((slug) => ({ title: slug, slug, summary: slug })),
+    );
+    mockReadWikiPage.mockImplementation(async (slug: string) => ({
+      slug,
+      title: slug,
+      content: `content ${slug}`,
+      path: `/fake/${slug}.md`,
+    }));
+    mockEmbed.mockResolvedValue({ embedding: [0.1, 0.2] });
+
+    const { result, warnings } = await withWarnSpy(() => rebuildVectorStore());
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("@cf/baai/bge-m3");
+    // Every page is still embedded, with the provider default.
+    expect(result.embedded).toBe(3);
+    expect(result.skipped).toBe(0);
+    expect(result.model).toBe("text-embedding-3-small");
+  });
+
   it("skips pages with empty content", async () => {
     mockListWikiPages.mockResolvedValue([
       { title: "Good", slug: "good", summary: "Has content" },
@@ -1308,22 +1359,6 @@ describe("Workers AI embeddings (bge-m3)", () => {
 // ---------------------------------------------------------------------------
 
 describe("embedding model resolution", () => {
-  /** Spy on `logger.warn`, capturing calls BEFORE the restore clears them. */
-  async function withWarnSpy<T>(
-    body: () => T | Promise<T>,
-  ): Promise<{ result: T; warnings: string[] }> {
-    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
-    try {
-      const result = await body();
-      const warnings = warn.mock.calls
-        .filter((call) => call[0] === "embeddings")
-        .map((call) => String(call[1]));
-      return { result, warnings };
-    } finally {
-      warn.mockRestore();
-    }
-  }
-
   it("re-exports the ONE Workers AI catalog rather than holding a copy", () => {
     // Same object, not merely equal: two tables would let the gate approve an
     // id the dimension check does not know.
@@ -1449,6 +1484,13 @@ describe("embedding model resolution", () => {
     expect(single.warnings).toHaveLength(1);
     expect(single.warnings[0]).toContain("text-embedding-3-small");
 
+    // A DIFFERENT dropped id, so `embedTexts` faces a fresh misconfiguration
+    // identity rather than the one the guard has already spoken for. This keeps
+    // the assertion about the embedTexts door warning on its own key — no
+    // test-only reset lever in the middle of it. (Throttling of the SAME key
+    // across doors is asserted by "SAYS the mismatch ONCE across every embed
+    // door" below.)
+    process.env.EMBEDDING_MODEL = "gemini-embedding-001";
     const runBatch = mockWorkersAi([workersVector(0.5), workersVector(0.6)]);
     const batch = await withWarnSpy(() => embedTexts(["a", "b"]));
     expect(runBatch).toHaveBeenCalledWith("@cf/baai/bge-m3", {
@@ -1456,6 +1498,7 @@ describe("embedding model resolution", () => {
       pooling: "cls",
     });
     expect(batch.warnings).toHaveLength(1);
+    expect(batch.warnings[0]).toContain("gemini-embedding-001");
     expect(batch.warnings[0]).toContain("@cf/baai/bge-m3");
   });
 
@@ -1495,6 +1538,235 @@ describe("embedding model resolution", () => {
 
     expect(result).toHaveLength(1024);
     expect(run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["hi"],
+      pooling: "cls",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Once per DISTINCT misconfiguration, not once per call (DW-273 / DW-278)
+// ---------------------------------------------------------------------------
+
+describe("misconfiguration warnings are said once", () => {
+  it("SAYS the mismatch ONCE across every embed door", async () => {
+    // DW-273: each door re-enters the resolver, so the same sentence used to be
+    // logged once per door — and ~2N times for an N-page rebuild.
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+    mockWorkersAi([workersVector(0.5)]);
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      const name = getEmbeddingModelName();
+      await embedText("hi");
+      mockWorkersAi([workersVector(0.5), workersVector(0.6)]);
+      await embedTexts(["a", "b"]);
+      return name;
+    });
+
+    expect(warnings).toHaveLength(1);
+    // ...and it is the RIGHT sentence. A count alone would be satisfied by a
+    // wrong-but-single warning, so the dropped id, the provider, and the model
+    // actually used are all named.
+    expect(warnings[0]).toContain("text-embedding-3-small");
+    expect(warnings[0]).toContain("workers-ai");
+    expect(warnings[0]).toContain("@cf/baai/bge-m3");
+    // Suppression is of repetition only — every call still resolved.
+    expect(result).toBe("@cf/baai/bge-m3");
+    expect(getEmbeddingModelName()).toBe("@cf/baai/bge-m3");
+  });
+
+  it("SPEAKS again when the override CHANGES", async () => {
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+    mockWorkersAi([workersVector(0.5)]);
+
+    const { warnings } = await withWarnSpy(() => {
+      getEmbeddingModelName();
+      process.env.EMBEDDING_MODEL = "@cf/nope";
+      getEmbeddingModelName();
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain("text-embedding-3-small");
+    expect(warnings[1]).toContain("@cf/nope");
+  });
+
+  it("keys on the PROVIDER too — one model id rejected by two providers warns twice", async () => {
+    // The key is the misconfiguration's identity, and "@cf/baai/bge-m3 under
+    // openai" is a different fact from "@cf/baai/bge-m3 under ollama".
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3";
+
+    const { warnings } = await withWarnSpy(() => {
+      process.env.EMBEDDING_PROVIDER = "openai";
+      getEmbeddingModelName();
+      process.env.EMBEDDING_PROVIDER = "ollama";
+      getEmbeddingModelName();
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain("openai");
+    expect(warnings[1]).toContain("ollama");
+  });
+
+  it("SAYS an invalid EMBEDDING_PROVIDER ONCE, and still refuses both times", async () => {
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.EMBEDDING_PROVIDER = "deepseek";
+
+    const { result, warnings } = await withWarnSpy(() => [
+      getEmbeddingModelName(),
+      getEmbeddingModelName(),
+    ]);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("deepseek");
+    // The refusal is unchanged — it does NOT fall through to the openai key.
+    expect(result).toEqual([null, null]);
+  });
+
+  it("SPEAKS again when the invalid provider override CHANGES", async () => {
+    process.env.EMBEDDING_PROVIDER = "deepseek";
+
+    const { warnings } = await withWarnSpy(() => {
+      getEmbeddingModelName();
+      process.env.EMBEDDING_PROVIDER = "bogus";
+      getEmbeddingModelName();
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain("deepseek");
+    expect(warnings[1]).toContain("bogus");
+  });
+
+  it("SAYS the unbound Workers AI binding ONCE across repeated calls", async () => {
+    // DW-278: `GET`/`PUT /api/settings` call this unconditionally once per
+    // request, so an unbound deployment logged a line per request.
+    mockGetCfContext.mockReturnValue({ env: {} });
+
+    const { result, warnings } = await withWarnSpy(() => [
+      getWorkersAiBinding(),
+      getWorkersAiBinding(),
+    ]);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("AI binding is not bound");
+    // Both callers still see "no binding" — `hasWorkersAiBinding === false`.
+    expect(result).toEqual([null, null]);
+  });
+
+  it("stays silent OFF the Workers runtime without consuming the binding key", async () => {
+    // The off-Workers `catch` returns before the guard, so a local run cannot
+    // spend the one warning a real Workers miss is owed.
+    //
+    // TWO spy windows, deliberately. A single window asserting "one warning
+    // total" cannot fail: if the `catch` DID warn, the guard would mute the
+    // real miss that follows and the window would still see exactly one line
+    // with exactly this text. Only a window that ends before the runtime
+    // changes can say the off-Workers path was silent.
+    const off = await withWarnSpy(() => getWorkersAiBinding());
+    expect(off.result).toBeNull();
+    expect(off.warnings).toEqual([]);
+
+    // Now on the Workers runtime with `AI` absent — the key is still unspent.
+    mockGetCfContext.mockReturnValue({ env: {} });
+    const on = await withWarnSpy(() => getWorkersAiBinding());
+    expect(on.result).toBeNull();
+    expect(on.warnings).toHaveLength(1);
+    expect(on.warnings[0]).toContain("AI binding is not bound");
+  });
+
+  it("keeps DIFFERENT misconfiguration families from spending each other's warning", async () => {
+    // One `Set`, three key namespaces: an unbound binding and a model mismatch
+    // are separate facts standing at the same time, and each is owed its own
+    // line. Cross-suppression here would silently drop half the diagnosis.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.EMBEDDING_PROVIDER = "openai";
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3"; // openai cannot serve it
+    mockGetCfContext.mockReturnValue({ env: {} }); // on Workers, AI unbound
+
+    const { warnings } = await withWarnSpy(() => {
+      expect(getWorkersAiBinding()).toBeNull();
+      expect(getEmbeddingModelName()).toBe("text-embedding-3-small");
+      // Repeats of BOTH families stay silent.
+      expect(getWorkersAiBinding()).toBeNull();
+      expect(getEmbeddingModelName()).toBe("text-embedding-3-small");
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings.filter((w) => w.includes("AI binding is not bound"))).toHaveLength(1);
+    expect(warnings.filter((w) => w.includes("cannot be served by"))).toHaveLength(1);
+  });
+
+  it("throttles a mismatch that arrives from the STORE, not just from env", async () => {
+    // This is the path `/api/settings` actually writes: `cfg.embeddingModel`,
+    // with no env var in sight. It reaches the same guard through the same key.
+    mockLoadConfigSync.mockReturnValue({
+      embeddingProvider: "workers-ai",
+      embeddingModel: "text-embedding-3-small",
+    });
+    mockWorkersAi([workersVector(0.5)]);
+
+    const first = await withWarnSpy(() => [
+      getEmbeddingModelName(),
+      getEmbeddingModelName(),
+    ]);
+    expect(first.warnings).toHaveLength(1);
+    expect(first.warnings[0]).toContain("text-embedding-3-small");
+    expect(first.result).toEqual(["@cf/baai/bge-m3", "@cf/baai/bge-m3"]);
+
+    // Changing the STORED id is a new identity and speaks again.
+    mockLoadConfigSync.mockReturnValue({
+      embeddingProvider: "workers-ai",
+      embeddingModel: "@cf/nope",
+    });
+    const second = await withWarnSpy(() => getEmbeddingModelName());
+    expect(second.warnings).toHaveLength(1);
+    expect(second.warnings[0]).toContain("@cf/nope");
+    expect(second.result).toBe("@cf/baai/bge-m3");
+  });
+
+  it("throttles a STORED invalid embedding provider, and speaks again when it changes", async () => {
+    // `cfg.embeddingProvider` is the other stored leg of the same override.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "deepseek" });
+
+    const first = await withWarnSpy(() => [
+      getEmbeddingModelName(),
+      getEmbeddingModelName(),
+    ]);
+    expect(first.warnings).toHaveLength(1);
+    expect(first.warnings[0]).toContain("deepseek");
+    // Still refused both times — it does NOT fall through to the openai key.
+    expect(first.result).toEqual([null, null]);
+
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "bogus" });
+    const second = await withWarnSpy(() => getEmbeddingModelName());
+    expect(second.warnings).toHaveLength(1);
+    expect(second.warnings[0]).toContain("bogus");
+    expect(second.result).toBeNull();
+  });
+
+  it("is a LOG-only change — the SUPPRESSED call embeds identically", async () => {
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+
+    await withWarnSpy(async () => {
+      const first = mockWorkersAi([workersVector(0.5)]);
+      await embedText("hi");
+      expect(first).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+        text: ["hi"],
+        pooling: "cls",
+      });
+    });
+
+    // Second call: warning suppressed, behaviour identical.
+    const second = mockWorkersAi([workersVector(0.5)]);
+    const { result, warnings } = await withWarnSpy(() => embedText("hi"));
+
+    expect(warnings).toEqual([]);
+    expect(result).toHaveLength(1024);
+    expect(second).toHaveBeenCalledWith("@cf/baai/bge-m3", {
       text: ["hi"],
       pooling: "cls",
     });

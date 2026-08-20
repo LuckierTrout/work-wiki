@@ -2367,7 +2367,8 @@ source_spec: `spec-dw-220-221-224-226-227-embedding-resolution.md`
 location: src/lib/embeddings.ts:resolveEmbeddingModelName and resolveEmbeddingProvider
 severity: low
 reason: `resolveEmbeddingModelName` is re-entered by every embed door, and `rebuildVectorStore` calls `getEmbeddingModelName()` once plus `embedText` per page, so a persistently mismatched `EMBEDDING_MODEL` produces roughly two identical WARN lines per page. Its sibling `resolveEmbeddingProvider` (`src/lib/embeddings.ts:93-99`) has exactly the same property and is the warning this bundle's intent asked the new one to mirror, so throttling only the new one would break the symmetry the intent bought. Closing it means a once-per-(provider, model) guard applied to BOTH warnings, which is a change to the module's logging convention rather than to this bundle.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-embedding-warning-throttle
 
 ### DW-274: `getEffectiveSettings` reports a provider-mismatched embedding model as the effective one, so the Settings surface names a model nothing embeds with.
 origin: spec-deferred 9bd380a9167d
@@ -2409,7 +2410,8 @@ source_spec: `spec-dw-218-219-223-225-vector-gate-surface.md`
 location: src/app/api/settings/route.ts with src/lib/embeddings.ts:56-73
 severity: low
 reason: `getWorkersAiBinding()` warns when it is ON the Workers runtime with the binding missing (`src/lib/embeddings.ts:64-71`), and the route now calls it unconditionally in `GET` and in `PUT`. The amplification is the same shape as the already-deferred "warnings fire per resolution rather than once per distinct misconfiguration" item from the DW-220 bundle, and closing it means a once-per-misconfiguration guard in `embeddings.ts` rather than a change to this seam.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-embedding-warning-throttle
 
 ### DW-279: There is no copy for the "stored on, effectively off" state the DW-219 scoping makes durable — the checkbox renders checked and unrefused beside a sentence saying vector search cannot be turned on.
 origin: spec-deferred d35e879954cf
@@ -2661,4 +2663,20 @@ source_spec: `spec-dw-277-279-280-281-vector-gate-surface-completeness.md`
 location: DEPLOY.md (the two "flat request" caveats) with src/app/api/settings/route.ts
 severity: low
 reason: Two sentences claim it: "the older `/settings` page saves the embedding provider through a flat request that never enters this gate" and "saves the embedding model through a flat request that never runs this check". `src/app/api/settings/route.ts` now calls `validateWorkbenchSettingsPatch` for a flat-only body (its comment spells out that "the flat branch cannot move that flag, so `turningOn` is always `false`"), and `settings-route.test.ts` carries a suite for the vector rule on the flat branch. Stale as of the DW-217 sweep (commit a5a50aa, this change's baseline), so pre-existing here — but this change rewrites the paragraphs immediately above and below both sentences, which is how it surfaced.
+status: open
+
+### DW-310: `searchByVector`'s model-drift breadcrumb is the same standing-misconfiguration shape as the three warnings this story throttled, but fires once per search query and was left unguarded.
+origin: spec-deferred 23b8e4e79790
+source_spec: `spec-dw-273-278-embedding-warning-throttle.md`
+location: src/lib/embeddings.ts:656
+severity: low
+reason: `src/lib/embeddings.ts:656-662` logs "all N matches dropped by the model filter (active=...) — likely embedding-model drift; rebuild embeddings" whenever the store returns hits and the model filter drops all of them. That condition is standing state (the active model name has drifted from every stored vector) and a search query is a higher-frequency door than either resolver, so a drifted corpus emits the line per query. It stayed unguarded because this bundle's intent named exactly three resolvers, and the sentence embeds a per-query `matches.length`, so it is not literally the same line each time. DW-273's own reason frames the fix as "a change to the module's logging convention", which argues the other way.
+status: open
+
+### DW-311: The non-embedding-capable override warning hardcodes `EMBEDDING_PROVIDER="..."` even when the value came from stored config, and now says it only once.
+origin: spec-deferred eb0689dd76b5
+source_spec: `spec-dw-273-278-embedding-warning-throttle.md`
+location: src/lib/embeddings.ts:134-145
+severity: low
+reason: `src/lib/embeddings.ts:134` reads `process.env.EMBEDDING_PROVIDER ?? cfg.embeddingProvider`, but the warning text always attributes the value to the env var. Pre-existing, and harmless while the line repeated; now that it is said once per identity, an owner whose bad value came from Settings gets a single line telling them to unset an env var they never set. The fix is to name the source (env vs stored) in the message.
 status: open

@@ -204,10 +204,10 @@ Two separate things happen to an id the resolved provider cannot serve:
   resolved provider (`@cf/baai/bge-m3` for Workers AI,
   `text-embedding-3-small` for OpenAI, `gemini-embedding-001` for Google,
   `nomic-embed-text` for Ollama), so content is still embedded — just not with
-  the model named here. Every such substitution now emits one warning on the
-  `embeddings` tag naming the dropped id, the provider, and the model used
-  instead, so a mismatch that arrived through the flat `/settings` route or
-  through this variable is visible in the container logs:
+  the model named here. The substitution emits one warning on the `embeddings`
+  tag naming the dropped id, the provider, and the model used instead, so a
+  mismatch that arrived through the flat `/settings` route or through this
+  variable is visible in the container logs:
 
   ```
   [embeddings] Embedding model "text-embedding-3-small" cannot be served by the
@@ -218,6 +218,15 @@ Two separate things happen to an id the resolved provider cannot serve:
   appear at all — `LOG_LEVEL=error` or `silent` restores exactly the silence
   this warning exists to end.
 
+  **It is said once, not once per embed.** The line is emitted once per distinct
+  `(provider, model)` misconfiguration per process — every embed door re-enters
+  the same resolver, so an unthrottled warning repeated itself roughly twice per
+  page of a rebuild. On Cloudflare the scope is the *isolate*, so while the
+  misconfiguration stands the line lands in only some isolates' logs rather than
+  in every request. A changed id is a new misconfiguration and speaks again; the
+  identical one fixed and then re-introduced within the same process stays
+  silent until a restart.
+
 That substitution is the expensive half. Different embedding models generally
 produce vectors of different widths, and every stored vector is tagged with the
 model that produced it. Once a store holds vectors from two models, queries
@@ -227,7 +236,12 @@ is re-embedded. So a mismatch does not stop embeddings; it changes which model
 does them, and can cost you the index you already built. If the model you set
 here does not appear to be in use, grep the logs for the `embeddings` warning
 above — it names the id that was dropped and the one embedding actually ran
-with.
+with. Grep the whole retained window rather than the last few minutes, and read
+a *single* occurrence as the full report: because the line is said once per
+process (per isolate on Cloudflare), the absence of a repeated line says
+nothing about whether the mismatch is still standing. Confirm the current state
+from Settings or from the model tag on freshly written vectors, not from the
+log's silence.
 
 ## Volume Mounts
 
