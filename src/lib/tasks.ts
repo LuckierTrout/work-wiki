@@ -160,6 +160,45 @@ export type Task =
       targetSlug?: string;
     };
 
+/**
+ * Every top-level {@link Task} `kind`, as a runtime list.
+ *
+ * The union above is types-only, so nothing outside the type system can name
+ * the set of kinds — and `workers/task-consumer/README.md` enumerates them in
+ * prose. `prose-inventory-parity.test.ts` compares that prose (and
+ * `parseTask`'s dispatch switch) against this list, which needs a runtime value
+ * to compare against.
+ *
+ * NOT the nested `staged.kind` (pdf/image/text/document) — a different axis.
+ *
+ * The two assertions below pin this list to the union in both directions and
+ * are enforced by CI's `pnpm exec tsc --noEmit`:
+ *   - `satisfies readonly Task["kind"][]` rejects a kind that the union does
+ *     not have (no extras);
+ *   - `_NoTaskKindMissingFromList` resolves to `never` only while every union
+ *     arm appears here, and a non-`never` residue fails `AssertNever` (no
+ *     omissions).
+ */
+export const TASK_KINDS = [
+  "ingest",
+  "extract-actions",
+  "extract-knowledge",
+  "compile-knowledge",
+  "run-agent",
+  "run-research",
+  "monitor-source",
+  "deliver-monitor-digest",
+  "deliver-integration",
+  "create-backup",
+  "maintain",
+] as const satisfies readonly Task["kind"][];
+
+export type TaskKind = (typeof TASK_KINDS)[number];
+
+/** Compile-time `Exclude<…> === never` check; see {@link TASK_KINDS}. */
+type AssertNever<T extends never> = T;
+type _NoTaskKindMissingFromList = AssertNever<Exclude<Task["kind"], TaskKind>>;
+
 /** Deterministic, no-LLM lint fixes the maintenance scan may auto-apply. */
 export type MaintainFixType =
   | "unmigrated-page"

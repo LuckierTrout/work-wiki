@@ -90,6 +90,46 @@ export const SUPPORTED_DOCUMENT_EXTENSIONS: readonly string[] = [
 export const SUPPORTED_DOCUMENT_MIME_TYPES: readonly string[] =
   Object.keys(MIME_FORMATS);
 
+/**
+ * The token each format is called by in user-facing prose. Four hand-written
+ * sentences enumerate the supported formats:
+ * `workers/email-ingest/index.ts` (a Cloudflare Worker reply string, in a
+ * bundle that cannot import `src/lib` at all), `workers/email-ingest/README.md`
+ * (Markdown), `src/components/EmailIngestSettings.tsx` (a JSX bullet) and
+ * `src/app/api/ingest/document/route.ts` (an API error message).
+ *
+ * The last two COULD import a sentence generated from this map. Generating at
+ * only those two would leave the Worker string and the README unpinned and
+ * split one convention into two, so `prose-inventory-parity.test.ts` instead
+ * reads all six of the repo's prose inventories back out of their files and
+ * compares their tokens to a derived set — this map being the derived set for
+ * these four.
+ *
+ * It lives here, next to `DOCUMENT_FORMATS`, because `Record<DocumentFormat, …>`
+ * is exhaustive at compile time: a format added above cannot land without a
+ * label, and once it has one the four prose tests name it as unmentioned. The
+ * labels are the prose spelling, not a mechanical upper-casing — `md` is
+ * written "Markdown" and `org` is written "Org".
+ */
+export const DOCUMENT_FORMAT_LABELS: Record<DocumentFormat, string> = {
+  docx: "DOCX",
+  pptx: "PPTX",
+  xlsx: "XLSX",
+  csv: "CSV",
+  md: "Markdown",
+  txt: "TXT",
+  html: "HTML",
+  pdf: "PDF",
+  zip: "ZIP",
+  odt: "ODT",
+  ods: "ODS",
+  odp: "ODP",
+  epub: "EPUB",
+  org: "Org",
+  rtf: "RTF",
+  mobi: "MOBI",
+};
+
 export interface ExtractedDocument {
   format: DocumentFormat;
   title: string;

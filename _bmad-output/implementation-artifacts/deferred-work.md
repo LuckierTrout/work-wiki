@@ -1183,7 +1183,8 @@ source_spec: `spec-retire-dead-machinery-round-2.md`
 location: src/mcp.ts:33
 severity: low
 reason: `src/mcp.ts`'s header comment carries a per-tool name list (the lines this pass edited at :33-37), and `workers/task-consumer/README.md:7-13` carries the `Task`-kind list. The new parity test pins `MCP_TOOLS` against the registrations and `mcp.json` against them too, and the count test pins the two numeric counts — but a tool or task kind added or retired without touching these two prose lists drifts silently. That is the exact failure mode DW-80 was filed for, one layer over. Pinning prose lists needs a convention decision (a test that greps Markdown/comments) rather than a cleanup edit.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-prose-inventory-parity-tests
 
 ### DW-133: No test exercises a `wontfix` thread through the KV-index fast path of `getDiscussionStatsForSlugs`.
 origin: spec-deferred ead2056e1663
@@ -2189,7 +2190,8 @@ source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: src/components/EmailIngestSettings.tsx:208
 severity: low
 reason: `workers/email-ingest/index.ts:201`, `workers/email-ingest/README.md:7`, `src/components/EmailIngestSettings.tsx:208` and `src/app/api/ingest/document/route.ts:35` each restate the format list in prose. This run edited three of them by hand. Adding a format still means remembering four prose edits; a copy test asserting each string names every entry of `SUPPORTED_DOCUMENT_EXTENSIONS` (or generating the sentence) would close the same gap the machine-list parity test closes.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-prose-inventory-parity-tests
 
 ### DW-250: The route's own `MAX_EMAIL_DOCUMENTS` rejection branch is never exercised.
 origin: spec-deferred 7fe00efe551e
@@ -2955,4 +2957,36 @@ source_spec: `spec-dw-127-309-doc-drift-corrections.md`
 location: src/lib/maintenance.ts:11
 severity: medium
 reason: src/lib/maintenance.ts's module header and workers/task-consumer/README.md:47-49 both re-list the union by hand. `MaintainFixType` (src/lib/tasks.ts:164-172) appears in no test, so adding a ninth member re-stales both silently -- exactly the mechanism DW-127 reported. DW-130 got a pin in this pass (mcp-annotations.test.ts); this list did not, because the intent did not ask for one.
+status: open
+
+### DW-342: A fifth supported-format sentence lives in the bulk importer and is already stale, and the private allowlist behind it is narrower than the app's.
+origin: spec-deferred fe13901b98f1
+source_spec: `spec-dw-132-249-prose-inventory-parity.md`
+location: src/lib/bulk-document-import.ts:48
+severity: medium
+reason: `src/lib/bulk-document-import.ts:48` returns "Use Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP." from `validationError`, and its private `SUPPORTED_EXTENSIONS` (:6-18) omits odt/ods/odp/epub/mobi/org/rtf. So bulk upload rejects files `POST /api/ingest/document` accepts. The bundle intent enumerated exactly four format sites, so this one was out of scope for this pass; it is the same drift class and the only one already out of sync. Adopting it means deriving the sentence from the set it actually describes, not from `DOCUMENT_FORMAT_LABELS`.
+status: open
+
+### DW-343: `MAINTAIN_FIX_TYPES` has no omission pin and the task-consumer README restates the same `lintType` list in unpinned prose.
+origin: spec-deferred 7dfb6b825471
+source_spec: `spec-dw-132-249-prose-inventory-parity.md`
+location: src/lib/tasks.ts:213
+severity: medium
+reason: `src/lib/tasks.ts:213` builds `new Set<MaintainFixType>([...])`, which rejects extra members but not omitted ones — the exact half `AssertNever` was added to cover for `TASK_KINDS` one screen above. A ninth fix type wired into `src/lib/maintenance.ts` but forgotten here makes `parseTask` return null at :440, so the enqueued task is treated as poison and goes to the DLQ, with `tsc` silent. `workers/task-consumer/README.md:48-50` restates the eight fix types in prose and nothing reads it — a seventh inventory of the same shape as the six this pass pinned.
+status: open
+
+### DW-344: The bulk-import file picker advertises formats the very next step refuses.
+origin: spec-deferred ec1d252f2b80
+source_spec: `spec-dw-132-249-prose-inventory-parity.md`
+location: src/components/BulkDocumentImport.tsx:25
+severity: low
+reason: `src/components/BulkDocumentImport.tsx:25-26` puts `.org,.rtf,.odt,.ods, .odp,.epub,.mobi` in the `accept` attribute of both file inputs, but `documentExtension` (`src/lib/bulk-document-import.ts:33-36`) maps all of them to "file", so `selectBulkDocuments` rejects them. Nothing compares the `accept` list to the allowlist. Pre-existing; surfaced while enumerating format sites.
+status: open
+
+### DW-345: The bulk importer's only copy test restates the sentence as a literal, so it can never fail on drift.
+origin: spec-deferred 0f7b1eaec336
+source_spec: `spec-dw-132-249-prose-inventory-parity.md`
+location: src/lib/__tests__/bulk-document-import.test.ts:45
+severity: low
+reason: `src/lib/__tests__/bulk-document-import.test.ts:45` asserts `/Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP/i` — a literal that would have to be edited alongside the very change it is meant to catch. This is the pattern `prose-inventory-parity.test.ts`'s header explicitly rules out; it would be replaced by adopting the site.
 status: open
