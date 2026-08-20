@@ -1,8 +1,8 @@
-# Yopedia inbound email Worker
+# work-wiki inbound email Worker
 
 This Worker receives Cloudflare Email Routing events, checks the owner-managed
 allowlist in `YOPEDIA_CONFIG`, parses the MIME body, and submits trusted text and
-supported document attachments to the main Yopedia Worker through a service binding.
+supported document attachments to the main work-wiki Worker through a service binding.
 
 Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI,
 Org, and RTF attachments are forwarded to the main Worker, staged in R2, and
@@ -17,7 +17,7 @@ Worker sends the final success/failure receipt after conversion settles.
 After deploying:
 
 1. Add a domain to Cloudflare DNS and enable Email Routing.
-2. Create the address entered under Yopedia **Settings → Email ingestion**.
+2. Create the address entered under work-wiki **Settings → Email ingestion**.
 3. Route that address to the `yopedia-email-ingest` Worker.
 4. Set `YOPEDIA_SERVICE_TOKEN` to the same secret used by the other Workers.
 5. Enable `workwiki.app` for Cloudflare Email Service sending so the

@@ -36,6 +36,13 @@
  *    TODAY'S occurrence count, so the waiver is per-occurrence rather than
  *    per-file: one new line of Yopedia display prose in an exempt file fails
  *    the suite, and so does an exemption that has stopped being needed.
+ *
+ * Those five points all describe NEGATIVE scans, and a negative scan is silent
+ * on absence: deleting a brand word passes every one of them. So the file also
+ * carries positive presence checks — `display name` over the app's own derived
+ * constants, and `operator-facing surfaces name the product` over the operator
+ * tooling — which fail when a surface stops naming the product at all. Half a
+ * rename is a failing state only because those exist.
  */
 import { describe, expect, it } from "vitest";
 import { readFile, readdir, stat } from "node:fs/promises";
@@ -370,8 +377,7 @@ const YOPEDIA_PROSE_EXEMPT = new Map([
   ["README.md", 5],
   ["wrangler.jsonc", 2],
   [path.join("docs", "trusted-memory-roadmap.md"), 2],
-  [path.join("scripts", "setup-cloudflare.sh"), 7],
-  [path.join("workers", "email-ingest", "README.md"), 3],
+  [path.join("scripts", "setup-cloudflare.sh"), 6],
   [path.join("workers", "task-consumer", "README.md"), 2],
   [path.join("workers", "task-consumer", "wrangler.jsonc"), 5],
 ]);
@@ -592,6 +598,126 @@ describe("no stale brand strings in rendered copy", () => {
           `Fewer: lower the count, or delete the entry if it reached 0 so the file rejoins the scan. ` +
           `More: new Yopedia display prose landed — remove it rather than raising the count, unless it is genuinely this deployment's own history.`,
       ).toBe(expected);
+    }
+  });
+});
+
+/**
+ * The scans above are all NEGATIVE: they fail on a stale name, and stay silent
+ * on a name that is simply absent. That is what let `scripts/setup-cloudflare.sh`
+ * and the two Worker READMEs drift apart (DW-235, DW-237) — deleting a brand
+ * word passes every scan, so "half-renamed" was never a failing state.
+ *
+ * These are the positive counterparts over the operator-facing surfaces:
+ * the Cloudflare setup script, the product-titled Worker READMEs, and the
+ * durable freeze list in AGENTS.md. That is not the complete set of surfaces
+ * that announce the product — the browser clipper's `manifest.json` name,
+ * description and `default_title`, and `popup.html`'s title and heading, name
+ * it too and are covered only by the negative scans. That gap is a gap, not a
+ * decision.
+ *
+ * `APP_NAME` is the derived side, never a literal restated here: a restated
+ * string would have to be edited alongside the very rename it is meant to catch.
+ */
+describe("operator-facing surfaces name the product", () => {
+  it("the Cloudflare setup script banners the display name", async () => {
+    const script = await readFile(path.join(ROOT, "scripts", "setup-cloudflare.sh"), "utf8");
+    // Match the live `echo "..."` form, not the whole file: a banner commented
+    // out or moved into a function nothing calls still `toContain`s its own text.
+    const banner = script
+      .split("\n")
+      .find((line) => /^\s*echo\s+"/.test(line) && line.includes("Cloudflare Infrastructure Setup"));
+    expect(
+      banner,
+      'scripts/setup-cloudflare.sh has no live `echo "… Cloudflare Infrastructure Setup"` banner line — ' +
+        "it was removed, commented out, or rewritten into a form this check no longer reads",
+    ).toBeDefined();
+    expect(
+      banner,
+      `the setup-cloudflare.sh banner must name ${APP_NAME}; it reads: ${banner}`,
+    ).toContain(`${APP_NAME} — Cloudflare Infrastructure Setup`);
+  });
+
+  it("every product-titled Worker README titles itself with the display name", async () => {
+    // One README titled "Yopedia inbound email Worker" while its sibling read
+    // "work-wiki sandbox runner" is the exact drift DW-237 recorded, so assert
+    // the pair together rather than one at a time — and derive the pair from
+    // the directory so a Worker added later fails closed instead of going
+    // silently uncovered, which is how DW-241's hand-kept list went stale.
+    //
+    // `task-consumer` is the one named exclusion: its title names the component
+    // ("# task-consumer Worker"), not the product, so there is no name there to
+    // agree or disagree — and its body's "yopedia agent task queue" is this
+    // deployment's own history, waived by YOPEDIA_PROSE_EXEMPT above.
+    const WORKERS = path.join(ROOT, "workers");
+    const COMPONENT_TITLED = new Set(["task-consumer"]);
+    const named = (await readdir(WORKERS, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && !COMPONENT_TITLED.has(entry.name))
+      .map((entry) => entry.name);
+    // A readdir that stops matching would pass every assertion below vacuously.
+    expect(
+      named.length,
+      `only ${named.length} product-titled Worker(s) found under workers/ — the listing collapsed`,
+    ).toBeGreaterThanOrEqual(2);
+
+    for (const worker of named) {
+      const relative = `workers/${worker}/README.md`;
+      const readme = await readFile(path.join(WORKERS, worker, "README.md"), "utf8");
+      // The first ATX heading, not line 1: a BOM, a leading blank line or an
+      // HTML comment would otherwise silently redefine what is being asserted.
+      const title = readme.split("\n").find((line) => /^#\s+\S/.test(line.replace(/^\uFEFF/, "")));
+      expect(title, `${relative} has no \`# \` title heading`).toBeDefined();
+      expect(title, `${relative} title must name ${APP_NAME}`).toContain(APP_NAME);
+      // `toContain` alone passes on "# Yopedia work-wiki inbound email Worker",
+      // which is a disagreement wearing the right name. Both stale spellings
+      // have to be absent for the title to actually agree: `saysStaleDisplayName`
+      // covers "WorkWiki", `hasStrayYopedia` covers the pre-rebrand name.
+      expect(
+        saysStaleDisplayName(title as string),
+        `${relative} title still carries the stale "WorkWiki" spelling: ${title}`,
+      ).toBe(false);
+      expect(
+        hasStrayYopedia(title as string),
+        `${relative} title still carries the pre-rebrand display name: ${title}`,
+      ).toBe(false);
+    }
+  });
+
+  it("AGENTS.md keeps the frozen-identifier list outside the managed block", async () => {
+    // DW-242's whole point: the `bmad:context` block is replaced on refresh, so
+    // the freeze list only survives by living below the closing marker. Nothing
+    // else in the repo reads AGENTS.md, so without this a refresh that deleted
+    // the section or pulled it back inside the markers would go unnoticed.
+    const agents = await readFile(path.join(ROOT, "AGENTS.md"), "utf8");
+    const CLOSING = "<!-- /bmad:context -->";
+    const marker = agents.indexOf(CLOSING);
+    expect(marker, `AGENTS.md no longer carries ${CLOSING}`).toBeGreaterThanOrEqual(0);
+    const durable = agents.slice(marker + CLOSING.length);
+    expect(
+      durable,
+      "AGENTS.md's `## Frozen identifiers` section is missing from the region below " +
+        "the closing bmad:context marker — a refresh would take it with the block",
+    ).toContain("## Frozen identifiers");
+
+    // The section's own claim is that every `workwiki` spelling it freezes is
+    // waived in WORKWIKI_IDENTIFIER_ALLOWLIST. Check it rather than trust it.
+    // Bounded at the next top-level heading: slicing to end-of-file would let a
+    // `workwiki` spelling from a LATER section satisfy the floor below, so an
+    // emptied Frozen-identifiers section could still pass.
+    const after = durable.slice(durable.indexOf("## Frozen identifiers") + 1);
+    const end = after.search(/\n## /);
+    const section = end === -1 ? after : after.slice(0, end);
+    const spelled = [...section.matchAll(/`([^`\n]*workwiki[^`\n]*)`/gi)].map((m) => m[1]);
+    expect(
+      spelled.length,
+      `the frozen-identifier section names only ${spelled.length} backticked workwiki spellings — it was emptied out`,
+    ).toBeGreaterThanOrEqual(10);
+    for (const spelling of spelled) {
+      expect(
+        strayWorkwiki(spelling),
+        `AGENTS.md freezes \`${spelling}\` but WORKWIKI_IDENTIFIER_ALLOWLIST does not waive it — ` +
+          "prose and allowlist have drifted, and the brand scan will fail on this file",
+      ).toEqual([]);
     }
   });
 });

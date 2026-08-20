@@ -2078,7 +2078,8 @@ source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
 location: scripts/setup-cloudflare.sh:113
 severity: low
 reason: Same class as the `# Yopedia sandbox runner` heading this bundle fixed, but in a root the intent authorized scanning, not editing. The surrounding `yopedia-raw`, `yopedia-embeddings-bge-m3` etc. on lines 119-163 are Cloudflare resource names and must stay frozen; only the line-113 banner is display copy.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-brand-display-copy-residue
 
 ### DW-236: DW-92's fix has no regression guard — "Yopedia" display prose can return to any maintainer surface with CI green.
 origin: spec-deferred 28803e5d8656
@@ -2095,7 +2096,8 @@ source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
 location: workers/email-ingest/README.md:1
 severity: low
 reason: Lines 1, 5 and 19. Out of this bundle's scope — the intent names only workers/sandbox-runner/README.md:1 — but the pair now reads half-renamed.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-brand-display-copy-residue
 
 ### DW-238: The stronger stray-workwiki rule guards only maintainer docs; the shipped app tree still uses the case-sensitive literal check.
 origin: spec-deferred f5f2a244a9e7
@@ -2130,7 +2132,8 @@ source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
 location: AGENTS.md:12
 severity: low
 reason: `workwiki-actions.ics` (src/app/api/integrations/calendar/route.ts:28), the export filename prefix (src/app/api/archive/export/route.ts:14), the clipper's `workwikiDefaultTags` storage key and `save-to-workwiki` context-menu id (integrations/browser-clipper/), and the `www.workwiki.app` variant. The intent enumerated four items; `workwiki-portable-archive` was patched in during review because a rename there breaks re-import of archives already on disk. The rest need per-item verification before being frozen in prose.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-brand-display-copy-residue
 
 ### DW-242: The DW-93 freeze fact lives inside a managed block whose own header says inside-block edits are replaced on refresh.
 origin: spec-deferred bc5d931b1066
@@ -2138,7 +2141,8 @@ source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
 location: AGENTS.md:2
 severity: low
 reason: AGENTS.md:2 reads "edits inside this block are replaced on refresh. Keep anything you want preserved outside the markers", while bmad-project-context's Refresh step re-verifies existing lines rather than regenerating. The intent asked for the managed block, so placement follows the intent; but whether the fact survives depends on which behavior the next refresh actually has. The machine-checked WORKWIKI_IDENTIFIER_ALLOWLIST is the durable half of the guard.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-brand-display-copy-residue
 
 ### DW-243: wrangler.jsonc files and root non-markdown are unscanned though AGENTS.md freezes their resource names.
 origin: spec-deferred 49b6ba9ef745
@@ -3069,4 +3073,20 @@ source_spec: `spec-dw-236-244-brand-scan-coverage.md`
 location: .agents/skills/
 severity: low
 reason: The test's own comment concedes .opencode/commands/ holds BMAD-installer-generated docs; .agents/skills/ is the same class, several hundred tracked markdown files, currently brand-clean. The split is undocumented either way. The intent named .opencode/commands/ and not this root.
+status: open
+
+### DW-355: The browser clipper's shipped product name has no positive coverage: manifest.json's name, description and action.default_title, and popup.html's title and heading, are read only by the negative brand
+origin: spec-deferred fb9316c76117
+source_spec: `spec-dw-235-237-241-242-brand-display-copy-residue.md`
+location: integrations/browser-clipper/manifest.json
+severity: low
+reason: brand-copy.test.ts pins browser-clipper/{popup.html,manifest.json,service-worker.js} into the scan corpus, but only for saysStaleDisplayName / strayWorkwiki / strayYopedia, all of which fail on a WRONG name and stay silent on a MISSING one. A reviewer edited manifest.json to "name": "Clipper" / "default_title": "Save to the app" and popup.html to "Save to the app", and the full suite still passed with zero `work-wiki` left in either file. This is the same half-renamed state DW-235/DW-237 recorded, on the surface with the widest audience — the Chrome extensions list and context menu, persisted inside already-installed extensions. Out of this bundle's scope: the intent names only scripts/setup-cloudflare.sh and the two Worker READMEs.
+status: open
+
+### DW-356: AGENTS.md's frozen list still omits three yopedia-side identifiers that IDENTIFIER_ALLOWLIST waives: the X-Yopedia-* wire headers and the two deployment origins.
+origin: spec-deferred b4f795fea992
+source_spec: `spec-dw-235-237-241-242-brand-display-copy-residue.md`
+location: AGENTS.md
+severity: low
+reason: IDENTIFIER_ALLOWLIST (src/lib/__tests__/brand-copy.test.ts) waives X-Yopedia-* headers, yopedia.yolog.dev and yopedia.yuanhao-li.workers.dev. The workers.dev origin is what skills/work-wiki-mcp/SKILL.md publishes as the MCP endpoint outside agents connect to, so renaming it is as breaking as anything already listed. DW-241 scoped completeness to the four WORKWIKI_* members only, so the yopedia half was never audited for the same gap.
 status: open
