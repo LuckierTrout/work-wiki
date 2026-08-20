@@ -90,9 +90,9 @@ refused. The refusal names the variable instead, so the way out becomes an
 ordered pair of steps rather than a dead end. In full:
 
 > Vector search needs the Cloudflare AI binding before it can be turned on.
-> Workers AI embeds through the Cloudflare AI binding, which exists only on the
-> Workers runtime — bind ai in wrangler.jsonc, or unset EMBEDDING_PROVIDER to
-> choose another embedding provider.
+> Cloudflare Workers AI embeds through the Cloudflare AI binding, which exists
+> only on the Workers runtime — bind ai in wrangler.jsonc, or unset
+> EMBEDDING_PROVIDER to choose another embedding provider.
 
 The select is **described but not marked invalid** here, for the same reason the
 model box is not marked for an `EMBEDDING_MODEL`-owned mismatch: marking a
@@ -100,7 +100,7 @@ control the owner cannot fix from there is a dead end. It also goes on showing
 the **stored** selection rather than the forced one, because the box edits the
 store and the store is what applies once the variable is unset — so on a
 deployment with `EMBEDDING_PROVIDER=workers-ai` and `openai` in Settings, the
-select reads OpenAI while the sentence beside it is about Workers AI.
+select reads OpenAI while the sentence beside it is about Cloudflare Workers AI.
 
 The same limit applies here as to the model rule below: the older `/settings`
 page saves the embedding provider through a flat request that never enters this

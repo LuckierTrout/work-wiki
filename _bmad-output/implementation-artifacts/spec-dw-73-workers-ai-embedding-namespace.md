@@ -235,11 +235,13 @@ baseline_revision: '1a19dfdde7b067534c069032f59ff9cf642ffcac'
 | Scenario | Input / State | Expected Output / Behavior | Error Handling |
 |----------|--------------|---------------------------|----------------|
 | Workers AI, in namespace | `{ provider: "workers-ai", baseUrl: null, model: "@cf/baai/bge-m3", hasKey: false }` | `canEnableVectorSearch` true; `vectorSearchMissingCopy` `""` | No error expected |
-| Workers AI, out of namespace | `{ provider: "workers-ai", baseUrl: null, model: "text-embedding-3-small", hasKey: false }` | false; copy: `Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.` | PUT with `vectorSearchEnabled: true` → 400 carrying that same sentence, nothing written |
-| Keyed provider, Workers AI id | `{ provider: "openai", baseUrl: "https://e", model: "@cf/baai/bge-m3", hasKey: true }` | false; copy: `Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.` | Same 400 path |
-| Namespace plus another missing leg | `{ provider: "openai", baseUrl: "https://e", model: "@cf/baai/bge-m3", hasKey: false }` | false; copy names both, in leg order: `…needs a model id outside the Workers AI @cf/ namespace and an API key before it can be turned on.` | Same 400 path |
+| Workers AI, out of namespace | `{ provider: "workers-ai", baseUrl: null, model: "text-embedding-3-small", hasKey: false }` | false; copy: `Vector search needs a model id in the Cloudflare Workers AI @cf/ namespace before it can be turned on.` | PUT with `vectorSearchEnabled: true` → 400 carrying that same sentence, nothing written |
+| Keyed provider, Workers AI id | `{ provider: "openai", baseUrl: "https://e", model: "@cf/baai/bge-m3", hasKey: true }` | false; copy: `Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.` | Same 400 path |
+| Namespace plus another missing leg | `{ provider: "openai", baseUrl: "https://e", model: "@cf/baai/bge-m3", hasKey: false }` | false; copy names both, in leg order: `…needs a model id outside the Cloudflare Workers AI @cf/ namespace and an API key before it can be turned on.` | Same 400 path |
 | No model at all | `{ provider: "workers-ai", baseUrl: null, model: null, hasKey: false }` | false; copy unchanged: `Vector search needs a model before it can be turned on.` | No namespace clause |
 | Stored config already mismatched | config `{ vectorSearchEnabled: true, embeddingProvider: "workers-ai", embeddingModel: "text-embedding-3-small" }` | `getVectorSearchSettings().enabled` is false | Reads as off rather than embedding with a model the owner did not choose |
+
+**2026-08-20 — the provider name in rows 2-4 was renegotiated (DW-222).** The frozen sentences said "Workers AI" because the code did; the picker two rows above the refusal renders `embeddingProviderLabel("workers-ai")` — "Cloudflare Workers AI" — so one selection was named twice on one screen. DW-222's 2026-08-19 decision authorised deriving the name from that helper and editing this matrix to match, for copy consistency with the picker. Only the provider NAME moved: row 2's "a model id **in** the … @cf/ namespace" remains superseded by DW-220 (no code path produces it today) and is left as recorded.
 
 </intent-contract>
 
@@ -422,7 +424,7 @@ if (!v.model) {
 }
 ```
 
-It is a leg rather than a separate sentence because the leg list is what the surface, the route and the runtime already share: a namespace complaint then composes with a missing key ("…needs a model id outside the Workers AI @cf/ namespace and an API key…") instead of hiding it.
+It is a leg rather than a separate sentence because the leg list is what the surface, the route and the runtime already share: a namespace complaint then composes with a missing key ("…needs a model id outside the Cloudflare Workers AI @cf/ namespace and an API key…") instead of hiding it.
 
 The gate widens for an already-stored mismatched config, which is deliberate: `getVectorSearchSettings` documents `enabled` as "the STORED flag intersected with the predicate" precisely so bytes that arrived another way get the same accessor-level answer as a save. The Workbench payload intentionally serves the stored flag instead, so an already-on switch remains checked, announces the refusal, can be turned off, and cannot be turned back on while the mismatch remains. The embedding path does not consume this accessor and still falls back to the provider default, as `DEPLOY.md` documents.
 

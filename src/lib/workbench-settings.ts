@@ -25,6 +25,7 @@ import {
   WORKERS_AI_MODEL_PREFIX,
   WORKERS_AI_EMBEDDING_MODEL_IDS,
   embeddingModelMatchesProvider,
+  embeddingProviderLabel,
   isEmbeddingProvider,
   VALID_PROVIDERS,
 } from "./providers";
@@ -167,6 +168,15 @@ export const SETTINGS_CUSTOM_ENDPOINT_COPY =
   "Custom uses an OpenAI-compatible endpoint. Set the base URL and the API key below.";
 
 /**
+ * The ONE name this module gives `workers-ai` (DW-222).
+ *
+ * The picker renders `embeddingProviderLabel(option)`, so a refusal that typed
+ * the name instead described the same selection under a second name on the same
+ * screen. Deriving it means the two cannot drift.
+ */
+const WORKERS_AI_LABEL = embeddingProviderLabel("workers-ai");
+
+/**
  * Shown when the control is ENABLED. When it is not, the sentence is
  * {@link vectorSearchMissingCopy}'s, which names the legs the SELECTED provider
  * is actually missing — Ollama and Workers AI supply their own transport, so
@@ -209,8 +219,7 @@ export const SETTINGS_VECTOR_ENV_MODEL_NOTE =
  * silently, on every Docker deployment. The sentence names the binding and the
  * two ways out.
  */
-export const SETTINGS_VECTOR_BINDING_NOTE =
-  "Workers AI embeds through the Cloudflare AI binding, which exists only on the Workers runtime — bind ai in wrangler.jsonc, or choose another embedding provider.";
+export const SETTINGS_VECTOR_BINDING_NOTE = `${WORKERS_AI_LABEL} embeds through the Cloudflare AI binding, which exists only on the Workers runtime — bind ai in wrangler.jsonc, or choose another embedding provider.`;
 
 /**
  * The same refusal where `EMBEDDING_PROVIDER` owns the selection (DW-281).
@@ -230,8 +239,7 @@ export const SETTINGS_VECTOR_BINDING_NOTE =
  * and the owner would hear one fact twice. That is the same duplication the
  * `"model"` exception in {@link vectorSearchFieldIssue} exists to prevent.
  */
-export const SETTINGS_VECTOR_BINDING_ENV_NOTE =
-  "Workers AI embeds through the Cloudflare AI binding, which exists only on the Workers runtime — bind ai in wrangler.jsonc, or unset EMBEDDING_PROVIDER to choose another embedding provider.";
+export const SETTINGS_VECTOR_BINDING_ENV_NOTE = `${WORKERS_AI_LABEL} embeds through the Cloudflare AI binding, which exists only on the Workers runtime — bind ai in wrangler.jsonc, or unset EMBEDDING_PROVIDER to choose another embedding provider.`;
 
 /**
  * The environment's overrides, said out loud.
@@ -651,8 +659,8 @@ function vectorSearchMissingLegs(v: VectorSearchInputs): VectorSearchLeg[] {
             // is wrong advice for `@cf/llava-hf/llava-1.5-7b-hf`, which already is
             // — and which `ai.run()` refuses. The list comes from the catalog, so
             // adding a model to the table adds it to this sentence.
-            `a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")})`
-          : `a model id outside the Workers AI ${WORKERS_AI_MODEL_PREFIX} namespace`,
+            `a supported ${WORKERS_AI_LABEL} model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")})`
+          : `a model id outside the ${WORKERS_AI_LABEL} ${WORKERS_AI_MODEL_PREFIX} namespace`,
       // Only when the environment owns the value: naming the variable is what
       // makes the sentence actionable, and saying it for a STORED mismatch would
       // send the owner to a variable that is not set (DW-218).

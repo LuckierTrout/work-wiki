@@ -1949,7 +1949,8 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/lib/workbench-settings.ts (vectorSearchMissingLegs)
 severity: low
 reason: `embeddingProviderLabel("workers-ai")` returns "Cloudflare Workers AI" and populates the embedding-provider `<option>` (`SettingsCanvas.tsx:451-455`), while the namespace sentence types "Workers AI". Deriving the name from `embeddingProviderLabel` was implemented during review and then reverted: the frozen I/O matrix in this spec's intent-contract pins the sentence text verbatim, and step-03's matrix audit forbids editing an expectation to match changed code. Worth doing as its own change, matrix text included.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-workers-ai-label-parity
 decision: 2026-08-19 Derive the label, update the matrix — Derive the provider name in vectorSearchMissingLegs from embeddingProviderLabel so the refusal and the picker always agree, and update spec-dw-73's frozen I/O matrix text in the same change, recording that the frozen expectation was renegotiated deliberately for copy consistency.
 
 ### DW-223: The namespace complaint is announced on the vector checkbox, not on the embedding-model field that actually holds the wrong value.

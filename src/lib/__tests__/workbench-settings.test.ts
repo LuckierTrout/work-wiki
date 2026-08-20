@@ -77,6 +77,7 @@ import {
   EMBEDDING_PROVIDERS,
   PROVIDER_INFO,
   WORKERS_AI_EMBEDDING_MODEL_IDS,
+  WORKERS_AI_MODEL_PREFIX,
   embeddingProviderLabel,
 } from "../providers";
 import {
@@ -377,7 +378,7 @@ function missingCopy(legs: VectorLegs): string {
  * rather than typed, so adding a supported id updates the expectation with the
  * sentence instead of leaving a stale literal behind.
  */
-const UNSUPPORTED_WORKERS_MODEL = `Vector search needs a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) before it can be turned on.`;
+const UNSUPPORTED_WORKERS_MODEL = `Vector search needs a supported Cloudflare Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) before it can be turned on.`;
 
 describe("canEnableVectorSearch", () => {
   it("requires an EXPLICIT embedding provider before anything else", () => {
@@ -491,7 +492,7 @@ describe("canEnableVectorSearch", () => {
         hasKey: false,
       }),
     ).toBe(
-      "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.",
     );
     // Google is a keyed provider, and gets the same answer OpenAI does.
     expect(
@@ -582,7 +583,7 @@ describe("canEnableVectorSearch", () => {
         hasKey: false,
       }),
     ).toBe(
-      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
+      "Vector search needs a supported Cloudflare Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
     );
     expect(
       missingCopy({
@@ -592,7 +593,7 @@ describe("canEnableVectorSearch", () => {
         hasKey: true,
       }),
     ).toBe(
-      "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.",
     );
     // A leg, not a separate sentence: it composes with the others in leg order
     // instead of hiding them.
@@ -604,7 +605,7 @@ describe("canEnableVectorSearch", () => {
         hasKey: false,
       }),
     ).toBe(
-      "Vector search needs a model id outside the Workers AI @cf/ namespace and an API key before it can be turned on.",
+      "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace and an API key before it can be turned on.",
     );
     // THREE legs, which is what pins the new leg's POSITION: it is the middle
     // clause, between the endpoint and the key, because that is the order
@@ -618,7 +619,7 @@ describe("canEnableVectorSearch", () => {
         hasKey: false,
       }),
     ).toBe(
-      "Vector search needs an endpoint, a model id outside the Workers AI @cf/ namespace and an API key before it can be turned on.",
+      "Vector search needs an endpoint, a model id outside the Cloudflare Workers AI @cf/ namespace and an API key before it can be turned on.",
     );
     // No model at all is still just "a model" — the namespace clause needs a
     // value to complain about.
@@ -663,7 +664,7 @@ describe("canEnableVectorSearch", () => {
           hasKey: false,
         }),
       ).toBe(
-        "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
+        "Vector search needs a supported Cloudflare Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
       );
     }
   });
@@ -754,7 +755,7 @@ describe("canEnableVectorSearch", () => {
         hasWorkersAiBinding: false,
       }),
     ).toBe(
-      "Vector search needs a supported Workers AI model id " +
+      "Vector search needs a supported Cloudflare Workers AI model id " +
         `(${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) and the Cloudflare AI binding ` +
         `before it can be turned on. ${SETTINGS_VECTOR_ENV_MODEL_NOTE} ` +
         SETTINGS_VECTOR_BINDING_NOTE,
@@ -848,7 +849,7 @@ describe("vectorSearchInactiveCopy — what a SWITCHED-ON switch says (DW-279)",
       modelOrigin: "env",
       hasWorkersAiBinding: false,
     } as const;
-    const list = `a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) and the Cloudflare AI binding`;
+    const list = `a supported Cloudflare Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) and the Cloudflare AI binding`;
     expect(missingCopy(legs)).toBe(
       `Vector search needs ${list} before it can be turned on. ${SETTINGS_VECTOR_ENV_MODEL_NOTE} ${SETTINGS_VECTOR_BINDING_NOTE}`,
     );
@@ -952,7 +953,7 @@ describe("vectorSearchFieldIssue — what the MODEL BOX says about itself (DW-22
         "model",
       ),
     ).toEqual({
-      copy: "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
+      copy: "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.",
       invalid: true,
     });
   });
@@ -2520,7 +2521,7 @@ describe("PUT /api/settings", () => {
     );
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.",
     );
     expect(await stored()).toEqual({ provider: "openai" });
   });
@@ -3156,7 +3157,7 @@ describe("PUT /api/settings", () => {
 
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.",
     );
     // Nothing written — not the flat field, not the chat model.
     expect(await stored()).toMatchObject({
@@ -3226,7 +3227,7 @@ describe("PUT /api/settings", () => {
 
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.",
     );
     // Refused BEFORE `saveConfig`: the store still holds what it held.
     expect(await stored()).toMatchObject({
@@ -3507,6 +3508,123 @@ describe("the Settings components stay inside the shell", () => {
     }
     const canvas = await readComponent("SettingsCanvas.tsx");
     expect(canvas).toContain("embeddingProviderLabel(option)");
+  });
+
+  it("gives workers-ai ONE name across the picker and every vector refusal (DW-222)", async () => {
+    // The picker renders `embeddingProviderLabel(option)` and the refusal sits
+    // two rows below it, so a hand-typed short name described one selection
+    // under two names on one screen. This sweeps every refusal the gate can
+    // produce rather than checking the four strings that were wrong once: a
+    // literal-by-literal rename passes again the next time someone types it.
+    const label = embeddingProviderLabel("workers-ai");
+    // The name itself, pinned. Without this the whole sweep survives deleting
+    // `embeddingProviderLabel`'s `workers-ai` branch: the label would fall back
+    // to the raw slug, every copy would name the provider "workers-ai", and
+    // every assertion below would still hold.
+    expect(label).toBe("Cloudflare Workers AI");
+    const providers = [null, "", "not-a-provider", ...EMBEDDING_PROVIDERS];
+    const models = [
+      null,
+      "@cf/baai/bge-m3",
+      "@cf/llava-hf/llava-1.5-7b-hf",
+      "text-embedding-3-small",
+    ];
+    const produced: string[] = [];
+    for (const provider of providers) {
+      for (const baseUrl of [null, "https://embeddings.example"]) {
+        for (const model of models) {
+          for (const hasKey of [false, true]) {
+            for (const modelOrigin of ["stored", "env"] as const) {
+              for (const providerOrigin of ["stored", "env"] as const) {
+                for (const hasWorkersAiBinding of [null, false, true]) {
+                  const inputs: VectorSearchInputs = {
+                    provider,
+                    baseUrl,
+                    model,
+                    hasKey,
+                    modelOrigin,
+                    providerOrigin,
+                    hasWorkersAiBinding,
+                  };
+                  const copies = [
+                    vectorSearchMissingCopy(inputs),
+                    vectorSearchInactiveCopy(inputs),
+                    // The THIRD copy producer on the same screen: the per-control
+                    // sentence each row carries. It composes the same legs, so a
+                    // name typed into one would surface here too.
+                    ...(["provider", "endpoint", "model", "key"] as const).map(
+                      (control) => vectorSearchFieldIssue(inputs, control)?.copy ?? "",
+                    ),
+                  ];
+                  for (const copy of copies) {
+                    if (!copy) continue;
+                    produced.push(copy);
+                    // Whatever is left once the picker's own name is removed
+                    // must not still be naming the provider — in any spelling,
+                    // so the slug and the short name are both caught.
+                    expect(copy.replaceAll(label, "«provider»")).not.toMatch(
+                      /workers[\s-]?ai/i,
+                    );
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    // A sweep that stopped producing the provider-naming refusals would pass
+    // while proving nothing, so each phrase family that CAN name the provider is
+    // pinned as actually reached.
+    const reached = (needle: string) => produced.some((copy) => copy.includes(needle));
+    expect(
+      reached(
+        `a supported ${label} model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")})`,
+      ),
+    ).toBe(true);
+    expect(reached(`a model id outside the ${label} ${WORKERS_AI_MODEL_PREFIX} namespace`)).toBe(
+      true,
+    );
+    expect(reached(SETTINGS_VECTOR_BINDING_NOTE)).toBe(true);
+    expect(reached(SETTINGS_VECTOR_BINDING_ENV_NOTE)).toBe(true);
+    // The sweep above can only catch the SHORT name. Hand-typing the full name
+    // would produce copy identical to the derived copy and slip through, so the
+    // module source is scanned too: the name may only ever arrive through
+    // `WORKERS_AI_LABEL`, which is what makes the picker its single source.
+    const source = await readFile(path.join(SRC, "lib/workbench-settings.ts"), "utf8");
+    expect(source).not.toContain(label);
+    expect(source).toContain('const WORKERS_AI_LABEL = embeddingProviderLabel("workers-ai")');
+    // The notes are reached by the sweep as leg notes; what the shape check adds
+    // is that each one OPENS with the derived name, which is the position the
+    // hand-typed short name occupied.
+    for (const note of [SETTINGS_VECTOR_BINDING_NOTE, SETTINGS_VECTOR_BINDING_ENV_NOTE]) {
+      expect(note.startsWith(`${label} embeds through the Cloudflare AI binding`)).toBe(
+        true,
+      );
+    }
+  });
+
+  it("keeps DEPLOY.md's quoted refusal identical to the constant it quotes (DW-222)", async () => {
+    // `DEPLOY.md` block-quotes SETTINGS_VECTOR_BINDING_ENV_NOTE so an operator
+    // can compare the doc to the screen. Nothing but memory joined the two, which
+    // is how the doc came to quote a sentence the surface had stopped showing.
+    // The quote is hard-wrapped, so it is un-wrapped before comparing: what must
+    // match is the SENTENCE, not the line breaks the markdown happens to use.
+    const doc = await readFile(path.resolve(SRC, "..", "DEPLOY.md"), "utf8");
+    const blocks: string[] = [];
+    let current: string[] = [];
+    for (const line of doc.split("\n")) {
+      if (line.startsWith(">")) {
+        current.push(line.replace(/^>\s?/, ""));
+      } else if (current.length > 0) {
+        blocks.push(current.join(" ").replace(/\s+/g, " ").trim());
+        current = [];
+      }
+    }
+    if (current.length > 0) blocks.push(current.join(" ").replace(/\s+/g, " ").trim());
+    expect(blocks.some((block) => block.includes(SETTINGS_VECTOR_BINDING_ENV_NOTE))).toBe(
+      true,
+    );
   });
 
   it("clears a stale refusal as soon as the owner edits anything", async () => {

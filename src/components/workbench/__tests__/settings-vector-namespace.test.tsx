@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
-import { WORKERS_AI_EMBEDDING_MODEL_IDS } from "@/lib/providers";
+import {
+  WORKERS_AI_EMBEDDING_MODEL_IDS,
+  WORKERS_AI_MODEL_PREFIX,
+  embeddingProviderLabel,
+} from "@/lib/providers";
 import {
   SETTINGS_LOADING_COPY,
   SETTINGS_READ_ONLY_COPY,
@@ -129,9 +133,9 @@ async function mount(stored: WorkbenchSettingsPayload) {
  * a supported model and this expectation would go on naming the old four while
  * the surface named five.
  */
-const UNSUPPORTED_WORKERS_MODEL = `Vector search needs a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) before it can be turned on.`;
+const UNSUPPORTED_WORKERS_MODEL = `Vector search needs a supported Cloudflare Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) before it can be turned on.`;
 const OUT_OF_NAMESPACE =
-  "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.";
+  "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.";
 /**
  * The same legs, said to a switch that is already ON (DW-279). Typed out for the
  * same reason the refusal above is: the point of a mounted assertion is the
@@ -139,7 +143,7 @@ const OUT_OF_NAMESPACE =
  * running deployment — the component selects it from draft-derived terms, which
  * cannot know what the stored config is doing.
  */
-const ON_BUT_INACTIVE = `Vector search is switched on, but it needs a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) before it can run. Turn it off, or supply what is missing.`;
+const ON_BUT_INACTIVE = `Vector search is switched on, but it needs a supported Cloudflare Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) before it can run. Turn it off, or supply what is missing.`;
 
 describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
   it("describes a Workers AI selection holding an OpenAI model id", async () => {
@@ -225,11 +229,40 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     const announced = announcedFor(checkbox);
     expect(announced).toBe(UNSUPPORTED_WORKERS_MODEL);
     // Specifically: it does not tell the owner to do what they have already done.
-    expect(announced).not.toContain("in the Workers AI @cf/ namespace");
+    // The phrase is DERIVED the way the copy is (DW-222): typed out, this guard
+    // stopped guarding the moment the provider name changed, because a
+    // reintroduced pre-DW-220 sentence would name the provider the new way.
+    expect(announced).not.toContain(
+      `in the ${embeddingProviderLabel("workers-ai")} ${WORKERS_AI_MODEL_PREFIX} namespace`,
+    );
     expect(announced).toContain("@cf/baai/bge-m3");
     fireEvent.click(checkbox);
     await waitFor(() => expect(checkbox.checked).toBe(false));
     expectNoSaveAttempted();
+  });
+
+  it("names the provider in the refusal exactly as the PICKER above it does (DW-222)", async () => {
+    // Every other parity assertion lives at the module seam, where both sides
+    // resolve through the same `embeddingProviderLabel` call and so cannot
+    // disagree by construction. This one compares RENDERED to RENDERED — the
+    // option text a screen reader reads out of the select against the sentence
+    // it reads out of the switch two rows below — which is the surface the
+    // intent is actually about.
+    await mount(payload());
+    const select = screen.getByLabelText("Embedding provider") as HTMLSelectElement;
+    const option = Array.from(select.options).find((o) => o.value === "workers-ai");
+    expect(option).toBeDefined();
+    const pickerName = option!.textContent ?? "";
+    // A blank option would make the containment check below pass vacuously.
+    expect(pickerName.trim().length).toBeGreaterThan(0);
+    const announced = announcedFor(
+      screen.getByLabelText("Enable vector search") as HTMLInputElement,
+    );
+    // The refusal is one that NAMES the provider, and it names it with the
+    // picker's own string, character for character.
+    expect(announced).toContain(pickerName);
+    // And it does not ALSO carry a second name for the same selection.
+    expect(announced.replaceAll(pickerName, "«provider»")).not.toMatch(/workers[\s-]?ai/i);
   });
 
   it("shows the ordinary hint once the id matches the provider", async () => {
