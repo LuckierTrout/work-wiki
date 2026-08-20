@@ -180,6 +180,18 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
       // Re-seeded from the STORED values the route answered with, not from what
       // was sent: a trimmed URL or a rejected-then-defaulted field must show
       // what the kernel actually holds. This is also what clears `dirty`.
+      //
+      // …INCLUDING the version, which the answered payload may now legitimately
+      // omit (DW-199). A save that answered NO version CLEARS it rather than
+      // keeping the old one — the convention `PreviewColumn` already spells for
+      // the same seam. What this surface knows at that point is "the current
+      // version is unknown", and the next save saying so (428, "could not be
+      // checked") is truthful, where the kept one would be a version this very
+      // save definitively superseded: it can only ever be refused, and it would
+      // be refused with 412's "somebody else changed this while you were
+      // editing" — a sentence about an actor that does not exist. Neither
+      // answer can clobber, so the tie is broken on which refusal tells the
+      // owner the truth.
       setPayload(result.payload);
       setDraft(settingsDraftFromPayload(result.payload));
       setStatus(SETTINGS_SAVED_COPY);

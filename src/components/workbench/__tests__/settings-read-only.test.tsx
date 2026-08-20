@@ -8,7 +8,10 @@ import {
   SETTINGS_SAVE_COPY,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
-import { WRITE_CONFLICT_COPY } from "@/lib/write-precondition";
+import {
+  WRITE_CONFLICT_COPY,
+  WRITE_PRECONDITION_REQUIRED_COPY,
+} from "@/lib/write-precondition";
 
 /**
  * The Settings controls a read-only deployment refuses, MOUNTED (DW-37, DW-65).
@@ -26,8 +29,9 @@ import { WRITE_CONFLICT_COPY } from "@/lib/write-precondition";
 /** The stored settings, as `GET /api/settings` serves them. */
 function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSettingsPayload {
   return {
-    // The write precondition `GET /api/settings` serves beside the values.
-    version: "w1:2-0000000000000000",
+    // The write precondition `GET /api/settings` serves beside the values — the
+    // opaque stamp the store holds, not a hash of the config (DW-197).
+    version: "s1:00000000000000000000000000000000",
     chatProvider: "openai",
     chatModel: "gpt-4o",
     ingestProvider: "anthropic",
@@ -230,8 +234,8 @@ describe("a read-only deployment (DW-37, DW-65)", () => {
 // save re-seeds it so the next one is not refused as a conflict with itself.
 
 describe("the Settings canvas sends the version it was seeded with (DW-63)", () => {
-  const SEEDED = "w1:2b-1111111122222222";
-  const LANDED = "w1:2b-3333333344444444";
+  const SEEDED = "s1:11111111111111112222222222222222";
+  const LANDED = "s1:33333333333333334444444444444444";
 
   /** Mount writable, with one response per call rather than one for all. */
   async function mountWritable(responses: Array<() => unknown>) {
@@ -294,6 +298,79 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     expect(ifMatchOf(2)).toBe(`"${LANDED}"`);
+  });
+
+  it("CLEARS the version when a landed save answers without one (DW-199)", async () => {
+    // The convention `PreviewColumn` already spells for this seam: what the
+    // surface knows after a versionless 200 is "the current version is
+    // unknown". Sending nothing gets 428 — "this save could not be checked" —
+    // which is true. Re-sending the version this very save superseded gets 412
+    // — "somebody else changed this while you were editing" — about an actor
+    // that does not exist, and it can only ever be refused. Neither can
+    // clobber, so the tie goes to the honest refusal.
+    const versionless = () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        saved: true,
+        workbench: (() => {
+          const { version: _dropped, ...rest } = payload({
+            readOnly: false,
+            chatModel: "gpt-4.1",
+          });
+          return rest;
+        })(),
+      }),
+    });
+    await mountWritable([
+      read(SEEDED),
+      versionless,
+      () => ({
+        ok: false,
+        status: 428,
+        json: async () => ({ error: WRITE_PRECONDITION_REQUIRED_COPY }),
+      }),
+    ]);
+
+    typeChatModel("gpt-4.1");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVED_COPY)).toBeTruthy());
+    expect(ifMatchOf(1)).toBe(`"${SEEDED}"`);
+
+    // The NEXT save carries no `If-Match` at all…
+    typeChatModel("gpt-4.1-mini");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(ifMatchOf(2)).toBeUndefined();
+
+    // …and is refused with the 428 sentence, with every edit still on screen.
+    await waitFor(() =>
+      expect(screen.getByText(WRITE_PRECONDITION_REQUIRED_COPY)).toBeTruthy(),
+    );
+    expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe(
+      "gpt-4.1-mini",
+    );
+  });
+
+  it("still RENDERS a load that carries no version at all", async () => {
+    // A payload without one is accepted rather than turned into an
+    // indistinguishable load failure that takes the whole canvas off screen.
+    const { version: _dropped, ...withoutVersion } = payload({ readOnly: false });
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ workbench: withoutVersion }),
+    } as unknown as Response);
+    render(<SettingsCanvas category="llm-models" headingId="wb-set-heading" />);
+    await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
+
+    expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe("gpt-4o");
+    // …and a save from it carries NO `If-Match`, which the route answers 428
+    // with the draft still on screen — never an unconditional write.
+    typeChatModel("gpt-4.1");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(ifMatchOf(1)).toBeUndefined();
   });
 
   it("keeps every edit on screen and shows the SERVER's conflict sentence", async () => {

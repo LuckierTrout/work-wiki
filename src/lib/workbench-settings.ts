@@ -235,15 +235,25 @@ export const SETTINGS_ROUTE = "/api/settings";
 export interface WorkbenchSettingsPayload {
   /**
    * The WRITE PRECONDITION for the stored `AppConfig` these values came out of
-   * (DW-63) — `objectVersion` of the parsed config, so a re-ordered
-   * `.llm-wiki-config.json` is not a conflict with itself.
+   * (DW-63) — the OPAQUE TOKEN `saveConfig` stamped beside the config, never a
+   * hash of it, so nothing derived from the three stored API keys reaches this
+   * payload (see `readConfig` in `src/lib/config.ts`).
    *
-   * REQUIRED, not optional: this surface's whole draft is re-seeded from a
-   * payload, and a payload without a version would seed an editor whose save
-   * can only ever be refused. `isWorkbenchSettingsPayload` therefore rejects
-   * one, which is the same reason it rejects a missing `language`.
+   * OPTIONAL, and absence DEGRADES rather than fails (DW-199). The route always
+   * sends one, so a payload without it means something between the route and
+   * the browser dropped it — and the cost of the two answers is wildly
+   * asymmetric. Refusing the payload takes the whole canvas off screen and
+   * loses every unsaved edit on it, for a field the surface only needs at Save.
+   * Accepting it renders the settings, and the surface CLEARS the version it
+   * was holding rather than carrying a superseded one forward: the next save is
+   * then refused with the 428 sentence — "this could not be checked", which is
+   * what is actually true — and the draft stays. That is `PreviewColumn`'s
+   * convention for the same seam. Nothing here can clobber either way: no
+   * version means no unconditional write, because `checkWritePrecondition` has
+   * no such branch. This matches `isPreviewPayload`, which tolerates the same
+   * absence.
    */
-  version: string;
+  version?: string;
   chatProvider: ProviderValue | null;
   chatModel: string | null;
   ingestProvider: ProviderValue | null;
@@ -303,10 +313,9 @@ export interface WorkbenchSettingsPayload {
  * Everything the payload carries EXCEPT the write precondition.
  *
  * `getWorkbenchSettings()` builds the values from the config cache; only the
- * route holds the config OBJECT the version is derived from, and it serves the
- * same one string at the top level and here (DW-63). Splitting the type is what
- * keeps that a single `objectVersion` call rather than a second derivation
- * inside the resolver that would have to agree with it.
+ * route holds the stored TOKEN, and it serves that same one string at the top
+ * level and here (DW-63). Splitting the type is what keeps the resolver unable
+ * to invent a second version that would have to agree with the route's.
  */
 export type WorkbenchSettingsValues = Omit<WorkbenchSettingsPayload, "version">;
 
@@ -361,11 +370,17 @@ export function isWorkbenchSettingsPayload(
   const nullableString = (key: string) =>
     payload[key] === null || typeof payload[key] === "string";
   return (
-    // The precondition the next save sends back. A payload without one seeds a
-    // draft that can never be stored, which is worse than one indistinguishable
-    // load failure.
-    typeof payload.version === "string" &&
-    payload.version.length > 0 &&
+    // The precondition the next save sends back — checked only for TYPE when
+    // present (DW-199). Absent, `null` (the same absence spelled by a
+    // serializer) and `""` are all accepted: the surface renders, its version
+    // goes to "unknown", and a save with none is refused with the 428 sentence
+    // while the draft stays on screen. What is refused is a NUMBER or an object
+    // — something that would be sent back as `If-Match` and answered with a
+    // conflict the owner cannot explain. See
+    // {@link WorkbenchSettingsPayload.version}.
+    (payload.version === undefined ||
+      payload.version === null ||
+      typeof payload.version === "string") &&
     nullableString("chatProvider") &&
     nullableString("chatModel") &&
     nullableString("ingestProvider") &&

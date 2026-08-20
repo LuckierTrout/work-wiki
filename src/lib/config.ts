@@ -194,6 +194,21 @@ function configRelPath(): string {
   return ".llm-wiki-config.json";
 }
 
+/**
+ * Relative path for the settings WRITE-PRECONDITION TOKEN, a sibling of the
+ * config file rather than a field inside it.
+ *
+ * A field would make the token a pseudo-setting: `AppConfig` is spread into
+ * `getWorkbenchSettings`, exported in backups, diffed field-by-field by the
+ * suite, and hand-edited by owners. A sibling file keeps the config's stored
+ * shape byte-identical to what it was before the guard existed, which is what
+ * makes "the version is derived from NOTHING in the config" a structural fact
+ * rather than a promise about which fields the hash skipped.
+ */
+function configVersionRelPath(): string {
+  return ".llm-wiki-config.version";
+}
+
 export function getConfigPath(): string {
   return `${getDataDir()}/.llm-wiki-config.json`;
 }
@@ -221,34 +236,288 @@ export function getOllamaBaseUrl(): string | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * Read and parse the config file. Returns `{}` if the file doesn't exist.
- * Also populates the sync cache as a side effect so that subsequent
- * `loadConfigSync()` calls return the up-to-date config.
+ * What `GET`/`PUT /api/settings` ANSWER when the settings store cannot be read.
+ *
+ * ONE sentence, owned here beside the read that produces the condition, never
+ * typed at a route or a render site. It is deliberately NOT the write-conflict
+ * wording: nothing is known to have changed and nothing was refused for being
+ * stale — the store simply could not be opened, so the honest thing to say is
+ * "temporary, try again", not "someone else edited this".
+ *
+ * The recovery half is the conflict copy's, word for word, because the owner's
+ * situation is identical: a draft is on screen, reloading destroys it, and
+ * copying it out first is the only thing that saves it.
+ *
+ * IT REACHES THE OWNER ON `PUT`, AND ONLY THERE. Both surfaces relay the
+ * server's `{ error }` verbatim on a refused save, so this is the sentence a
+ * refused save shows. On `GET` it is the route's honest BODY and nothing
+ * renders it: `fetchWorkbenchSettings` maps every non-ok response to the same
+ * `failed`, and `useSettings.fetchSettings` throws its own fixed string — both
+ * deliberately, because a read must grant no oracle, and a body that told a
+ * reader which way the read failed would be one. That asymmetry is the design,
+ * not a gap: the write is the verb the owner is owed an explanation for.
  */
-export async function loadConfig(): Promise<AppConfig> {
-  try {
-    const raw = await getStorage().readFile(configRelPath());
-    const data = JSON.parse(raw) as AppConfig;
-    _configCache = { data, ts: Date.now() };
-    return data;
-  } catch (err) {
-    if (!isEnoent(err)) {
-      logger.warn("config", "load config failed:", err);
-    }
-    return {};
-  }
+export const CONFIG_UNREADABLE_COPY =
+  "The settings store could not be read, so nothing was changed. This is usually temporary — copy anything you have unsaved, then reload and try again.";
+
+/**
+ * The version a store that has a config but has never been stamped reports.
+ *
+ * ONE fixed sentinel rather than `null`, so a first save through the API can
+ * still land: a store written by hand, restored from a backup, or created
+ * before this scheme existed has a config and no token, and refusing every save
+ * against it would strand the owner with no way through except deleting a file
+ * they cannot see.
+ *
+ * ITS OWN RESIDUAL. While a store is unstamped, two surfaces hold this same
+ * constant, so a save from either matches and neither is refused — the guard is
+ * off between them. The window is the FIRST save only: {@link saveConfig}
+ * stamps a real token every time, so the second surface through is checked
+ * against a real one.
+ *
+ * THE LARGER RESIDUAL, WHICH IS NOT LIMITED TO UNSTAMPED STORES. The stamp
+ * tracks SAVES, not bytes, so a hand edit of `.llm-wiki-config.json` leaves the
+ * version standing — on a stamped store just as much as on an unstamped one —
+ * and a draft seeded before that edit saves straight over it. The
+ * content-derived version this replaced DID move for a hand edit and refused
+ * that save. Losing that is the price paid to get `firecrawlApiKey`,
+ * `customApiKey` and `embeddingApiKey` out of the value served on a boundary
+ * AD-23 says no secret material crosses: a version computed over the store is a
+ * function of everything in it, and there is no version that is both derived
+ * from the bytes and independent of the secrets among them. The guard is
+ * defined over writes THROUGH THE API, which is what it was always able to
+ * check; editing the file underneath a running app was never a supported way to
+ * change settings. It is not closed; it is bounded and written down.
+ *
+ * `s1:` names the scheme, the same way `w1:` does in `write-precondition.ts`,
+ * so a token from a future scheme can never be mistaken for a match.
+ */
+export const UNSTAMPED_CONFIG_VERSION = "s1:unstamped";
+
+/**
+ * A fresh settings precondition token.
+ *
+ * DERIVED FROM NOTHING IN THE CONFIG. Not a hash of the file, not of the parsed
+ * object, not of any subset of fields that happens to exclude the secrets
+ * today. `firecrawlApiKey`, `customApiKey` and `embeddingApiKey` live in this
+ * store, and AD-23 says no secret material crosses the settings boundary — a
+ * content-derived version is exactly that material, re-encoded. A random token
+ * cannot leak what it does not read, and it answers the only question the guard
+ * asks ("is this the same store state the draft was seeded from") just as well.
+ *
+ * 32 hex characters out of `crypto.randomUUID()`: available identically in
+ * node, in the browser and in the Worker, and wide enough that two saves never
+ * collide.
+ */
+export function newConfigVersion(): string {
+  return `s1:${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
 /**
- * Write config JSON via storage provider.
+ * The settings store as it actually is: readable, or not.
+ *
+ * `unreadable` is the case {@link loadConfig} cannot express. It answers `{}`
+ * for an ABSENT config and for a FAILED read alike, which is right for the ~50
+ * consumers that just want defaults and wrong for the one that merges a patch
+ * into what it read: a transient storage error would make `{}` the merge base
+ * and write away every stored field, including the three API keys.
  */
-export async function saveConfig(config: AppConfig): Promise<void> {
-  await getStorage().writeFile(
+export type ConfigRead =
+  | { status: "ok"; config: AppConfig; version: string }
+  | { status: "unreadable"; error: unknown };
+
+/** Is this parsed JSON something `AppConfig` could be? */
+function isPlainConfigObject(value: unknown): value is AppConfig {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The config half of {@link readConfig}: parse the file, or say it is broken.
+ *
+ * ENOENT is `ok` with `{}` — an absent config is the documented default and has
+ * always been. Everything else is `unreadable`: a parse error, a non-object
+ * parse (`null`, `[]`, `"x"` — all valid JSON, none of them a config), and any
+ * storage failure that is not "not found".
+ */
+async function readStoredConfig(): Promise<
+  { status: "ok"; config: AppConfig } | { status: "unreadable"; error: unknown }
+> {
+  let raw: string;
+  try {
+    raw = await getStorage().readFile(configRelPath());
+  } catch (err) {
+    if (isEnoent(err)) return { status: "ok", config: {} };
+    logger.warn("config", "load config failed:", err);
+    return { status: "unreadable", error: err };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    logger.warn("config", "load config failed:", err);
+    return { status: "unreadable", error: err };
+  }
+  if (!isPlainConfigObject(parsed)) {
+    const err = new Error("config file does not hold a JSON object");
+    logger.warn("config", "load config failed:", err);
+    return { status: "unreadable", error: err };
+  }
+  _configCache = { data: parsed, ts: Date.now() };
+  return { status: "ok", config: parsed };
+}
+
+/**
+ * Every shape a stored token may legitimately have.
+ *
+ * The sentinel, or exactly what {@link newConfigVersion} produces — there is no
+ * third. Anything else in the file was not written by this module.
+ */
+function isStoredConfigVersion(value: string): boolean {
+  return value === UNSTAMPED_CONFIG_VERSION || /^s1:[0-9a-f]{32}$/.test(value);
+}
+
+/**
+ * The token half of {@link readConfig}.
+ *
+ * ENOENT is the UNSTAMPED store, which is `ok` with the sentinel. Any other
+ * READ FAILURE is `unreadable`, and it has to be: answering the sentinel for a
+ * storage error would let a save land against a store whose real token nobody
+ * checked, which is the lost update the guard exists to catch.
+ *
+ * A file that READS but does not hold a token is a different fact, and it
+ * answers the SENTINEL rather than `unreadable`. The token travels in `If-Match`
+ * and `parseIfMatch` accepts one quoted value with no embedded quote, so a
+ * stamp corrupted to contain a quote, a newline, or anything else the header
+ * cannot carry would make every save 428 forever, with no path out that does not
+ * involve deleting a file the owner cannot see from any surface. `unreadable`
+ * would be the same lockout wearing a 503. The sentinel is the recoverable
+ * answer: the owner's next save lands and stamps a real token, so a corrupted
+ * stamp SELF-HEALS. The cost is the unstamped window's cost, once — and a
+ * lockout with no way out is worse than one save that goes unchecked. It is
+ * logged, because a token nothing in this module could have written means
+ * something else is writing that file.
+ */
+async function readStoredVersion(): Promise<
+  { status: "ok"; version: string } | { status: "unreadable"; error: unknown }
+> {
+  let raw: string;
+  try {
+    raw = await getStorage().readFile(configVersionRelPath());
+  } catch (err) {
+    if (isEnoent(err)) return { status: "ok", version: UNSTAMPED_CONFIG_VERSION };
+    logger.warn("config", "load config version failed:", err);
+    return { status: "unreadable", error: err };
+  }
+  const version = raw.trim();
+  if (!isStoredConfigVersion(version)) {
+    // A present-but-empty file is the ordinary case of this — a half-written
+    // stamp — and is not worth a distinct answer.
+    if (version.length > 0) {
+      logger.warn("config", "config version file does not hold a token; treating as unstamped");
+    }
+    return { status: "ok", version: UNSTAMPED_CONFIG_VERSION };
+  }
+  return { status: "ok", version };
+}
+
+/**
+ * Read the config AND the precondition token it is guarded by, honestly.
+ *
+ * This is the read the settings route runs, and the only one that can tell
+ * "there is no config" from "the config could not be read". Both files must
+ * answer: a readable config beside an unreadable token is still `unreadable`,
+ * because the version the route would serve and compare would be a guess.
+ *
+ * THE TOKEN IS READ FIRST, and the order is the safety property — the read side
+ * of the one {@link saveConfig} spells on the write side, inverted for the same
+ * reason. Two files cannot be read in one instant, so a concurrent save can
+ * always land between them, and the only question is WHICH mismatched pair this
+ * function can produce.
+ *
+ * Token first can only ever yield (STALE token, fresh config): the surface is
+ * seeded from current values labelled with a version the store no longer holds,
+ * so its next `PUT` is refused 412 for a change that did happen. A false
+ * refusal, recovered by reloading.
+ *
+ * Config first yields (stale config, FRESH token): the surface is seeded from
+ * SUPERSEDED values wearing the current version, its next `PUT` MATCHES, and it
+ * writes those superseded values over the save that just landed. That is the
+ * silent lost update the whole guard exists to catch, reintroduced by the order
+ * of two reads. As on the write side: a refusal nobody expected is recoverable,
+ * a silent overwrite is not.
+ *
+ * Populates the sync cache exactly as {@link loadConfig} does, so callers can
+ * still reach `getWorkbenchSettings()`/`getEffectiveProvider()` right after.
+ */
+export async function readConfig(): Promise<ConfigRead> {
+  const version = await readStoredVersion();
+  if (version.status === "unreadable") return version;
+  const config = await readStoredConfig();
+  if (config.status === "unreadable") return config;
+  return { status: "ok", config: config.config, version: version.version };
+}
+
+/**
+ * Read and parse the config file. Returns `{}` if the file doesn't exist, if it
+ * cannot be read, or if it does not hold a JSON OBJECT — the last of those is
+ * new: `null`, `[1,2,3]` and `"x"` are all valid JSON and used to be cast to
+ * `AppConfig` and handed to every caller verbatim, so a `.length` or a spread
+ * met something that was not a config. Also populates the sync cache as a side
+ * effect so that subsequent `loadConfigSync()` calls return the up-to-date
+ * config.
+ *
+ * THE LOSSY WRAPPER over {@link readConfig}'s config half, kept at exactly its
+ * old signature and its old `{}`-on-failure contract because ~50 call sites
+ * depend on both. Only the settings route needs to tell absent from broken, and
+ * it calls `readConfig` instead. It reads the config file ONLY: a caller that
+ * wants defaults has no use for the token, and making every one of those ~50
+ * reads pay a second storage round-trip — or degrade to `{}` because a file
+ * they never look at failed to open — would be a cost and a regression for a
+ * fact they do not consume.
+ */
+export async function loadConfig(): Promise<AppConfig> {
+  const read = await readStoredConfig();
+  return read.status === "ok" ? read.config : {};
+}
+
+/**
+ * Write config JSON via storage provider, and STAMP a fresh precondition token.
+ *
+ * THE TOKEN FILE IS WRITTEN FIRST, and the order is the safety property. If the
+ * config write then fails, the served token matches no open draft: every
+ * surface is refused, nothing was silently overwritten, and the owner recovers
+ * by reloading. The reverse order would leave a token that still matches a
+ * config which had already changed — a save that should have been refused
+ * lands, which is precisely the lost update this guard exists to catch. A
+ * refusal nobody expected is recoverable; a silent overwrite is not.
+ *
+ * Returns the token it stamped, so the route answers the version the store now
+ * holds without a second read. It also PRIMES the sync cache with what it just
+ * wrote (it used to null it, which left `loadConfigSync` answering `{}` for the
+ * whole 5 s TTL after every save, i.e. env-detected providers immediately after
+ * the owner selected one).
+ *
+ * EVERY SAVE ROTATES, INCLUDING ONE THAT CHANGED NOTHING. The token is a fact
+ * about writes, not about content, so a no-op save — the owner pressing Save on
+ * an untouched form — invalidates the other Settings surface's draft, and that
+ * surface is answered 412 for a change nobody made. The content-derived version
+ * moved only when content moved and would not have. This is the same trade as
+ * the residual in {@link UNSTAMPED_CONFIG_VERSION}, in the other direction: the
+ * stamp errs toward refusing, and a false refusal costs one reload, where the
+ * derived version's cost was the secrets.
+ *
+ * See {@link UNSTAMPED_CONFIG_VERSION} for what this does not close.
+ */
+export async function saveConfig(config: AppConfig): Promise<string> {
+  const version = newConfigVersion();
+  const storage = getStorage();
+  await storage.writeFile(configVersionRelPath(), version + "\n");
+  await storage.writeFile(
     configRelPath(),
     JSON.stringify(config, null, 2) + "\n",
   );
-  // Invalidate the sync cache so subsequent reads see the new data
-  _configCache = null;
+  _configCache = { data: { ...config }, ts: Date.now() };
+  return version;
 }
 
 // ---------------------------------------------------------------------------

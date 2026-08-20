@@ -1,9 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import {
+  CONFIG_UNREADABLE_COPY,
+  UNSTAMPED_CONFIG_VERSION,
   loadConfig,
+  readConfig,
+  newConfigVersion,
   saveConfig,
   loadConfigSync,
   isValidProvider,
@@ -19,7 +23,8 @@ import {
   _resetConfigCache,
   type AppConfig,
 } from "../config";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
+import { WRITE_CONFLICT_COPY } from "../write-precondition";
 
 // ---------------------------------------------------------------------------
 // Helpers — use a temp dir so tests don't touch the real project root
@@ -114,6 +119,239 @@ describe("loadConfig", () => {
 });
 
 // ---------------------------------------------------------------------------
+// readConfig — the honest read (DW-192) and the opaque stamp (DW-197)
+// ---------------------------------------------------------------------------
+
+const CONFIG_FILE = ".llm-wiki-config.json";
+const VERSION_FILE = ".llm-wiki-config.version";
+
+const FAULT = "the storage provider is unavailable";
+
+/**
+ * Reject every `writeFile` to a path ending in `suffix`; pass the rest through.
+ *
+ * The path-conditional `writeFile` spy `wikis.test.ts` already uses to observe
+ * half-finished multi-file writes. Faulting ONE of `saveConfig`'s two writes is
+ * the only way the order between them is observable at all — a test that reads
+ * the source text instead passes for a `Promise.all` that has no order, and
+ * fails for a refactor that changed nothing.
+ */
+function failWritesTo(suffix: string, message = FAULT) {
+  const storage = getStorage();
+  const write = storage.writeFile.bind(storage);
+  return vi
+    .spyOn(storage, "writeFile")
+    .mockImplementation(async (target: string, content: string) => {
+      if (target.endsWith(suffix)) return Promise.reject(new Error(message));
+      return write(target, content);
+    });
+}
+
+describe("readConfig", () => {
+  it("answers `ok` with `{}` and the sentinel for a store with no files", async () => {
+    // ABSENT is not broken: an empty config is the documented default, and a
+    // first save has to be able to land against it.
+    const read = await readConfig();
+    expect(read).toEqual({
+      status: "ok",
+      config: {},
+      version: UNSTAMPED_CONFIG_VERSION,
+    });
+  });
+
+  it("answers `ok` with the config and the STORED token after a save", async () => {
+    const stamped = await saveConfig({ provider: "openai" });
+    const read = await readConfig();
+    expect(read).toEqual({
+      status: "ok",
+      config: { provider: "openai" },
+      version: stamped,
+    });
+  });
+
+  it("answers the SENTINEL for a config with no token file", async () => {
+    // Hand-written, restored from a backup, or created before this scheme.
+    await saveConfig({ provider: "openai" });
+    await fs.rm(path.join(tmpDir, VERSION_FILE));
+    _resetConfigCache();
+    const read = await readConfig();
+    expect(read).toMatchObject({
+      status: "ok",
+      config: { provider: "openai" },
+      version: UNSTAMPED_CONFIG_VERSION,
+    });
+  });
+
+  it("treats an EMPTY token file as unstamped, so the next save heals it", async () => {
+    await saveConfig({ provider: "openai" });
+    await fs.writeFile(path.join(tmpDir, VERSION_FILE), "\n", "utf-8");
+    _resetConfigCache();
+    expect(await readConfig()).toMatchObject({
+      status: "ok",
+      config: { provider: "openai" },
+      version: UNSTAMPED_CONFIG_VERSION,
+    });
+    // …and the next save stamps a real one rather than leaving it broken.
+    const healed = await saveConfig({ provider: "openai" });
+    expect(healed).not.toBe(UNSTAMPED_CONFIG_VERSION);
+    _resetConfigCache();
+    expect(await readConfig()).toMatchObject({ status: "ok", version: healed });
+  });
+
+  it("treats a MALFORMED token as unstamped rather than locking the owner out", async () => {
+    // The token travels in `If-Match`, which carries one quoted value with no
+    // embedded quote. A stamp holding a quote or a newline could never be sent
+    // back, so honouring it verbatim would answer every save 428 forever with
+    // no path out from any surface the owner can see.
+    for (const corrupt of ['s1:"quoted"', "s1:not-hex", "w1:2-0000000000000000", "garbage\nlines"]) {
+      await saveConfig({ provider: "openai" });
+      await fs.writeFile(path.join(tmpDir, VERSION_FILE), corrupt + "\n", "utf-8");
+      _resetConfigCache();
+      expect(await readConfig()).toMatchObject({
+        status: "ok",
+        version: UNSTAMPED_CONFIG_VERSION,
+      });
+    }
+  });
+
+  it("answers `unreadable` for a config that is not valid JSON", async () => {
+    await fs.writeFile(path.join(tmpDir, CONFIG_FILE), "{ not json", "utf-8");
+    _resetConfigCache();
+    const read = await readConfig();
+    expect(read.status).toBe("unreadable");
+  });
+
+  it("answers `unreadable` for JSON that is not an object", async () => {
+    // `"x"`, `[]` and `null` are all valid JSON and none of them is a config;
+    // spreading one into a merge base loses the whole store just as surely as
+    // a read error does.
+    for (const body of ['"x"', "[1,2]", "null", "42"]) {
+      await fs.writeFile(path.join(tmpDir, CONFIG_FILE), body, "utf-8");
+      _resetConfigCache();
+      expect((await readConfig()).status).toBe("unreadable");
+    }
+  });
+
+  it("answers `unreadable` when the CONFIG reads but the TOKEN does not", async () => {
+    // A directory where the token file should be: the read fails with EISDIR,
+    // which is not ENOENT, so the version the route would serve is a guess.
+    await saveConfig({ provider: "openai" });
+    await fs.rm(path.join(tmpDir, VERSION_FILE));
+    await fs.mkdir(path.join(tmpDir, VERSION_FILE));
+    _resetConfigCache();
+    const read = await readConfig();
+    expect(read.status).toBe("unreadable");
+  });
+
+  it("keeps `loadConfig`'s lossy `{}` contract for the same broken store", async () => {
+    // ~50 call sites want defaults and cannot act on the difference. Only the
+    // settings route needs it, and it calls `readConfig`.
+    await fs.writeFile(path.join(tmpDir, CONFIG_FILE), "{ not json", "utf-8");
+    _resetConfigCache();
+    expect(await loadConfig()).toEqual({});
+  });
+
+  it("owns the unreadable sentence in ONE module, typed at no route site", async () => {
+    // One wording for one fact, beside the read that produces it. A route that
+    // typed its own would drift the moment a second door needed the same
+    // refusal, and it is deliberately NOT the write-conflict wording: nothing
+    // is known to have changed here.
+    expect(typeof CONFIG_UNREADABLE_COPY).toBe("string");
+    expect(CONFIG_UNREADABLE_COPY.length).toBeGreaterThan(0);
+    expect(CONFIG_UNREADABLE_COPY).not.toBe(WRITE_CONFLICT_COPY);
+    const route = await fs.readFile(
+      path.join(process.cwd(), "src/app/api/settings/route.ts"),
+      "utf-8",
+    );
+    expect(route).toContain("CONFIG_UNREADABLE_COPY");
+    // The SENTENCE itself is nowhere in the route — only the constant's name.
+    expect(route).not.toContain(CONFIG_UNREADABLE_COPY.slice(0, 40));
+  });
+});
+
+describe("the settings precondition token", () => {
+  it("ROTATES on every save, and is what the store then holds", async () => {
+    const first = await saveConfig({ provider: "openai" });
+    const second = await saveConfig({ provider: "openai" });
+    // Same config, different token: nothing about the content produces it.
+    expect(second).not.toBe(first);
+    _resetConfigCache();
+    const read = await readConfig();
+    expect(read).toMatchObject({ status: "ok", version: second });
+  });
+
+  it("is derived from NOTHING in the config", async () => {
+    // Two stores differing only in a stored API key can hold the same token —
+    // which is only possible because no field contributes to it. A
+    // content-derived version could not do this, and that is the AD-23 leak.
+    const stamped = await saveConfig({ firecrawlApiKey: "fc-one" });
+    await fs.writeFile(
+      path.join(tmpDir, CONFIG_FILE),
+      JSON.stringify({ firecrawlApiKey: "fc-two" }, null, 2) + "\n",
+      "utf-8",
+    );
+    _resetConfigCache();
+    const read = await readConfig();
+    expect(read).toMatchObject({
+      status: "ok",
+      config: { firecrawlApiKey: "fc-two" },
+      version: stamped,
+    });
+
+    // …and no stored value appears anywhere in a token.
+    expect(stamped).not.toContain("fc-one");
+    expect(newConfigVersion()).not.toBe(newConfigVersion());
+    expect(newConfigVersion().startsWith("s1:")).toBe(true);
+  });
+
+  it("writes the TOKEN FILE BEFORE the config file", async () => {
+    // The order is the safety property, and the only way to observe it is to
+    // BREAK the second write and look at what the store is left holding. A
+    // half-completed save must leave a token nobody holds — every open draft is
+    // refused and recovers by reloading — rather than a token that still
+    // matches a config which has already changed, which is the silent lost
+    // update the guard exists to catch.
+    const before = await saveConfig({ provider: "openai" });
+
+    const spy = failWritesTo(CONFIG_FILE);
+    try {
+      await expect(saveConfig({ provider: "google" })).rejects.toThrow(FAULT);
+    } finally {
+      spy.mockRestore();
+    }
+
+    _resetConfigCache();
+    const read = await readConfig();
+    // The config write never landed, so the store still holds the old values…
+    expect(read).toMatchObject({ status: "ok", config: { provider: "openai" } });
+    // …but the token ALREADY moved, so the draft that was seeded before this
+    // half-save can no longer match. That is the recoverable direction.
+    expect(read).not.toMatchObject({ version: before });
+  });
+
+  it("lives in a SIBLING FILE, never inside the config", async () => {
+    // `AppConfig` is spread into `getWorkbenchSettings`, exported in backups
+    // and diffed field-by-field by the suite. The config's stored shape stays
+    // exactly the fields it had.
+    await saveConfig({ provider: "openai" });
+    const raw = await fs.readFile(path.join(tmpDir, CONFIG_FILE), "utf-8");
+    expect(JSON.parse(raw)).toEqual({ provider: "openai" });
+    expect(raw).not.toContain("s1:");
+    expect(
+      (await fs.readFile(path.join(tmpDir, VERSION_FILE), "utf-8")).trim(),
+    ).toMatch(/^s1:[0-9a-f]{32}$/);
+  });
+
+  it("PRIMES the sync cache with what it wrote", async () => {
+    // It used to null the cache, which left `loadConfigSync` answering `{}` for
+    // the whole 5 s TTL after every save — i.e. env-detected providers
+    // immediately after the owner selected one.
+    await saveConfig({ provider: "openai", model: "gpt-4o" });
+    expect(loadConfigSync()).toMatchObject({ provider: "openai", model: "gpt-4o" });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // saveConfig + loadConfig round-trip
 // ---------------------------------------------------------------------------
 
@@ -165,11 +403,10 @@ describe("loadConfigSync", () => {
     const first = loadConfigSync();
     expect(first.provider).toBe("openai");
 
-    // Write a different value directly (bypassing cache invalidation)
+    // Write a different value. `saveConfig` now PRIMES the cache with what it
+    // wrote rather than nulling it, so the sync read would already see
+    // "google" here — reset explicitly to exercise the cold-cache path below.
     await saveConfig({ provider: "google" });
-    // Don't call loadConfig — cache should still return old value
-    // because saveConfig invalidates cache, but loadConfigSync refills
-    // with {} (cold cache). Let's test the real flow instead:
     _resetConfigCache();
 
     // Cache is cold, so loadConfigSync returns {}

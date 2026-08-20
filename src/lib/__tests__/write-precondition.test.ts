@@ -145,6 +145,120 @@ describe("objectVersion", () => {
     expect(objectVersion({})).toBe(objectVersion({}));
     expect(objectVersion({})).not.toBe(objectVersion({ a: 1 }));
   });
+
+  it("THROWS a TypeError on a cycle rather than overflowing the stack", () => {
+    // `JSON.stringify` throws on a cycle; so does this, for the same reason and
+    // catchably. A recursion that never terminated would take the route down
+    // with a stack overflow nothing could attribute.
+    const cyclic: Record<string, unknown> = { a: 1 };
+    cyclic.self = cyclic;
+    expect(() => objectVersion(cyclic)).toThrow(TypeError);
+
+    // Indirect cycles too.
+    const outer: Record<string, unknown> = {};
+    const inner: Record<string, unknown> = { outer };
+    outer.inner = inner;
+    expect(() => objectVersion(outer)).toThrow(TypeError);
+
+    // …but SHARING is not a cycle: a DAG serializes fine, and parsed config
+    // that reuses one object in two places is ordinary.
+    const shared = { a: 1 };
+    expect(() => objectVersion({ left: shared, right: shared })).not.toThrow();
+  });
+
+  it("THROWS a RangeError past the depth bound", () => {
+    let deep: unknown = 1;
+    for (let level = 0; level < 200; level += 1) deep = { deep };
+    expect(() => objectVersion(deep)).toThrow(RangeError);
+
+    // A depth anything real reaches is fine.
+    let shallow: unknown = 1;
+    for (let level = 0; level < 10; level += 1) shallow = { shallow };
+    expect(() => objectVersion(shallow)).not.toThrow();
+  });
+
+  it("DISTINGUISHES the non-plain values that used to collapse to `{}`", () => {
+    // `Object.entries` sees no own enumerable keys on any of these, so all of
+    // them used to serialize as `{}` — two different dates, or two maps with
+    // different contents, produced the SAME version and a real edit read as no
+    // edit at all.
+    expect(objectVersion(new Date(1))).not.toBe(objectVersion(new Date(2)));
+    expect(objectVersion(new Map([["a", 1]]))).not.toBe(
+      objectVersion(new Map([["a", 2]])),
+    );
+    expect(objectVersion(new Set([1]))).not.toBe(objectVersion([1]));
+    expect(objectVersion(/a/)).not.toBe(objectVersion(/b/));
+
+    // A class instance is not its plain-object twin, and two instances of
+    // different classes with the same fields are not each other.
+    class Point {
+      constructor(
+        readonly x: number,
+        readonly y: number,
+      ) {}
+    }
+    class Vector {
+      constructor(
+        readonly x: number,
+        readonly y: number,
+      ) {}
+    }
+    expect(objectVersion(new Point(1, 2))).not.toBe(objectVersion({ x: 1, y: 2 }));
+    expect(objectVersion(new Point(1, 2))).not.toBe(objectVersion(new Vector(1, 2)));
+    // …and it still MOVES when the instance's own fields move.
+    expect(objectVersion(new Point(1, 2))).not.toBe(objectVersion(new Point(1, 3)));
+
+    // Equal values still agree, whichever kind they are.
+    expect(objectVersion(new Date(1))).toBe(objectVersion(new Date(1)));
+    expect(objectVersion(new Set([1, 2]))).toBe(objectVersion(new Set([2, 1])));
+    expect(objectVersion(new Map([["a", 1], ["b", 2]]))).toBe(
+      objectVersion(new Map([["b", 2], ["a", 1]])),
+    );
+  });
+
+  it("separates a SUBCLASS from its built-in, and a look-alike class from both", () => {
+    // Two collisions the kind-name alone and the class-name alone each leave
+    // open. `instanceof` puts a subclass on the built-in's branch, so without
+    // the class name `MyMap` and `Map` holding the same entries agreed…
+    class MyMap extends Map<string, number> {}
+    class MySet extends Set<number> {}
+    class MyList extends Array<number> {}
+    expect(objectVersion(new MyMap([["a", 1]]))).not.toBe(
+      objectVersion(new Map([["a", 1]])),
+    );
+    expect(objectVersion(new MySet([1]))).not.toBe(objectVersion(new Set([1])));
+    expect(objectVersion(MyList.from([1, 2]))).not.toBe(objectVersion([1, 2]));
+
+    // …and a class merely NAMED like a built-in never reaches that branch at
+    // all, so without the kind name an ordinary object called `Set` and an
+    // empty real `Set` agreed — both had the tag and no own fields.
+    const Set_ = class Set {};
+    const Map_ = class Map {};
+    const RegExp_ = class RegExp {};
+    expect(objectVersion(new Set_())).not.toBe(objectVersion(new Set()));
+    expect(objectVersion(new Map_())).not.toBe(objectVersion(new Map()));
+    expect(objectVersion(new RegExp_())).not.toBe(objectVersion(/(?:)/));
+
+    // Two subclasses of the same built-in are still told apart by their names,
+    // and each still moves with its own contents.
+    class OtherMap extends Map<string, number> {}
+    expect(objectVersion(new MyMap([["a", 1]]))).not.toBe(
+      objectVersion(new OtherMap([["a", 1]])),
+    );
+    expect(objectVersion(new MyMap([["a", 1]]))).not.toBe(
+      objectVersion(new MyMap([["a", 2]])),
+    );
+  });
+
+  it("honours `toJSON`, without confusing a value for what it serializes to", () => {
+    const custom = { toJSON: () => ({ kind: "one" }) };
+    const other = { toJSON: () => ({ kind: "two" }) };
+    expect(objectVersion(custom)).not.toBe(objectVersion(other));
+    // A `Date` and its own ISO string are different values, so they get
+    // different versions — the type name is kept alongside the replacement.
+    const date = new Date(1);
+    expect(objectVersion(date)).not.toBe(objectVersion(date.toISOString()));
+  });
 });
 
 // ---------------------------------------------------------------------------

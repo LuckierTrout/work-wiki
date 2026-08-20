@@ -1680,7 +1680,8 @@ source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/lib/config.ts:197, src/app/api/settings/route.ts:156
 severity: medium
 reason: `src/lib/config.ts:197-209` catches every read/parse error, logs a `logger.warn` for anything that is not ENOENT, and returns `{}`. The settings route uses that value as BOTH the precondition's merge base and the object it spreads into. If a transient storage error hits the `GET`, the surface is seeded with `objectVersion({})`; if the same failure hits the `PUT`, the header matches, the guard reports "no conflict", and the merge lands on an empty config. Pre-existing — the route merged into `{}` and wrote before this change too, and the precondition makes the case strictly rarer, not more likely. Closing it means teaching the config loader to distinguish "absent" from "unreadable", which is a kernel change no DW entry in this bundle names.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-settings-write-precondition-integrity
 
 ### DW-193: The artifact route reads current bytes OUTSIDE the very per-owner lock its own writer takes, so the one route that already holds a lock still leaves the concurrent-save window open.
 origin: spec-deferred f94acd1bd4a8
@@ -1721,7 +1722,8 @@ source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/lib/write-precondition.ts:130
 severity: low
 reason: `Object.entries(new Date(...))` is empty, so two different `Date`s, `Map`s, `Set`s or class instances all serialize identically; a cyclic object recurses until the stack blows, where `JSON.stringify` would at least throw a catchable `TypeError`. Only caller today is the settings route over a parsed-JSON `AppConfig`, where none of these shapes can occur — but `objectVersion` is exported as a general primitive with an inviting name.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-settings-write-precondition-integrity
 
 ### DW-198: The Settings write precondition is a hash of the STORED SECRETS, and it is served to the browser beside the comment asserting no secret material crosses that boundary.
 origin: spec-deferred d87cea3adf09
@@ -1729,7 +1731,8 @@ source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/app/api/settings/route.ts:52, src/lib/write-precondition.ts:150
 severity: medium
 reason: `GET /api/settings` computes `objectVersion(await loadConfig())` over the whole parsed `AppConfig` — `firecrawlApiKey`, `customApiKey` and the embedding key included — and ships that string twice, at the top level and on `workbench`, four lines below the comment stating that `getWorkbenchSettings()` reduces the three secrets to `has*ApiKey` booleans "(AD-23)". The version is not the secret and the route is owner-only, so this is a weak confirmation oracle rather than key recovery, but it is secret-DERIVED material on a surface whose stated invariant is that none leaves the kernel. It cannot be fixed by hashing a redacted projection: the `PUT` merges into the whole config, so a version blind to the secret fields would miss exactly the lost update it exists to catch. Closing it needs a different scheme — an opaque token stamped on save and stored beside the config — which the intent forecloses by naming "the stored `AppConfig`" as the version's input.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-settings-write-precondition-integrity
 decision: 2026-08-19 Stamp an opaque token — Replace the content-derived version with an opaque token generated on each successful `saveConfig` and stored beside the config, served as the precondition and compared on `PUT`. This restores the AD-23 boundary and keeps the guard's coverage of the secret fields; update `write-precondition.ts`'s docs so `objectVersion` is no longer presented as the settings scheme.
 
 ### DW-199: `isWorkbenchSettingsPayload` making `version` required turns a save that LANDED into a reported failure, and one absent field into a whole-canvas load failure.
@@ -1738,7 +1741,8 @@ source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/lib/workbench-settings.ts:359, src/lib/workbench-settings.ts:1028
 severity: low
 reason: `src/lib/workbench-settings.ts:359` now rejects a payload whose `version` is missing or empty, and `saveWorkbenchSettings` runs the 200 response through it — so a landed write would be answered `{ status: "error" }`, `SettingsCanvas` would keep its superseded version, and every later save would be refused 412 for a change the owner made themselves. `fetchWorkbenchSettings` fails the same way on read, taking every value off screen. Unreachable today: the route derives `version` from `objectVersion(fresh)`, which is always a non-empty string. Recorded because the two sibling clients deliberately chose the opposite tolerance (`isPreviewPayload` accepts absence, `useSettings` accepts a versionless 200), so the three payloads now answer the same question three ways and a fourth surface has no convention to follow.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-settings-write-precondition-integrity
 
 ### DW-200: A Schema draft held across an active-Wiki switch can still land on the OTHER Wiki's `schema.md` when both hold the identical seeded bytes.
 origin: spec-deferred 18037df81052
@@ -2320,4 +2324,12 @@ source_spec: `spec-dw-120-122-123-authz-realm-parity-and-copy.md`
 location: src/lib/commons.ts:17
 severity: low
 reason: `commons.ts` imports `isAgentScopedType`/`isArtifactType` from `./wiki`, which merely re-exports them from the client-safe `./page-types`. Because `belongsInCommons` is now on the 403 path, two suites (`ingest-history-delete-route.test.ts`, `ingest-routes.test.ts`) had to widen their `vi.mock("@/lib/wiki")` factories to keep the predicate from calling `undefined`. Importing from `./page-types` directly would remove the trap for every future route suite at no behavioural cost. The import is pre-existing and unchanged by this pass.
+status: open
+
+### DW-272: The two-file token scheme has no coverage on the Cloudflare R2 backend, where the read-your-writes guarantee the design leans on does not hold across two separate objects.
+origin: spec-deferred 8497b4ae1815
+source_spec: `spec-dw-192-197-198-199-settings-write-precondition.md`
+location: src/lib/config.ts:readConfig / saveConfig
+severity: medium
+reason: `saveConfig` writes `.llm-wiki-config.version` and then `.llm-wiki-config.json` as two independent objects, and `readConfig` reads them back as two independent objects. On the filesystem backend both are immediately consistent, which is what every new test relies on; R2 offers no such guarantee across two keys, so a read that lands between the two writes — or after both, on a replica that has only seen one — can pair a fresh token with a stale config even without a concurrent save. Both "token unreadable" tests force `EISDIR` by creating a DIRECTORY at the token path, a condition R2 cannot produce, so the Cloudflare backend has no coverage of the scheme at all. Closing it means either a single-object scheme (token inside the config, or the storage layer's own `writeFileIfMatch` compare-and-set, which `src/lib/storage/r2.ts` already exposes) or an R2-backed test harness neither the suite nor this bundle has.
 status: open

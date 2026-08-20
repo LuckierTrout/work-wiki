@@ -34,6 +34,8 @@ vi.mock("@/lib/auth", () => ({
 }));
 
 import {
+  CONFIG_UNREADABLE_COPY,
+  UNSTAMPED_CONFIG_VERSION,
   _resetConfigCache,
   applyWorkbenchSettings,
   getChatModelSettings,
@@ -43,6 +45,7 @@ import {
   getVectorSearchSettings,
   getWorkbenchSettings,
   loadConfig,
+  readConfig,
   saveConfig,
   workbenchSettingsStored,
   type AppConfig,
@@ -54,7 +57,7 @@ import {
   formatIfMatch,
   objectVersion,
 } from "../write-precondition";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 import {
   DEFAULT_SETTINGS_CATEGORY,
   LLM_TIMEOUT_MAX_SECONDS,
@@ -161,6 +164,17 @@ async function store(config: AppConfig): Promise<void> {
 }
 
 /**
+ * The precondition token the STORE currently holds — the opaque stamp
+ * `saveConfig` wrote to the sibling file, not anything derived from the config
+ * (DW-197). This is what a surface seeded from `GET` would send back.
+ */
+async function storedVersion(): Promise<string> {
+  const read = await readConfig();
+  if (read.status !== "ok") throw new Error("store is unreadable");
+  return read.version;
+}
+
+/**
  * `PUT /api/settings` REQUIRES the write precondition (DW-63), so the default is
  * the version of what the store CURRENTLY holds — exactly what a surface seeded
  * from `GET` would send back. Pass `ifMatch` to send a stale one, or `null` to
@@ -170,7 +184,7 @@ async function put(
   body: Record<string, unknown>,
   ifMatch?: string | null,
 ): Promise<Request> {
-  const version = ifMatch === undefined ? objectVersion(await loadConfig()) : ifMatch;
+  const version = ifMatch === undefined ? await storedVersion() : ifMatch;
   return new Request("http://localhost/api/settings", {
     method: "PUT",
     headers: {
@@ -179,6 +193,11 @@ async function put(
     },
     body: JSON.stringify(body),
   });
+}
+
+/** The `{ error }` sentence a refusal answered with. */
+async function response412Error(response: Response): Promise<unknown> {
+  return ((await response.json()) as { error?: unknown }).error;
 }
 
 /** Read the config file back through storage, bypassing the sync cache. */
@@ -190,10 +209,11 @@ async function stored(): Promise<AppConfig> {
 /** A payload with every field at its "fresh deployment" value. */
 function emptyPayload(): WorkbenchSettingsPayload {
   return {
-    // The write precondition the surface sends back as `If-Match` (DW-63).
-    // Required on the payload: a draft seeded without one could only ever be
-    // refused, so `isWorkbenchSettingsPayload` rejects a body missing it.
-    version: "w1:2-0000000000000000",
+    // The write precondition the surface sends back as `If-Match` (DW-63) — the
+    // opaque stamp the store holds. Optional on the payload since DW-199: an
+    // absent one degrades to "keep the version already held" rather than
+    // failing the whole read.
+    version: "s1:00000000000000000000000000000000",
     chatProvider: null,
     chatModel: null,
     ingestProvider: null,
@@ -1293,7 +1313,31 @@ describe("the settings client", () => {
     });
   });
 
-  it("refuses a GET body that carries no version, because a draft seeded from it could never save", async () => {
+  it("ACCEPTS a landed SAVE whose payload carries no version (DW-199)", async () => {
+    // The headline symptom: `isWorkbenchSettingsPayload` required `version`, so
+    // a 200 that omitted one was reported to the surface as an ERROR. A save
+    // that LANDED being shown as a failure is the worst of the three outcomes —
+    // the owner reads "not applied" about a change that was applied, and the
+    // canvas is left showing a draft it believes is unsaved.
+    const { version: _dropped, ...withoutVersion } = emptyPayload();
+    const impl = stubFetch(() => ({
+      ok: true,
+      status: 200,
+      body: { saved: true, workbench: withoutVersion },
+    })).impl;
+    await expect(saveWorkbenchSettings({}, { fetchImpl: impl })).resolves.toEqual({
+      status: "ok",
+      payload: withoutVersion,
+    });
+  });
+
+  it("ACCEPTS a GET body that carries no version, and still renders (DW-199)", async () => {
+    // The route always sends one, so absence means something in between
+    // dropped it. Refusing takes the whole canvas off screen and loses every
+    // unsaved edit on it; accepting shows the settings and lets the surface
+    // keep the version it already held. Nothing can clobber either way — a
+    // save with no version is refused 428, because `checkWritePrecondition`
+    // has no "skip the check" branch.
     const { version: _dropped, ...withoutVersion } = emptyPayload();
     const impl = stubFetch(() => ({
       ok: true,
@@ -1301,8 +1345,25 @@ describe("the settings client", () => {
       body: { workbench: withoutVersion },
     })).impl;
     await expect(fetchWorkbenchSettings({ fetchImpl: impl })).resolves.toEqual({
-      status: "failed",
+      status: "ok",
+      payload: withoutVersion,
     });
+  });
+
+  it("accepts a `null` or empty version, and refuses only a wrong TYPE", async () => {
+    // `null` is the same absence spelled by a serializer, and `""` is a token
+    // nothing can match — both degrade the same way. A NUMBER would be sent
+    // back as `If-Match` and answered with a conflict the owner cannot explain.
+    for (const version of [null, ""]) {
+      expect(
+        isWorkbenchSettingsPayload({ ...emptyPayload(), version }),
+      ).toBe(true);
+    }
+    for (const version of [1, {}, []]) {
+      expect(
+        isWorkbenchSettingsPayload({ ...emptyPayload(), version }),
+      ).toBe(false);
+    }
   });
 });
 
@@ -1391,8 +1452,8 @@ describe("GET /api/settings", () => {
   it("serves ONE write precondition, at the top level and on `workbench`", async () => {
     // Two surfaces read this body — `/settings` takes the top-level field
     // through `useSettings`, the canvas takes it off the object it seeds its
-    // draft from. One `objectVersion` call, served twice, so the two cannot
-    // drift into disagreeing about what the next save is conditional on.
+    // draft from. One stored token, served twice, so the two cannot drift into
+    // disagreeing about what the next save is conditional on.
     await store({ provider: "openai", model: "gpt-4o" });
     const { GET } = await import("@/app/api/settings/route");
     const body = (await (await GET()).json()) as {
@@ -1402,24 +1463,162 @@ describe("GET /api/settings", () => {
 
     expect(typeof body.version).toBe("string");
     expect(body.workbench.version).toBe(body.version);
-    expect(body.version).toBe(objectVersion({ provider: "openai", model: "gpt-4o" }));
+    // …and it is the token the store HOLDS, not a value computed here.
+    expect(body.version).toBe(await storedVersion());
   });
 
-  it("serves the SAME version for a config re-serialized in another key order", async () => {
-    // `.llm-wiki-config.json` is hand-editable, so a text editor that re-orders
-    // the keys must not be reported as a change nobody made.
+  it("serves a version that is NOT a function of the stored secrets", async () => {
+    // AD-23: no secret material crosses this boundary. A CONTENT-DERIVED
+    // version was exactly that — a value computed over `firecrawlApiKey`,
+    // `customApiKey` and `embeddingApiKey` — so two stores differing only in a
+    // key had to serve different versions. An opaque stamp cannot: it is
+    // generated from randomness and stored beside the config.
+    const secrets = {
+      firecrawlApiKey: "fc-secret-one",
+      customApiKey: "sk-custom-one",
+      embeddingApiKey: "sk-embed-one",
+    };
+    await store({ provider: "openai", ...secrets });
+    const { GET } = await import("@/app/api/settings/route");
+    const first = await (await GET()).json();
+    const firstText = JSON.stringify(first);
+
+    // The serialized body carries no key, and no version derived from one.
+    for (const secret of Object.values(secrets)) {
+      expect(firstText).not.toContain(secret);
+    }
+    expect(firstText).not.toContain(objectVersion({ provider: "openai", ...secrets }));
+
+    // Hand-stamp a second store with the SAME token but different keys: the
+    // served version is identical, which is only possible because no field
+    // contributes to it.
+    const held = await storedVersion();
+    await fs.writeFile(
+      path.join(tmpDir, ".llm-wiki-config.json"),
+      JSON.stringify(
+        {
+          provider: "openai",
+          firecrawlApiKey: "fc-secret-two",
+          customApiKey: "sk-custom-two",
+          embeddingApiKey: "sk-embed-two",
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf-8",
+    );
+    _resetConfigCache();
+    const second = (await (await GET()).json()) as { version: string };
+    expect(second.version).toBe(held);
+  });
+
+  it("is BLIND to any config change that did not go through `saveConfig`", async () => {
+    // The real property of the stamp scheme, stated as it is rather than as the
+    // narrower claim the derived version used to make. The version tracks
+    // SAVES, not bytes, so anything that edits `.llm-wiki-config.json` behind
+    // the API is invisible to the guard.
+    //
+    // The BENIGN case is a key re-order: `.llm-wiki-config.json` is
+    // hand-editable, and a text editor that re-serialized it must not be
+    // reported as a change nobody made. Under the stamp that is structural
+    // rather than earned by sorting keys.
     await store({ provider: "openai", model: "gpt-4o" });
     const { GET } = await import("@/app/api/settings/route");
     const first = (await (await GET()).json()) as { version: string };
 
-    await store({ model: "gpt-4o", provider: "openai" });
-    const second = (await (await GET()).json()) as { version: string };
+    await fs.writeFile(
+      path.join(tmpDir, ".llm-wiki-config.json"),
+      JSON.stringify({ model: "gpt-4o", provider: "openai" }, null, 2) + "\n",
+      "utf-8",
+    );
+    _resetConfigCache();
+    expect(((await (await GET()).json()) as { version: string }).version).toBe(
+      first.version,
+    );
 
-    expect(second.version).toBe(first.version);
-    // …and it still moves for a real change.
+    // The RESIDUAL is the same fact with different bytes: a hand edit that
+    // actually CHANGES a value also leaves the version standing, so a draft
+    // seeded before it saves straight over it. The derived version moved here
+    // and this one does not — that is the cost paid to get the three API keys
+    // off the boundary (AD-23), and it is recorded rather than closed. See
+    // `UNSTAMPED_CONFIG_VERSION` in `config.ts`.
+    await fs.writeFile(
+      path.join(tmpDir, ".llm-wiki-config.json"),
+      JSON.stringify({ provider: "anthropic", model: "claude" }, null, 2) + "\n",
+      "utf-8",
+    );
+    _resetConfigCache();
+    expect(((await (await GET()).json()) as { version: string }).version).toBe(
+      first.version,
+    );
+
+    // …and it moves on every save THROUGH the API, which is the whole set of
+    // writes the guard is defined over.
     await store({ provider: "anthropic", model: "gpt-4o" });
-    const third = (await (await GET()).json()) as { version: string };
-    expect(third.version).not.toBe(first.version);
+    const last = (await (await GET()).json()) as { version: string };
+    expect(last.version).not.toBe(first.version);
+  });
+
+  it("serves the sentinel for a store that has a config but no token file", async () => {
+    // A store written by hand, restored from a backup, or created before this
+    // scheme existed. Refusing every save against it would strand the owner.
+    await store({ provider: "openai" });
+    await fs.rm(path.join(tmpDir, ".llm-wiki-config.version"));
+    _resetConfigCache();
+    const { GET } = await import("@/app/api/settings/route");
+    const body = (await (await GET()).json()) as { version: string };
+    expect(body.version).toBe(UNSTAMPED_CONFIG_VERSION);
+  });
+
+  it("serves the sentinel over `{}` for a store with no files at all", async () => {
+    const { GET } = await import("@/app/api/settings/route");
+    const body = (await (await GET()).json()) as { version: string };
+    expect(body.version).toBe(UNSTAMPED_CONFIG_VERSION);
+  });
+
+  it("refuses to serve settings it could not read (503)", async () => {
+    // `loadConfig()` answers `{}` for an absent config AND for a broken one.
+    // Serving defaults for the second would seed a draft from settings the
+    // owner never chose, and the save that followed would write them in.
+    await store({ provider: "openai" });
+    await fs.writeFile(
+      path.join(tmpDir, ".llm-wiki-config.json"),
+      "{ not json",
+      "utf-8",
+    );
+    _resetConfigCache();
+    const { GET } = await import("@/app/api/settings/route");
+    const response = await GET();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: CONFIG_UNREADABLE_COPY });
+  });
+
+  it("refuses a config file that parses to something that is not an object", async () => {
+    // `"x"`, `[]` and `null` are all valid JSON and none of them is a config.
+    // Spreading one into the merge base is the same lost store as a read error.
+    await fs.writeFile(
+      path.join(tmpDir, ".llm-wiki-config.json"),
+      "[1, 2, 3]\n",
+      "utf-8",
+    );
+    _resetConfigCache();
+    const { GET } = await import("@/app/api/settings/route");
+    expect((await GET()).status).toBe(503);
+  });
+
+  it("refuses when the CONFIG reads but its TOKEN FILE does not", async () => {
+    // The precondition lives in a sibling file, so its read can fail on its
+    // own. Serving a version the store did not actually stamp would seed a
+    // draft against a guess, and the save that followed would be compared to
+    // something nobody wrote.
+    await store({ provider: "openai" });
+    await fs.rm(path.join(tmpDir, ".llm-wiki-config.version"));
+    await fs.mkdir(path.join(tmpDir, ".llm-wiki-config.version"));
+    _resetConfigCache();
+    const { GET } = await import("@/app/api/settings/route");
+    const response = await GET();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: CONFIG_UNREADABLE_COPY });
   });
 });
 
@@ -1723,8 +1922,9 @@ describe("PUT /api/settings", () => {
       workbench: WorkbenchSettingsPayload;
     };
     expect(await stored()).toMatchObject({ chatModel: "gpt-4o" });
-    // The version of what the store now HOLDS, read back after the save.
-    expect(body.version).toBe(objectVersion(await stored()));
+    // The token the store now HOLDS — `saveConfig` stamped it and returned it,
+    // so there is nothing to predict and nothing to read back.
+    expect(body.version).toBe(await storedVersion());
     expect(body.version).not.toBe(seeded);
     // …and served on the object the canvas re-seeds its draft from, so a second
     // save without a reload still lands.
@@ -1792,15 +1992,168 @@ describe("PUT /api/settings", () => {
 
   it("does not refuse a save over a config re-ordered underneath it", async () => {
     // The config-re-order row of the matrix, end to end: same values, other key
-    // order, no false conflict.
+    // order, no false conflict. Re-ordered BY HAND — a re-order through
+    // `saveConfig` is a save, and every save rotates the token by design.
     await store({ provider: "openai", model: "gpt-4o" });
     const { GET, PUT } = await import("@/app/api/settings/route");
     const seeded = ((await (await GET()).json()) as { version: string }).version;
-    await store({ model: "gpt-4o", provider: "openai" });
+    await fs.writeFile(
+      path.join(tmpDir, ".llm-wiki-config.json"),
+      JSON.stringify({ model: "gpt-4o", provider: "openai" }, null, 2) + "\n",
+      "utf-8",
+    );
+    _resetConfigCache();
 
     const response = await PUT(await put({ workbench: { chatModel: "gpt-4o" } }, seeded));
 
     expect(response.status).toBe(200);
+  });
+
+  it("LANDS over a hand edit it never saw — the residual, pinned", async () => {
+    // The same blindness as the row above, with the sign flipped: the guard is
+    // defined over saves, so a hand edit between the seed and the save is not a
+    // conflict it can see, and the stale draft wins. Pinned so the trade is a
+    // recorded behaviour rather than a surprise — the derived version refused
+    // this, and refusing it is what cost the boundary its secret discipline.
+    await store({ provider: "openai" });
+    const { GET, PUT } = await import("@/app/api/settings/route");
+    const seeded = ((await (await GET()).json()) as { version: string }).version;
+
+    await fs.writeFile(
+      path.join(tmpDir, ".llm-wiki-config.json"),
+      JSON.stringify({ provider: "anthropic" }, null, 2) + "\n",
+      "utf-8",
+    );
+    _resetConfigCache();
+
+    const response = await PUT(await put({ workbench: { chatModel: "gpt-4o" } }, seeded));
+
+    expect(response.status).toBe(200);
+    // The hand edit survives only because it is in the merge BASE this request
+    // read — nothing about it was checked, and a save that had touched
+    // `provider` would have overwritten it silently.
+    expect(await stored()).toEqual({ provider: "anthropic", chatModel: "gpt-4o" });
+  });
+
+  it("refuses the NEXT save after a half-completed one, rather than losing it", async () => {
+    // `saveConfig` writes the token first and the config second. When the
+    // second write fails, the stamp has already moved: every surface still
+    // holding the pre-save version is refused and recovers by reloading. The
+    // reverse order would leave that version MATCHING a config that had already
+    // changed, and the stale draft would write straight over it.
+    await store({ provider: "openai" });
+    const seeded = await storedVersion();
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    const spy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        if (target.endsWith(".llm-wiki-config.json")) {
+          return Promise.reject(new Error("the storage provider is unavailable"));
+        }
+        return write(target, content);
+      });
+    try {
+      // The route surfaces the storage failure as its existing 500.
+      const half = await PUT(await put({ workbench: { chatModel: "gpt-4o" } }, seeded));
+      expect(half.status).toBe(500);
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The config never changed…
+    expect(await stored()).toEqual({ provider: "openai" });
+    // …and a surface still holding the pre-save version is REFUSED rather than
+    // allowed to land over whatever the store now holds.
+    const next = await PUT(await put({ workbench: { chatModel: "gpt-4.1" } }, seeded));
+    expect(next.status).toBe(412);
+    expect(await response412Error(next)).toBe(WRITE_CONFLICT_COPY);
+    expect(await stored()).toEqual({ provider: "openai" });
+  });
+
+  it("refuses a save it could not read the store for (503), without calling saveConfig", async () => {
+    // `loadConfig()` answers `{}` for a broken read, and a patch merged into
+    // `{}` and written back deletes every stored field — the three API keys
+    // included. The refusal happens before the merge, so the bytes on disk are
+    // untouched.
+    await store({ provider: "openai", firecrawlApiKey: "fc-secret" });
+    const seeded = await storedVersion();
+    const broken = "{ not json";
+    await fs.writeFile(
+      path.join(tmpDir, ".llm-wiki-config.json"),
+      broken,
+      "utf-8",
+    );
+    _resetConfigCache();
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      await put({ workbench: { chatModel: "gpt-4o" } }, seeded),
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: CONFIG_UNREADABLE_COPY });
+    // Nothing was written: the store still holds the broken bytes rather than
+    // a config merged out of `{}`.
+    expect(
+      await readFile(path.join(tmpDir, ".llm-wiki-config.json"), "utf-8"),
+    ).toBe(broken);
+  });
+
+  it("refuses a save whose TOKEN FILE could not be read (503), and writes nothing", async () => {
+    // Same refusal, same sentence, for the other half of the read. The bytes
+    // on disk are the proof nothing was merged.
+    await store({ provider: "openai", firecrawlApiKey: "fc-secret" });
+    const seeded = await storedVersion();
+    const before = await readFile(
+      path.join(tmpDir, ".llm-wiki-config.json"),
+      "utf-8",
+    );
+    await fs.rm(path.join(tmpDir, ".llm-wiki-config.version"));
+    await fs.mkdir(path.join(tmpDir, ".llm-wiki-config.version"));
+    _resetConfigCache();
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      await put({ workbench: { chatModel: "gpt-4o" } }, seeded),
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: CONFIG_UNREADABLE_COPY });
+    expect(
+      await readFile(path.join(tmpDir, ".llm-wiki-config.json"), "utf-8"),
+    ).toBe(before);
+  });
+
+  it("lands a first save against the UNSTAMPED sentinel and stamps a real token", async () => {
+    // A store with a config and no token file — hand-written, restored, or
+    // created before this scheme existed. Refusing it would strand the owner.
+    await store({ provider: "openai" });
+    await fs.rm(path.join(tmpDir, ".llm-wiki-config.version"));
+    _resetConfigCache();
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      await put({ workbench: { chatModel: "gpt-4o" } }, UNSTAMPED_CONFIG_VERSION),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { version: string };
+    expect(body.version).not.toBe(UNSTAMPED_CONFIG_VERSION);
+    expect(body.version).toBe(await storedVersion());
+    expect(await stored()).toMatchObject({ provider: "openai", chatModel: "gpt-4o" });
+  });
+
+  it("lands a first save into a store with NO files at all", async () => {
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(
+      await put({ workbench: { chatModel: "gpt-4o" } }, UNSTAMPED_CONFIG_VERSION),
+    );
+    expect(response.status).toBe(200);
+    expect(await stored()).toEqual({ chatModel: "gpt-4o" });
+    expect(await storedVersion()).not.toBe(UNSTAMPED_CONFIG_VERSION);
   });
 
   it("counts an embedding model set by the LEGACY field in the same request", async () => {

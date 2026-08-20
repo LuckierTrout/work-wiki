@@ -1,5 +1,5 @@
 import {
-  loadConfig,
+  readConfig,
   saveConfig,
   getEffectiveSettings,
   getWorkbenchSettings,
@@ -7,7 +7,7 @@ import {
   workbenchSettingsStored,
   isValidProvider,
   isReadOnly,
-  _resetConfigCache,
+  CONFIG_UNREADABLE_COPY,
   type AppConfig,
 } from "@/lib/config";
 import { getEffectiveProvider } from "@/lib/config";
@@ -23,12 +23,24 @@ import { isOwnerHandle } from "@/lib/owner";
 import {
   IF_MATCH_HEADER,
   checkWritePrecondition,
-  objectVersion,
 } from "@/lib/write-precondition";
 
 async function requireOwner() {
   const principal = await getPrincipal();
   return principal && isOwnerHandle(principal.handle) ? principal : null;
+}
+
+/**
+ * The store could not be read — 503, the same sentence, on BOTH verbs.
+ *
+ * Same status and same wording deliberately: a `GET` that answered defaults and
+ * a `PUT` that merged into `{}` would each be a different lie about the same
+ * one fact. 503 rather than 500 because the condition is a store that is
+ * temporarily unavailable, which is what the copy tells the owner to do about
+ * it.
+ */
+function configUnreadable(): Response {
+  return Response.json({ error: CONFIG_UNREADABLE_COPY }, { status: 503 });
 }
 
 // ---------------------------------------------------------------------------
@@ -39,18 +51,28 @@ export async function GET() {
   if (!(await requireOwner())) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
-  const config = await loadConfig();
+  // The HONEST read (DW-192): an absent config is `{}` and a BROKEN one is a
+  // refusal, where `loadConfig()` answers `{}` for both. A `GET` that served
+  // defaults for an unreadable store would seed a draft from settings the owner
+  // never chose, and the save that followed would write them in.
+  const read = await readConfig();
+  if (read.status === "unreadable") return configUnreadable();
   const settings = getEffectiveSettings();
-  // ONE call, served twice (DW-63). Both Settings surfaces write the same
-  // `AppConfig` through the same `PUT`, so both need the same precondition —
+  // ONE precondition, served twice (DW-63). Both Settings surfaces write the
+  // same `AppConfig` through the same `PUT`, so both need the same one —
   // `/settings` reads the top-level field through `useSettings`, the Workbench
   // canvas reads it off the `workbench` object it already seeds its draft from.
-  // Two `objectVersion` calls here would be two expressions that agree today.
+  // Two derivations here would be two expressions that agree today.
   //
-  // The input is the PARSED config, not the file's bytes: `objectVersion` sorts
-  // keys, so a hand-edited `.llm-wiki-config.json` re-serialized in another
-  // order is not a conflict with itself.
-  const version = objectVersion(config);
+  // IT IS AN OPAQUE STAMP, NOT A HASH OF THE CONFIG (DW-198). `saveConfig`
+  // generates it from randomness and stores it in a sibling file; nothing in
+  // `.llm-wiki-config.json` contributes to it. That is what keeps the sentence
+  // below true: this response carries no secret material and no function of
+  // any, where a content-derived version was a value computed over
+  // `firecrawlApiKey`, `customApiKey` and `embeddingApiKey`. It also means a
+  // hand-edited config re-serialized in another key order is not a conflict
+  // with itself — nothing about the bytes is read at all.
+  const version = read.version;
   // ONE settings API. Story 1.9's fields ride under ONE nested `workbench` key
   // beside the frozen legacy object — widening `EffectiveSettings` would force
   // edits to `settings-route.test.ts`'s whole-object fixture and to
@@ -171,21 +193,34 @@ export async function PUT(request: Request) {
       }
     }
 
-    // Load existing config and merge with provided fields
-    const existing = await loadConfig();
+    // Load existing config and merge with provided fields.
+    //
+    // THE HONEST READ, BEFORE ANY MERGE (DW-192). `loadConfig()` answers `{}`
+    // for a config that is absent AND for one that failed to open, so a
+    // transient storage error used to make `{}` the merge base — and a patch
+    // merged into `{}` and written back deletes every stored field, the three
+    // API keys included. Refusing costs the owner one retry; merging costs them
+    // their credentials.
+    const read = await readConfig();
+    if (read.status === "unreadable") return configUnreadable();
+    const existing = read.config;
 
-    // THE WRITE PRECONDITION (DW-63), against the very object this request is
+    // THE WRITE PRECONDITION (DW-63), against the store state this request is
     // about to merge into — no second read, and no lock. Two surfaces write this
     // one file (`SettingsCanvas` and `/settings` through `useSettings`), so a
     // draft seeded on either before the other saved would otherwise silently put
     // back every field the other just changed.
     //
+    // The version is the STORED STAMP read alongside the config, not a hash of
+    // it (DW-198): `saveConfig` rotates it on every landed write, so a draft
+    // seeded before someone else's save holds a token the store no longer has.
+    //
     // Checked HERE rather than at the top of the handler because this is the
     // merge base: every branch above it refuses without writing, and moving the
-    // check earlier would only mean hashing a config the request never used.
+    // check earlier would only mean reading a config the request never used.
     const precondition = checkWritePrecondition(
       request.headers.get(IF_MATCH_HEADER),
-      objectVersion(existing),
+      read.version,
     );
     if (!precondition.ok) {
       return Response.json(
@@ -280,17 +315,13 @@ export async function PUT(request: Request) {
       merged = applyWorkbenchSettings(updated, validation.patch);
     }
 
-    await saveConfig(merged);
-
-    // Re-prime the sync cache so the response and any immediate LLM request use
-    // the newly selected provider rather than falling back to env detection.
-    _resetConfigCache();
-    const fresh = await loadConfig();
-    // The version of what the store now HOLDS, read back rather than derived
-    // from `merged`: `saveConfig` is the only thing that decides what lands, and
-    // a surface that stays open saves again against this. Answering a predicted
-    // version would refuse the owner's very next save.
-    const version = objectVersion(fresh);
+    // The version of what the store now HOLDS, from the one place that decides
+    // it. `saveConfig` generates the token, writes it, then writes the config,
+    // and returns what it stamped — so there is nothing to predict and nothing
+    // to read back. It also re-primes the sync cache with what it wrote, so the
+    // response below and any immediate LLM request use the newly selected
+    // provider rather than falling back to env detection.
+    const version = await saveConfig(merged);
 
     // Return updated effective settings
     const effective = getEffectiveProvider();

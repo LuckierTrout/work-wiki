@@ -18,6 +18,7 @@ node_modules/
 /agents/
 /agent-secrets/
 .llm-wiki-config.json
+.llm-wiki-config.version
 SESSION_PLAN.md
 ISSUE_RESPONSE.md
 timelapse.mp4
