@@ -1303,7 +1303,8 @@ source_spec: `spec-wiki-rename-and-delete.md`
 location: src/lib/wikis.ts (sweepOrphanWikiDirectories) / src/lib/maintenance.ts
 severity: medium
 reason: `sweepOrphanWikiDirectories` is exported and locked but has no caller in `src/` outside the test suite; `deleteWiki` is the only production path that reaches the sweep, and deleting the last (always current) Wiki is refused. The repo already has a home for this class of work: `scanForMaintenance` in `src/lib/maintenance.ts`, cron-driven via `src/app/api/tasks/scan/route.ts`, which emits a structurally identical `orphan-page` op for "file on disk, no index entry". DW-18's intent names a registry READ as the orphan's cause but does not say what should trigger the cleanup, so the delete-side-effect reading was chosen at planning time rather than settled by the intent.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-orphan-wiki-sweep-hardening
 
 ### DW-148: Wiki names are not unique and both the switcher and the new delete picker render the name alone, so two Wikis with the same name are indistinguishable at the moment of an irreversible delete.
 origin: spec-deferred b04ccd5558d3
@@ -1329,7 +1330,8 @@ source_spec: `spec-wiki-rename-and-delete.md`
 location: src/lib/wikis.ts (sweepOrphans) / src/lib/lock.ts
 severity: low
 reason: `src/lib/lock.ts` documents the lock as in-process ("does not protect against multiple server processes"), and `createWiki` seeds `wikis/<id>/` BEFORE pushing the entry and writing the registry — both inside the lock, so a single Node process is safe. Under `build:cloudflare` / `open-next.config.ts` two isolates can hold the "same" lock at once: isolate A is mid-create with the directory on disk and no entry, isolate B deletes an unrelated Wiki and its sweep sees A's directory as an orphan. Every other registry operation has the same exposure, but this is the first one whose consequence is byte removal rather than a lost entry. A mtime grace period on sweep candidates, or a cross-process lock, would close it; both are design decisions past DW-18.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-orphan-wiki-sweep-hardening
 decision: 2026-08-19 mtime grace period — Skip any directory whose newest entry is younger than a grace window (minutes, not seconds) so an in-flight create can never be swept, document the window beside `sweepOrphans`, and add a test that pins a freshly seeded directory as unsweepable.
 
 ### DW-151: Follow-up review still recommended for dw-wiki-rename-and-delete after the damping cap was spent
@@ -1428,7 +1430,8 @@ source_spec: `spec-dw-20-wiki-create-and-template-atomicity.md`
 location: src/lib/wikis.ts
 severity: low
 reason: `sweepOrphans` returns 0 whenever `registry.wikis.length === 0` (a deliberate guard against sweeping a lost registry), and `sweepOrphanWikiDirectories` is referenced only from `deleteWiki` and tests. So when `discardCreatedWikiDirectory` itself fails on a tenant's first-ever create, the bytes sit on disk until that tenant has at least one Wiki AND a delete runs. Pinned as a fact by the new `re-throws the seed error…` test. Pre-existing sweep design; the new code only made the gap visible.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-orphan-wiki-sweep-hardening
 
 ### DW-163: Crash durability is still open — compensating cleanup only covers a rejected write, not process death between two writes.
 origin: spec-deferred 75712627a6a0
@@ -2471,4 +2474,36 @@ source_spec: `spec-dw-181-184-preview-refresh-affordances.md`
 location: src/lib/live-region.ts and src/components/workbench/__tests__/preview-announcements.test.tsx
 severity: low
 reason: DW-182's fix is an alternating U+200B appended to a repeated sentence. The node and jsdom suites prove only that the region's string CHANGED — which was never in doubt. Whether NVDA, JAWS or VoiceOver re-utters on that change, and whether any of them normalises the mark away before diffing, is asserted in prose only. The DW-182 ledger entry predicted this ("no test in a node or jsdom project can verify"), and the repo already records the equivalent gap for CSS. Without a browser/AT project the suite reads as if the mechanism is proven.
+status: open
+
+### DW-288: The scheduled sweep reclaims only the configured owner's tenant, so DW-147's condition still holds unchanged for every other tenant.
+origin: spec-deferred 13ff1f1e878f
+source_spec: `spec-dw-147-150-162-orphan-wiki-sweep-hardening.md`
+location: src/lib/maintenance.ts (sweepOrphanWikiDirs)
+severity: low
+reason: `sweepOrphanWikiDirs` resolves one handle via `getOwnerHandle()` (`NEXT_PUBLIC_OWNER_HANDLE`), but `POST /api/wikis` calls `createWiki(principal.handle, ...)`, so any signed-in principal gets its own tenant and its own registry. For those tenants `deleteWiki` remains the only trigger. This matches the neighbouring backup block in the same route (also owner-only) and `src/lib/owner.ts`'s "single-owner deployment" stance, so it is a deliberate scope, not a bug — but the repo has an owner-enumeration precedent (`listSourceMonitorOwners`) and no equivalent index for Wikis.
+status: open
+
+### DW-289: The sweep has no per-pass cap, so one cron request can walk, stat and delete an unbounded number of candidates while holding the tenant lock.
+origin: spec-deferred a53600c92e2a
+source_spec: `spec-dw-147-150-162-orphan-wiki-sweep-hardening.md`
+location: src/lib/wikis.ts (sweepOrphans)
+severity: low
+reason: Every other block in `src/app/api/tasks/scan/route.ts` bounds its work (`.slice(0, 25)`, `listDueOutboxEvents(..., 50)`) and `scanForMaintenance` documents its cap as a "cost + blast-radius bound". `sweepOrphans` runs inside `withFileLock(wikiLockKey(owner))`, so a long pass queues every create, rename and delete for that tenant behind it. Bounded in practice by `MAX_WIKIS` (100) and by orphans being rare, which is why it is recorded rather than fixed.
+status: open
+
+### DW-290: A future-dated mtime (clock skew, or a restored archive) makes an orphan permanently unsweepable, with no signal that it is leaking.
+origin: spec-deferred a38f8ad0290b
+source_spec: `spec-dw-147-150-162-orphan-wiki-sweep-hardening.md`
+location: src/lib/wikis.ts (sweepOrphans)
+severity: low
+reason: `sweepOrphans` skips whenever `newest > Date.now() - ORPHAN_SWEEP_GRACE_MS`. A directory whose newest write time is in the future never satisfies that test, on any pass, forever. R2 reports `head.uploaded` and the filesystem provider reports `mtime`, neither of which is guaranteed monotonic against the isolate's clock. The skip is logged at `info`, so nothing escalates.
+status: open
+
+### DW-291: A `.discarded` tombstone is never cleared, so it can outlive the condition it records.
+origin: spec-deferred 83a44a70622c
+source_spec: `spec-dw-147-150-162-orphan-wiki-sweep-hardening.md`
+location: src/lib/wikis.ts (discardCreatedWikiDirectory)
+severity: low
+reason: The marker is written when `discardCreatedWikiDirectory`'s `deleteDirectory` fails, and nothing removes it except the directory's own deletion. If a `writeRegistry` landed on the store but reported failure, the compensation runs against a directory the registry DOES name; the tombstone is then harmless while the registry stands (`known.has(id)` skips it) but authorises deletion if that `wikis.json` is later lost. Requires three unlikely faults in sequence, hence low.
 status: open

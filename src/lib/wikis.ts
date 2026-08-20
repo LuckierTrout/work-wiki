@@ -269,7 +269,9 @@ async function readRegistry(owner: string): Promise<WikiRegistry> {
  * with no error. {@link createWiki} enforces {@link MAX_WIKIS} up front instead.
  *
  * Orphans that DO arise — a `normalizeRegistry` drop, or an interrupted delete —
- * are reclaimed by {@link sweepOrphanWikiDirectories} rather than avoided here.
+ * are reclaimed by {@link sweepOrphanWikiDirectories}, which the maintenance
+ * scan runs on a schedule (`sweepOrphanWikiDirs` in `maintenance.ts`), so
+ * reclamation no longer waits on the tenant happening to delete a Wiki.
  */
 async function writeRegistry(owner: string, registry: WikiRegistry): Promise<void> {
   await getStorage().writeFile(
@@ -499,6 +501,33 @@ async function restoreSeededFiles(snapshot: SeededFileSnapshot[]): Promise<void>
 }
 
 /**
+ * The marker a failed half-create compensation leaves inside the directory it
+ * could not remove: `tenants/<t>/wikis/<id>/.discarded`.
+ *
+ * THIS FILE IS EVIDENCE, and it is the only evidence {@link sweepOrphans} has
+ * that a directory is unclaimed when the registry names nothing at all. Nothing
+ * else in the repo writes it — only {@link discardCreatedWikiDirectory}'s catch,
+ * for an id `crypto.randomUUID()` minted moments earlier and that no registry
+ * entry has ever named. So "this directory carries a tombstone" is a fact about
+ * a create that provably failed, not an inference from a registry that may
+ * itself be the thing that was lost.
+ *
+ * Dot-prefixed so the Files tab's dotfile filter (`workbench-files.ts`) hides
+ * it, and hung off {@link wikiDirPath} rather than spelled as a literal so it is
+ * reclaimed by the same `deleteDirectory` every other per-Wiki byte is.
+ *
+ * ITS CONTENTS ARE DIAGNOSTIC ONLY — an ISO timestamp, there to tell a human
+ * reading the bucket when the failed create happened. {@link sweepOrphans} reads
+ * EXISTENCE and nothing else, so the format is free to change and a truncated or
+ * empty marker still means exactly what a full one does.
+ */
+const WIKI_DISCARD_TOMBSTONE = ".discarded";
+
+function wikiDiscardTombstonePath(owner: string, wikiId: string): string {
+  return `${wikiDirPath(owner, wikiId)}/${WIKI_DISCARD_TOMBSTONE}`;
+}
+
+/**
  * Discard the whole directory a {@link createWiki} was building. NEVER THROWS.
  *
  * Scoped to an id this call just minted with `crypto.randomUUID()`, so it can
@@ -506,6 +535,14 @@ async function restoreSeededFiles(snapshot: SeededFileSnapshot[]): Promise<void>
  * and never `wikis.json`, `tenants/<t>/wiki/**` or `tenants/<t>/raw/**`.
  * `deleteDirectory` is a no-op when the directory is absent, so this is also
  * correct when the fault came before the first byte landed.
+ *
+ * WHEN THE REMOVAL ITSELF FAILS it leaves a {@link WIKI_DISCARD_TOMBSTONE}
+ * behind instead, which is what makes those bytes reclaimable on a FIRST create
+ * — the case where the tenant's registry still names nothing and
+ * {@link sweepOrphans} therefore refuses to treat an unmarked directory as
+ * garbage. The tombstone write is best-effort: it warns on failure and never
+ * replaces the original diagnosis, because this whole function is compensation
+ * and `createWiki` must re-throw what actually broke.
  */
 async function discardCreatedWikiDirectory(
   owner: string,
@@ -514,18 +551,39 @@ async function discardCreatedWikiDirectory(
   try {
     await getStorage().deleteDirectory(wikiDirPath(owner, wikiId));
   } catch (error) {
-    // The registry never named this id, so the leftovers ARE an orphan. But
-    // "leave it for the sweep" would be too strong a promise, and it is most
-    // wrong in the case that matters most: after a failed FIRST create the
-    // tenant's registry names nothing, {@link sweepOrphans} deliberately bails
-    // on an empty registry, and its only non-test caller is {@link deleteWiki}.
-    // So these bytes sit there until the tenant has at least one wiki AND a
-    // delete runs. That is recoverable, not automatic — hence a warn that says
-    // what is actually true rather than one that implies a cleanup is queued.
+    // ORDER MATTERS, and it is the order of events: the removal failed (which
+    // is WHY a tombstone is about to be written), then the marker either landed
+    // or did not, and only then can anything true be said about what happens
+    // next. Announcing the outcome up front would print a promise this function
+    // has not yet earned — and would contradict the failure warn below it.
     logger.warn(
       "wikis",
-      `removing the directory of half-created wiki "${wikiId}" failed — no registry entry names it, so it stays on disk until a delete in this tenant next sweeps`,
+      `removing the directory of half-created wiki "${wikiId}" failed — no registry entry names it, so its bytes are an orphan`,
       error,
+    );
+    // The registry never named this id, so the leftovers ARE an orphan — and
+    // the tombstone is how the sweep learns that without the registry's help.
+    let tombstoned = false;
+    try {
+      await getStorage().writeFile(
+        wikiDiscardTombstonePath(owner, wikiId),
+        `${new Date().toISOString()}\n`,
+      );
+      tombstoned = true;
+    } catch (tombstoneError) {
+      // Best-effort by design: without the marker the bytes are merely
+      // unreclaimable, which is exactly where they were before this existed.
+      logger.warn(
+        "wikis",
+        `marking half-created wiki "${wikiId}" as discarded failed`,
+        tombstoneError,
+      );
+    }
+    logger.warn(
+      "wikis",
+      tombstoned
+        ? `half-created wiki "${wikiId}" is marked discarded — the orphan sweep reclaims its directory once the directory is older than the grace window`
+        : `half-created wiki "${wikiId}" is NOT marked discarded — its directory stays on disk until this tenant owns a wiki and a sweep runs`,
     );
   }
 }
@@ -994,6 +1052,81 @@ export async function renameWiki(
 }
 
 /**
+ * How long a candidate directory's newest write must have been sitting still
+ * before {@link sweepOrphans} will remove it. Fifteen minutes.
+ *
+ * WHY A WINDOW AT ALL: `withFileLock` is in-process only, so on a multi-isolate
+ * deployment the lock isolate A holds while it seeds `wikis/<id>/` is invisible
+ * to isolate B. B reads a registry that does not yet name the id — because A has
+ * not reached `writeRegistry` — and, without this, would delete the bytes A is
+ * still writing. That is byte removal, not a lost entry, and no retry recovers
+ * it.
+ *
+ * WHY MTIME AND NOT A LOCK: {@link createWiki} seeds the directory BEFORE it
+ * pushes the registry entry, so an in-flight create's directory always carries
+ * writes from seconds ago. Anything that has been untouched for minutes is
+ * therefore not a create in progress. This is a safety margin over the gap
+ * between the seed and the registry write, generously sized for a slow or
+ * suspended isolate; it does not pretend to be a cross-process lock, and a
+ * pause longer than the window would still lose the race. Trading a bounded
+ * delay in reclaiming dead bytes for that margin is the right way round: the
+ * bytes cost storage, the race costs a Wiki.
+ */
+export const ORPHAN_SWEEP_GRACE_MS = 15 * 60 * 1000;
+
+/**
+ * The most recent write anywhere under `dir`, in epoch millis — or NULL when
+ * that cannot be established.
+ *
+ * `FileEntry` carries no mtime and R2 has no directory objects, so age has to
+ * come from `stat` per FILE; the directory's own `stat` is only a fallback for
+ * the filesystem provider, where an empty or file-less directory still has one.
+ * The walk recurses (a Wiki directory holds `revisions/<file>/<name>`), and one
+ * unreadable descendant poisons the whole answer rather than being skipped:
+ * this value gates a delete, so "the newest write I could see" must never be
+ * mistaken for "the newest write there is". THE DEPTH BOUND OBEYS THAT RULE TOO
+ * — exceeding it throws rather than returning, because a truncated walk that
+ * reported the shallow mtime it did see could age-qualify a directory whose
+ * deeper, newer writes it never looked at.
+ */
+async function newestWriteTime(dir: string): Promise<number | null> {
+  const storage = getStorage();
+  let newest: number | null = null;
+  const walk = async (prefix: string, depth: number): Promise<void> => {
+    // `revisions/<file>/<name>` is the deepest shape a Wiki directory has; the
+    // bound is belt-and-braces against a provider that reports a cycle. Deeper
+    // than that is UNKNOWN, not empty — the outer catch turns this into null.
+    if (depth > 4) {
+      throw new Error(`wiki directory "${dir}" is nested deeper than expected`);
+    }
+    for (const entry of await storage.listFiles(prefix)) {
+      const child = `${prefix}/${entry.name}`;
+      if (entry.isDirectory) {
+        await walk(child, depth + 1);
+        continue;
+      }
+      const at = (await storage.stat(child)).lastModified.getTime();
+      if (Number.isFinite(at) && (newest === null || at > newest)) newest = at;
+    }
+  };
+  try {
+    await walk(dir, 0);
+    if (newest !== null) return newest;
+    // No files: on the filesystem provider the directory itself still has an
+    // mtime; on R2 there is no such object and this throws → unknown → skip.
+    const at = (await storage.stat(dir)).lastModified.getTime();
+    return Number.isFinite(at) ? at : null;
+  } catch (error) {
+    logger.warn(
+      "wikis",
+      `could not read the age of wiki directory "${dir}" — treating it as too young to sweep`,
+      error,
+    );
+    return null;
+  }
+}
+
+/**
  * Remove one orphaned `wikis/<uuid>/` directory per entry that no registry
  * record claims. Returns how many were removed.
  *
@@ -1006,35 +1139,101 @@ export async function renameWiki(
  * with any other shape of name, is left alone — a future sibling there must
  * not become collateral damage of a delete.
  *
- * AN EMPTY REGISTRY SWEEPS NOTHING. `readRegistry` degrades a missing or
- * unparseable `wikis.json` to {@link emptyRegistry}, so "no entries, but
- * directories on disk" is indistinguishable from "the registry was lost or is
- * half-restored" — and against that state every Wiki the tenant has is an
- * orphan. It also cannot be the legitimate post-delete state: the current Wiki
- * is undeletable, so a delete never empties the registry. Bailing out costs a
- * genuinely-empty tenant one skipped no-op; not bailing out costs a tenant with
- * a lost registry every artifact it owns.
+ * NOTHING YOUNGER THAN {@link ORPHAN_SWEEP_GRACE_MS} IS REMOVED, and neither is
+ * anything whose age cannot be read at all — unknown age is treated as too
+ * young. That is the multi-isolate guard: the lock is in-process, so a
+ * concurrent isolate's in-flight `createWiki` looks exactly like an orphan from
+ * here until its registry write lands.
+ *
+ * AN EMPTY REGISTRY SWEEPS ONLY TOMBSTONED DIRECTORIES. `readRegistry` degrades
+ * a missing or unparseable `wikis.json` to {@link emptyRegistry}, so "no
+ * entries, but directories on disk" is indistinguishable from "the registry was
+ * lost or is half-restored" — and against that reading every Wiki the tenant has
+ * is an orphan. It also cannot be the legitimate post-delete state: the current
+ * Wiki is undeletable, so a delete never empties the registry. So the registry
+ * gets no vote here; the only thing that does is a {@link WIKI_DISCARD_TOMBSTONE},
+ * which only {@link discardCreatedWikiDirectory} writes and only for an id whose
+ * create provably failed. That reclaims the DW-162 case — a first-ever create
+ * whose seed AND whose discard both failed — without letting a lost `wikis.json`
+ * cost the tenant a single artifact.
+ *
+ * Residual, and documented rather than fixed: an isolate killed BETWEEN the seed
+ * and the registry write on a first-ever create leaves an UNTOMBSTONED directory
+ * (the catch never ran), which stays unreclaimable until the tenant owns a Wiki.
+ * Bounded by the same guard, and the safe side of it.
  */
 async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<number> {
-  if (registry.wikis.length === 0) {
-    logger.warn(
-      "wikis",
-      "skipping the orphan sweep: the registry names no wikis, which is a lost or unreadable wikis.json as often as it is an empty tenant — and a sweep against that would delete every wiki directory on disk",
-    );
-    return 0;
-  }
+  const tombstonedOnly = registry.wikis.length === 0;
   const known = new Set(registry.wikis.map((wiki) => wiki.id));
   const entries = await getStorage().listFiles(wikisRootPath(owner));
+  const candidates = entries
+    .filter((entry) => entry.isDirectory)
+    .map((entry) => entry.name)
+    .filter((name) => WIKI_ID_RE.test(name) && !known.has(name));
+  if (tombstonedOnly && candidates.length > 0) {
+    // Only when there is actually something being held back. A scheduled sweep
+    // runs on every cron tick, and a brand-new tenant with no wikis and no
+    // directories is a healthy state — warning about it every few minutes would
+    // train the operator to ignore the line that matters.
+    logger.warn(
+      "wikis",
+      "the registry names no wikis, which is a lost or unreadable wikis.json as often as it is an empty tenant — sweeping only directories marked discarded by a failed half-create",
+    );
+  }
+  const cutoff = Date.now() - ORPHAN_SWEEP_GRACE_MS;
   let removed = 0;
-  for (const entry of entries) {
-    if (!entry.isDirectory) continue;
-    if (!WIKI_ID_RE.test(entry.name)) continue;
-    if (known.has(entry.name)) continue;
-    await getStorage().deleteDirectory(wikiDirPath(owner, entry.name));
+  for (const name of candidates) {
+    const dir = wikiDirPath(owner, name);
+    if (tombstonedOnly) {
+      let tombstoned = false;
+      try {
+        tombstoned = await getStorage().fileExists(
+          wikiDiscardTombstonePath(owner, name),
+        );
+      } catch (error) {
+        // Unreadable is not evidence. Skip, exactly as unknown age does.
+        logger.warn(
+          "wikis",
+          `could not check whether wiki directory "${name}" is marked discarded — leaving it alone`,
+          error,
+        );
+      }
+      if (!tombstoned) continue;
+    }
+    const newest = await newestWriteTime(dir);
+    if (newest === null || newest > cutoff) {
+      // The in-flight-create guard. `newestWriteTime` already warned when the
+      // age was unreadable, so only the young case needs a line of its own —
+      // and at INFO, because it is the expected, benign outcome that repeats on
+      // every pass for as long as the directory stays young.
+      if (newest !== null) {
+        logger.info(
+          "wikis",
+          `skipped orphaned wiki directory "${name}": its newest write is younger than the ${
+            ORPHAN_SWEEP_GRACE_MS / 60_000
+          }-minute grace window, so it may be a create still in flight on another isolate`,
+        );
+      }
+      continue;
+    }
+    try {
+      await getStorage().deleteDirectory(dir);
+    } catch (error) {
+      // Per candidate, like the age read and the tombstone probe above. One
+      // stuck directory must not abort the pass: the caller
+      // (`sweepOrphanWikiDirs`) turns a throw into 0, so propagating here would
+      // report "removed nothing" for a pass that had already removed N.
+      logger.warn(
+        "wikis",
+        `removing orphaned wiki directory "${name}" failed — leaving it for the next sweep`,
+        error,
+      );
+      continue;
+    }
     removed += 1;
     logger.warn(
       "wikis",
-      `removed orphaned wiki directory "${entry.name}" — no registry entry referenced it`,
+      `removed orphaned wiki directory "${name}" — no registry entry referenced it`,
     );
   }
   return removed;
@@ -1047,8 +1246,14 @@ async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<numb
  * `normalizeRegistry` drops unusable entries during a plain READ, so the sweep
  * cannot live there without making reads destructive. It runs from
  * {@link deleteWiki} — the one moment a Wiki directory is legitimately removed —
- * and is exported here, taking the lock itself, so it is directly testable and
- * callable by a future maintenance task.
+ * and, since a tenant that never deletes would otherwise never reclaim
+ * anything, it is exported here (taking the lock itself) so the maintenance
+ * scan can run it on a schedule: `sweepOrphanWikiDirs` in `maintenance.ts`,
+ * called by `POST /api/tasks/scan`.
+ *
+ * See {@link sweepOrphans} for what it will and will not remove — in particular
+ * {@link ORPHAN_SWEEP_GRACE_MS}, which is what makes a scheduled caller safe
+ * beside a concurrent create.
  */
 export async function sweepOrphanWikiDirectories(owner: string): Promise<number> {
   return withFileLock(wikiLockKey(owner), async () =>

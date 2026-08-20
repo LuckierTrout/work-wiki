@@ -5,6 +5,7 @@ vi.mock("@/lib/maintenance", () => ({
   scanForMaintenance: vi.fn(),
   rebuildDerivedIndexes: vi.fn(),
   purgeStaleJobs: vi.fn(),
+  sweepOrphanWikiDirs: vi.fn(),
   DEFAULT_MAINTENANCE_CAP: 10,
 }));
 vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn() }));
@@ -17,7 +18,12 @@ vi.mock("@/lib/monitor-digests", () => ({
 }));
 
 import { getServicePrincipal } from "@/lib/auth";
-import { scanForMaintenance, rebuildDerivedIndexes, purgeStaleJobs } from "@/lib/maintenance";
+import {
+  scanForMaintenance,
+  rebuildDerivedIndexes,
+  purgeStaleJobs,
+  sweepOrphanWikiDirs,
+} from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
 import { isOwnerBackupDue } from "@/lib/backups";
 import {
@@ -31,6 +37,7 @@ const mockedGetService = vi.mocked(getServicePrincipal);
 const mockedScan = vi.mocked(scanForMaintenance);
 const mockedRebuild = vi.mocked(rebuildDerivedIndexes);
 const mockedPurge = vi.mocked(purgeStaleJobs);
+const mockedSweepOrphanWikiDirs = vi.mocked(sweepOrphanWikiDirs);
 const mockedEnqueue = vi.mocked(enqueueTask);
 const mockedBackupDue = vi.mocked(isOwnerBackupDue);
 const mockedCreateDigest = vi.mocked(createMonitorDigest);
@@ -63,6 +70,7 @@ beforeEach(() => {
   mockedScan.mockResolvedValue(SAMPLE);
   mockedRebuild.mockResolvedValue({});
   mockedPurge.mockResolvedValue(0);
+  mockedSweepOrphanWikiDirs.mockResolvedValue(0);
   mockedEnqueue.mockResolvedValue(true);
   mockedBackupDue.mockResolvedValue(false);
   mockedDueDigestOwners.mockResolvedValue([]);
@@ -143,6 +151,46 @@ describe("POST /api/tasks/scan", () => {
       backupDue: true,
       backupEnqueued: false,
     });
+  });
+
+  it("sweeps orphaned wiki directories on a normal scan and reports the count", async () => {
+    // The sweep's ONLY scheduled trigger. It removes bytes nothing references
+    // rather than editing pages, so — like the scheduled-agent, monitor and
+    // backup blocks — it runs with AUTONOMOUS_MAINTENANCE off; a tenant that
+    // never deletes a wiki would otherwise never reclaim a single directory.
+    mockedSweepOrphanWikiDirs.mockResolvedValue(2);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedSweepOrphanWikiDirs).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({ enabled: false, dry: true, orphanWikiDirsRemoved: 2 });
+  });
+
+  it("sweeps orphaned wiki directories in the enabled production configuration", async () => {
+    // The row the cron actually runs: AUTONOMOUS_MAINTENANCE=on, no ?dry. The
+    // two cases either side of this one both hold the sweep's gate in its
+    // non-production position, so without this nothing pins the configuration
+    // the feature exists for.
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedSweepOrphanWikiDirs.mockResolvedValue(3);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedSweepOrphanWikiDirs).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({ enabled: true, dry: false, orphanWikiDirsRemoved: 3 });
+  });
+
+  it("?dry=1 suppresses the orphan-directory sweep", async () => {
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedSweepOrphanWikiDirs.mockResolvedValue(2);
+
+    const res = await scan("?dry=1");
+    const body = await res.json();
+
+    expect(mockedSweepOrphanWikiDirs).not.toHaveBeenCalled();
+    expect(body.orphanWikiDirsRemoved).toBe(0);
   });
 
   it("honors a ?cap override", async () => {

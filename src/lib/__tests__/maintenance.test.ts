@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -10,9 +10,11 @@ import {
   type Frontmatter,
 } from "../wiki";
 import { createThread } from "../talk";
-import { scanForMaintenance, rebuildDerivedIndexes } from "../maintenance";
+import { scanForMaintenance, rebuildDerivedIndexes, sweepOrphanWikiDirs } from "../maintenance";
 import { listCommonsPages } from "../commons";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
+import { wikisRootPath } from "../wiki-paths";
+import { ORPHAN_SWEEP_GRACE_MS } from "../wikis";
 
 let tmpDir: string;
 const saved: Record<string, string | undefined> = {};
@@ -21,7 +23,10 @@ const PAST = "2020-01-01";
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "maint-test-"));
-  for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR"]) saved[k] = process.env[k];
+  for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR", "NEXT_PUBLIC_OWNER_HANDLE"]) {
+    saved[k] = process.env[k];
+  }
+  delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
@@ -30,7 +35,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR"]) {
+  vi.restoreAllMocks();
+  for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR", "NEXT_PUBLIC_OWNER_HANDLE"]) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
@@ -368,5 +374,78 @@ describe("rebuildDerivedIndexes — commons index (#398)", () => {
     // And the rebuild actually populated it with the public page.
     const commons = await listCommonsPages();
     expect(commons.map((p) => p.slug)).toContain("agentic-systems");
+  });
+});
+
+describe("sweepOrphanWikiDirs — the scheduled orphan-directory GC (DW-147)", () => {
+  const OWNER = "alice";
+
+  /**
+   * Built from `wikisRootPath`, the same helper the sweep itself addresses
+   * through — never hand-joined. A helper that spelled the tenancy layout a
+   * second time would plant its "orphan" somewhere the sweep never looks the
+   * day that layout moves, and the no-op assertions below would then pass
+   * vacuously while the real behaviour had silently broken.
+   */
+  function wikisRoot(): string {
+    return path.join(tmpDir, ...wikisRootPath(OWNER).split("/"));
+  }
+
+  /** An unreferenced `wikis/<uuid>/`, backdated past the sweep's grace window. */
+  async function plantAgedOrphan(id: string): Promise<string> {
+    const dir = path.join(wikisRoot(), id);
+    await fs.mkdir(dir, { recursive: true });
+    const file = path.join(dir, "purpose.md");
+    await fs.writeFile(file, "# Orphan\n");
+    const when = new Date(Date.now() - ORPHAN_SWEEP_GRACE_MS * 2);
+    await fs.utimes(file, when, when);
+    await fs.utimes(dir, when, when);
+    return dir;
+  }
+
+  async function exists(target: string): Promise<boolean> {
+    try {
+      await fs.stat(target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("sweeps the configured owner's tenant and returns the count", async () => {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    // The registry has to NAME a wiki, or the sweep's empty-registry rule
+    // (a lost wikis.json reads identically) leaves everything alone.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const orphan = await plantAgedOrphan("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+
+    expect(await sweepOrphanWikiDirs()).toBe(1);
+
+    expect(await exists(orphan)).toBe(false);
+    expect(await exists(path.join(wikisRoot(), wiki.id))).toBe(true);
+  });
+
+  it("is a no-op when no owner handle is configured", async () => {
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    const orphan = await plantAgedOrphan("11111111-2222-4333-8444-555555555555");
+
+    // Single-owner deployment: with nobody configured there is no tenant to
+    // resolve, so the scan must not guess one and start deleting.
+    expect(await sweepOrphanWikiDirs()).toBe(0);
+    expect(await exists(orphan)).toBe(true);
+  });
+
+  it("returns 0 instead of throwing when the sweep fails", async () => {
+    // Fail-soft like `purgeStaleJobs`: this runs inside the maintenance scan,
+    // and a storage hiccup here must not 500 a scan that did everything else.
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    vi.spyOn(getStorage(), "listFiles").mockRejectedValue(
+      new Error("listing the wikis directory failed"),
+    );
+
+    await expect(sweepOrphanWikiDirs()).resolves.toBe(0);
   });
 });

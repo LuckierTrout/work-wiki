@@ -4,6 +4,7 @@ import {
   scanForMaintenance,
   rebuildDerivedIndexes,
   purgeStaleJobs,
+  sweepOrphanWikiDirs,
   DEFAULT_MAINTENANCE_CAP,
 } from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
@@ -24,11 +25,26 @@ import { isOwnerBackupDue } from "@/lib/backups";
  * POST /api/tasks/scan — the autonomous-maintenance producer (Q2).
  *
  * Service-token only (the sole caller is the task-consumer worker's cron). Scans
- * the wiki for maintenance work and enqueues `maintain` tasks. Gated by the
- * `AUTONOMOUS_MAINTENANCE` env: anything other than `"on"` means **dry-run** —
- * the scan still runs and logs/returns what it WOULD enqueue, but enqueues
- * nothing. `?dry=1` forces a dry-run regardless (for inspection). `?cap=N`
- * overrides the per-scan task cap.
+ * the wiki for maintenance work and enqueues `maintain` tasks.
+ *
+ * `AUTONOMOUS_MAINTENANCE` GATES PAGE AUTO-EDITS, NOT THE WHOLE RUN. Anything
+ * other than `"on"` means **dry-run** for the `maintain` queue — the scan still
+ * runs and logs/returns what it WOULD enqueue, but enqueues nothing — and that
+ * is all `dry: true` in the response means. It does NOT mean the request
+ * changed nothing: the index rebuild, the ingest-job GC and the orphan
+ * wiki-directory sweep are self-healing upkeep rather than unattended content
+ * edits, so they run regardless, as do the scheduled-agent, source-monitor,
+ * digest, outbox and backup blocks.
+ *
+ * `?dry=1` IS THE ONE TRUE INSPECTION SWITCH: it suppresses every one of those
+ * side-effecting blocks as well as the enqueue, which is what makes it safe to
+ * point at a live deployment to see what a scan would do. `?cap=N` overrides the
+ * per-scan task cap.
+ *
+ * Response fields worth naming: `jobsPurged` (terminal ingest-job status files
+ * deleted) and `orphanWikiDirsRemoved` (`tenants/<t>/wikis/<uuid>/` directories
+ * no registry entry named, reclaimed for good — this route is that sweep's only
+ * scheduled trigger).
  */
 export async function POST(req: Request) {
   const principal = getServicePrincipal(req);
@@ -143,9 +159,20 @@ export async function POST(req: Request) {
       backupEnqueued = await enqueueTask({ kind: "create-backup", owner: backupOwner });
     }
 
+    // Reclaim `wikis/<uuid>/` directories no registry entry names. Byte
+    // removal, so it is gated like the scheduled-agent/monitor/backup blocks
+    // above — skipped only under `?dry=1` inspection, and NOT held back by
+    // `AUTONOMOUS_MAINTENANCE`, which gates auto-EDITS of pages rather than GC.
+    // This is the only scheduled trigger the sweep has: `deleteWiki` is its
+    // other caller, and a tenant that never deletes never reclaims anything.
+    let orphanWikiDirsRemoved = 0;
+    if (!forceDry) {
+      orphanWikiDirsRemoved = await sweepOrphanWikiDirs();
+    }
+
     logger.info(
       "maintenance",
-      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued}`,
+      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued} jobsPurged=${jobsPurged} orphanWikiDirsRemoved=${orphanWikiDirsRemoved}`,
     );
 
     return NextResponse.json({
@@ -168,6 +195,7 @@ export async function POST(req: Request) {
       backupOwnerConfigured: Boolean(backupOwner),
       backupDue,
       backupEnqueued,
+      orphanWikiDirsRemoved,
       // The candidate list — for dry-run inspection of what it would do.
       tasks: tasks.map((t) =>
         t.kind === "maintain"

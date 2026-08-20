@@ -23,6 +23,7 @@ import { getWorkspaceProfile, saveWorkspaceProfile } from "../workspace-profile"
 import { WORKSPACE_SCENARIO_TEMPLATES } from "../workspace-profile-schema";
 import {
   MAX_WIKIS,
+  ORPHAN_SWEEP_GRACE_MS,
   applyScenarioTemplate,
   createWiki,
   deleteWiki,
@@ -746,6 +747,30 @@ async function exists(target: string): Promise<boolean> {
   }
 }
 
+/**
+ * Push every mtime under `dir` (and the directory's own) well past
+ * {@link ORPHAN_SWEEP_GRACE_MS}, so the sweep sees settled bytes rather than
+ * what looks exactly like a create still in flight on another isolate.
+ *
+ * Every directory these tests plant was written milliseconds ago, so WITHOUT
+ * this the grace window skips it — and a sweep test that passed by deleting the
+ * grace check instead would be testing the code it removed.
+ */
+async function ageDirectory(
+  dir: string,
+  ageMs = ORPHAN_SWEEP_GRACE_MS * 2,
+): Promise<void> {
+  const when = new Date(Date.now() - ageMs);
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    const child = path.join(dir, entry.name);
+    if (entry.isDirectory()) await ageDirectory(child, ageMs);
+    else await fs.utimes(child, when, when);
+  }
+  // The directory itself LAST: it is the fallback when a candidate holds no
+  // files at all, and writing a child would have bumped it again.
+  await fs.utimes(dir, when, when);
+}
+
 /** Backdate a Wiki's `updatedAt` so "bumped" is an observation, not a coin flip. */
 async function backdate(wikiId: string, when = "2000-01-01T00:00:00.000Z"): Promise<void> {
   const file = abs(wikiRegistryPath(OWNER));
@@ -952,6 +977,7 @@ describe("deleting a wiki", () => {
     expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([keep.id]);
     // The bytes are still there — deliberately, for the next sweep to reclaim.
     expect(await exists(wikiDir(drop.id))).toBe(true);
+    await ageDirectory(wikiDir(drop.id));
     expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
     expect(await exists(wikiDir(drop.id))).toBe(false);
     expect(await exists(wikiDir(keep.id))).toBe(true);
@@ -969,6 +995,7 @@ describe("the orphan-directory sweep", () => {
   it("removes only unreferenced uuid directories, and counts them", async () => {
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     const orphan = await plantOrphan("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+    await ageDirectory(orphan);
     // Neither of these is a Wiki directory, so neither is the sweep's business.
     const sibling = abs("tenants", TENANT, "wikis", "archive");
     await fs.mkdir(sibling, { recursive: true });
@@ -990,6 +1017,7 @@ describe("the orphan-directory sweep", () => {
     const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
     await setCurrentWiki(OWNER, keep.id);
     const orphan = await plantOrphan("11111111-2222-4333-8444-555555555555");
+    await ageDirectory(orphan);
 
     expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
 
@@ -1010,7 +1038,7 @@ describe("the orphan-directory sweep", () => {
     expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
   });
 
-  it("refuses to sweep against an empty registry, whatever is on disk", async () => {
+  it("refuses to sweep an untombstoned directory against an empty registry", async () => {
     // `readRegistry` degrades a missing or unparseable wikis.json to an EMPTY
     // registry, so "no entries but directories on disk" is a lost or
     // half-restored registry as often as it is an empty tenant — and against
@@ -1020,6 +1048,9 @@ describe("the orphan-directory sweep", () => {
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     const purpose = await readWikiArtifact(OWNER, wiki.id, "purpose.md");
     await fs.rm(abs(wikiRegistryPath(OWNER)));
+    // Aged, so what is being pinned is the registry rule and not the grace
+    // window standing in for it.
+    await ageDirectory(wikiDir(wiki.id));
 
     expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
 
@@ -1032,6 +1063,186 @@ describe("the orphan-directory sweep", () => {
     );
     expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
     expect(await exists(wikiDir(wiki.id))).toBe(true);
+  });
+
+  it("reclaims a tombstoned directory against an empty registry (DW-162)", async () => {
+    // The one thing that outranks the empty-registry rule. Only the half-create
+    // compensation writes `.discarded`, and only for an id whose create
+    // provably failed — so this directory is unclaimed no matter what the
+    // registry does or does not say, which is exactly the first-ever-create
+    // case that used to need the tenant to own a wiki AND run a delete.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const doomed = await plantOrphan("cccccccc-dddd-4eee-8fff-000000000000");
+    await fs.writeFile(path.join(doomed, ".discarded"), "2020-01-01T00:00:00.000Z\n");
+    await ageDirectory(doomed);
+    await ageDirectory(wikiDir(wiki.id));
+    await fs.rm(abs(wikiRegistryPath(OWNER)));
+
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+
+    expect(await exists(doomed)).toBe(false);
+    // …and the real wiki, whose registry entry the lost wikis.json took with
+    // it, is untouched. That is the whole point of narrowing rather than
+    // lifting the bail.
+    expect(await exists(wikiDir(wiki.id))).toBe(true);
+  });
+
+  it("leaves a tombstoned directory alone while it is still inside the grace window", async () => {
+    const doomed = await plantOrphan("cccccccc-dddd-4eee-8fff-111111111111");
+    await fs.writeFile(path.join(doomed, ".discarded"), "now\n");
+    await fs.rm(abs(wikiRegistryPath(OWNER)), { force: true });
+
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+    expect(await exists(doomed)).toBe(true);
+  });
+
+  it("sweeps an aged orphan and spares a fresh one in the same pass", async () => {
+    // The multi-isolate guard, and the reason it cannot be a whole-pass bail:
+    // isolate A's in-flight `createWiki` has already seeded its directory but
+    // not yet written the registry, so from here it is indistinguishable from
+    // an orphan — except by age. Sparing it must not cost the aged sibling.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const aged = await plantOrphan("aaaaaaaa-1111-4111-8111-111111111111");
+    const inFlight = await plantOrphan("bbbbbbbb-2222-4222-8222-222222222222");
+    await ageDirectory(aged);
+
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+
+    expect(await exists(aged)).toBe(false);
+    expect(await exists(inFlight)).toBe(true);
+    // And once it settles, the next pass takes it — the window delays, it does
+    // not exempt.
+    await ageDirectory(inFlight);
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+    expect(await exists(inFlight)).toBe(false);
+  });
+
+  it("sweeps an aged orphan that holds no files at all", async () => {
+    // `FileEntry` carries no mtime, so age comes from `stat` per FILE — and an
+    // empty directory has none. The directory's own `stat` is the fallback, and
+    // this is the only row that reaches it: without it the walk finds nothing,
+    // the age is unknown, and a directory that is provably dead is skipped
+    // forever. (Replace that fallback with `return null` and only this fails.)
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const bare = wikiDir("aaaaaaaa-5555-4555-8555-555555555555");
+    await fs.mkdir(bare, { recursive: true });
+    await ageDirectory(bare);
+
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+    expect(await exists(bare)).toBe(false);
+  });
+
+  it("skips a candidate whose per-file stat throws", async () => {
+    // The other half of "unknown age": the listing succeeds, so the walk knows
+    // the files are there, but their mtimes cannot be read. Seeing the names is
+    // not seeing the ages, and only the ages decide.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const unreadable = await plantOrphan("aaaaaaaa-6666-4666-8666-666666666666");
+    const readable = await plantOrphan("aaaaaaaa-7777-4777-8777-777777777777");
+    await ageDirectory(unreadable);
+    await ageDirectory(readable);
+
+    const storage = getStorage();
+    const stat = storage.stat.bind(storage);
+    const spy = vi
+      .spyOn(storage, "stat")
+      .mockImplementation(async (target: string) => {
+        if (target.includes("aaaaaaaa-6666-4666-8666-666666666666")) {
+          throw new Error("the file is unreadable");
+        }
+        return stat(target);
+      });
+    try {
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(await exists(unreadable)).toBe(true);
+    expect(await exists(readable)).toBe(false);
+  });
+
+  it("skips a candidate whose tombstone probe throws, under an empty registry", async () => {
+    // An unreadable probe is NOT a tombstone. Treating it as one would delete
+    // live wiki directories in precisely the lost-`wikis.json` state the whole
+    // empty-registry rule exists to protect — the registry names nothing, so
+    // the probe is the only thing standing between the sweep and every
+    // artifact the tenant owns.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await ageDirectory(wikiDir(wiki.id));
+    await fs.rm(abs(wikiRegistryPath(OWNER)));
+
+    const probe = vi
+      .spyOn(getStorage(), "fileExists")
+      .mockRejectedValue(new Error("the marker cannot be read"));
+    try {
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+    } finally {
+      probe.mockRestore();
+    }
+
+    expect(await exists(wikiDir(wiki.id))).toBe(true);
+  });
+
+  it("does not abort the pass when one removal fails", async () => {
+    // `sweepOrphanWikiDirs` turns a throw into 0, so a propagating failure here
+    // would make the scan report "removed nothing" for a pass that had already
+    // removed the sibling — the count would contradict the disk.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const stuck = await plantOrphan("aaaaaaaa-8888-4888-8888-888888888888");
+    const fine = await plantOrphan("aaaaaaaa-9999-4999-8999-999999999999");
+    await ageDirectory(stuck);
+    await ageDirectory(fine);
+
+    const storage = getStorage();
+    const remove = storage.deleteDirectory.bind(storage);
+    const spy = vi
+      .spyOn(storage, "deleteDirectory")
+      .mockImplementation(async (target: string) => {
+        if (target.endsWith("aaaaaaaa-8888-4888-8888-888888888888")) {
+          throw new Error("the directory is busy");
+        }
+        return remove(target);
+      });
+    try {
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(await exists(stuck)).toBe(true);
+    expect(await exists(fine)).toBe(false);
+  });
+
+  it("skips a candidate whose age cannot be read", async () => {
+    // Unknown age is treated as too young. A directory that cannot be read is
+    // exactly as likely to be a create in flight as a dead one, and only one of
+    // those two mistakes destroys bytes.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const unreadable = await plantOrphan("aaaaaaaa-3333-4333-8333-333333333333");
+    const readable = await plantOrphan("aaaaaaaa-4444-4444-8444-444444444444");
+    await ageDirectory(unreadable);
+    await ageDirectory(readable);
+
+    const storage = getStorage();
+    const listFiles = storage.listFiles.bind(storage);
+    const listing = vi
+      .spyOn(storage, "listFiles")
+      .mockImplementation(async (prefix: string) => {
+        if (prefix.endsWith("aaaaaaaa-3333-4333-8333-333333333333")) {
+          throw new Error("the directory is unreadable");
+        }
+        return listFiles(prefix);
+      });
+    try {
+      // The readable sibling still goes: one bad candidate is not a bad pass.
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+    } finally {
+      listing.mockRestore();
+    }
+
+    expect(await exists(unreadable)).toBe(true);
+    expect(await exists(readable)).toBe(false);
   });
 
   it("never fails the delete it runs inside", async () => {
@@ -1226,23 +1437,102 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
           scope === "wikis" && String(message).includes("half-created"),
       ),
     ).toBe(true);
-    // The bytes stay behind, unnamed by any registry entry. That is an orphan
-    // — but deliberately NOT a self-healing one, and the warn must not claim
-    // otherwise: this tenant's registry names nothing, and the sweep bails out
-    // on an empty registry rather than treating every directory on disk as
-    // garbage. So the leftovers persist until the tenant has a wiki and a
-    // delete runs.
+    // The bytes stay behind, unnamed by any registry entry — but the failed
+    // compensation left a `.discarded` marker on them (DW-162). That marker is
+    // the only evidence the sweep has here: this tenant's registry names
+    // nothing, so an UNMARKED directory could just as well be a wiki whose
+    // wikis.json was lost, and the sweep refuses those.
     expect(await listWikis(OWNER)).toEqual([]);
-    expect(await wikisRootEntries()).toHaveLength(1);
+    const [leftover] = await wikisRootEntries();
+    expect(leftover).toBeDefined();
+    expect(await exists(path.join(wikiDir(leftover), ".discarded"))).toBe(true);
+
+    // Still inside the grace window, so nothing goes yet — the marker says
+    // "unclaimed", the window says "not yet proven settled", and both must hold.
     expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
     expect(await wikisRootEntries()).toHaveLength(1);
 
-    // Once the tenant has a real wiki, a delete's sweep does reclaim them.
+    // Once it has settled, a scheduled sweep reclaims it with no wiki and no
+    // delete anywhere in sight — the DW-162 fix.
+    await ageDirectory(wikiDir(leftover));
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+    expect(await wikisRootEntries()).toEqual([]);
+  });
+
+  it("reclaims an UNTOMBSTONED half-create leftover once the tenant owns a wiki", async () => {
+    // The documented residual, pinned rather than left to inference: when the
+    // marker write fails too — or when the isolate dies before the catch runs
+    // at all — the leftovers are exactly as unreclaimable as they were before
+    // the tombstone existed. They are not lost, though: the moment the registry
+    // names ANY wiki, the empty-registry rule no longer applies and an ordinary
+    // sweep takes them.
+    const write = failWritesTo(["schema.md", ".discarded"], "the artifact store is unavailable");
+    const remove = vi
+      .spyOn(getStorage(), "deleteDirectory")
+      .mockRejectedValue(new Error("the directory is busy"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        createWiki(OWNER, { name: "Doomed", scenario: "reading" }),
+      ).rejects.toThrow("the artifact store is unavailable");
+    } finally {
+      write.mockRestore();
+      remove.mockRestore();
+      warn.mockRestore();
+    }
+
+    const [leftover] = await wikisRootEntries();
+    expect(leftover).toBeDefined();
+    expect(await exists(path.join(wikiDir(leftover), ".discarded"))).toBe(false);
+
+    // Empty registry + no marker = no evidence, so it stays however old it is.
+    await ageDirectory(wikiDir(leftover));
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+    expect(await wikisRootEntries()).toEqual([leftover]);
+
+    // A real wiki makes the registry authoritative again, and the leftover is
+    // then just an ordinary orphan.
     const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
-    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
-    await setCurrentWiki(OWNER, keep.id);
-    await deleteWiki(OWNER, drop.id);
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
     expect((await wikisRootEntries()).sort()).toEqual([keep.id]);
+  });
+
+  it("still re-throws the seed error when the tombstone cannot be written either", async () => {
+    // The marker is best-effort by design. Losing it costs reclaimability —
+    // the bytes are merely back where they were before it existed — but it must
+    // never cost the diagnosis: compensation reports what actually broke.
+    const write = failWritesTo(["schema.md", ".discarded"], "the artifact store is unavailable");
+    const remove = vi
+      .spyOn(getStorage(), "deleteDirectory")
+      .mockRejectedValue(new Error("the directory is busy"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let warned: unknown[][] = [];
+    try {
+      await expect(
+        createWiki(OWNER, { name: "Doomed", scenario: "reading" }),
+      ).rejects.toThrow("the artifact store is unavailable");
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      write.mockRestore();
+      remove.mockRestore();
+      warn.mockRestore();
+    }
+
+    expect(
+      warned.some(
+        ([scope, message]) =>
+          scope === "wikis" && String(message).includes("marking half-created"),
+      ),
+    ).toBe(true);
+    // Unmarked, so an empty registry gives the sweep no evidence and the bytes
+    // stay — the honest outcome, not a silent deletion.
+    const [leftover] = await wikisRootEntries();
+    expect(leftover).toBeDefined();
+    expect(await exists(path.join(wikiDir(leftover), ".discarded"))).toBe(false);
+    await ageDirectory(wikiDir(leftover));
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+    expect(await wikisRootEntries()).toHaveLength(1);
   });
 
   // Same four writes, the other caller: here the files already existed, so the

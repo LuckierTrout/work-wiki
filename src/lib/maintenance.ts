@@ -27,6 +27,7 @@ import { listWikiPages, readWikiPageWithFrontmatter } from "./wiki";
 import { getOnDiskSlugs, checkMissingCrossRefs, LOW_CONFIDENCE_THRESHOLD } from "./lint-checks";
 import { extractWikiLinks } from "./links";
 import { purgeStaleIngestJobs } from "./ingest-jobs";
+import { getOwnerHandle } from "./owner";
 import type { Task } from "./tasks";
 import { logger } from "./logger";
 
@@ -288,6 +289,38 @@ export async function purgeStaleJobs(): Promise<number> {
     return await purgeStaleIngestJobs();
   } catch (err) {
     logger.error("maintenance", "ingest-job GC failed:", err);
+    return 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Orphan wiki-directory GC — reclaim `wikis/<uuid>/` nothing references
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail-soft wrapper around `sweepOrphanWikiDirectories` for the maintenance
+ * scan. Returns how many directories were reclaimed (0 on error, and 0 when no
+ * owner handle is configured — a single-owner deployment with no owner has no
+ * tenant to sweep).
+ *
+ * DELIBERATELY NOT INSIDE {@link scanForMaintenance}: that function's contract
+ * is READ-ONLY — it returns candidate tasks and the route decides whether to
+ * enqueue them — and this removes bytes. It sits beside {@link purgeStaleJobs}
+ * as its own export the route calls, which is the same shape every other
+ * byte-removing scan step already has.
+ *
+ * `await import("./wikis")` keeps the module graph loose, matching
+ * {@link rebuildDerivedIndexes}: `wikis.ts` pulls in the whole scenario-template
+ * and workspace-profile subtree, and nothing else in this module needs it.
+ */
+export async function sweepOrphanWikiDirs(): Promise<number> {
+  try {
+    const owner = getOwnerHandle();
+    if (!owner) return 0;
+    const { sweepOrphanWikiDirectories } = await import("./wikis");
+    return await sweepOrphanWikiDirectories(owner);
+  } catch (err) {
+    logger.error("maintenance", "orphan wiki-directory sweep failed:", err);
     return 0;
   }
 }
