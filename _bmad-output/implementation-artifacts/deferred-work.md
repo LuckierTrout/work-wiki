@@ -2214,7 +2214,8 @@ source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: src/app/api/email/ingest/route.ts:116
 severity: low
 reason: `src/app/api/email/ingest/route.ts:116-121` returns 400 with "Attach no more than 10 supported documents" above the cap. The parity test only pins `MAX_EMAIL_ATTACHMENTS === MAX_EMAIL_DOCUMENTS`; no test posts 11 supported files, so the branch and its message could be deleted or inverted with the suite green. The widest route test in this run posts three parts.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-email-ingest-test-coverage
 
 ### DW-251: The Worker's `|| "application/octet-stream"` MIME fallback cannot be observed at the Request boundary, so the assertion pinning it is not discriminating.
 origin: spec-deferred b0bbefc71f31
@@ -2222,7 +2223,8 @@ source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: workers/email-ingest/index.ts:243
 severity: low
 reason: `workers/email-ingest/index.ts:243` supplies the fallback when a parsed attachment reports an empty `mimeType`. The multipart/form-data serializer is spec-required to emit `application/octet-stream` for an entry whose `type` is the empty string, so deleting the `||` changes nothing on the wire and fails no assertion made at the outgoing `Request`. The test documents this. Closing it needs a different surface — the Worker's `Blob` construction directly, or the `contentType` the route stores.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-email-ingest-test-coverage
 
 ### DW-252: The forwarded request's `Authorization` header and target URL are asserted nowhere, in a Worker suite that otherwise reads the body closely.
 origin: spec-deferred 309fb683efb4
@@ -2230,7 +2232,8 @@ source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: workers/email-ingest/index.ts:245-253
 severity: low
 reason: `workers/email-ingest/index.ts` sends `Authorization: Bearer ${serviceToken}` to `${site}/api/email/ingest`. Both new suites read only `formData()` off the captured `Request`, so a regression dropping or corrupting the service token — the thing `getServicePrincipal` gates on at `route.ts:81` — would ship green.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-email-ingest-test-coverage
 
 ### DW-253: Two attachment-related behaviours have neither a test nor deliberate handling.
 origin: spec-deferred fc3cbd828749
@@ -2247,7 +2250,8 @@ source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: src/lib/document-extract.ts:522
 severity: low
 reason: Closing the `EXTENSION_ALIASES`/`MIME_FORMATS` prototype-chain holes surfaced the identical defect in `mediaTypeFor` (`IMAGE_MEDIA_TYPES[ext] ?? null`) in `src/lib/document-extract.ts`, which reads filenames from *inside* uploaded archives and is therefore attacker-reachable the same way. It was fixed with the same helper, but reverting that third fix fails nothing: `mediaTypeFor` is module-private and reachable only by crafting an archive containing an image entry named e.g. `logo.constructor`.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-email-ingest-test-coverage
 
 ### DW-255: `ConfirmDialog`'s `busy` gate is pinned at one consumer only — `WikiSwitcher`'s Rename and Delete confirms reach the same gate with nothing asserting it.
 origin: spec-deferred 304df609e829
@@ -3140,4 +3144,44 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: workers/email-ingest/index.ts:59
 severity: medium
 reason: `MAX_EMAIL_ATTACHMENTS` is 10 and `MAX_DOCUMENT_SIZE` is 10 MB, so the advertised envelope is up to ten documents; ten 2 MB documents encode to roughly 27 MB and are bounced by `MAX_RAW_EMAIL_BYTES` (14.4 MB) with "larger than 13.7 MB". The per-message cap and the per-email attachment cap describe incompatible envelopes, which also makes the new over-cap acknowledgement line unreachable for anything but small files. Pre-existing and worse before this change (the cap was 10 MB); distinct from the aggregate-memory item above, which is about the forwarding copies rather than the gate.
+status: open
+
+### DW-363: The second copy of the site-URL trim -- the one that builds the sender-visible acknowledgement links -- is pinned by nothing.
+origin: spec-deferred 5a52b035362e
+source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
+location: workers/email-ingest/index.ts:386
+severity: low
+reason: `workers/email-ingest/index.ts` computes `(env.YOPEDIA_SITE_URL || "").replace(/\/+$/, "")` twice: at :325 for the forwarded request (now pinned by the new transport case) and again at :386 for the `Page:` / `Track it under Recent ingests:` lines in the reply. Reverting only the :386 trim leaves both Worker suites green, so a sender would receive `https://host///u/yopedia/slug`. The new `///` fixture already drives the worker with a trailing-slash site and discards `msg.reply` instead of asserting it.
+status: open
+
+### DW-364: The Worker's two misconfiguration early-returns -- missing service token and missing site URL -- produce sender-visible replies that no test observes.
+origin: spec-deferred def3eb49a02e
+source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
+location: workers/email-ingest/index.ts:255-263
+severity: medium
+reason: `workers/email-ingest/index.ts:255-263` replies "the ingest service is not configured" and returns without forwarding when `YOPEDIA_SERVICE_TOKEN` is absent; :326 throws `YOPEDIA_SITE_URL is missing`, caught by the surrounding try/catch into the "could not queue this email" reply. Neither branch is exercised anywhere, so deleting either -- and forwarding an unauthenticated request, or one to a relative URL -- fails nothing. The new `forwardedRequest(siteUrl)` helper already parameterises the site, so the second is one fixture away.
+status: open
+
+### DW-365: `assetFromArchive` still indexes the unzipped file map with a raw `files[target]`, one line above the `ownLookup` call added to close exactly that pattern.
+origin: spec-deferred d5c3b8bba1b8
+source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
+location: src/lib/document-extract.ts:458
+severity: low
+reason: `src/lib/document-extract.ts:458` does `const bytes = files[target]`, where `target` is resolved from a relationship `Target` attribute inside an attacker-supplied archive. `resolveArchiveTarget` can produce a bare `constructor` (e.g. from `../constructor`), which would answer an inherited function. It is unreachable today only because `mediaTypeFor` rejects an extensionless name first and the `!bytes || !mediaType` guard short-circuits -- an accident of ordering, not a guard. Routing it through `ownLookup` would make it match its neighbour.
+status: open
+
+### DW-366: The route's `MAX_EMAIL_CONTENT_CHARS` 400 branch is unexercised -- the same defect class as DW-250, two gates above it.
+origin: spec-deferred a47249ac6557
+source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
+location: src/app/api/email/ingest/route.ts:152
+severity: low
+reason: `src/app/api/email/ingest/route.ts:152-157` returns 400 with "Email body exceeds 100,000 characters" for an over-long body. Nothing in the repo posts a body above the cap, so the branch and its `toLocaleString` copy could be deleted or inverted with the suite green. The Worker truncates at the same number before forwarding, so -- like DW-250's branch -- this is a route contract for direct callers.
+status: open
+
+### DW-367: The route's "no text body or supported document attachment" 400 asserts only its status, in the same file as a new block arguing at length that the copy must be pinned.
+origin: spec-deferred 96774befabcc
+source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
+location: src/app/api/email/ingest/route.ts:146
+severity: low
+reason: `src/lib/__tests__/email-ingest-route.test.ts`'s "rejects attachment-only email when its file type is unsupported" checks `status === 400` and that nothing was enqueued, leaving "The email has no text body or supported document attachment to ingest" (`route.ts:146-151`) unmatched by anything in the repo -- the same gap DW-250 named for the neighbouring branch.
 status: open

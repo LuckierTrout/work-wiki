@@ -66,6 +66,52 @@ describe("document extraction", () => {
     expect(result.text).toContain("Embedded image: System architecture");
   });
 
+  /**
+   * `mediaTypeFor` reads its extension out of `IMAGE_MEDIA_TYPES` through
+   * `ownLookup`, not `table[ext]`. A plain index hit finds `Object.prototype`
+   * members, so an archive entry named `logo.constructor` looks like a
+   * supported image: `archiveEntryKind` admits it into the unzip filter and
+   * `assetFromArchive` emits an asset whose `mediaType` is the `Object`
+   * constructor *function*. Every fixture in this suite used a real extension,
+   * so reverting to `IMAGE_MEDIA_TYPES[ext] ?? null` shipped green (DW-254).
+   */
+  it("ignores an archive entry whose extension names an Object.prototype member", () => {
+    const result = office("prototype-named.docx", {
+      "word/document.xml": `<w:document><w:body>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Logo" descr="Company logo"/><a:graphic><a:blip r:embed="rId1"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Chart" descr="Revenue chart"/><a:graphic><a:blip r:embed="rId2"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+      </w:body></w:document>`,
+      "word/_rels/document.xml.rels": '<Relationships><Relationship Id="rId1" Target="media/logo.constructor"/><Relationship Id="rId2" Target="media/chart.png"/></Relationships>',
+      "word/media/logo.constructor": new Uint8Array([1, 2, 3, 4]),
+      // The real image alongside it: the fix must reject the prototype-named
+      // entry without also rejecting anything legitimate.
+      "word/media/chart.png": new Uint8Array([137, 80, 78, 71]),
+    });
+    expect(result.assets).toHaveLength(1);
+    expect(result.assets[0]).toMatchObject({
+      filename: "chart.png",
+      mediaType: "image/png",
+      alt: "Revenue chart",
+      // Second `w:p` block, so the surviving asset must report Paragraph 2 --
+      // pinning it rules out an asset that merely inherited the right name.
+      context: "Paragraph 2",
+    });
+    // The PNG magic bytes, not the prototype-named entry's payload: a
+    // regression that emitted `chart.png`'s name and media type over
+    // `logo.constructor`'s bytes passes every assertion above.
+    expect(Array.from(new Uint8Array(result.assets[0].bytes))).toEqual([137, 80, 78, 71]);
+    expect(result.assets.map((asset) => asset.filename)).not.toContain("logo.constructor");
+    // The count alone would still pass if `chart.png` were the one dropped and
+    // the inherited member had produced the surviving asset, so the shape of
+    // every `mediaType` is pinned too -- the mutation yields a function here.
+    for (const asset of result.assets) {
+      expect(typeof asset.mediaType).toBe("string");
+      expect(asset.mediaType).toMatch(/^image\//);
+    }
+    expect(result.text).toContain("Embedded image: Revenue chart");
+    expect(result.text).not.toContain("Company logo");
+  });
+
   it("extracts PPTX slides in presentation order with linked speaker notes", () => {
     const result = office("deck.pptx", {
       "ppt/presentation.xml": '<p:presentation><p:sldIdLst><p:sldId r:id="rId2"/><p:sldId r:id="rId1"/></p:sldIdLst></p:presentation>',
@@ -87,6 +133,45 @@ describe("document extraction", () => {
         context: "Slide 1",
       }),
     ]);
+  });
+
+  /**
+   * The same `mediaTypeFor` gate guards a second, independent call site:
+   * `archiveEntryKind` applies it to `^ppt/media/[^/]+$` at
+   * `src/lib/document-extract.ts:392` exactly as it does to `word/media` at
+   * `:382`. Fixing one arm does not fix the other, and no PPTX fixture in this
+   * suite used anything but a real extension, so this arm stayed unpinned
+   * (DW-254).
+   */
+  it("ignores a PPTX media entry whose extension names an Object.prototype member", () => {
+    const result = office("prototype-named.pptx", {
+      "ppt/presentation.xml": '<p:presentation><p:sldIdLst><p:sldId r:id="rId1"/></p:sldIdLst></p:presentation>',
+      "ppt/_rels/presentation.xml.rels": '<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/></Relationships>',
+      // The two `p:cNvPr` descriptions are consumed in document order, one per
+      // `a:blip`, so the surviving image must report the SECOND description --
+      // proof the prototype-named blip was walked past rather than never seen.
+      "ppt/slides/slide1.xml": '<p:sld><a:p><a:r><a:t>Quarter in review</a:t></a:r></a:p><p:cNvPr name="Logo" descr="Company logo"/><a:blip r:embed="imgLogo"/><p:cNvPr name="Chart" descr="Revenue chart"/><a:blip r:embed="imgChart"/></p:sld>',
+      "ppt/slides/_rels/slide1.xml.rels": '<Relationships><Relationship Id="imgLogo" Target="../media/logo.constructor"/><Relationship Id="imgChart" Target="../media/chart.png"/></Relationships>',
+      "ppt/media/logo.constructor": new Uint8Array([1, 2, 3, 4]),
+      "ppt/media/chart.png": new Uint8Array([137, 80, 78, 71]),
+    });
+    expect(result.assets).toHaveLength(1);
+    expect(result.assets[0]).toMatchObject({
+      filename: "chart.png",
+      mediaType: "image/png",
+      alt: "Revenue chart",
+      context: "Slide 1",
+    });
+    expect(Array.from(new Uint8Array(result.assets[0].bytes))).toEqual([137, 80, 78, 71]);
+    expect(result.assets.map((asset) => asset.filename)).not.toContain("logo.constructor");
+    for (const asset of result.assets) {
+      expect(typeof asset.mediaType).toBe("string");
+      expect(asset.mediaType).toMatch(/^image\//);
+    }
+    // The slide's image list names the real image only.
+    expect(result.text).toContain("- Revenue chart (chart.png)");
+    expect(result.text).not.toContain("logo.constructor");
+    expect(result.text).not.toContain("Company logo");
   });
 
   it("extracts XLSX shared strings, inline strings, values, and sheet names", () => {

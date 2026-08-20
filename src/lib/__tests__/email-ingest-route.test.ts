@@ -42,7 +42,7 @@ import { getServicePrincipal } from "@/lib/auth";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { stageBytes } from "@/lib/ingest-staging";
 import { createIngestJob, getIngestJob } from "@/lib/ingest-jobs";
-import { loadEmailIngestConfig } from "@/lib/email-ingest";
+import { loadEmailIngestConfig, MAX_EMAIL_DOCUMENTS } from "@/lib/email-ingest";
 import { getAgent } from "@/lib/agents";
 import { getVault, vaultOwnedBy } from "@/lib/vault";
 
@@ -482,6 +482,98 @@ describe("POST /api/email/ingest", () => {
       }));
       // One recorded name, no attachments: the local subtraction.
       expect(await withoutCount.json()).toMatchObject({ skippedAttachmentCount: 1 });
+    });
+  });
+
+  /**
+   * The per-message document cap. Nothing posted more than three parts before
+   * this block, so `attachments.length > MAX_EMAIL_DOCUMENTS` survived both
+   * deletion and inversion, and no test in the repo matched the message text
+   * (DW-250).
+   *
+   * Who reaches this branch: NOT an emailing sender. `MAX_EMAIL_ATTACHMENTS`
+   * equals `MAX_EMAIL_DOCUMENTS` (pinned in `email-ingest-allowlist-parity.test.ts`)
+   * and the Worker slices to its own cap at `workers/email-ingest/index.ts:300`
+   * before forwarding, so a forwarded message can never arrive over the cap --
+   * a sender would only ever see this string relayed back through the Worker's
+   * `safeError`. This is the route's own contract for DIRECT service-principal
+   * callers, and defence-in-depth should the two caps ever drift apart.
+   *
+   * Counts are derived from `MAX_EMAIL_DOCUMENTS` so a cap change moves the
+   * fixtures rather than silently re-aiming them. The user-facing sentence is
+   * the deliberate exception: it is pinned verbatim, because a wording
+   * regression is exactly what an interpolated expectation cannot see.
+   */
+  describe("supported-document cap", () => {
+    /** Small, in-allowlist, distinct per index -- nothing here trips the size gate. */
+    function csvFiles(count: number): File[] {
+      return Array.from(
+        { length: count },
+        (_unused, index) =>
+          new File([`name,total\nrow-${index},${index}`], `sheet-${index + 1}.csv`, {
+            type: "text/csv",
+          }),
+      );
+    }
+
+    it("accepts exactly the cap", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-at-cap@example.com>",
+        files: csvFiles(MAX_EMAIL_DOCUMENTS),
+      }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        accepted: true,
+        supportedAttachmentCount: MAX_EMAIL_DOCUMENTS,
+      });
+      expect(mockedStageBytes).toHaveBeenCalledTimes(MAX_EMAIL_DOCUMENTS);
+      expect(mockedEnqueue).toHaveBeenCalledOnce();
+    });
+
+    it("rejects one above the cap with the copy a direct caller reads", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-over-cap@example.com>",
+        files: csvFiles(MAX_EMAIL_DOCUMENTS + 1),
+      }));
+      expect(response.status).toBe(400);
+      // The sentence below encodes this cap as a literal, so the two must move
+      // together: a legitimate cap change should fail HERE, naming the coupling,
+      // rather than surfacing one line down as an opaque wording regression.
+      expect(MAX_EMAIL_DOCUMENTS).toBe(10);
+      // Verbatim, not `Attach no more than ${MAX_EMAIL_DOCUMENTS} ...`: the
+      // interpolated form re-derives whatever the route emits and so cannot
+      // fail on a reworded message.
+      expect(await response.json()).toEqual({
+        error: "Attach no more than 10 supported documents",
+      });
+      // The 400 lands before any irreversible work.
+      expect(mockedStageBytes).not.toHaveBeenCalled();
+      expect(mockedCreateJob).not.toHaveBeenCalled();
+      expect(mockedEnqueue).not.toHaveBeenCalled();
+    });
+
+    it("counts only supported files toward the cap", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-cap-plus-unsupported@example.com>",
+        files: [
+          ...csvFiles(MAX_EMAIL_DOCUMENTS),
+          new File(["binary"], "installer.exe", { type: "application/octet-stream" }),
+          new File(["binary"], "driver.exe", { type: "application/octet-stream" }),
+        ],
+      }));
+      // `attachments` is filtered by `isSupportedDocument` before the
+      // comparison, so the two rejected parts cannot push a legal message over.
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        supportedAttachmentCount: MAX_EMAIL_DOCUMENTS,
+        skippedAttachmentCount: 2,
+      });
+      // The reported count alone would not notice the `.exe` parts leaking into
+      // R2; the staging call count would.
+      expect(mockedStageBytes).toHaveBeenCalledTimes(MAX_EMAIL_DOCUMENTS);
     });
   });
 

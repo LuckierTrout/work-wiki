@@ -11,18 +11,42 @@ import { base64PartWireSize } from "./email-ingest-wire";
  * Worker-level coverage for `workers/email-ingest`, which had none: the sibling
  * task-consumer receipt is pinned in `task-consumer.test.ts`, but nothing
  * exercised this worker at all — `brand-copy.test.ts` reads it as text and
- * looks only for brand strings. Two surfaces are pinned here.
+ * looks only for brand strings.
  *
- * The acknowledgement reply is the first thing a sender receives after
- * forwarding a document in, and it carries a page link. `/wiki/<slug>` is
- * retired (404), so that link had to move to the owner-scoped form; a
- * regression to the retired URL would otherwise ship green.
+ * The surfaces pinned here, in file order:
  *
- * The attachment byte-copy is the buffer the worker fills before wrapping each
- * supported attachment in a `Blob`. Zeroing or emptying that copy still yields
- * a correctly-sized buffer, an `{ ok: true, slug }` response and a
- * byte-identical acknowledgement, so every emailed PDF/DOCX would ingest empty
- * with the suite green.
+ * 1. The acknowledgement reply — the first thing a sender receives after
+ *    forwarding a document in, and it carries a page link. `/wiki/<slug>` is
+ *    retired (404), so that link had to move to the owner-scoped form; a
+ *    regression to the retired URL would otherwise ship green.
+ *
+ * 2. The attachment byte-copy — the buffer the worker fills before wrapping
+ *    each supported attachment in a `Blob`. Zeroing or emptying that copy still
+ *    yields a correctly-sized buffer, an `{ ok: true, slug }` response and a
+ *    byte-identical acknowledgement, so every emailed PDF/DOCX would ingest
+ *    empty with the suite green.
+ *
+ * 3. The forwarded transport — the method, target URL and `Authorization`
+ *    header of the `Request` handed to the `YOPEDIA` binding. Both worker
+ *    suites read only `formData()` off that `Request`, so the envelope around
+ *    the body was entirely unobserved (DW-252).
+ *
+ * 4. The multi-attachment forwarding loop — the per-email cap, the
+ *    `attachment-<n>` filename fallback, the `attachmentName` fields and the
+ *    index pairing of name to bytes, none of which a one-attachment fixture
+ *    can reach.
+ *
+ * 5. The loss accounting — the attachment counts the acknowledgement reports
+ *    back to the sender, and the `skippedAttachmentCount` field forwarded to
+ *    the route so it need not re-derive the loss from a truncated name list.
+ *
+ * 6. The raw-message size gate — its exact boundary and the figure the refusal
+ *    quotes back.
+ *
+ * The `Blob` *type* the worker builds is pinned next door in
+ * `email-ingest-worker-normalization.test.ts`, which mocks `postal-mime`: it is
+ * invisible from the `Request` captured here, because the multipart serializer
+ * rewrites an empty type before the body exists.
  */
 
 const RAW_EMAIL = [
@@ -164,6 +188,52 @@ describe("email-ingest attachment forwarding", () => {
     expect(part.name).toBe("report.pdf");
     expect(part.type).toBe("application/pdf");
     expect(new Uint8Array(await part.arrayBuffer())).toEqual(ATTACHMENT_BYTES);
+  });
+});
+
+/**
+ * The envelope around that body: method, target URL and credential. Both worker
+ * suites read only `formData()` off the captured `Request`, so dropping the
+ * `Authorization` header, sending a bare token, or hardcoding a different
+ * ingest path all shipped green (DW-252).
+ *
+ * The bindings below deliberately carry values that appear nowhere else in this
+ * file -- `env()`'s own `test-token` / `yopedia.example.com` are what a
+ * hardcoded literal would most plausibly be frozen to, and asserting against
+ * them could not tell a threaded value from a baked-in one.
+ */
+describe("email-ingest forwarded transport", () => {
+  const TRANSPORT_TOKEN = "svc-9f3c1a-transport";
+  const TRANSPORT_SITE = "https://ingest-edge.internal.test";
+
+  async function forwardedRequest(siteUrl: string) {
+    const msg = message(ATTACHMENT_EMAIL, "Quarterly report");
+    const bindings = {
+      ...env(Response.json({ ok: true, slug: "quarterly-report" })),
+      YOPEDIA_SERVICE_TOKEN: TRANSPORT_TOKEN,
+      YOPEDIA_SITE_URL: siteUrl,
+    };
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
+    return bindings.YOPEDIA.fetch.mock.calls[0][0];
+  }
+
+  it("POSTs to the configured site's ingest endpoint as the service principal", async () => {
+    const forwarded = await forwardedRequest(TRANSPORT_SITE);
+    expect(forwarded.method).toBe("POST");
+    expect(forwarded.url).toBe(`${TRANSPORT_SITE}/api/email/ingest`);
+    // `Bearer ` included: the route's `getServicePrincipal` reads the scheme,
+    // so a bare token authenticates as nobody and every email 401s.
+    expect(forwarded.headers.get("Authorization")).toBe(`Bearer ${TRANSPORT_TOKEN}`);
+  });
+
+  it("builds the target from the configured site with its trailing slashes trimmed", async () => {
+    const forwarded = await forwardedRequest(`${TRANSPORT_SITE}///`);
+    // Not `https://ingest-edge.internal.test////api/email/ingest`.
+    expect(forwarded.url).toBe(`${TRANSPORT_SITE}/api/email/ingest`);
   });
 });
 
