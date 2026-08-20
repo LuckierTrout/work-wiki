@@ -39,6 +39,8 @@ function body(version: string | undefined, overrides: Record<string, unknown> = 
     embeddingSupport: true,
     embeddingModel: null,
     embeddingModelSource: "none",
+    embeddingModelInEffect: null,
+    embeddingModelOverridden: false,
     hasApiKey: true,
     ollamaBaseUrl: null,
     ollamaBaseUrlSource: "none",

@@ -1,5 +1,5 @@
 import type { ProviderInfo } from "./types";
-import { hasEmbeddingSupport } from "./embeddings";
+import { getEmbeddingModelName, hasEmbeddingSupport } from "./embeddings";
 import { isEnoent } from "./errors";
 import { VALID_PROVIDERS, DEFAULT_MODELS, isEmbeddingProvider } from "./providers";
 import type { EmbeddingProvider, ProviderValue } from "./providers";
@@ -90,6 +90,25 @@ export interface EffectiveSettings {
   embeddingSupport: boolean;
   embeddingModel: string | null;
   embeddingModelSource: SettingSource;
+  /**
+   * The model this deployment ACTUALLY embeds with, resolved through
+   * {@link getEmbeddingModelName} — the same door `embedText` goes through
+   * (DW-274). Null when nothing embeds, which is exactly when
+   * `embeddingSupport` is false.
+   *
+   * It is a SECOND field rather than a correction to `embeddingModel` because
+   * the two answer different questions: `embeddingModel`/`embeddingModelSource`
+   * say what is set and where, and this says what is in effect. See the
+   * comment on the assignment in `getEffectiveSettings`.
+   */
+  embeddingModelInEffect: string | null;
+  /**
+   * True when a model IS reported, something IS in effect, and they differ —
+   * i.e. the reported model is being substituted on the embed path. False when
+   * nothing is set (nothing to override) and false when nothing embeds (the
+   * `embeddingSupport: false` story, not an override story).
+   */
+  embeddingModelOverridden: boolean;
   hasApiKey: boolean;
   apiKeySource: SettingSource;
   ollamaBaseUrl: string | null;
@@ -1231,6 +1250,33 @@ export function getEffectiveSettings(): EffectiveSettings {
     embeddingModelSource = "none";
   }
 
+  // ...and the OTHER half of the same answer (DW-274).
+  //
+  // The pair above says what is SET and where. It does not say what embeds:
+  // `resolveEmbeddingModelName` applies `embeddingModelMatchesProvider` before
+  // honouring the value, so on a Workers AI deployment with
+  // `EMBEDDING_MODEL=text-embedding-3-small` the pair above is truthfully "env,
+  // text-embedding-3-small" while `embedText` runs on `@cf/baai/bge-m3`. A
+  // surface whose whole job is "what is in effect and where did it come from"
+  // has to be able to say both.
+  //
+  // Read through `getEmbeddingModelName()` — the resolver's own door, the one
+  // every embed path uses — and NOT by re-applying the predicate here. A rule
+  // stated twice is two rules that agree today. (The resolver's mismatch
+  // warning is throttled once per `(provider, override)` per process (DW-273),
+  // so a settings read cannot make it spam.)
+  //
+  // The reported pair is deliberately left alone rather than replaced with the
+  // resolved name: `useSettings` seeds the editable model input from
+  // `embeddingModel` whenever the source is `config`, so a provider default
+  // leaking into it would put a value the owner never chose into their box —
+  // and the next save would write it into the store.
+  const embeddingModelInEffect = getEmbeddingModelName();
+  const embeddingModelOverridden =
+    embeddingModel !== null &&
+    embeddingModelInEffect !== null &&
+    embeddingModelInEffect !== embeddingModel;
+
   const structuredKnowledge = getStructuredKnowledgeModelSettings();
 
   return {
@@ -1242,6 +1288,8 @@ export function getEffectiveSettings(): EffectiveSettings {
     embeddingSupport: hasEmbeddingSupport(),
     embeddingModel,
     embeddingModelSource,
+    embeddingModelInEffect,
+    embeddingModelOverridden,
     hasApiKey: resolvedApiKey !== null,
     apiKeySource,
     ollamaBaseUrl,

@@ -149,6 +149,8 @@ export default function SettingsPage() {
           setEmbeddingModel={setEmbeddingModel}
           effectiveModel={settings?.embeddingModel ?? null}
           modelSource={settings?.embeddingModelSource ?? "none"}
+          modelInEffect={settings?.embeddingModelInEffect ?? null}
+          overridden={settings?.embeddingModelOverridden ?? false}
           rebuilding={rebuilding}
           onRebuild={handleRebuildEmbeddings}
           rebuildResult={rebuildResult}

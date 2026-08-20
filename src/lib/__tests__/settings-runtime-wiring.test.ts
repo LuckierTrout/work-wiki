@@ -567,6 +567,43 @@ describe("the stored embedding credential and endpoint are read", () => {
     expect(getEmbeddingModelName()).toBe("@cf/baai/bge-m3");
   });
 
+  it("says WHICH model embeds when EMBEDDING_MODEL is being substituted (DW-274)", async () => {
+    // The literal DW-274 deployment: Workers AI (auto-detected from the bound
+    // `AI` binding) with `EMBEDDING_MODEL=text-embedding-3-small` in the
+    // environment. `/settings` used to render that env value in its locked
+    // "from env" box and stop there, while `embedText` ran on `@cf/baai/bge-m3`
+    // — the one surface whose job is "what is in effect and where did it come
+    // from" answering wrongly.
+    //
+    // This is the only file that can reach the state: it mocks
+    // `@opennextjs/cloudflare`, so the Workers AI leg of
+    // `embeddingModelMatchesProvider` is reachable here and nowhere else.
+    mockGetCfContext.mockReturnValue({ env: { AI: { run: vi.fn() } } });
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+    await store({});
+
+    // The embed path — the fact the page has to agree with.
+    expect(getEmbeddingModelName()).toBe("@cf/baai/bge-m3");
+
+    const settings = getEffectiveSettings();
+    // What is SET, unchanged: this is what the locked box shows and what the
+    // source badge is about.
+    expect(settings.embeddingModel).toBe("text-embedding-3-small");
+    expect(settings.embeddingModelSource).toBe("env");
+    // What is IN EFFECT — the half that was missing.
+    expect(settings.embeddingModelInEffect).toBe("@cf/baai/bge-m3");
+    expect(settings.embeddingModelOverridden).toBe(true);
+    expect(settings.embeddingSupport).toBe(true);
+
+    // And both ride at the TOP LEVEL of the legacy object, so the route's
+    // `...settings` spread carries them with no route change (DW-63).
+    const { GET } = await import("@/app/api/settings/route");
+    const body = (await (await GET()).json()) as Record<string, unknown>;
+    expect(body.embeddingModel).toBe("text-embedding-3-small");
+    expect(body.embeddingModelInEffect).toBe("@cf/baai/bge-m3");
+    expect(body.embeddingModelOverridden).toBe(true);
+  });
+
   it("does the same for Google", async () => {
     process.env.GOOGLE_GENERATIVE_AI_API_KEY = "";
     await store({ embeddingProvider: "google", embeddingApiKey: "g-stored" });

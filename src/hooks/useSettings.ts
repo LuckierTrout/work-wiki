@@ -19,6 +19,14 @@ export interface EffectiveSettings {
   embeddingSupport: boolean;
   embeddingModel: string | null;
   embeddingModelSource: SettingSource;
+  /**
+   * What actually embeds, and whether it differs from what is set (DW-274).
+   * The pair above stays "what is set and where" — the draft-seeding below
+   * reads `embeddingModel`, so a resolved provider default landing in it would
+   * be written into the store by the next save.
+   */
+  embeddingModelInEffect: string | null;
+  embeddingModelOverridden: boolean;
   hasApiKey: boolean;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;

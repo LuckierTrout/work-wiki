@@ -234,14 +234,43 @@ either fail outright on a dimension mismatch or have every hit discarded by the
 model filter — either way vector search returns nothing until the whole corpus
 is re-embedded. So a mismatch does not stop embeddings; it changes which model
 does them, and can cost you the index you already built. If the model you set
-here does not appear to be in use, grep the logs for the `embeddings` warning
-above — it names the id that was dropped and the one embedding actually ran
-with. Grep the whole retained window rather than the last few minutes, and read
-a *single* occurrence as the full report: because the line is said once per
-process (per isolate on Cloudflare), the absence of a repeated line says
-nothing about whether the mismatch is still standing. Confirm the current state
-from Settings or from the model tag on freshly written vectors, not from the
-log's silence.
+here does not appear to be in use, **the flat `/settings` page answers
+directly**: the embedding model field shows what is *set* (and where it came
+from — on that page the box is locked to the variable's value when
+`EMBEDDING_MODEL` owns it, which is what makes the source unambiguous), and when
+the model actually embedding is a different one, a note beneath the field names
+it — "Not in effect. This deployment embeds with `…`".
+
+Read the absence of that note carefully, because it means "no substitution" only
+alongside the rest of the page. It is absent in three different states: the id
+in the box is the id embedding (the case you want); **nothing is set** at all,
+so the box is empty and the provider's own default is running, unnamed here;
+and **nothing is embedding** at all — no resolvable embedding provider — in
+which case the id in the box is running nowhere and the substitution note would
+be a lie, so it is withheld; what tells you *that* is the connection line at the
+top of the page, which drops its `• embeddings ✓` marker. So the note answers
+one question only — "is the id I set being substituted" — and the box and the
+connection line answer the other two.
+
+This is a `/settings` behaviour and not a general one. The **Workbench** Settings
+canvas deliberately does the opposite with a forced value: it keeps the *stored*
+selection in the control and says the environment's value beside it, for the
+reason given above about the provider select — so do not go hunting on that
+surface for a locked box that only exists on the flat page.
+
+On either surface the mismatch is described, not marked: the field is not
+flagged invalid and the save is not blocked, because an `EMBEDDING_MODEL`-owned
+mismatch cannot be fixed from that box at all — unset the variable, or set it to
+an id the embedding provider serves.
+
+The logs say the same thing from the other side: grep for the `embeddings`
+warning above — it names the id that was dropped and the one embedding actually
+ran with. Grep the whole retained window rather than the last few minutes, and
+read a *single* occurrence as the full report: because the line is said once per
+process (per isolate on Cloudflare), the absence of a repeated line says nothing
+about whether the mismatch is still standing. So confirm the current state from
+Settings or from the model tag on freshly written vectors, not from the log's
+silence.
 
 ## Volume Mounts
 

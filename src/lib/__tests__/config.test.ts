@@ -620,6 +620,121 @@ describe("getEffectiveSettings", () => {
     expect(settings.embeddingModel).toBe("nomic-embed-text");
     expect(settings.embeddingModelSource).toBe("config");
   });
+
+  // -------------------------------------------------------------------------
+  // What is SET vs what is IN EFFECT (DW-274)
+  //
+  // `resolveEmbeddingModelName` applies `embeddingModelMatchesProvider` before
+  // honouring a model name, so the model this page reports as "set" is not
+  // always the model that embeds. These rows pin the second half of the answer.
+  //
+  // The Workers AI direction of the predicate is unreachable from this file —
+  // nothing here mocks `@opennextjs/cloudflare`, so `getWorkersAiBinding()`
+  // always returns null. The literal DW-274 scenario lives in
+  // `settings-runtime-wiring.test.ts`, which does mock it; every row here uses
+  // the other direction (a `@cf/` id under a non-Workers provider).
+  // -------------------------------------------------------------------------
+
+  it("names the model actually embedding when a STORED model is substituted", async () => {
+    // Ollama cannot serve a `@cf/` id, so the resolver drops it for the ollama
+    // default — while the box, and the source badge beside it, go on truthfully
+    // saying what the owner stored.
+    delete process.env.EMBEDDING_MODEL;
+    await saveConfig({
+      embeddingProvider: "ollama",
+      embeddingModel: "@cf/baai/bge-m3",
+    });
+    await loadConfig();
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBe("@cf/baai/bge-m3");
+    expect(settings.embeddingModelSource).toBe("config");
+    expect(settings.embeddingModelInEffect).toBe("nomic-embed-text");
+    expect(settings.embeddingModelOverridden).toBe(true);
+    expect(settings.embeddingSupport).toBe(true);
+  });
+
+  it("reports no override when the set model IS the one embedding", async () => {
+    process.env.EMBEDDING_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "sk-env-key";
+    process.env.EMBEDDING_MODEL = "text-embedding-3-large";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBe("text-embedding-3-large");
+    expect(settings.embeddingModelSource).toBe("env");
+    expect(settings.embeddingModelInEffect).toBe("text-embedding-3-large");
+    expect(settings.embeddingModelOverridden).toBe(false);
+  });
+
+  it("names the provider default in effect when no model is set at all", () => {
+    // Nothing is SET, so there is nothing to override — but something IS
+    // embedding, and this is the field that says what.
+    delete process.env.EMBEDDING_MODEL;
+    process.env.OPENAI_API_KEY = "sk-env-key";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBeNull();
+    expect(settings.embeddingModelSource).toBe("none");
+    expect(settings.embeddingModelInEffect).toBe("text-embedding-3-small");
+    expect(settings.embeddingModelOverridden).toBe(false);
+  });
+
+  it("does NOT call a model an override when nothing embeds at all", () => {
+    // No key, no binding, no stored provider: `getEmbeddingModelName()` is
+    // null. That is the `embeddingSupport: false` story — "your model is being
+    // substituted" would be a different and untrue sentence.
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBe("text-embedding-3-small");
+    expect(settings.embeddingModelSource).toBe("env");
+    expect(settings.embeddingModelInEffect).toBeNull();
+    expect(settings.embeddingModelOverridden).toBe(false);
+    expect(settings.embeddingSupport).toBe(false);
+  });
+
+  it("reads BOTH halves off the same env-over-config winner", async () => {
+    // Env and store hold DIFFERENT model names, and the env one is the
+    // mismatch. Every other row sets one leg or the other, so none of them can
+    // catch the two halves disagreeing about which value they are describing:
+    // a reported pair built from the env leg beside an in-effect value compared
+    // against the stored leg would render "nomic-embed-text is not in effect"
+    // — about a value nothing is currently using — while the box shows the env
+    // name. The precedence is `getEmbeddingModelOverride()` first for the
+    // report and `nonEmpty(env) ?? nonEmpty(cfg)` for the resolver, and this is
+    // what pins them to the same answer.
+    await saveConfig({
+      embeddingProvider: "ollama",
+      embeddingModel: "nomic-embed-text",
+    });
+    await loadConfig();
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3";
+
+    const settings = getEffectiveSettings();
+    // The env value wins the report, as it always did…
+    expect(settings.embeddingModel).toBe("@cf/baai/bge-m3");
+    expect(settings.embeddingModelSource).toBe("env");
+    // …and the override the resolver weighed is that SAME env value, which
+    // ollama cannot serve — so the substitution reported is the env one's, not
+    // the stored one's (which ollama serves perfectly well).
+    expect(settings.embeddingModelInEffect).toBe("nomic-embed-text");
+    expect(settings.embeddingModelOverridden).toBe(true);
+  });
+
+  it("leaves the DW-227 whitespace answers exactly as they were", () => {
+    // A blank override is "not set", on BOTH halves of the answer: the
+    // resolver trims it away and embeds with the provider default, so there is
+    // no substitution to report either.
+    process.env.EMBEDDING_MODEL = "   ";
+    process.env.EMBEDDING_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "sk-env-key";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBeNull();
+    expect(settings.embeddingModelSource).toBe("none");
+    expect(settings.embeddingModelInEffect).toBe("text-embedding-3-small");
+    expect(settings.embeddingModelOverridden).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

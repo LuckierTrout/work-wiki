@@ -109,6 +109,8 @@ beforeEach(() => {
     embeddingSupport: true,
     embeddingModel: null,
     embeddingModelSource: "none",
+    embeddingModelInEffect: null,
+    embeddingModelOverridden: false,
     hasApiKey: false,
     apiKeySource: "none",
     ollamaBaseUrl: null,

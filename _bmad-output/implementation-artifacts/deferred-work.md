@@ -2376,7 +2376,8 @@ source_spec: `spec-dw-220-221-224-226-227-embedding-resolution.md`
 location: src/lib/config.ts:getEffectiveSettings
 severity: medium
 reason: The embedding-model branch reports `env ?? config` after trimming, but never runs `embeddingModelMatchesProvider`. With `EMBEDDING_MODEL=text-embedding-3-small` under `workers-ai`, `/settings` renders `text-embedding-3-small` in the locked "from env" box (`src/components/EmbeddingSettings.tsx:38-56`) while `embedText` runs on `@cf/baai/bge-m3`. Pre-existing — this bundle only changed which values count as SET on that branch — and now partly mitigated by the new WARN, but the one surface whose job is "what is in effect and where did it come from" still answers wrongly. Closing it means either resolving the reported model through `getEmbeddingModelName()` or adding an "overridden" flag the component can render.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-effective-settings-embedding-truth
 
 ### DW-275: The legacy flat `PUT /api/settings` branch still stores `model` and `ollamaBaseUrl` untrimmed, the same gate/resolver split just closed for `embeddingModel`.
 origin: spec-deferred 1873c25f4f7d
@@ -2679,4 +2680,20 @@ source_spec: `spec-dw-273-278-embedding-warning-throttle.md`
 location: src/lib/embeddings.ts:134-145
 severity: low
 reason: `src/lib/embeddings.ts:134` reads `process.env.EMBEDDING_PROVIDER ?? cfg.embeddingProvider`, but the warning text always attributes the value to the env var. Pre-existing, and harmless while the line repeated; now that it is said once per identity, an owner whose bad value came from Settings gets a single line telling them to unset an env var they never set. The fix is to name the source (env vs stored) in the message.
+status: open
+
+### DW-312: The Workbench Settings canvas has its own embedding-model control and still cannot say which model is actually embedding.
+origin: spec-deferred f2471935e58a
+source_spec: `spec-dw-274-effective-settings-embedding-truth.md`
+location: src/components/workbench/SettingsCanvas.tsx:542
+severity: low
+reason: `src/components/workbench/SettingsCanvas.tsx:542-565` renders the embedding model row from `getWorkbenchSettings`, not `getEffectiveSettings`, so the two new fields never reach it. It names a provider/model mismatch only through the vector-gate refusal copy (`src/lib/workbench-settings.ts:640-659`) — i.e. as a reason the vector switch cannot be turned on, not as "this is not the model embedding". `src/app/api/settings/route.ts:70-77` calls these "Both Settings surfaces", so after this story they answer the DW-274 question differently. Pre-existing and left alone deliberately: DW-274 names `getEffectiveSettings` and `src/components/EmbeddingSettings.tsx`, and the canvas is fed by a different accessor whose payload shape is its own contract.
+status: open
+
+### DW-313: `getEffectiveSettings` reads the config cache several times, so its "what is set" and "what is in effect" halves can in principle describe different snapshots.
+origin: spec-deferred 811577823483
+source_spec: `spec-dw-274-effective-settings-embedding-truth.md`
+location: src/lib/config.ts:1156
+severity: low
+reason: `src/lib/config.ts:1156` takes `cfg` from `loadConfigSync()`, and both `getEmbeddingModelName()` (:1274) and `hasEmbeddingSupport()` (:1288) re-enter it. `loadConfigSync` has a 5 s TTL and returns an EMPTY config when the cache is cold (:569-578), so a TTL boundary crossed between two of those reads would report a stored model as set while resolving the in-effect half against `{}` — a "Not in effect" note about a substitution that is not happening. The shape is pre-existing (`embeddingSupport` has re-entered the same way since before this story) and the window is between two adjacent synchronous statements with no await, so it is vanishingly narrow; the fix is a `cfg`-taking door on the resolver, which `src/lib/embeddings.ts` does not expose today.
 status: open

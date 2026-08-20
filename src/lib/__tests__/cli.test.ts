@@ -441,6 +441,8 @@ describe("CLI command execution", () => {
       embeddingSupport: true,
       embeddingModel: null,
       embeddingModelSource: "default",
+      embeddingModelInEffect: "text-embedding-3-small",
+      embeddingModelOverridden: false,
       hasApiKey: true,
       apiKeySource: "env",
       ollamaBaseUrl: null,
