@@ -434,8 +434,10 @@ export async function PUT(request: Request) {
     // body came from `/settings`, which renders no embedding provider, endpoint
     // or key at all, so being refused over those legs leaves the owner nothing
     // to do; `flatMovableVectorLegs` narrows WHETHER the gate refuses at all —
-    // not the sentence, which is `vectorSearchMissingCopy(merged)` verbatim
-    // either way — to requests naming a leg this body could have moved, while a
+    // not WHICH sentence it carries, which the THIRD argument's stored flag
+    // decides: a request turning the switch on reads "…before it can be turned
+    // on", one against a switch already stored ON reads the switched-on frame
+    // (DW-308) — to requests naming a leg this body could have moved, while a
     // configuration this request BROKE still refuses over any leg at all. Three
     // readings of one fact, all written from the same expression so they cannot
     // drift into scoping a patch that was never applied.

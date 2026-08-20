@@ -39,7 +39,7 @@ import { getWorkersAiBinding } from "@/lib/embeddings";
 import type { Ai } from "@/lib/storage/cloudflare-types";
 import {
   SETTINGS_INVALID_URL_COPY,
-  vectorSearchMissingCopy,
+  vectorSearchInactiveCopy,
 } from "@/lib/workbench-settings";
 
 const mockedBinding = vi.mocked(getWorkersAiBinding);
@@ -370,8 +370,15 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
     embeddingModel: "@cf/baai/bge-m3",
   } as const;
 
-  /** The sentence the gate produces once `model` has moved off the catalog. */
-  const MISMATCH_COPY = vectorSearchMissingCopy({
+  /**
+   * The sentence the gate produces once `model` has moved off the catalog.
+   *
+   * The SWITCHED-ON frame (DW-308): every store in this describe holds
+   * `vectorSearchEnabled: true` already, so no request here is asking to turn
+   * the switch on and "…before it can be turned on" would land in the save bar
+   * beside a box the payload still shows ticked.
+   */
+  const MISMATCH_COPY = vectorSearchInactiveCopy({
     provider: "workers-ai",
     baseUrl: null,
     model: "text-embedding-3-small",
@@ -504,7 +511,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
     // key, which is a different value from the stored id and so is a move the
     // rule reads. All three answered 200 before DW-217 and quietly left the
     // switch on over a config that can no longer embed.
-    const removalCopy = vectorSearchMissingCopy({
+    const removalCopy = vectorSearchInactiveCopy({
       provider: "workers-ai",
       baseUrl: null,
       model: null,
@@ -514,7 +521,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
       hasWorkersAiBinding: true,
     });
     expect(removalCopy).toBe(
-      "Vector search needs a model before it can be turned on.",
+      "Vector search is switched on, but it needs a model before it can run. Turn it off, or supply what is missing.",
     );
     const { PUT } = await import("@/app/api/settings/route");
 
@@ -530,7 +537,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
   it("REFUSES a flat embeddingProvider DELETION that leaves the gate unsatisfied", async () => {
     // Same half, the other field: with no provider the rule cannot even ask the
     // remaining questions, so it reports the one leg that matters.
-    const removalCopy = vectorSearchMissingCopy({
+    const removalCopy = vectorSearchInactiveCopy({
       provider: null,
       baseUrl: null,
       model: "@cf/baai/bge-m3",
@@ -540,7 +547,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
       hasWorkersAiBinding: true,
     });
     expect(removalCopy).toBe(
-      "Vector search needs an embedding provider before it can be turned on.",
+      "Vector search is switched on, but it needs an embedding provider before it can run. Turn it off, or supply what is missing.",
     );
     const { PUT } = await import("@/app/api/settings/route");
 
@@ -855,7 +862,7 @@ describe("PUT /api/settings — the flat vector refusal names only actionable le
 
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs an endpoint, a model and an API key before it can be turned on.",
+      "Vector search is switched on, but it needs an endpoint, a model and an API key before it can run. Turn it off, or supply what is missing.",
     );
     expect(mockedSave).not.toHaveBeenCalled();
   });
@@ -876,7 +883,7 @@ describe("PUT /api/settings — the flat vector refusal names only actionable le
 
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs an endpoint and an API key before it can be turned on.",
+      "Vector search is switched on, but it needs an endpoint and an API key before it can run. Turn it off, or supply what is missing.",
     );
     expect(mockedSave).not.toHaveBeenCalled();
   });
@@ -919,7 +926,7 @@ describe("PUT /api/settings — the flat vector refusal names only actionable le
 
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs an endpoint and an API key before it can be turned on.",
+      "Vector search is switched on, but it needs an endpoint and an API key before it can run. Turn it off, or supply what is missing.",
     );
     // Nothing written — not the flat field, not the chat model.
     expect(mockedSave).not.toHaveBeenCalled();

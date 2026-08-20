@@ -2,13 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
 import {
+  SETTINGS_KEY_ABSENT_COPY,
+  SETTINGS_KEY_REMOVE_COPY,
+  SETTINGS_KEY_REMOVE_PENDING_COPY,
+  SETTINGS_KEY_STORED_COPY,
+  SETTINGS_KEY_UNDO_COPY,
   SETTINGS_MODEL_INHERIT_COPY,
   SETTINGS_READ_ONLY_COPY,
   SETTINGS_SAVED_COPY,
   SETTINGS_SAVE_COPY,
   SETTINGS_TIMEOUT_HINT_COPY,
+  settingsEnvKeyCopy,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
+import { embeddingProviderLabel } from "@/lib/providers";
 import {
   WRITE_CONFLICT_COPY,
   WRITE_PRECONDITION_REQUIRED_COPY,
@@ -92,9 +99,15 @@ function announcedFor(control: HTMLElement): string {
     .join(" ");
 }
 
-/** Mount one category and let the single on-mount read settle. */
+/**
+ * Mount one category and let the single on-mount read settle.
+ *
+ * `external-sources` is here for the THIRD key row (DW-307): Custom lives under
+ * `llm-models` and Embedding under `embeddings`, so Firecrawl is the only one of
+ * the three that no category already reached.
+ */
 async function mount(
-  category: "llm-models" | "embeddings",
+  category: "llm-models" | "embeddings" | "external-sources",
   stored: WorkbenchSettingsPayload,
 ) {
   fetchMock.mockResolvedValue({
@@ -189,6 +202,94 @@ describe("a read-only deployment (DW-37, DW-65)", () => {
     // a control at it would announce "unsaved edits do not apply" as though it
     // were a constraint on the picker.
     expect(announced).not.toContain(SETTINGS_READ_ONLY_COPY);
+  });
+
+  it("appends the sentence to a KEY row that has no stored key (DW-307)", async () => {
+    // The row DW-280 left behind, on the reasoning that a `readOnly` box has no
+    // refusal to announce. `readOnly` is a property of the BOX and says nothing
+    // about the deployment, and this row's only other affordance — Remove — is
+    // taken off the page under `stored.readOnly` rather than refused in place.
+    // What was perceived here was a box that would not take a keystroke, next to
+    // a button that had vanished, described only as "No key is stored."
+    await mount("llm-models", payload({ hasCustomApiKey: false }));
+    const key = screen.getByLabelText("Custom API key") as HTMLInputElement;
+    expect(key.readOnly).toBe(true);
+    // Still focusable: `readOnly` keeps a box in the tab order, which is the
+    // only reason its description is ever announced at all.
+    key.focus();
+    expect(document.activeElement).toBe(key);
+    const announced = announcedFor(key);
+    // The hint is KEPT, not replaced — for a field that renders nothing, "No key
+    // is stored." is the only thing distinguishing it from a filled one.
+    expect(announced).toContain(SETTINGS_KEY_ABSENT_COPY);
+    expect(announced).toContain(SETTINGS_READ_ONLY_COPY);
+  });
+
+  it("keeps the env-key hint beside BOTH sentences on a stored key (DW-307)", async () => {
+    // Three things in one description, in the row's own order: what the box
+    // holds, what the environment already supplies for the SELECTED provider,
+    // and why nothing here can be changed.
+    await mount(
+      "embeddings",
+      payload({ hasEmbeddingApiKey: true, envEmbeddingApiKeyProviders: ["openai"] }),
+    );
+    const key = screen.getByLabelText("Embedding API key") as HTMLInputElement;
+    expect(key.readOnly).toBe(true);
+    // Read out WHOLE rather than as three independent `toContain`s, which would
+    // pass on any permutation — and the order is the claim: the row's own hint
+    // first, the deployment-wide sentence appended last.
+    expect(announcedFor(key)).toBe(
+      `${SETTINGS_KEY_STORED_COPY} ${settingsEnvKeyCopy(embeddingProviderLabel("openai"))} ${SETTINGS_READ_ONLY_COPY}`,
+    );
+    // A key IS stored, so the only thing keeping Remove off the page is the
+    // read-only deployment — the vanished affordance the sentence stands in for.
+    expect(screen.queryByRole("button", { name: SETTINGS_KEY_REMOVE_COPY })).toBeNull();
+  });
+
+  it("answers for the THIRD key row too, on its own category (DW-307)", async () => {
+    // Firecrawl is the one of the three that no other case here reaches, and it
+    // is the plainest of them: no env-key hint, no vector rule, nothing but the
+    // row's own state and the deployment's. `secretRow` is one builder, so this
+    // is the pin that the fix landed on the BUILDER rather than on two of its
+    // three call sites.
+    await mount("external-sources", payload({ hasFirecrawlApiKey: false }));
+    const key = screen.getByLabelText("Firecrawl API key") as HTMLInputElement;
+    expect(key.readOnly).toBe(true);
+    expect(announcedFor(key)).toBe(
+      `${SETTINGS_KEY_ABSENT_COPY} ${SETTINGS_READ_ONLY_COPY}`,
+    );
+    // …and with a key stored, the same append beside the other hint, with the
+    // Remove button off the page.
+    cleanup();
+    await mount("external-sources", payload({ hasFirecrawlApiKey: true }));
+    expect(announcedFor(screen.getByLabelText("Firecrawl API key"))).toBe(
+      `${SETTINGS_KEY_STORED_COPY} ${SETTINGS_READ_ONLY_COPY}`,
+    );
+    expect(screen.queryByRole("button", { name: SETTINGS_KEY_REMOVE_COPY })).toBeNull();
+  });
+
+  it("leaves a KEY row announcing its hint alone on a writable deployment", async () => {
+    // The other half: nothing refused, so nothing appended, and the affordance
+    // the read-only sentence stands in for is back on the page.
+    await mount("embeddings", payload({ readOnly: false, hasEmbeddingApiKey: true }));
+    const key = screen.getByLabelText("Embedding API key") as HTMLInputElement;
+    expect(key.readOnly).toBe(false);
+    const announced = announcedFor(key);
+    expect(announced).toBe(SETTINGS_KEY_STORED_COPY);
+    expect(announced).not.toContain(SETTINGS_READ_ONLY_COPY);
+    expect(screen.getByRole("button", { name: SETTINGS_KEY_REMOVE_COPY })).toBeTruthy();
+  });
+
+  it("says only the removal sentence while a removal is pending", async () => {
+    // The third hint state, and the one place `readOnly` on this box means
+    // something other than the deployment: a key queued for deletion takes no
+    // keystrokes, on a deployment that refuses nothing. Unchanged by DW-307.
+    await mount("embeddings", payload({ readOnly: false, hasEmbeddingApiKey: true }));
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_KEY_REMOVE_COPY }));
+    const key = screen.getByLabelText("Embedding API key") as HTMLInputElement;
+    await waitFor(() => expect(key.readOnly).toBe(true));
+    expect(announcedFor(key)).toBe(SETTINGS_KEY_REMOVE_PENDING_COPY);
+    expect(screen.getByRole("button", { name: SETTINGS_KEY_UNDO_COPY })).toBeTruthy();
   });
 
   it("refuses a provider change and puts the picker back", async () => {

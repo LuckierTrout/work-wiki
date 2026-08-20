@@ -431,8 +431,17 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
           spellCheck={false}
           readOnly={stored.readOnly || removing}
           // For a field that shows nothing, the hint IS the state: "a key is
-          // stored" is the only thing distinguishing it from an empty one.
-          aria-describedby={hintId}
+          // stored" is the only thing distinguishing it from an empty one — so
+          // the read-only sentence is APPENDED to it here, never substituted for
+          // it (DW-307). The row was left out of DW-280 on the reasoning that a
+          // `readOnly` box has no refusal to announce, which was never true:
+          // `readOnly` announces "read-only" as a property of the box and says
+          // nothing about the deployment, and the row's only other affordance —
+          // the Remove button — is REMOVED under `stored.readOnly` rather than
+          // refused in place. What a screen reader perceives on a read-only
+          // deployment is a box that will not take a keystroke beside a button
+          // that has vanished, described only as "A key is stored."
+          aria-describedby={describedBy(hintId)}
         />
         <span className="wb-set-hint" id={hintId}>
           {removing

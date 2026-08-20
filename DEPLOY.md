@@ -94,6 +94,13 @@ ordered pair of steps rather than a dead end. In full:
 > only on the Workers runtime — bind ai in wrangler.jsonc, or unset
 > EMBEDDING_PROVIDER to choose another embedding provider.
 
+Both quotes above are the **turning-on** frame — what a save that asks to switch
+vector search on is answered with. A save against a switch the store already held
+on is answered over the same legs and the same notes, in the switched-on frame
+instead: *"Vector search is switched on, but it needs the Cloudflare AI binding
+before it can run. Turn it off, or supply what is missing."* See *A switch that
+is already ON* below for the rule that picks between them.
+
 The select is **described but not marked invalid** here, for the same reason the
 model box is not marked for an `EMBEDDING_MODEL`-owned mismatch: marking a
 control the owner cannot fix from there is a dead end. It also goes on showing
@@ -169,8 +176,11 @@ Two separate things happen to an id the resolved provider cannot serve:
   Custom base URL, Embedding model, Embedding endpoint, Firecrawl base URL and
   the LLM timeout — now also announce that settings are read-only here, rather
   than leaving that sentence unassociated beside the Save button. The three
-  **API-key** rows (Custom, Embedding, Firecrawl) are the exception: they still
-  announce only whether a key is stored.
+  **API-key** rows (Custom, Embedding, Firecrawl) announce it too, appended to
+  whether a key is stored: a password box that shows nothing has that hint as its
+  only state, and on a read-only deployment its Remove button is not merely
+  refused but gone, so the sentence is the only thing standing in for the missing
+  affordance.
 
   **A switch that is already ON is acknowledged as on, not described as
   un-turn-on-able.** The settings surface serves the stored flag rather than the
@@ -185,6 +195,14 @@ Two separate things happen to an id the resolved provider cannot serve:
   read-only deployment the read-only sentence rides here too. The box stays
   operable in that state: turning vector search **off** is always allowed, so an
   owner is never stranded with a switch whose legs have since gone missing.
+
+  A **refused save** now carries the same frame. The route picks it from the flag
+  the store held *before* the request — its analogue of the ticked box the
+  browser reads: a save that asks to turn the switch **on** is still told *"…
+  before it can be turned on"*, while a save against a switch that was already on
+  is answered with the switched-on sentence, since that is what lands in the save
+  bar beside the still-checked box. Same unmet legs, same notes, same order in
+  either frame; which situations are refused at all is unchanged.
 
   An unrelated Workbench save — a chat model, an LLM timeout — is **not** refused
   by a mismatch it did not create, even on a deployment whose stored vector

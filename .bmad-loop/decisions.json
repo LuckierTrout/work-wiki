@@ -161,6 +161,33 @@
     "label": "Stop writing the threads",
     "resolution": ""
   },
+  "DW-253": {
+    "answered_at": "2026-08-20",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Change the route to skip an attachment over `MAX_DOCUMENT_SIZE` rather than 400 the request, ingest the body and the remaining attachments, and name the dropped file in the acknowledgement alongside the existing skipped-attachment sentence. Add a per-attachment size pre-filter in the Worker so an oversized part is never forwarded, and add the missing end-to-end case for an email whose attachments are all unsupported but which carries a body.",
+    "key": "1",
+    "label": "Drop the oversized attachment",
+    "resolution": ""
+  },
+  "DW-272": {
+    "answered_at": "2026-08-20",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Move the version token inside the config object (or replace the scheme with the storage layer's `writeFileIfMatch` compare-and-set, already exposed at `src/lib/storage/r2.ts:193`) so one object carries both the bytes and the token and no read can pair them inconsistently on any backend. Migrate an existing two-file deployment on first read, delete the now-unreachable token-file branches together with the EISDIR tests that only a filesystem can produce, and add coverage for a compare-and-set that loses.",
+    "key": "1",
+    "label": "Single object via writeFileIfMatch",
+    "resolution": ""
+  },
+  "DW-293": {
+    "answered_at": "2026-08-20",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Keep fsync as the default for single writes, and give the loop paths a batched form: a bulk-write door that fsyncs once per batch (or a directory sync at the end) for portable-archive import, backup restore and ingest, plus an accumulate-then-flush shape for `upsertEmbedding` so an embeddings rebuild stops rewriting and syncing the whole index per vector. Add a benchmark that fails if any of those paths regresses past a recorded bound.",
+    "key": "1",
+    "label": "Batch the loop paths",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

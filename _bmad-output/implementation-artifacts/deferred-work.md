@@ -1871,7 +1871,9 @@ source_spec: `spec-dw-49-artifact-seed-data-version-bump.md`
 location: src/lib/data-version.ts:31 (DATA_VERSION_KEY), src/app/api/workbench/version/route.ts
 severity: low
 reason: `DATA_VERSION_KEY = "data-version"` (src/lib/data-version.ts:31) has no owner in it, and `GET /api/workbench/version` serves that single integer to everyone. Pre-existing — `writeWikiArtifact` and the page lifecycle already bump the same global key — but this change widens the set of operations that trigger a cross-tenant server re-render from "someone edited a page" to "someone anywhere created a Wiki". Not a correctness bug: a refresh is idempotent and each client re-renders its own tenant's data. The fix is a per-tenant key, which is a storage-layout change well outside this bundle.
-status: open
+status: done 2026-08-20
+resolution: closed by human decision: Accept the single global key under the single-owner deployment stance `src/lib/owner.ts` records: a cross-tenant refresh is idempotent and correct, DW-159's ownership gate on `POST /api/wikis` removes the accidental second-tenant path this sweep, and a per-tenant key is a storage-layout change with no correctness payoff while one owner exists.
+decision: 2026-08-20 Keep the global key — Accept the single global key under the single-owner deployment stance `src/lib/owner.ts` records: a cross-tenant refresh is idempotent and correct, DW-159's ownership gate on `POST /api/wikis` removes the accidental second-tenant path this sweep, and a per-tenant key is a storage-layout change with no correctness payoff while one owner exists.
 
 ### DW-213: A successful re-template overwrites an owner-edited `schema.md` with template bytes and takes no revision snapshot, so DW-59's recovery path does not cover the other operation that destroys the same f
 origin: spec-deferred 0847f138003a
@@ -2214,6 +2216,7 @@ location: src/app/api/email/ingest/route.ts:122
 severity: low
 reason: (a) An email whose attachments are all unsupported but which has a body: the "queued" line is omitted, the "skipped" line fires, and a zero-attachment form is forwarded — untested end to end. (b) A single attachment over `MAX_DOCUMENT_SIZE` makes the route 400 the *whole* email (`src/app/api/email/ingest/route.ts:122-128`), so the body and every other attachment are lost, and the Worker does no per-attachment size pre-filter before forwarding.
 status: open
+decision: 2026-08-20 Drop the oversized attachment — Change the route to skip an attachment over `MAX_DOCUMENT_SIZE` rather than 400 the request, ingest the body and the remaining attachments, and name the dropped file in the acknowledgement alongside the existing skipped-attachment sentence. Add a per-attachment size pre-filter in the Worker so an oversized part is never forwarded, and add the missing end-to-end case for an email whose attachments are all unsupported but which carries a body.
 
 ### DW-254: The prototype-chain fix applied to `mediaTypeFor` during review is unpinned by any test.
 origin: spec-deferred 7ef023996ec5
@@ -2329,7 +2332,9 @@ source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
 location: src/app/api/tasks/run/route.ts:78
 severity: medium
 reason: The route's own status contract maps 4xx to "ack and drop" and 5xx to "retry, DLQ after max_retries". Before this change an ungated write simply succeeded; the new uniform 403 means work queued against a deployment that is read-only for a maintenance window is discarded rather than parked in the DLQ for replay. 403 is what the intent asks for ("the refusal shape the existing gated routes answer") and retrying cannot succeed while the flag is set, so it was implemented and documented in the route comment with the operational note "drain or pause the queue before setting YOPEDIA_READONLY". Whether the queue consumer should instead answer 503 and preserve the work is an operational decision, not a code defect.
-status: open
+status: done 2026-08-20
+resolution: closed by human decision: Keep the uniform 403 so the read-only refusal shape stays consistent across every gated route, and treat 'drain or pause the queue before setting the flag' as the operating procedure — already recorded at `src/app/api/tasks/run/route.ts:60-78` and covered by the operator-facing flag documentation this sweep's `read-only-docs-and-copy-parity` bundle adds.
+decision: 2026-08-20 Keep 403 and document it — Keep the uniform 403 so the read-only refusal shape stays consistent across every gated route, and treat 'drain or pause the queue before setting the flag' as the operating procedure — already recorded at `src/app/api/tasks/run/route.ts:60-78` and covered by the operator-facing flag documentation this sweep's `read-only-docs-and-copy-parity` bundle adds.
 
 ### DW-268: `YOPEDIA_READONLY` has no operator-facing documentation, and this change materially redefines what it refuses.
 origin: spec-deferred 726f9f7ae0c5
@@ -2370,6 +2375,7 @@ location: src/lib/config.ts:readConfig / saveConfig
 severity: medium
 reason: `saveConfig` writes `.llm-wiki-config.version` and then `.llm-wiki-config.json` as two independent objects, and `readConfig` reads them back as two independent objects. On the filesystem backend both are immediately consistent, which is what every new test relies on; R2 offers no such guarantee across two keys, so a read that lands between the two writes — or after both, on a replica that has only seen one — can pair a fresh token with a stale config even without a concurrent save. Both "token unreadable" tests force `EISDIR` by creating a DIRECTORY at the token path, a condition R2 cannot produce, so the Cloudflare backend has no coverage of the scheme at all. Closing it means either a single-object scheme (token inside the config, or the storage layer's own `writeFileIfMatch` compare-and-set, which `src/lib/storage/r2.ts` already exposes) or an R2-backed test harness neither the suite nor this bundle has.
 status: open
+decision: 2026-08-20 Single object via writeFileIfMatch — Move the version token inside the config object (or replace the scheme with the storage layer's `writeFileIfMatch` compare-and-set, already exposed at `src/lib/storage/r2.ts:193`) so one object carries both the bytes and the token and no read can pair them inconsistently on any backend. Migrate an existing two-file deployment on first read, delete the now-unreachable token-file branches together with the EISDIR tests that only a filesystem can produce, and add coverage for a compare-and-set that loses.
 
 ### DW-273: Both embedding-resolution warnings fire per resolution rather than once per distinct misconfiguration, so a rebuild or a large ingest emits the same sentence hundreds of times.
 origin: spec-deferred 7167de6cd16e
@@ -2547,6 +2553,7 @@ location: src/lib/storage/filesystem.ts
 severity: medium
 reason: Measured under the full parallel suite: contributors 27ms -> 5091ms, lint 35ms -> 4854ms, query-history 102ms -> 24204ms. The same per-write cost is paid by `portable-archive.ts` on import (one write per archive entry), `backups.ts` on restore (one per asset), `embeddings.ts` on rebuild (each `upsertEmbedding` rewrites AND fsyncs the whole `.indexes/embeddings.json`) and by ingest. The cost is the durability guarantee working as specified, not a defect — but no benchmark, batching, or bound exists for those paths.
 status: open
+decision: 2026-08-20 Batch the loop paths — Keep fsync as the default for single writes, and give the loop paths a batched form: a bulk-write door that fsyncs once per batch (or a directory sync at the end) for portable-archive import, backup restore and ingest, plus an accumulate-then-flush shape for `upsertEmbedding` so an embeddings rebuild stops rewriting and syncing the whole index per vector. Add a benchmark that fails if any of those paths regresses past a recorded bound.
 
 ### DW-294: `POST /api/research` has no `isReadOnly()` gate, unlike ~20 sibling write routes.
 origin: spec-deferred a0e0feee7f8f
@@ -2663,7 +2670,8 @@ source_spec: `spec-dw-277-279-280-281-vector-gate-surface-completeness.md`
 location: src/components/workbench/SettingsCanvas.tsx:secretRow with src/lib/__tests__/workbench-settings.test.ts (describedBy call-site count)
 severity: low
 reason: DW-280 closed this for `textRow`, and the two provider pickers and the vector checkbox already wrap their hint id in `describedBy(...)`. But `secretRow` still hardcodes `aria-describedby={hintId}` while setting `readOnly={stored.readOnly || removing}` and dropping its Remove button under `readOnly` — so on a `YOPEDIA_READONLY` deployment a keyboard user reaches Custom / Embedding / Firecrawl API key, finds a box that will not take a keystroke and an affordance that has vanished, and is told only "A key is stored." No test in the repo mounts a password field on a read-only deployment, and the source-shape guard in `workbench-settings.test.ts` pins the `describedBy(` call-site count at exactly 4, so adopting it in `secretRow` also means bumping that count to 5. This bundle's intent names "all seven text rows" and DW-280's location is `textRow`, so the key rows are a separate decision rather than part of this change.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-vector-gate-copy-and-secret-row
 
 ### DW-308: The route's 400 body still frames an already-on deployment as un-turn-on-able, so the two halves of the one rule now describe the same state with different sentences.
 origin: spec-deferred 1e2fbab9c662
@@ -2671,7 +2679,8 @@ source_spec: `spec-dw-277-279-280-281-vector-gate-surface-completeness.md`
 location: src/lib/workbench-settings.ts:validateWorkbenchSettingsPatch (the `vectorSearchMissingCopy(merged)` refusal) with src/components/workbench/SettingsCanvas.tsx (save bar)
 severity: low
 reason: DW-279 was closed on the client only: `vectorSearchInactiveCopy` is selected by `SettingsCanvas`, while `validateWorkbenchSettingsPatch` returns `vectorSearchMissingCopy(merged)` — "…before it can be turned on" — for every refusal. The path is reachable: with the switch stored ON and a save that MOVES a vector input into an unmet state, the owner gets a 400 whose sentence lands in the save bar beside a still-ticked box, which is the exact mismatch DW-279 argues against. `validateWorkbenchSettingsPatch` already reads `baseline.vectorSearchEnabled`, so it could pick the frame — but whether an ERROR response should describe a state rather than a refusal is a distinct decision, and DW-279's location names the `vectorSearchEnabled` hint only.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-vector-gate-copy-and-secret-row
 
 ### DW-309: DEPLOY.md still says the legacy flat `/settings` branch never enters the vector gate, which DW-217 made false.
 origin: spec-deferred bc4653e2dd77
@@ -2831,4 +2840,28 @@ source_spec: `spec-dw-303-306-settings-flat-branch-uniformity.md`
 location: src/app/api/settings/route.ts:321-395
 severity: low
 reason: `model`, `ollamaBaseUrl`, `embeddingModel` and now `structuredKnowledgeModel` all read `typeof x === "string" ? x.trim() : ""` and then treat `trimmed.length === 0` as DELETE. Each comment says the ternary "must never be what turns a malformed body into a delete", but `""` is exactly the delete arm — the only thing preventing it is the non-string 400 above the merge. Unreachable today and identical across all four, so fixing one alone would break the uniformity DW-305 was about; the fix is to make all four fall back to leaving the field untouched.
+status: open
+
+### DW-329: Every refusal the legacy flat `/settings` path can now produce ends "Turn it off, or supply what is missing." — naming a switch that page does not render.
+origin: spec-deferred d479ec58b9cf
+source_spec: `spec-dw-307-308-vector-gate-copy-and-secret-row.md`
+location: src/lib/workbench-settings.ts:validateWorkbenchSettingsPatch (the frame selection) with src/app/settings/page.tsx
+severity: medium
+reason: For a flat-only body the gate runs only when the STORED flag is already on (`route.ts` spells out that "the flat branch cannot move that flag, so `turningOn` is always `false`"), so after DW-308 the flat path can receive ONLY the switched-on frame. `src/app/settings/page.tsx` renders the embedding model and nothing else — no vector checkbox anywhere outside `SettingsCanvas` — so "supply what is missing" is actionable there and "Turn it off" is not. That collides with the DW-303 principle already written into the same function ("a refusal has to be one the requesting surface can DO something about"), which DW-308 narrowed to WHETHER-only without extending the same surface-awareness to WHICH sentence is chosen. The intent framed the frame decision as binary on the stored flag and said nothing about surface-awareness, and the repinned expectations in `settings-route.test.ts` lock the current wording in — so whether the frame should additionally read `actionableLegs` is a distinct decision
+status: open
+
+### DW-330: The client picks the refusal's frame from the DRAFT checkbox and the route from the STORED flag, so one composition still shows both sentences on the same screen at the same moment.
+origin: spec-deferred 5ca1c85bc38b
+source_spec: `spec-dw-307-308-vector-gate-copy-and-secret-row.md`
+location: src/components/workbench/SettingsCanvas.tsx (the checkbox hint selector) with src/lib/workbench-settings.ts:validateWorkbenchSettingsPatch
+severity: low
+reason: `SettingsCanvas` selects between `vectorSearchInactiveCopy` and `vectorSearchMissingCopy` on `values.vectorSearchEnabled` — the draft flag — while `validateWorkbenchSettingsPatch` selects on `baseline.vectorSearchEnabled`. Reachable: with the switch stored OFF and the legs met, the owner ticks the box (`vectorRefused` permits it), then moves a leg into an unmet state in the same draft. The checkbox hint reads "Vector search is switched on, but it needs …" while the 400 that lands in the save bar a few rows below reads "… before it can be turned on". The behaviour is unchanged by DW-308 — that composition answered the same way before — but it is the same two-sentences-for-one-state shape DW-279 and DW-308 exist to remove. DW-308's own intent excluded the literal "same frame the client picks" reading by also requiring both frames to be pinned at the route, so closing this needs a decision the intent does not contain: whether the route should read the REQUEST's flag for the frame while st
+status: open
+
+### DW-331: `workspace-purpose-settings.test.tsx` is flaky — one `getByRole("status")` assertion fails intermittently, roughly one run in three.
+origin: spec-deferred 9e7a23de70bf
+source_spec: `spec-dw-307-308-vector-gate-copy-and-secret-row.md`
+location: src/components/__tests__/workspace-purpose-settings.test.tsx
+severity: low
+reason: Observed during this change's verification: a full `npm test` reported 1 failed / 5514 passed in that file, and two subsequent full runs reported 5515/5515. Run in isolation three times it failed once and passed twice. The file is untouched by this change and shares nothing with the settings or vector-gate surface — the failing assertion is on the active-wiki status line ("This workspace now has an active wiki, ...") — so this is pre-existing suite noise rather than a regression. It makes every future run's green a coin flip on that one file.
 status: open

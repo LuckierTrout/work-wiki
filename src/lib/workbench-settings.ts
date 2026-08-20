@@ -715,13 +715,28 @@ export function vectorSearchMissingCopy(v: VectorSearchInputs): string {
  * a state the surface is visibly not in. The owner reads a ticked box and a
  * sentence about turning it on, and cannot tell what the box is even claiming.
  *
- * The sentence acknowledges the switch and then says what the settings AS THEY
- * NOW STAND still need — not what the deployment is doing. That distinction is
- * load-bearing: every term this surface computes is DRAFT-derived, so an
- * unsaved provider change would make any claim about the running deployment
- * false while the stored config goes on working. The save bar's standing
- * sentence is the one place unsaved edits are qualified, and it is already
- * announced on this control.
+ * The sentence acknowledges the switch and then says what the inputs it was
+ * handed still need — not what the deployment is doing. TWO callers now say it,
+ * over different inputs, and the wording holds for both precisely because it
+ * makes no claim about the running deployment:
+ *
+ *   - The Embeddings surface, beside the checkbox (DW-279). Every term that
+ *     surface computes is DRAFT-derived, so an unsaved provider change would
+ *     make any claim about the running deployment false while the stored config
+ *     goes on working. Here the sentence is about the settings AS THEY NOW STAND
+ *     on screen; the save bar's standing sentence is the one place unsaved edits
+ *     are qualified, and it is already announced on this control.
+ *   - {@link validateWorkbenchSettingsPatch}, as a REFUSED SAVE's error string
+ *     (DW-308), chosen when `baseline` held the flag on. The inputs are the
+ *     post-merge config the request asked for — what the store WOULD hold had
+ *     the save landed — so "switched on" is the flag the store already holds and
+ *     "it needs …" is what the requested config would still be missing. Nothing
+ *     is written, so the running deployment is unchanged either way, which is
+ *     what keeps the same words honest here. The consumer need not be a browser:
+ *     any client of `PUT /api/settings` reads this string as the 400 body, and
+ *     it is self-contained — it names the unmet legs and the action (turning the
+ *     switch off) without depending on a save bar or on anything else rendered
+ *     beside it.
  *
  * Same legs, same notes, same order as the refusal — only the frame changes,
  * and the action the owner actually has here (turning it off) is the one named.
@@ -1003,6 +1018,13 @@ export interface WorkbenchSettingsStored {
  * gate the flat field was supposed to have entered. It defaults to `stored`, so
  * a caller with no legacy path — every caller but the route — is unchanged.
  *
+ * `baseline` has a SECOND job (DW-308): it picks which sentence a refusal
+ * carries. A request that turns the switch ON gets "…before it can be turned
+ * on"; a request against a switch the store already had ON gets the switched-on
+ * frame, because the save bar renders the refusal beside a box the payload
+ * still shows ticked. It decides WHICH sentence only — never WHETHER the gate
+ * refuses, which stays {@link canEnableVectorSearch} alone.
+ *
  * `actionableLegs` is the set of vector legs the REQUESTING SURFACE can move —
  * see {@link flatMovableVectorLegs} and the vector rule below. Omitted (the
  * default) means "this surface reaches every control", which is today's
@@ -1175,7 +1197,30 @@ export function validateWorkbenchSettingsPatch(
           !vectorSearchMissingLegs(merged).some((leg) => actionableLegs.has(leg.field));
       }
       if (!suppressed) {
-        return { ok: false, error: vectorSearchMissingCopy(merged) };
+        return {
+          ok: false,
+          // Same legs, same notes, same order — only the FRAME differs, and it
+          // is the same question the client asks of its checkbox (DW-308).
+          // `vectorSearchMissingCopy` says "…before it can be turned on", which
+          // is exactly right for a request asking to turn the switch on and
+          // describes a state the surface is visibly not in when the switch was
+          // ALREADY on: the save bar would land that sentence beside a still-
+          // ticked box, which is the mismatch DW-279 closed on the client half.
+          //
+          // `baseline.vectorSearchEnabled` — the flag as the store held it
+          // BEFORE the request, already computed as `turningOn` — is the
+          // server's analogue of the ticked box the client reads. The POST-merge
+          // `enabled` would be useless: the gate only runs inside `if (enabled)`,
+          // so it is always `true` here and the missing frame would become
+          // unreachable.
+          //
+          // Which SENTENCE, never WHETHER: `canEnableVectorSearch` stays the one
+          // rule both callers answer identically about whether a situation is
+          // refused at all.
+          error: turningOn
+            ? vectorSearchMissingCopy(merged)
+            : vectorSearchInactiveCopy(merged),
+        };
       }
     }
   }

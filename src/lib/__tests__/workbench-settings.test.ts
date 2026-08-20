@@ -380,7 +380,17 @@ function missingCopy(legs: VectorLegs): string {
  * rather than typed, so adding a supported id updates the expectation with the
  * sentence instead of leaving a stale literal behind.
  */
-const UNSUPPORTED_WORKERS_MODEL = `Vector search needs a supported Cloudflare Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) before it can be turned on.`;
+const UNSUPPORTED_WORKERS_MODEL_LIST = `a supported Cloudflare Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")})`;
+
+const UNSUPPORTED_WORKERS_MODEL = `Vector search needs ${UNSUPPORTED_WORKERS_MODEL_LIST} before it can be turned on.`;
+
+/**
+ * The same refusal in the SWITCHED-ON frame (DW-308) — what the route answers
+ * when the store already held the flag `true`, so the save bar lands the
+ * sentence beside a box the payload still shows ticked. Same legs, same order;
+ * only the frame differs.
+ */
+const UNSUPPORTED_WORKERS_MODEL_INACTIVE = `Vector search is switched on, but it needs ${UNSUPPORTED_WORKERS_MODEL_LIST} before it can run. Turn it off, or supply what is missing.`;
 
 describe("canEnableVectorSearch", () => {
   it("requires an EXPLICIT embedding provider before anything else", () => {
@@ -1437,6 +1447,10 @@ describe("validateWorkbenchSettingsPatch", () => {
       // Moving the PROVIDER re-opens the whole question, and the answer is a
       // fresh one: `text-embedding-3-small` is fine for OpenAI, so what is now
       // missing is the endpoint and the key this provider needs.
+      //
+      // `mismatch()` stores the flag ON, so both refusals below carry the
+      // SWITCHED-ON frame (DW-308): neither request is asking to turn the switch
+      // on, so "before it can be turned on" would land beside a ticked box.
       expect(
         validateWorkbenchSettingsPatch(
           { vectorSearchEnabled: true, embeddingProvider: "openai" },
@@ -1444,7 +1458,8 @@ describe("validateWorkbenchSettingsPatch", () => {
         ),
       ).toEqual({
         ok: false,
-        error: "Vector search needs an endpoint and an API key before it can be turned on.",
+        error:
+          "Vector search is switched on, but it needs an endpoint and an API key before it can run. Turn it off, or supply what is missing.",
       });
       // And moving the MODEL to another unsupported id keeps the model leg.
       expect(
@@ -1452,7 +1467,7 @@ describe("validateWorkbenchSettingsPatch", () => {
           { embeddingModel: "@cf/llava-hf/llava-1.5-7b-hf" },
           mismatch(),
         ),
-      ).toEqual({ ok: false, error: UNSUPPORTED_WORKERS_MODEL });
+      ).toEqual({ ok: false, error: UNSUPPORTED_WORKERS_MODEL_INACTIVE });
     });
 
     it("still refuses TURNING IT ON even when no input moved", () => {
@@ -1549,6 +1564,15 @@ describe("validateWorkbenchSettingsPatch — actionableLegs (DW-303)", () => {
   const MISSING_TRANSPORT =
     "Vector search needs an endpoint and an API key before it can be turned on.";
 
+  /**
+   * The same two legs in the SWITCHED-ON frame (DW-308). Scoping decides WHETHER
+   * the gate refuses; the baseline flag decides WHICH sentence it carries, and
+   * every case in this describe but "never scopes a patch that is TURNING IT ON"
+   * runs against a store that already held the flag `true`.
+   */
+  const INACTIVE_TRANSPORT =
+    "Vector search is switched on, but it needs an endpoint and an API key before it can run. Turn it off, or supply what is missing.";
+
   it("an OMITTED fourth argument refuses exactly as before, and an EMPTY set is its opposite", () => {
     // The default is what keeps every caller but the flat-only route path
     // unchanged, so the two have to be pinned against each other: omitted means
@@ -1562,7 +1586,7 @@ describe("validateWorkbenchSettingsPatch — actionableLegs (DW-303)", () => {
 
     expect(validateWorkbenchSettingsPatch({}, merged, baseline)).toEqual({
       ok: false,
-      error: MISSING_TRANSPORT,
+      error: INACTIVE_TRANSPORT,
     });
     expect(
       validateWorkbenchSettingsPatch({}, merged, baseline, new Set()).ok,
@@ -1602,7 +1626,7 @@ describe("validateWorkbenchSettingsPatch — actionableLegs (DW-303)", () => {
     ).toEqual({
       ok: false,
       error:
-        "Vector search needs an endpoint, a model id outside the Cloudflare Workers AI @cf/ namespace and an API key before it can be turned on.",
+        "Vector search is switched on, but it needs an endpoint, a model id outside the Cloudflare Workers AI @cf/ namespace and an API key before it can run. Turn it off, or supply what is missing.",
     });
   });
 
@@ -1671,7 +1695,7 @@ describe("validateWorkbenchSettingsPatch — actionableLegs (DW-303)", () => {
 
     expect(validateWorkbenchSettingsPatch({}, merged, baseline, claimed)).toEqual({
       ok: false,
-      error: `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+      error: `Vector search is switched on, but it needs the Cloudflare AI binding before it can run. Turn it off, or supply what is missing. ${SETTINGS_VECTOR_BINDING_NOTE}`,
     });
 
     // …and the same call with `binding` removed from the claimed set ALLOWS it.
@@ -1715,7 +1739,7 @@ describe("validateWorkbenchSettingsPatch — actionableLegs (DW-303)", () => {
         baseline,
         flatMovableVectorLegs({ embeddingProvider: "openai" }),
       ),
-    ).toEqual({ ok: false, error: MISSING_TRANSPORT });
+    ).toEqual({ ok: false, error: INACTIVE_TRANSPORT });
   });
 
   it("never scopes a patch that is TURNING IT ON", () => {
@@ -1781,11 +1805,153 @@ describe("validateWorkbenchSettingsPatch — the baseline argument (DW-306)", ()
     // Two arguments: the move is invisible, so an empty patch changes nothing.
     expect(validateWorkbenchSettingsPatch({}, stored).ok).toBe(true);
     // Three: the move is measured from what the store held BEFORE the request.
+    // The baseline held the flag ON, so the refusal carries the switched-on
+    // frame (DW-308) — this request is not asking to turn anything on.
     expect(validateWorkbenchSettingsPatch({}, stored, baseline)).toEqual({
       ok: false,
       error:
-        "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.",
+        "Vector search is switched on, but it needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can run. Turn it off, or supply what is missing.",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WHICH sentence a refusal carries, and what still decides WHETHER (DW-308)
+// ---------------------------------------------------------------------------
+//
+// DW-279 closed the ticked-box mismatch on the CLIENT: the hint beside a
+// checked switch says "Vector search is switched on, but…" rather than "…before
+// it can be turned on", because the second describes a state the surface is
+// visibly not in. The route answered `vectorSearchMissingCopy` for every
+// refusal, so a save that broke an already-ON switch landed that same retired
+// sentence in the save bar — beside the same still-ticked box.
+//
+// The frame is picked from `baseline.vectorSearchEnabled`: the flag as the store
+// held it BEFORE the request, which is the server's analogue of the box the
+// client reads. Both frames stay reachable, and neither moves any refusal
+// boundary — `canEnableVectorSearch` is still the one rule.
+
+describe("the refusal's FRAME follows the stored flag (DW-308)", () => {
+  /** `openai` with a model and nothing else: the endpoint and key legs unmet. */
+  const openaiLegs = {
+    embeddingProvider: "openai",
+    embeddingModel: "text-embedding-3-small",
+  } as const;
+
+  it("keeps 'before it can be turned on' for a request that TURNS THE SWITCH ON", () => {
+    // The frame that would be retired outright if the choice were made from the
+    // post-merge `enabled`: the gate runs only inside `if (enabled)`, so that
+    // flag is always `true` there. This request is asking for vector search, and
+    // "before it can be turned on" is exactly what it is being told.
+    const baseline = storedState({ vectorSearchEnabled: false, ...openaiLegs });
+
+    expect(
+      validateWorkbenchSettingsPatch({ vectorSearchEnabled: true }, baseline),
+    ).toEqual({
+      ok: false,
+      error: "Vector search needs an endpoint and an API key before it can be turned on.",
+    });
+  });
+
+  it("answers the SWITCHED-ON frame when the store already held the flag on", () => {
+    // Same legs, same order, same absence of notes — only the frame differs, and
+    // the action the owner actually has here (turning it off) is the one named.
+    const baseline = storedState({
+      vectorSearchEnabled: true,
+      embeddingProvider: "ollama",
+      embeddingModel: "nomic-embed-text",
+    });
+    const merged = storedState({ ...baseline, embeddingProvider: "openai" });
+
+    expect(validateWorkbenchSettingsPatch({}, merged, baseline)).toEqual({
+      ok: false,
+      error:
+        "Vector search is switched on, but it needs an endpoint and an API key before it can run. Turn it off, or supply what is missing.",
+    });
+  });
+
+  it("carries every leg NOTE through the switched-on frame unchanged", () => {
+    // The notes are what tell an owner where a leg they cannot see is coming
+    // from, so a frame that dropped them would be a worse refusal than the one
+    // it replaced. `workers-ai` off the Workers runtime is the leg with a note.
+    const baseline = storedState({
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "@cf/baai/bge-m3",
+      hasWorkersAiBinding: false,
+    });
+    const merged = storedState({ ...baseline, embeddingModel: "@cf/baai/bge-large-en-v1.5" });
+
+    expect(validateWorkbenchSettingsPatch({}, merged, baseline)).toEqual({
+      ok: false,
+      error: `Vector search is switched on, but it needs the Cloudflare AI binding before it can run. Turn it off, or supply what is missing. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    });
+  });
+
+  it("is the copy functions' own output, never a second spelling of them", () => {
+    // The frames are chosen, not re-written: whichever one a refusal lands on,
+    // the string is byte-identical to the exported function's over the same
+    // merged inputs. A future edit to either sentence therefore cannot leave the
+    // route saying something the surface does not.
+    const inputs = {
+      provider: "openai",
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: false,
+      modelOrigin: "stored",
+      providerOrigin: "stored",
+      hasWorkersAiBinding: false,
+    } as const;
+    const off = storedState({ vectorSearchEnabled: false, ...openaiLegs });
+    const on = storedState({ vectorSearchEnabled: true, ...openaiLegs });
+
+    expect(
+      validateWorkbenchSettingsPatch({ vectorSearchEnabled: true }, off),
+    ).toEqual({ ok: false, error: vectorSearchMissingCopy(inputs) });
+    expect(
+      validateWorkbenchSettingsPatch(
+        {},
+        storedState({ ...on, embeddingModel: "text-embedding-3-large" }),
+        on,
+      ),
+    ).toEqual({
+      ok: false,
+      error: vectorSearchInactiveCopy({ ...inputs, model: "text-embedding-3-large" }),
+    });
+  });
+
+  it("moves no refusal boundary: the same situations are refused either way", () => {
+    // The Block If. The frame is about WHICH sentence, never WHETHER — so for
+    // each situation below, flipping only the stored flag changes the string and
+    // never the `ok`.
+    const satisfiable = {
+      embeddingProvider: "ollama",
+      embeddingModel: "nomic-embed-text",
+    } as const;
+
+    // Satisfied: accepted with the flag off AND with the flag on.
+    for (const flag of [false, true]) {
+      const baseline = storedState({ vectorSearchEnabled: flag, ...satisfiable });
+      expect(
+        validateWorkbenchSettingsPatch(
+          { vectorSearchEnabled: true, embeddingModel: "mxbai-embed-large" },
+          baseline,
+        ).ok,
+      ).toBe(true);
+    }
+    // Unsatisfiable: refused with the flag off AND with the flag on, and the two
+    // sentences differ.
+    const answers = [false, true].map(
+      (flag) =>
+        validateWorkbenchSettingsPatch(
+          { vectorSearchEnabled: true, embeddingProvider: "openai" },
+          storedState({ vectorSearchEnabled: flag, ...satisfiable }),
+        ) as { ok: false; error: string },
+    );
+    expect(answers.map((answer) => answer.ok)).toEqual([false, false]);
+    expect(answers[0].error).not.toBe(answers[1].error);
+    expect(answers[0].error).toContain("before it can be turned on");
+    expect(answers[1].error).toContain("Vector search is switched on, but it needs");
   });
 });
 
@@ -2877,7 +3043,7 @@ describe("PUT /api/settings", () => {
 
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      UNSUPPORTED_WORKERS_MODEL,
+      UNSUPPORTED_WORKERS_MODEL_INACTIVE,
     );
     expect(await stored()).toEqual({
       vectorSearchEnabled: true,
@@ -3456,7 +3622,7 @@ describe("PUT /api/settings", () => {
 
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search is switched on, but it needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can run. Turn it off, or supply what is missing.",
     );
     // Nothing written — not the flat field, not the chat model.
     expect(await stored()).toMatchObject({
@@ -3489,7 +3655,7 @@ describe("PUT /api/settings", () => {
     // switch reading ON while `getVectorSearchSettings()` had gone to `false`.
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      UNSUPPORTED_WORKERS_MODEL,
+      UNSUPPORTED_WORKERS_MODEL_INACTIVE,
     );
     // Nothing landed, so the store still holds the id it held…
     expect(await stored()).toMatchObject({ embeddingModel: "@cf/baai/bge-m3" });
@@ -3526,7 +3692,7 @@ describe("PUT /api/settings", () => {
 
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search is switched on, but it needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can run. Turn it off, or supply what is missing.",
     );
     // Refused BEFORE `saveConfig`: the store still holds what it held.
     expect(await stored()).toMatchObject({
@@ -3555,6 +3721,53 @@ describe("PUT /api/settings", () => {
       model: "gpt-4o",
       embeddingModel: "text-embedding-3-small",
     });
+  });
+
+  it("picks the refusal's FRAME from the STORED flag, on both paths (DW-308)", async () => {
+    // End to end against the real store, because the frame is chosen from the
+    // config as it was READ — and on the flat-legacy path the object the patch
+    // merges onto has already had the flat field folded into it. Only the third
+    // argument still holds the pre-request flag, so a route that passed the
+    // merge target for both would answer the wrong frame here.
+    //
+    // Off the Workers runtime the binding leg joins the sentence, which is what
+    // makes this case pin the NOTES surviving the reframe as well.
+    const { PUT } = await import("@/app/api/settings/route");
+
+    // Stored OFF, and the request asks to turn it on: "before it can be turned
+    // on" is exactly what it is being told.
+    await store({ embeddingProvider: "workers-ai", embeddingModel: "@cf/baai/bge-m3" });
+    const turningOn = await PUT(await put({ workbench: { vectorSearchEnabled: true } }));
+    expect(turningOn.status).toBe(400);
+    expect(((await turningOn.json()) as { error: string }).error).toBe(
+      `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    );
+    // The WHOLE stored object, not `not.toMatchObject({ vectorSearchEnabled:
+    // true })`: that assertion passes just as happily when the key is absent —
+    // which is the state this store starts in — so it could never have observed
+    // the write it is guarding. Equality pins the flag as still unwritten AND
+    // that nothing else landed either.
+    expect(await stored()).toEqual({
+      embeddingProvider: "workers-ai",
+      embeddingModel: "@cf/baai/bge-m3",
+    });
+
+    // Stored ON, and a FLAT legacy field moves a leg into an unmet state: the
+    // save bar would land the sentence beside a box the payload still ticks.
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "ollama",
+      embeddingModel: "nomic-embed-text",
+    });
+    const alreadyOn = await PUT(await put({ embeddingProvider: "workers-ai" }));
+    expect(alreadyOn.status).toBe(400);
+    // Two legs and a note, in leg order — the reframe changes the sentence they
+    // are wrapped in and nothing about the legs themselves.
+    expect(((await alreadyOn.json()) as { error: string }).error).toBe(
+      `Vector search is switched on, but it needs ${UNSUPPORTED_WORKERS_MODEL_LIST} and the Cloudflare AI binding before it can run. Turn it off, or supply what is missing. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    );
+    // Nothing written either way — the frame is the only thing that changed.
+    expect(await stored()).toMatchObject({ embeddingProvider: "ollama" });
   });
 });
 
@@ -3719,19 +3932,24 @@ describe("the Settings components stay inside the shell", () => {
     // Every control a read-only deployment refuses routes its description
     // through `describedBy`, which APPENDS the save bar's read-only sentence to
     // the control's own hint — `aria-describedby` takes a space-separated list,
-    // so the hint is kept rather than replaced. Four call sites now: the two
-    // pickers, the vector switch, and `textRow`, which covers seven rows.
-    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(4);
+    // so the hint is kept rather than replaced. Five call sites now: the two
+    // pickers, the vector switch, `textRow` (seven rows) and `secretRow` (the
+    // three API-key rows, DW-307).
+    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(5);
     expect(canvas).toContain('const readOnlyNoteId = field("bar-note");');
     expect(canvas).toContain('<span className="wb-set-bar-note" id={readOnlyNoteId}>');
     // Each row builder wires its own hint; none of them renders a bare span.
     const hintSpans = [...canvas.matchAll(/<span className="wb-set-hint"/g)];
     const identified = [...canvas.matchAll(/<span className="wb-set-hint" id=/g)];
     expect(identified.length).toBe(hintSpans.length);
-    // One bare `hintId` left — the secret row, which a read-only deployment
-    // renders `readOnly` rather than `aria-disabled`, so it has no refusal to
-    // announce. The provider picker's went through `describedBy` above.
-    expect(canvas.match(/aria-describedby=\{hintId\}/g)?.length).toBe(1);
+    // NO bare `hintId` left. The secret row was the last one, exempted on the
+    // reasoning that a read-only deployment renders it `readOnly` rather than
+    // `aria-disabled` so it has "no refusal to announce" — which was never true
+    // (DW-307): `readOnly` announces a property of the BOX and says nothing
+    // about the deployment, and the row's only other affordance, the Remove
+    // button, is removed outright under `stored.readOnly`. Both it and the
+    // provider picker now match the `describedBy(hintId)` form below.
+    expect(canvas.match(/aria-describedby=\{hintId\}/g)?.length ?? 0).toBe(0);
     expect(canvas).toContain("aria-describedby={describedBy(hintId)}");
   });
 
