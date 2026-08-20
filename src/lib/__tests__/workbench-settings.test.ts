@@ -50,7 +50,12 @@ import {
   workbenchSettingsStored,
   type AppConfig,
 } from "../config";
-import { EMBEDDING_PROVIDERS, PROVIDER_INFO, embeddingProviderLabel } from "../providers";
+import {
+  EMBEDDING_PROVIDERS,
+  PROVIDER_INFO,
+  WORKERS_AI_EMBEDDING_MODEL_IDS,
+  embeddingProviderLabel,
+} from "../providers";
 import {
   WRITE_CONFLICT_COPY,
   WRITE_PRECONDITION_REQUIRED_COPY,
@@ -499,7 +504,7 @@ describe("canEnableVectorSearch", () => {
         hasKey: false,
       }),
     ).toBe(
-      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
     );
     expect(
       vectorSearchMissingCopy({
@@ -556,6 +561,48 @@ describe("canEnableVectorSearch", () => {
         hasKey: false,
       }),
     ).toBe("");
+  });
+
+  it("refuses a @cf/ id that is NOT a supported embedding model (DW-220)", () => {
+    // The id is genuinely inside the namespace, so the old sentence — "needs a
+    // model id in the Workers AI @cf/ namespace" — described a condition the
+    // owner had already met, next to a switch that stayed off. `ai.run()` is
+    // where it used to fail.
+    for (const model of ["@cf/", "@cf/llava-hf/llava-1.5-7b-hf", "constructor"]) {
+      expect(
+        canEnableVectorSearch({
+          provider: "workers-ai",
+          baseUrl: null,
+          model,
+          hasKey: false,
+        }),
+      ).toBe(false);
+      expect(
+        vectorSearchMissingCopy({
+          provider: "workers-ai",
+          baseUrl: null,
+          model,
+          hasKey: false,
+        }),
+      ).toBe(
+        "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
+      );
+    }
+  });
+
+  it("accepts every id the sentence names, so the copy is not a dead end", () => {
+    // The refusal lists four ids; each one must actually clear the gate, or the
+    // sentence sends the owner somewhere the switch still says no.
+    for (const model of WORKERS_AI_EMBEDDING_MODEL_IDS) {
+      expect(
+        canEnableVectorSearch({
+          provider: "workers-ai",
+          baseUrl: null,
+          model,
+          hasKey: false,
+        }),
+      ).toBe(true);
+    }
   });
 });
 
@@ -992,7 +1039,7 @@ describe("the client and the route read the same vector rule", () => {
     const draft = settingsDraftFromPayload(payload);
     expect(draftCanEnableVectorSearch(draft, payload)).toBe(false);
     expect(vectorSearchMissingCopy(draftVectorInputs(draft, payload))).toBe(
-      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
     );
     // …the already-stored `true` reads as off…
     expect(getVectorSearchSettings().enabled).toBe(false);
@@ -1005,7 +1052,7 @@ describe("the client and the route read the same vector rule", () => {
     );
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
     );
   });
 
@@ -1035,7 +1082,7 @@ describe("the client and the route read the same vector rule", () => {
     );
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
     );
   });
 });
@@ -1704,7 +1751,7 @@ describe("PUT /api/settings", () => {
     expect(response.status).toBe(400);
     const body = (await response.json()) as { error: string };
     expect(body.error).toBe(
-      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
     );
     expect(await stored()).toEqual({ provider: "openai" });
   });
@@ -1757,7 +1804,7 @@ describe("PUT /api/settings", () => {
 
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
     );
     // The unrelated edit did NOT land — the refusal precedes `saveConfig`, so
     // the store is byte-for-byte what it was.
@@ -1800,7 +1847,7 @@ describe("PUT /api/settings", () => {
         draftVectorInputs(settingsDraftFromPayload(payload), payload),
       ),
     ).toBe(
-      "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
     );
   });
 

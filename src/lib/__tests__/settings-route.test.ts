@@ -232,6 +232,76 @@ describe("/api/settings", () => {
     expect(body.workbench.version).toBe(SAVED_VERSION);
   });
 
+  it("TRIMS a padded embeddingModel on the legacy flat branch (DW-221)", async () => {
+    // The one writer that could still store a padded id. The vector gate reads
+    // the stored value trimmed and would accept `" @cf/baai/bge-m3 "`; the embed
+    // resolver reads the SAME value and now trims too — but a store holding the
+    // padding is a value the two sides only agree on by accident, so the trim
+    // happens at the door, exactly as `applyWorkbenchSettings`'s `setText` does.
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ embeddingModel: " @cf/baai/bge-m3 " }));
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({ embeddingModel: "@cf/baai/bge-m3" });
+  });
+
+  it("DELETES embeddingModel when the flat branch is given whitespace only", async () => {
+    // `""` already deleted the key; `"   "` used to be stored verbatim and then
+    // handed to the provider as a model name.
+    mockedRead.mockResolvedValue({
+      status: "ok",
+      config: { embeddingModel: "@cf/baai/bge-m3" },
+      version: STORED_VERSION,
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ embeddingModel: "   " }));
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({});
+  });
+
+  it("REFUSES a non-string embeddingModel rather than deleting the stored one", async () => {
+    // The trim added for DW-221 reads a non-string as `""`, which the branch
+    // below treats as DELETE — so `{"embeddingModel": 42}` would have wiped the
+    // owner's model and answered 200. Every sibling flat field refuses a
+    // non-string, and a malformed body must never be read as an erasure.
+    mockedRead.mockResolvedValue({
+      status: "ok",
+      config: { embeddingModel: "@cf/baai/bge-m3" },
+      version: STORED_VERSION,
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    for (const value of [42, true, { id: "@cf/baai/bge-m3" }, ["@cf/baai/bge-m3"]]) {
+      mockedSave.mockClear();
+      const response = await PUT(request({ embeddingModel: value }));
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "embeddingModel must be a string",
+      });
+      // Nothing was written, so the stored id is still the stored id.
+      expect(mockedSave).not.toHaveBeenCalled();
+    }
+  });
+
+  it("still deletes embeddingModel for null and the empty string", async () => {
+    mockedRead.mockResolvedValue({
+      status: "ok",
+      config: { embeddingModel: "@cf/baai/bge-m3" },
+      version: STORED_VERSION,
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    for (const value of [null, ""]) {
+      mockedSave.mockClear();
+      const response = await PUT(request({ embeddingModel: value }));
+      expect(response.status).toBe(200);
+      expect(mockedSave).toHaveBeenCalledWith({});
+    }
+  });
+
   it("honors the explicit deployment read-only switch", async () => {
     mockedReadOnly.mockReturnValue(true);
     const { PUT } = await import("@/app/api/settings/route");

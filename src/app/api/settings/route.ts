@@ -193,6 +193,22 @@ export async function PUT(request: Request) {
       }
     }
 
+    // Validate embeddingModel if provided — TYPE only, like `ollamaBaseUrl`:
+    // `null`, `""` and whitespace all still mean DELETE below.
+    //
+    // Without this, a non-string reaches the trimming branch, resolves to `""`
+    // through the `typeof` ternary, and DELETES the owner's stored model while
+    // answering 200. Every sibling flat field refuses a non-string outright, and
+    // a silent delete is the worst possible reading of a malformed body.
+    if (body.embeddingModel !== undefined && body.embeddingModel !== null) {
+      if (typeof body.embeddingModel !== "string") {
+        return Response.json(
+          { error: "embeddingModel must be a string" },
+          { status: 400 },
+        );
+      }
+    }
+
     // Load existing config and merge with provided fields.
     //
     // THE HONEST READ, BEFORE ANY MERGE (DW-192). `loadConfig()` answers `{}`
@@ -276,10 +292,21 @@ export async function PUT(request: Request) {
     }
 
     if (body.embeddingModel !== undefined) {
-      if (body.embeddingModel === null || body.embeddingModel === "") {
+      // TRIMMED, exactly as `applyWorkbenchSettings`'s `setText` already trims
+      // for the Workbench path (DW-221). This is the last writer that could
+      // still store a padded id — one the vector gate accepts (it reads the
+      // value trimmed) and the embed resolver then drops for the provider
+      // default. Whitespace-only deletes the key rather than storing blanks.
+      //
+      // A non-string was refused with 400 above, so the `typeof` ternary is
+      // belt-and-braces: it must never be the thing that turns a malformed body
+      // into a delete.
+      const trimmed =
+        typeof body.embeddingModel === "string" ? body.embeddingModel.trim() : "";
+      if (body.embeddingModel === null || trimmed.length === 0) {
         delete updated.embeddingModel;
       } else {
-        updated.embeddingModel = body.embeddingModel;
+        updated.embeddingModel = trimmed;
       }
     }
 

@@ -53,7 +53,15 @@ import {
   embedText,
   embedTexts,
   rebuildVectorStore,
+  WORKERS_AI_EMBEDDING_DIMENSIONS,
 } from "../embeddings";
+import {
+  EMBEDDING_PROVIDERS,
+  WORKERS_AI_EMBEDDING_DIMENSIONS as CATALOG_FROM_PROVIDERS,
+  embeddingModelMatchesProvider,
+  isWorkersAiEmbeddingModel,
+} from "../providers";
+import { logger } from "../logger";
 import { getStorage, _resetStorage } from "../storage";
 import { loadConfigSync } from "../config";
 import { listWikiPages, readWikiPage } from "../wiki";
@@ -1262,6 +1270,234 @@ describe("Workers AI embeddings (bge-m3)", () => {
     await expect(embedText("dimension guard")).rejects.toThrow(
       "expected 1024, received 1536",
     );
+  });
+
+  it("refuses a @cf/ id that is not an embedding model, and falls back", async () => {
+    // In the namespace, genuinely a Cloudflare model — and not something the
+    // embedding binding will serve (DW-220). Before the catalog it reached
+    // `ai.run()` verbatim.
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "@cf/llava-hf/llava-1.5-7b-hf";
+    const run = mockWorkersAi([workersVector(0.5)]);
+
+    await embedText("hi");
+
+    expect(run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["hi"],
+      pooling: "cls",
+    });
+  });
+
+  it("refuses the BARE @cf/ prefix rather than sending it to the binding", async () => {
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "@cf/";
+    const run = mockWorkersAi([workersVector(0.5)]);
+
+    expect(getEmbeddingModelName()).toBe("@cf/baai/bge-m3");
+    await embedText("hi");
+    expect(run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["hi"],
+      pooling: "cls",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Model resolution: ONE trim rule, and an AUDIBLE fallback
+// (DW-221 / DW-224 / DW-226 / DW-227)
+// ---------------------------------------------------------------------------
+
+describe("embedding model resolution", () => {
+  /** Spy on `logger.warn`, capturing calls BEFORE the restore clears them. */
+  async function withWarnSpy<T>(
+    body: () => T | Promise<T>,
+  ): Promise<{ result: T; warnings: string[] }> {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const result = await body();
+      const warnings = warn.mock.calls
+        .filter((call) => call[0] === "embeddings")
+        .map((call) => String(call[1]));
+      return { result, warnings };
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  it("re-exports the ONE Workers AI catalog rather than holding a copy", () => {
+    // Same object, not merely equal: two tables would let the gate approve an
+    // id the dimension check does not know.
+    expect(WORKERS_AI_EMBEDDING_DIMENSIONS).toBe(CATALOG_FROM_PROVIDERS);
+  });
+
+  it("gives every provider a DEFAULT its own gate accepts", () => {
+    // `DEFAULT_EMBEDDING_MODELS` (embeddings.ts) and the catalog (providers.ts)
+    // are two tables with no compile-time link. If the workers-ai default ever
+    // left the catalog, `resolveEmbeddingModelName` would return a value its own
+    // predicate refuses — the fallback would be a model the gate would never let
+    // an owner choose — and `WORKERS_AI_EMBEDDING_DIMENSIONS[model]` would come
+    // back `undefined`, making the dimension check silently skip. The default is
+    // read the only way this suite can reach it: through the resolver itself,
+    // with no override set.
+    const defaults: Record<string, string> = {};
+    for (const provider of EMBEDDING_PROVIDERS) {
+      delete process.env.EMBEDDING_MODEL;
+      process.env.EMBEDDING_PROVIDER = provider;
+      // Credentials/transport, so the provider actually resolves.
+      process.env.OPENAI_API_KEY = "sk-openai";
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-key";
+      mockWorkersAi([workersVector(0.1)]);
+
+      const model = getEmbeddingModelName();
+      expect(model).not.toBeNull();
+      defaults[provider] = model!;
+      expect(embeddingModelMatchesProvider(provider, model!)).toBe(true);
+    }
+
+    // Named explicitly for the one leg that is a catalog: the Workers AI default
+    // must be a KEY of the dimensions table, so the width check has a number to
+    // compare against rather than `undefined`.
+    expect(isWorkersAiEmbeddingModel(defaults["workers-ai"])).toBe(true);
+    expect(CATALOG_FROM_PROVIDERS[defaults["workers-ai"]]).toBeGreaterThan(0);
+  });
+
+  it("honours a PADDED stored id — the gate reads it trimmed, so this must too", async () => {
+    // DW-221: the gate tests `" @cf/baai/bge-m3".trim()` and lets the owner turn
+    // vector search on; the resolver used to test the RAW string, fail, and
+    // embed with the default. Same string on both sides now — and no warning,
+    // because nothing was dropped.
+    mockLoadConfigSync.mockReturnValue({ embeddingModel: " @cf/baai/bge-m3 " });
+    const run = mockWorkersAi([workersVector(0.5)]);
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      const name = getEmbeddingModelName();
+      await embedText("hi");
+      return name;
+    });
+
+    expect(result).toBe("@cf/baai/bge-m3");
+    expect(run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["hi"],
+      pooling: "cls",
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it("treats a whitespace-only EMBEDDING_MODEL as UNSET, never as a model name", async () => {
+    // DW-227: `" "` is truthy, so it used to be handed to the provider verbatim
+    // as the model name — while the vector gate read the very same variable as
+    // absent.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.EMBEDDING_PROVIDER = "openai";
+    process.env.EMBEDDING_MODEL = "   ";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("text-embedding-3-small");
+    // Unset is not a mismatch: nothing was dropped, so nothing is warned about.
+    expect(warnings).toEqual([]);
+  });
+
+  it("lets a stored id win over a whitespace-only env override", () => {
+    // The same ordering `getVectorSearchSettings` applies: `nonEmpty(env) ??
+    // nonEmpty(config)`. A blank env var must not shadow the stored choice.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    process.env.EMBEDDING_MODEL = " ";
+    mockLoadConfigSync.mockReturnValue({ embeddingModel: "mxbai-embed-large" });
+
+    expect(getEmbeddingModelName()).toBe("mxbai-embed-large");
+  });
+
+  it("keeps env winning over a stored id when the env var is really set", () => {
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    process.env.EMBEDDING_MODEL = "nomic-embed-text";
+    mockLoadConfigSync.mockReturnValue({ embeddingModel: "mxbai-embed-large" });
+
+    expect(getEmbeddingModelName()).toBe("nomic-embed-text");
+  });
+
+  it("WARNS once on getEmbeddingModelName when the override is dropped", async () => {
+    // DW-226/224: the substitution used to be completely silent, where its
+    // sibling `resolveEmbeddingProvider` has always warned.
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+    mockWorkersAi([workersVector(0.5)]);
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("@cf/baai/bge-m3");
+    expect(warnings).toHaveLength(1);
+    // Both ids are named — the dropped one and the one actually used.
+    expect(warnings[0]).toContain("text-embedding-3-small");
+    expect(warnings[0]).toContain("@cf/baai/bge-m3");
+    expect(warnings[0]).toContain("workers-ai");
+  });
+
+  it("WARNS on the embed path itself — embedText and embedTexts", async () => {
+    // The gate never runs here: an env override bypasses the store entirely.
+    // This is the path DW-224 is about — the logs are the only place the
+    // substitution can show up.
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+    const runSingle = mockWorkersAi([workersVector(0.5)]);
+
+    const single = await withWarnSpy(() => embedText("hi"));
+    expect(runSingle).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["hi"],
+      pooling: "cls",
+    });
+    expect(single.warnings).toHaveLength(1);
+    expect(single.warnings[0]).toContain("text-embedding-3-small");
+
+    const runBatch = mockWorkersAi([workersVector(0.5), workersVector(0.6)]);
+    const batch = await withWarnSpy(() => embedTexts(["a", "b"]));
+    expect(runBatch).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["a", "b"],
+      pooling: "cls",
+    });
+    expect(batch.warnings).toHaveLength(1);
+    expect(batch.warnings[0]).toContain("@cf/baai/bge-m3");
+  });
+
+  it("WARNS on the AI-SDK leg too, where getEmbeddingModel builds the model", async () => {
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.EMBEDDING_PROVIDER = "openai";
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModel());
+
+    expect(result).not.toBeNull();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("@cf/baai/bge-m3");
+    expect(warnings[0]).toContain("text-embedding-3-small");
+  });
+
+  it("stays SILENT when the override is honoured", async () => {
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-large-en-v1.5";
+    mockWorkersAi([workersVector(0.5)]);
+
+    const { warnings } = await withWarnSpy(async () => {
+      getEmbeddingModelName();
+      await embedText("hi");
+    });
+
+    expect(warnings).toEqual([]);
+  });
+
+  it("is a LOG, not a behaviour change — the default is still returned", async () => {
+    // Silencing the logger must not alter what gets embedded.
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "@cf/";
+    const run = mockWorkersAi([workersVector(0.5)]);
+
+    const { result } = await withWarnSpy(() => embedText("hi"));
+
+    expect(result).toHaveLength(1024);
+    expect(run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["hi"],
+      pooling: "cls",
+    });
   });
 });
 

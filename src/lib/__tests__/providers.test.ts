@@ -4,7 +4,10 @@ import {
   VALID_PROVIDERS,
   DEFAULT_MODELS,
   WORKERS_AI_MODEL_PREFIX,
+  WORKERS_AI_EMBEDDING_DIMENSIONS,
+  WORKERS_AI_EMBEDDING_MODEL_IDS,
   embeddingModelMatchesProvider,
+  isWorkersAiEmbeddingModel,
   providerLabel,
 } from "../providers";
 
@@ -193,20 +196,61 @@ describe("embeddingModelMatchesProvider", () => {
     expect(embeddingModelMatchesProvider("workers-ai", "")).toBe(false);
   });
 
-  it("accepts the BARE prefix under workers-ai — this is a namespace test, not a catalog", () => {
-    // `"@cf/"` is in the namespace and nothing more is claimed: the helper says
-    // where an id lives, not whether Workers AI serves it. A bare prefix fails
-    // later, at `ai.run()`, which is the documented boundary of this rule.
-    expect(embeddingModelMatchesProvider("workers-ai", WORKERS_AI_MODEL_PREFIX)).toBe(true);
+  it("REFUSES the bare prefix under workers-ai — the leg is a catalog, not a namespace (DW-220)", () => {
+    // `"@cf/"` is inside the namespace and used to pass, which meant the gate
+    // approved an id `ai.run()` rejects — a gate that approves an id nothing can
+    // serve. Membership answers the question the caller is actually asking.
+    expect(embeddingModelMatchesProvider("workers-ai", WORKERS_AI_MODEL_PREFIX)).toBe(
+      false,
+    );
+    // The other leg is unchanged: the bare prefix is still `@cf/`-shaped, so it
+    // is still out of bounds under every non-Workers provider.
     expect(embeddingModelMatchesProvider("openai", WORKERS_AI_MODEL_PREFIX)).toBe(false);
   });
 
+  it("refuses a real Workers AI model that is not an EMBEDDING model", () => {
+    // A vision model is a genuine Cloudflare id in the genuine namespace — and
+    // exactly the wrong thing to hand an embedding call. It failed only at
+    // `ai.run()` before.
+    expect(
+      embeddingModelMatchesProvider("workers-ai", "@cf/llava-hf/llava-1.5-7b-hf"),
+    ).toBe(false);
+    expect(
+      embeddingModelMatchesProvider("workers-ai", "@cf/meta/llama-3.1-8b-instruct"),
+    ).toBe(false);
+  });
+
+  it("accepts EVERY id in the shipped catalog under workers-ai", () => {
+    // The whole table, not a sample: an id in `WORKERS_AI_EMBEDDING_DIMENSIONS`
+    // is one `embeddings.ts` dimension-checks, so the gate must not refuse it.
+    for (const id of Object.keys(WORKERS_AI_EMBEDDING_DIMENSIONS)) {
+      expect(embeddingModelMatchesProvider("workers-ai", id)).toBe(true);
+      // …and the same id remains out of bounds everywhere else.
+      expect(embeddingModelMatchesProvider("openai", id)).toBe(false);
+    }
+  });
+
+  it("does not treat prototype keys as model ids", () => {
+    // An OWN-PROPERTY test (`hasOwnProperty.call`), not `in`: `"constructor" in
+    // {}` is true, and a settings surface that let it through would approve a
+    // "model" nothing can serve.
+    expect(embeddingModelMatchesProvider("workers-ai", "constructor")).toBe(false);
+    expect(embeddingModelMatchesProvider("workers-ai", "toString")).toBe(false);
+    expect(embeddingModelMatchesProvider("workers-ai", "__proto__")).toBe(false);
+    expect(isWorkersAiEmbeddingModel("constructor")).toBe(false);
+    expect(isWorkersAiEmbeddingModel("hasOwnProperty")).toBe(false);
+  });
+
   it("is CASE-SENSITIVE, deliberately", () => {
-    // `@CF/…` is not in the namespace, so under workers-ai it is refused by a
-    // sentence naming `@cf/`. That is the point rather than a rough edge:
-    // `resolveEmbeddingModelName` applies this same helper and would drop the id
-    // for the provider default, so accepting it here would let the gate approve
-    // a model the resolver silently replaces — the exact bug DW-73 fixes.
+    // `@CF/…` is neither a catalog key nor inside the `@cf/` namespace, and the
+    // two legs read that fact in OPPOSITE directions: under workers-ai it is not
+    // in the catalog, so it is REFUSED; under OpenAI the leg only asks whether
+    // the id is `@cf/`-shaped, and `@CF/` is not, so it is ACCEPTED — as an
+    // ordinary OpenAI model name would be. Refusing it under workers-ai is the
+    // point rather than a rough edge: `resolveEmbeddingModelName` applies this
+    // same helper and would drop the id for the provider default, so approving
+    // it here would let the gate accept a model the resolver replaces — the bug
+    // DW-73 fixes.
     expect(embeddingModelMatchesProvider("workers-ai", "@CF/baai/bge-m3")).toBe(false);
     expect(embeddingModelMatchesProvider("openai", "@CF/baai/bge-m3")).toBe(true);
   });
@@ -217,5 +261,43 @@ describe("embeddingModelMatchesProvider", () => {
     expect(
       embeddingModelMatchesProvider("workers-ai", `${WORKERS_AI_MODEL_PREFIX}baai/bge-m3`),
     ).toBe(true);
+  });
+
+  it("does NOT trim — both callers hand it an already-trimmed value", () => {
+    // A trimming predicate would re-open the gate/resolver split from the other
+    // side (DW-221): the trim belongs in the ONE read both callers share, so
+    // that "what the gate approved" and "what is sent" are the same string.
+    expect(embeddingModelMatchesProvider("workers-ai", " @cf/baai/bge-m3")).toBe(false);
+    expect(embeddingModelMatchesProvider("workers-ai", "@cf/baai/bge-m3 ")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Workers AI embedding catalog — ONE table (DW-220)
+// ---------------------------------------------------------------------------
+
+describe("WORKERS_AI_EMBEDDING_MODEL_IDS", () => {
+  it("is derived from the dimensions table, not a second list", () => {
+    // Two lists would drift, and the drift would be invisible: the gate would
+    // name ids the dimension check does not know, or refuse ids it does.
+    expect([...WORKERS_AI_EMBEDDING_MODEL_IDS]).toEqual(
+      Object.keys(WORKERS_AI_EMBEDDING_DIMENSIONS),
+    );
+    expect(WORKERS_AI_EMBEDDING_MODEL_IDS.length).toBe(4);
+  });
+
+  it("names only ids inside the Workers AI namespace, each with a width", () => {
+    for (const id of WORKERS_AI_EMBEDDING_MODEL_IDS) {
+      expect(id.startsWith(WORKERS_AI_MODEL_PREFIX)).toBe(true);
+      expect(WORKERS_AI_EMBEDDING_DIMENSIONS[id]).toBeGreaterThan(0);
+      expect(isWorkersAiEmbeddingModel(id)).toBe(true);
+    }
+  });
+
+  it("still carries the widths `embeddings.ts` checks returned vectors against", () => {
+    expect(WORKERS_AI_EMBEDDING_DIMENSIONS["@cf/baai/bge-m3"]).toBe(1024);
+    expect(WORKERS_AI_EMBEDDING_DIMENSIONS["@cf/baai/bge-large-en-v1.5"]).toBe(1024);
+    expect(WORKERS_AI_EMBEDDING_DIMENSIONS["@cf/baai/bge-base-en-v1.5"]).toBe(768);
+    expect(WORKERS_AI_EMBEDDING_DIMENSIONS["@cf/baai/bge-small-en-v1.5"]).toBe(384);
   });
 });

@@ -23,6 +23,7 @@ import {
   EMBEDDING_PROVIDERS,
   PROVIDER_INFO,
   WORKERS_AI_MODEL_PREFIX,
+  WORKERS_AI_EMBEDDING_MODEL_IDS,
   embeddingModelMatchesProvider,
   isEmbeddingProvider,
   VALID_PROVIDERS,
@@ -455,12 +456,16 @@ const SELF_TRANSPORTING_EMBEDDING_PROVIDERS: ReadonlySet<string> = new Set([
  *    could satisfy endpoint + model + stored key, turn vector search on, and
  *    still resolve no embedding provider at all — a switch that reads as on and
  *    embeds nothing.
- *  - The MODEL is always required, for every provider, and it must sit in the
- *    selected provider's NAMESPACE — {@link embeddingModelMatchesProvider}, the
- *    same predicate `embeddings.ts`'s `resolveEmbeddingModelName` uses to decide
- *    whether to honour a model id or drop it for the provider default. Without
- *    this leg the gate would accept a mismatch the resolver then silently
- *    overrides, embedding with a model the owner never chose (DW-73).
+ *  - The MODEL is always required, for every provider, and the selected provider
+ *    must be able to SERVE it — {@link embeddingModelMatchesProvider}, the same
+ *    predicate `embeddings.ts`'s `resolveEmbeddingModelName` uses to decide
+ *    whether to honour a model id or drop it for the provider default. Its two
+ *    legs are asymmetric: under `workers-ai` the id must be one of the supported
+ *    Cloudflare embedding models (CATALOG membership, so an in-namespace id the
+ *    binding cannot serve is refused here rather than at `ai.run()` — DW-220),
+ *    and under every other provider it must simply sit OUTSIDE the `@cf/`
+ *    namespace. Without this leg the gate would accept a mismatch the resolver
+ *    then overrides, embedding with a model the owner never chose (DW-73).
  *  - The KEY and the ENDPOINT are required only where the provider does not
  *    supply them itself (see {@link SELF_TRANSPORTING_EMBEDDING_PROVIDERS}).
  *
@@ -490,7 +495,11 @@ function vectorSearchMissingLegs(v: VectorSearchInputs): string[] {
     // would silently override.
     missing.push(
       v.provider === "workers-ai"
-        ? `a model id in the Workers AI ${WORKERS_AI_MODEL_PREFIX} namespace`
+        ? // NAMING the ids, not the namespace (DW-220): "in the @cf/ namespace"
+          // is wrong advice for `@cf/llava-hf/llava-1.5-7b-hf`, which already is
+          // — and which `ai.run()` refuses. The list comes from the catalog, so
+          // adding a model to the table adds it to this sentence.
+          `a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")})`
         : `a model id outside the Workers AI ${WORKERS_AI_MODEL_PREFIX} namespace`,
     );
   }

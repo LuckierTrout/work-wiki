@@ -576,6 +576,50 @@ describe("getEffectiveSettings", () => {
     expect(settings.modelSource).toBe("default");
     expect(settings.model).toBe("claude-sonnet-4-20250514");
   });
+
+  it("reports an env-set embedding model as 'env'", () => {
+    process.env.EMBEDDING_MODEL = "text-embedding-3-large";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBe("text-embedding-3-large");
+    expect(settings.embeddingModelSource).toBe("env");
+  });
+
+  it("does NOT report a whitespace-only EMBEDDING_MODEL as env-sourced (DW-227)", () => {
+    // Reporting `"   "` as the env-sourced model told the owner a model name
+    // that nothing would ever embed with, on a surface whose whole job is to
+    // say where the effective value came from.
+    process.env.EMBEDDING_MODEL = "   ";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModelSource).not.toBe("env");
+    expect(settings.embeddingModelSource).toBe("none");
+    expect(settings.embeddingModel).toBeNull();
+  });
+
+  it("does NOT report a whitespace-only STORED embedding model as config-sourced", async () => {
+    // The config leg of the same DW-227 split. A blank stored value is reachable
+    // from a pre-change flat write or a hand-edited config, and reporting it as
+    // the config-sourced model contradicts `resolveEmbeddingModelName`, which
+    // trims it away and embeds with the provider default.
+    await saveConfig({ embeddingModel: "   " });
+    await loadConfig();
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModelSource).not.toBe("config");
+    expect(settings.embeddingModelSource).toBe("none");
+    expect(settings.embeddingModel).toBeNull();
+  });
+
+  it("lets the STORED embedding model win over a blank env override", async () => {
+    await saveConfig({ embeddingModel: "nomic-embed-text" });
+    await loadConfig();
+    process.env.EMBEDDING_MODEL = " ";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBe("nomic-embed-text");
+    expect(settings.embeddingModelSource).toBe("config");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -765,6 +809,26 @@ describe("getEmbeddingModelOverride", () => {
   it("returns the env value when EMBEDDING_MODEL is set", () => {
     process.env.EMBEDDING_MODEL = "text-embedding-ada-002";
     expect(getEmbeddingModelOverride()).toBe("text-embedding-ada-002");
+  });
+
+  it("treats an EMPTY EMBEDDING_MODEL as unset (DW-227)", () => {
+    // `EMBEDDING_MODEL=` in a compose file is a variable someone declared and
+    // left blank, not a model called "". The vector gate has always read it
+    // this way; the resolver used to hand the blank string to the provider.
+    process.env.EMBEDDING_MODEL = "";
+    expect(getEmbeddingModelOverride()).toBeUndefined();
+  });
+
+  it("treats a WHITESPACE-ONLY EMBEDDING_MODEL as unset", () => {
+    process.env.EMBEDDING_MODEL = "   ";
+    expect(getEmbeddingModelOverride()).toBeUndefined();
+  });
+
+  it("TRIMS a padded value, so the gate and the resolver see one string", () => {
+    // DW-221: the gate trims, so a padded value used to be accepted there and
+    // dropped by the resolver, which compared the raw string.
+    process.env.EMBEDDING_MODEL = "  @cf/baai/bge-m3  ";
+    expect(getEmbeddingModelOverride()).toBe("@cf/baai/bge-m3");
   });
 });
 

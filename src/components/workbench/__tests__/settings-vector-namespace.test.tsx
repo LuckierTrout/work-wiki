@@ -109,8 +109,8 @@ async function mount(stored: WorkbenchSettingsPayload) {
   return view;
 }
 
-const IN_NAMESPACE =
-  "Vector search needs a model id in the Workers AI @cf/ namespace before it can be turned on.";
+const UNSUPPORTED_WORKERS_MODEL =
+  "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.";
 const OUT_OF_NAMESPACE =
   "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.";
 
@@ -121,7 +121,7 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     // Refused: the owner cannot turn it on, and the reason travels WITH the
     // control rather than sitting unassociated beside it.
     expect(checkbox.getAttribute("aria-disabled")).toBe("true");
-    expect(announcedFor(checkbox)).toBe(IN_NAMESPACE);
+    expect(announcedFor(checkbox)).toBe(UNSUPPORTED_WORKERS_MODEL);
     fireEvent.click(checkbox);
     await waitFor(() => expect(checkbox.checked).toBe(false));
     expectNoSaveAttempted();
@@ -168,7 +168,7 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     expect(checkbox.getAttribute("aria-disabled")).toBeNull();
     // The refusal is still what gets announced, so "checked" never reads as
     // "working".
-    expect(announcedFor(checkbox)).toBe(IN_NAMESPACE);
+    expect(announcedFor(checkbox)).toBe(UNSUPPORTED_WORKERS_MODEL);
     // Off is allowed...
     fireEvent.click(checkbox);
     await waitFor(() => expect(checkbox.checked).toBe(false));
@@ -177,9 +177,26 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     expect(checkbox.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(checkbox);
     await waitFor(() => expect(checkbox.checked).toBe(false));
-    expect(announcedFor(checkbox)).toBe(IN_NAMESPACE);
+    expect(announcedFor(checkbox)).toBe(UNSUPPORTED_WORKERS_MODEL);
     // Neither the allowed turn-OFF nor the refused turn-back-ON went near the
     // network: this surface saves from its own button, never from the switch.
+    expectNoSaveAttempted();
+  });
+
+  it("refuses a @cf/ id that Workers AI cannot EMBED with (DW-220)", async () => {
+    // The most misleading state the old sentence produced: the owner typed a
+    // real Cloudflare id, inside the namespace the refusal named, and the switch
+    // still would not turn on. The rendered sentence now lists what to type.
+    await mount(payload({ embeddingModel: "@cf/llava-hf/llava-1.5-7b-hf" }));
+    const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
+    expect(checkbox.getAttribute("aria-disabled")).toBe("true");
+    const announced = announcedFor(checkbox);
+    expect(announced).toBe(UNSUPPORTED_WORKERS_MODEL);
+    // Specifically: it does not tell the owner to do what they have already done.
+    expect(announced).not.toContain("in the Workers AI @cf/ namespace");
+    expect(announced).toContain("@cf/baai/bge-m3");
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(checkbox.checked).toBe(false));
     expectNoSaveAttempted();
   });
 

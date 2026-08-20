@@ -217,9 +217,18 @@ export function getConfigPath(): string {
 // Centralised env-var accessors for embedding / Ollama settings
 // ---------------------------------------------------------------------------
 
-/** Returns the `EMBEDDING_MODEL` env override, or `undefined` if not set. */
+/**
+ * Returns the `EMBEDDING_MODEL` env override, or `undefined` if not set.
+ *
+ * Read through {@link nonEmpty}, so `EMBEDDING_MODEL=` and a whitespace-only
+ * value are "unset" here exactly as they already are to
+ * {@link getVectorSearchSettings} (DW-227). Without the trim the same variable
+ * read as absent to the gate and as a model NAME to the resolver, which then
+ * handed a blank string to the provider; and a padded id was accepted by the
+ * gate (which trims) and dropped by the resolver (which did not).
+ */
 export function getEmbeddingModelOverride(): string | undefined {
-  return process.env.EMBEDDING_MODEL;
+  return nonEmpty(process.env.EMBEDDING_MODEL) ?? undefined;
 }
 
 /**
@@ -1140,14 +1149,27 @@ export function getEffectiveSettings(): EffectiveSettings {
     ollamaBaseUrlSource = "none";
   }
 
-  // Embedding model
+  // Embedding model.
+  //
+  // Through the same accessor the resolver uses (DW-227), so a blank or
+  // whitespace-only `EMBEDDING_MODEL` is reported as "not set from env" rather
+  // than as an env-sourced model name nothing would ever embed with.
+  //
+  // BOTH legs are trimmed, not just the env one: a stored `"   "` (reachable
+  // from a pre-change flat write or a hand-edited config) would otherwise be
+  // reported as a config-sourced model name while `resolveEmbeddingModelName`
+  // trims it away and embeds with the provider default — the same split, one
+  // leg over. Every sibling reader of this key (`getVectorSearchSettings`,
+  // `getWorkbenchSettings`, `workbenchSettingsStored`) already uses `nonEmpty`.
+  const envEmbeddingModel = getEmbeddingModelOverride();
+  const storedEmbeddingModel = nonEmpty(cfg.embeddingModel);
   let embeddingModel: string | null;
   let embeddingModelSource: SettingSource;
-  if (process.env.EMBEDDING_MODEL) {
-    embeddingModel = process.env.EMBEDDING_MODEL;
+  if (envEmbeddingModel) {
+    embeddingModel = envEmbeddingModel;
     embeddingModelSource = "env";
-  } else if (cfg.embeddingModel) {
-    embeddingModel = cfg.embeddingModel;
+  } else if (storedEmbeddingModel) {
+    embeddingModel = storedEmbeddingModel;
     embeddingModelSource = "config";
   } else {
     embeddingModel = null;

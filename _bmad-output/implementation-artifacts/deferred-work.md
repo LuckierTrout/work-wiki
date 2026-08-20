@@ -1913,7 +1913,8 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/lib/providers.ts (embeddingModelMatchesProvider)
 severity: low
 reason: `"@cf/".startsWith("@cf/")` is true, and `@cf/llava-hf/llava-1.5-7b-hf` (`src/lib/vision.ts:19`) satisfies the leg for `workers-ai`; both fail at `ai.run()` instead. `WORKERS_AI_EMBEDDING_DIMENSIONS` (`src/lib/embeddings.ts:35-43`) already enumerates the four supported ids and could back a membership check, but it is unexported and lives in a module client-safe code cannot import. Pre-existing: both inputs were accepted before DW-73 too.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-embedding-resolution-namespace-hardening
 
 ### DW-221: The gate reads a trimmed model while `resolveEmbeddingModelName` reads the raw stored string, so a stored id with leading whitespace passes the gate and is still dropped at resolution.
 origin: spec-deferred a3c81a10def4
@@ -1921,7 +1922,8 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/app/api/settings/route.ts:247 with src/lib/embeddings.ts:180-186
 severity: low
 reason: `getVectorSearchSettings` reads `nonEmpty(cfg.embeddingModel)` (`src/lib/config.ts:512`, trims) and both feeders trim, while `resolveEmbeddingModelName` tests `override.startsWith(...)` on the raw value (`src/lib/embeddings.ts:180-186`). The legacy flat branch stores `body.embeddingModel` untrimmed (`src/app/api/settings/route.ts:247`), so a stored `" @cf/baai/bge-m3"` under `workers-ai` satisfies the gate and is then replaced by the default — the exact substitution DW-73 exists to prevent. Reachable only by a direct API call, since both UIs trim.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-embedding-resolution-namespace-hardening
 
 ### DW-222: The refusal calls the provider "Workers AI" while the picker two rows above calls the same selection "Cloudflare Workers AI".
 origin: spec-deferred 1b9ba6bd81b9
@@ -1946,7 +1948,8 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/lib/embeddings.ts (hasEmbeddingSupport) with src/lib/ingest.ts:989
 severity: medium
 reason: `getVectorSearchSettings()` has no production consumer — grepping `src/` returns only its own definition (`src/lib/config.ts:506`) and two comments. Ingest embeds on `hasEmbeddingSupport()` (`src/lib/ingest.ts:989`), which `src/lib/workbench-settings.ts:452` deliberately leaves untaught, so a mismatched deployment keeps embedding under the substituted provider default. DW-73 refuses the mismatch at the Settings surface, which is what the ledger decision asked for; the substitution the ledger described as the harm survives on the embed path. Out of scope on the intent's own authority ("the namespace guard is pre-existing"; the decision names the surface, not the resolver), and now documented in `DEPLOY.md` rather than hidden.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-embedding-resolution-namespace-hardening
 
 ### DW-225: The vector gate has no Cloudflare-binding leg, so `workers-ai` with a matching `@cf/` id passes on a deployment where nothing can ever embed.
 origin: spec-deferred cd8a690ae5d7
@@ -1962,7 +1965,8 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/lib/embeddings.ts:180-192
 severity: low
 reason: `resolveEmbeddingProvider` emits a `logger.warn` naming the bad value when `EMBEDDING_PROVIDER` is not embedding-capable (`src/lib/embeddings.ts:93-99`), but the namespace fallback one function below is silent. Since DW-73 the fallback is reached only on paths the gate does not cover (the legacy flat route branch, an env override, a vector-off deployment), which is exactly where a one-line warn naming the dropped id and the model actually used would be diagnosable. Pre-existing silence; the spec's Never list also pins the fallback's behaviour, and a log is not behaviour.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-embedding-resolution-namespace-hardening
 
 ### DW-227: A whitespace-only `EMBEDDING_MODEL` is handed to the provider verbatim as the embedding model name, while the vector gate reads the same value as absent.
 origin: spec-deferred bebc4469f137
@@ -1970,7 +1974,8 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/lib/config.ts:175-177 with src/lib/embeddings.ts:180-183
 severity: low
 reason: `getEmbeddingModelOverride()` returns `process.env.EMBEDDING_MODEL` raw (`src/lib/config.ts:175-177`) with no `nonEmpty`, and `resolveEmbeddingModelName` guards on truthiness only, so `" "` is truthy. `embeddingModelMatchesProvider(provider, " ")` is TRUE for every non-`workers-ai` provider (`" ".startsWith("@cf/")` is false, which equals `provider !== "workers-ai"`), so the blank string is returned as the model name and reaches the provider call. `getVectorSearchSettings` reads the same env var through `nonEmpty` (`src/lib/config.ts:512`), which trims it to null, so the gate reports "a model" missing while the resolver embeds with a blank id. Pre-existing: the pre-DW-73 resolver used the same truthiness guard. Distinct from the leading-whitespace item above — that one substitutes the provider default, this one sends an empty name.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-embedding-resolution-namespace-hardening
 
 ### DW-228: The new mounted settings test duplicates about sixty lines of an existing workbench test's harness verbatim.
 origin: spec-deferred 29c84000c317
@@ -2332,4 +2337,36 @@ source_spec: `spec-dw-192-197-198-199-settings-write-precondition.md`
 location: src/lib/config.ts:readConfig / saveConfig
 severity: medium
 reason: `saveConfig` writes `.llm-wiki-config.version` and then `.llm-wiki-config.json` as two independent objects, and `readConfig` reads them back as two independent objects. On the filesystem backend both are immediately consistent, which is what every new test relies on; R2 offers no such guarantee across two keys, so a read that lands between the two writes — or after both, on a replica that has only seen one — can pair a fresh token with a stale config even without a concurrent save. Both "token unreadable" tests force `EISDIR` by creating a DIRECTORY at the token path, a condition R2 cannot produce, so the Cloudflare backend has no coverage of the scheme at all. Closing it means either a single-object scheme (token inside the config, or the storage layer's own `writeFileIfMatch` compare-and-set, which `src/lib/storage/r2.ts` already exposes) or an R2-backed test harness neither the suite nor this bundle has.
+status: open
+
+### DW-273: Both embedding-resolution warnings fire per resolution rather than once per distinct misconfiguration, so a rebuild or a large ingest emits the same sentence hundreds of times.
+origin: spec-deferred 7167de6cd16e
+source_spec: `spec-dw-220-221-224-226-227-embedding-resolution.md`
+location: src/lib/embeddings.ts:resolveEmbeddingModelName and resolveEmbeddingProvider
+severity: low
+reason: `resolveEmbeddingModelName` is re-entered by every embed door, and `rebuildVectorStore` calls `getEmbeddingModelName()` once plus `embedText` per page, so a persistently mismatched `EMBEDDING_MODEL` produces roughly two identical WARN lines per page. Its sibling `resolveEmbeddingProvider` (`src/lib/embeddings.ts:93-99`) has exactly the same property and is the warning this bundle's intent asked the new one to mirror, so throttling only the new one would break the symmetry the intent bought. Closing it means a once-per-(provider, model) guard applied to BOTH warnings, which is a change to the module's logging convention rather than to this bundle.
+status: open
+
+### DW-274: `getEffectiveSettings` reports a provider-mismatched embedding model as the effective one, so the Settings surface names a model nothing embeds with.
+origin: spec-deferred 9bd380a9167d
+source_spec: `spec-dw-220-221-224-226-227-embedding-resolution.md`
+location: src/lib/config.ts:getEffectiveSettings
+severity: medium
+reason: The embedding-model branch reports `env ?? config` after trimming, but never runs `embeddingModelMatchesProvider`. With `EMBEDDING_MODEL=text-embedding-3-small` under `workers-ai`, `/settings` renders `text-embedding-3-small` in the locked "from env" box (`src/components/EmbeddingSettings.tsx:38-56`) while `embedText` runs on `@cf/baai/bge-m3`. Pre-existing — this bundle only changed which values count as SET on that branch — and now partly mitigated by the new WARN, but the one surface whose job is "what is in effect and where did it come from" still answers wrongly. Closing it means either resolving the reported model through `getEmbeddingModelName()` or adding an "overridden" flag the component can render.
+status: open
+
+### DW-275: The legacy flat `PUT /api/settings` branch still stores `model` and `ollamaBaseUrl` untrimmed, the same gate/resolver split just closed for `embeddingModel`.
+origin: spec-deferred 1873c25f4f7d
+source_spec: `spec-dw-220-221-224-226-227-embedding-resolution.md`
+location: src/app/api/settings/route.ts (legacy flat branch)
+severity: low
+reason: `embeddingModel` and `structuredKnowledgeModel` now trim on the way in; `body.model` and `body.ollamaBaseUrl` are still written raw. `ollamaBaseUrl` is read back by `getOllamaBaseUrl()` without a trim and by the settings surfaces with one, which is the shape of DW-221 for a different field. Pre-existing and untouched by this bundle, whose intent names only the embedding model.
+status: open
+
+### DW-276: A mismatched deployment still EMBEDS under the substituted default; this bundle ended the silence, not the substitution.
+origin: spec-deferred 5155e62ce7df
+source_spec: `spec-dw-220-221-224-226-227-embedding-resolution.md`
+location: src/lib/embeddings.ts:hasEmbeddingSupport with src/lib/ingest.ts:989
+severity: medium
+reason: DW-224's ledger coordinates are `hasEmbeddingSupport` with `src/lib/ingest.ts:989`, and neither file changed. Under the intent's reading ("stops embedding under the substituted default WITHOUT A WORD") the fix is the warning, and the spec's Never list pins that reading because `src/lib/workbench-settings.ts` and `src/lib/config.ts` both record that Story 2.9 (embed after ingest) and Story 3.4 (search merge) own teaching `hasEmbeddingSupport()` the vector gate. So the harm the ledger measured — a corpus quietly embedded with a model the owner did not choose — is now diagnosable but not prevented, and the tightened predicate moves two more inputs (a bare `@cf/`, a `@cf/` vision id) from "fails at ai.run()" into "substitutes the default". Closing it means refusing to embed on a mismatch, which belongs to those stories.
 status: open

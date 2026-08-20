@@ -10,6 +10,7 @@ import { getStorage } from "./storage";
 import { loadConfigSync, getEmbeddingModelOverride, getOllamaBaseUrl } from "./config";
 import {
   EMBEDDING_PROVIDERS,
+  WORKERS_AI_EMBEDDING_DIMENSIONS,
   embeddingModelMatchesProvider,
   isEmbeddingProvider,
   type EmbeddingProvider,
@@ -34,13 +35,14 @@ const DEFAULT_EMBEDDING_MODELS: Record<EmbeddingProvider, string> = {
   "workers-ai": "@cf/baai/bge-m3",
 };
 
-/** Fixed output widths for Workers AI embedding models supported here. */
-export const WORKERS_AI_EMBEDDING_DIMENSIONS: Readonly<Record<string, number>> = {
-  "@cf/baai/bge-small-en-v1.5": 384,
-  "@cf/baai/bge-base-en-v1.5": 768,
-  "@cf/baai/bge-large-en-v1.5": 1024,
-  "@cf/baai/bge-m3": 1024,
-};
+/**
+ * Fixed output widths for Workers AI embedding models supported here.
+ *
+ * A RE-EXPORT, not a copy: the table lives in `providers.ts` so the client-safe
+ * vector gate can test membership against the same object the dimension check
+ * below reads. Existing importers of this name are unaffected.
+ */
+export { WORKERS_AI_EMBEDDING_DIMENSIONS };
 
 /**
  * Return the Cloudflare Workers AI binding if available, else null.
@@ -168,30 +170,56 @@ function nonEmpty(value: string | undefined | null): string | null {
  *
  * Priority: `EMBEDDING_MODEL` env → `config.embeddingModel` → provider default.
  *
- * The override is only honored when it belongs to the resolved provider's
- * namespace — Workers AI ids start with `@cf/`, the AI-SDK providers don't.
- * This prevents a stale override left over from a previous provider (e.g.
+ * The override is only honored when {@link embeddingModelMatchesProvider} says
+ * the resolved provider can actually serve it — Workers AI ids must be in the
+ * supported catalog, the AI-SDK providers' ids must sit outside `@cf/`. This
+ * prevents a stale override left over from a previous provider (e.g.
  * `EMBEDDING_MODEL=text-embedding-3-small`) from leaking into a Workers AI
  * call (or vice versa) and producing an invalid model id.
+ *
+ * Both legs are read through {@link nonEmpty}, the SAME trim-and-null (and the
+ * same env-over-config ordering) `getVectorSearchSettings` applies (DW-221,
+ * DW-227). Without it a stored `" @cf/baai/bge-m3"` satisfied the gate — which
+ * reads it trimmed — and was then dropped here for the provider default,
+ * because the raw string with its leading space is not a catalog id; and a
+ * whitespace-only `EMBEDDING_MODEL` read as absent to the gate while being
+ * truthy enough to be sent to the provider verbatim as a model name.
  */
 function resolveEmbeddingModelName(
   provider: EmbeddingProvider,
   cfg: ReturnType<typeof loadConfigSync>,
 ): string {
-  const override = getEmbeddingModelOverride() ?? cfg.embeddingModel;
-  if (override) {
-    if (embeddingModelMatchesProvider(provider, override)) return override;
-    // Namespace mismatch — ignore the override and use the provider default.
-    //
-    // The WORKBENCH settings gate refuses this combination (DW-73), but that is
-    // only one of the ways a value reaches here: the legacy flat
-    // `PUT /api/settings` branch writes `embeddingModel` without running the
-    // gate, an `EMBEDDING_MODEL` env override bypasses the store entirely, and
-    // a vector-off deployment never consults the gate at all. So the fallback
-    // is not dead code for stray bytes — it is the live behaviour on every
-    // supported path the gate does not cover, and it stays.
-  }
-  return DEFAULT_EMBEDDING_MODELS[provider] ?? provider;
+  const fallback = DEFAULT_EMBEDDING_MODELS[provider] ?? provider;
+  const override =
+    nonEmpty(getEmbeddingModelOverride()) ?? nonEmpty(cfg.embeddingModel);
+  if (!override) return fallback;
+  if (embeddingModelMatchesProvider(provider, override)) return override;
+
+  // Mismatch — ignore the override and use the provider default, AUDIBLY.
+  //
+  // The WORKBENCH settings gate refuses this combination (DW-73), but that is
+  // only one of the ways a value reaches here: the legacy flat
+  // `PUT /api/settings` branch writes `embeddingModel` without running the
+  // gate, an `EMBEDDING_MODEL` env override bypasses the store entirely, and
+  // a vector-off deployment never consults the gate at all. So the fallback
+  // is not dead code for stray bytes — it is the live behaviour on every
+  // supported path the gate does not cover, and it stays.
+  //
+  // What changes is that it stops being SILENT (DW-224, DW-226). Every embed
+  // door (`getEmbeddingModelName`, `getEmbeddingModel`, `embedText`,
+  // `embedTexts`, `runWorkersAiEmbedding`) routes through here, so this one
+  // warning is what makes the substitution visible on the embed path itself —
+  // mirroring the warning `resolveEmbeddingProvider` already emits when it
+  // refuses an override. The log is not behaviour: the default is still
+  // returned, exactly as before.
+  logger.warn(
+    "embeddings",
+    `Embedding model "${override}" cannot be served by the "${provider}" ` +
+      `embedding provider; embedding with "${fallback}" instead. ` +
+      "Vectors are tagged with the model that produced them, so a corpus " +
+      "already embedded with a different model needs rebuilding.",
+  );
+  return fallback;
 }
 
 /**
