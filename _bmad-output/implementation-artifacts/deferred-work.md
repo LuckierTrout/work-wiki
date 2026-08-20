@@ -2400,7 +2400,8 @@ source_spec: `spec-dw-218-219-223-225-vector-gate-surface.md`
 location: src/components/workbench/SettingsCanvas.tsx (embeddingProvider select) with src/lib/workbench-settings.ts:vectorSearchModelIssue
 severity: low
 reason: DW-223's own argument is that "the ordinary way into that state is changing the provider select, which touches neither control" — and selecting Workers AI on a deployment with no binding is exactly that shape. `VectorSearchLegField` now enumerates `provider | endpoint | model | key | binding`, but only the `model` leg has a consumer (`vectorSearchModelIssue`); the provider, endpoint and key rows stay silent. The bundle's intent names only the embedding-model field, so wiring a second field-level complaint is new scope rather than part of this change.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-vector-gate-surface-completeness
 
 ### DW-278: Every settings read and save now calls `getWorkersAiBinding()`, so a Workers deployment with `AI` unbound emits one WARN per settings request on a path that previously logged nothing.
 origin: spec-deferred cdd17a74d9ff
@@ -2416,7 +2417,8 @@ source_spec: `spec-dw-218-219-223-225-vector-gate-surface.md`
 location: src/components/workbench/SettingsCanvas.tsx (vectorSearchEnabled hint)
 severity: low
 reason: `vectorRefused` is `stored.readOnly || (!vectorAllowed && !values.vectorSearchEnabled)`, so an already-on switch stays operable by design (an owner must be able to undo it). Pre-existing — the mounted case "leaves an ALREADY-ON switch checked, refused, and turn-off-able" pinned it before this bundle — but DW-219 makes the state survivable across unrelated saves rather than being cleared at the next one. Closing it means a distinct sentence for "on but inactive", which is a copy decision no ledger entry in this bundle asks for.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-vector-gate-surface-completeness
 
 ### DW-280: `textRow` never appends the read-only sentence through `describedBy()`, unlike every other refusable control on the surface.
 origin: spec-deferred eedddaf19e0d
@@ -2424,7 +2426,8 @@ source_spec: `spec-dw-218-219-223-225-vector-gate-surface.md`
 location: src/components/workbench/SettingsCanvas.tsx:textRow
 severity: low
 reason: `providerRow`, the embedding-provider select and the vector checkbox all wrap their hint id in `describedBy(...)`, which appends `SETTINGS_READ_ONLY_COPY` on a read-only deployment; `textRow` hardcodes `aria-describedby={hint ? hintId : undefined}`. Pre-existing for all seven text rows. This bundle made the gap slightly more visible by giving the embedding-model row a complaint (the mark itself is now suppressed under `readOnly`), but the fix belongs to every text row at once.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-vector-gate-surface-completeness
 
 ### DW-281: With `EMBEDDING_PROVIDER=workers-ai` the binding refusal advises choosing another embedding provider, which the env-locked select cannot do.
 origin: spec-deferred d621d1cdd313
@@ -2432,7 +2435,8 @@ source_spec: `spec-dw-218-219-223-225-vector-gate-surface.md`
 location: src/lib/workbench-settings.ts (SETTINGS_VECTOR_BINDING_NOTE) with mergedVectorInputs
 severity: low
 reason: `mergedVectorInputs` and `draftVectorInputs` both take `envEmbeddingProvider` ahead of anything stored or typed, so the provider leg can be owned by the environment exactly as the model leg can — but `VectorSearchInputs` gained an origin field for the MODEL only, which is what this bundle's intent asked for. Naming `EMBEDDING_PROVIDER` in the binding note would need a second origin field, the same shape change DW-218 made for the model.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-vector-gate-surface-completeness
 
 ### DW-282: The Wiki canvas card reads `WorkbenchData` but ignores its `readOnly` flag, so on a read-only deployment `Create Wiki` and `Change template` still open and only meet a 403 after the destructive confir
 origin: spec-deferred bdeb7e2db60a
@@ -2633,4 +2637,28 @@ source_spec: `spec-dw-217-275-settings-flat-branch-validation.md`
 location: src/lib/workbench-settings.ts:790
 severity: medium
 reason: DW-219 added the third `baseline` argument precisely so a flat move in the same request is measured against what the store held BEFORE the request rather than against itself. Every test in `settings-route.test.ts` and `workbench-settings.test.ts` sends the flat move and the nested move as separate requests, so the argument that justifies the parameter is unexercised. Pre-existing since DW-219; this change widened the parameter's role without adding the case.
+status: open
+
+### DW-307: `secretRow` never routes its description through `describedBy()`, so the three API-key rows are the last controls on the Settings surface that a read-only deployment refuses without saying why.
+origin: spec-deferred c188b4ff4f4e
+source_spec: `spec-dw-277-279-280-281-vector-gate-surface-completeness.md`
+location: src/components/workbench/SettingsCanvas.tsx:secretRow with src/lib/__tests__/workbench-settings.test.ts (describedBy call-site count)
+severity: low
+reason: DW-280 closed this for `textRow`, and the two provider pickers and the vector checkbox already wrap their hint id in `describedBy(...)`. But `secretRow` still hardcodes `aria-describedby={hintId}` while setting `readOnly={stored.readOnly || removing}` and dropping its Remove button under `readOnly` — so on a `YOPEDIA_READONLY` deployment a keyboard user reaches Custom / Embedding / Firecrawl API key, finds a box that will not take a keystroke and an affordance that has vanished, and is told only "A key is stored." No test in the repo mounts a password field on a read-only deployment, and the source-shape guard in `workbench-settings.test.ts` pins the `describedBy(` call-site count at exactly 4, so adopting it in `secretRow` also means bumping that count to 5. This bundle's intent names "all seven text rows" and DW-280's location is `textRow`, so the key rows are a separate decision rather than part of this change.
+status: open
+
+### DW-308: The route's 400 body still frames an already-on deployment as un-turn-on-able, so the two halves of the one rule now describe the same state with different sentences.
+origin: spec-deferred 1e2fbab9c662
+source_spec: `spec-dw-277-279-280-281-vector-gate-surface-completeness.md`
+location: src/lib/workbench-settings.ts:validateWorkbenchSettingsPatch (the `vectorSearchMissingCopy(merged)` refusal) with src/components/workbench/SettingsCanvas.tsx (save bar)
+severity: low
+reason: DW-279 was closed on the client only: `vectorSearchInactiveCopy` is selected by `SettingsCanvas`, while `validateWorkbenchSettingsPatch` returns `vectorSearchMissingCopy(merged)` — "…before it can be turned on" — for every refusal. The path is reachable: with the switch stored ON and a save that MOVES a vector input into an unmet state, the owner gets a 400 whose sentence lands in the save bar beside a still-ticked box, which is the exact mismatch DW-279 argues against. `validateWorkbenchSettingsPatch` already reads `baseline.vectorSearchEnabled`, so it could pick the frame — but whether an ERROR response should describe a state rather than a refusal is a distinct decision, and DW-279's location names the `vectorSearchEnabled` hint only.
+status: open
+
+### DW-309: DEPLOY.md still says the legacy flat `/settings` branch never enters the vector gate, which DW-217 made false.
+origin: spec-deferred bc4653e2dd77
+source_spec: `spec-dw-277-279-280-281-vector-gate-surface-completeness.md`
+location: DEPLOY.md (the two "flat request" caveats) with src/app/api/settings/route.ts
+severity: low
+reason: Two sentences claim it: "the older `/settings` page saves the embedding provider through a flat request that never enters this gate" and "saves the embedding model through a flat request that never runs this check". `src/app/api/settings/route.ts` now calls `validateWorkbenchSettingsPatch` for a flat-only body (its comment spells out that "the flat branch cannot move that flag, so `turningOn` is always `false`"), and `settings-route.test.ts` carries a suite for the vector rule on the flat branch. Stale as of the DW-217 sweep (commit a5a50aa, this change's baseline), so pre-existing here — but this change rewrites the paragraphs immediately above and below both sentences, which is how it surfaced.
 status: open

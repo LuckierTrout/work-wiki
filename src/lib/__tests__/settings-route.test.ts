@@ -372,6 +372,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
     model: "text-embedding-3-small",
     hasKey: false,
     modelOrigin: "stored",
+    providerOrigin: "stored",
     hasWorkersAiBinding: true,
   });
 
@@ -504,6 +505,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
       model: null,
       hasKey: false,
       modelOrigin: "stored",
+      providerOrigin: "stored",
       hasWorkersAiBinding: true,
     });
     expect(removalCopy).toBe(
@@ -529,6 +531,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
       model: "@cf/baai/bge-m3",
       hasKey: false,
       modelOrigin: "stored",
+      providerOrigin: "stored",
       hasWorkersAiBinding: true,
     });
     expect(removalCopy).toBe(

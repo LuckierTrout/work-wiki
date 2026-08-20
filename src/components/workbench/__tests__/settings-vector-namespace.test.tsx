@@ -4,9 +4,12 @@ import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
 import { WORKERS_AI_EMBEDDING_MODEL_IDS } from "@/lib/providers";
 import {
   SETTINGS_LOADING_COPY,
+  SETTINGS_READ_ONLY_COPY,
+  SETTINGS_VECTOR_BINDING_ENV_NOTE,
   SETTINGS_VECTOR_BINDING_NOTE,
   SETTINGS_VECTOR_ENV_MODEL_NOTE,
   SETTINGS_VECTOR_HINT_COPY,
+  SETTINGS_VECTOR_PROVIDER_COPY,
   settingsEnvOverrideCopy,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
@@ -129,6 +132,14 @@ async function mount(stored: WorkbenchSettingsPayload) {
 const UNSUPPORTED_WORKERS_MODEL = `Vector search needs a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) before it can be turned on.`;
 const OUT_OF_NAMESPACE =
   "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.";
+/**
+ * The same legs, said to a switch that is already ON (DW-279). Typed out for the
+ * same reason the refusal above is: the point of a mounted assertion is the
+ * string a screen reader announces. It speaks about the SETTINGS, not about the
+ * running deployment — the component selects it from draft-derived terms, which
+ * cannot know what the stored config is doing.
+ */
+const ON_BUT_INACTIVE = `Vector search is switched on, but it needs a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) before it can run. Turn it off, or supply what is missing.`;
 
 describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
   it("describes a Workers AI selection holding an OpenAI model id", async () => {
@@ -183,8 +194,13 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     // turn off.
     expect(checkbox.getAttribute("aria-disabled")).toBeNull();
     // The refusal is still what gets announced, so "checked" never reads as
-    // "working".
-    expect(announcedFor(checkbox)).toBe(UNSUPPORTED_WORKERS_MODEL);
+    // "working" — but said as the state the surface is actually IN (DW-279).
+    // "before it can be turned on" beside a ticked box describes some other
+    // deployment, and left the owner no way to tell whether the feature is
+    // running. It is not: `getVectorSearchSettings` intersects the stored flag
+    // with this same predicate.
+    expect(announcedFor(checkbox)).toBe(ON_BUT_INACTIVE);
+    expect(announcedFor(checkbox)).not.toContain("before it can be turned on");
     // Off is allowed...
     fireEvent.click(checkbox);
     await waitFor(() => expect(checkbox.checked).toBe(false));
@@ -225,6 +241,22 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     expect(announcedFor(checkbox)).toBe(SETTINGS_VECTOR_HINT_COPY);
     fireEvent.click(checkbox);
     await waitFor(() => expect(checkbox.checked).toBe(true));
+  });
+
+  it("keeps the ordinary hint on a switch that is ON with every leg met", async () => {
+    // The other side of the DW-279 split. A checked box is NOT what selects the
+    // switched-on-but-unmet sentence — an unmet leg is — so a working deployment
+    // must still read the standing hint. Ordering the component's ternary the
+    // other way round would announce "it needs … before it can run" over a
+    // vector search that is running, which is the more damaging of the two
+    // mistakes.
+    await mount(
+      payload({ embeddingModel: "@cf/baai/bge-m3", vectorSearchEnabled: true }),
+    );
+    const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.getAttribute("aria-disabled")).toBeNull();
+    expect(announcedFor(checkbox)).toBe(SETTINGS_VECTOR_HINT_COPY);
   });
 });
 
@@ -301,7 +333,14 @@ describe("the MODEL INPUT carries its own complaint (DW-223)", () => {
     expect(modelInput().value).toBe("text-embedding-3-small");
     expect(modelInput().readOnly).toBe(true);
     expect(modelInput().getAttribute("aria-invalid")).toBeNull();
-    expect(announcedFor(modelInput())).toBe(UNSUPPORTED_WORKERS_MODEL);
+    // The complaint AND the reason the box will not move (DW-280): `textRow`
+    // routes its description through `describedBy`, so a read-only deployment
+    // appends the save bar's sentence here the same way it does on the provider
+    // pickers, rather than leaving the box announcing a complaint with no
+    // explanation of why it cannot be acted on.
+    expect(announcedFor(modelInput())).toBe(
+      `${UNSUPPORTED_WORKERS_MODEL} ${SETTINGS_READ_ONLY_COPY}`,
+    );
   });
 
   it("marks the box the moment the PROVIDER select moves under it", async () => {
@@ -363,5 +402,175 @@ describe("the vector switch names the Cloudflare AI binding (DW-225)", () => {
     const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
     expect(checkbox.getAttribute("aria-disabled")).toBeNull();
     expect(announcedFor(checkbox)).toBe(SETTINGS_VECTOR_HINT_COPY);
+  });
+});
+
+describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", () => {
+  /**
+   * The control the binding leg belongs to. Nothing on this surface binds `ai`
+   * in `wrangler.jsonc`, so the leg has no control of its own — but choosing a
+   * different embedding provider drops it entirely, which makes this select the
+   * one place the complaint can be acted on. Which span reaches which control is
+   * exactly what a node suite cannot observe.
+   */
+  function providerSelect(): HTMLSelectElement {
+    return screen.getByLabelText("Embedding provider") as HTMLSelectElement;
+  }
+
+  const BINDING_REFUSAL =
+    "Vector search needs the Cloudflare AI binding before it can be turned on.";
+
+  it("marks and describes a STORED workers-ai selection with no binding", async () => {
+    await mount(
+      payload({ embeddingModel: "@cf/baai/bge-m3", hasWorkersAiBinding: false }),
+    );
+    // The select holds the value that is wrong for this deployment, and it is
+    // the control that can move it — so it is the control that is marked.
+    expect(providerSelect().value).toBe("workers-ai");
+    expect(providerSelect().getAttribute("aria-invalid")).toBe("true");
+    const announced = announcedFor(providerSelect());
+    expect(announced).toContain(BINDING_REFUSAL);
+    // The NOTE rides here rather than only on the checkbox, because on this
+    // control it names precisely what the control does.
+    expect(announced).toContain(SETTINGS_VECTOR_BINDING_NOTE);
+    // The row's standing hint is kept, not replaced.
+    expect(announced).toContain(SETTINGS_VECTOR_PROVIDER_COPY);
+  });
+
+  it("describes but does NOT mark an EMBEDDING_PROVIDER-owned selection, and swaps the note", async () => {
+    // The variable wins over the select in every feeder, so "choose another
+    // embedding provider" is advice this control cannot follow — and marking it
+    // "wrong, fix it" points at a control that cannot fix it (DW-281).
+    await mount(
+      payload({
+        embeddingModel: "@cf/baai/bge-m3",
+        hasWorkersAiBinding: false,
+        envEmbeddingProvider: "workers-ai",
+      }),
+    );
+    expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
+    const announced = announcedFor(providerSelect());
+    expect(announced).toContain(settingsEnvOverrideCopy("provider", "workers-ai"));
+    expect(announced).toContain(BINDING_REFUSAL);
+    expect(announced).toContain(SETTINGS_VECTOR_BINDING_ENV_NOTE);
+    expect(announced).toContain(
+      "unset EMBEDDING_PROVIDER to choose another embedding provider",
+    );
+    // NOT the stored note's unconditional form, which this select cannot act on.
+    expect(announced).not.toContain("or choose another embedding provider");
+  });
+
+  it("renders the STORED selection while describing the env one (DW-281)", async () => {
+    // The state the env-override convention actually produces, and the only one
+    // where the two can be told apart: the box edits the STORE, and the store is
+    // what applies once the variable is unset — so the select goes on showing
+    // OpenAI while the gate, and the sentence, are about `workers-ai`. Marking
+    // the select here would point at a value that is not the one being refused.
+    await mount(
+      payload({
+        embeddingProvider: "openai",
+        embeddingModel: "@cf/baai/bge-m3",
+        embeddingBaseUrl: "https://embed.example",
+        hasEmbeddingApiKey: true,
+        envEmbeddingProvider: "workers-ai",
+        hasWorkersAiBinding: false,
+      }),
+    );
+    // The control still reports what a save would write…
+    expect(providerSelect().value).toBe("openai");
+    expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
+    // …while its description names the provider the gate is actually reading,
+    // and the leg that provider is missing.
+    const announced = announcedFor(providerSelect());
+    expect(announced).toContain(settingsEnvOverrideCopy("provider", "workers-ai"));
+    expect(announced).toContain(BINDING_REFUSAL);
+    expect(announced).toContain(SETTINGS_VECTOR_BINDING_ENV_NOTE);
+    // The checkbox agrees — one rule, and the env provider is what both halves
+    // of it read.
+    expect(announcedFor(screen.getByLabelText("Enable vector search"))).toBe(
+      `${BINDING_REFUSAL} ${SETTINGS_VECTOR_BINDING_ENV_NOTE}`,
+    );
+    // The stored `@cf/` id is not complained about: it is the right id FOR the
+    // provider the environment forces, which is the one the gate reads.
+    expect(
+      (screen.getByLabelText("Embedding model") as HTMLInputElement).getAttribute(
+        "aria-invalid",
+      ),
+    ).toBeNull();
+  });
+
+  it("says nothing about the binding once it exists", async () => {
+    await mount(
+      payload({ embeddingModel: "@cf/baai/bge-m3", hasWorkersAiBinding: true }),
+    );
+    expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
+    const announced = announcedFor(providerSelect());
+    expect(announced).toBe(SETTINGS_VECTOR_PROVIDER_COPY);
+    expect(announced).not.toContain("Cloudflare AI binding");
+  });
+
+  it("stays silent for a leg that is pure ABSENCE", async () => {
+    // A fresh deployment: no provider, no model, no endpoint, no key. Nothing
+    // holds a wrong value, so nothing is marked and no row repeats the one
+    // sentence the checkbox already carries.
+    await mount(
+      payload({
+        embeddingProvider: null,
+        embeddingModel: null,
+        hasWorkersAiBinding: false,
+      }),
+    );
+    expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
+    expect(announcedFor(providerSelect())).toBe(SETTINGS_VECTOR_PROVIDER_COPY);
+    expect(
+      (screen.getByLabelText("Embedding model") as HTMLInputElement).getAttribute(
+        "aria-invalid",
+      ),
+    ).toBeNull();
+    expect(
+      screen.getByLabelText("Embedding endpoint").getAttribute("aria-describedby"),
+    ).toBeNull();
+    expect(announcedFor(screen.getByLabelText("Enable vector search"))).toBe(
+      "Vector search needs an embedding provider before it can be turned on.",
+    );
+  });
+
+  it("marks the select the moment the deployment's binding is the missing leg", async () => {
+    // The mirror of the model row's "the provider moved under it" case: here the
+    // owner moves the provider TO the one this runtime cannot serve, and the
+    // control they just touched is the one that reports it.
+    await mount(
+      payload({
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingBaseUrl: "https://embed.example",
+        hasEmbeddingApiKey: true,
+        hasWorkersAiBinding: false,
+      }),
+    );
+    expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
+
+    fireEvent.change(providerSelect(), { target: { value: "workers-ai" } });
+
+    await waitFor(() =>
+      expect(providerSelect().getAttribute("aria-invalid")).toBe("true"),
+    );
+    expect(announcedFor(providerSelect())).toContain(SETTINGS_VECTOR_BINDING_NOTE);
+  });
+
+  it("describes without marking on a read-only deployment", async () => {
+    // The same suppression `textRow` applies: `YOPEDIA_READONLY` makes every
+    // control here unfixable, so only the MARK is withheld.
+    await mount(
+      payload({
+        embeddingModel: "@cf/baai/bge-m3",
+        hasWorkersAiBinding: false,
+        readOnly: true,
+      }),
+    );
+    expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
+    const announced = announcedFor(providerSelect());
+    expect(announced).toContain(BINDING_REFUSAL);
+    expect(announced).toContain(SETTINGS_READ_ONLY_COPY);
   });
 });

@@ -45,8 +45,9 @@ import {
   settingsEnvKeyCopy,
   settingsEnvOverrideCopy,
   settingsSaveBody,
+  vectorSearchFieldIssue,
+  vectorSearchInactiveCopy,
   vectorSearchMissingCopy,
-  vectorSearchModelIssue,
   type SettingsCategoryId,
   type SettingsDraft,
   type WorkbenchSettingsPayload,
@@ -246,7 +247,20 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
   // refusal used to be announced only as the checkbox's description, while the
   // box holding the wrong value carried nothing — and the ordinary way into that
   // state is changing the provider select, which touches neither control.
-  const vectorModelIssue = vectorSearchModelIssue(vectorInputs);
+  const vectorModelIssue = vectorSearchFieldIssue(vectorInputs, "model");
+  // …and the same question asked of the PROVIDER select (DW-277). The binding
+  // leg has no control of its own, so it lands here: this select is the only
+  // thing on the surface that can move it.
+  const vectorProviderIssue = vectorSearchFieldIssue(vectorInputs, "provider");
+  // The third state of the switch's hint (DW-279). A switch that is on — stored
+  // on, or switched on in this draft — renders CHECKED, and `vectorBlocked`
+  // would describe it as something that cannot be turned on, which is not the
+  // state the box is visibly in. Like every other term here this reads the
+  // DRAFT, so the sentence it selects speaks about the settings as they now
+  // stand rather than about what the deployment is doing; the save bar's
+  // standing sentence is what qualifies unsaved edits, and it is announced on
+  // this control too.
+  const vectorInactive = vectorSearchInactiveCopy(vectorInputs);
   // The vector switch's WHOLE refusal predicate, named once so the attribute
   // that announces it and the handler that enforces it cannot drift into
   // disagreeing about when the toggle is refused. Turning it OFF is always
@@ -279,9 +293,16 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
    * refusal is stated at all. Without it `SETTINGS_READ_ONLY_COPY` sits
    * unassociated in the save bar and the picker announces as "dimmed" with no
    * reason — the same gap `aria-disabled` was adopted to close.
+   *
+   * A row with NO hint of its own is answered too (DW-280): the read-only
+   * sentence is then the WHOLE description rather than an append, which is what
+   * lets the hintless text rows — Chat model, Embedding endpoint, the rest —
+   * carry the refusal at all. `undefined` in and a writable deployment gives
+   * `undefined` back, so a control with nothing to say still emits no attribute.
    */
-  function describedBy(hintId: string): string {
-    return stored.readOnly ? `${hintId} ${readOnlyNoteId}` : hintId;
+  function describedBy(hintId: string | undefined): string | undefined {
+    if (!stored.readOnly) return hintId;
+    return hintId ? `${hintId} ${readOnlyNoteId}` : readOnlyNoteId;
   }
 
   /**
@@ -313,8 +334,11 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
           spellCheck={false}
           readOnly={stored.readOnly}
           // A range printed beside a box is invisible to a screen reader; the
-          // accepted values have to be part of the control's own description.
-          aria-describedby={hint ? hintId : undefined}
+          // accepted values have to be part of the control's own description —
+          // and on a read-only deployment so is the reason the box will not
+          // move, which `describedBy` appends (or supplies outright, for a row
+          // that has no hint of its own).
+          aria-describedby={describedBy(hint ? hintId : undefined)}
           // Only when this box holds the wrong value — see the parameter's note.
           // NEVER on a read-only deployment: the same rule that leaves an
           // env-owned mismatch described-but-unmarked applies whole here, since
@@ -479,6 +503,14 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
                   set("embeddingProvider", event.target.value);
                 }}
                 aria-describedby={describedBy(field("embeddingProvider-hint"))}
+                // Only when THIS select holds the wrong value — a provider the
+                // gate does not recognise, or `workers-ai` on a deployment with
+                // no `AI` binding (DW-277). Withheld for an env-owned selection
+                // and on a read-only deployment for the same reason `textRow`
+                // withholds it: "this field is wrong, fix it" about a control
+                // that cannot be fixed from here is a dead end. The DESCRIPTION
+                // still rides in both cases.
+                aria-invalid={(vectorProviderIssue?.invalid && !stored.readOnly) || undefined}
               >
                 <option value="">Auto-detect</option>
                 {EMBEDDING_PROVIDERS.map((option) => (
@@ -491,9 +523,20 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
                   for the vector switch, which needs to know WHICH provider it is
                   turning on. */}
               <span className="wb-set-hint" id={field("embeddingProvider-hint")}>
-                {stored.envEmbeddingProvider
-                  ? settingsEnvOverrideCopy("provider", stored.envEmbeddingProvider)
-                  : SETTINGS_VECTOR_PROVIDER_COPY}
+                {/* Where the value comes from (or what the field is for), then
+                    the gate's complaint about it — the same order the model row
+                    uses, and both as this control's OWN description so a screen
+                    reader reads them here rather than on a checkbox three rows
+                    down. The complaint carries the leg's NOTE, because on this
+                    control the note names exactly what the control can do. */}
+                {[
+                  stored.envEmbeddingProvider
+                    ? settingsEnvOverrideCopy("provider", stored.envEmbeddingProvider)
+                    : SETTINGS_VECTOR_PROVIDER_COPY,
+                  vectorProviderIssue?.copy ?? null,
+                ]
+                  .filter((part): part is string => part !== null)
+                  .join(" ")}
               </span>
             </p>
             {/* ONE embedding model, writing the EXISTING config key. A second
@@ -555,11 +598,20 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
                 Enable vector search
               </label>
               <span className="wb-set-hint" id={field("vectorSearchEnabled-hint")}>
-                {/* Names the legs the SELECTED provider is missing — Ollama and
-                    Workers AI carry their own transport, so demanding a key from
-                    either would send the owner after a credential that does not
-                    exist. */}
-                {vectorAllowed ? SETTINGS_VECTOR_HINT_COPY : vectorBlocked}
+                {/* Three states, not two. Names the legs the SELECTED provider
+                    is missing — Ollama and Workers AI carry their own transport,
+                    so demanding a key from either would send the owner after a
+                    credential that does not exist — and says them as an ON-BUT-
+                    INACTIVE state whenever the box is checked, because "before
+                    it can be turned on" beside a ticked box describes a state
+                    the surface is visibly not in (DW-279). The split is the same
+                    term `vectorRefused` uses, so what is announced and what is
+                    refused cannot disagree. */}
+                {vectorAllowed
+                  ? SETTINGS_VECTOR_HINT_COPY
+                  : values.vectorSearchEnabled
+                    ? vectorInactive
+                    : vectorBlocked}
               </span>
             </p>
           </>

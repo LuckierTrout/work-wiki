@@ -102,6 +102,7 @@ import {
   SETTINGS_SAVE_BAR_COPY,
   SETTINGS_SAVE_FAILED_COPY,
   SETTINGS_CATEGORIES,
+  SETTINGS_VECTOR_BINDING_ENV_NOTE,
   SETTINGS_VECTOR_BINDING_NOTE,
   SETTINGS_VECTOR_ENV_MODEL_NOTE,
   canEnableVectorSearch,
@@ -113,10 +114,12 @@ import {
   settingsAnnouncement,
   settingsDirty,
   settingsDraftFromPayload,
+  settingsEnvOverrideCopy,
   settingsSaveBody,
   validateWorkbenchSettingsPatch,
+  vectorSearchFieldIssue,
+  vectorSearchInactiveCopy,
   vectorSearchMissingCopy,
-  vectorSearchModelIssue,
   type SettingsFetch,
   type VectorSearchInputs,
   type WorkbenchSettingsPayload,
@@ -334,18 +337,29 @@ describe("the settings nav vocabulary", () => {
 // ---------------------------------------------------------------------------
 
 /**
- * A {@link VectorSearchInputs} from the four legs a case is ABOUT, with the two
- * facts DW-218/DW-225 added at their "not in play" values: `"stored"` (the
- * editable box holds the model, so the box is what a mismatch is about) and
- * `null` (this caller cannot know whether a Cloudflare `AI` binding exists, so
- * the binding leg is not applied). The cases that are ABOUT either fact pass it
- * explicitly, which is what keeps every other case here reading as it did.
+ * A {@link VectorSearchInputs} from the four legs a case is ABOUT, with the
+ * three facts DW-218/DW-225/DW-281 added at their "not in play" values:
+ * `"stored"` twice (the editable controls hold the model and the provider, so
+ * they are what a wrong value is about) and `null` (this caller cannot know
+ * whether a Cloudflare `AI` binding exists, so the binding leg is not applied).
+ * The cases that are ABOUT any of the three pass it explicitly, which is what
+ * keeps every other case here reading as it did.
  */
-type VectorLegs = Omit<VectorSearchInputs, "modelOrigin" | "hasWorkersAiBinding"> &
-  Partial<Pick<VectorSearchInputs, "modelOrigin" | "hasWorkersAiBinding">>;
+type VectorLegs = Omit<
+  VectorSearchInputs,
+  "modelOrigin" | "providerOrigin" | "hasWorkersAiBinding"
+> &
+  Partial<
+    Pick<VectorSearchInputs, "modelOrigin" | "providerOrigin" | "hasWorkersAiBinding">
+  >;
 
 function vectorInputs(legs: VectorLegs): VectorSearchInputs {
-  return { modelOrigin: "stored", hasWorkersAiBinding: null, ...legs };
+  return {
+    modelOrigin: "stored",
+    providerOrigin: "stored",
+    hasWorkersAiBinding: null,
+    ...legs,
+  };
 }
 
 /** {@link canEnableVectorSearch} over {@link vectorInputs}. */
@@ -746,9 +760,118 @@ describe("canEnableVectorSearch", () => {
         SETTINGS_VECTOR_BINDING_NOTE,
     );
   });
+
+  it("picks the note the OWNER can act on when EMBEDDING_PROVIDER forces the selection (DW-281)", () => {
+    // The stored note's second way out — "choose another embedding provider" —
+    // is advice the provider select cannot follow while the variable is set:
+    // every feeder takes `EMBEDDING_PROVIDER` ahead of the stored selection, so
+    // a different provider picked in the box changes nothing and the switch
+    // stays refused. The env variant names unsetting the variable instead.
+    const legs = {
+      provider: "workers-ai",
+      baseUrl: null,
+      model: "@cf/baai/bge-m3",
+      hasKey: false,
+      hasWorkersAiBinding: false,
+    } as const;
+    expect(missingCopy({ ...legs, providerOrigin: "env" })).toBe(
+      `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_ENV_NOTE}`,
+    );
+    // The variable is named, and naming it is what turns "choose another
+    // provider" back into an action: unset it FIRST, and then the select works.
+    expect(SETTINGS_VECTOR_BINDING_ENV_NOTE).toContain(
+      "unset EMBEDDING_PROVIDER to choose another embedding provider",
+    );
+    // …and NOT the stored note's unconditional form, which is the advice this
+    // deployment cannot follow.
+    expect(SETTINGS_VECTOR_BINDING_ENV_NOTE).not.toContain(
+      "or choose another embedding provider",
+    );
+    // It also does not restate `settingsEnvOverrideCopy`, which already says the
+    // variable wins over the box and is ALREADY the provider row's standing
+    // hint — the two ride on the same control, so a second telling is the same
+    // duplication the `"model"` exception in `vectorSearchFieldIssue` avoids.
+    expect(SETTINGS_VECTOR_BINDING_ENV_NOTE).not.toContain("wins at runtime");
+    expect(settingsEnvOverrideCopy("provider", "workers-ai")).toContain(
+      "wins at runtime",
+    );
+    // …and the stored half is untouched, where that advice IS actionable.
+    expect(missingCopy({ ...legs, providerOrigin: "stored" })).toBe(
+      `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    );
+    // The origin changes only the NOTE — the refusal itself, and whether there
+    // is one at all, is the same rule either way.
+    expect(canEnable({ ...legs, providerOrigin: "env" })).toBe(false);
+    expect(canEnable({ ...legs, providerOrigin: "stored" })).toBe(false);
+  });
 });
 
-describe("vectorSearchModelIssue — what the MODEL BOX says about itself (DW-223)", () => {
+describe("vectorSearchInactiveCopy — what a SWITCHED-ON switch says (DW-279)", () => {
+  /** {@link vectorSearchInactiveCopy} over {@link vectorInputs}. */
+  function inactiveCopy(legs: VectorLegs): string {
+    return vectorSearchInactiveCopy(vectorInputs(legs));
+  }
+
+  it("acknowledges the switch instead of describing it as un-turn-on-able", () => {
+    // The payload serves the STORED flag rather than the intersected one, so a
+    // config whose legs went missing renders CHECKED. Beside a ticked box,
+    // "before it can be turned on" describes a state the surface is visibly not
+    // in, and leaves the owner unable to tell whether the feature is running.
+    const copy = inactiveCopy({
+      provider: "openai",
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: false,
+    });
+    expect(copy).toBe(
+      "Vector search is switched on, but it needs an endpoint and an API key before it can run. Turn it off, or supply what is missing.",
+    );
+    expect(copy).not.toContain("before it can be turned on");
+    // It says what the SETTINGS still need, never what the deployment is doing.
+    // Every term the surface computes is draft-derived, so a claim about the
+    // running deployment would be false the moment an unsaved edit unmet a leg
+    // while the stored config went on working.
+    expect(copy).not.toContain("inactive");
+    // The action the owner actually HAS here is named — turning it off is
+    // always allowed, which is exactly what `vectorRefused` leaves operable.
+    expect(copy).toContain("Turn it off");
+  });
+
+  it("lists the same legs in the same order as the refusal, and carries their notes", () => {
+    // One sentence frame differs; the legs, their order and their notes do not.
+    // Anything else and the two sentences would disagree about what is wrong.
+    const legs = {
+      provider: "workers-ai",
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: false,
+      modelOrigin: "env",
+      hasWorkersAiBinding: false,
+    } as const;
+    const list = `a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) and the Cloudflare AI binding`;
+    expect(missingCopy(legs)).toBe(
+      `Vector search needs ${list} before it can be turned on. ${SETTINGS_VECTOR_ENV_MODEL_NOTE} ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    );
+    expect(inactiveCopy(legs)).toBe(
+      `Vector search is switched on, but it needs ${list} before it can run. Turn it off, or supply what is missing. ${SETTINGS_VECTOR_ENV_MODEL_NOTE} ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    );
+  });
+
+  it("says nothing at all when every leg is met", () => {
+    // The switch is on AND working, which is the surface's ordinary hint — not
+    // this sentence with an empty list.
+    expect(
+      inactiveCopy({
+        provider: "ollama",
+        baseUrl: null,
+        model: "nomic-embed-text",
+        hasKey: false,
+      }),
+    ).toBe("");
+  });
+});
+
+describe("vectorSearchFieldIssue — what the MODEL BOX says about itself (DW-223)", () => {
   const workersAi = {
     provider: "workers-ai",
     baseUrl: null,
@@ -758,8 +881,9 @@ describe("vectorSearchModelIssue — what the MODEL BOX says about itself (DW-22
 
   it("marks the box invalid when the box's OWN value is the wrong one", () => {
     expect(
-      vectorSearchModelIssue(
+      vectorSearchFieldIssue(
         vectorInputs({ ...workersAi, model: "text-embedding-3-small", modelOrigin: "stored" }),
+        "model",
       ),
     ).toEqual({ copy: UNSUPPORTED_WORKERS_MODEL, invalid: true });
   });
@@ -769,8 +893,9 @@ describe("vectorSearchModelIssue — what the MODEL BOX says about itself (DW-22
     // marking it is a dead end — the owner still needs to know what the gate is
     // unhappy about, which is why the copy is the same.
     expect(
-      vectorSearchModelIssue(
+      vectorSearchFieldIssue(
         vectorInputs({ ...workersAi, model: "text-embedding-3-small", modelOrigin: "env" }),
+        "model",
       ),
     ).toEqual({ copy: UNSUPPORTED_WORKERS_MODEL, invalid: false });
   });
@@ -778,12 +903,17 @@ describe("vectorSearchModelIssue — what the MODEL BOX says about itself (DW-22
   it("says nothing when the id matches, when the box is empty, or when no provider is chosen", () => {
     // A matching id: no complaint.
     expect(
-      vectorSearchModelIssue(vectorInputs({ ...workersAi, model: "@cf/baai/bge-m3" })),
+      vectorSearchFieldIssue(
+        vectorInputs({ ...workersAi, model: "@cf/baai/bge-m3" }),
+        "model",
+      ),
     ).toBeNull();
     // An EMPTY box holds no wrong value — the checkbox's own "needs a model"
     // sentence carries that, and marking an empty optional field invalid would
     // be a complaint about a state the owner has not entered.
-    expect(vectorSearchModelIssue(vectorInputs({ ...workersAi, model: null }))).toBeNull();
+    expect(
+      vectorSearchFieldIssue(vectorInputs({ ...workersAi, model: null }), "model"),
+    ).toBeNull();
     // No provider: the gate has exactly ONE leg, and it is not this row's.
     const noProvider = vectorInputs({
       provider: null,
@@ -791,7 +921,7 @@ describe("vectorSearchModelIssue — what the MODEL BOX says about itself (DW-22
       model: "text-embedding-3-small",
       hasKey: false,
     });
-    expect(vectorSearchModelIssue(noProvider)).toBeNull();
+    expect(vectorSearchFieldIssue(noProvider, "model")).toBeNull();
     expect(vectorSearchMissingCopy(noProvider)).toBe(
       "Vector search needs an embedding provider before it can be turned on.",
     );
@@ -801,8 +931,9 @@ describe("vectorSearchModelIssue — what the MODEL BOX says about itself (DW-22
     // The model row already carries `settingsEnvOverrideCopy` saying where the
     // value comes from; a second sentence about the same variable would only
     // repeat it, so the note stays on the checkbox.
-    const issue = vectorSearchModelIssue(
+    const issue = vectorSearchFieldIssue(
       vectorInputs({ ...workersAi, model: "text-embedding-3-small", modelOrigin: "env" }),
+      "model",
     );
     expect(issue?.copy).not.toContain("EMBEDDING_MODEL");
   });
@@ -811,18 +942,135 @@ describe("vectorSearchModelIssue — what the MODEL BOX says about itself (DW-22
     // A keyed provider missing its endpoint and key still gets exactly the model
     // sentence here — the row speaks for its own field, not for the switch.
     expect(
-      vectorSearchModelIssue(
+      vectorSearchFieldIssue(
         vectorInputs({
           provider: "openai",
           baseUrl: null,
           model: "@cf/baai/bge-m3",
           hasKey: false,
         }),
+        "model",
       ),
     ).toEqual({
       copy: "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
       invalid: true,
     });
+  });
+});
+
+describe("vectorSearchFieldIssue — every refusable control, one rule (DW-277)", () => {
+  const workersAiUnbound = {
+    provider: "workers-ai",
+    baseUrl: null,
+    model: "@cf/baai/bge-m3",
+    hasKey: false,
+    hasWorkersAiBinding: false,
+  } as const;
+
+  it("gives the BINDING leg to the provider select, which is the only control that can move it", () => {
+    // Nothing on this surface binds `ai` in `wrangler.jsonc`, so the leg has no
+    // control of its own — but choosing a different embedding provider drops it
+    // entirely, which makes the select the one control the complaint can act
+    // through. Before this it belonged to nothing and the select stayed silent.
+    expect(
+      vectorSearchFieldIssue(vectorInputs(workersAiUnbound), "provider"),
+    ).toEqual({
+      copy: `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+      invalid: true,
+    });
+    // The model row is silent about it — the id is not what is wrong.
+    expect(vectorSearchFieldIssue(vectorInputs(workersAiUnbound), "model")).toBeNull();
+  });
+
+  it("describes but does NOT mark an env-owned selection, and swaps the note", () => {
+    // Same dead end `modelOrigin` closes for the model box: `EMBEDDING_PROVIDER`
+    // wins over the select, so marking it "wrong, fix it" points at a control
+    // that cannot fix it — and the note has to name the variable rather than
+    // "choose another provider" (DW-281).
+    expect(
+      vectorSearchFieldIssue(
+        vectorInputs({ ...workersAiUnbound, providerOrigin: "env" }),
+        "provider",
+      ),
+    ).toEqual({
+      copy: `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_ENV_NOTE}`,
+      invalid: false,
+    });
+  });
+
+  it("says nothing once the binding exists", () => {
+    expect(
+      vectorSearchFieldIssue(
+        vectorInputs({ ...workersAiUnbound, hasWorkersAiBinding: true }),
+        "provider",
+      ),
+    ).toBeNull();
+    // And nothing where the fact is not knowable, which applies no leg at all.
+    expect(
+      vectorSearchFieldIssue(
+        vectorInputs({ ...workersAiUnbound, hasWorkersAiBinding: null }),
+        "provider",
+      ),
+    ).toBeNull();
+  });
+
+  it("complains where the select holds a value the gate does not recognise", () => {
+    // Present-and-wrong, so the select IS what is at fault — the same test the
+    // model box passes for a mismatched id.
+    expect(
+      vectorSearchFieldIssue(
+        vectorInputs({ provider: "acme", baseUrl: null, model: "m", hasKey: false }),
+        "provider",
+      ),
+    ).toEqual({
+      copy: "Vector search needs an embedding provider before it can be turned on.",
+      invalid: true,
+    });
+  });
+
+  it("treats an UNSET provider as absence, not as a wrong value", () => {
+    // The select holds nothing, so it holds nothing WRONG. Its standing
+    // `SETTINGS_VECTOR_PROVIDER_COPY` hint is already the complaint, and the
+    // checkbox lists the leg once — a second copy on the select would be the
+    // same sentence twice on one screen.
+    const unset = vectorInputs({
+      provider: null,
+      baseUrl: null,
+      model: null,
+      hasKey: false,
+    });
+    expect(vectorSearchFieldIssue(unset, "provider")).toBeNull();
+    expect(vectorSearchMissingCopy(unset)).toBe(
+      "Vector search needs an embedding provider before it can be turned on.",
+    );
+  });
+
+  it("never produces an issue for the ENDPOINT or the KEY, whose legs are pure absence", () => {
+    // Not an omission — the answer. Both legs fire only when the value is
+    // MISSING, and a missing value is not a wrong one, so a fresh deployment
+    // renders no box repeating a leg the checkbox already lists in one sentence.
+    const bare = vectorInputs({
+      provider: "openai",
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: false,
+    });
+    expect(vectorSearchMissingCopy(bare)).toBe(
+      "Vector search needs an endpoint and an API key before it can be turned on.",
+    );
+    expect(vectorSearchFieldIssue(bare, "endpoint")).toBeNull();
+    expect(vectorSearchFieldIssue(bare, "key")).toBeNull();
+    // …and neither does a SATISFIED endpoint or key, for the ordinary reason.
+    const filled = vectorInputs({
+      provider: "openai",
+      baseUrl: "https://embed.example",
+      model: "text-embedding-3-small",
+      hasKey: true,
+    });
+    expect(vectorSearchFieldIssue(filled, "endpoint")).toBeNull();
+    expect(vectorSearchFieldIssue(filled, "key")).toBeNull();
+    expect(vectorSearchFieldIssue(filled, "provider")).toBeNull();
+    expect(vectorSearchFieldIssue(filled, "model")).toBeNull();
   });
 });
 
@@ -1309,6 +1557,22 @@ describe("the client and the route read the same vector rule", () => {
       config: { embeddingProvider: "workers-ai" },
       binding: true,
     },
+    // The two `providerOrigin` situations (DW-281). The ORIGIN itself changes
+    // only which note a refusal carries, never whether there is one — so these
+    // pin the property that matters: adding a third input to
+    // `VECTOR_INPUT_KEYS` did not make the two halves read it differently.
+    {
+      name: "the environment forces workers-ai with no binding",
+      env: { provider: "workers-ai" },
+      config: { embeddingModel: "@cf/baai/bge-m3" },
+      binding: false,
+    },
+    {
+      name: "the environment forces workers-ai and the binding exists",
+      env: { provider: "workers-ai" },
+      config: { embeddingModel: "@cf/baai/bge-m3" },
+      binding: true,
+    },
   ];
 
   for (const situation of situations) {
@@ -1323,6 +1587,19 @@ describe("the client and the route read the same vector rule", () => {
 
       const payload = getWorkbenchSettings(binding);
       const draft = settingsDraftFromPayload(payload);
+      // Every INPUT the rule reads, not just the boolean it produces: the
+      // origins decide which sentence a refusal carries, so two halves that
+      // agreed on `false` while disagreeing about WHY would still send the two
+      // surfaces apart. `VECTOR_INPUT_KEYS` is exhaustive by construction, so
+      // this comparison grows with the interface.
+      const inputs = draftVectorInputs(draft, payload);
+      expect({
+        situation: situation.name,
+        providerOrigin: inputs.providerOrigin,
+      }).toEqual({
+        situation: situation.name,
+        providerOrigin: situation.env.provider ? "env" : "stored",
+      });
       // The BROWSER's answer, from the payload alone…
       const client = draftCanEnableVectorSearch(draft, payload);
       // …and the ROUTE's, for the very patch that draft would send.
@@ -1417,7 +1694,7 @@ describe("the client and the route read the same vector rule", () => {
     const inputs = draftVectorInputs(draft, payload);
     expect(inputs.modelOrigin).toBe("stored");
     expect(vectorSearchMissingCopy(inputs)).toBe(UNSUPPORTED_WORKERS_MODEL);
-    expect(vectorSearchModelIssue(inputs)).toEqual({
+    expect(vectorSearchFieldIssue(inputs, "model")).toEqual({
       copy: UNSUPPORTED_WORKERS_MODEL,
       invalid: true,
     });
@@ -1444,7 +1721,7 @@ describe("the client and the route read the same vector rule", () => {
       `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
     );
     // The model row has nothing to complain about — the id is fine.
-    expect(vectorSearchModelIssue(draftVectorInputs(draft, payload))).toBeNull();
+    expect(vectorSearchFieldIssue(draftVectorInputs(draft, payload), "model")).toBeNull();
 
     // And the route, which reads the binding for itself, answers the same.
     const { PUT } = await import("@/app/api/settings/route");
@@ -3127,7 +3404,14 @@ describe("the Settings components stay inside the shell", () => {
     // stored", which for a password field showing nothing IS the state, and so
     // is "leave the provider unset to inherit", which is what the blank option
     // in the picker means.
-    expect(canvas).toContain('aria-describedby={hint ? hintId : undefined}');
+    // The text rows route their OWN hint through `describedBy` too (DW-280):
+    // the ternary picks whether this row has a hint at all, and `describedBy`
+    // decides what a read-only deployment adds to it — including for the rows
+    // that have no hint, where the read-only sentence becomes the whole
+    // description rather than being dropped for want of something to append to.
+    expect(canvas).toContain(
+      'aria-describedby={describedBy(hint ? hintId : undefined)}',
+    );
     expect(canvas).toContain(
       'aria-describedby={describedBy(field("vectorSearchEnabled-hint"))}',
     );
@@ -3135,8 +3419,9 @@ describe("the Settings components stay inside the shell", () => {
     // Every control a read-only deployment refuses routes its description
     // through `describedBy`, which APPENDS the save bar's read-only sentence to
     // the control's own hint — `aria-describedby` takes a space-separated list,
-    // so the hint is kept rather than replaced. Three controls, three calls.
-    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(3);
+    // so the hint is kept rather than replaced. Four call sites now: the two
+    // pickers, the vector switch, and `textRow`, which covers seven rows.
+    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(4);
     expect(canvas).toContain('const readOnlyNoteId = field("bar-note");');
     expect(canvas).toContain('<span className="wb-set-bar-note" id={readOnlyNoteId}>');
     // Each row builder wires its own hint; none of them renders a bare span.

@@ -104,6 +104,13 @@ import {
   hasLLMKey,
 } from "../llm";
 import { _resetStorage } from "../storage";
+import {
+  SETTINGS_VECTOR_BINDING_ENV_NOTE,
+  draftVectorInputs,
+  settingsDraftFromPayload,
+  vectorSearchFieldIssue,
+  vectorSearchMissingCopy,
+} from "../workbench-settings";
 import { readConfig } from "../config";
 import { IF_MATCH_HEADER, formatIfMatch } from "../write-precondition";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
@@ -670,5 +677,69 @@ describe("the stored embedding credential and endpoint are read", () => {
     mockGetCfContext.mockReturnValue({ env: { AI: { run: vi.fn() } } });
     const bound = await PUT(await turnVectorSearchOn());
     expect(bound.status).toBe(200);
+  });
+
+  it("names the VARIABLE when EMBEDDING_PROVIDER forces the unbound selection (DW-281)", async () => {
+    // The same refusal, with the one way out the owner has. The stored note
+    // offers "choose another embedding provider", which is advice this
+    // deployment cannot follow: `EMBEDDING_PROVIDER` wins over the stored
+    // selection in every feeder, so a provider picked in Settings changes
+    // nothing and the switch stays refused forever. End to end, because the
+    // origin is derived rather than served — the route computes it from the
+    // same `envEmbeddingProvider` the payload already carries.
+    mockGetCfContext.mockImplementation(noCloudflareContext);
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    await store({ embeddingModel: "@cf/baai/bge-m3" });
+
+    // The browser's half sees the env origin off the payload alone.
+    const payload = getWorkbenchSettings(false);
+    expect(payload.envEmbeddingProvider).toBe("workers-ai");
+    const inputs = draftVectorInputs(settingsDraftFromPayload(payload), payload);
+    expect(inputs.providerOrigin).toBe("env");
+    const sentence = vectorSearchMissingCopy(inputs);
+    expect(sentence).toBe(
+      `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_ENV_NOTE}`,
+    );
+    // …and the complaint rides on the PROVIDER SELECT, described but not
+    // marked: the select is not what is wrong.
+    expect(vectorSearchFieldIssue(inputs, "provider")).toEqual({
+      copy: sentence,
+      invalid: false,
+    });
+
+    // …and the route, which re-runs the rule over the merged config, answers
+    // with the very same sentence.
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(await turnVectorSearchOn());
+    expect(response.status).toBe(400);
+    const error = ((await response.json()) as { error: string }).error;
+    expect(error).toBe(sentence);
+    expect(error).toContain(
+      "unset EMBEDDING_PROVIDER to choose another embedding provider",
+    );
+    // NOT the stored note's unconditional form — the advice this deployment
+    // cannot follow while the variable is set.
+    expect(error).not.toContain("or choose another embedding provider");
+  });
+
+  it("reports the provider ORIGIN from config.ts too, without leaking it (DW-281)", async () => {
+    // `getVectorSearchSettings` constructs its own `VectorSearchInputs`, and the
+    // field has no default — so this is the caller that would silently claim the
+    // store owns a value the environment forces. Its DECLARED shape is unchanged:
+    // the gate-only inputs must not reach a consumer that could misread them.
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    await store({ vectorSearchEnabled: true, embeddingModel: "@cf/baai/bge-m3" });
+    const settings = getVectorSearchSettings();
+    expect(Object.keys(settings).sort()).toEqual([
+      "baseUrl",
+      "enabled",
+      "hasKey",
+      "model",
+      "provider",
+    ]);
+    expect(settings.provider).toBe("workers-ai");
+    // `hasWorkersAiBinding` is `null` here, so the binding leg is not applied —
+    // this caller answers exactly as it did before either origin existed.
+    expect(settings.enabled).toBe(true);
   });
 });

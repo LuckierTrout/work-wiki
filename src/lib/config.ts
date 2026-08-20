@@ -815,7 +815,8 @@ export interface VectorSearchSettings {
  */
 export function getVectorSearchSettings(): VectorSearchSettings {
   const cfg = loadConfigSync();
-  const provider = envEmbeddingProvider() ?? nonEmpty(cfg.embeddingProvider);
+  const envProvider = envEmbeddingProvider();
+  const provider = envProvider ?? nonEmpty(cfg.embeddingProvider);
   const envModel = nonEmpty(process.env.EMBEDDING_MODEL);
   const inputs: VectorSearchInputs = {
     provider,
@@ -824,6 +825,12 @@ export function getVectorSearchSettings(): VectorSearchSettings {
     hasKey: embeddingKeyPresent(cfg, provider),
     // The same `??` above, read as a question about origin.
     modelOrigin: envModel !== null ? "env" : "stored",
+    // …and the same question about the provider (DW-281). Nothing on this
+    // caller's answer turns on it — the binding leg it selects a note for is
+    // never applied here (`hasWorkersAiBinding: null`) — but the field has no
+    // default, precisely so a constructor cannot forget it and quietly claim
+    // the store owns a value the environment forces.
+    providerOrigin: envProvider !== null ? "env" : "stored",
     // NOT KNOWN HERE, and deliberately left that way (DW-225).
     //
     // `getWorkersAiBinding()` lives in `embeddings.ts`, which imports THIS

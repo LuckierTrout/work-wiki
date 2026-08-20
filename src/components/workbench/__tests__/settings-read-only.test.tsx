@@ -6,6 +6,7 @@ import {
   SETTINGS_READ_ONLY_COPY,
   SETTINGS_SAVED_COPY,
   SETTINGS_SAVE_COPY,
+  SETTINGS_TIMEOUT_HINT_COPY,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
 import {
@@ -141,6 +142,45 @@ describe("a read-only deployment (DW-37, DW-65)", () => {
     }
   });
 
+  it("appends the sentence to a TEXT row that has a hint of its own (DW-280)", async () => {
+    // `textRow` hardcoded `aria-describedby={hint ? hintId : undefined}`, so
+    // none of the seven text rows ever announced the refusal the two provider
+    // pickers and the vector switch already carried. A keyboard user reached a
+    // box that would not accept a keystroke and was told only what the field
+    // means.
+    await mount("llm-models", payload());
+    const timeout = screen.getByLabelText("LLM timeout (seconds)") as HTMLInputElement;
+    expect(timeout.readOnly).toBe(true);
+    const announced = announcedFor(timeout);
+    // The hint is KEPT, not replaced: the accepted range is still the only place
+    // the bounds are stated at all.
+    expect(announced).toContain(SETTINGS_TIMEOUT_HINT_COPY);
+    expect(announced).toContain(SETTINGS_READ_ONLY_COPY);
+  });
+
+  it("makes the sentence the WHOLE description of a hintless text row (DW-280)", async () => {
+    // The rows the old ternary dropped entirely: with no hint there was nothing
+    // to append to, so the attribute was omitted and the refusal went unsaid.
+    // `describedBy` answers for them too.
+    await mount("llm-models", payload());
+    const chatModel = screen.getByLabelText("Chat model") as HTMLInputElement;
+    expect(chatModel.readOnly).toBe(true);
+    expect(announcedFor(chatModel)).toBe(SETTINGS_READ_ONLY_COPY);
+  });
+
+  it("leaves a hintless text row with NO description on a writable deployment", async () => {
+    // The other half of the same rule: `undefined` in and nothing refused gives
+    // `undefined` back, so a box with nothing to say still emits no attribute
+    // rather than pointing at the save bar's ordinary standing sentence.
+    await mount("llm-models", payload({ readOnly: false }));
+    expect(
+      screen.getByLabelText("Chat model").getAttribute("aria-describedby"),
+    ).toBeNull();
+    // …while a hinted row still carries its own hint alone.
+    const announced = announcedFor(screen.getByLabelText("LLM timeout (seconds)"));
+    expect(announced).toBe(SETTINGS_TIMEOUT_HINT_COPY);
+  });
+
   it("keeps the description to the control's own hint on a writable deployment", async () => {
     await mount("llm-models", payload({ readOnly: false }));
     const announced = announcedFor(screen.getByLabelText("Chat provider"));
@@ -205,6 +245,39 @@ describe("a read-only deployment (DW-37, DW-65)", () => {
     fireEvent.click(checkbox);
 
     await waitFor(() => expect(checkbox.checked).toBe(false));
+  });
+
+  it("qualifies the SWITCHED-ON sentence on a deployment that refuses everything", async () => {
+    // The composition of the two things this change adds, and the one place they
+    // could contradict each other: the switch is on with a leg unmet, so the
+    // hint names turning it off as the available action — on a deployment where
+    // nothing can be turned off at all. The read-only sentence is what makes
+    // that honest, and it only rides here because the switch routes its
+    // description through `describedBy`. Without the pin, the two features are
+    // correct apart and misleading together.
+    await mount(
+      "embeddings",
+      // `openai` with a stored key and NO endpoint: exactly one unmet leg, so
+      // the sentence below stays about the composition rather than the legs.
+      payload({ vectorSearchEnabled: true, embeddingBaseUrl: null }),
+    );
+    const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    const announced = announcedFor(checkbox);
+    expect(announced).toContain(
+      "Vector search is switched on, but it needs an endpoint before it can run. Turn it off, or supply what is missing.",
+    );
+    // …and the sentence that says the offered action is not available here.
+    expect(announced).toContain(SETTINGS_READ_ONLY_COPY);
+    // The old wording is the regression: "before it can be turned on" beside a
+    // box that is visibly ticked.
+    expect(announced).not.toContain("before it can be turned on");
+
+    // Read-only wins over the always-allow-turning-off rule, so the click
+    // commits nothing and the box stays where the store put it.
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(checkbox.checked).toBe(true));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("leaves every control interactive on a writable deployment", async () => {

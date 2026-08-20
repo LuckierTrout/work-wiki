@@ -75,6 +75,33 @@ the missing binding is reported before content is ingested; the log stays silent
 because `getWorkersAiBinding()` only warns when it is ON the Workers runtime with
 `AI` unbound, which is a misconfiguration rather than "not Cloudflare".
 
+The refusal is also announced on the **Embedding provider select itself**, not
+only on the switch, because that select is the one control on the surface that
+can move this leg — nothing there binds `ai` in `wrangler.jsonc`, but choosing a
+different provider drops the requirement entirely. The select is marked invalid
+on the same rule the Embedding model box follows: only when the **stored**
+selection is the wrong one, because that is the only case editing it can fix.
+
+**When `EMBEDDING_PROVIDER` is what forces the selection, the second way out
+changes.** The variable wins over the stored selection in every code path, so
+"choose another embedding provider" would be advice the select cannot follow —
+a different provider picked in Settings changes nothing and the switch stays
+refused. The refusal names the variable instead, so the way out becomes an
+ordered pair of steps rather than a dead end. In full:
+
+> Vector search needs the Cloudflare AI binding before it can be turned on.
+> Workers AI embeds through the Cloudflare AI binding, which exists only on the
+> Workers runtime — bind ai in wrangler.jsonc, or unset EMBEDDING_PROVIDER to
+> choose another embedding provider.
+
+The select is **described but not marked invalid** here, for the same reason the
+model box is not marked for an `EMBEDDING_MODEL`-owned mismatch: marking a
+control the owner cannot fix from there is a dead end. It also goes on showing
+the **stored** selection rather than the forced one, because the box edits the
+store and the store is what applies once the variable is unset — so on a
+deployment with `EMBEDDING_PROVIDER=workers-ai` and `openai` in Settings, the
+select reads OpenAI while the sentence beside it is about Workers AI.
+
 The same limit applies here as to the model rule below: the older `/settings`
 page saves the embedding provider through a flat request that never enters this
 gate, so `workers-ai` selected there is still stored silently on a deployment
@@ -132,9 +159,32 @@ Two separate things happen to an id the resolved provider cannot serve:
   `EMBEDDING_MODEL`, so a model typed here cannot lift this until that variable
   is unset."* Without that sentence the message named only the id rule, and
   typing a supported id into the Embedding model box changed nothing — the
-  override wins at runtime and the switch stayed off. The box itself is marked
-  invalid only when the **stored** value is the wrong one, because that is the
-  only case editing it can fix.
+  override wins at runtime and the switch stayed off. The control that holds the
+  wrong value — the Embedding model box, or the Embedding provider select for a
+  missing `AI` binding — is marked invalid only when the **stored** value is the
+  wrong one, because that is the only case editing it can fix. A read-only
+  deployment (`YOPEDIA_READONLY`) is the same case whole: every field is
+  described and none is marked. On such a deployment the two provider pickers,
+  the vector switch and all seven **text** rows — Chat model, Ingest model,
+  Custom base URL, Embedding model, Embedding endpoint, Firecrawl base URL and
+  the LLM timeout — now also announce that settings are read-only here, rather
+  than leaving that sentence unassociated beside the Save button. The three
+  **API-key** rows (Custom, Embedding, Firecrawl) are the exception: they still
+  announce only whether a key is stored.
+
+  **A switch that is already ON is acknowledged as on, not described as
+  un-turn-on-able.** The settings surface serves the stored flag rather than the
+  effective one, so a configuration whose legs went missing renders the box
+  *checked*. Beside it the sentence names the same unmet legs, but addressed to
+  a switch that is already on — *"Vector search is switched on, but it needs an
+  endpoint before it can run. Turn it off, or supply what is missing."* —
+  because "before it can be turned on" beside a ticked box describes some other
+  deployment. The sentence is about the settings as they currently stand,
+  including unsaved edits, and not a claim about what the deployment is doing;
+  the save bar's standing sentence is what qualifies unsaved edits, and on a
+  read-only deployment the read-only sentence rides here too. The box stays
+  operable in that state: turning vector search **off** is always allowed, so an
+  owner is never stranded with a switch whose legs have since gone missing.
 
   An unrelated Workbench save — a chat model, an LLM timeout — is **not** refused
   by a mismatch it did not create, even on a deployment whose stored vector

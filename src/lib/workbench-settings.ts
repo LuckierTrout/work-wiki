@@ -213,6 +213,27 @@ export const SETTINGS_VECTOR_BINDING_NOTE =
   "Workers AI embeds through the Cloudflare AI binding, which exists only on the Workers runtime — bind ai in wrangler.jsonc, or choose another embedding provider.";
 
 /**
+ * The same refusal where `EMBEDDING_PROVIDER` owns the selection (DW-281).
+ *
+ * {@link SETTINGS_VECTOR_BINDING_NOTE}'s second way out — "choose another
+ * embedding provider" — is advice the owner CANNOT follow when the environment
+ * forces `workers-ai`: every feeder takes `EMBEDDING_PROVIDER` ahead of the
+ * stored selection, so a different provider picked in the box changes nothing
+ * and the switch stays refused. Worse, this note rides on the provider SELECT
+ * itself, so the sentence would be telling the control to do the one thing it
+ * cannot. Naming the VARIABLE is what turns that way out back into an action:
+ * unset it FIRST, and then the select works again.
+ *
+ * What the sentence deliberately does NOT do is explain that the variable wins
+ * over the box — {@link settingsEnvOverrideCopy} says exactly that, and it is
+ * already the provider row's standing hint, so the two ride on the same control
+ * and the owner would hear one fact twice. That is the same duplication the
+ * `"model"` exception in {@link vectorSearchFieldIssue} exists to prevent.
+ */
+export const SETTINGS_VECTOR_BINDING_ENV_NOTE =
+  "Workers AI embeds through the Cloudflare AI binding, which exists only on the Workers runtime — bind ai in wrangler.jsonc, or unset EMBEDDING_PROVIDER to choose another embedding provider.";
+
+/**
  * The environment's overrides, said out loud.
  *
  * `EMBEDDING_PROVIDER` and `EMBEDDING_MODEL` win at runtime and a save cannot
@@ -487,6 +508,24 @@ export interface VectorSearchInputs {
    */
   modelOrigin: "env" | "stored";
   /**
+   * WHERE {@link provider} came from — the same question {@link modelOrigin}
+   * asks about the model, for the same reason (DW-281).
+   *
+   * `"env"` means `EMBEDDING_PROVIDER` supplied it, and every feeder takes that
+   * override ahead of the stored selection, so the Embedding provider select is
+   * NOT the thing that is wrong and choosing another provider in it changes
+   * nothing. `"stored"` means the value is the one that select edits. The
+   * binding refusal picks {@link SETTINGS_VECTOR_BINDING_ENV_NOTE} for the
+   * first and {@link SETTINGS_VECTOR_BINDING_NOTE} for the second, and
+   * {@link vectorSearchFieldIssue} marks the select `aria-invalid` only for the
+   * second.
+   *
+   * No default, for the same reason {@link modelOrigin} has none: a constructor
+   * that forgot it would silently claim the select is at fault for a value the
+   * owner cannot reach from here.
+   */
+  providerOrigin: "env" | "stored";
+  /**
    * Can this deployment reach the Cloudflare `AI` binding? (DW-225)
    *
    * TRI-STATE, and the third state is load-bearing. `null` means "not knowable
@@ -633,7 +672,14 @@ function vectorSearchMissingLegs(v: VectorSearchInputs): VectorSearchLeg[] {
     missing.push({
       field: "binding",
       phrase: "the Cloudflare AI binding",
-      note: SETTINGS_VECTOR_BINDING_NOTE,
+      // Which of the two ways out the owner can actually take depends on WHO
+      // owns the selection: with `EMBEDDING_PROVIDER` set, "choose another
+      // embedding provider" names an action the provider select cannot perform
+      // (DW-281).
+      note:
+        v.providerOrigin === "env"
+          ? SETTINGS_VECTOR_BINDING_ENV_NOTE
+          : SETTINGS_VECTOR_BINDING_NOTE,
     });
   }
   return missing;
@@ -648,51 +694,173 @@ function vectorSearchMissingLegs(v: VectorSearchInputs): VectorSearchLeg[] {
 export function vectorSearchMissingCopy(v: VectorSearchInputs): string {
   const missing = vectorSearchMissingLegs(v);
   if (missing.length === 0) return "";
-  return [vectorSearchLegSentence(missing), ...missing.map((leg) => leg.note)]
+  return withLegNotes(vectorSearchLegSentence(missing), missing);
+}
+
+/**
+ * What a switch that is already SWITCHED ON, over legs that are unmet, has to
+ * say (DW-279).
+ *
+ * The surface renders the box CHECKED — the payload serves the stored flag, and
+ * the draft carries whatever the owner has done to it since — and beside it
+ * {@link vectorSearchMissingCopy} said "before it can be turned ON", describing
+ * a state the surface is visibly not in. The owner reads a ticked box and a
+ * sentence about turning it on, and cannot tell what the box is even claiming.
+ *
+ * The sentence acknowledges the switch and then says what the settings AS THEY
+ * NOW STAND still need — not what the deployment is doing. That distinction is
+ * load-bearing: every term this surface computes is DRAFT-derived, so an
+ * unsaved provider change would make any claim about the running deployment
+ * false while the stored config goes on working. The save bar's standing
+ * sentence is the one place unsaved edits are qualified, and it is already
+ * announced on this control.
+ *
+ * Same legs, same notes, same order as the refusal — only the frame changes,
+ * and the action the owner actually has here (turning it off) is the one named.
+ */
+export function vectorSearchInactiveCopy(v: VectorSearchInputs): string {
+  const missing = vectorSearchMissingLegs(v);
+  if (missing.length === 0) return "";
+  return withLegNotes(
+    `Vector search is switched on, but it needs ${vectorSearchLegList(missing)} before it can run. Turn it off, or supply what is missing.`,
+    missing,
+  );
+}
+
+/** One sentence plus every leg's note, in leg order, blanks dropped. */
+function withLegNotes(sentence: string, legs: readonly VectorSearchLeg[]): string {
+  return [sentence, ...legs.map((leg) => leg.note)]
     .filter((part): part is string => typeof part === "string" && part.length > 0)
     .join(" ");
 }
 
+/**
+ * The legs as a noun-phrase LIST, split out of {@link vectorSearchLegSentence}
+ * so the on-but-inactive sentence names exactly the same things in exactly the
+ * same order without restating how a list is punctuated.
+ */
+function vectorSearchLegList(legs: readonly VectorSearchLeg[]): string {
+  const phrases = legs.map((leg) => leg.phrase);
+  return phrases.length === 1
+    ? phrases[0]
+    : `${phrases.slice(0, -1).join(", ")} and ${phrases[phrases.length - 1]}`;
+}
+
 /** The one refusal sentence, without any leg's note. */
 function vectorSearchLegSentence(legs: readonly VectorSearchLeg[]): string {
-  const phrases = legs.map((leg) => leg.phrase);
-  const list =
-    phrases.length === 1
-      ? phrases[0]
-      : `${phrases.slice(0, -1).join(", ")} and ${phrases[phrases.length - 1]}`;
-  return `Vector search needs ${list} before it can be turned on.`;
+  return `Vector search needs ${vectorSearchLegList(legs)} before it can be turned on.`;
+}
+
+/** A control on the Embeddings surface that a leg can be ABOUT. */
+export type VectorSearchControl = "provider" | "endpoint" | "model" | "key";
+
+/**
+ * Which CONTROL an unmet leg reaches.
+ *
+ * Every leg but one maps to its namesake. The `binding` leg has no control of
+ * its own — nothing on this surface binds `ai` in `wrangler.jsonc` — so it maps
+ * to the PROVIDER select, which is the only thing here that can move it: a
+ * different embedding provider drops the leg entirely (DW-277).
+ *
+ * At most one leg reaches any control: the provider leg returns early from
+ * {@link vectorSearchMissingLegs} and so excludes the binding leg, and the
+ * model leg is produced once.
+ */
+const VECTOR_LEG_CONTROL = {
+  provider: "provider",
+  endpoint: "endpoint",
+  model: "model",
+  key: "key",
+  binding: "provider",
+} satisfies Record<VectorSearchLegField, VectorSearchControl>;
+
+/** Does this control hold a value at all? See {@link vectorSearchFieldIssue}. */
+function vectorControlHasValue(v: VectorSearchInputs, control: VectorSearchControl): boolean {
+  switch (control) {
+    case "provider":
+      return Boolean(v.provider);
+    case "endpoint":
+      return Boolean(v.baseUrl);
+    case "model":
+      return Boolean(v.model);
+    case "key":
+      return v.hasKey;
+  }
 }
 
 /**
- * What the EMBEDDING-MODEL INPUT itself has to say, or `null` when it has
- * nothing (DW-223).
+ * WHO owns this control's value — the environment, or the store this edits.
+ *
+ * A `switch` with NO default, like {@link vectorControlHasValue} above and for a
+ * sharper reason: `"stored"` is the answer that MARKS a control `aria-invalid`,
+ * so a control added to {@link VectorSearchControl} and quietly caught by a
+ * fallback would inherit "the owner is at fault" for a value they may not own.
+ * Exhaustiveness makes that a compile error instead.
+ */
+function vectorControlOrigin(
+  v: VectorSearchInputs,
+  control: VectorSearchControl,
+): "env" | "stored" {
+  switch (control) {
+    case "provider":
+      return v.providerOrigin;
+    case "model":
+      return v.modelOrigin;
+    case "endpoint":
+    case "key":
+      // Neither can produce an issue at all — both legs are pure presence tests,
+      // so `vectorSearchFieldIssue` has already returned `null` before it asks.
+      // The arms exist so the switch stays exhaustive, not because they are
+      // reachable through a real issue.
+      return "stored";
+  }
+}
+
+/**
+ * What ONE refusable control has to say about its own value, or `null` when it
+ * has nothing (DW-223, DW-277).
  *
  * The refusal used to be announced only as the vector checkbox's
- * `aria-describedby`, while the box holding the wrong value carried no
+ * `aria-describedby`, while the control holding the wrong value carried no
  * description and no `aria-invalid` — and the ordinary way into that state is
- * changing the PROVIDER select, which touches neither control. So the model leg
- * is offered separately here, for the row that owns the value.
+ * changing the PROVIDER select, which touches neither the model box nor the
+ * switch. So each leg is offered separately here, to the control that OWNS it
+ * per {@link VECTOR_LEG_CONTROL}.
  *
- * `copy` is the model leg's sentence ALONE: the `EMBEDDING_MODEL` note stays on
- * the checkbox, because this row already carries
- * {@link settingsEnvOverrideCopy} saying where the value comes from and a second
- * sentence about the same variable would only repeat it.
+ * ABSENCE IS NOT AN ISSUE. A control holding nothing holds no WRONG value, so a
+ * bare "needs a model" / "needs an endpoint" / "needs an API key" / "needs an
+ * embedding provider" leg produces no issue at all and the checkbox's one
+ * sentence carries it — otherwise a fresh deployment would render three boxes
+ * each repeating a leg already listed once. That silence is the rule's answer,
+ * not an omission: the endpoint and key legs are pure presence tests, so those
+ * two controls never produce an issue, and the provider select's standing
+ * {@link SETTINGS_VECTOR_PROVIDER_COPY} hint is already the complaint for an
+ * unset provider.
  *
- * `invalid` is true only when the BOX'S OWN value is the wrong one — a mismatch
- * with `modelOrigin: "stored"`. An env-owned mismatch is described without being
- * marked, because marking a field the owner cannot fix from here is a dead end.
- * An EMPTY box is neither: it holds no wrong value, so a bare "a model" leg
- * produces no issue at all and the checkbox's own sentence carries it.
+ * `copy` is the leg's sentence plus the leg's NOTE, which names what owns the
+ * problem and rides on the owning control — except for `"model"`, whose row
+ * already carries {@link settingsEnvOverrideCopy} about the very same variable
+ * and would only repeat it.
+ *
+ * `invalid` is true only when the CONTROL'S OWN value is the wrong one — an
+ * origin of `"stored"`. An env-owned value is described without being marked,
+ * because marking a control the owner cannot fix from here is a dead end.
  */
-export function vectorSearchModelIssue(
+export function vectorSearchFieldIssue(
   v: VectorSearchInputs,
+  control: VectorSearchControl,
 ): { copy: string; invalid: boolean } | null {
-  if (!v.model) return null;
-  const leg = vectorSearchMissingLegs(v).find((entry) => entry.field === "model");
+  if (!vectorControlHasValue(v, control)) return null;
+  const leg = vectorSearchMissingLegs(v).find(
+    (entry) => VECTOR_LEG_CONTROL[entry.field] === control,
+  );
   if (!leg) return null;
   return {
-    copy: vectorSearchLegSentence([leg]),
-    invalid: v.modelOrigin === "stored",
+    copy:
+      control === "model"
+        ? vectorSearchLegSentence([leg])
+        : withLegNotes(vectorSearchLegSentence([leg]), [leg]),
+    invalid: vectorControlOrigin(v, control) === "stored",
   };
 }
 
@@ -931,6 +1099,7 @@ const VECTOR_INPUT_KEYS = {
   model: true,
   hasKey: true,
   modelOrigin: true,
+  providerOrigin: true,
   hasWorkersAiBinding: true,
 } satisfies Record<keyof VectorSearchInputs, true>;
 
@@ -938,12 +1107,12 @@ const VECTOR_INPUT_KEYS = {
  * Does this request leave every input the vector rule reads exactly where it
  * was?
  *
- * Field by field over {@link VECTOR_INPUT_KEYS}. Two of those fields cannot
- * differ between the two sides TODAY — no patch can move `modelOrigin` or
- * `hasWorkersAiBinding`, which come from the environment and the runtime — so
- * they are compared for completeness rather than because they vary. That is the
- * point of the exhaustive list: the day one of them becomes patchable, this
- * comparison already reads it.
+ * Field by field over {@link VECTOR_INPUT_KEYS}. Three of those fields cannot
+ * differ between the two sides TODAY — no patch can move `modelOrigin`,
+ * `providerOrigin` or `hasWorkersAiBinding`, which come from the environment and
+ * the runtime — so they are compared for completeness rather than because they
+ * vary. That is the point of the exhaustive list: the day one of them becomes
+ * patchable, this comparison already reads it.
  */
 function vectorInputsEqual(a: VectorSearchInputs, b: VectorSearchInputs): boolean {
   return (Object.keys(VECTOR_INPUT_KEYS) as Array<keyof VectorSearchInputs>).every(
@@ -992,6 +1161,10 @@ function mergedVectorInputs(
     // env override wins, so when there is one the model box is not what the gate
     // is looking at.
     modelOrigin: stored.envEmbeddingModel !== null ? "env" : "stored",
+    // The `??` on the `provider` line above, read the same way: with
+    // `EMBEDDING_PROVIDER` set, the select is not what the gate is looking at
+    // and "choose another provider" is advice it cannot follow (DW-281).
+    providerOrigin: stored.envEmbeddingProvider !== null ? "env" : "stored",
     // A runtime fact no patch can move — it arrives on `stored` from the route.
     hasWorkersAiBinding: stored.hasWorkersAiBinding,
   };
@@ -1183,6 +1356,10 @@ export function draftVectorInputs(
     // Same reading as the route's `mergedVectorInputs`: the override wins, so
     // with one set the editable box is not the value being checked.
     modelOrigin: payload.envEmbeddingModel !== null ? "env" : "stored",
+    // The same reading of the `provider` line above that the route's
+    // `mergedVectorInputs` applies — both halves must read the same origin, or
+    // they answer differently for the same deployment.
+    providerOrigin: payload.envEmbeddingProvider !== null ? "env" : "stored",
     // Served on the payload precisely because the browser cannot ask.
     hasWorkersAiBinding: payload.hasWorkersAiBinding,
   };
