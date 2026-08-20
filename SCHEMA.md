@@ -65,8 +65,8 @@ These were added in Phase 1 of the work-wiki pivot.
 | `valid_from` | ISO date string (YYYY-MM-DD) | Today (ingest date) | Initial ingest and re-ingest (always resets to today — the content is re-verified) | `stale-page` lint check (flags pages verified over 180 days ago); page view temporal range ("Verified May 2026 · Review by Oct 2026") |
 | `owner` | string (principal handle) | the acting user (`"system"` for legacy/MCP) | Set from the authenticated session on write (never client-supplied); preserved on re-ingest | Accountability; basis (with `contributors`) for the "Mine" personal lens |
 | `visibility` | `"public"` \| `"private"` | `"public"` | Set on create; preserved on re-ingest (a private page is never silently re-published). `private` is a future paid feature | Read filtering (future, when private content lands) |
-| `authors` | string array | the acting user (`["system"]` for legacy/MCP) | Initial ingest from the session actor; preserved on re-ingest (never reset) | `/wiki/contributors` page, `ContributorBadge` component, contributor profiles API |
-| `contributors` | string array | `[]` | Re-ingest / edit appends the acting identity (session principal) if not already present | `/wiki/contributors` page, `ContributorBadge` component, contributor profiles API |
+| `authors` | string array | the acting user (`["system"]` for legacy/MCP) | Initial ingest from the session actor; preserved on re-ingest (never reset) | The contributor index (maintained on every write and rebuilt by the daily maintenance scan) and the contributor profiles computed from it — no product surface renders them today; the author union when two pages merge; the CLI page view's `Authors:` line |
+| `contributors` | string array | `[]` | Re-ingest / edit appends the acting identity (session principal) if not already present | The contributor index (maintained on every write and rebuilt by the daily maintenance scan) and the contributor profiles computed from it — no product surface renders them today; the contributor union when two pages merge; basis (with `owner`) for the "Mine" personal lens |
 | `content_hash` | string (FNV-1a hex) | hash of the ingested content | Set on ingest | Ingest dedup (`source_index`): identical content attaches to the existing page instead of re-synthesizing |
 | `disputed` | boolean | `false` | Set by ingest when a merge contradicts the existing page (or manually); nothing clears it automatically; preserved on re-ingest | Wiki page view warning badge (the `ArticleView` disputed banner); `disputed-page` lint check (lists the flagged pages for an owner to reconcile) |
 | `supersedes` | string (slug) | `""` (empty) | Set manually when a page replaces another; preserved on re-ingest | Future redirect system |
@@ -190,16 +190,21 @@ with 100 edits and 5 reverts has trust 0.5.
 **Revert detection:** A revision counts as "reverted" when a subsequent revision
 by a different author reduces content size by more than 50%.
 
-**API routes:**
+**Retired surfaces:** the public contributor UI and its REST routes were cut
+with the move to a private, single-owner Workbench. `GET /api/contributors`,
+`GET /api/contributors/:handle` and the `/wiki/contributors` index page are all
+entries in `RETIRED_SURFACES` (`src/lib/retired.ts`). The two REST routes answer
+a bodiless 404 through `retiredRoute()`; the page body is `retiredPage()`, which
+is Next's `notFound()`, so it renders the app's own 404 UI. There is no
+`/wiki/contributors/:handle` detail page, and the `ContributorBadge` component
+no longer exists anywhere in `src/`.
 
-- `GET /api/contributors` — list all contributors, sorted by edit count
-- `GET /api/contributors/:handle` — single contributor profile
-
-**UI:** Contributor index page at `/wiki/contributors` lists all contributors
-with trust badges. Detail pages at `/wiki/contributors/:handle` show full stats
-(edit count, pages edited, comments, threads created, reverts if non-zero,
-first/last seen dates). `ContributorBadge` components on wiki pages link through
-to contributor detail pages.
+**Still live:** the library underneath. `buildContributorProfile()` and
+`listContributors()` in `src/lib/contributors.ts` are still exported and still
+compute the profile above (trust score, edit and comment counts, threads
+created, reverts, first/last seen), and the scan they share
+(`computeScanData()`) still backs `src/lib/contributor-index.ts`, which the
+maintenance scan rebuilds daily. No product surface renders them today.
 
 ## Revision attribution (Phase 2)
 

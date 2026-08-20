@@ -36,13 +36,15 @@ describe("MCP tool annotations", () => {
     expect(Object.keys(tools)).toHaveLength(40);
   });
 
-  // The tool retirements left the count hand-written in two places, where it
-  // silently went stale. Both are read by agent integrators —
-  // `public/agent-api.md` is served at `/agent-api` — so pin them to the real
-  // registration count rather than to another hand-written number.
+  // The tool retirements left the count hand-written in three places, where it
+  // silently went stale. All three are read by integrators and designers —
+  // `public/agent-api.md` is served at `/agent-api`, and `DESIGN-triggers.md`
+  // is the MCP capability assessment — so pin them to the real registration
+  // count rather than to another hand-written number.
   it.each([
     ["public/agent-api.md", "public/agent-api.md"],
     ["src/lib/mcp-http.ts", "src/lib/mcp-http.ts"],
+    ["DESIGN-triggers.md", "DESIGN-triggers.md"],
   ])("%s documents the real tool count", async (_label, relative) => {
     const { readFile } = await import("fs/promises");
     const path = await import("path");

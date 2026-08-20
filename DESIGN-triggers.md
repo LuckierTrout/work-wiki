@@ -335,7 +335,7 @@ events in `wiki/.trigger-events/<YYYY-MM-DD>.jsonl`.
 
 ### 4.1 Current MCP capabilities
 
-work-wiki's MCP server (`src/mcp.ts`) exposes 21 tools over stdio transport.
+work-wiki's MCP server (`src/mcp.ts`) exposes 40 tools over stdio transport.
 The `@modelcontextprotocol/sdk` package supports:
 
 - **Tool registration** (fully used)

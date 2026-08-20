@@ -8,10 +8,12 @@
  *     from the source (the reconcile-on-merge step refreshes it). Also used for
  *     low-confidence pages (below `LOW_CONFIDENCE_THRESHOLD`) that have a
  *     `source_url` — re-ingesting re-synthesizes and may raise confidence.
- *   - **fix** (deterministic, no LLM): backfill a legacy page missing all
- *     work-wiki schema fields (`unmigrated-page`); clear a dangling `supersedes`
- *     reference (`supersedes-dangling`); drop an index entry whose page file is
- *     gone (`stale-index`). These reuse the lint auto-fixes (`lint-fix.ts`).
+ *   - **fix** (deterministic, no LLM): a lint fix (`lintType`) —
+ *     `orphan-page`, `stale-index`, `unmigrated-page`, `supersedes-dangling`,
+ *     `broken-link`, `empty-page`, `stale-page`, `missing-crossref`: the whole
+ *     `MaintainFixType` union (`tasks.ts`). These reuse the lint auto-fixes
+ *     (`lint-fix.ts`). One is destructive: `empty-page` DELETES the page
+ *     outright — every other fix only rewrites a page or an index entry.
  *
  * Guardrails (because no human is watching each one):
  *   - **commons-only**: skip PRIVATE pages entirely. Autonomous maintenance

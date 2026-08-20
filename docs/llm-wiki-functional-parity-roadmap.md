@@ -97,20 +97,22 @@ job. Selected-text and readable-content capture remain optional future work.
 
 ### Local implementation status — 2026-08-06
 
-Two Phase 1 slices are implemented locally. Settings now includes an
-owner-scoped Workspace Purpose editor with clean-room General, Research,
-Reading, Personal Growth, and Business scenario drafts. It stores purpose, key
-questions, scope boundaries, output language, and page conventions. The saved
-profile is included in ingest and reconciliation, query and native chat,
-source-monitor proposals, structured-knowledge extraction, action extraction,
-and specialized-agent instructions. It does not alter raw evidence or bypass
-citations and review. Chat also has a persistent evidence selector. Original
-Sources Only mode uses the readable wiki index solely to find candidate source
-documents, then builds answer context exclusively from captured raw snapshots.
-It uses bounded lexical chunk ranking, treats source text and metadata as
-untrusted data, requires exact raw API links with line ranges, and fails with a
-useful error when the selected scope has no captured originals. Existing
-conversations migrate safely to Wiki Pages mode.
+Two Phase 1 slices are implemented locally. Settings now includes a per-Wiki
+Workspace Purpose editor with clean-room General, Research, Reading, Personal
+Growth, and Business scenario drafts. Each Wiki keeps its own profile beside
+that Wiki's `purpose.md` and `schema.md`, so switching the active Wiki swaps
+which profile is live. It stores purpose, key questions, scope boundaries,
+output language, and page conventions. The saved profile is included in ingest
+and reconciliation, query and native chat, source-monitor proposals,
+structured-knowledge extraction, action extraction, and specialized-agent
+instructions. It does not alter raw evidence or bypass citations and review.
+Chat also has a persistent evidence selector. Original Sources Only mode uses
+the readable wiki index solely to find candidate source documents, then builds
+answer context exclusively from captured raw snapshots. It uses bounded lexical
+chunk ranking, treats source text and metadata as untrusted data, requires
+exact raw API links with line ranges, and fails with a useful error when the
+selected scope has no captured originals. Existing conversations migrate safely
+to Wiki Pages mode.
 
 Verification for these slices: 172 test files and 3,683 tests passed, full lint
 passed, the Next production build passed, the OpenNext Cloudflare build

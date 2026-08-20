@@ -1139,7 +1139,8 @@ source_spec: `spec-retire-dead-machinery-round-2.md`
 location: src/lib/maintenance.ts:11
 severity: medium
 reason: The header (`src/lib/maintenance.ts:11-14`) names `unmigrated-page`, `supersedes-dangling`, and `stale-index`; the scan body also emits `orphan-page` (:60), `broken-link` (:127), `empty-page` (:143), `stale-page` (:160), and `missing-crossref` (:193), matching `MaintainFixType` in `src/lib/tasks.ts:164-172`. Pre-existing drift surfaced while correcting the task-consumer README against this file — the README now carries the accurate list, so the module header is the remaining stale copy.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-doc-drift-corrections
 
 ### DW-128: `.yoyo/status.md` still advertises `list_contributors` and `get_contributor` and an MCP tool count of 31.
 origin: spec-deferred d19fab62b40d
@@ -1155,7 +1156,8 @@ source_spec: `spec-retire-dead-machinery-round-2.md`
 location: SCHEMA.md:195
 severity: low
 reason: `SCHEMA.md:195-201` advertises `GET /api/contributors`, `GET /api/contributors/:handle`, the `/wiki/contributors` index, the `/wiki/contributors/:handle` detail pages, and `ContributorBadge` components on wiki pages; `:68-69` cites the same surfaces as the consumers of the `authors`/`contributors` frontmatter fields. All three routes are `retiredRoute()` / `retiredPage()` 404s and `ContributorBadge` no longer exists anywhere under `src/`. This drift predates this pass — the routes were retired earlier, and this pass only removed the MCP tools — but it is the same contributor surface, so it belongs with DW-8's residue.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-doc-drift-corrections
 
 ### DW-130: `DESIGN-triggers.md` states the MCP server exposes 21 tools; the real count is 40.
 origin: spec-deferred b88666035d3d
@@ -1163,7 +1165,8 @@ source_spec: `spec-retire-dead-machinery-round-2.md`
 location: DESIGN-triggers.md:338
 severity: low
 reason: `DESIGN-triggers.md:338` reads "work-wiki's MCP server (`src/mcp.ts`) exposes 21 tools over stdio transport." The count guard in `src/lib/__tests__/mcp-annotations.test.ts:41-59` scans only `public/agent-api.md` and `src/lib/mcp-http.ts`, so this third hand-written count is unpinned and was already stale by ~20 before this pass. Out of the retirement's file scope.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-doc-drift-corrections
 
 ### DW-131: The graph page's canvas accessibility fallback points readers at `/wiki`, which is a retired 404.
 origin: spec-deferred 0160c928098e
@@ -1232,7 +1235,8 @@ source_spec: `spec-per-wiki-workspace-profiles.md`
 location: docs/llm-wiki-functional-parity-roadmap.md:101
 severity: low
 reason: Line 101 predates this change; the roadmap is not a spec surface this run owns, but the sentence is now wrong.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-doc-drift-corrections
 
 ### DW-139: `putWorkspaceProfile` is an exported unlocked writer whose only guard is a docblock.
 origin: spec-deferred 5cc8cc30ccaa
@@ -1516,7 +1520,8 @@ source_spec: `spec-dw-30-wiki-lens-copy-and-invariant.md`
 location: _bmad-output/planning-artifacts/prds/prd-work-wiki-2026-08-12/prd.md:99
 severity: low
 reason: `_bmad-output/planning-artifacts/prds/prd-work-wiki-2026-08-12/prd.md:99` reads "**File Tree** — Left-column browse of the Wiki's files (Pages, Sources, purpose/Schema)", which groups Pages and Sources under "the Wiki's" exactly as the corrected AC used to. The intent named `epics.md:400` specifically and said nothing about the PRD, so rewording a second planning artifact is outside what was authorised here.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-doc-drift-corrections
 
 ### DW-172: The AC edit shifted `epics.md` by two lines, so four line-addressed citations in three completed story records now point two lines short.
 origin: spec-deferred 1f39f0c46915
@@ -2151,7 +2156,8 @@ source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
 location: tools/work-wiki-sync.md
 severity: low
 reason: No README, DEPLOY.md, AGENTS.md or UI surface links to the operator sync doc; src/components/LocalSyncPanel.tsx:42-44 emits the env commands inline and points nowhere. Pre-existing under the old filename too, but the rename was the natural moment to add the one link that makes it discoverable.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-doc-drift-corrections
 
 ### DW-246: A third hand-copy of the document allowlist lives in `src/lib/bulk-document-import.ts` and still rejects seven formats the app extractor accepts.
 origin: spec-deferred 2da88f7dbb6c
@@ -2688,7 +2694,8 @@ source_spec: `spec-dw-277-279-280-281-vector-gate-surface-completeness.md`
 location: DEPLOY.md (the two "flat request" caveats) with src/app/api/settings/route.ts
 severity: low
 reason: Two sentences claim it: "the older `/settings` page saves the embedding provider through a flat request that never enters this gate" and "saves the embedding model through a flat request that never runs this check". `src/app/api/settings/route.ts` now calls `validateWorkbenchSettingsPatch` for a flat-only body (its comment spells out that "the flat branch cannot move that flag, so `turningOn` is always `false`"), and `settings-route.test.ts` carries a suite for the vector rule on the flat branch. Stale as of the DW-217 sweep (commit a5a50aa, this change's baseline), so pre-existing here — but this change rewrites the paragraphs immediately above and below both sentences, which is how it surfaced.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-doc-drift-corrections
 
 ### DW-310: `searchByVector`'s model-drift breadcrumb is the same standing-misconfiguration shape as the three warnings this story throttled, but fires once per search query and was left unguarded.
 origin: spec-deferred 23b8e4e79790
@@ -2916,4 +2923,36 @@ source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
 location: src/components/workbench/SettingsCanvas.tsx (modelSubstitution)
 severity: low
 reason: `modelSubstitution` reads `stored.embeddingModelOverridden` / `stored.embeddingModelInEffect`, while the env sentence and `vectorModelIssue` on the same row come from `values`. An owner who corrects the model in the box still reads "Not in effect. This deployment embeds with …" until a PUT lands. This is unavoidable without the server — the rule runs over the env and the store together — and it is documented in code and in DEPLOY.md ("re-reads it on save"), but the same row now mixes two freshness contracts and no test mounts the edit-then-read path. Whether the note should be suppressed while the model or provider field is dirty is a decision the intent does not contain.
+status: open
+
+### DW-338: SCHEMA.md's Talk pages section still documents all five `/api/wiki/:slug/discuss...` routes as live surfaces.
+origin: spec-deferred d5560fb0b17e
+source_spec: `spec-dw-127-309-doc-drift-corrections.md`
+location: SCHEMA.md:126
+severity: medium
+reason: SCHEMA.md:126-167 lists GET/POST discuss, GET/PATCH the thread, and POST comments as live. All five are entries in RETIRED_SURFACES (src/lib/retired.ts:37-40) and answer 404. Same drift class as DW-129, one heading above the block this change corrected; the intent named only the contributor surface.
+status: open
+
+### DW-339: SCHEMA.md's planned-evolution status still calls talk pages and contributor profiles complete, contradicting the new retired-surfaces block.
+origin: spec-deferred 493f9af093ca
+source_spec: `spec-dw-127-309-doc-drift-corrections.md`
+location: SCHEMA.md
+severity: low
+reason: The Phase 2 status prose later in SCHEMA.md reads that talk pages and attribution are complete and contributor profiles are implemented, a few hundred lines below the paragraph this change rewrote to say the whole contributor product surface was cut.
+status: open
+
+### DW-340: DESIGN-triggers.md still designs triggers on `discussion-opened` / `discussion-resolved` and talk-thread events that retired with the commons.
+origin: spec-deferred 3b9db02a207e
+source_spec: `spec-dw-127-309-doc-drift-corrections.md`
+location: DESIGN-triggers.md:190
+severity: low
+reason: DESIGN-triggers.md:190-191 and :316-317 build trigger designs on discussion events whose routes are all RETIRED_SURFACES entries (src/lib/retired.ts:37-40). This change corrected only the tool count at :338, which was the only fact the intent named in that file.
+status: open
+
+### DW-341: The eight-member `fix` list is hand-copied in two documents with nothing pinning either to `MaintainFixType`.
+origin: spec-deferred 52bccbf1a637
+source_spec: `spec-dw-127-309-doc-drift-corrections.md`
+location: src/lib/maintenance.ts:11
+severity: medium
+reason: src/lib/maintenance.ts's module header and workers/task-consumer/README.md:47-49 both re-list the union by hand. `MaintainFixType` (src/lib/tasks.ts:164-172) appears in no test, so adding a ninth member re-stales both silently -- exactly the mechanism DW-127 reported. DW-130 got a pin in this pass (mcp-annotations.test.ts); this list did not, because the intent did not ask for one.
 status: open

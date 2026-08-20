@@ -110,9 +110,19 @@ deployment with `EMBEDDING_PROVIDER=workers-ai` and `openai` in Settings, the
 select reads OpenAI while the sentence beside it is about Cloudflare Workers AI.
 
 The same limit applies here as to the model rule below: the older `/settings`
-page saves the embedding provider through a flat request that never enters this
-gate, so `workers-ai` selected there is still stored silently on a deployment
-with no binding. The refusal guards the Workbench switch, not the config file.
+page now runs this same gate on its flat request. It fires only when the
+request moves a vector input the rule reads and vector search is **already
+stored on** — that request cannot move `vectorSearchEnabled` itself, so it
+never refuses in the turning-on frame. A refusal is then normally narrowed to
+the legs that flat body could have moved: the embedding model, the only vector
+control that page renders, plus the provider and binding legs when a direct API
+caller sends `embeddingProvider`. The exception is a save that **breaks a
+configuration that previously worked** — that one refuses over any unmet leg,
+actionable from that page or not. With vector search off none of it applies: a
+flat save is not gated at all, so a provider sent to the flat `/api/settings`
+route is still stored silently on a deployment with no binding. And nothing
+gates `EMBEDDING_PROVIDER` or the config file itself — the rule only ever runs
+on an API save.
 
 Those are not safe answers by themselves, though: `openai` and `google` are
 dropped just as silently when the matching key is missing (`OPENAI_API_KEY` /
@@ -188,12 +198,15 @@ Two separate things happen to an id the resolved provider cannot serve:
   **explicitly selected** embedding provider disagree, and a save that tries is
   rejected with a message naming the supported ids (under `workers-ai`) or the
   namespace boundary (under the other providers). Two limits are worth knowing
-  before you rely on it. The older `/settings` page saves the embedding model
-  through a flat request that never runs this check, so a mismatch entered there
-  is accepted silently — it is trimmed on the way in, but not validated. And the
-  refusal only names a model rule once an embedding provider has actually been
-  chosen — with the provider left to auto-detection the switch refuses for the
-  missing provider instead.
+  before you rely on it. The older `/settings` page now runs this same check on
+  its flat request, but only against a store where vector search is **already
+  on** — and there, a save that breaks a configuration that previously worked
+  is refused over any unmet leg, not just the model box (see the provider rule
+  above). With the switch off that flat save is not gated at all, so a mismatch
+  entered there is still accepted silently — it is trimmed on the way in, but
+  not validated. And the refusal only names a model rule once an embedding
+  provider has actually been chosen — with the provider left to auto-detection
+  the switch refuses for the missing provider instead.
 
   When the mismatched id came from **this variable** rather than from the
   Settings store, the refusal says so: it appends *"That value comes from
@@ -389,6 +402,12 @@ The compose file defines two named volumes:
 | `raw-data` | `/app/raw` | Ingested source documents |
 
 Your wiki data lives in these volumes and persists even if you remove the container.
+
+For an off-container copy — one-off pulls, scheduled snapshots, and the
+two-step restore — use the [local sync companion](tools/work-wiki-sync.md).
+Point `WORKWIKI_URL` at your own deployment before you run it: the companion
+defaults to `https://workwiki.app`, so a self-hoster who skips that variable
+pulls from the hosted instance rather than from this container.
 
 ### Using a local directory instead
 
