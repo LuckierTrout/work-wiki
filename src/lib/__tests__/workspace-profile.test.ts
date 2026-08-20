@@ -14,11 +14,18 @@ import { _resetLocks } from "../lock";
 import { buildQuerySystemPrompt } from "../query";
 import { _resetStorage } from "../storage";
 import { tenantForOwner } from "../wiki";
-import { createWiki, setCurrentWiki, wikiRegistryPath } from "../wikis";
+import {
+  applyScenarioTemplate,
+  createWiki,
+  setCurrentWiki,
+  wikiRegistryPath,
+} from "../wikis";
+import { withWikiLock } from "../wiki-lock";
 import { buildWorkspaceGuidance } from "../workspace-guidance";
 import {
   emptyWorkspaceProfile,
   getWorkspaceProfile,
+  putWorkspaceProfile,
   renderWorkspaceGuidance,
   saveWorkspaceProfile,
 } from "../workspace-profile";
@@ -187,6 +194,315 @@ describe("workspace purpose profile", () => {
     const seeded = await getWorkspaceProfile(OWNER, wiki.id);
     expect(seeded.createdAt).not.toBe("2020-01-01T00:00:00.000Z");
     expect(Date.parse(seeded.createdAt!)).toBeGreaterThan(Date.parse("2024-01-01"));
+  });
+
+  it("treats this wiki's OWN unparseable profile as empty rather than throwing (DW-144)", async () => {
+    // The file `putWorkspaceProfile` reads for `createdAt` is the file it is
+    // about to overwrite. Rethrowing the `SyntaxError` from it meant a corrupt
+    // profile BLOCKED the re-template and the Settings save that would have
+    // repaired it — the write was refused by the very bytes it was replacing.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const perWiki = abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json");
+    await fs.writeFile(perWiki, "{ not json");
+
+    expect(await getWorkspaceProfile(OWNER, wiki.id)).toEqual(emptyWorkspaceProfile());
+  });
+
+  it("does NOT read a corrupt own profile through to the legacy singleton (DW-144)", async () => {
+    // Empty, not null. A wiki with a corrupt file HAS a file of its own; the
+    // read-through exists only for wikis that never wrote one, and letting a
+    // corrupt file fall through would show the owner a purpose authored for a
+    // different era of the tenant and — worse — hand `putWorkspaceProfile` that
+    // file's `createdAt`.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await fs.writeFile(
+      abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json"),
+      "{ not json",
+    );
+    await fs.writeFile(
+      abs("tenants", TENANT, "workspace-profile.json"),
+      JSON.stringify({
+        version: 1,
+        scenario: "custom",
+        purpose: "Hand-authored before the split.",
+        keyQuestions: [],
+        inScope: [],
+        outOfScope: [],
+        outputLanguage: "English",
+        pageConventions: "",
+        createdAt: "2020-01-01T00:00:00.000Z",
+        updatedAt: "2020-01-01T00:00:00.000Z",
+      }),
+    );
+
+    const read = await getWorkspaceProfile(OWNER, wiki.id);
+    expect(read.purpose).not.toContain("Hand-authored before the split.");
+    expect(read).toEqual(emptyWorkspaceProfile());
+  });
+
+  it("lets a re-template overwrite a corrupt own profile (DW-144)", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const perWiki = abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json");
+    await fs.writeFile(perWiki, "{ not json");
+
+    await expect(
+      applyScenarioTemplate(OWNER, wiki.id, "reading"),
+    ).resolves.toBeTruthy();
+
+    const repaired = await getWorkspaceProfile(OWNER, wiki.id);
+    expect(repaired.scenario).toBe("reading");
+    expect(repaired.purpose).toBe(WORKSPACE_SCENARIO_TEMPLATES.reading.purpose);
+    // `createdAt` was unknowable, so it is stamped fresh rather than left null.
+    expect(repaired.createdAt).toBeTruthy();
+    expect(Date.parse(repaired.createdAt!)).toBeGreaterThan(Date.parse("2024-01-01"));
+  });
+
+  it("lets a Settings save overwrite a corrupt own profile (DW-144)", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await fs.writeFile(
+      abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json"),
+      "not json at all",
+    );
+
+    const saved = await saveWorkspaceProfile(OWNER, wiki.id, {
+      scenario: "custom",
+      purpose: "Retyped after the file went bad.",
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    });
+
+    expect(saved.purpose).toBe("Retyped after the file went bad.");
+    expect(saved.createdAt).toBeTruthy();
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).purpose).toBe(
+      "Retyped after the file went bad.",
+    );
+  });
+
+  it("still throws when this wiki's own profile is UNREADABLE, not merely unparseable (DW-144)", async () => {
+    // The line the degradation stops at. A directory in the file's place — or a
+    // storage outage — is not fixed by writing, and answering it as an empty
+    // Workspace Purpose would show the owner a blank purpose while storage was
+    // merely failing, then let the next save stamp a fresh `createdAt` over a
+    // profile that is still there.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const perWiki = abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json");
+    await fs.rm(perWiki);
+    await fs.mkdir(perWiki);
+
+    await expect(getWorkspaceProfile(OWNER, wiki.id)).rejects.toThrow();
+  });
+
+  it("treats a schema-REJECTED own profile as empty too, not just unparseable JSON (DW-144)", async () => {
+    // `toProfile` raises on two different things and the degradation covers
+    // both, because both are the same fact about the file: these bytes cannot
+    // become a profile, and reading them again will not change that. Valid JSON
+    // naming a scenario the schema retired is the realistic case — a rename in
+    // `workspace-profile-schema.ts` turns every stored profile on the old name
+    // into this, and rethrowing would have blocked the very save that migrates
+    // them.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const perWiki = abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json");
+    await fs.writeFile(
+      perWiki,
+      JSON.stringify({
+        version: 1,
+        scenario: "retired-name",
+        purpose: "Recoverable text.",
+      }),
+    );
+    // A legacy singleton is present and must NOT be reached: the wiki has a
+    // file of its own, unusable or not.
+    await fs.writeFile(
+      abs("tenants", TENANT, "workspace-profile.json"),
+      JSON.stringify({
+        version: 1,
+        scenario: "custom",
+        purpose: "Hand-authored before the split.",
+        keyQuestions: [],
+        inScope: [],
+        outOfScope: [],
+        outputLanguage: "English",
+        pageConventions: "",
+        createdAt: "2020-01-01T00:00:00.000Z",
+        updatedAt: "2020-01-01T00:00:00.000Z",
+      }),
+    );
+
+    expect(await getWorkspaceProfile(OWNER, wiki.id)).toEqual(emptyWorkspaceProfile());
+
+    // And the next save replaces it, which is the whole reason the read degrades.
+    const saved = await saveWorkspaceProfile(OWNER, wiki.id, {
+      scenario: "reading",
+      purpose: "Migrated off the retired scenario.",
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    });
+    expect(saved.scenario).toBe("reading");
+    expect(saved.createdAt).toBeTruthy();
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).purpose).toBe(
+      "Migrated off the retired scenario.",
+    );
+  });
+
+  it("refuses a lock token used AFTER withWikiLock returned (DW-139)", async () => {
+    // A minted token is an ordinary value, so it outlives the critical section
+    // it was minted in — captured in a closure, or carried by a promise started
+    // inside the body and never awaited. Without the liveness check the type
+    // system would go on asserting "the lock is held" about a moment when it is
+    // not, which is the DW-139 exposure with a proof attached.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const profilePath = abs(
+      "tenants",
+      TENANT,
+      "wikis",
+      wiki.id,
+      "workspace-profile.json",
+    );
+
+    let escaped!: Parameters<Parameters<typeof withWikiLock>[1]>[0];
+    const inside = await withWikiLock(OWNER, async (held) => {
+      escaped = held;
+      // Accepted while the lock is actually held — the control that makes the
+      // rejection below evidence of the lifetime rather than of a dead token.
+      return putWorkspaceProfile(held, OWNER, wiki.id, {
+        scenario: "custom",
+        purpose: "Written inside the critical section.",
+        keyQuestions: [],
+        inScope: [],
+        outOfScope: [],
+        outputLanguage: "English",
+        pageConventions: "",
+      });
+    });
+    expect(inside.purpose).toBe("Written inside the critical section.");
+
+    const before = await fs.readFile(profilePath, "utf8");
+    await expect(
+      putWorkspaceProfile(escaped, OWNER, wiki.id, {
+        scenario: "custom",
+        purpose: "Written with a token that outlived its lock.",
+        keyQuestions: [],
+        inScope: [],
+        outOfScope: [],
+        outputLanguage: "English",
+        pageConventions: "",
+      }),
+    ).rejects.toThrow(/wiki lock proof expired/);
+
+    // Distinct from the tenant-mismatch refusal: the two failures have
+    // different fixes, and one message covering both would name neither.
+    await expect(
+      putWorkspaceProfile(escaped, OWNER, wiki.id, {
+        scenario: "custom",
+        purpose: "x",
+        keyQuestions: [],
+        inScope: [],
+        outOfScope: [],
+        outputLanguage: "English",
+        pageConventions: "",
+      }),
+    ).rejects.not.toThrow(/proof mismatch/);
+
+    // Nothing written — the check runs before a byte is read or written.
+    expect(await fs.readFile(profilePath, "utf8")).toBe(before);
+  });
+
+  it("retires the token even when the locked body THREW (DW-139)", async () => {
+    // A rejected body releases the lock exactly as a resolving one does, and a
+    // token left live across a failure is the one most likely to be reused — by
+    // the retry the failure prompts.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    let escaped!: Parameters<Parameters<typeof withWikiLock>[1]>[0];
+
+    await expect(
+      withWikiLock(OWNER, async (held) => {
+        escaped = held;
+        throw new Error("the locked body failed");
+      }),
+    ).rejects.toThrow("the locked body failed");
+
+    await expect(
+      putWorkspaceProfile(escaped, OWNER, wiki.id, {
+        scenario: "custom",
+        purpose: "Retried with the failed run's token.",
+        keyQuestions: [],
+        inScope: [],
+        outOfScope: [],
+        outputLanguage: "English",
+        pageConventions: "",
+      }),
+    ).rejects.toThrow(/wiki lock proof expired/);
+  });
+
+  it("rejects a lock token minted for a DIFFERENT owner (DW-139)", async () => {
+    // The one runtime mistake the brand cannot catch on its own: the type says
+    // "some wiki lock is held", and only the key the token carries can say it is
+    // the one covering the bytes about to be written. A token from another
+    // tenant would serialize the write against the wrong key.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const before = await fs.readFile(
+      abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json"),
+      "utf8",
+    );
+
+    await expect(
+      withWikiLock("bob", (held) =>
+        putWorkspaceProfile(held, OWNER, wiki.id, {
+          scenario: "custom",
+          purpose: "Written under another tenant's lock.",
+          keyQuestions: [],
+          inScope: [],
+          outOfScope: [],
+          outputLanguage: "English",
+          pageConventions: "",
+        }),
+      ),
+    ).rejects.toThrow(/wiki lock proof mismatch/);
+
+    // Nothing written — the check runs before a byte is read or written.
+    expect(
+      await fs.readFile(
+        abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json"),
+        "utf8",
+      ),
+    ).toBe(before);
+
+    // …and the matching token is accepted, so the assertion above is evidence of
+    // the tenant check rather than of a putter that rejects everything.
+    const ok = await withWikiLock(OWNER, (held) =>
+      putWorkspaceProfile(held, OWNER, wiki.id, {
+        scenario: "custom",
+        purpose: "Written under this tenant's lock.",
+        keyQuestions: [],
+        inScope: [],
+        outOfScope: [],
+        outputLanguage: "English",
+        pageConventions: "",
+      }),
+    );
+    expect(ok.purpose).toBe("Written under this tenant's lock.");
+  });
+
+  it("keeps the lock proof as putWorkspaceProfile's FIRST parameter (DW-139)", async () => {
+    // A source-scan pin, because the guarantee is a COMPILE-time one and no
+    // runtime assertion can observe it: an unlocked caller does not throw, it
+    // fails to build. Dropping the parameter would leave every case in this file
+    // green while restoring the exposure DW-139 named — an exported putter that
+    // any module can call without holding `wikis:<tenant>`.
+    const source = await fs.readFile(
+      path.resolve(__dirname, "../workspace-profile.ts"),
+      "utf8",
+    );
+    expect(source).toContain("export async function putWorkspaceProfile(\n  held: WikiLockHeld,");
+    expect(source).toContain("assertWikiLockHeld(held, owner);");
+    // And the ONE minting site is the lock wrapper, not this module.
+    expect(source).not.toContain("WIKI_LOCK_HELD");
   });
 
   it("validates bounded profile input and independently authored templates", () => {

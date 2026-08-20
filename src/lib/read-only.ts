@@ -34,6 +34,20 @@
  * instead: `src/lib/__tests__/read-only-copy-parity.test.ts` compares each
  * client constant against the server sentence it mirrors.
  *
+ * THE WIKI-LIFECYCLE ROUTES KEEP THEIR INLINE LITERALS. `POST /api/wikis`,
+ * `POST /api/wikis/[id]/template` and `PATCH /api/wikis/[id]` gate at the HTTP
+ * layer on `isReadOnly()` and spell their 403 body in place. DW-266 added
+ * {@link READ_ONLY_REFUSAL.wikiCreate}, `.wikiTemplate` and `.wikiRename` for
+ * the KERNEL functions behind them (`createWiki`, `applyScenarioTemplate`,
+ * `renameWiki`), which any DIRECT LIBRARY CALLER — a CLI command, a future MCP
+ * tool, a maintenance script — reaches with no route in front. Today the four
+ * wiki routes are their only callers, so the gates change no behaviour the app
+ * has; they are there for the caller added next. Importing the constant into those handlers would have rewritten route
+ * bodies this change is not allowed to touch, so the sentences are duplicated
+ * on purpose and the duplication is pinned by TEST rather than by import:
+ * `read-only-copy-parity.test.ts` compares each constant against the literal
+ * the handler actually serves, so a reworded route fails on the next run.
+ *
  * A CLIENT SENTENCE MAY BE NARROWER THAN THE SERVER'S. The Revert control is
  * the case: the server refusal it meets is `pageWrite`, the KERNEL's sentence
  * for any page write, because the revert route maps the writer's error rather
@@ -80,6 +94,37 @@ export const READ_ONLY_REFUSAL = {
   /** `writeWikiArtifact` and the two Workbench artifact routes. */
   artifactEdit:
     "The Schema cannot be edited while this deployment is read-only.",
+  /**
+   * `createWiki` and `POST /api/wikis`. Character-identical to the sentence the
+   * route already serves inline — see the module note on the wiki-lifecycle
+   * doors below.
+   */
+  wikiCreate: "Wikis cannot be created while this deployment is read-only.",
+  /**
+   * `applyScenarioTemplate` and `POST /api/wikis/[id]/template` — the re-seed
+   * that overwrites `purpose.md`, `schema.md` and the Wiki's own profile.
+   */
+  wikiTemplate: "Templates cannot be applied while this deployment is read-only.",
+  /** `renameWiki` and `PATCH /api/wikis/[id]`. */
+  wikiRename: "Wikis cannot be renamed while this deployment is read-only.",
+  /**
+   * The two unlocked byte putters under `tenants/<t>/wikis/<id>/` —
+   * `putWikiArtifact` in `wikis.ts` and `putWorkspaceProfile` in
+   * `workspace-profile.ts` — plus `saveWorkspaceProfile`, the locked wrapper
+   * that gates before taking the lock.
+   *
+   * ONE sentence for all three because they are one fact: this deployment does
+   * not write files inside a Wiki's directory. It names the FILE rather than a
+   * verb precisely because the putters are reached by create, re-template,
+   * rename and a Settings save alike — the same reasoning as {@link pageWrite}.
+   *
+   * `PUT /api/workspace-profile` keeps its own narrower 403 ("Settings are
+   * read-only in this deployment.") and never reaches this sentence, since its
+   * `isReadOnly()` gate answers first; `read-only-copy-parity.test.ts` records
+   * that divergence.
+   */
+  wikiFileWrite:
+    "Wiki files cannot be written while this deployment is read-only.",
   /** `DELETE /api/ingest/history` — the bulk page delete. */
   bulkPageDelete:
     "Ingested pages cannot be deleted while this deployment is read-only.",

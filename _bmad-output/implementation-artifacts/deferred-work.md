@@ -1238,7 +1238,8 @@ source_spec: `spec-per-wiki-workspace-profiles.md`
 location: src/lib/workspace-profile.ts
 severity: low
 reason: It must be exported so `seedWikiArtifacts` can write inside the non-reentrant `wikis:<tenant>` lock, but a future caller that is NOT holding that lock can write a profile with no serialization and nothing in the suite or the type system flags it. The module-private `putWikiArtifact` does not have this exposure.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-workspace-profile-store-hardening
 
 ### DW-140: `PUT /api/workspace-profile` has no explicit invalid-JSON branch, so a malformed body surfaces a raw parser message as the 400.
 origin: spec-deferred f65e39667a15
@@ -1279,7 +1280,8 @@ source_spec: `spec-per-wiki-workspace-profiles.md`
 location: src/lib/workspace-profile.ts
 severity: low
 reason: `getWorkspaceProfile` rethrows a `SyntaxError` from its own file (only the legacy fallback degrades), and `putWorkspaceProfile` reads existing state before writing. Pre-existing shape — the old tenant-global store behaved the same way.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-workspace-profile-store-hardening
 
 ### DW-145: Two tabs editing the SAME Wiki's Workspace Purpose still last-write-wins with no warning.
 origin: spec-deferred 47d53b63986a
@@ -2312,7 +2314,8 @@ source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
 location: src/lib/wikis.ts (putWikiArtifact)
 severity: low
 reason: `assertWritable` was added to `writeWikiArtifact` (src/lib/wikis.ts), but the unlocked seeder `putWikiArtifact` — used by `createWiki` inside the registry lock — takes the wider `ArtifactFile` type and has no gate. The residual hole is narrow because `POST /api/wikis` has consulted `isReadOnly()` since before this change, so only a direct library caller (CLI, a future MCP tool) can reach it; it is nonetheless a caller that does not inherit the refusal the module docstring claims every caller inherits.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-workspace-profile-store-hardening
 
 ### DW-267: `POST /api/tasks/run` answering 403 changes Cloudflare Queue semantics from retry-then-DLQ to ack-and-drop, and the trade-off deserves a human call.
 origin: spec-deferred d73cd0e4de4b
@@ -2697,4 +2700,44 @@ source_spec: `spec-dw-274-effective-settings-embedding-truth.md`
 location: src/lib/config.ts:1156
 severity: low
 reason: `src/lib/config.ts:1156` takes `cfg` from `loadConfigSync()`, and both `getEmbeddingModelName()` (:1274) and `hasEmbeddingSupport()` (:1288) re-enter it. `loadConfigSync` has a 5 s TTL and returns an EMPTY config when the cache is cold (:569-578), so a TTL boundary crossed between two of those reads would report a stored model as set while resolving the in-effect half against `{}` — a "Not in effect" note about a substitution that is not happening. The shape is pre-existing (`embeddingSupport` has re-entered the same way since before this story) and the window is between two adjacent synchronous statements with no await, so it is vanishingly narrow; the fix is a `cfg`-taking door on the resolver, which `src/lib/embeddings.ts` does not expose today.
+status: open
+
+### DW-314: `deleteWiki`, `setCurrentWiki` and `sweepOrphanWikiDirectories` still write and delete bytes with no `assertWritable`, while their three sibling lifecycle doors now refuse.
+origin: spec-deferred 844e3a28f040
+source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
+location: src/lib/wikis.ts (deleteWiki, setCurrentWiki, sweepOrphanWikiDirectories); src/app/api/tasks/scan/route.ts
+severity: medium
+reason: `deleteWiki` rewrites `wikis.json` and calls `getStorage().deleteDirectory(wikiDirPath(...))` — the most destructive operation in the module — and `setCurrentWiki` rewrites the registry; neither calls `assertWritable`. `sweepOrphanWikiDirectories` deletes directories and is reached from `src/app/api/tasks/scan/route.ts`, which carries no `isReadOnly()` gate at all, so it can delete on a timer on a read-only deployment. Their HTTP doors do gate (`src/app/api/wikis/[id]/route.ts:63`, `src/app/api/wikis/current/route.ts:19`), which is exactly the "route gates, kernel does not" shape DW-266 names. Out of scope here: the bundle's intent names `putWikiArtifact` and `putWorkspaceProfile`, and neither of these three writes through either putter.
+status: open
+
+### DW-315: `read-only-door-coverage.test.ts` still registers four kernel writers, so the newly refusing wiki-lifecycle exports are invisible to the scan that guards tomorrow's doors.
+origin: spec-deferred 451eef2b76ed
+source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
+location: src/lib/__tests__/read-only-door-coverage.test.ts:36
+severity: low
+reason: `KERNEL_WRITERS` and `WRITER_EXPORTS` do not name `createWiki`, `applyScenarioTemplate`, `renameWiki` or `saveWorkspaceProfile`, and the file's staleness guard re-derives only from `KERNEL_WRITERS`. A future `route.ts` importing `createWiki` with neither treatment would serve the refusal as a 500 and the scan would not notice. Every route that reaches them today gates first, so nothing is broken now. Deliberately not fixed here: widening that registry re-derives a route-treatment map across the whole app.
+status: open
+
+### DW-316: The three wiki lifecycle routes classify a `ReadOnlyError` as 500 rather than mapping it to 403.
+origin: spec-deferred 56ea98b9ffae
+source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
+location: src/app/api/wikis/route.ts; src/app/api/wikis/[id]/route.ts; src/app/api/wikis/[id]/template/route.ts
+severity: low
+reason: `src/app/api/wikis/route.ts`, `src/app/api/wikis/[id]/route.ts` and `src/app/api/wikis/[id]/template/route.ts` branch only on `ClientInputError` (400) and answer 500 for everything else. Every other read-only-aware route carries an `isReadOnlyError(error) -> 403` branch beside its early gate (see `src/app/api/workbench/artifact/route.ts:68`). Reachable only if `YOPEDIA_READONLY` flips between the route's own `isReadOnly()` gate and the kernel call. Route files were fenced out of this change.
+status: open
+
+### DW-317: The two putter backstop gates are unreachable through every current caller, so no test observes them firing.
+origin: spec-deferred 0b21a169fec9
+source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
+location: src/lib/wikis.ts (putWikiArtifact); src/lib/workspace-profile.ts (putWorkspaceProfile)
+severity: low
+reason: `putWikiArtifact`'s `assertWritable` is shadowed by `writeWikiArtifact`'s gate and by the three lifecycle entry gates; `putWorkspaceProfile`'s is shadowed by `saveWorkspaceProfile`'s. Deleting either leaves the whole suite green, so they are pinned by inspection only and could be removed as dead code by a future reader. A direct call with a held token under `YOPEDIA_READONLY=1` would pin each.
+status: open
+
+### DW-318: Two sibling wiki doors own inline read-only literals with no constant and no parity assertion, and `wikiRename` has no client counterpart.
+origin: spec-deferred ad2cf2a1e9d1
+source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
+location: src/app/api/wikis/[id]/route.ts:63; src/app/api/wikis/current/route.ts:19
+severity: low
+reason: `DELETE /api/wikis/[id]` ("Wikis cannot be deleted while this deployment is read-only.") and `PUT /api/wikis/current` ("The active wiki cannot be changed...") are spelled inline and compared against nothing, which is the drift `read-only-copy-parity.test.ts` exists to prevent. `wikiRename` also has no client constant beside a dimmed control, unlike `WIKI_CREATE_READ_ONLY_COPY` and `WIKI_TEMPLATE_READ_ONLY_COPY`.
 status: open

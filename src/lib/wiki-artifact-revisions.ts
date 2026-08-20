@@ -26,7 +26,8 @@
  *      history dies with the Wiki. There is no orphan class to invent.
  *   2. NO NEW LOCK ORDER. `wikis:<tenant>` already owns everything under the
  *      Wiki directory, so the snapshot happens inside the SAME
- *      `withFileLock(wikiLockKey(owner))` that wraps the artifact write — one
+ *      `withWikiLock(owner)` — `wiki-lock.ts`'s one spelling of
+ *      `withFileLock(wikiLockKey(owner))` — that wraps the artifact write: one
  *      key, one critical section, history and bytes serialized together.
  *   3. NO NEW VISIBILITY. The Files tab's Wiki branch intersects its listing
  *      with `WIKI_ARTIFACT_FILES` and skips directories, so `revisions/` never

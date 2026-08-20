@@ -21,7 +21,14 @@ import path from "path";
 import { ensureDirectories, serializeFrontmatter } from "../wiki";
 import { deleteWikiPage, writeWikiPageWithSideEffects } from "../lifecycle";
 import { patchMetadata } from "../patch-metadata";
-import { createWiki, readWikiArtifact, writeWikiArtifact } from "../wikis";
+import {
+  applyScenarioTemplate,
+  createWiki,
+  readWikiArtifact,
+  renameWiki,
+  writeWikiArtifact,
+} from "../wikis";
+import { getWorkspaceProfile, saveWorkspaceProfile } from "../workspace-profile";
 import { listWikiArtifactRevisions } from "../wiki-artifact-revisions";
 import { readDataVersion } from "../data-version";
 import { READ_ONLY_REFUSAL, ReadOnlyError, isReadOnlyError } from "../read-only";
@@ -267,6 +274,188 @@ describe("the kernel writers refuse on a read-only deployment", () => {
     expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toBe(seeded);
     expect(await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md")).toHaveLength(0);
     expect(await snapshot()).toEqual(before);
+  });
+});
+
+/**
+ * Four wiki writers gated by DW-266: `createWiki`, `applyScenarioTemplate`,
+ * `renameWiki` and `saveWorkspaceProfile`.
+ *
+ * Not kernel writers in the DW-188 sense — `read-only-door-coverage.test.ts`
+ * keeps `KERNEL_WRITERS` at four on purpose — but the same exposure: they are
+ * exported library functions that write bytes, and a DIRECT LIBRARY CALLER (a
+ * CLI command, a future MCP tool, a maintenance script) reaches them with no
+ * route in front. Today the four API routes are their only callers and every
+ * one of those gates first, so what these cases pin is the direct call.
+ *
+ * NOT A CLAIM ABOUT THE FAMILY. `deleteWiki`, `setCurrentWiki` and
+ * `sweepOrphanWikiDirectories` still write `wikis.json` and delete Wiki
+ * directories with no `assertWritable` — the bundle did not name them, so they
+ * are a known gap rather than something these cases cover.
+ *
+ * WHAT THE BYTE SNAPSHOTS PROVE, AND WHAT THEY DO NOT. They prove the operation
+ * committed nothing: no registry entry, no seeded file, no retitled heading, no
+ * moved refresh counter. They do NOT prove the gate runs before the LOCK — a
+ * gate moved inside the locked body would leave the tree byte-identical too,
+ * because `discardCreatedWikiDirectory` removes a directory nothing had written
+ * yet and `restoreSeededFiles` puts the snapshot back byte for byte. That
+ * placement is what `describe("the gate precedes the lock")` below pins, by
+ * source order, and the two together are the whole claim.
+ */
+describe("the wiki lifecycle writers refuse on a read-only deployment", () => {
+  it("createWiki — no registry entry, no wiki directory, no compensation", async () => {
+    // One existing wiki, so the registry file is already there and a refusal
+    // that rewrote it (or swept the directory) would show as a diff rather than
+    // as a missing file that was never there either way.
+    await createWiki(OWNER, { name: "Field notes", scenario: "research" });
+    const before = await snapshot();
+    const beforeVersion = await readDataVersion();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => createWiki(OWNER, { name: "Second", scenario: "business" }),
+      READ_ONLY_REFUSAL.wikiCreate,
+    );
+
+    expect(await snapshot()).toEqual(before);
+    expect(await readDataVersion()).toBe(beforeVersion);
+  });
+
+  it("applyScenarioTemplate — no snapshot, no restore, no re-seeded bytes", async () => {
+    const wiki = await createWiki(OWNER, { name: "Field notes", scenario: "research" });
+    const seededSchema = await readWikiArtifact(OWNER, wiki.id, "schema.md");
+    const before = await snapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => applyScenarioTemplate(OWNER, wiki.id, "business"),
+      READ_ONLY_REFUSAL.wikiTemplate,
+    );
+
+    // The re-template overwrites purpose.md, schema.md AND the wiki's own
+    // workspace-profile.json; all three are inside the snapshot below, and the
+    // Schema is called out because it is the EXECUTABLE one.
+    expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toBe(seededSchema);
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("research");
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("renameWiki — wikis.json and purpose.md both survive", async () => {
+    const wiki = await createWiki(OWNER, { name: "Field notes", scenario: "research" });
+    const before = await snapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => renameWiki(OWNER, wiki.id, "Renamed"),
+      READ_ONLY_REFUSAL.wikiRename,
+    );
+
+    // `retitlePurpose` is FAIL-SOFT: a refusal raised by the putter inside it
+    // would be warned about and swallowed, leaving a rewritten `wikis.json`
+    // reporting success. The registry bytes below are what prove the gate runs
+    // at the entry instead — this assertion is the one that goes red if the
+    // gate is ever moved down to `putWikiArtifact` alone.
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("saveWorkspaceProfile — the profile bytes are untouched", async () => {
+    const wiki = await createWiki(OWNER, { name: "Field notes", scenario: "research" });
+    const seeded = await getWorkspaceProfile(OWNER, wiki.id);
+    const before = await snapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () =>
+        saveWorkspaceProfile(OWNER, wiki.id, {
+          scenario: "custom",
+          purpose: "Rewritten on a read-only deployment.",
+          keyQuestions: [],
+          inScope: [],
+          outOfScope: [],
+          outputLanguage: "English",
+          pageConventions: "",
+        }),
+      READ_ONLY_REFUSAL.wikiFileWrite,
+    );
+
+    expect(await getWorkspaceProfile(OWNER, wiki.id)).toEqual(seeded);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("all four are unchanged on a writable deployment — the control case", async () => {
+    // `YOPEDIA_READONLY` is UNSET. Without this, every "unchanged" assertion
+    // above would also pass against a lifecycle writer that simply stopped
+    // working.
+    const wiki = await createWiki(OWNER, { name: "Field notes", scenario: "research" });
+    const renamed = await renameWiki(OWNER, wiki.id, "Field notes II");
+    expect(renamed?.name).toBe("Field notes II");
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain(
+      "# Field notes II",
+    );
+
+    const applied = await applyScenarioTemplate(OWNER, wiki.id, "business");
+    expect(applied?.scenario).toBe("business");
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("business");
+
+    const saved = await saveWorkspaceProfile(OWNER, wiki.id, {
+      scenario: "custom",
+      purpose: "Owner-authored.",
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    });
+    expect(saved.purpose).toBe("Owner-authored.");
+  });
+});
+
+/**
+ * The gate PRECEDES the lock, pinned by source order (DW-266).
+ *
+ * The half of the claim the byte snapshots above cannot make. A gate moved
+ * inside `withWikiLock`'s callback would refuse just as loudly and leave a
+ * byte-identical tree — the compensations see to that — while a refused call
+ * had queued behind every in-flight operation for the tenant and, in
+ * `applyScenarioTemplate`, read three files it was never going to replace.
+ *
+ * Source order rather than behaviour because the property IS textual: there is
+ * no observable that distinguishes "refused before the lock" from "refused
+ * inside it" on a deployment where nothing else holds the key, and contriving
+ * one (holding the lock from the test and timing the rejection) would pin the
+ * scheduler rather than the gate.
+ */
+describe("the read-only gate precedes the wiki lock", () => {
+  it("assertWritable comes before withWikiLock in each gated writer", async () => {
+    const sources: Record<string, string> = {
+      wikis: await fs.readFile(path.resolve(__dirname, "../wikis.ts"), "utf8"),
+      "workspace-profile": await fs.readFile(
+        path.resolve(__dirname, "../workspace-profile.ts"),
+        "utf8",
+      ),
+    };
+
+    for (const [module, fn] of [
+      ["wikis", "createWiki"],
+      ["wikis", "applyScenarioTemplate"],
+      ["wikis", "renameWiki"],
+      ["workspace-profile", "saveWorkspaceProfile"],
+    ] as const) {
+      const source = sources[module];
+      const start = source.indexOf(`export async function ${fn}(`);
+      expect(start, `${module}.ts: ${fn}`).toBeGreaterThan(-1);
+      // The function's OWN body: bounded by the `}` in column 0 that closes it,
+      // so the next declaration's text is never attributed to this one.
+      const close = source.indexOf("\n}\n", start);
+      expect(close, `${module}.ts: ${fn} close`).toBeGreaterThan(start);
+      const body = source.slice(start, close);
+
+      const gate = body.search(/assertWritable\(READ_ONLY_REFUSAL\.\w+\)/);
+      const lock = body.indexOf("withWikiLock(owner");
+      expect(gate, `${fn} calls assertWritable`).toBeGreaterThan(-1);
+      expect(lock, `${fn} takes the wiki lock`).toBeGreaterThan(-1);
+      expect(gate, `${fn} gates BEFORE taking the lock`).toBeLessThan(lock);
+    }
   });
 });
 

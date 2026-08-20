@@ -27,13 +27,35 @@
  * reentrant, so anything running inside it writes through an unlocked putter
  * ({@link putWikiArtifact}, `putWorkspaceProfile`). See `src/lib/lock.ts`.
  *
+ * The key is always taken through `withWikiLock` (`wiki-lock.ts`), never as a
+ * bare `withFileLock(wikiLockKey(owner), …)`: one spelling, and it is the one
+ * that mints the `WikiLockHeld` token the cross-module putter demands (DW-139).
+ * `putWikiArtifact` needs no token because it is module-private and every
+ * caller is visible here; `putWorkspaceProfile` is not, so the token rides down
+ * through {@link seedWikiArtifacts}.
+ *
+ * READ-ONLY (DW-266): {@link createWiki}, {@link applyScenarioTemplate} and
+ * {@link renameWiki} each refuse BEFORE taking the lock and before reading a
+ * byte, so a refusal on a stably read-only deployment never reaches a
+ * compensation path; the putters refuse again as a backstop. The wiki routes
+ * keep their own inline 403s and gate first, so these gates change nothing the
+ * app does today — they exist for a DIRECT LIBRARY CALLER (a CLI command, a
+ * future MCP tool) reaching the kernel with no route in front.
+ *
+ * WHAT IS NOT GATED, stated so the coverage is not mistaken for the family.
+ * {@link deleteWiki}, {@link setCurrentWiki} and
+ * {@link sweepOrphanWikiDirectories} still write `wikis.json` and delete Wiki
+ * directories with NO `assertWritable` — a known gap this change did not close,
+ * because the bundle that added the three gates above did not name them. Their
+ * HTTP doors gate, so the gap is the same direct-library-caller one, one level
+ * further out.
+ *
  * The registry idiom (path, lock key, `crypto.randomUUID()`, ENOENT → empty,
  * a hard cap) mirrors `research-projects.ts`.
  */
 
 import { bumpDataVersion } from "./data-version";
 import { ClientInputError, isEnoent } from "./errors";
-import { withFileLock } from "./lock";
 import { logger } from "./logger";
 import { getOwnerHandle } from "./owner";
 import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
@@ -54,11 +76,11 @@ import {
   type WikiArtifactFile,
 } from "./wiki-scenarios";
 import { tenantForOwner, validateTenant } from "./wiki";
+import { withWikiLock, type WikiLockHeld } from "./wiki-lock";
 import {
   WIKI_ID_RE,
   wikiArtifactPath,
   wikiDirPath,
-  wikiLockKey,
   wikiProfilePath,
   wikisRootPath,
 } from "./wiki-paths";
@@ -301,13 +323,19 @@ function templateProfile(scenario: CreatableScenario): WorkspaceProfileInput {
 /**
  * The BYTES of one artifact, and nothing else — no lock, no log, no bump.
  *
- * UNLOCKED on purpose. `seedWikiArtifacts` runs inside `withFileLock(
- * wikiLockKey(owner))` already (via {@link createWiki} and
- * {@link applyScenarioTemplate}) and `withFileLock` is NOT reentrant — `lock.ts`
- * chains a new call onto the key's existing promise, so taking
- * `wikis:<tenant>` again from in there would deadlock the whole tenant. Callers
- * that are not already holding it take it themselves; see
- * {@link writeWikiArtifact}.
+ * UNLOCKED on purpose. `seedWikiArtifacts` runs inside `withWikiLock(owner)`
+ * already (via {@link createWiki} and {@link applyScenarioTemplate}) and
+ * `withFileLock` is NOT reentrant — `lock.ts` chains a new call onto the key's
+ * existing promise, so taking `wikis:<tenant>` again from in there would
+ * deadlock the whole tenant. Callers that are not already holding it take it
+ * themselves; see {@link writeWikiArtifact}.
+ *
+ * MODULE-PRIVATE, which is why it takes no `WikiLockHeld` while
+ * `putWorkspaceProfile` does: every caller is in this file and visible in one
+ * read, so the compile-time proof DW-139 asked for buys nothing here. What it
+ * does carry is the read-only refusal (DW-266) — the three entry points below
+ * gate before the lock, and this is the backstop that keeps a FUTURE caller in
+ * this module from writing bytes on a read-only deployment by forgetting to.
  *
  * This is also the ONE place artifact bytes are written. Both the seeder and
  * the Schema editor address them through {@link wikiArtifactPath}, so
@@ -319,6 +347,7 @@ async function putWikiArtifact(
   file: WikiArtifactFile,
   content: string,
 ): Promise<void> {
+  assertWritable(READ_ONLY_REFUSAL.wikiFileWrite);
   await getStorage().writeFile(wikiArtifactPath(owner, wikiId, file), content);
 }
 
@@ -349,13 +378,24 @@ async function putWikiArtifact(
  * for the same reason {@link putWikiArtifact} is unlocked — the caller is
  * already holding `wikis:<tenant>`.
  *
+ * `held` IS THE PROOF OF THAT, THREADED not re-derived. `putWorkspaceProfile`
+ * lives in another module and cannot see which lock this call stack is under,
+ * so the token minted by `withWikiLock` in {@link createWiki} /
+ * {@link applyScenarioTemplate} rides down to it (DW-139). This function takes
+ * it rather than minting one so that a future caller outside a lock cannot
+ * reach the seeder either.
+ *
  * THREE SEQUENTIAL WRITES, NO TRANSACTION, and deliberately none here: a fault
  * at ANY of them — and at the caller's registry write that follows — is undone
  * by the CALLER's compensation, because what the undo is depends on whether the
  * directory is new (discard it) or being overwritten (restore the snapshot).
  * See the compensation block below.
  */
-async function seedWikiArtifacts(owner: string, wiki: WikiRecord): Promise<void> {
+async function seedWikiArtifacts(
+  held: WikiLockHeld,
+  owner: string,
+  wiki: WikiRecord,
+): Promise<void> {
   const template = scenarioTemplate(wiki.scenario);
   // The seeded Schema embeds the engine's own page conventions ahead of the
   // scenario's, so the Wiki's file IS the whole executable Schema and
@@ -373,7 +413,7 @@ async function seedWikiArtifacts(owner: string, wiki: WikiRecord): Promise<void>
     "schema.md",
     renderSchemaMarkdown(template, engineConventions),
   );
-  await putWorkspaceProfile(owner, wiki.id, templateProfile(wiki.scenario));
+  await putWorkspaceProfile(held, owner, wiki.id, templateProfile(wiki.scenario));
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +444,13 @@ async function seedWikiArtifacts(owner: string, wiki: WikiRecord): Promise<void>
  *
  * Both run inside the already-held `wikis:<tenant>` lock and therefore go
  * through `getStorage()` directly — `withFileLock` is not reentrant, so taking
- * `wikiLockKey(owner)` again from in here would deadlock the whole tenant.
+ * the Wiki lock again from in here would deadlock the whole tenant. They also
+ * bypass the putters' read-only gate on purpose: a compensation only ever runs
+ * on a deployment that was already writing, and while the flag holds STILL the
+ * entry-point gates above mean a refused call never reaches one. `isReadOnly()`
+ * re-reads `process.env` per call, though, so a flag flipped mid-operation can
+ * land here — with a seed already part-written, which is exactly the state a
+ * compensation must be allowed to clean up rather than refuse.
  *
  * Both are FAIL-SOFT in the same shape as `deleteWiki`'s tail: a cleanup that
  * itself throws is warned about and swallowed, because the caller must receive
@@ -685,7 +731,7 @@ export async function writeWikiArtifact(
   // two different sentences for the same edit.
   const editReason = normalizeArtifactEditReason(reason);
 
-  await withFileLock(wikiLockKey(owner), async () => {
+  await withWikiLock(owner, async () => {
     // READ BEFORE WRITE (DW-59). The bytes about to be replaced are the
     // owner's previous EXECUTABLE Schema, and this is the only moment they
     // still exist. The snapshot is INSIDE this callback on purpose: the same
@@ -812,8 +858,16 @@ export async function createWiki(
   owner: string,
   input: CreateWikiInput,
 ): Promise<WikiRecord> {
+  // Deployment read-only (DW-188/DW-266), answered BEFORE the lock and before
+  // the registry is read. Ordering matters more here than at a plain writer: a
+  // gate placed inside the locked body would sit above `discardCreatedWikiDirectory`,
+  // so a refusal would run the compensating `deleteDirectory` on a deployment
+  // that is not supposed to touch a byte. `POST /api/wikis` already refuses
+  // first, so this is a backstop for a direct library caller — a CLI command, a
+  // future MCP tool — reaching the kernel with no route in front.
+  assertWritable(READ_ONLY_REFUSAL.wikiCreate);
   const { name, scenario } = parseCreateWikiInput(input);
-  const created = await withFileLock(wikiLockKey(owner), async () => {
+  const created = await withWikiLock(owner, async (held) => {
     const registry = await readRegistry(owner);
     if (registry.wikis.length >= MAX_WIKIS) {
       throw new ClientInputError(
@@ -831,7 +885,7 @@ export async function createWiki(
     // The cap check above throws BEFORE this point on purpose: it writes
     // nothing, so it must not be inside the compensation.
     try {
-      await seedWikiArtifacts(owner, wiki);
+      await seedWikiArtifacts(held, owner, wiki);
       registry.wikis.push(wiki);
       registry.currentId = wiki.id;
       await writeRegistry(owner, registry);
@@ -892,10 +946,16 @@ export async function applyScenarioTemplate(
   wikiId: string,
   scenario: CreatableScenario,
 ): Promise<WikiRecord | null> {
+  // Before the lock, before `snapshotSeededFiles` and therefore before
+  // `restoreSeededFiles` could ever run (DW-266). A re-template is the most
+  // destructive operation in this module — it overwrites files the owner may
+  // have edited — so a read-only deployment must not even take the snapshot.
+  // `POST /api/wikis/[id]/template` already refuses first.
+  assertWritable(READ_ONLY_REFUSAL.wikiTemplate);
   if (!isCreatableScenario(scenario)) {
     throw new ClientInputError("Choose one Scenario Template.");
   }
-  const applied = await withFileLock(wikiLockKey(owner), async () => {
+  const applied = await withWikiLock(owner, async (held) => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
     if (!wiki) return null;
@@ -906,7 +966,7 @@ export async function applyScenarioTemplate(
     wiki.scenario = scenario;
     wiki.updatedAt = new Date().toISOString();
     try {
-      await seedWikiArtifacts(owner, wiki);
+      await seedWikiArtifacts(held, owner, wiki);
       await writeRegistry(owner, registry);
     } catch (error) {
       // What makes "put the old artifacts back" the correct undo rather than a
@@ -962,7 +1022,7 @@ export async function setCurrentWiki(
   owner: string,
   wikiId: string,
 ): Promise<WikiRecord | null> {
-  return withFileLock(wikiLockKey(owner), async () => {
+  return withWikiLock(owner, async () => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
     if (!wiki) return null;
@@ -993,6 +1053,13 @@ export async function setCurrentWiki(
  * still be renameable, so a surprise here is warned about and the rename
  * stands. Only a LEADING `# …` line is replaced — anything else is left exactly
  * as the owner wrote it rather than guessed at.
+ *
+ * WHICH IS ALSO WHY THE READ-ONLY GATE IS NOT HERE. This catch would swallow
+ * the `ReadOnlyError` {@link putWikiArtifact} raises, leaving a rename that had
+ * already written `wikis.json` reporting success on a deployment that refuses
+ * writes. {@link renameWiki} therefore refuses at its own entry, before the
+ * lock — which is what keeps that swallow unreachable rather than merely
+ * unlikely (DW-266).
  */
 async function retitlePurpose(
   owner: string,
@@ -1038,8 +1105,15 @@ export async function renameWiki(
   wikiId: string,
   name: string,
 ): Promise<WikiRecord | null> {
+  // Before the lock and before the registry write (DW-266). This gate is what
+  // makes the refusal REACHABLE at all: {@link retitlePurpose} below is
+  // fail-soft by design, so the `ReadOnlyError` `putWikiArtifact` would raise
+  // inside it is warned about and swallowed — a rename gated only at the putter
+  // would still rewrite `wikis.json` and then report success.
+  // `PATCH /api/wikis/[id]` already refuses first.
+  assertWritable(READ_ONLY_REFUSAL.wikiRename);
   const parsed = parseWikiName(name);
-  return withFileLock(wikiLockKey(owner), async () => {
+  return withWikiLock(owner, async () => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
     if (!wiki) return null;
@@ -1256,7 +1330,7 @@ async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<numb
  * beside a concurrent create.
  */
 export async function sweepOrphanWikiDirectories(owner: string): Promise<number> {
-  return withFileLock(wikiLockKey(owner), async () =>
+  return withWikiLock(owner, async () =>
     sweepOrphans(owner, await readRegistry(owner)),
   );
 }
@@ -1289,7 +1363,7 @@ export async function deleteWiki(
   owner: string,
   wikiId: string,
 ): Promise<WikiRecord | null> {
-  return withFileLock(wikiLockKey(owner), async () => {
+  return withWikiLock(owner, async () => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
     if (!wiki) return null;

@@ -721,11 +721,65 @@ describe("the active wiki pointer", () => {
       expect(source).not.toMatch(/withFileLock\(\s*["'`]workspace-profile:/);
     }
 
+    // The save takes the WIKI key — pinned through the one spelling that now
+    // exists for it. `withWikiLock` wraps `withFileLock(wikiLockKey(owner))`
+    // and mints the `WikiLockHeld` the putter demands (DW-139), so the
+    // assertion is split across the two files: the store calls the wrapper, and
+    // the wrapper is the thing that resolves to `wikis:<tenant>`.
     const profileStore = await fs.readFile(
       path.resolve(__dirname, "../workspace-profile.ts"),
       "utf8",
     );
-    expect(profileStore).toContain("withFileLock(wikiLockKey(owner)");
+    expect(profileStore).toContain("withWikiLock(owner");
+    const wikiLock = await fs.readFile(
+      path.resolve(__dirname, "../wiki-lock.ts"),
+      "utf8",
+    );
+    // The STATEMENT, not the identifier: `wikiLockKey(owner)` on its own also
+    // matches this module's docblock, so deleting the real call would leave the
+    // prose behind and keep this green.
+    expect(wikiLock).toContain("const key = wikiLockKey(owner);");
+    expect(wikiLock).toContain("withFileLock(key");
+
+    // ONE SPELLING, enforced. `lock.ts`, `wikis.ts`, `wiki-lock.ts` and
+    // `workspace-profile.ts` all now claim that no module takes the Wiki key
+    // without minting a `WikiLockHeld`, and a claim four docblocks make and
+    // nothing checks is how the second spelling comes back — `withWikiLock` is
+    // a wrapper, so the old form still compiles and still works, and a future
+    // author copying it would reach the unlocked putters with no token to
+    // demand. `__tests__` is excluded: several suites hold the lock directly to
+    // create the contention they are testing, which is legitimate.
+    //
+    // Comments are STRIPPED before matching, because four of the modules that
+    // must not make this call quote it verbatim while explaining why — the
+    // rule's own documentation would otherwise be the only thing failing.
+    // Known limit: the line-comment strip also truncates at a `//` inside a
+    // string literal (a URL), which can only ever hide a match, and no
+    // production line pairs a URL with a lock call.
+    const withoutComments = (source: string): string =>
+      source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+    const offenders: string[] = [];
+    for (const file of files) {
+      if (file.includes("__tests__")) continue;
+      if (file.endsWith(`${path.sep}wiki-lock.ts`)) continue;
+      const source = withoutComments(await fs.readFile(file, "utf8"));
+      // The CALL form across its argument list, in any spelling of it.
+      if (/\bwithFileLock\(\s*[^)]*\bwikiLockKey\(/.test(source)) {
+        offenders.push(path.relative(root, file));
+      }
+    }
+    expect(offenders, "modules taking the wiki lock outside wiki-lock.ts").toEqual([]);
+
+    // The scan is only evidence if the regex actually matches the form it
+    // bans — a broken pattern would produce an empty `offenders` and a green,
+    // meaningless assertion. `wiki-lock.ts`, the one legitimate site, is the
+    // fixture.
+    expect(
+      /\bwithFileLock\(\s*[^)]*\bwikiLockKey\(/.test(
+        withoutComments("return withFileLock(wikiLockKey(owner), async () => {}); "),
+      ),
+    ).toBe(true);
   });
 });
 

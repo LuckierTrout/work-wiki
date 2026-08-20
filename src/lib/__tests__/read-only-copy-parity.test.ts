@@ -115,6 +115,50 @@ describe("client refusal copy mirrors the server's", () => {
     expect(WORKSPACE_PURPOSE_READ_ONLY_COPY).toContain("read-only");
   });
 
+  it("the wiki-lifecycle kernel sentences equal the literals their routes serve", async () => {
+    // DW-266 gated `createWiki`, `applyScenarioTemplate` and `renameWiki`
+    // themselves, so CLI, MCP and library callers inherit the refusal the three
+    // routes already answer inline. The routes keep their literals — rewriting
+    // those bodies was out of scope — so the constant and the literal are two
+    // copies of one sentence, and this is what stops them drifting: reword
+    // either side and the next run is red.
+    expect(await routeSource("wikis/route.ts")).toContain(
+      servedAs(READ_ONLY_REFUSAL.wikiCreate),
+    );
+    expect(await routeSource("wikis/[id]/template/route.ts")).toContain(
+      servedAs(READ_ONLY_REFUSAL.wikiTemplate),
+    );
+    expect(await routeSource("wikis/[id]/route.ts")).toContain(
+      servedAs(READ_ONLY_REFUSAL.wikiRename),
+    );
+    // And through the SAME sentences, the client constants beside the dimmed
+    // canvas controls: three copies, one wording, one test.
+    expect(READ_ONLY_REFUSAL.wikiCreate).toBe(WIKI_CREATE_READ_ONLY_COPY);
+    expect(READ_ONLY_REFUSAL.wikiTemplate).toBe(WIKI_TEMPLATE_READ_ONLY_COPY);
+  });
+
+  it("the Settings route and the kernel behind it answer DIFFERENT sentences", async () => {
+    // `wikiFileWrite` covers the two unlocked byte putters under
+    // `tenants/<t>/wikis/<id>/` and `saveWorkspaceProfile`. Unlike the three
+    // wiki-lifecycle keys above it deliberately does NOT mirror its route:
+    // `PUT /api/workspace-profile` gates first with a sentence about SETTINGS —
+    // narrower, and the only one an HTTP caller ever reads — while a direct
+    // library caller reaching `saveWorkspaceProfile` gets the kernel's. Two
+    // sentences for one door, recorded as a difference so it does not look like
+    // the re-ingest bug above.
+    const route = await routeSource("workspace-profile/route.ts");
+    const served = "Settings are read-only in this deployment.";
+    expect(route).toContain(servedAs(served));
+    expect(READ_ONLY_REFUSAL.wikiFileWrite).not.toBe(served);
+    // And the kernel's is the WIDER of the two: it names the file, because the
+    // putters behind it are reached by create, re-template and rename alike.
+    expect(READ_ONLY_REFUSAL.wikiFileWrite).toContain("Wiki files");
+    // Both still name the deployment state, which is what makes either
+    // sentence actionable.
+    expect(served).toContain("read-only");
+    expect(READ_ONLY_REFUSAL.wikiFileWrite).toContain("read-only");
+  });
+
   it("every server sentence names read-only and reads as a sentence", () => {
     // "Forbidden" alone would leave the owner hunting a permission they do not
     // lack, which is the whole reason these are owned in one place.

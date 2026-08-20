@@ -660,8 +660,21 @@ describe("the bump lives at exactly one site", () => {
       // takes — a tenant-wide deadlock risk. The `withFileLock` call's own close
       // at the function's top indent has to come first. Two closing forms,
       // because one caller passes a one-line arrow and two pass a block.
-      const lock = body.indexOf("withFileLock(wikiLockKey(owner)");
-      expect(lock).toBeGreaterThan(-1);
+      // Two accepted spellings: the bare `withFileLock(wikiLockKey(owner), …)`
+      // and `withWikiLock(owner, …)`, the wrapper that took its place when the
+      // lock started minting a `WikiLockHeld` (DW-139). Either one is the Wiki
+      // lock opening; what is being pinned is where its CLOSE falls relative to
+      // the bump, and that is unchanged by the rename.
+      // `?? -1` so a body with NEITHER spelling fails as "no lock found" and
+      // names the function, rather than passing `undefined` into the
+      // `indexOf(close, lock)` below — which would search from 0 and find the
+      // close of something else entirely.
+      const lock =
+        ["withFileLock(wikiLockKey(owner)", "withWikiLock(owner"]
+          .map((form) => body.indexOf(form))
+          .filter((at) => at > -1)
+          .sort((a, b) => a - b)[0] ?? -1;
+      expect(lock, `${name} opens the wiki lock`).toBeGreaterThan(-1);
       const closes = ["\n  });\n", "\n  );\n"]
         .map((close) => body.indexOf(close, lock))
         .filter((at) => at > -1)
