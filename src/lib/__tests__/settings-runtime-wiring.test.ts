@@ -828,3 +828,142 @@ describe("the stored embedding credential and endpoint are read", () => {
     expect(settings.enabled).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// One config, one answer about it (DW-312 / DW-313)
+// ---------------------------------------------------------------------------
+
+describe("both Settings surfaces answer the substitution question the same way", () => {
+  it("agrees on the model IN EFFECT and on the overridden flag, for the same config", async () => {
+    // DW-312. `getEffectiveSettings` feeds the flat `/settings` page and
+    // `getWorkbenchSettings` feeds the Workbench canvas. Before this they
+    // resolved the question from different places — one through
+    // `getEmbeddingModelName`, the other not at all — so one deployment told an
+    // owner two different things depending on which Settings screen they opened.
+    process.env.OPENAI_API_KEY = "sk-env";
+
+    // A substitution IS running: openai cannot serve a `@cf/` id, so the
+    // resolver embeds with its own default instead.
+    await store({ embeddingProvider: "openai", embeddingModel: "@cf/baai/bge-m3" });
+    const substituting = getEffectiveSettings();
+    expect(substituting.embeddingModel).toBe("@cf/baai/bge-m3");
+    expect(substituting.embeddingModelInEffect).toBe("text-embedding-3-small");
+    expect(substituting.embeddingModelOverridden).toBe(true);
+    expect(getWorkbenchSettings(false)).toMatchObject({
+      embeddingModelInEffect: substituting.embeddingModelInEffect,
+      embeddingModelOverridden: substituting.embeddingModelOverridden,
+    });
+
+    // …and NOT running: the id is one the provider serves, so both surfaces
+    // report the same model with nothing to announce.
+    await store({
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+    });
+    const settled = getEffectiveSettings();
+    expect(settled.embeddingModelInEffect).toBe("text-embedding-3-small");
+    expect(settled.embeddingModelOverridden).toBe(false);
+    expect(getWorkbenchSettings(false)).toMatchObject({
+      embeddingModelInEffect: settled.embeddingModelInEffect,
+      embeddingModelOverridden: settled.embeddingModelOverridden,
+    });
+
+    // …and with NOTHING embedding at all, the flag is false rather than "the
+    // model you set is being substituted" — a different story entirely.
+    delete process.env.OPENAI_API_KEY;
+    await store({ embeddingProvider: "openai", embeddingModel: "@cf/baai/bge-m3" });
+    const dark = getEffectiveSettings();
+    expect(dark.embeddingSupport).toBe(false);
+    expect(dark.embeddingModelInEffect).toBeNull();
+    expect(dark.embeddingModelOverridden).toBe(false);
+    expect(getWorkbenchSettings(false)).toMatchObject({
+      embeddingModelInEffect: null,
+      embeddingModelOverridden: false,
+    });
+  });
+
+  it("resolves BOTH halves against the same snapshot on a COLD cache (DW-313)", async () => {
+    // `loadConfigSync()` is a 5 s-TTL cache that answers `{}` when cold. Both
+    // resolvers open by reading it once; the question is whether the rest of
+    // their answer is resolved against THAT read or against a fresh one. A
+    // stored model reported from one snapshot beside an in-effect model
+    // resolved from `{}` is a "set but not in effect" note about a substitution
+    // that is not happening.
+    process.env.OPENAI_API_KEY = "sk-env";
+    await store({ embeddingProvider: "openai", embeddingModel: "@cf/baai/bge-m3" });
+
+    // Cold: nothing has primed the cache, so the snapshot every leg sees is
+    // `{}` — no stored model, and the env-detected openai default embedding.
+    _resetConfigCache();
+    const cold = getEffectiveSettings();
+    expect(cold.embeddingModel).toBeNull();
+    expect(cold.embeddingModelSource).toBe("none");
+    expect(cold.embeddingModelInEffect).toBe("text-embedding-3-small");
+    // Nothing is SET, so nothing is being substituted — the note is withheld
+    // rather than describing an override the empty snapshot does not contain.
+    expect(cold.embeddingModelOverridden).toBe(false);
+    expect(cold.embeddingSupport).toBe(true);
+
+    _resetConfigCache();
+    expect(getWorkbenchSettings(false)).toMatchObject({
+      embeddingModel: null,
+      embeddingModelInEffect: "text-embedding-3-small",
+      embeddingModelOverridden: false,
+    });
+  });
+
+  it("SERVES the pair on the real route, GET and PUT (DW-312)", async () => {
+    // End to end, because the library seam cannot see the wire. `route.ts` is
+    // what puts `getWorkbenchSettings`'s object under `workbench`, and
+    // `settings-route.test.ts` structurally cannot cover this — it mocks the
+    // whole embeddings module, so the resolution it would be asserting is the
+    // mock's. This file imports the real route and the real resolvers.
+    process.env.OPENAI_API_KEY = "sk-env";
+    await store({ embeddingProvider: "openai", embeddingModel: "@cf/baai/bge-m3" });
+
+    const { GET, PUT } = await import("@/app/api/settings/route");
+    const read = (await (await GET()).json()) as {
+      embeddingModelInEffect: string | null;
+      embeddingModelOverridden: boolean;
+      workbench: {
+        embeddingModel: string | null;
+        embeddingModelInEffect: string | null;
+        embeddingModelOverridden: boolean;
+      };
+    };
+    // The stored id is still what the canvas box edits…
+    expect(read.workbench.embeddingModel).toBe("@cf/baai/bge-m3");
+    // …and beside it, what this deployment actually embeds with.
+    expect(read.workbench.embeddingModelInEffect).toBe("text-embedding-3-small");
+    expect(read.workbench.embeddingModelOverridden).toBe(true);
+    // The flat page's own fields, on the same body, answering identically —
+    // which is the whole of DW-312 as an owner would experience it.
+    expect(read.embeddingModelInEffect).toBe(read.workbench.embeddingModelInEffect);
+    expect(read.embeddingModelOverridden).toBe(read.workbench.embeddingModelOverridden);
+
+    // …and a landed SAVE re-seeds them, because `PUT` serves the payload back
+    // from a cache `saveConfig` has just re-primed. The save moves the stored id
+    // to one openai CAN serve, so the substitution stops on the same response
+    // that performed the write.
+    const current = await readConfig();
+    if (current.status !== "ok") throw new Error("store is unreadable");
+    const saved = await PUT(
+      new Request("http://local/api/settings", {
+        method: "PUT",
+        headers: {
+          "content-type": "application/json",
+          [IF_MATCH_HEADER]: formatIfMatch(current.version),
+        },
+        body: JSON.stringify({
+          workbench: { embeddingModel: "text-embedding-3-small" },
+        }),
+      }),
+    );
+    expect(saved.status).toBe(200);
+    const after = (await saved.json()) as {
+      workbench: { embeddingModelInEffect: string | null; embeddingModelOverridden: boolean };
+    };
+    expect(after.workbench.embeddingModelInEffect).toBe("text-embedding-3-small");
+    expect(after.workbench.embeddingModelOverridden).toBe(false);
+  });
+});

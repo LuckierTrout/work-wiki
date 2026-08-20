@@ -719,7 +719,7 @@ describe("searchByVector", () => {
     expect(results).toEqual([]);
   });
 
-  it("drops matches whose stored model differs from the current model", async () => {
+  it("drops matches whose stored model differs from the current model, AUDIBLY", async () => {
     // Vectors were embedded by a different model than the current provider uses.
     await seedVector("page-a", [1, 0, 0], "old-model-from-different-provider", "a");
     await seedVector("page-b", [0, 1, 0], "old-model-from-different-provider", "b");
@@ -727,10 +727,96 @@ describe("searchByVector", () => {
     process.env.OPENAI_API_KEY = "sk-test";
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
 
-    const results = await searchByVector("test query", 10);
+    const { result, warnings } = await withWarnSpy(() => searchByVector("test query", 10));
 
     // All matches filtered out — stale model.
-    expect(results).toEqual([]);
+    expect(result).toEqual([]);
+    // …and the breadcrumb that makes that diagnosable rather than looking like
+    // "no matches" (DW-310). `[]` alone was satisfied by a silent drop.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("embedding-model drift");
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+  });
+
+  it("says the drift line ONCE however many queries run against the drifted corpus", async () => {
+    // DW-310. The drift is STANDING state — it holds until the corpus is
+    // rebuilt — but this door is per QUERY, so the unthrottled line repeated
+    // itself for every search anyone ran.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    await seedVector("page-b", [0, 1, 0], "old-model", "b");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => [
+      await searchByVector("one", 10),
+      await searchByVector("two", 10),
+      await searchByVector("three", 10),
+    ]);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("dropped every match");
+    // Suppression is of repetition only — every query still answered.
+    expect(result).toEqual([[], [], []]);
+
+    // The sentence names NO match count. A count is a property of the QUERY,
+    // not of the misconfiguration — it is why the line was "not literally the
+    // same each time" — and keying on it would have re-armed the warning for
+    // every distinct number of hits. Pinned by GROWING the drifted corpus and
+    // re-arming the key: the same identity produces the byte-identical line.
+    expect(warnings[0]).not.toMatch(/\b\d+ match/);
+    await seedVector("page-c", [0, 0, 1], "old-model", "c");
+    _resetEmbeddingWarnings();
+    const bigger = await withWarnSpy(() => searchByVector("four", 10));
+    expect(bigger.warnings).toEqual(warnings);
+  });
+
+  it("SPEAKS again when the ACTIVE MODEL changes and still drifts", async () => {
+    // A changed misconfiguration is a new identity. The corpus is untouched;
+    // what moved is the model the deployment now embeds with, and an owner
+    // reading the log needs the new name.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { warnings } = await withWarnSpy(async () => {
+      await searchByVector("one", 10);
+      await searchByVector("two", 10);
+      // A second openai-servable id, so the only thing that changes is the
+      // ACTIVE model — no substitution warning joins the window.
+      process.env.EMBEDDING_MODEL = "text-embedding-3-large";
+      await searchByVector("three", 10);
+      await searchByVector("four", 10);
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    expect(warnings[1]).toContain('active="text-embedding-3-large"');
+  });
+
+  it("stays SILENT when the filter keeps even one match", async () => {
+    // Not drift: the corpus still holds vectors this model produced, so the
+    // query is answerable and there is nothing standing to report.
+    await seedVector("kept", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    await seedVector("dropped", [0, 1, 0], "old-model", "b");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(() => searchByVector("q", 10));
+
+    expect(result.map((r) => r.slug)).toEqual(["kept"]);
+    expect(warnings).toEqual([]);
+  });
+
+  it("stays SILENT when the store returns nothing at all", async () => {
+    // An empty store is not a drifted one. Warning here would fire on every
+    // fresh deployment, before a single page had been embedded.
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(() => searchByVector("q", 10));
+
+    expect(result).toEqual([]);
+    expect(warnings).toEqual([]);
   });
 
   it("returns [] (never throws) when the scan hits a dimension mismatch", async () => {
@@ -740,6 +826,43 @@ describe("searchByVector", () => {
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
 
     await expect(searchByVector("q", 10)).resolves.toEqual([]);
+  });
+
+  it("keeps `searchByVector` on ONE snapshot for both halves", async () => {
+    // The caller the door exists for. `embedText` has a network round-trip
+    // inside it, so two independent cache reads can straddle the 5 s expiry:
+    // the query gets embedded with snapshot A's model while the filter compares
+    // against snapshot B's, every hit is dropped, and the drift line fires for a
+    // corpus that has not drifted — BURNING the `drift:<model>` key so a later
+    // real drift under that model is silent for the rest of the process.
+    //
+    // Simulated by making the cache turn over DURING the embed: the mock hands
+    // back a different config from the moment `embed()` resolves. A
+    // `searchByVector` that re-read the cache for the filter would see the
+    // second one.
+    await seedVector("page-a", [1, 0, 0], "text-embedding-3-large", "a");
+    mockLoadConfigSync.mockReturnValue({
+      embeddingProvider: "openai",
+      embeddingApiKey: "sk-stored",
+      embeddingModel: "text-embedding-3-large",
+    });
+    mockEmbed.mockImplementation(async () => {
+      // The cache expires mid-flight and now answers a DIFFERENT active model.
+      mockLoadConfigSync.mockReturnValue({
+        embeddingProvider: "openai",
+        embeddingApiKey: "sk-stored",
+        embeddingModel: "text-embedding-3-small",
+      });
+      return { embedding: [1, 0, 0] };
+    });
+
+    const { result, warnings } = await withWarnSpy(() => searchByVector("q", 10));
+
+    // The vector was embedded with `text-embedding-3-large` and the filter
+    // compared against `text-embedding-3-large`, so the hit is KEPT…
+    expect(result.map((r) => r.slug)).toEqual(["page-a"]);
+    // …and no drift was reported for a corpus that has not drifted.
+    expect(warnings).toEqual([]);
   });
 
   it("keeps unlabelled (legacy) vectors with no model metadata", async () => {
@@ -1747,6 +1870,61 @@ describe("misconfiguration warnings are said once", () => {
     expect(second.result).toBeNull();
   });
 
+  it("names the ENV as the source of a bad provider override, with the remedy it has", async () => {
+    // DW-311. The env sentence is unchanged: this deployment DOES have an
+    // `EMBEDDING_PROVIDER` set, and unsetting it is a thing the owner can do.
+    process.env.EMBEDDING_PROVIDER = "deepseek";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('EMBEDDING_PROVIDER="deepseek"');
+    expect(warnings[0]).toContain("unset it to auto-detect");
+    expect(result).toBeNull();
+  });
+
+  it("names SETTINGS as the source of a bad STORED provider, and never a variable", async () => {
+    // DW-311's actual bug. `EMBEDDING_PROVIDER` was hardcoded into the sentence
+    // whatever the value's origin, so an owner who chose the provider in
+    // Settings — and who has no such variable anywhere — was told to unset one.
+    // Since DW-273 the line is said exactly ONCE, so that may be the only thing
+    // they ever read about it.
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "deepseek" });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("deepseek");
+    expect(warnings[0]).toContain("Settings");
+    expect(warnings[0]).not.toContain("EMBEDDING_PROVIDER");
+    expect(warnings[0]).not.toContain("unset");
+    // The refusal itself is untouched — only the sentence learned where the
+    // value came from.
+    expect(result).toBeNull();
+  });
+
+  it("treats the SAME bad value from the two sources as TWO identities", async () => {
+    // The key carries the source because the two sentences carry different
+    // REMEDIES. Keyed on the string alone, whichever arrived first would
+    // silence the other's remedy for the life of the process — and the one
+    // silenced is the one the owner can actually act on.
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "deepseek" });
+    const stored = await withWarnSpy(() => getEmbeddingModelName());
+    expect(stored.warnings).toHaveLength(1);
+    expect(stored.warnings[0]).toContain("Settings");
+
+    process.env.EMBEDDING_PROVIDER = "deepseek";
+    const env = await withWarnSpy(() => getEmbeddingModelName());
+    expect(env.warnings).toHaveLength(1);
+    expect(env.warnings[0]).toContain('EMBEDDING_PROVIDER="deepseek"');
+    // Two DIFFERENT sentences, and both were heard.
+    expect(env.warnings[0]).not.toBe(stored.warnings[0]);
+    // …and each is still throttled within its own identity.
+    const again = await withWarnSpy(() => getEmbeddingModelName());
+    expect(again.warnings).toEqual([]);
+    expect(again.result).toBeNull();
+  });
+
   it("is a LOG-only change — the SUPPRESSED call embeds identically", async () => {
     process.env.EMBEDDING_PROVIDER = "workers-ai";
     process.env.EMBEDDING_MODEL = "text-embedding-3-small";
@@ -1815,5 +1993,72 @@ describe("embedding/LLM provider decoupling", () => {
     expect(getEmbeddingModelName()).toBeNull();
     expect(getEmbeddingModel()).toBeNull();
     expect(hasEmbeddingSupport()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One resolution, one snapshot — the `cfg` door (DW-313)
+// ---------------------------------------------------------------------------
+
+describe("the optional `cfg` door resolves against the snapshot it is given", () => {
+  // `loadConfigSync()` is a 5 s-TTL cache, so "read it again" and "read it once
+  // and pass it along" are only the same answer while the cache happens not to
+  // turn over between the two reads. Every case below makes the PASSED snapshot
+  // disagree with what the cache would answer, which is the only way to tell a
+  // threaded `cfg` from a decorative one — a resolver that accepted the
+  // parameter and then ignored it would satisfy any test where the two agree.
+  const CACHED = { embeddingProvider: "openai" } as const;
+  const PASSED = {
+    embeddingProvider: "openai",
+    embeddingApiKey: "sk-passed-in",
+    embeddingModel: "text-embedding-3-large",
+  } as const;
+
+  it("follows the ARGUMENT, through the provider, the KEY and the model legs", () => {
+    // The cache holds a provider with no credential anywhere, so it resolves to
+    // nothing at all.
+    mockLoadConfigSync.mockReturnValue({ ...CACHED });
+
+    // The passed snapshot carries the stored key, and that is the ONLY place it
+    // exists — no `OPENAI_API_KEY` is set. So an answer of anything but `null`
+    // proves `embeddingApiKeyFor` read the argument rather than re-entering the
+    // cache, which is the private leg the two public doors traverse.
+    expect(getEmbeddingModelName(PASSED)).toBe("text-embedding-3-large");
+    expect(hasEmbeddingSupport(PASSED)).toBe(true);
+
+    // …and the model name came from the argument too: the cache's snapshot has
+    // no `embeddingModel`, so a resolver reading it would have answered the
+    // provider default instead.
+    expect(getEmbeddingModelName(PASSED)).not.toBe("text-embedding-3-small");
+  });
+
+  it("does not touch the cache AT ALL when a snapshot is passed", () => {
+    // The strongest form of the claim: not "it agreed with the argument" but
+    // "it never asked". A single stray `loadConfigSync()` anywhere down the
+    // path is what DW-313 is about, and it is invisible whenever the two
+    // snapshots happen to match.
+    mockLoadConfigSync.mockReturnValue({ ...CACHED });
+    mockLoadConfigSync.mockClear();
+
+    expect(getEmbeddingModelName(PASSED)).toBe("text-embedding-3-large");
+    expect(hasEmbeddingSupport(PASSED)).toBe(true);
+
+    expect(mockLoadConfigSync).not.toHaveBeenCalled();
+  });
+
+  it("still reads the CACHE when nothing is passed — the default is unchanged", () => {
+    // The other half of the spec's claim. The parameter exists for the two
+    // settings resolvers; every other caller wants "resolve against whatever is
+    // current", and passing nothing has to stay byte-identical to the behaviour
+    // before the parameter existed.
+    mockLoadConfigSync.mockReturnValue({ ...CACHED });
+    expect(getEmbeddingModelName()).toBeNull();
+    expect(hasEmbeddingSupport()).toBe(false);
+    expect(mockLoadConfigSync).toHaveBeenCalled();
+
+    // Move the cache and the bare doors move with it.
+    mockLoadConfigSync.mockReturnValue({ ...PASSED });
+    expect(getEmbeddingModelName()).toBe("text-embedding-3-large");
+    expect(hasEmbeddingSupport()).toBe(true);
   });
 });

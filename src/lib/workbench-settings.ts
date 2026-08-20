@@ -256,6 +256,36 @@ export function settingsEnvOverrideCopy(kind: "provider" | "model", value: strin
   return `The environment sets ${variable}=${value}, and that wins at runtime. What you save here applies only once that variable is unset.`;
 }
 
+/**
+ * What this deployment is EMBEDDING with, when that is not the model that is set
+ * (DW-274, DW-312).
+ *
+ * A DERIVED-SERVER fact, unlike everything else on this row: the environment
+ * sentence above says where a value came from, {@link vectorSearchFieldIssue}
+ * says why the vector switch will not turn on, and this says what the embed path
+ * is doing right now. All three can be true at once and each is a different
+ * question, so this composes with them rather than replacing either.
+ *
+ * NOT shared verbatim with `EmbeddingSettings.tsx`, which says the same thing on
+ * the flat `/settings` page. That one is JSX — a `<p>` beneath the field, with
+ * the model name in a `<span className="font-mono">` — and it can say "the model
+ * above" because it sits directly under a box that always shows the value it
+ * means. Here the sentence is a plain string joined into the row's own
+ * `aria-describedby` hint, after whatever else that hint already carries, and
+ * the box beside it shows the STORED model, which is EMPTY whenever
+ * `EMBEDDING_MODEL` owns the value. So this wording names "the model that is
+ * set" rather than pointing at a control, and carries no markup at all. Two
+ * surfaces, one fact, two sentences shaped for where they are read.
+ */
+export function settingsModelSubstitutedCopy(modelInEffect: string): string {
+  return (
+    `Not in effect. This deployment embeds with ${modelInEffect} — the ` +
+    "embedding provider cannot serve the model that is set, so it uses its own " +
+    "default instead. Vectors are tagged with the model that produced them, so " +
+    "an index built with a different model needs rebuilding."
+  );
+}
+
 /** Said where a key comes from the environment rather than from this store. */
 export function settingsEnvKeyCopy(providerName: string): string {
   return `${providerName} supplies its API key from the environment; nothing needs to be stored here.`;
@@ -339,6 +369,31 @@ export interface WorkbenchSettingsPayload {
   embeddingModel: string | null;
   embeddingBaseUrl: string | null;
   hasEmbeddingApiKey: boolean;
+  /**
+   * The model this deployment ACTUALLY embeds with (DW-274, DW-312).
+   *
+   * NOT editable and NOT a second embedding-model field: the row still edits
+   * `embeddingModel` above, and this only says what the resolver does with it.
+   * The server is the only place that can answer it — the rule is
+   * `embeddingModelMatchesProvider` applied over the env and the store together,
+   * inside `embeddings.ts`, which this client-safe module must not import — so
+   * the answer is SERVED rather than derived in the browser. `null` when
+   * nothing embeds at all, which is a different story from a substitution and
+   * is why the canvas guards on both fields rather than on the flag alone.
+   */
+  embeddingModelInEffect: string | null;
+  /**
+   * Is the model above being SUBSTITUTED on the embed path? (DW-274, DW-312)
+   *
+   * True only when a model is set, something is in effect, and they differ.
+   * False when nothing is set (nothing to override) and false when nothing
+   * embeds. Served rather than derived for the same reason as the field above,
+   * and served to THIS surface as well as to the flat `/settings` page because
+   * one deployment answering the same question two ways on two Settings screens
+   * is the gap DW-312 names. It is one boolean about the runtime and names
+   * nothing.
+   */
+  embeddingModelOverridden: boolean;
   /**
    * The ENVIRONMENT's overrides, which a save cannot change and which win at
    * runtime.
@@ -463,11 +518,20 @@ export function isWorkbenchSettingsPayload(
     nullableString("firecrawlBaseUrl") &&
     nullableString("envEmbeddingProvider") &&
     nullableString("envEmbeddingModel") &&
+    // REQUIRED, on the same argument `hasWorkersAiBinding` is required on
+    // (DW-312): the substitution note is guarded on BOTH of these, and neither
+    // absence has a safe reading. Defaulting the flag to `false` would silence
+    // a substitution that IS running — the one thing the note exists to say —
+    // and defaulting it to `true` would announce one that is not. `null` is
+    // accepted for the model name because it is a real state (nothing embeds),
+    // but `undefined` is not: it means the payload is not one.
+    nullableString("embeddingModelInEffect") &&
     (payload.llmTimeoutSeconds === null ||
       typeof payload.llmTimeoutSeconds === "number") &&
     typeof payload.vectorSearchEnabled === "boolean" &&
     typeof payload.hasCustomApiKey === "boolean" &&
     typeof payload.hasEmbeddingApiKey === "boolean" &&
+    typeof payload.embeddingModelOverridden === "boolean" &&
     // REQUIRED as a boolean, unlike `version`: this one feeds the vector rule,
     // and a missing value has no safe reading. Defaulting it to `true` would
     // enable the switch on a deployment with no binding; defaulting it to

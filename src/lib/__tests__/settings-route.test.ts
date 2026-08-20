@@ -17,8 +17,24 @@ vi.mock("@/lib/config", async (original) => ({
  * vitest the real function would add the BINDING leg to every `workers-ai`
  * refusal and drown out the leg each test is actually about. Mocking it lets a
  * test say "the binding is there" and keep the sentence about the MODEL.
+ *
+ * `getEmbeddingModelName` is the SECOND thing the route needs from this module,
+ * and it is load-bearing: since DW-312 `getWorkbenchSettings` resolves
+ * `embeddingModelInEffect`/`embeddingModelOverridden` through
+ * `embeddingModelAnswer`, which calls it — and `getWorkbenchSettings` builds the
+ * payload every 200 in this file serves back. A mock that stopped at the binding
+ * left it `undefined` and turned all of them into 500s.
+ *
+ * `hasEmbeddingSupport` is DEFENSIVE rather than load-bearing: the only route
+ * path that reaches it is `getEffectiveSettings`/`getEffectiveProvider`, and
+ * both of those are mocked above. It is stubbed so this file does not silently
+ * depend on which `config.ts` doors happen to be mocked.
  */
-vi.mock("@/lib/embeddings", () => ({ getWorkersAiBinding: vi.fn(() => null) }));
+vi.mock("@/lib/embeddings", () => ({
+  getWorkersAiBinding: vi.fn(() => null),
+  getEmbeddingModelName: vi.fn(() => null),
+  hasEmbeddingSupport: vi.fn(() => false),
+}));
 
 import { getPrincipal } from "@/lib/auth";
 import { isOwnerHandle } from "@/lib/owner";

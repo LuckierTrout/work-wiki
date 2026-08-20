@@ -98,8 +98,9 @@ export interface EffectiveSettings {
    *
    * It is a SECOND field rather than a correction to `embeddingModel` because
    * the two answer different questions: `embeddingModel`/`embeddingModelSource`
-   * say what is set and where, and this says what is in effect. See the
-   * comment on the assignment in `getEffectiveSettings`.
+   * say what is set and where, and this says what is in effect. The reasoning
+   * lives on {@link embeddingModelAnswer}, the one helper BOTH Settings
+   * resolvers derive this pair from (DW-312).
    */
   embeddingModelInEffect: string | null;
   /**
@@ -720,7 +721,12 @@ export function getEffectiveProvider(): ProviderInfo {
     configured: providerIsConfigured(provider),
     provider,
     model,
-    embeddingSupport: hasEmbeddingSupport(),
+    // The `cfg` read at the top of this function, not a fresh one (DW-313).
+    // `loadConfigSync()` is a 5 s-TTL cache, so re-entering it here would let
+    // "which provider is active" and "can it embed?" describe two different
+    // snapshots — on one `ProviderInfo` object, served by `/api/status`,
+    // `POST /api/settings/test` and the `effective` field of `PUT /api/settings`.
+    embeddingSupport: hasEmbeddingSupport(cfg),
   };
 }
 
@@ -990,6 +996,93 @@ export function getFirecrawlSettings(): FirecrawlSettings {
 }
 
 /**
+ * The WHOLE embedding-model answer, derived from ONE config snapshot.
+ *
+ * Four values, two questions. `model`/`source` say what is SET and where it
+ * came from; `inEffect`/`overridden` say what this deployment actually embeds
+ * with and whether that differs. Both Settings surfaces answer both questions,
+ * and they answer them from HERE rather than from two expressions that agree
+ * today (DW-312): the flat `/settings` page and the Workbench canvas were
+ * telling an owner different things about the same config, because only
+ * `getEffectiveSettings` carried the second half.
+ *
+ * `cfg` is a PARAMETER, and every leg below resolves against it — including
+ * `getEmbeddingModelName(cfg)`, which threads it all the way through the
+ * provider and key resolution (DW-313). `loadConfigSync()` is a 5 s-TTL cache,
+ * so a helper that re-read it per leg could describe a snapshot its caller
+ * never saw — on a cold cache, "set to X from config" beside "in effect: the
+ * provider default", i.e. a substitution that is not happening.
+ *
+ * WHAT IS SET (`model`/`source`)
+ *
+ * Read through the same accessor the resolver uses (DW-227), so a blank or
+ * whitespace-only `EMBEDDING_MODEL` is reported as "not set from env" rather
+ * than as an env-sourced model name nothing would ever embed with.
+ *
+ * BOTH legs are trimmed, not just the env one: a stored `"   "` (reachable
+ * from a pre-change flat write or a hand-edited config) would otherwise be
+ * reported as a config-sourced model name while `resolveEmbeddingModelName`
+ * trims it away and embeds with the provider default — the same split, one
+ * leg over. Every sibling reader of this key (`getVectorSearchSettings`,
+ * `getWorkbenchSettings`, `workbenchSettingsStored`) already uses `nonEmpty`.
+ *
+ * WHAT IS IN EFFECT (`inEffect`/`overridden`, DW-274)
+ *
+ * The pair above does not say what embeds: `resolveEmbeddingModelName` applies
+ * `embeddingModelMatchesProvider` before honouring the value, so on a Workers
+ * AI deployment with `EMBEDDING_MODEL=text-embedding-3-small` the pair above is
+ * truthfully "env, text-embedding-3-small" while `embedText` runs on
+ * `@cf/baai/bge-m3`. A surface whose whole job is "what is in effect and where
+ * did it come from" has to be able to say both.
+ *
+ * Read through `getEmbeddingModelName()` — the resolver's own door, the one
+ * every embed path uses — and NOT by re-applying the predicate here. A rule
+ * stated twice is two rules that agree today. (The resolver's mismatch warning
+ * is throttled once per `(provider, override)` per process (DW-273), so a
+ * settings read cannot make it spam.)
+ *
+ * The reported pair is deliberately left alone rather than replaced with the
+ * resolved name: `useSettings` seeds the editable model input from
+ * `embeddingModel` whenever the source is `config`, so a provider default
+ * leaking into it would put a value the owner never chose into their box — and
+ * the next save would write it into the store.
+ *
+ * `overridden` is true only when a model IS reported, something IS in effect,
+ * and they differ. False when nothing is set (nothing to override) and false
+ * when nothing embeds (the `embeddingSupport: false` story, not an override
+ * story).
+ */
+function embeddingModelAnswer(cfg: AppConfig): {
+  model: string | null;
+  source: SettingSource;
+  inEffect: string | null;
+  overridden: boolean;
+} {
+  const envEmbeddingModel = getEmbeddingModelOverride();
+  const storedEmbeddingModel = nonEmpty(cfg.embeddingModel);
+  let model: string | null;
+  let source: SettingSource;
+  if (envEmbeddingModel) {
+    model = envEmbeddingModel;
+    source = "env";
+  } else if (storedEmbeddingModel) {
+    model = storedEmbeddingModel;
+    source = "config";
+  } else {
+    model = null;
+    source = "none";
+  }
+
+  const inEffect = getEmbeddingModelName(cfg);
+  return {
+    model,
+    source,
+    inEffect,
+    overridden: model !== null && inEffect !== null && inEffect !== model,
+  };
+}
+
+/**
  * The `workbench` half of `GET /api/settings`.
  *
  * NO STORED KEY IS EVER IN HERE — the three secrets become `has*ApiKey`
@@ -1011,6 +1104,10 @@ export function getWorkbenchSettings(
   const cfg = loadConfigSync();
   const firecrawl = getFirecrawlSettings();
   const envProvider = envEmbeddingProvider();
+  // Resolved from the `cfg` already read above, through the ONE helper
+  // `getEffectiveSettings` uses (DW-312/DW-313) — so the two Settings surfaces
+  // cannot answer "is the model I set being substituted?" differently.
+  const embedding = embeddingModelAnswer(cfg);
   return {
     chatProvider: cfg.chatProvider ?? null,
     chatModel: cfg.chatModel ?? null,
@@ -1035,6 +1132,14 @@ export function getWorkbenchSettings(
     // browser can still answer the vector gate for a provider it has changed
     // but not yet saved.
     hasEmbeddingApiKey: nonEmpty(cfg.embeddingApiKey) !== null,
+    // What this deployment is EMBEDDING with right now, and whether that is a
+    // substitution for the model above (DW-312). Not editable, and not a key:
+    // one model name and one boolean. The canvas cannot derive either — the
+    // resolver's `embeddingModelMatchesProvider` rule runs server-side over the
+    // env and the store together — so the answer is served rather than computed
+    // in the browser.
+    embeddingModelInEffect: embedding.inEffect,
+    embeddingModelOverridden: embedding.overridden,
     // What a save cannot change and what wins at runtime, served apart from the
     // editable fields so the browser can feed the vector predicate exactly what
     // the route feeds it.
@@ -1223,59 +1328,12 @@ export function getEffectiveSettings(): EffectiveSettings {
     ollamaBaseUrlSource = "none";
   }
 
-  // Embedding model.
-  //
-  // Through the same accessor the resolver uses (DW-227), so a blank or
-  // whitespace-only `EMBEDDING_MODEL` is reported as "not set from env" rather
-  // than as an env-sourced model name nothing would ever embed with.
-  //
-  // BOTH legs are trimmed, not just the env one: a stored `"   "` (reachable
-  // from a pre-change flat write or a hand-edited config) would otherwise be
-  // reported as a config-sourced model name while `resolveEmbeddingModelName`
-  // trims it away and embeds with the provider default — the same split, one
-  // leg over. Every sibling reader of this key (`getVectorSearchSettings`,
-  // `getWorkbenchSettings`, `workbenchSettingsStored`) already uses `nonEmpty`.
-  const envEmbeddingModel = getEmbeddingModelOverride();
-  const storedEmbeddingModel = nonEmpty(cfg.embeddingModel);
-  let embeddingModel: string | null;
-  let embeddingModelSource: SettingSource;
-  if (envEmbeddingModel) {
-    embeddingModel = envEmbeddingModel;
-    embeddingModelSource = "env";
-  } else if (storedEmbeddingModel) {
-    embeddingModel = storedEmbeddingModel;
-    embeddingModelSource = "config";
-  } else {
-    embeddingModel = null;
-    embeddingModelSource = "none";
-  }
-
-  // ...and the OTHER half of the same answer (DW-274).
-  //
-  // The pair above says what is SET and where. It does not say what embeds:
-  // `resolveEmbeddingModelName` applies `embeddingModelMatchesProvider` before
-  // honouring the value, so on a Workers AI deployment with
-  // `EMBEDDING_MODEL=text-embedding-3-small` the pair above is truthfully "env,
-  // text-embedding-3-small" while `embedText` runs on `@cf/baai/bge-m3`. A
-  // surface whose whole job is "what is in effect and where did it come from"
-  // has to be able to say both.
-  //
-  // Read through `getEmbeddingModelName()` — the resolver's own door, the one
-  // every embed path uses — and NOT by re-applying the predicate here. A rule
-  // stated twice is two rules that agree today. (The resolver's mismatch
-  // warning is throttled once per `(provider, override)` per process (DW-273),
-  // so a settings read cannot make it spam.)
-  //
-  // The reported pair is deliberately left alone rather than replaced with the
-  // resolved name: `useSettings` seeds the editable model input from
-  // `embeddingModel` whenever the source is `config`, so a provider default
-  // leaking into it would put a value the owner never chose into their box —
-  // and the next save would write it into the store.
-  const embeddingModelInEffect = getEmbeddingModelName();
-  const embeddingModelOverridden =
-    embeddingModel !== null &&
-    embeddingModelInEffect !== null &&
-    embeddingModelInEffect !== embeddingModel;
+  // Embedding model — BOTH halves of the answer, from the one snapshot read at
+  // the top of this function (DW-274, DW-312, DW-313). The reasoning for each
+  // leg lives on {@link embeddingModelAnswer}, which is also what
+  // `getWorkbenchSettings` calls, so the two Settings surfaces cannot drift
+  // into describing the same config differently.
+  const embedding = embeddingModelAnswer(cfg);
 
   const structuredKnowledge = getStructuredKnowledgeModelSettings();
 
@@ -1285,11 +1343,15 @@ export function getEffectiveSettings(): EffectiveSettings {
     model,
     modelSource,
     configured: providerIsConfigured(provider),
-    embeddingSupport: hasEmbeddingSupport(),
-    embeddingModel,
-    embeddingModelSource,
-    embeddingModelInEffect,
-    embeddingModelOverridden,
+    // The SAME `cfg` every other half of this answer is resolved against
+    // (DW-313) — "does this deployment embed?" and "with what?" are one
+    // question, and a second read of the 5 s-TTL cache could answer them about
+    // two different snapshots.
+    embeddingSupport: hasEmbeddingSupport(cfg),
+    embeddingModel: embedding.model,
+    embeddingModelSource: embedding.source,
+    embeddingModelInEffect: embedding.inEffect,
+    embeddingModelOverridden: embedding.overridden,
     hasApiKey: resolvedApiKey !== null,
     apiKeySource,
     ollamaBaseUrl,

@@ -468,6 +468,38 @@ describe("getEffectiveProvider — merge priority", () => {
     expect(info.model).toBe("gpt-4o-mini");
   });
 
+  it("reports embeddingSupport, resolved against the same config it reports the provider from", async () => {
+    // No test in this suite read `embeddingSupport` at all before, on the one
+    // `ProviderInfo` object `/api/status`, `POST /api/settings/test` and the
+    // `effective` field of `PUT /api/settings` all serve.
+    //
+    // It also has to be resolved from the `cfg` this function already read
+    // rather than from a second `loadConfigSync()` (DW-313): `loadConfigSync`
+    // is a 5 s-TTL cache, so re-entering it would let "which provider is
+    // active" and "can it embed?" describe two different snapshots on one
+    // object.
+    await saveConfig({ provider: "openai", model: "gpt-4o-mini" });
+    await loadConfig();
+    process.env.OPENAI_API_KEY = "sk-openai-env-key";
+
+    expect(getEffectiveProvider()).toMatchObject({
+      provider: "openai",
+      configured: true,
+      // openai can embed, and with the key present the resolver reaches a model.
+      embeddingSupport: true,
+    });
+
+    // Take the credential away and the SAME object reports both halves of the
+    // new answer: still the owner's selection, no longer able to embed.
+    delete process.env.OPENAI_API_KEY;
+    _resetConfigCache();
+    await loadConfig();
+    expect(getEffectiveProvider()).toMatchObject({
+      provider: "openai",
+      embeddingSupport: false,
+    });
+  });
+
   it("saved provider selection wins when another provider key also exists", async () => {
     await saveConfig({ provider: "openai" });
     await loadConfig();

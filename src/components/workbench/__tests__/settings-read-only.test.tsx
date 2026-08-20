@@ -52,6 +52,10 @@ function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSe
     embeddingModel: "text-embedding-3-small",
     embeddingBaseUrl: null,
     hasEmbeddingApiKey: true,
+    // No substitution running — this file is about what a read-only deployment
+    // refuses, not about what it embeds with (DW-312).
+    embeddingModelInEffect: null,
+    embeddingModelOverridden: false,
     envEmbeddingProvider: null,
     envEmbeddingModel: null,
     envEmbeddingApiKeyProviders: [],

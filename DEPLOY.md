@@ -121,6 +121,40 @@ Forcing a provider also switches OFF the auto-detection fallback, so an override
 that cannot resolve leaves embeddings disabled rather than picking a provider
 that would have worked. Set the variable only alongside the credential it needs.
 
+**A provider that cannot embed at all is refused out loud, and the warning now
+names where the value came from.** `EMBEDDING_PROVIDER=deepseek` — or any value
+outside `openai`, `google`, `ollama`, `workers-ai` — disables embeddings rather
+than falling through to auto-detection, and says so once on the `embeddings` tag:
+
+```
+[embeddings] EMBEDDING_PROVIDER="deepseek" is not embedding-capable
+(valid: openai, google, ollama, workers-ai); embeddings are disabled.
+Fix the override or unset it to auto-detect.
+```
+
+The same unservable value can also arrive from the **store**, because Settings
+saves an embedding provider of its own and the variable is only the first of the
+two feeders. That case gets its own sentence — it names the *stored* provider and
+points at Settings, with no `EMBEDDING_PROVIDER=` and no instruction to unset a
+variable nobody set:
+
+```
+[embeddings] The embedding provider saved in Settings, "deepseek", is not
+embedding-capable (valid: openai, google, ollama, workers-ai); embeddings are
+disabled. Choose a supported embedding provider in Settings.
+```
+
+Which value *wins* is unchanged — the variable still beats the store. Only the
+sentence learned where the value it is refusing came from.
+
+One deployment does not hear both at once: a set `EMBEDDING_PROVIDER` shadows the
+stored selection entirely, so the Settings sentence is only reachable once the
+variable is unset. What the throttle guarantees is that unsetting it does not
+cost you the second line — the source is part of the misconfiguration's identity,
+so a stored `deepseek` uncovered by removing an env `deepseek` is a *new* fact
+and is said once on its own terms, rather than being silenced as a repeat of the
+sentence you already fixed.
+
 **`EMBEDDING_MODEL` must name a model the selected provider can actually serve.**
 Under `workers-ai` it must be one of the supported Cloudflare embedding ids:
 
@@ -270,7 +304,32 @@ top of the page, which drops its `• embeddings ✓` marker. So the note answer
 one question only — "is the id I set being substituted" — and the box and the
 connection line answer the other two.
 
-This is a `/settings` behaviour and not a general one. The **Workbench** Settings
+**Both Settings surfaces answer this question.** The **Workbench** Settings canvas
+says the same thing on its Embedding model row, as part of the row's own
+description rather than as a note beneath the box:
+
+> Not in effect. This deployment embeds with `…` — the embedding provider cannot
+> serve the model that is set, so it uses its own default instead. Vectors are
+> tagged with the model that produced them, so an index built with a different
+> model needs rebuilding.
+
+The wording is shaped for the row it rides on rather than copied from the flat
+page: the canvas box shows the **stored** model, which is empty whenever
+`EMBEDDING_MODEL` owns the value, so the sentence names "the model that is set"
+instead of pointing at a control. Both surfaces withhold it on the same rule —
+no sentence unless something is actually in effect to name — and both apply it
+regardless of which embedding provider is selected, or whether one is selected at
+all. The canvas re-reads it on save, since a landed `PUT` serves the payload back
+from a cache the write has just re-primed.
+
+What changed on the canvas is the state its model row was previously **silent**
+in: with **no embedding provider chosen**, `vectorSearchFieldIssue` returns the
+provider leg early and never produces a model complaint, so that row had nothing
+to say at all — while the deployment was quietly embedding with something other
+than the id in the box. (The flat page was never silent there; its note has no
+provider term.)
+
+The **locked box** is a `/settings` behaviour and not a general one. The Workbench
 canvas deliberately does the opposite with a forced value: it keeps the *stored*
 selection in the control and says the environment's value beside it, for the
 reason given above about the provider select — so do not go hunting on that
@@ -281,12 +340,42 @@ flagged invalid and the save is not blocked, because an `EMBEDDING_MODEL`-owned
 mismatch cannot be fixed from that box at all — unset the variable, or set it to
 an id the embedding provider serves.
 
-The logs say the same thing from the other side: grep for the `embeddings`
-warning above — it names the id that was dropped and the one embedding actually
-ran with. Grep the whole retained window rather than the last few minutes, and
-read a *single* occurrence as the full report: because the line is said once per
-process (per isolate on Cloudflare), the absence of a repeated line says nothing
-about whether the mismatch is still standing. So confirm the current state from
+**The other half of that cost has its own line, throttled the same way.** Once a
+store holds only vectors from a model the deployment no longer uses, every
+search still runs — it just discards every hit — and `searchByVector` leaves a
+breadcrumb so that is diagnosable rather than looking like "no matches":
+
+```
+[embeddings] searchByVector: the model filter dropped every match
+(active="@cf/baai/bge-m3") — likely embedding-model drift; rebuild embeddings.
+```
+
+Like the substitution warning it is said **once per process** (per isolate on
+Cloudflare), keyed on the *active model name*: drift is standing state that holds
+until the corpus is rebuilt, and the door it is logged from runs once per search,
+so an unthrottled line repeated itself for every query anyone ran. A change to
+the active model that still drifts is a new identity and speaks again. The line
+deliberately names **no match count** — the count belongs to the query, not to the
+misconfiguration, and putting it in the sentence is what would make each query's
+line look different enough to be worth repeating.
+
+It carries the same two operational caveats as the substitution warning, for the
+same two reasons. It is a `warn`-level line, so `LOG_LEVEL` must be `warn` or
+below for it to appear at all — `LOG_LEVEL=error` or `silent` restores exactly
+the silence it exists to end. And because it is said once per process, a **single
+occurrence is the full report**: its absence from the last few minutes of log
+says nothing about whether the drift is still standing, and the fix is confirmed
+by a search returning results again, not by the log going quiet.
+
+The logs say the same thing from the other side: grep for the
+`cannot be served by` **substitution** warning quoted earlier in this section —
+it names the id that was dropped and the one embedding actually ran with. (Not
+the drift line above, which names neither: it reports the corpus that is now
+unreachable, not the id that was substituted.) Grep the whole retained window
+rather than the last few minutes, and read a *single* occurrence as the full
+report: because the line is said once per process (per isolate on Cloudflare),
+the absence of a repeated line says nothing about whether the mismatch is still
+standing. So confirm the current state from
 Settings or from the model tag on freshly written vectors, not from the log's
 silence.
 

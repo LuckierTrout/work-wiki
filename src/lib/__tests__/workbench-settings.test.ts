@@ -266,6 +266,10 @@ function emptyPayload(): WorkbenchSettingsPayload {
     embeddingModel: null,
     embeddingBaseUrl: null,
     hasEmbeddingApiKey: false,
+    // Nothing set and nothing embedding, so there is no substitution to
+    // announce — the "fresh deployment" answer for the DW-312 pair too.
+    embeddingModelInEffect: null,
+    embeddingModelOverridden: false,
     envEmbeddingProvider: null,
     envEmbeddingModel: null,
     envEmbeddingApiKeyProviders: [],
@@ -2619,6 +2623,46 @@ describe("the settings client", () => {
         isWorkbenchSettingsPayload({ ...emptyPayload(), hasWorkersAiBinding: value }),
       ).toBe(true);
     }
+  });
+
+  it("REQUIRES the substitution pair on the same argument (DW-312)", () => {
+    // The canvas guards its note on BOTH fields, and neither absence has a safe
+    // reading: a flag defaulted to `false` silences a substitution that IS
+    // running — the one thing the note exists to say — and `true` announces one
+    // that is not. So a payload missing either is not one, and the surface
+    // shows its failed-read sentence rather than guessing.
+    const { embeddingModelInEffect: _model, ...withoutModel } = emptyPayload();
+    expect(isWorkbenchSettingsPayload(withoutModel)).toBe(false);
+    const { embeddingModelOverridden: _flag, ...withoutFlag } = emptyPayload();
+    expect(isWorkbenchSettingsPayload(withoutFlag)).toBe(false);
+
+    for (const value of [null, "true", 0, 1]) {
+      expect(
+        isWorkbenchSettingsPayload({ ...emptyPayload(), embeddingModelOverridden: value }),
+      ).toBe(false);
+    }
+    for (const value of [1, {}, []]) {
+      expect(
+        isWorkbenchSettingsPayload({ ...emptyPayload(), embeddingModelInEffect: value }),
+      ).toBe(false);
+    }
+
+    // `null` IS accepted for the model name — "nothing embeds" is a real state,
+    // and it is exactly the state that withholds the note.
+    expect(
+      isWorkbenchSettingsPayload({
+        ...emptyPayload(),
+        embeddingModelInEffect: null,
+        embeddingModelOverridden: true,
+      }),
+    ).toBe(true);
+    expect(
+      isWorkbenchSettingsPayload({
+        ...emptyPayload(),
+        embeddingModelInEffect: "@cf/baai/bge-m3",
+        embeddingModelOverridden: true,
+      }),
+    ).toBe(true);
   });
 });
 

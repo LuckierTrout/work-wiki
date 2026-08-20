@@ -44,6 +44,7 @@ import {
   settingsDraftFromPayload,
   settingsEnvKeyCopy,
   settingsEnvOverrideCopy,
+  settingsModelSubstitutedCopy,
   settingsSaveBody,
   vectorSearchFieldIssue,
   vectorSearchInactiveCopy,
@@ -268,6 +269,22 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
   // gone missing — which is what the `!values.vectorSearchEnabled` term says.
   const vectorRefused =
     stored.readOnly || (!vectorAllowed && !values.vectorSearchEnabled);
+  // What this deployment is EMBEDDING with right now (DW-312), which unlike
+  // every other term here is read off the PAYLOAD rather than off the draft.
+  // It has to be: the substitution is the resolver applying
+  // `embeddingModelMatchesProvider` over the env and the store together, which
+  // only the server can evaluate — and it describes what is running, not what
+  // the owner is currently typing. It refreshes on save, because `PUT` re-seeds
+  // this payload from a cache `saveConfig` has just re-primed.
+  //
+  // Guarded on BOTH fields, exactly as `EmbeddingSettings.tsx` guards the same
+  // note on the flat page: a half-wired payload would otherwise render a
+  // sentence with a hole where the model name goes, which is worse than no
+  // sentence.
+  const modelSubstitution =
+    stored.embeddingModelOverridden && stored.embeddingModelInEffect !== null
+      ? settingsModelSubstitutedCopy(stored.embeddingModelInEffect)
+      : null;
   // Named only when the SELECTED provider is one the environment already
   // carries a key for — an `OPENAI_API_KEY` says nothing about a Google
   // selection, which is exactly the confusion a flat "a key is present" caused.
@@ -557,16 +574,30 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
             {textRow(
               "embeddingModel",
               "Embedding model",
-              // The env sentence first (where the value comes from), then the
-              // gate's complaint about it (what is wrong with it). Both are the
-              // control's OWN description, so a screen reader reads them on the
-              // field rather than leaving the complaint on a checkbox three rows
-              // down.
+              // THREE parts, in the order an owner needs them: where the value
+              // comes from (the env sentence), what is wrong with it (the
+              // gate's complaint), and what is embedding instead right now (the
+              // substitution note, DW-312). Each answers a different question
+              // and any subset may be absent — the substitution note in
+              // particular is the only one that appears when NO provider is
+              // selected, where the gate returns the provider leg early and
+              // produces no model complaint at all. All three are the control's
+              // OWN description, so a screen reader reads them on the field
+              // rather than leaving them on a checkbox three rows down.
+              //
+              // The substitution is DESCRIBED, never MARKED: `invalid` below
+              // stays the gate's answer alone. A substitution is not a wrong
+              // value in this box — the box may be empty while `EMBEDDING_MODEL`
+              // owns the value, and even a stored id that the provider cannot
+              // serve is still what applies the moment the provider changes —
+              // so no `aria-invalid`, nothing disabled, and the save is not
+              // blocked.
               [
                 stored.envEmbeddingModel
                   ? settingsEnvOverrideCopy("model", stored.envEmbeddingModel)
                   : null,
                 vectorModelIssue?.copy ?? null,
+                modelSubstitution,
               ]
                 .filter((part): part is string => part !== null)
                 .join(" ") || undefined,

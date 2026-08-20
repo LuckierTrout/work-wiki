@@ -47,6 +47,11 @@ function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSe
     embeddingModel: "text-embedding-3-small",
     embeddingBaseUrl: null,
     hasEmbeddingApiKey: false,
+    // No substitution by default (DW-312), so every case written before the
+    // pair existed announces exactly what it announced then — the cases that
+    // are ABOUT the substitution opt in by overriding both fields.
+    embeddingModelInEffect: null,
+    embeddingModelOverridden: false,
     envEmbeddingProvider: null,
     envEmbeddingModel: null,
     envEmbeddingApiKeyProviders: [],
@@ -402,6 +407,123 @@ describe("the MODEL INPUT carries its own complaint (DW-223)", () => {
     // The box still holds what the owner stored — the complaint describes it,
     // it does not rewrite it.
     expect(modelInput().value).toBe("text-embedding-3-small");
+  });
+});
+
+describe("the MODEL ROW says what this deployment actually embeds with (DW-312)", () => {
+  function modelInput(): HTMLInputElement {
+    return screen.getByLabelText("Embedding model") as HTMLInputElement;
+  }
+
+  /**
+   * The substitution sentence, typed out for the same reason every other
+   * sentence in this file is: the point of a mounted assertion is the string a
+   * screen reader announces, and building it by calling the copy function would
+   * assert only that the component calls the function.
+   *
+   * It names "the model that is set" rather than "the model above", because on
+   * THIS surface the box beside it is empty whenever `EMBEDDING_MODEL` owns the
+   * value — which is exactly the state the second case below mounts.
+   */
+  function substituted(model: string): string {
+    return `Not in effect. This deployment embeds with ${model} — the embedding provider cannot serve the model that is set, so it uses its own default instead. Vectors are tagged with the model that produced them, so an index built with a different model needs rebuilding.`;
+  }
+
+  it("announces the substitution on the model row, naming the model IN EFFECT", async () => {
+    await mount(
+      payload({
+        embeddingModelOverridden: true,
+        embeddingModelInEffect: "@cf/baai/bge-m3",
+      }),
+    );
+    const announced = announcedFor(modelInput());
+    expect(announced).toContain(substituted("@cf/baai/bge-m3"));
+    // The gate's own complaint is still here and still the only reason the box
+    // is marked — the note rides beside it without changing the mark. (The
+    // no-provider case below is the one that isolates "described, never marked":
+    // there the gate produces nothing and the note stands alone, unmarked.)
+    expect(announced).toContain(UNSUPPORTED_WORKERS_MODEL);
+    // And the box is still editable: a substitution is not a refusal.
+    expect(modelInput().readOnly).toBe(false);
+  });
+
+  it("rides BESIDE the env sentence and the gate complaint, not instead of them", async () => {
+    // Three different questions on one row: where the value comes from, why the
+    // switch will not turn on, and what is embedding right now. All three can be
+    // true at once, and each is the model row's own description.
+    await mount(
+      payload({
+        embeddingModel: null,
+        envEmbeddingModel: "text-embedding-3-small",
+        embeddingModelOverridden: true,
+        embeddingModelInEffect: "@cf/baai/bge-m3",
+      }),
+    );
+    // The box is EMPTY — the env owns the value — which is why the note cannot
+    // point at "the model above".
+    expect(modelInput().value).toBe("");
+    const announced = announcedFor(modelInput());
+    expect(announced).toContain(
+      settingsEnvOverrideCopy("model", "text-embedding-3-small"),
+    );
+    expect(announced).toContain(UNSUPPORTED_WORKERS_MODEL);
+    expect(announced).toContain(substituted("@cf/baai/bge-m3"));
+    // An env-owned mismatch is still described-but-unmarked; the note does not
+    // change that.
+    expect(modelInput().getAttribute("aria-invalid")).toBeNull();
+  });
+
+  it("appears with NO provider selected, where the gate says nothing at all", async () => {
+    // The state the canvas MODEL ROW was silent about. `vectorSearchFieldIssue`
+    // returns the provider leg early and produces no model complaint, so before
+    // this the row had nothing to say — while the deployment was quietly
+    // embedding with something other than the id in the box.
+    //
+    // A COHERENT payload: nothing is chosen in Settings, the server
+    // auto-detected Workers AI, and Workers AI cannot serve the stored OpenAI
+    // id — so the id is set, something else is in effect, and they differ,
+    // which is exactly what `embeddingModelAnswer` requires before it reports
+    // `overridden`.
+    await mount(
+      payload({
+        embeddingProvider: null,
+        embeddingModel: "text-embedding-3-small",
+        embeddingModelOverridden: true,
+        embeddingModelInEffect: "@cf/baai/bge-m3",
+      }),
+    );
+    // The note stands ALONE here — no env sentence, no gate complaint — which
+    // is what isolates "described, never marked": the row is announced and the
+    // box carries no `aria-invalid` at all.
+    expect(modelInput().getAttribute("aria-invalid")).toBeNull();
+    expect(announcedFor(modelInput())).toBe(substituted("@cf/baai/bge-m3"));
+  });
+
+  it("says NOTHING when nothing is overridden", async () => {
+    // The default fixture answer, pinned explicitly: a row with no complaint and
+    // no substitution carries no description at all.
+    await mount(
+      payload({
+        embeddingModel: "@cf/baai/bge-m3",
+        embeddingModelInEffect: "@cf/baai/bge-m3",
+        embeddingModelOverridden: false,
+      }),
+    );
+    expect(modelInput().getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("WITHHOLDS the note on a half-wired payload", async () => {
+    // Guarded on BOTH fields, exactly as the `/settings` sibling guards the same
+    // note: a sentence with a hole where the model name goes is worse than no
+    // sentence.
+    await mount(
+      payload({
+        embeddingModel: "@cf/baai/bge-m3",
+        embeddingModelOverridden: true,
+        embeddingModelInEffect: null,
+      }),
+    );
+    expect(modelInput().getAttribute("aria-describedby")).toBeNull();
   });
 });
 

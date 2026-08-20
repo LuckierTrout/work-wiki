@@ -285,7 +285,7 @@ resolution: already resolved: The resolver the entry said Story 1.5 would need w
 origin: spec-deferred 5a6b330e4ac8
 location: src/lib/workbench-files.ts
 source_spec: `spec-1-4-knowledge-tree-and-file-tree.md`
-severity: low
+severity: medium
 reason: `listWorkbenchFilePaths` filters `.md` leaves under the wiki root against the slug set `listReadableWikiPages` returned, so a page hidden from the Knowledge tab cannot surface in Files by filename. `raw/` is not filtered: `saveRawSource` writes `raw/<slug>.md` and `saveRawSourceFor` writes `raw/<slug>/<hash>.md`, so the source tree still spells the slug of a page the filter excludes. In the single-owner Workbench this epic ships, every file under the tenant belongs to the signed-in owner, so nothing crosses an owner boundary today — the exposure is limited to agent-scoped pages and to legacy flat-tree residue. Filtering `raw/` needs a source→page mapping the walk does not have (one raw file can back several pages, and an orphaned source backs none), so it belongs with whichever story gives Sources a real read model — Epic 2.
 status: open
 
@@ -433,7 +433,7 @@ decision: 2026-08-16 Allow one shared breakpoint constant — Introduce a single
 origin: spec-deferred 50d952f5c317
 location: src/components/workbench/DataVersionWatcher.tsx (run), src/lib/workbench-data-version.ts (shouldRefreshForDataVersion)
 source_spec: `spec-1-7-dataversion-workbench-refresh.md`
-severity: low
+severity: medium
 reason: `DataVersionWatcher` sets `refreshedForRef.current = result.version` before `router.refresh()` and never checks that the new render's `dataVersion` caught up. Both reads go through the same Worker, so the window is narrow — but if the RSC read answers the pre-bump integer, `served` stays behind while `refreshedFor` is ahead, and `shouldRefreshForDataVersion` returns `false` for that version forever; the trees then wait for the NEXT write. The obvious fix is not obviously right: dropping the guard restores the unbounded re-render loop it exists to prevent (a degraded `page.tsx` read stuck at 0 against a route answering 7 would refresh every tick, forever), so closing this needs a bounded retry policy — how many attempts, how long to wait for the baseline to move — which is a refresh-policy decision for whichever story next revisits the signal (Epic 2's Ingest is its first real consumer).
 status: open
 
@@ -526,7 +526,7 @@ resolution: resolved by sweep bundle dw2-artifact-seed-data-version-bump
 origin: spec-deferred d9e12a049e09
 location: src/lib/wiki-scenarios.ts (EDITABLE_ARTIFACT_FILES)
 source_spec: `spec-1-8-edit-schema.md`
-severity: low
+severity: medium
 reason: PRD FR-34 reads "Christian can view/edit purpose and Schema from Settings or Wiki tree", and the UX run names both files. This story's acceptance covers Schema alone, so the exclusion is correct here — but it is now an asserted invariant (`expect(EDITABLE_ARTIFACT_FILES).not.toContain( "purpose.md")`), so a later story must edit a test to open it. Opening it also needs an answer to what `purpose.md` must contain to be valid (the Schema's `hasPageConventions` has no analogue) and to how it reconciles with the tenant-global workspace profile (DW-14, DW-21), which is why it was not simply widened here.
 status: open
 decision: 2026-08-16 Wait for DW-14
@@ -622,7 +622,7 @@ status: open
 origin: spec-deferred bddb90da84c0
 location: src/lib/embeddings.ts:139, src/lib/config.ts (getWorkbenchSettings)
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
-severity: low
+severity: medium
 reason: `embeddingApiKeyFor` reads the same stored value for `openai` and `google`, and `settingsSaveBody` omits an untouched secret — so an owner who stored an OpenAI key and then picks Google sends that key to Google while the hint still reads "A key is stored." Keying the field per provider (or labelling which vendor the stored key belongs to) is a store-shape decision this story's acceptance does not settle; the vector gate's env leg was made provider-aware in this pass, but the STORED key deliberately stayed vendor-agnostic so a provider changed in the draft can still answer the gate before it is saved.
 status: open
 
@@ -646,7 +646,7 @@ status: open
 origin: spec-deferred 1ed1cc09bf7d
 location: src/lib/embeddings.ts:228-238 (_createEmbeddingModel)
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
-severity: low
+severity: medium
 reason: `_createEmbeddingModel` reads `loadConfigSync().embeddingBaseUrl` and applies it to the `openai` and `google` branches alike, with nothing tying the value to the provider it was typed for. This is the endpoint twin of the already-recorded vendor-agnostic `embeddingApiKey`, and it has the same resolution: keying the field per provider is a store-shape decision this story's acceptance does not settle. Nothing breaks today — the pair is usually changed together — but the silent reuse is real.
 status: open
 
@@ -937,7 +937,7 @@ resolution: resolved by sweep bundle dw2-email-ingest-attachment-coverage
 origin: spec-deferred 4fa3442f8443
 source_spec: `spec-email-ingest-attachment-test.md`
 location: workers/email-ingest/index.ts:39
-severity: low
+severity: medium
 reason: The worker rejects on `message.rawSize > MAX_RAW_EMAIL_BYTES` (10 MB, `index.ts:39/147`) — a raw-message measurement taken *before* MIME decoding. Base64 inflates payloads by roughly a third, so the effective per-attachment ceiling over email is about 7.5 MB, while `MAX_DOCUMENT_SIZE` in `src/lib/constants.ts` is 10 MB. The gap is undocumented and untested in both directions.
 status: open
 decision: 2026-08-19 Raise the raw cap — Raise `MAX_RAW_EMAIL_BYTES` to about 13.4 MB so a `MAX_DOCUMENT_SIZE` attachment survives base64 expansion, derive it from `MAX_DOCUMENT_SIZE` with a comment naming the expansion factor, and add a test that fails if the two caps drift apart.
@@ -1710,7 +1710,7 @@ resolution: resolved by sweep bundle dw3-settings-write-precondition-integrity
 origin: spec-deferred f94acd1bd4a8
 source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/app/api/workbench/artifact/route.ts:149, src/lib/wikis.ts:556
-severity: low
+severity: medium
 reason: `src/app/api/workbench/artifact/route.ts` calls `readWikiArtifact` for the precondition, then `writeWikiArtifact`, which wraps its put in `withFileLock(wikiLockKey(owner))` (`src/lib/wikis.ts:556`). Moving the read and the check inside that same critical section would close the window at zero design cost — no new lock and no new lock ordering, which is what this spec's Never clause actually forbids. Not done here because it needs a precondition parameter threaded into `writeWikiArtifact` and an unlocked internal getter, and because the other two routes would then carry a weaker guarantee than this one.
 status: open
 
@@ -1718,7 +1718,7 @@ status: open
 origin: spec-deferred 40d3b352a7ca
 source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/middleware.ts:30, src/app/api/wiki/[slug]/route.ts:174
-severity: low
+severity: medium
 reason: `src/middleware.ts:30-31` documents `/api/wiki/<slug>` mutations as authenticated by "Clerk session OR the system service token", and the PUT handler resolves `getServicePrincipal(req)` for exactly that caller. Any external agent issuing an unconditional `PUT` now receives a 428 carrying a sentence written for a human editor. No in-repo caller exists (verified: `tools/`, `scripts/`, `integrations/`, `workers/`, `skills/` carry no `api/wiki` or `api/settings` request), so nothing breaks in this tree — but no doc, and no test, covers the service-principal path against the guard. DW-38 names "Epic 8's loopback API" as a future third writer that would inherit this requirement.
 status: open
 
@@ -1726,7 +1726,7 @@ status: open
 origin: spec-deferred e8332ca1afef
 source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/lib/wiki.ts:334, src/app/api/workbench/preview/route.ts:142
-severity: low
+severity: medium
 reason: `src/lib/wiki.ts:334-337` returns a cached page whenever `pageCache` is active, and `GET /api/workbench/preview` derives the version from exactly that value. The cache is ref-counted around bulk scans rather than held per-request, so no route in this bundle activates it today; the staleness is pre-existing for `body` and the version merely inherits it.
 status: open
 
@@ -1771,7 +1771,7 @@ resolution: resolved by sweep bundle dw3-settings-write-precondition-integrity
 origin: spec-deferred 18037df81052
 source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/app/api/workbench/artifact/route.ts:129
-severity: low
+severity: medium
 reason: `PUT /api/workbench/artifact` resolves `currentId` from the registry at request time and checks the precondition against THAT Wiki's artifact. Two Wikis seeded from the same template hold byte-identical `schema.md`, so the version matches and the draft is written to a Wiki it was never read from. Pre-existing and strictly improved by this change — the write was unconditional before, so the same draft landed on the other Wiki whatever its bytes were — but the guard does not close it, because a content version cannot distinguish two files that genuinely hold the same content. Closing it means binding the seeded Wiki id to the request, which no DW entry in this bundle names.
 status: open
 
@@ -1845,7 +1845,7 @@ status: open
 origin: spec-deferred 4e2733a570b3
 source_spec: `spec-dw-49-artifact-seed-data-version-bump.md`
 location: src/lib/wikis.ts (renameWiki / retitlePurpose)
-severity: low
+severity: medium
 reason: `retitlePurpose` (src/lib/wikis.ts) writes the retitled `purpose.md` through the same tail-less `putWikiArtifact` the seeder uses, and `renameWiki` adds no bump. Renaming a NON-current Wiki changes no `currentWikiId`, so `Workbench`'s selection-reset effect does not fire either — the same DW-57 shape, one artifact over. Milder than DW-57 because `purpose.md` is not in `EditableArtifactFile`, so the stale column is read-only and there is no silent-revert half. Out of scope here: the bundle intent names the seeding and re-apply paths only.
 status: open
 
@@ -1861,7 +1861,7 @@ status: open
 origin: spec-deferred 376f1759e471
 source_spec: `spec-dw-49-artifact-seed-data-version-bump.md`
 location: src/lib/wikis.ts, src/lib/lifecycle.ts
-severity: low
+severity: medium
 reason: DW-49 names three classes of bypassing writer: template seeding, raw source files, and "any later writer that lands bytes the Files tab renders". Only the first is closed here. A grep of `src/lib` finds no writer under `tenants/<t>/raw/` today, so there is nothing to bump; the guard test in `workbench-data-version.test.ts` will fail the moment a fourth bump site appears, which is the intended tripwire.
 status: open
 
@@ -1895,7 +1895,7 @@ status: open
 origin: spec-deferred 5d7e90742d9d
 source_spec: `spec-dw-59-per-wiki-artifact-revisions.md`
 location: src/lib/wiki-artifact-revisions.ts, src/lib/backups.ts:56-85
-severity: low
+severity: medium
 reason: Every `writeWikiArtifact` writes a full copy under `tenants/<t>/wikis/<id>/revisions/<file>/` with no retention policy (deliberate — page revisions have none either), and `listWikiArtifactRevisions` stats every revision on each GET with an unbounded `Promise.all`. `src/lib/backups.ts` walks all of `tenants/<t>` against `MAX_BACKUP_FILES = 10_000` / `MAX_BACKUP_BYTES = 2 GB` and throws "Backup exceeds the safety limit" rather than degrading. Page revisions spread across slugs; these pile into one directory per artifact.
 status: open
 
@@ -2213,7 +2213,7 @@ status: open
 origin: spec-deferred fc3cbd828749
 source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: src/app/api/email/ingest/route.ts:122
-severity: low
+severity: medium
 reason: (a) An email whose attachments are all unsupported but which has a body: the "queued" line is omitted, the "skipped" line fires, and a zero-attachment form is forwarded — untested end to end. (b) A single attachment over `MAX_DOCUMENT_SIZE` makes the route 400 the *whole* email (`src/app/api/email/ingest/route.ts:122-128`), so the body and every other attachment are lost, and the Worker does no per-attachment size pre-filter before forwarding.
 status: open
 decision: 2026-08-20 Drop the oversized attachment — Change the route to skip an attachment over `MAX_DOCUMENT_SIZE` rather than 400 the request, ingest the body and the remaining attachments, and name the dropped file in the acknowledgement alongside the existing skipped-attachment sentence. Add a per-attachment size pre-filter in the Worker so an oversized part is never forwarded, and add the missing end-to-end case for an email whose attachments are all unsupported but which carries a body.
@@ -2518,7 +2518,7 @@ status: open
 origin: spec-deferred a53600c92e2a
 source_spec: `spec-dw-147-150-162-orphan-wiki-sweep-hardening.md`
 location: src/lib/wikis.ts (sweepOrphans)
-severity: low
+severity: medium
 reason: Every other block in `src/app/api/tasks/scan/route.ts` bounds its work (`.slice(0, 25)`, `listDueOutboxEvents(..., 50)`) and `scanForMaintenance` documents its cap as a "cost + blast-radius bound". `sweepOrphans` runs inside `withFileLock(wikiLockKey(owner))`, so a long pass queues every create, rename and delete for that tenant behind it. Bounded in practice by `MAX_WIKIS` (100) and by orphans being rare, which is why it is recorded rather than fixed.
 status: open
 
@@ -2694,9 +2694,10 @@ status: open
 origin: spec-deferred 23b8e4e79790
 source_spec: `spec-dw-273-278-embedding-warning-throttle.md`
 location: src/lib/embeddings.ts:656
-severity: low
+severity: medium
 reason: `src/lib/embeddings.ts:656-662` logs "all N matches dropped by the model filter (active=...) — likely embedding-model drift; rebuild embeddings" whenever the store returns hits and the model filter drops all of them. That condition is standing state (the active model name has drifted from every stored vector) and a search query is a higher-frequency door than either resolver, so a drifted corpus emits the line per query. It stayed unguarded because this bundle's intent named exactly three resolvers, and the sentence embeds a per-query `matches.length`, so it is not literally the same line each time. DW-273's own reason frames the fix as "a change to the module's logging convention", which argues the other way.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-embedding-truth-and-warning-attribution
 
 ### DW-311: The non-embedding-capable override warning hardcodes `EMBEDDING_PROVIDER="..."` even when the value came from stored config, and now says it only once.
 origin: spec-deferred eb0689dd76b5
@@ -2704,7 +2705,8 @@ source_spec: `spec-dw-273-278-embedding-warning-throttle.md`
 location: src/lib/embeddings.ts:134-145
 severity: low
 reason: `src/lib/embeddings.ts:134` reads `process.env.EMBEDDING_PROVIDER ?? cfg.embeddingProvider`, but the warning text always attributes the value to the env var. Pre-existing, and harmless while the line repeated; now that it is said once per identity, an owner whose bad value came from Settings gets a single line telling them to unset an env var they never set. The fix is to name the source (env vs stored) in the message.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-embedding-truth-and-warning-attribution
 
 ### DW-312: The Workbench Settings canvas has its own embedding-model control and still cannot say which model is actually embedding.
 origin: spec-deferred f2471935e58a
@@ -2712,7 +2714,8 @@ source_spec: `spec-dw-274-effective-settings-embedding-truth.md`
 location: src/components/workbench/SettingsCanvas.tsx:542
 severity: low
 reason: `src/components/workbench/SettingsCanvas.tsx:542-565` renders the embedding model row from `getWorkbenchSettings`, not `getEffectiveSettings`, so the two new fields never reach it. It names a provider/model mismatch only through the vector-gate refusal copy (`src/lib/workbench-settings.ts:640-659`) — i.e. as a reason the vector switch cannot be turned on, not as "this is not the model embedding". `src/app/api/settings/route.ts:70-77` calls these "Both Settings surfaces", so after this story they answer the DW-274 question differently. Pre-existing and left alone deliberately: DW-274 names `getEffectiveSettings` and `src/components/EmbeddingSettings.tsx`, and the canvas is fed by a different accessor whose payload shape is its own contract.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-embedding-truth-and-warning-attribution
 
 ### DW-313: `getEffectiveSettings` reads the config cache several times, so its "what is set" and "what is in effect" halves can in principle describe different snapshots.
 origin: spec-deferred 811577823483
@@ -2720,7 +2723,8 @@ source_spec: `spec-dw-274-effective-settings-embedding-truth.md`
 location: src/lib/config.ts:1156
 severity: low
 reason: `src/lib/config.ts:1156` takes `cfg` from `loadConfigSync()`, and both `getEmbeddingModelName()` (:1274) and `hasEmbeddingSupport()` (:1288) re-enter it. `loadConfigSync` has a 5 s TTL and returns an EMPTY config when the cache is cold (:569-578), so a TTL boundary crossed between two of those reads would report a stored model as set while resolving the in-effect half against `{}` — a "Not in effect" note about a substitution that is not happening. The shape is pre-existing (`embeddingSupport` has re-entered the same way since before this story) and the window is between two adjacent synchronous statements with no await, so it is vanishingly narrow; the fix is a `cfg`-taking door on the resolver, which `src/lib/embeddings.ts` does not expose today.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-embedding-truth-and-warning-attribution
 
 ### DW-314: `deleteWiki`, `setCurrentWiki` and `sweepOrphanWikiDirectories` still write and delete bytes with no `assertWritable`, while their three sibling lifecycle doors now refuse.
 origin: spec-deferred 844e3a28f040
@@ -2790,7 +2794,7 @@ status: open
 origin: spec-deferred 8fd5a084ba2f
 source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
 location: src/lib/names-terms.ts:327
-severity: low
+severity: medium
 reason: All three sites threaded in this change pair `buildWorkspaceGuidance(owner, cache)` with a bare `buildNamesTermsGuidance(owner)`, and `ingest()` calls `listNamesTerms` a fourth time. `buildNamesTermsGuidance` (names-terms.ts:327) has the same read-per-call shape `buildWorkspaceGuidance` had. This spec's "Never" clause deferred it to "a different ledger entry", but no open ledger entry covers dictionary guidance caching, so the deferral has nowhere to land.
 status: open
 
@@ -2806,7 +2810,7 @@ status: open
 origin: spec-deferred 3caced74045d
 source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
 location: src/app/api/ingest/batch/route.ts:152
-severity: low
+severity: medium
 reason: `POST /api/ingest/batch`'s off-Workers fallback (src/app/api/ingest/batch/route.ts:152) loops `ingestUrl` per URL inline when the queue is unavailable, and `POST /api/tasks/run` drains tasks one per request. On Workers each URL is a separate queued request, so per-document and per-request coincide in production and the DW-141 remedy is met there. The inline fallback is the residual case: closing it needs a handle threaded through `IngestOptions` and the `ingestUrl`/`ingestPdf`/`ingestImage` wrappers, which is a design extension beyond this spec.
 status: open
 
@@ -2864,4 +2868,52 @@ source_spec: `spec-dw-307-308-vector-gate-copy-and-secret-row.md`
 location: src/components/__tests__/workspace-purpose-settings.test.tsx
 severity: low
 reason: Observed during this change's verification: a full `npm test` reported 1 failed / 5514 passed in that file, and two subsequent full runs reported 5515/5515. Run in isolation three times it failed once and passed twice. The file is untouched by this change and shares nothing with the settings or vector-gate surface — the failing assertion is on the active-wiki status line ("This workspace now has an active wiki, ...") — so this is pre-existing suite noise rather than a regression. It makes every future run's green a coin flip on that one file.
+status: open
+
+### DW-332: The `drift:<active model>` key is never re-armed, so a corpus that is rebuilt and then drifts again under the same active model is silent for the rest of the process.
+origin: spec-deferred 694c7c190212
+source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
+location: src/lib/embeddings.ts (searchByVector, warnedMisconfigurations)
+severity: medium
+reason: `warnedMisconfigurations` is documented as never clearing, on the argument that "a restart (or a new isolate) already fixes" the case. That holds for the three env/binding misconfigurations it was written for, but not for drift: drift is fixed by REBUILDING THE CORPUS, which happens in the same process. `searchByVector` already holds the counter-signal that proves the drift is over — `kept.length > 0` — and could delete the key there. The intent said only "bring it under the same throttle", and the module's recorded trade-off argues the other way, so whether drift should be the one identity that re-arms is a decision neither contains.
+status: open
+
+### DW-333: A whitespace-only `EMBEDDING_PROVIDER` is truthy, shadows a valid stored provider, and is now attributed to the environment while quoting a blank string.
+origin: spec-deferred 2dbdb2eb9569
+source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
+location: src/lib/embeddings.ts:resolveEmbeddingProvider
+severity: low
+reason: `resolveEmbeddingProvider` reads `process.env.EMBEDDING_PROVIDER ?? cfg.embeddingProvider` with no `nonEmpty`, so `EMBEDDING_PROVIDER=" "` is truthy, wins over the store, fails `isEmbeddingProvider`, and warns `EMBEDDING_PROVIDER=" " is not embedding-capable`. Pre-existing and untouched here — this story's Boundaries forbade changing which value wins — but DW-311 made the sentence attribute it, so the blank now reads as a deliberate env choice. Every sibling reader of the model key (`resolveEmbeddingModelName`, `getVectorSearchSettings`, `embeddingModelAnswer`) goes through `nonEmpty`; this leg does not, and fixing it moves a resolution boundary.
+status: open
+
+### DW-334: `getEffectiveSettings` still re-enters the 5 s config cache on its non-embedding legs, so only the embedding half of its answer is snapshot-consistent.
+origin: spec-deferred fbbe5abd3cc7
+source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
+location: src/lib/config.ts:getEffectiveSettings
+severity: low
+reason: After DW-313 the embedding legs all resolve against the `cfg` read at the top of the function, but `getStructuredKnowledgeModelSettings()`, `apiKeyForProvider`'s `custom` branch and `getCustomBaseUrl()` each call `loadConfigSync()` themselves. The intent's sentence — "give `getEffectiveSettings` one config snapshot" — reads broader than the ledger entry it came from, which names only `getEmbeddingModelName` and `hasEmbeddingSupport`. Closing the rest means `cfg`-taking doors on three more resolvers, which is a distinct piece of work from the one DW-313 described.
+status: open
+
+### DW-335: `settings-vector-namespace.test.tsx`'s default fixture encodes a config whose real payload would carry the substitution note, so several exact-equality announcements pin a state the wire cannot produc
+origin: spec-deferred b09de8588471
+source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
+location: src/components/workbench/__tests__/settings-vector-namespace.test.tsx
+severity: low
+reason: The fixture is `embeddingProvider: "workers-ai"` with `embeddingModel: "text-embedding-3-small"` and `embeddingModelOverridden: false, embeddingModelInEffect: null`. For that config `embeddingModelAnswer` returns `overridden: true, inEffect: "@cf/baai/bge-m3"`, so the real GET body would carry a third sentence on the model row. The pre-existing cases assert the announced string with `toBe`, and they are about the vector gate rather than the substitution, so the simplification is deliberate and documented in the fixture comment — but it means those assertions describe a payload the server never serves. Making the fixture faithful would repin every one of them.
+status: open
+
+### DW-336: The substitution sentence exists as two hand-maintained twins — the flat page's JSX and the canvas's copy function — with nothing pinning that they keep saying the same thing.
+origin: spec-deferred 005b0025a4ed
+source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
+location: src/components/EmbeddingSettings.tsx with src/lib/workbench-settings.ts:settingsModelSubstitutedCopy
+severity: low
+reason: `EmbeddingSettings.tsx` renders "Not in effect. This deployment embeds with <mono/> — the embedding provider cannot serve the model above, …" while `settingsModelSubstitutedCopy` returns the same sentence with "the model that is set". The divergence is deliberate and argued (the canvas box is empty whenever `EMBEDDING_MODEL` owns the value, so it cannot point at a control), and both are separately tested — but a wording fix to one leaves the other stale with no failing test. DW-312 asked for the two surfaces to answer the same question; they now agree on the VALUES, through `embeddingModelAnswer`, and nothing holds the two sentences together.
+status: open
+
+### DW-337: The canvas substitution note is payload-derived while the two sentences beside it are draft-derived, so mid-edit the row can describe pre-edit server state.
+origin: spec-deferred 30c4576690ec
+source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
+location: src/components/workbench/SettingsCanvas.tsx (modelSubstitution)
+severity: low
+reason: `modelSubstitution` reads `stored.embeddingModelOverridden` / `stored.embeddingModelInEffect`, while the env sentence and `vectorModelIssue` on the same row come from `values`. An owner who corrects the model in the box still reads "Not in effect. This deployment embeds with …" until a PUT lands. This is unavoidable without the server — the rule runs over the env and the store together — and it is documented in code and in DEPLOY.md ("re-reads it on save"), but the same row now mixes two freshness contracts and no test mounts the edit-then-read path. Whether the note should be suppressed while the model or provider field is dirty is a decision the intent does not contain.
 status: open
