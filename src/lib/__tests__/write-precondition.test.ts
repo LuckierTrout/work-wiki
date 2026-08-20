@@ -382,12 +382,14 @@ describe("the conflict sentence has exactly one owner", () => {
     "app/api/wiki/[slug]/route.ts",
     "app/api/workbench/artifact/route.ts",
     "app/api/settings/route.ts",
+    "app/api/workspace-profile/route.ts",
     "app/api/workbench/preview/route.ts",
     "lib/workbench-preview.ts",
     "lib/workbench-settings.ts",
     "components/workbench/PreviewColumn.tsx",
     "components/workbench/SettingsCanvas.tsx",
     "components/WikiEditor.tsx",
+    "components/WorkspacePurposeSettings.tsx",
     "hooks/useSettings.ts",
     "app/u/[handle]/[slug]/edit/page.tsx",
   ];
@@ -418,6 +420,7 @@ describe("the conflict sentence has exactly one owner", () => {
       "app/api/wiki/[slug]/route.ts",
       "app/api/workbench/artifact/route.ts",
       "app/api/settings/route.ts",
+      "app/api/workspace-profile/route.ts",
     ]) {
       const source = await read(route);
       expect(source).toContain('from "@/lib/write-precondition"');

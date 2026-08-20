@@ -1247,7 +1247,8 @@ source_spec: `spec-per-wiki-workspace-profiles.md`
 location: src/app/api/workspace-profile/route.ts
 severity: low
 reason: `/api/wikis/current` catches this and answers "Invalid JSON body."; this route lets `request.json()` throw into the generic catch. Pre-existing behaviour, unchanged here.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-workspace-profile-route-preconditions
 
 ### DW-141: `buildWorkspaceGuidance` now performs two storage reads per call, uncached, at seven call sites including three in `ingest.ts`.
 origin: spec-deferred 4b7d37651866
@@ -1289,7 +1290,8 @@ source_spec: `spec-per-wiki-workspace-profiles.md`
 location: src/app/api/workspace-profile/route.ts
 severity: low
 reason: The PUT guard compares Wiki identity only, so a drift check passes when both tabs name the same Wiki. The profile already carries `updatedAt` and the form already tracks `savedAt`, so an `If-Match`-style precondition was available; the store has never had one, so this is pre-existing shape, not new here.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-workspace-profile-route-preconditions
 
 ### DW-146: Follow-up review still recommended for dw-per-wiki-workspace-profiles after the damping cap was spent
 origin: review-budget-followup
@@ -2740,4 +2742,12 @@ source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
 location: src/app/api/wikis/[id]/route.ts:63; src/app/api/wikis/current/route.ts:19
 severity: low
 reason: `DELETE /api/wikis/[id]` ("Wikis cannot be deleted while this deployment is read-only.") and `PUT /api/wikis/current` ("The active wiki cannot be changed...") are spelled inline and compared against nothing, which is the drift `read-only-copy-parity.test.ts` exists to prevent. `wikiRename` also has no client constant beside a dimmed control, unlike `WIKI_CREATE_READ_ONLY_COPY` and `WIKI_TEMPLATE_READ_ONLY_COPY`.
+status: open
+
+### DW-319: A storage failure inside `saveWorkspaceProfile` is still answered 400 by `PUT /api/workspace-profile`, telling the owner their edit was rejected when the write merely could not reach storage.
+origin: spec-deferred 926718bb8f18
+source_spec: `spec-dw-140-145-workspace-profile-route-preconditions.md`
+location: src/app/api/workspace-profile/route.ts
+severity: low
+reason: The route's own comment above the registry read states the rule: "a registry that cannot be READ is not the caller's input being wrong. GET answers 500 for that exact condition, and answering 400 here would tell the owner their edit was rejected when storage was merely unreadable." This pass gave the precondition READ its own 500 branch, but `saveWorkspaceProfile` still throws into the generic `catch` that returns 400 — so an unwritable store (an EACCES, a full disk, a lock timeout) surfaces as a raw machine-authored sentence at 400, the same class of message DW-140 removed from this route. Pre-existing: the write has thrown into that catch since the route was written, and this change did not move it.
 status: open

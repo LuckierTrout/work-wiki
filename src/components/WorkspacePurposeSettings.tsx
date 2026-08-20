@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from "react";
 import type { WorkspaceProfile } from "@/lib/workspace-profile";
 import { SCENARIO_LABELS } from "@/lib/wiki-scenarios";
+import { formatIfMatch, IF_MATCH_HEADER } from "@/lib/write-precondition";
 import {
   EMPTY_WORKSPACE_PROFILE,
   WORKSPACE_SCENARIO_TEMPLATES,
@@ -42,6 +43,19 @@ function parseList(value: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * The version a response published, or `null` when it published none.
+ *
+ * One expression for both the GET and the PUT, because "unknown" has to mean
+ * the same thing on both: an empty string is as unusable as a missing key —
+ * `formatIfMatch("")` produces `""`, which `parseIfMatch` reads as ABSENT
+ * anyway — so it is normalised to `null` here rather than sent and refused
+ * there.
+ */
+function readVersion(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   const body = (await response.json().catch(() => ({}))) as T & { error?: string };
@@ -73,6 +87,21 @@ export function WorkspacePurposeSettings() {
   // distinction WikiWorkbench draws with `unavailable`). The error banner below
   // says what actually happened; this keeps the intro from contradicting it.
   const [loadFailed, setLoadFailed] = useState(false);
+  /**
+   * The version of the profile this form was seeded from, as the route
+   * published it (DW-145).
+   *
+   * NEVER DERIVED HERE. The route computes it over the profile it just read and
+   * this form only carries it back in `If-Match`, so the two sides can never
+   * describe two different values — the `/api/settings` convention, which
+   * `useSettings` follows for the same reason.
+   *
+   * `null` means "unknown", and the two ways to reach it are a load that failed
+   * and a save that answered no version. Both must send NO precondition, so the
+   * route answers the truthful 428 rather than a 412 blaming the owner for a
+   * change nobody made.
+   */
+  const [version, setVersion] = useState<string | null>(null);
   /**
    * The read-only sentence's id, so every control refused for that reason can
    * resolve it through `aria-describedby`.
@@ -113,6 +142,7 @@ export function WorkspacePurposeSettings() {
       profile: WorkspaceProfile;
       readOnly: boolean;
       wiki: ActiveWiki | null;
+      version?: unknown;
     }>("/api/workspace-profile")
       .then((data) => {
         if (cancelled) return;
@@ -124,9 +154,13 @@ export function WorkspacePurposeSettings() {
         placeProfile(data.profile, data.wiki ? data.profile.updatedAt : null);
         setReadOnly(data.readOnly);
         setWiki(data.wiki ?? null);
+        setVersion(readVersion(data.version));
       })
       .catch((error) => {
         if (!cancelled) {
+          // The version goes with the read that failed — see the state's own
+          // note, and `useSettings.fetchSettings` for the identical clear.
+          setVersion(null);
           setLoadFailed(true);
           setFeedback({
             ok: false,
@@ -180,19 +214,44 @@ export function WorkspacePurposeSettings() {
       outOfScope: parseList(outOfScope),
     };
     try {
-      const data = await request<{ profile: WorkspaceProfile; wiki: ActiveWiki | null }>(
-        "/api/workspace-profile",
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          // The wiki these edits were composed against travels WITH them. The
-          // route re-resolves the active wiki per request, so without this a
-          // switch in another tab between load and save would write what is on
-          // screen over a different wiki's stored purpose.
-          body: JSON.stringify({ ...input, wikiId: wiki?.id }),
+      const data = await request<{
+        profile: WorkspaceProfile;
+        wiki: ActiveWiki | null;
+        version?: unknown;
+      }>("/api/workspace-profile", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          // The PROFILE these edits were composed against, as the route named
+          // it (DW-145). Omitted when the version is unknown so the route
+          // answers 428 — "could not be checked" — instead of 412, which would
+          // claim a change nobody made. Sent through `formatIfMatch` because a
+          // header this form spelled itself is one `parseIfMatch` would read as
+          // absent, which is the guard being skipped by malforming it.
+          ...(version ? { [IF_MATCH_HEADER]: formatIfMatch(version) } : {}),
         },
-      );
+        // The wiki these edits were composed against travels WITH them. The
+        // route re-resolves the active wiki per request, so without this a
+        // switch in another tab between load and save would write what is on
+        // screen over a different wiki's stored purpose.
+        body: JSON.stringify({ ...input, wikiId: wiki?.id }),
+      });
       placeProfile(data.profile, data.profile.updatedAt);
+      // Adopt the version of what the save actually WROTE. Without this the
+      // second save of a session is still conditioned on the profile this form
+      // loaded, and is refused 412 for the change the owner just made
+      // themselves.
+      //
+      // A REFUSED SAVE NEVER REACHES THIS LINE — `request` throws and the catch
+      // below takes over — so the seeded version simply stays put. That is not a
+      // claim that it is still current: after a 412 it is stale BY DEFINITION,
+      // because the store holds bytes this form has never seen. Re-seeding it
+      // from a response that refused would silently re-point the draft at
+      // someone else's save, which is the lost update itself. The recovery is
+      // the one `WRITE_CONFLICT_COPY` states — copy the text, reload — and the
+      // reload is what re-seeds this state, exactly as it does for `useSettings`
+      // and `WikiEditor`.
+      setVersion(readVersion(data.version));
       // Adopt the wiki the server says it wrote, so the confirmation names the
       // wiki actually written rather than the one this form last believed in.
       const written = data.wiki ?? wiki;

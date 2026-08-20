@@ -33,6 +33,7 @@ import {
   WORKSPACE_SCENARIO_TEMPLATES,
   parseWorkspaceProfileInput,
 } from "../workspace-profile-schema";
+import { objectVersion } from "../write-precondition";
 
 const OWNER = "alice";
 const TENANT = tenantForOwner(OWNER);
@@ -610,6 +611,47 @@ describe("guidance follows the active wiki", () => {
     const guidance = await buildWorkspaceGuidance(OWNER);
     expect(guidance).toContain("Project Lighthouse");
     expect(guidance).not.toContain("Phoenix reading shelf");
+  });
+
+  it("versions a save and the read-back of it IDENTICALLY, against real bytes", async () => {
+    // THE FIXED POINT `PUT /api/workspace-profile`'s second save rests on
+    // (DW-145). The route answers `objectVersion` of what `saveWorkspaceProfile`
+    // RETURNED, and conditions the next save on `objectVersion` of what
+    // `getWorkspaceProfile` then READS BACK. Those are two different objects
+    // built by two different functions — `putWorkspaceProfile` composes one from
+    // the cleaned input, `toProfile` reconstructs the other from the serialized
+    // bytes — and nothing else forces them to agree.
+    //
+    // Asserted HERE, against a real temp-`DATA_DIR`, because both route suites
+    // mock this store: their versions agree only because the same fixture object
+    // is handed to both mocks. If the two objects ever diverge by a field, every
+    // second save in a session is refused 412 for a change the owner made
+    // themselves, and no mocked suite can see it.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const written = await saveWorkspaceProfile(OWNER, wiki.id, {
+      scenario: "custom",
+      purpose: "Track decisions.",
+      keyQuestions: ["What changed?"],
+      inScope: ["Decisions"],
+      outOfScope: ["Rumor"],
+      outputLanguage: "Português",
+      pageConventions: "Cite sources.",
+    });
+    const readBack = await getWorkspaceProfile(OWNER, wiki.id);
+
+    expect(readBack).toEqual(written);
+    expect(objectVersion(readBack)).toBe(objectVersion(written));
+
+    // And a SECOND save moves it — the version has to be a change detector, not
+    // a constant that would let a genuinely stale draft through.
+    const again = await saveWorkspaceProfile(OWNER, wiki.id, {
+      ...parseWorkspaceProfileInput(written),
+      purpose: "Track decisions, and who made them.",
+    });
+    expect(objectVersion(again)).not.toBe(objectVersion(written));
+    expect(objectVersion(await getWorkspaceProfile(OWNER, wiki.id))).toBe(
+      objectVersion(again),
+    );
   });
 
   it("injects the active wiki's saved purpose into ingest and query prompts", async () => {

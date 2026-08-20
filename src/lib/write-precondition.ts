@@ -36,10 +36,17 @@
  *
  * WHAT IS LEFT, PRECISELY. {@link contentVersion} over a string is what the page
  * write, the artifact write, the artifact revisions route, the preview route and
- * the editor page all call — the derived scheme is alive and is the whole of it.
- * {@link objectVersion} and {@link stableSerialize} have NO production caller in
- * this repo today: the settings route was the only one, and it no longer
- * derives. They stay exported and are hardened rather than deleted, so the next
+ * the editor page all call — the derived scheme is alive and is most of it.
+ * {@link objectVersion} has ONE production caller: `PUT /api/workspace-profile`,
+ * which versions the `WorkspaceProfile` object it just read (DW-145). That store
+ * qualifies where the settings store did not, and the difference is the whole of
+ * AD-23: `workspace-profile.json` is rewritten wholesale by
+ * `putWorkspaceProfile`'s own serializer — the re-serialization case this
+ * function is for — and it holds NO key material, so a version derived from it
+ * is not a function of any secret. `.llm-wiki-config.json` holds three, which is
+ * why that route moved to an opaque stamp (DW-198) rather than staying here.
+ * {@link stableSerialize} still has no production caller of its own; it is
+ * exported for the suite and stays hardened rather than deleted, so the next
  * caller inherits a serializer that does not answer "no change" for two
  * genuinely different values — which is what the settings one silently got.
  *
@@ -301,10 +308,11 @@ export function stableSerialize(value: unknown): string {
  *
  * A GENERAL PRIMITIVE, AND EXPLICITLY NOT THE SETTINGS SCHEME. It compares a
  * parsed object rather than a byte string, which is what a caller wants when the
- * file it guards is rewritten by its own serializer. It is NOT what
- * `/api/settings` uses: that store holds three API keys, and a version derived
- * from a store is a function of everything in it — see the module docblock,
- * `readConfig` and `saveConfig` in `src/lib/config.ts`.
+ * file it guards is rewritten by its own serializer — `PUT
+ * /api/workspace-profile` is that caller today. It is NOT what `/api/settings`
+ * uses: that store holds three API keys, and a version derived from a store is a
+ * function of everything in it — see the module docblock, `readConfig` and
+ * `saveConfig` in `src/lib/config.ts`.
  *
  * Inherits {@link stableSerialize}'s two throws. Both are catchable and both
  * mean the same thing to a caller: this value has no version, so do not pretend

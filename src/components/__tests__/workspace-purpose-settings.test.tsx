@@ -5,6 +5,12 @@ import {
   WorkspacePurposeSettings,
 } from "@/components/WorkspacePurposeSettings";
 import { emptyWorkspaceProfile, type WorkspaceProfile } from "@/lib/workspace-profile";
+import {
+  formatIfMatch,
+  IF_MATCH_HEADER,
+  objectVersion,
+  WRITE_CONFLICT_COPY,
+} from "@/lib/write-precondition";
 
 /**
  * The Workspace Purpose form, MOUNTED.
@@ -24,6 +30,22 @@ const PROFILE: WorkspaceProfile = {
   purpose: "Track decisions.",
 };
 
+/**
+ * The version the route publishes beside {@link PROFILE}.
+ *
+ * Derived HERE only to spell the fixture — the component must never compute
+ * one; it carries back whatever the response named. `objectVersion` is used so
+ * the stub is a real response shape rather than a literal that would keep
+ * passing if the route's scheme changed underneath it.
+ */
+const VERSION = objectVersion(PROFILE);
+
+/** What the form's PUT actually sent as its precondition, or undefined. */
+function sentIfMatch(call: unknown[]): string | undefined {
+  const init = call[1] as RequestInit | undefined;
+  return (init?.headers as Record<string, string> | undefined)?.[IF_MATCH_HEADER];
+}
+
 /** The subset of `Response` the component's `request` helper reads. */
 function answer(body: unknown, { ok = true, status = 200 } = {}) {
   return { ok, status, json: async () => body } as unknown as Response;
@@ -37,7 +59,7 @@ function stubGet(body: unknown, options?: { ok?: boolean; status?: number }) {
 }
 
 beforeEach(() => {
-  stubGet({ profile: PROFILE, readOnly: false, wiki: WIKI });
+  stubGet({ profile: PROFILE, readOnly: false, wiki: WIKI, version: VERSION });
 });
 
 afterEach(() => {
@@ -135,6 +157,7 @@ describe("the form names the wiki whose purpose it is showing", () => {
       profile: { ...PROFILE, updatedAt: "2026-08-01T10:00:00.000Z" },
       readOnly: false,
       wiki: WIKI,
+      version: VERSION,
     });
     render(<WorkspacePurposeSettings />);
 
@@ -147,7 +170,11 @@ describe("the form names the wiki whose purpose it is showing", () => {
     await waitFor(() => expect(formFieldset().disabled).toBe(false));
 
     fetchMock.mockResolvedValueOnce(
-      answer({ profile: PROFILE, wiki: { ...WIKI, name: "Renamed" } }),
+      answer({
+        profile: PROFILE,
+        wiki: { ...WIKI, name: "Renamed" },
+        version: VERSION,
+      }),
     );
     fireEvent.submit(saveButton().closest("form")!);
 
@@ -183,9 +210,126 @@ describe("the form names the wiki whose purpose it is showing", () => {
   });
 });
 
+describe("the form carries the version it was seeded with (DW-145)", () => {
+  it("sends the GET's version as If-Match, formatted as a strong validator", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: PROFILE, wiki: WIKI, version: VERSION }),
+    );
+    fireEvent.submit(saveButton().closest("form")!);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    // Quoted, because a header this form spelled itself is one `parseIfMatch`
+    // reads as ABSENT — which is the guard being skipped by malforming it.
+    expect(sentIfMatch(fetchMock.mock.calls[1])).toBe(formatIfMatch(VERSION));
+  });
+
+  it("adopts the version the PUT answered, so a second save is not refused", async () => {
+    // The whole reason the PUT publishes one. Without adopting it, the owner's
+    // second save in a session is conditioned on the profile they LOADED and is
+    // refused 412 for the change they just made themselves.
+    const written = { ...PROFILE, purpose: "Saved once." };
+    const secondVersion = objectVersion(written);
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: written, wiki: WIKI, version: secondVersion }),
+    );
+    fireEvent.submit(saveButton().closest("form")!);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: written, wiki: WIKI, version: secondVersion }),
+    );
+    fireEvent.submit(saveButton().closest("form")!);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    expect(sentIfMatch(fetchMock.mock.calls[1])).toBe(formatIfMatch(VERSION));
+    expect(sentIfMatch(fetchMock.mock.calls[2])).toBe(
+      formatIfMatch(secondVersion),
+    );
+  });
+
+  it("sends NO precondition after a failed load, so the refusal is the truthful one", async () => {
+    // WHAT THIS PINS, EXACTLY: that a form whose load failed sends no
+    // precondition, so the route answers the truthful 428 — "could not be
+    // checked" — rather than 412, "changed somewhere else", for a change nobody
+    // made. That is the reasoning `useSettings.fetchSettings` applies.
+    //
+    // WHAT IT DOES NOT PIN: the `setVersion(null)` in the component's `.catch`.
+    // This component loads exactly ONCE, at mount, and the state already starts
+    // `null`, so deleting that line would leave this case green. The clear is
+    // defensive against a refetch this component does not yet perform, and it
+    // becomes load-bearing — and observable — the moment one is added. Nothing
+    // is added to production code to make it observable today.
+    stubGet({ error: "Storage is unavailable." }, { ok: false, status: 500 });
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(screen.getByText("unavailable")).toBeTruthy());
+
+    // The fieldset is shut with no wiki, so the PUT is driven the way a
+    // non-form caller would — through the submit handler the button points at.
+    fetchMock.mockResolvedValueOnce(answer({ profile: PROFILE, wiki: null }));
+    fireEvent.submit(saveButton().closest("form")!);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(sentIfMatch(fetchMock.mock.calls[1])).toBeUndefined();
+  });
+
+  it("sends no precondition again once a save answered none", async () => {
+    // A PUT that publishes no version leaves the client knowing nothing, and
+    // "nothing" has to mean 428 on the next save rather than the superseded
+    // version it was holding — which the store no longer has.
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    fetchMock.mockResolvedValueOnce(answer({ profile: PROFILE, wiki: WIKI }));
+    fireEvent.submit(saveButton().closest("form")!);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    fetchMock.mockResolvedValueOnce(answer({ profile: PROFILE, wiki: WIKI }));
+    fireEvent.submit(saveButton().closest("form")!);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    expect(sentIfMatch(fetchMock.mock.calls[2])).toBeUndefined();
+  });
+
+  it("shows the conflict sentence verbatim and keeps the draft on screen", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    fireEvent.change(purposeField(), {
+      target: { value: "Minutes of work the owner must not lose." },
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: WRITE_CONFLICT_COPY }, { ok: false, status: 412 }),
+    );
+    fireEvent.submit(saveButton().closest("form")!);
+
+    // Relayed through the existing `request` helper and the existing feedback
+    // banner — no sentence is typed at a render site.
+    await waitFor(() =>
+      expect(screen.getByText(WRITE_CONFLICT_COPY)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Workspace Purpose saved/)).toBeNull();
+    // "Your text is still here" has to be TRUE.
+    expect(purposeField().value).toBe(
+      "Minutes of work the owner must not lose.",
+    );
+  });
+});
+
 describe("with no wiki, and with a failed load", () => {
   it("says a wiki is needed and collects no edits", async () => {
-    stubGet({ profile: emptyWorkspaceProfile(), readOnly: false, wiki: null });
+    stubGet({
+      profile: emptyWorkspaceProfile(),
+      readOnly: false,
+      wiki: null,
+      version: objectVersion(emptyWorkspaceProfile()),
+    });
     render(<WorkspacePurposeSettings />);
 
     await waitFor(() =>
@@ -213,6 +357,7 @@ describe("with no wiki, and with a failed load", () => {
       },
       readOnly: false,
       wiki: null,
+      version: VERSION,
     });
     render(<WorkspacePurposeSettings />);
 
@@ -247,7 +392,7 @@ describe("on a read-only deployment the form refuses without going silent", () =
    * hiding itself. Read-only means read-only, not hidden.
    */
   beforeEach(() => {
-    stubGet({ profile: PROFILE, readOnly: true, wiki: WIKI });
+    stubGet({ profile: PROFILE, readOnly: true, wiki: WIKI, version: VERSION });
   });
 
   it("keeps every stored value readable and in the tab order", async () => {
@@ -352,6 +497,7 @@ describe("on a read-only deployment the form refuses without going silent", () =
       profile: { ...PROFILE, scenario: "custom" },
       readOnly: true,
       wiki: WIKI,
+      version: VERSION,
     });
     render(<WorkspacePurposeSettings />);
     await waitFor(() => expect(scenarioSelect().value).toBe("custom"));
@@ -374,6 +520,7 @@ describe("on a read-only deployment the form refuses without going silent", () =
       profile: { ...PROFILE, scenario: "custom" },
       readOnly: false,
       wiki: WIKI,
+      version: VERSION,
     });
     render(<WorkspacePurposeSettings />);
     await waitFor(() => expect(scenarioSelect().value).toBe("custom"));
@@ -382,7 +529,7 @@ describe("on a read-only deployment the form refuses without going silent", () =
   });
 
   it("leaves a writable deployment exactly as it was", async () => {
-    stubGet({ profile: PROFILE, readOnly: false, wiki: WIKI });
+    stubGet({ profile: PROFILE, readOnly: false, wiki: WIKI, version: VERSION });
     render(<WorkspacePurposeSettings />);
     await waitFor(() => expect(formFieldset().disabled).toBe(false));
 
