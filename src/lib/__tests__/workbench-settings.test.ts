@@ -2888,20 +2888,15 @@ describe("PUT /api/settings", () => {
     expect(await stored()).not.toMatchObject({ chatModel: "gpt-4o" });
   });
 
-  it("lets a FLAT-ONLY body store a namespace mismatch the gate never runs on", async () => {
-    // CHARACTERIZATION, not endorsement. The case above passes only because its
-    // body also carries `workbench`, which is what makes the route enter the
-    // validated branch at all. A body with NO `workbench` key skips it entirely
-    // — by explicit design, so that "a body with no `workbench` produces
-    // byte-identically the same saved object" stays true — and the flat
-    // `embeddingModel` branch has never validated anything.
+  it("REFUSES the ledger's verbatim DW-217 reproduction against the real store", async () => {
+    // THE REPRODUCTION AS THE LEDGER STATES IT, end to end against the actual
+    // config store rather than a mocked one — the point being that the answer is
+    // observed at the RESOLVER surface, where the damage used to show up.
     //
-    // The consequence since DW-73 is recorded as the FIRST entry in this spec's
-    // `deferred` list: a flat-only save can now switch effective vector search
-    // off, where before it was harmless because the resolver simply fell back.
-    // Closing it is a decision about legacy compatibility, not a patch, so this
-    // test pins TODAY'S answer. When that decision is taken, this expectation
-    // should be updated deliberately rather than tripped over.
+    // `onWorkers()` binds `AI`, so the refusal is about the MODEL leg alone; off
+    // the runtime the binding leg would join the sentence and hide the leg this
+    // case is about.
+    onWorkers();
     await store({
       vectorSearchEnabled: true,
       embeddingProvider: "workers-ai",
@@ -2913,17 +2908,76 @@ describe("PUT /api/settings", () => {
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(await put({ embeddingModel: "text-embedding-3-small" }));
 
-    // Accepted, because the vector gate is never consulted on this path.
-    expect(response.status).toBe(200);
+    // Before DW-217 this answered 200, wrote the mismatch, and left the stored
+    // switch reading ON while `getVectorSearchSettings()` had gone to `false`.
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      UNSUPPORTED_WORKERS_MODEL,
+    );
+    // Nothing landed, so the store still holds the id it held…
+    expect(await stored()).toMatchObject({ embeddingModel: "@cf/baai/bge-m3" });
+    // …and the switch still means what it says.
+    await loadConfig();
+    expect(getVectorSearchSettings().enabled).toBe(true);
+  });
+
+  it("REFUSES a FLAT-ONLY body that moves a vector input past the gate (DW-217)", async () => {
+    // This used to be a CHARACTERIZATION of the hole. The case above passed only
+    // because its body also carried `workbench`, which is what made the route
+    // enter the validated branch at all; a body with NO `workbench` key skipped
+    // the gate entirely, so a flat-only save could switch effective vector
+    // search off while the stored flag went on reading as on.
+    //
+    // DW-217 closes it by running the ONE rule over the post-legacy-merge config
+    // on both paths — an empty `{}` patch when `workbench` is absent — which is
+    // why the sentence below is byte-identical to the one the nested case above
+    // answers with. `applyWorkbenchSettings` is still conditional on the key, so
+    // "a body with no `workbench` produces byte-identically the same saved
+    // object" stays true for every body that PASSES.
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingBaseUrl: "https://embed.example",
+      embeddingApiKey: "sk-embed",
+      embeddingModel: "text-embedding-3-small",
+    });
+    await loadConfig();
+    expect(getVectorSearchSettings().enabled).toBe(true);
+
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(await put({ embeddingModel: "@cf/baai/bge-m3" }));
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
+    );
+    // Refused BEFORE `saveConfig`: the store still holds what it held.
     expect(await stored()).toMatchObject({
+      embeddingModel: "text-embedding-3-small",
+    });
+    // …so the stored flag and the effective accessor still agree.
+    await loadConfig();
+    expect(getVectorSearchSettings().enabled).toBe(true);
+  });
+
+  it("still lets a flat-only body through when it moves no vector input (DW-219)", async () => {
+    // The gate re-runs on the flat path, but only for a request that MOVES
+    // something the rule reads. A deployment already storing a mismatch must
+    // still be able to edit its chat model.
+    await store({
       vectorSearchEnabled: true,
       embeddingProvider: "workers-ai",
       embeddingModel: "text-embedding-3-small",
     });
-    // And the effective accessor now disagrees with the stored flag: the switch
-    // still reads on in the store while vector search is off in fact.
-    await loadConfig();
-    expect(getVectorSearchSettings().enabled).toBe(false);
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(await put({ model: "gpt-4o" }));
+
+    expect(response.status).toBe(200);
+    expect(await stored()).toMatchObject({
+      model: "gpt-4o",
+      embeddingModel: "text-embedding-3-small",
+    });
   });
 });
 

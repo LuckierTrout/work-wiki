@@ -276,10 +276,17 @@ export async function PUT(request: Request) {
     }
 
     if (body.model !== undefined) {
-      if (body.model === null || body.model === "") {
+      // TRIMMED, like every neighbouring text field (DW-275). `getEffectiveProvider`
+      // and the LLM call sites read `cfg.model` back LITERALLY, so a padded id
+      // stored here is one the provider never recognises. The whitespace-only
+      // case cannot reach this branch — the non-empty check above already
+      // answered 400 — but the shape stays `embeddingModel`'s so the delete is
+      // decided identically wherever it does become reachable.
+      const trimmed = typeof body.model === "string" ? body.model.trim() : "";
+      if (body.model === null || trimmed.length === 0) {
         delete updated.model;
       } else {
-        updated.model = body.model;
+        updated.model = trimmed;
       }
     }
 
@@ -304,10 +311,20 @@ export async function PUT(request: Request) {
     }
 
     if (body.ollamaBaseUrl !== undefined) {
-      if (body.ollamaBaseUrl === null || body.ollamaBaseUrl === "") {
+      // TRIMMED, exactly as `applyWorkbenchSettings`'s `setText` trims the other
+      // endpoints (DW-275). `getOllamaBaseUrl()` reads `cfg.ollamaBaseUrl` back
+      // with no trim of its own and hands it straight to `fetch`, so a padded
+      // value stored here is a URL the reader takes LITERALLY. Whitespace-only
+      // deletes the key, matching what `""` and `null` already do — the type
+      // check above refused a non-string, so the `typeof` ternary is
+      // belt-and-braces and must never be what turns a malformed body into a
+      // delete.
+      const trimmed =
+        typeof body.ollamaBaseUrl === "string" ? body.ollamaBaseUrl.trim() : "";
+      if (body.ollamaBaseUrl === null || trimmed.length === 0) {
         delete updated.ollamaBaseUrl;
       } else {
-        updated.ollamaBaseUrl = body.ollamaBaseUrl;
+        updated.ollamaBaseUrl = trimmed;
       }
     }
 
@@ -357,20 +374,44 @@ export async function PUT(request: Request) {
     // equal to itself, and skip the gate — silently undoing the promise the
     // paragraph above makes. `updated` stays the MERGE TARGET; `existing` is the
     // BASELINE the move is measured from.
-    let merged = updated;
-    if (body.workbench !== undefined) {
-      const validation = validateWorkbenchSettingsPatch(
-        body.workbench,
-        workbenchSettingsStored(updated, hasWorkersAiBinding),
-        workbenchSettingsStored(existing, hasWorkersAiBinding),
-      );
-      if (!validation.ok) {
-        // Nothing is written: the refusal happens before `saveConfig`, so a
-        // rejected vector switch leaves the store exactly as it was.
-        return Response.json({ error: validation.error }, { status: 400 });
-      }
-      merged = applyWorkbenchSettings(updated, validation.patch);
+    //
+    // ONE rule, BOTH branches (DW-217). The gate used to live inside
+    // `if (body.workbench !== undefined)`, so a flat-only body could move
+    // `embeddingModel` or `embeddingProvider` into a state
+    // `canEnableVectorSearch` rejects, answer 200, and switch effective vector
+    // search off without ever saying so — `getVectorSearchSettings()` intersects
+    // the stored flag with the same predicate, so the owner's switch simply
+    // stopped meaning anything.
+    //
+    // An EMPTY patch is the reuse point: every field check in
+    // `validateWorkbenchSettingsPatch` `continue`s on `undefined`, so `{}` falls
+    // straight through to the vector rule with `enabled = stored.vectorSearchEnabled`
+    // (the flat branch cannot move that flag, so `turningOn` is always `false`
+    // here) and fires purely on `!vectorInputsEqual(current, merged)` — exactly
+    // "this flat request moved something the rule reads". No second copy of the
+    // rule, and no second copy of the refusal sentence.
+    //
+    // ONE question, asked ONCE: the same fact decides which patch is validated
+    // and whether the patch is APPLIED, and the two readings are inverses of
+    // each other. Written twice they could drift into validating `{}` and then
+    // applying it, or validating a patch and then dropping it.
+    const hasWorkbenchKey = body.workbench !== undefined;
+    const validation = validateWorkbenchSettingsPatch(
+      hasWorkbenchKey ? body.workbench : {},
+      workbenchSettingsStored(updated, hasWorkersAiBinding),
+      workbenchSettingsStored(existing, hasWorkersAiBinding),
+    );
+    if (!validation.ok) {
+      // Nothing is written: the refusal happens before `saveConfig`, so a
+      // rejected vector switch leaves the store exactly as it was.
+      return Response.json({ error: validation.error }, { status: 400 });
     }
+    // `applyWorkbenchSettings` stays conditional on the KEY: a body with no
+    // `workbench` that passes the gate saves the byte-identical object it did
+    // before, so validating everything changed no legacy save's outcome.
+    const merged = hasWorkbenchKey
+      ? applyWorkbenchSettings(updated, validation.patch)
+      : updated;
 
     // The version of what the store now HOLDS, from the one place that decides
     // it. `saveConfig` generates the token, writes it, then writes the config,

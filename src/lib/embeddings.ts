@@ -197,13 +197,15 @@ function resolveEmbeddingModelName(
 
   // Mismatch — ignore the override and use the provider default, AUDIBLY.
   //
-  // The WORKBENCH settings gate refuses this combination (DW-73), but that is
-  // only one of the ways a value reaches here: the legacy flat
-  // `PUT /api/settings` branch writes `embeddingModel` without running the
-  // gate, an `EMBEDDING_MODEL` env override bypasses the store entirely, and
-  // a vector-off deployment never consults the gate at all. So the fallback
-  // is not dead code for stray bytes — it is the live behaviour on every
-  // supported path the gate does not cover, and it stays.
+  // The settings gate refuses this combination (DW-73) on BOTH write paths now
+  // — since DW-217 the legacy flat `PUT /api/settings` branch runs the same
+  // rule over its post-merge config, so a flat save can no longer smuggle a
+  // mismatch past it. But the gate is not the only way a value reaches here:
+  // an `EMBEDDING_MODEL` env override bypasses the store entirely, and a
+  // deployment with vector search OFF is never gated at all (the rule only
+  // runs when the merged flag is on). So the fallback is not dead code for
+  // stray bytes — it is the live behaviour on the paths the gate does not
+  // cover, and it stays.
   //
   // What changes is that it stops being SILENT (DW-224, DW-226). Every embed
   // door (`getEmbeddingModelName`, `getEmbeddingModel`, `embedText`,

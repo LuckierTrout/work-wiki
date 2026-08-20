@@ -1903,7 +1903,8 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/app/api/settings/route.ts:243-270
 severity: medium
 reason: `src/app/api/settings/route.ts:243-256` writes `body.embeddingModel` unconditionally; the gate runs only inside `if (body.workbench !== undefined)` at :270. The live `/settings` page sends exactly that flat shape (`src/hooks/useSettings.ts:245`) and DW-61's 2026-08-18 decision keeps that page. Verified against the real route: store `{ vectorSearchEnabled: true, embeddingProvider: "workers-ai", embeddingModel: "@cf/baai/bge-m3" }`, then PUT `{ embeddingModel: "text-embedding-3-small" }` with no `workbench` key -> 200, and `getVectorSearchSettings().enabled` drops to false. Before DW-73 the same write was harmless (the resolver fell back). The flat branch has never validated anything by explicit design ("a body with no `workbench` produces byte-identically the same saved object"), so closing it is a decision about legacy compatibility, not a patch.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-settings-flat-branch-validation
 decision: 2026-08-19 Validate the flat branch too — Run the vector gate on the resulting config in the flat branch as well, so a flat PUT that would turn effective vector search off is refused 400 with the same sentence the Workbench surface shows; pin the reproduction above as a route test.
 
 ### DW-218: An `EMBEDDING_MODEL` env override in the wrong namespace refuses vector search with a sentence the owner cannot act on from the Settings box.
@@ -2382,7 +2383,8 @@ source_spec: `spec-dw-220-221-224-226-227-embedding-resolution.md`
 location: src/app/api/settings/route.ts (legacy flat branch)
 severity: low
 reason: `embeddingModel` and `structuredKnowledgeModel` now trim on the way in; `body.model` and `body.ollamaBaseUrl` are still written raw. `ollamaBaseUrl` is read back by `getOllamaBaseUrl()` without a trim and by the settings surfaces with one, which is the shape of DW-221 for a different field. Pre-existing and untouched by this bundle, whose intent names only the embedding model.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-settings-flat-branch-validation
 
 ### DW-276: A mismatched deployment still EMBEDS under the substituted default; this bundle ended the silence, not the substitution.
 origin: spec-deferred 5155e62ce7df
@@ -2599,4 +2601,36 @@ source_spec: `spec-dw-189-191-read-only-surface-affordances.md`
 location: src/lib/__tests__/read-only-copy-parity.test.ts
 severity: low
 reason: This change added parity cases for `WIKI_TEMPLATE_READ_ONLY_COPY`, `WIKI_CREATE_READ_ONLY_COPY` and `WORKSPACE_PURPOSE_READ_ONLY_COPY`, and the second of those proves `POST /api/wikis` answers "Wikis cannot be created while this deployment is read-only." — so the switcher's four-verb `WIKI_READ_ONLY_COPY` (src/lib/workbench-tree.ts:120) does not match any single door it sits in front of. That is defensible (it covers four routes at once, like the Revert narrowing already recorded), but it is unrecorded: the suite's own header says every client constant is compared "CHARACTER-IDENTICAL where the door answers its own refusal, and explicitly recorded where it deliberately does not", and this one is neither. Pre-existing (DW-37 shipped it unpinned).
+status: open
+
+### DW-303: The flat branch can now be refused for vector legs no flat field can satisfy (endpoint, API key, Workers AI binding), and the legacy /settings page has no control for any of them.
+origin: spec-deferred fe4be61a5560
+source_spec: `spec-dw-217-275-settings-flat-branch-validation.md`
+location: src/app/api/settings/route.ts:390-410
+severity: medium
+reason: `vectorSearchMissingLegs` reads provider, endpoint, model, key and binding, but the flat vocabulary carries only `embeddingProvider` and `embeddingModel`, and `src/hooks/useSettings.ts` renders no embedding-provider, endpoint or key control at all. On a deployment already storing an unsatisfied vector config (say openai with no endpoint), an owner editing the embedding model from /settings now gets "Vector search needs an endpoint and an API key before it can be turned on." from a page with no endpoint box. The Workbench surface is the way out, so it is not a dead end, but the refusal names fields the surface that produced it cannot show. Closing it would mean either scoping the flat refusal to legs the request could have moved, or serving `VectorSearchLeg.field` on the response so the surface can say something actionable.
+status: open
+
+### DW-304: The flat `ollamaBaseUrl` is stored with no absolute-http validation, unlike every endpoint in the `workbench` patch.
+origin: spec-deferred 4592c0a3844b
+source_spec: `spec-dw-217-275-settings-flat-branch-validation.md`
+location: src/app/api/settings/route.ts:311-327
+severity: medium
+reason: `validateWorkbenchSettingsPatch` refuses `customBaseUrl`, `embeddingBaseUrl` and `firecrawlBaseUrl` unless `isAbsoluteHttpUrl(raw.trim())`. The flat branch type-checks only, so `"not-a-url"` or a `file:` URL is stored and `getOllamaBaseUrl()` (src/lib/config.ts:239) hands it straight to the provider SDK. Pre-existing; this bundle's intent named only the trim.
+status: open
+
+### DW-305: `structuredKnowledgeModel` is the one flat text field still deciding its delete on the literal empty string rather than on the trimmed value.
+origin: spec-deferred 3bf4aaa1f56f
+source_spec: `spec-dw-217-275-settings-flat-branch-validation.md`
+location: src/app/api/settings/route.ts:290-305
+severity: low
+reason: It already trims on store, and the non-empty check above answers 400 for a whitespace-only value, so there is no observable difference today. It is a uniformity gap rather than a defect: `model`, `ollamaBaseUrl` and `embeddingModel` now all decide the delete on `trimmed.length === 0`.
+status: open
+
+### DW-306: A body carrying BOTH a flat legacy field and a `workbench` key -- the only case `validateWorkbenchSettingsPatch`'s `baseline` parameter exists for -- has no test at any surface.
+origin: spec-deferred 68068f7435ec
+source_spec: `spec-dw-217-275-settings-flat-branch-validation.md`
+location: src/lib/workbench-settings.ts:790
+severity: medium
+reason: DW-219 added the third `baseline` argument precisely so a flat move in the same request is measured against what the store held BEFORE the request rather than against itself. Every test in `settings-route.test.ts` and `workbench-settings.test.ts` sends the flat move and the nested move as separate requests, so the argument that justifies the parameter is unexercised. Pre-existing since DW-219; this change widened the parameter's role without adding the case.
 status: open
