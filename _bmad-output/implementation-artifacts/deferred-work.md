@@ -2086,7 +2086,8 @@ source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
 location: src/lib/__tests__/brand-copy.test.ts
 severity: medium
 reason: Both maintainer scans test only `workwiki` spellings. Confirmed during review by restoring `# Yopedia sandbox runner` at workers/sandbox-runner/README.md:1 and by planting `<title>Yopedia Growth Journal</title>` in journal-site/build.mjs and `# Using Yopedia as an agent` in public/agent-api.md: all 12 tests still passed. A Yopedia dimension over maintainer roots needs per-path exemptions for the prose in README.md:186,208, BACKLOG.md:1,3, docs/trusted-memory-roadmap.md:4,94 and workers/email-ingest/README.md:1,5,19, which this bundle's intent does not authorize.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-brand-scan-coverage
 
 ### DW-237: workers/email-ingest/README.md still says "Yopedia", so the two Worker READMEs in workers/ now disagree on the product name.
 origin: spec-deferred bd43323d6e3a
@@ -2102,7 +2103,8 @@ source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
 location: src/lib/__tests__/brand-copy.test.ts
 severity: medium
 reason: `hasStrayWorkwiki` runs over `maintainerSources()` only, while `scannedSources()` (src/app, src/components, workers/, the browser clipper) keeps `saysStaleDisplayName` alone. Confirmed by planting `// Workwiki local sync` in src/components/LocalSyncPanel.tsx: suite stayed green. Extending the predicate to `scannedSources()` needs three more allowlist entries for real identifiers found there: `workwikiDefaultTags` (integrations/browser-clipper/popup.js:12,13,25), `save-to-workwiki` (integrations/browser-clipper/service-worker.js:3), and the `https://hooks.example.com/workwiki` placeholder (src/components/IntegrationDesk.tsx:114).
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-brand-scan-coverage
 
 ### DW-239: This spec's stated reason for keeping the four new roots out of scannedSources() is wrong for three of them.
 origin: spec-deferred ff31b1fa5979
@@ -2110,7 +2112,8 @@ source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
 location: src/lib/__tests__/brand-copy.test.ts
 severity: low
 reason: The intent-contract says they "carry capital-Y Yopedia prose and yologdev/yopedia links that would fail the yopedia-identifier test". Running IDENTIFIER_ALLOWLIST over each root during review gave zero offenders for public/, journal-site/ and .opencode/commands/ — journal-site/build.mjs:11-12's yologdev/yopedia links are already allowlisted. Only scripts/setup-cloudflare.sh actually offends. The exclusion still stands on the intent's authority (it says extend maintainerSources()), but public/ and journal-site/ could be folded into scannedSources() today at no cost.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-brand-scan-coverage
 
 ### DW-240: skills/work-wiki-mcp/SKILL.md is hand-authored, brand-named, and read by no scan.
 origin: spec-deferred 970d96b7a1a8
@@ -2118,7 +2121,8 @@ source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
 location: skills/work-wiki-mcp/SKILL.md
 severity: low
 reason: Tracked in git and literally named for the product, yet skills/ is in neither scannedSources() nor maintainerSources(). Same class as the public/ gap this bundle closed; the root simply was not named in the intent.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-brand-scan-coverage
 
 ### DW-241: AGENTS.md's frozen list still omits four live WORKWIKI_* family members.
 origin: spec-deferred 4cafc2bd11e4
@@ -2142,7 +2146,8 @@ source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
 location: src/lib/__tests__/brand-copy.test.ts
 severity: low
 reason: maintainerSources() walks workers/ for markdown only, and the root listing is markdown-only, so wrangler.jsonc, workers/*/wrangler.jsonc, package.json, mcp.json and Dockerfile are read by nothing. AGENTS.md explicitly calls "every resource name in both wrangler.jsonc files" frozen.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-brand-scan-coverage
 
 ### DW-244: Three overlapping extension filters with no shared definition; each omits types the others cover.
 origin: spec-deferred cdc2c1304d4b
@@ -2150,7 +2155,8 @@ source_spec: `spec-dw-91-96-brand-scan-coverage-and-residue.md`
 location: src/lib/__tests__/brand-copy.test.ts:116
 severity: low
 reason: TEXT_SOURCES covers .svg but not .tsx/.mdx/.webmanifest/.toml; CLIPPER_SOURCES covers .js/.html but not .svg, so a clipper icon carrying brand text goes unread. Because the pin test anchors only one file per root, adding a file of an uncovered type shrinks coverage with no test failure.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-brand-scan-coverage
 
 ### DW-245: tools/work-wiki-sync.md is reachable from nothing but the test's pin list.
 origin: spec-deferred 18ccb7a475e4
@@ -3015,4 +3021,52 @@ source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
 location: src/app/api/lint/fix/route.ts:54
 severity: medium
 reason: `src/app/api/lint/fix/route.ts:54-56` destructures `type` off a raw `await req.json()` with no schema at all, and `src/lib/mcp-http.ts:490` declares it as free-form `str(...)`. `src/mcp.ts:2465` does validate, but against `z.enum(ALL_CHECK_TYPES)` rather than the fixable subset. The `ownEntry` guard added by this story is currently the only defense; `z.enum(AUTO_FIXABLE_CHECK_TYPES)` at the door would make it a second line rather than the sole one.
+status: open
+
+### DW-349: workers/email-ingest/README.md:20 documents a live app menu path with the retired brand ("the address entered under Yopedia **Settings -> Email ingestion**"), so the exemption freezes wrong operator d
+origin: spec-deferred 8edfd4178f50
+source_spec: `spec-dw-236-244-brand-scan-coverage.md`
+location: workers/email-ingest/README.md:20
+severity: low
+reason: The file is in YOPEDIA_PROSE_EXEMPT because three of its "Yopedia" mentions are deployment history, but this one names a UI path the display rename should have updated. This bundle's intent authorises exemptions, not copy corrections, and the spec's Never list forbids editing it.
+status: open
+
+### DW-350: .github/workflows/ carries brand strings and is read by no scan.
+origin: spec-deferred c422dc958830
+source_spec: `spec-dw-236-244-brand-scan-coverage.md`
+location: .github/workflows/
+severity: low
+reason: Reviewer found hits at infra-setup.yml:52, deploy-cloudflare.yml:4,79,97,98 and seed-yoyo.yml:4-18,36,92-102. Neither source list reaches the tree. AGENTS.md marks .github/ protected, so folding it in is a decision the intent did not authorise; seed-yoyo.yml:93 also names a second workers.dev subdomain (yopedia.christianlee-flightwall.workers.dev) that the current single-host allowlist entry would not cover.
+status: open
+
+### DW-351: Root non-Markdown files beyond the four AGENTS.md freezes stay unread.
+origin: spec-deferred 78dc1d82c3b4
+source_spec: `spec-dw-236-244-brand-scan-coverage.md`
+location: src/lib/__tests__/brand-copy.test.ts
+severity: low
+reason: maintainerSources() names wrangler.jsonc, package.json, mcp.json and Dockerfile because the root listing is non-recursive markdown-only. That leaves docker-compose.yml, .env.example, next.config.ts, open-next.config.ts, tailwind.config.ts, vitest.config.ts, eslint.config.mjs and postcss.config.mjs unscanned. Widening the root listing to SOURCE_TEXT would cover them but also pull in pnpm-lock.yaml, which needs its own decision.
+status: open
+
+### DW-352: IDENTIFIER_ALLOWLIST's /yopedia-[a-z-]+/g swallows display prose, the way the workwiki family did before it was anchored.
+origin: spec-deferred 41f20a262d72
+source_spec: `spec-dw-236-244-brand-scan-coverage.md`
+location: src/lib/__tests__/brand-copy.test.ts:52
+severity: medium
+reason: strayYopedia("the yopedia-first workflow") returns no match, so that prose would pass the scan. The workwiki side guards the identical case with its anchored alternation and a "the workwiki-first approach" slip case. The pattern is pre-existing and narrowing it needs evidence about which real Cloudflare resource names depend on it, so the new yopedia case table pins today's behaviour rather than changing it.
+status: open
+
+### DW-353: Named single files and newly walked roots surface as ENOENT rather than a pin failure when renamed or removed.
+origin: spec-deferred 7e47d62e4062
+source_spec: `spec-dw-236-244-brand-scan-coverage.md`
+location: src/lib/__tests__/brand-copy.test.ts
+severity: low
+reason: scannedSources() pushes src/mcp.ts and src/middleware.ts by literal path, maintainerSources() pushes four root config files the same way, and walk() calls readdir() on skills/, public/, journal-site/ and .opencode/commands/ without an existence check. A rename throws from inside a content assertion instead of failing the pin test with its diagnostic message. The stat-based pattern already used by the scripts.sync test is the fix.
+status: open
+
+### DW-354: .agents/skills/ is tracked installer-generated markdown that no scan reads, while the comparable .opencode/commands/ was folded in.
+origin: spec-deferred 41e89080aefb
+source_spec: `spec-dw-236-244-brand-scan-coverage.md`
+location: .agents/skills/
+severity: low
+reason: The test's own comment concedes .opencode/commands/ holds BMAD-installer-generated docs; .agents/skills/ is the same class, several hundred tracked markdown files, currently brand-clean. The split is undocumented either way. The intent named .opencode/commands/ and not this root.
 status: open
