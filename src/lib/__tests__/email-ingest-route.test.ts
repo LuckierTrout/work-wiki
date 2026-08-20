@@ -80,6 +80,11 @@ function multipartRequest(
     /** Names with no file part -- what the Worker sends for attachments it would not forward. */
     unforwardedNames?: string[];
     messageId?: string;
+    /**
+     * The Worker's own total. A string, not a number: this is a multipart field,
+     * and the route has to parse it back out of the wire form.
+     */
+    skippedAttachmentCount?: string;
   } = {},
 ) {
   const form = new FormData();
@@ -97,6 +102,9 @@ function multipartRequest(
     form.append("attachments", file, file.name);
   }
   for (const name of options.unforwardedNames ?? []) form.append("attachmentName", name);
+  if (options.skippedAttachmentCount !== undefined) {
+    form.append("skippedAttachmentCount", options.skippedAttachmentCount);
+  }
   return new Request("http://localhost/api/email/ingest", { method: "POST", body: form });
 }
 
@@ -329,6 +337,151 @@ describe("POST /api/email/ingest", () => {
       accepted: true,
       supportedAttachmentCount: 2,
       skippedAttachmentCount: 1,
+    });
+  });
+
+  /**
+   * The Worker knows what it never forwarded -- unsupported parts plus supported
+   * ones it dropped at its own per-email cap -- and the route cannot re-derive
+   * that from a name list truncated at 20 and a file list truncated at 10. So
+   * the count travels with the message. Both payload branches are pinned with
+   * the field PRESENT as well as absent: an assertion that only omits it leaves
+   * the parse itself free to be deleted (DW-247).
+   */
+  describe("forwarded skipped-attachment count", () => {
+    it("reports the multipart count the Worker sent, not the local subtraction", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-forwarded-count@example.com>",
+        files: [new File([FIRST_BYTES], "report.pdf", { type: "application/pdf" })],
+        unforwardedNames: ["archive.exe"],
+        skippedAttachmentCount: "14",
+      }));
+      expect(response.status).toBe(200);
+      // Locally derivable: 2 names minus 1 staged file = 1. The Worker's 14 wins.
+      expect(await response.json()).toMatchObject({
+        supportedAttachmentCount: 1,
+        skippedAttachmentCount: 14,
+      });
+    });
+
+    it("adds its own rejections to the forwarded count", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-forwarded-plus-local@example.com>",
+        files: [
+          new File([FIRST_BYTES], "report.pdf", { type: "application/pdf" }),
+          // Forwarded by the Worker, refused here: a loss the Worker's total
+          // cannot already include, so the two are summed rather than maxed.
+          new File([SECOND_BYTES], "program.exe", { type: "application/octet-stream" }),
+        ],
+        skippedAttachmentCount: "3",
+      }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        supportedAttachmentCount: 1,
+        skippedAttachmentCount: 4,
+      });
+    });
+
+    it("never reports below what the recorded names already prove was lost", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-count-below-floor@example.com>",
+        files: [new File([FIRST_BYTES], "report.pdf", { type: "application/pdf" })],
+        unforwardedNames: ["archive.exe", "photo.heic"],
+        // A Worker that miscounted, an older Worker that sent nothing but a
+        // zero, or a hand-rolled POST: three names arrived and one file was
+        // staged, so at least two are gone whatever the sender of the count
+        // believes. A bare sum would answer 0 and call it honest.
+        skippedAttachmentCount: "0",
+      }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        supportedAttachmentCount: 1,
+        skippedAttachmentCount: 2,
+      });
+    });
+
+    /**
+     * The floor masks a bad parse whenever it is the larger number, so both of
+     * these are built where it cannot: `Infinity` overshoots any floor, and the
+     * negative case needs a fixture where the route's OWN drop count exceeds the
+     * local subtraction. That only happens when recorded names collapse -- the
+     * name union is deduplicated, so four identically-named parts contribute one
+     * name and four drops. With distinct names the subtraction is always the
+     * larger of the two and a negative count is unobservable.
+     */
+    it("ignores a non-finite count instead of letting it reach the response", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-infinite-count@example.com>",
+        files: [new File([FIRST_BYTES], "report.pdf", { type: "application/pdf" })],
+        skippedAttachmentCount: "Infinity",
+      }));
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Record<string, unknown>;
+      // `Math.max(0, Infinity)` is `Infinity`, which `JSON.stringify` writes as
+      // `null` -- so a dropped finiteness check surfaces as a missing number,
+      // not a wrong one.
+      expect(typeof body.skippedAttachmentCount).toBe("number");
+      expect(Number.isFinite(body.skippedAttachmentCount)).toBe(true);
+      expect(body.skippedAttachmentCount).toBe(0);
+    });
+
+    it("ignores a negative count instead of subtracting it from its own drops", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-negative-observable@example.com>",
+        content: "Four scans from the copier.",
+        files: Array.from(
+          { length: 4 },
+          () => new File([SECOND_BYTES], "scan.exe", { type: "application/octet-stream" }),
+        ),
+        skippedAttachmentCount: "-1",
+      }));
+      expect(response.status).toBe(200);
+      // One deduplicated name, no staged file: the local subtraction is 1. The
+      // route rejected all four parts, so treating -1 as a real count would
+      // answer `max(1, -1 + 4)` = 3.
+      expect(await response.json()).toMatchObject({
+        supportedAttachmentCount: 0,
+        skippedAttachmentCount: 1,
+      });
+    });
+
+    it("falls back to the subtraction when the multipart field is absent or unusable", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const absent = await POST(mixedAttachmentRequest());
+      expect(await absent.json()).toMatchObject({ skippedAttachmentCount: 1 });
+      const unusable = await POST(multipartRequest({
+        messageId: "<message-bad-count@example.com>",
+        files: [new File([FIRST_BYTES], "report.pdf", { type: "application/pdf" })],
+        unforwardedNames: ["archive.exe"],
+        skippedAttachmentCount: "not-a-number",
+      }));
+      expect(await unusable.json()).toMatchObject({ skippedAttachmentCount: 1 });
+      const negative = await POST(multipartRequest({
+        messageId: "<message-negative-count@example.com>",
+        files: [new File([FIRST_BYTES], "report.pdf", { type: "application/pdf" })],
+        unforwardedNames: ["archive.exe"],
+        skippedAttachmentCount: "-5",
+      }));
+      expect(await negative.json()).toMatchObject({ skippedAttachmentCount: 1 });
+    });
+
+    it("reads the count on the JSON body branch too", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const withCount = await POST(request({ skippedAttachmentCount: 14 }));
+      expect(await withCount.json()).toMatchObject({
+        supportedAttachmentCount: 0,
+        skippedAttachmentCount: 14,
+      });
+      const withoutCount = await POST(request({
+        messageId: "<message-json-no-count@example.com>",
+      }));
+      // One recorded name, no attachments: the local subtraction.
+      expect(await withoutCount.json()).toMatchObject({ skippedAttachmentCount: 1 });
     });
   });
 

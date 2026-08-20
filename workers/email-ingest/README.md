@@ -6,10 +6,14 @@ supported document attachments to the main work-wiki Worker through a service bi
 
 Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI,
 Org, and RTF attachments are forwarded to the main Worker, staged in R2, and
-extracted by the task queue. Unsupported attachment names remain in
-activity history and are reported as skipped. The owner can route accepted mail
-to an owned vault and/or agent in Settings. Original documents and supported
-embedded figures are preserved in R2 after synthesis.
+extracted by the task queue. The Worker carries at most ten supported documents
+out of one message, and records the first twenty attachment names — forwarded or
+not — in activity history; names past the twentieth are not recorded at all. The
+acknowledgement reports the two losses separately: parts in an unsupported
+format, and supported documents left behind because the message went over that
+ten-document limit. The owner can route accepted mail to an owned vault and/or
+agent in Settings. Original documents and supported embedded figures are
+preserved in R2 after synthesis.
 
 The inbound Worker sends an immediate accepted/rejected reply. The task-consumer
 Worker sends the final success/failure receipt after conversion settles.

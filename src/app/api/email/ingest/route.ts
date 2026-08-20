@@ -38,6 +38,30 @@ interface EmailPayload {
   content: string;
   attachmentNames: string[];
   attachments: File[];
+  /**
+   * What the inbound Worker never forwarded — unsupported parts plus supported
+   * ones it dropped at its own per-email cap. Both payload branches read it, so
+   * it is absent only when a caller omits the field or sends an unusable value
+   * (non-numeric, non-finite, or negative); the route then falls back to
+   * deriving a minimum from the recorded names.
+   */
+  skippedAttachmentCount?: number;
+}
+
+/**
+ * Missing, non-numeric, non-finite and negative values are all "absent", not
+ * zero: an unparseable field must fall back to the local subtraction rather than
+ * silently reporting that nothing was skipped. One guard for both payload
+ * branches, so the JSON number and the multipart string cannot diverge.
+ */
+function parseSkippedCount(value: unknown): number | undefined {
+  const raw =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : NaN;
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : undefined;
 }
 
 async function parsePayload(request: Request): Promise<EmailPayload> {
@@ -61,6 +85,7 @@ async function parsePayload(request: Request): Promise<EmailPayload> {
         form.getAll("attachmentName").filter((entry): entry is string => typeof entry === "string"),
       ),
       attachments,
+      skippedAttachmentCount: parseSkippedCount(form.get("skippedAttachmentCount")),
     };
   }
 
@@ -77,6 +102,7 @@ async function parsePayload(request: Request): Promise<EmailPayload> {
         : [],
     ),
     attachments: [],
+    skippedAttachmentCount: parseSkippedCount(body.skippedAttachmentCount),
   };
 }
 
@@ -247,6 +273,21 @@ export async function POST(request: Request) {
       task.staged = { key, kind: "text" };
     }
 
+    // The Worker's count and the route's own rejections are disjoint losses: the
+    // Worker reports what it never forwarded, and the route can additionally drop
+    // a forwarded file that fails `isSupportedDocument`. Sum them — and never
+    // report below what is locally derivable, so a caller that sends no count (or
+    // an implausibly low one) still gets an honest floor.
+    const localSkipped = Math.max(0, attachmentNames.length - attachments.length);
+    const skippedAttachmentCount =
+      payload.skippedAttachmentCount === undefined
+        ? localSkipped
+        : Math.max(
+            localSkipped,
+            payload.skippedAttachmentCount +
+              Math.max(0, payload.attachments.length - attachments.length),
+          );
+
     const response = await enqueueOrInline(jobId, task, async () => {
       let combined = content;
       const documentSources: DocumentSourceInput[] = [];
@@ -281,7 +322,7 @@ export async function POST(request: Request) {
       ...responseBody,
       accepted: true,
       supportedAttachmentCount: attachments.length,
-      skippedAttachmentCount: Math.max(0, attachmentNames.length - attachments.length),
+      skippedAttachmentCount,
     }, { status: response.status });
   } catch (error) {
     // Mid-request flag flip: the gate above already answered for a deployment

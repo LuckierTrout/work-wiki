@@ -939,7 +939,8 @@ source_spec: `spec-email-ingest-attachment-test.md`
 location: workers/email-ingest/index.ts:39
 severity: medium
 reason: The worker rejects on `message.rawSize > MAX_RAW_EMAIL_BYTES` (10 MB, `index.ts:39/147`) — a raw-message measurement taken *before* MIME decoding. Base64 inflates payloads by roughly a third, so the effective per-attachment ceiling over email is about 7.5 MB, while `MAX_DOCUMENT_SIZE` in `src/lib/constants.ts` is 10 MB. The gap is undocumented and untested in both directions.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-email-worker-caps-and-accounting
 decision: 2026-08-19 Raise the raw cap — Raise `MAX_RAW_EMAIL_BYTES` to about 13.4 MB so a `MAX_DOCUMENT_SIZE` attachment survives base64 expansion, derive it from `MAX_DOCUMENT_SIZE` with a comment naming the expansion factor, and add a test that fails if the two caps drift apart.
 
 ### DW-105: The shared dialog hook `useDialogA11y` — the richest DOM-only behaviour in reach — still has no mounted coverage.
@@ -2186,7 +2187,8 @@ source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: workers/email-ingest/index.ts:287-292
 severity: medium
 reason: `workers/email-ingest/index.ts` computes skipped as `attachmentNames.length - supportedAttachments.length`, where the names list is capped at 20 and the supported list at 10. An 11th supported attachment dropped by the cap is reported as "1 unsupported attachment was recorded but skipped" — the sender is never told a supported file was dropped for exceeding the limit. Past 20 attachments the subtraction compares a 20-capped list against a 10-capped one and understates the loss. The route's `skippedAttachmentCount` carries the same semantics. This run pinned the existing copy as-is per its spec Boundaries rather than correcting it.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-email-worker-caps-and-accounting
 
 ### DW-248: Three more forced cross-module duplicate constants in the Worker remain unpinned after this run pinned only the 10-attachment cap.
 origin: spec-deferred 5210d48fc471
@@ -2194,7 +2196,8 @@ source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: workers/email-ingest/index.ts:210
 severity: low
 reason: `workers/email-ingest/index.ts` carries `.slice(0, 20)` for the recorded attachment-name list (duplicating `MAX_EMAIL_ATTACHMENTS_RECORDED` in `src/lib/email-ingest.ts:7`), `MAX_EMAIL_CONTENT_CHARS = 100_000` (duplicating the export of the same name), and `MAX_RAW_EMAIL_BYTES = 10 * 1024 * 1024`. All are the same "Worker cannot import `src/lib`, so a test must pin it" class as the `MAX_EMAIL_ATTACHMENTS`/`MAX_EMAIL_DOCUMENTS` pair that `email-ingest-allowlist-parity.test.ts` now covers. The 20 is never approached by the 13-part fixture.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-email-worker-caps-and-accounting
 
 ### DW-249: Four hand-written prose lists of supported formats exist and no test asserts any of them against the allowlist they describe.
 origin: spec-deferred 1bb1a8484942
@@ -3089,4 +3092,52 @@ source_spec: `spec-dw-235-237-241-242-brand-display-copy-residue.md`
 location: AGENTS.md
 severity: low
 reason: IDENTIFIER_ALLOWLIST (src/lib/__tests__/brand-copy.test.ts) waives X-Yopedia-* headers, yopedia.yolog.dev and yopedia.yuanhao-li.workers.dev. The workers.dev origin is what skills/work-wiki-mcp/SKILL.md publishes as the MCP endpoint outside agents connect to, so renaming it is as breaking as anything already listed. DW-241 scoped completeness to the four WORKWIKI_* members only, so the yopedia half was never audited for the same gap.
+status: open
+
+### DW-357: The duplicate-Message-ID early return omits skippedAttachmentCount entirely, so a resend of an already-seen message reports supportedAttachmentCount with no skipped figure at all.
+origin: spec-deferred 00f8b3678ac9
+source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
+location: src/app/api/email/ingest/route.ts:202
+severity: medium
+reason: `src/app/api/email/ingest/route.ts` returns `{ accepted, duplicate, ... , supportedAttachmentCount }` on the duplicate path without `skippedAttachmentCount`, while the success path returns both. Pre-dates this change, but it is the same response contract the change corrects. The only test on that path asserts accepted/duplicate/status/slug and nothing about attachment counts.
+status: open
+
+### DW-358: Quoted-printable transfer encoding is unaccounted for in the raw-size cap, which is derived from base64 expansion alone.
+origin: spec-deferred 18e6b2bf1947
+source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
+location: workers/email-ingest/index.ts
+severity: medium
+reason: Many clients send text/* attachments and non-ASCII bodies as quoted-printable, which expands up to roughly 3x for byte-dense content — far beyond base64's 4/3. A large .csv or .txt attachment can therefore still be refused below the advertised per-document ceiling, for the same reason DW-104 described for base64.
+status: open
+
+### DW-359: Inline MIME parts (signature logos, embedded images) are counted as unsupported attachments and reported to the sender as skipped.
+origin: spec-deferred b0f13e11e949
+source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
+location: workers/email-ingest/index.ts
+severity: low
+reason: `parsed.attachments` from postal-mime includes parts with `disposition: "inline"` and a `contentId`. Every ordinary email with a branded signature therefore produces an "N unsupported attachments were recorded but skipped" line. Pre-existing — the old subtraction counted them too — so this is not a regression, but the corrected accounting makes the noise more visible.
+status: open
+
+### DW-360: Nothing bounds the aggregate size of the attachments the Worker copies into the forwarded FormData, and raising the raw cap raises that peak.
+origin: spec-deferred 9ad9274b13e0
+source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
+location: workers/email-ingest/index.ts
+severity: low
+reason: The forwarding loop copies each attachment twice (source view, then a fresh Uint8Array) on top of the parsed MIME tree, inside a Cloudflare Worker's memory budget. The cap governs one raw message, not the sum of decoded attachment bytes plus copies. No test or guard covers the aggregate.
+status: open
+
+### DW-361: A full-size document and a maximal email body cannot both fit under the derived raw cap, because the 64 KiB envelope allowance is far smaller than MAX_EMAIL_CONTENT_CHARS.
+origin: spec-deferred 29968aee1ee7
+source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
+location: workers/email-ingest/index.ts:59
+severity: medium
+reason: `MAX_RAW_EMAIL_BYTES` leaves 65,533 bytes of slack above the 14,348,938-byte wire size of a base64-encoded `MAX_DOCUMENT_SIZE` document, while the Worker's own `MAX_EMAIL_CONTENT_CHARS` is 100,000 and the body is truncated only *after* the `rawSize` gate. An email carrying a 10 MB attachment plus a body anywhere near the accepted length is refused with a size bounce although every individual limit is respected. Not a regression -- the old 10 MB cap refused that message too -- and the constant's comment now says so, but no test covers the interaction of the two caps.
+status: open
+
+### DW-362: The raw cap bounds one full-size document, so several mid-size supported documents are refused wholesale even though every per-document and per-count limit is respected.
+origin: spec-deferred 95bfc309fad5
+source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
+location: workers/email-ingest/index.ts:59
+severity: medium
+reason: `MAX_EMAIL_ATTACHMENTS` is 10 and `MAX_DOCUMENT_SIZE` is 10 MB, so the advertised envelope is up to ten documents; ten 2 MB documents encode to roughly 27 MB and are bounced by `MAX_RAW_EMAIL_BYTES` (14.4 MB) with "larger than 13.7 MB". The per-message cap and the per-email attachment cap describe incompatible envelopes, which also makes the new over-cap acknowledgement line unreachable for anything but small files. Pre-existing and worse before this change (the cap was 10 MB); distinct from the aggregate-memory item above, which is about the forwarding copies rather than the gate.
 status: open

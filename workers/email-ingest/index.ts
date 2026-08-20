@@ -36,8 +36,68 @@ interface Env {
 }
 
 const CONFIG_KEY = "_idx:email-ingest-config";
-const MAX_RAW_EMAIL_BYTES = 10 * 1024 * 1024;
-const MAX_EMAIL_CONTENT_CHARS = 100_000;
+/**
+ * Duplicates `MAX_DOCUMENT_SIZE` in `src/lib/constants.ts` — the per-document
+ * ceiling `/api/email/ingest` enforces on every staged attachment. The
+ * duplication is forced: this module is bundled for Cloudflare and cannot import
+ * from `src/lib`. Pinned against the original by
+ * `src/lib/__tests__/email-ingest-allowlist-parity.test.ts`.
+ */
+export const MAX_EMAIL_DOCUMENT_BYTES = 10 * 1024 * 1024;
+/**
+ * Base64 writes 4 characters for every 3 bytes, and RFC 2045 wraps the result at
+ * 76 characters with a CRLF after each line — 78 wire bytes per 76 characters of
+ * payload. `message.rawSize` is the on-the-wire RFC 822 byte count, measured
+ * before anything is decoded, so a bare 4/3 factor is not enough: it bounces a
+ * full-size document by ~2.6%.
+ */
+export const BASE64_EXPANSION_FACTOR = (4 / 3) * (78 / 76);
+/**
+ * Headroom for everything that is not the encoded document: part headers,
+ * boundary markers, and an ordinary text body. It is not enough for a maximal body — a
+ * document at `MAX_EMAIL_DOCUMENT_BYTES` leaves 65,533 bytes here, well under
+ * `MAX_EMAIL_CONTENT_CHARS` — and is not meant to be: the pair only has to be
+ * simultaneously satisfiable for realistic mail, not at both extremes at once.
+ */
+export const MIME_ENVELOPE_HEADROOM_BYTES = 64 * 1024;
+/**
+ * The pre-decode ceiling, derived rather than restated: a message carrying one
+ * `MAX_EMAIL_DOCUMENT_BYTES` document has to fit under it once base64 expansion,
+ * the RFC 2045 line wrap and the MIME envelope are paid for — otherwise the
+ * route's own `MAX_DOCUMENT_SIZE` gate is unreachable over email and a full-size
+ * document is refused at the door (DW-104).
+ *
+ * This lands at ~13.75 MiB, deliberately above the "about 13.4 MB" recorded in
+ * the 2026-08-19 decision. That estimate was a bare `MAX_DOCUMENT_SIZE * 4 / 3`
+ * = 13,981,014 bytes, and a full-size document reaches the wire at 14,348,938 —
+ * so clamping back to the estimate would re-create the exact bounce the decision
+ * was made to stop. The operative clause was "so a `MAX_DOCUMENT_SIZE`
+ * attachment survives base64 expansion"; the figure was its arithmetic, not its
+ * intent.
+ */
+export const MAX_RAW_EMAIL_BYTES =
+  Math.ceil(MAX_EMAIL_DOCUMENT_BYTES * BASE64_EXPANSION_FACTOR) +
+  MIME_ENVELOPE_HEADROOM_BYTES;
+/**
+ * Rounded DOWN to the displayed precision, so the figure quoted back to the
+ * sender is never larger than the limit actually enforced.
+ */
+const MAX_RAW_EMAIL_MB = (
+  Math.floor((MAX_RAW_EMAIL_BYTES / 1024 / 1024) * 10) / 10
+).toFixed(1);
+/**
+ * Duplicates `MAX_EMAIL_CONTENT_CHARS` in `src/lib/email-ingest.ts`, which 400s
+ * a longer body — truncating here to a different number would either lose text
+ * the route would have accepted or post a body it rejects wholesale. Pinned by
+ * the parity test, since this module cannot import the constant.
+ */
+export const MAX_EMAIL_CONTENT_CHARS = 100_000;
+/**
+ * Duplicates `MAX_EMAIL_ATTACHMENTS_RECORDED` in `src/lib/email-ingest.ts`,
+ * which truncates the recorded name list to the same number in
+ * `sanitizeAttachmentNames`. Pinned by the parity test.
+ */
+export const MAX_EMAIL_ATTACHMENT_NAMES_RECORDED = 20;
 const TRUNCATION_MARKER = "\n\n[Email body truncated]";
 /**
  * Duplicates the app extractor's allowlist (`SUPPORTED_DOCUMENT_EXTENSIONS` and
@@ -187,7 +247,7 @@ export default {
       await reply(
         message,
         headerSubject,
-        "work-wiki did not process this message because it is larger than 10 MB.",
+        `work-wiki did not process this message because it is larger than ${MAX_RAW_EMAIL_MB} MB.`,
       );
       return;
     }
@@ -229,9 +289,18 @@ export default {
       );
       return;
     }
-    const supportedAttachments = parsed.attachments
-      .filter((attachment) => supportedAttachment(attachment.filename, attachment.mimeType))
-      .slice(0, MAX_EMAIL_ATTACHMENTS);
+    // Both losses are counted from `parsed.attachments`, never from the
+    // 20-capped `attachmentNames` list: the old
+    // `attachmentNames.length - supportedAttachments.length` subtraction called a
+    // cap-truncated *supported* file "unsupported", and understated the loss
+    // entirely once a sender attached more than 20 files (DW-247).
+    const eligibleAttachments = parsed.attachments.filter((attachment) =>
+      supportedAttachment(attachment.filename, attachment.mimeType),
+    );
+    const supportedAttachments = eligibleAttachments.slice(0, MAX_EMAIL_ATTACHMENTS);
+    const unsupportedCount = parsed.attachments.length - eligibleAttachments.length;
+    const overCapCount = eligibleAttachments.length - supportedAttachments.length;
+    const skippedAttachmentCount = unsupportedCount + overCapCount;
     if (!rawContent && supportedAttachments.length === 0) {
       await reply(
         message,
@@ -249,7 +318,7 @@ export default {
         : rawContent;
     const attachmentNames = parsed.attachments
       .map((attachment) => attachment.filename || "unnamed attachment")
-      .slice(0, 20);
+      .slice(0, MAX_EMAIL_ATTACHMENT_NAMES_RECORDED);
 
     let response: Response;
     try {
@@ -262,6 +331,9 @@ export default {
       form.append("messageId", messageId);
       if (content) form.append("content", content);
       for (const name of attachmentNames) form.append("attachmentName", name);
+      // The true total, so the route reports the real loss instead of
+      // re-deriving it from the truncated name list.
+      form.append("skippedAttachmentCount", String(skippedAttachmentCount));
       for (const [index, attachment] of supportedAttachments.entries()) {
         const filename = attachment.filename || `attachment-${index + 1}`;
         const source = typeof attachment.content === "string"
@@ -326,8 +398,11 @@ export default {
       supportedAttachments.length
         ? `${supportedAttachments.length} supported attachment${supportedAttachments.length === 1 ? " was" : "s were"} queued for ingestion.`
         : "",
-      attachmentNames.length > supportedAttachments.length
-        ? `${attachmentNames.length - supportedAttachments.length} unsupported attachment${attachmentNames.length - supportedAttachments.length === 1 ? " was" : "s were"} recorded but skipped.`
+      overCapCount
+        ? `${overCapCount} supported attachment${overCapCount === 1 ? " was" : "s were"} not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`
+        : "",
+      unsupportedCount
+        ? `${unsupportedCount} unsupported attachment${unsupportedCount === 1 ? " was" : "s were"} recorded but skipped.`
         : "",
     ].filter(Boolean);
     await reply(message, subject, lines.join("\n\n"));

@@ -5,13 +5,25 @@ import {
   detectDocumentFormat,
   isSupportedDocument,
 } from "../document-extract";
-import { MAX_EMAIL_DOCUMENTS } from "../email-ingest";
+import { MAX_DOCUMENT_SIZE } from "../constants";
 import {
+  MAX_EMAIL_ATTACHMENTS_RECORDED,
+  MAX_EMAIL_CONTENT_CHARS,
+  MAX_EMAIL_DOCUMENTS,
+} from "../email-ingest";
+import {
+  BASE64_EXPANSION_FACTOR,
   MAX_EMAIL_ATTACHMENTS,
+  MAX_EMAIL_ATTACHMENT_NAMES_RECORDED,
+  MAX_EMAIL_CONTENT_CHARS as WORKER_MAX_EMAIL_CONTENT_CHARS,
+  MAX_EMAIL_DOCUMENT_BYTES,
+  MAX_RAW_EMAIL_BYTES,
+  MIME_ENVELOPE_HEADROOM_BYTES,
   SUPPORTED_EXTENSIONS,
   SUPPORTED_MIME_TYPES,
   supportedAttachment,
 } from "../../../workers/email-ingest/index";
+import { base64PartWireSize } from "./email-ingest-wire";
 
 /**
  * The email door and the app extractor keep two copies of the same allowlist.
@@ -125,5 +137,49 @@ describe("email-ingest allowlist parity", () => {
     // MAX_EMAIL_DOCUMENTS. If the Worker's cap were the larger of the two, every
     // over-cap email would be rejected wholesale instead of truncated.
     expect(MAX_EMAIL_ATTACHMENTS).toBe(MAX_EMAIL_DOCUMENTS);
+  });
+
+  it("copies the app's per-document size ceiling", () => {
+    expect(MAX_EMAIL_DOCUMENT_BYTES).toBe(MAX_DOCUMENT_SIZE);
+  });
+
+  /**
+   * The raw cap is the one duplicated constant that cannot be pinned by
+   * comparing numbers alone: `message.rawSize` is measured on an *encoded*
+   * message, and `MAX_DOCUMENT_SIZE` bounds a *decoded* file. So the pin is at
+   * the message surface — the true wire size of a full-size document, computed
+   * the way RFC 2045 actually writes it (and the way this repo's fixtures write
+   * it: `email-ingest-worker.test.ts` calibrates `base64PartWireSize` against a
+   * real `multipartEmail` fixture).
+   */
+  it("admits a full-size document once it is base64-encoded on the wire", () => {
+    const wireSize = base64PartWireSize(MAX_DOCUMENT_SIZE);
+    expect(wireSize).toBeLessThan(MAX_RAW_EMAIL_BYTES);
+    // The naive factor — the one the original "raise it to ~13.4 MB" figure was
+    // built from — is NOT enough: it omits the CRLF after every 76-character
+    // line and bounces the very document this cap exists to admit.
+    expect(wireSize).toBeGreaterThan(Math.ceil(MAX_DOCUMENT_SIZE * (4 / 3)));
+    // Derived from the exported terms, never restated as a literal: a hand-typed
+    // cap would keep the comparison above true only by coincidence, and would
+    // stop tracking `MAX_DOCUMENT_SIZE` the moment it moved.
+    expect(MAX_RAW_EMAIL_BYTES).toBe(
+      Math.ceil(MAX_EMAIL_DOCUMENT_BYTES * BASE64_EXPANSION_FACTOR) +
+        MIME_ENVELOPE_HEADROOM_BYTES,
+    );
+    // Part headers, boundaries and the text body still have to fit.
+    expect(MAX_RAW_EMAIL_BYTES - wireSize).toBeGreaterThanOrEqual(1024);
+  });
+
+  it("records the same number of attachment names the route keeps", () => {
+    // The Worker truncates the forwarded `attachmentName` list; the route
+    // truncates again in `sanitizeAttachmentNames`. A smaller Worker cap loses
+    // names the route would have kept, silently.
+    expect(MAX_EMAIL_ATTACHMENT_NAMES_RECORDED).toBe(MAX_EMAIL_ATTACHMENTS_RECORDED);
+  });
+
+  it("truncates the email body at the length the route accepts", () => {
+    // Above this the route 400s the whole message, so a larger Worker cap turns
+    // a truncated-but-ingested email into a total rejection.
+    expect(WORKER_MAX_EMAIL_CONTENT_CHARS).toBe(MAX_EMAIL_CONTENT_CHARS);
   });
 });

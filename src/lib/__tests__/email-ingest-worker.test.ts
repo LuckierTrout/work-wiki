@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import worker from "../../../workers/email-ingest/index";
+import worker, {
+  MAX_EMAIL_ATTACHMENTS,
+  MAX_EMAIL_ATTACHMENT_NAMES_RECORDED,
+  MAX_EMAIL_DOCUMENT_BYTES,
+  MAX_RAW_EMAIL_BYTES,
+} from "../../../workers/email-ingest/index";
+import { base64PartWireSize } from "./email-ingest-wire";
 
 /**
  * Worker-level coverage for `workers/email-ingest`, which had none: the sibling
@@ -258,7 +264,10 @@ function partBytes(index: number, length = 96): Uint8Array {
 }
 
 function multipartEmail(
-  parts: readonly Pick<MixedPart, "filename" | "mime">[],
+  parts: readonly (Pick<MixedPart, "filename" | "mime"> & {
+    /** Decoded payload length. Defaults to `partBytes`'s own 96. */
+    bytes?: number;
+  })[],
   options: { subject: string; messageId: string; body: string },
 ): string {
   const lines = [
@@ -284,7 +293,7 @@ function multipartEmail(
         : "Content-Disposition: attachment",
       "Content-Transfer-Encoding: base64",
       "",
-      base64Lines(partBytes(index)),
+      base64Lines(partBytes(index, part.bytes ?? 96)),
       "",
     );
   });
@@ -376,24 +385,80 @@ describe("email-ingest multi-attachment forwarding", () => {
 });
 
 /**
+ * Twenty-four parts, twelve of them supported: enough to push the recorded-name
+ * list past its own 20 cap while the forwarding cap is also biting. This is the
+ * fixture the old `attachmentNames.length - supportedAttachments.length`
+ * subtraction got most wrong — it reported `20 - 10 = 10` skipped where fourteen
+ * files were actually lost, and called two supported files unsupported.
+ */
+const OVER_NAME_CAP_PARTS: MixedPart[] = Array.from({ length: 24 }, (_, index) =>
+  index % 2 === 0
+    ? {
+        filename: `keep-${index}.pdf`,
+        mime: "application/pdf",
+        parsedMime: "application/pdf",
+        supported: true,
+      }
+    : {
+        filename: `drop-${index}.exe`,
+        mime: "application/octet-stream",
+        parsedMime: "application/octet-stream",
+        supported: false,
+      },
+);
+
+const OVER_NAME_CAP_EMAIL = multipartEmail(OVER_NAME_CAP_PARTS, {
+  subject: "Everything at once",
+  messageId: "message-over-name-cap",
+  body: "Twenty-four files attached.",
+});
+
+/**
  * The acknowledgement is the only place the sender learns that some of what
  * they attached did not make it in. Both counts and both plural forms are
- * pinned; the cap-truncated eleventh supported part folding into the *skipped*
- * line is existing behaviour, pinned as-is rather than corrected here.
+ * pinned -- and the two losses are pinned *separately*: a supported file the
+ * per-email cap dropped is not an unsupported one, and telling the sender it was
+ * is a lie about their own file (DW-247).
  */
 describe("email-ingest acknowledgement attachment counts", () => {
-  it("reports the queued and skipped counts in the plural", async () => {
+  it("separates the over-cap supported files from the unsupported ones", async () => {
     const { reply } = await forwardedForm(MIXED_EMAIL, "Mixed batch", "mixed-batch");
     expect(reply.text).toContain("10 supported attachments were queued for ingestion.");
     expect(reply.text).toContain(
-      "3 unsupported attachments were recorded but skipped.",
+      `1 supported attachment was not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`,
     );
+    expect(reply.text).toContain("2 unsupported attachments were recorded but skipped.");
+    // The exact wrong number the old subtraction produced: eleven supported
+    // parts, ten forwarded, and the cast-off eleventh counted as unsupported.
+    expect(reply.text).not.toContain("3 unsupported");
+  });
+
+  it("reports the true totals when there are more parts than the names cap", async () => {
+    const { form, reply } = await forwardedForm(
+      OVER_NAME_CAP_EMAIL,
+      "Everything at once",
+      "everything-at-once",
+    );
+    // The recorded-name list is still truncated -- that cap is unchanged.
+    expect(form.getAll("attachmentName")).toHaveLength(
+      MAX_EMAIL_ATTACHMENT_NAMES_RECORDED,
+    );
+    expect(reply.text).toContain("10 supported attachments were queued for ingestion.");
+    expect(reply.text).toContain(
+      `2 supported attachments were not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`,
+    );
+    expect(reply.text).toContain("12 unsupported attachments were recorded but skipped.");
+    // `20 - 10`: what the truncated-list subtraction reported, understating the
+    // loss by four files and mislabelling two more.
+    expect(reply.text).not.toContain("10 unsupported");
   });
 
   it("reports the queued and skipped counts in the singular", async () => {
     const { reply } = await forwardedForm(SINGLE_SKIP_EMAIL, "One and one", "one-and-one");
     expect(reply.text).toContain("1 supported attachment was queued for ingestion.");
     expect(reply.text).toContain("1 unsupported attachment was recorded but skipped.");
+    // Nothing was dropped by the cap, so no over-cap line at all -- not a zero.
+    expect(reply.text).not.toContain("not queued because");
   });
 
   it("says nothing about attachments when the email carries none", async () => {
@@ -407,5 +472,155 @@ describe("email-ingest acknowledgement attachment counts", () => {
     const sent = msg.reply.mock.calls[0][0];
     expect(sent.text).not.toContain("queued for ingestion");
     expect(sent.text).not.toContain("recorded but skipped");
+    expect(sent.text).not.toContain("not queued because");
+  });
+});
+
+/**
+ * The route re-derives nothing: whatever the Worker did not forward travels with
+ * the message as one number. Without this field the route can only subtract a
+ * 20-capped name list from a 10-capped file list and understate the loss.
+ */
+describe("email-ingest forwarded skipped count", () => {
+  it("forwards the true total the sender was told about", async () => {
+    const { form } = await forwardedForm(MIXED_EMAIL, "Mixed batch", "mixed-batch");
+    // Two unsupported plus one supported file cut by the cap.
+    expect(form.get("skippedAttachmentCount")).toBe("3");
+  });
+
+  it("forwards a total the truncated name list could not express", async () => {
+    const { form } = await forwardedForm(
+      OVER_NAME_CAP_EMAIL,
+      "Everything at once",
+      "everything-at-once",
+    );
+    // Twelve unsupported plus two over-cap -- above the 20-name list's own
+    // arithmetic ceiling of `20 - 10`.
+    expect(form.get("skippedAttachmentCount")).toBe("14");
+  });
+
+  it("forwards a zero when nothing was skipped", async () => {
+    const { form } = await forwardedForm(ATTACHMENT_EMAIL, "Quarterly report", "quarterly-report");
+    expect(form.get("skippedAttachmentCount")).toBe("0");
+  });
+});
+
+/**
+ * `message.rawSize` is counted before any MIME decoding, so the cap it is
+ * compared against has to be big enough for an ENCODED full-size document. It
+ * was not: 10 MB flat, which put the route's own `MAX_DOCUMENT_SIZE` gate out of
+ * reach over email entirely (DW-104).
+ */
+describe("email-ingest raw message cap", () => {
+  it("predicts a real fixture's encoded part length at every awkward length", () => {
+    // Calibration. The parity test measures a full-size document against the cap
+    // with `base64PartWireSize`; if that formula stopped describing how MIME is
+    // actually written, the measurement would be fiction. So: apply it to
+    // messages this suite really builds, and compare with the bytes on the page.
+    //
+    // Three lengths, because the formula has three ways to be wrong and 96 bytes
+    // exercises none of them on its own:
+    //   96  -- a multiple of 3 (no base64 padding) whose 128 characters end
+    //          mid-line, so the last line is short;
+    //   100 -- not a multiple of 3, so the encoder emits `=` padding and the
+    //          character count is no longer a clean 4n/3;
+    //   114 -- a multiple of 57, i.e. exactly 152 characters = two FULL 76-char
+    //          lines. This is the boundary case a 10 MB document actually lands
+    //          near, and the one a `ceil(chars / 76)` off-by-one would break:
+    //          counting a phantom trailing line inflates the prediction here and
+    //          nowhere else.
+    const LENGTHS = [96, 100, 114];
+    const raw = multipartEmail(
+      LENGTHS.map((bytes, index) => ({
+        filename: `part-${index}.pdf`,
+        mime: "application/pdf",
+        bytes,
+      })),
+      {
+        subject: "Calibration",
+        messageId: "message-calibration",
+        body: "Three files attached.",
+      },
+    );
+
+    // Read the encoded regions back out of the message rather than rebuilding
+    // them: a calibration against a restatement of the formula would agree with
+    // itself no matter how wrong both were.
+    const marker = "Content-Transfer-Encoding: base64\r\n\r\n";
+    const blocks: string[] = [];
+    for (let cursor = 0; ; ) {
+      const found = raw.indexOf(marker, cursor);
+      if (found < 0) break;
+      const start = found + marker.length;
+      const end = raw.indexOf("\r\n\r\n--work-wiki-boundary", start);
+      expect(end).toBeGreaterThan(start);
+      // Through the CRLF that terminates the last base64 line -- exactly the
+      // span the helper counts.
+      blocks.push(raw.slice(start, end + 2));
+      cursor = end;
+    }
+
+    expect(blocks).toHaveLength(LENGTHS.length);
+    expect(blocks.map((block) => new TextEncoder().encode(block).byteLength)).toEqual(
+      LENGTHS.map((bytes) => base64PartWireSize(bytes)),
+    );
+    // The padding case really is padded, and the multiple-of-57 case really does
+    // end on a full line -- so the lengths above cannot silently stop being the
+    // awkward ones.
+    expect(blocks[1]).toContain("=");
+    expect(blocks[2]?.split("\r\n")[1]).toHaveLength(76);
+  });
+
+  it("forwards a message the size of a base64-encoded full-size document", async () => {
+    const msg = {
+      ...message(ATTACHMENT_EMAIL, "Quarterly report"),
+      rawSize: base64PartWireSize(MAX_EMAIL_DOCUMENT_BYTES),
+    };
+    const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
+    expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
+  });
+
+  it("forwards a message sitting exactly on the cap", async () => {
+    // The gate is `>`, and the refusal copy quotes the cap as the size a message
+    // may not EXCEED. A `>=` would make that sentence false for exactly one byte
+    // count -- invisible to a below/above pair of tests.
+    const msg = {
+      ...message(ATTACHMENT_EMAIL, "Quarterly report"),
+      rawSize: MAX_RAW_EMAIL_BYTES,
+    };
+    const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
+    expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
+  });
+
+  it("refuses a genuinely oversized message and quotes a cap it really enforces", async () => {
+    const msg = {
+      ...message(ATTACHMENT_EMAIL, "Quarterly report"),
+      rawSize: MAX_RAW_EMAIL_BYTES + 1,
+    };
+    const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+    expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
+    const text = msg.reply.mock.calls[0][0].text;
+    expect(text).toContain("larger than");
+    // The stale hardcoded figure, and any figure ABOVE the enforced cap: quoting
+    // a limit larger than the one enforced invites the sender to resend a message
+    // that will bounce again. Rounding must go down, not to nearest.
+    expect(text).not.toContain("larger than 10 MB");
+    const quoted = Number(/larger than ([\d.]+) MB/.exec(text)?.[1]);
+    expect(Number.isFinite(quoted)).toBe(true);
+    expect(quoted * 1024 * 1024).toBeLessThanOrEqual(MAX_RAW_EMAIL_BYTES);
   });
 });
