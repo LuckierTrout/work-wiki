@@ -6,6 +6,7 @@ vi.mock("@/lib/maintenance", () => ({
   rebuildDerivedIndexes: vi.fn(),
   purgeStaleJobs: vi.fn(),
   sweepOrphanWikiDirs: vi.fn(),
+  backfillWorkspaceProfiles: vi.fn(),
   DEFAULT_MAINTENANCE_CAP: 10,
 }));
 vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn() }));
@@ -23,6 +24,7 @@ import {
   rebuildDerivedIndexes,
   purgeStaleJobs,
   sweepOrphanWikiDirs,
+  backfillWorkspaceProfiles,
 } from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
 import { isOwnerBackupDue } from "@/lib/backups";
@@ -38,6 +40,7 @@ const mockedScan = vi.mocked(scanForMaintenance);
 const mockedRebuild = vi.mocked(rebuildDerivedIndexes);
 const mockedPurge = vi.mocked(purgeStaleJobs);
 const mockedSweepOrphanWikiDirs = vi.mocked(sweepOrphanWikiDirs);
+const mockedBackfillProfiles = vi.mocked(backfillWorkspaceProfiles);
 const mockedEnqueue = vi.mocked(enqueueTask);
 const mockedBackupDue = vi.mocked(isOwnerBackupDue);
 const mockedCreateDigest = vi.mocked(createMonitorDigest);
@@ -71,6 +74,7 @@ beforeEach(() => {
   mockedRebuild.mockResolvedValue({});
   mockedPurge.mockResolvedValue(0);
   mockedSweepOrphanWikiDirs.mockResolvedValue(0);
+  mockedBackfillProfiles.mockResolvedValue(0);
   mockedEnqueue.mockResolvedValue(true);
   mockedBackupDue.mockResolvedValue(false);
   mockedDueDigestOwners.mockResolvedValue([]);
@@ -191,6 +195,50 @@ describe("POST /api/tasks/scan", () => {
 
     expect(mockedSweepOrphanWikiDirs).not.toHaveBeenCalled();
     expect(body.orphanWikiDirsRemoved).toBe(0);
+  });
+
+  it("backfills workspace profiles on a normal scan and reports the count", async () => {
+    // The DW-137 migration's ONLY trigger of any kind. It writes bytes rather
+    // than editing page content, so it runs with AUTONOMOUS_MAINTENANCE off
+    // exactly like the orphan sweep — a deployment that leaves that flag at its
+    // default would otherwise never finish migrating.
+    mockedBackfillProfiles.mockResolvedValue(2);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedBackfillProfiles).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({
+      enabled: false,
+      dry: true,
+      workspaceProfilesBackfilled: 2,
+    });
+  });
+
+  it("backfills workspace profiles in the enabled production configuration", async () => {
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedBackfillProfiles.mockResolvedValue(3);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedBackfillProfiles).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({
+      enabled: true,
+      dry: false,
+      workspaceProfilesBackfilled: 3,
+    });
+  });
+
+  it("?dry=1 suppresses the workspace-profile backfill", async () => {
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedBackfillProfiles.mockResolvedValue(2);
+
+    const res = await scan("?dry=1");
+    const body = await res.json();
+
+    expect(mockedBackfillProfiles).not.toHaveBeenCalled();
+    expect(body.workspaceProfilesBackfilled).toBe(0);
   });
 
   it("honors a ?cap override", async () => {

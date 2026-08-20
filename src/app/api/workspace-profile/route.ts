@@ -11,7 +11,6 @@ import {
 import {
   emptyWorkspaceProfile,
   getWorkspaceProfile,
-  readLegacyTenantProfile,
   saveWorkspaceProfile,
 } from "@/lib/workspace-profile";
 import { parseWorkspaceProfileInput } from "@/lib/workspace-profile-schema";
@@ -58,14 +57,15 @@ export async function GET() {
   }
   try {
     const wiki = await getCurrentWiki(principal.handle);
-    // With no Wiki, show the retired tenant-global profile if one is still
-    // there: an owner mid-migration can at least SEE what they wrote instead
-    // of an empty form. Read-only — the form stays disabled, `wiki` stays
-    // null, and nothing here writes or deletes the legacy file.
+    // With no Wiki there is no profile to read, so the form is seeded with an
+    // empty one (DW-137). This branch used to show the retired tenant-global
+    // file if one was still there; that address no longer exists on any live
+    // read path — `workspace-profile-backfill.ts` relocates it once from the
+    // maintenance scan — and the form is disabled with `wiki: null` either way,
+    // so what it displayed was a purpose nothing could save.
     const profile = wiki
       ? await getWorkspaceProfile(principal.handle, wiki.id)
-      : ((await readLegacyTenantProfile(principal.handle)) ??
-        emptyWorkspaceProfile());
+      : emptyWorkspaceProfile();
     return NextResponse.json({
       profile,
       readOnly: isReadOnly(),
@@ -148,9 +148,8 @@ export async function PUT(request: Request) {
     // bad field is answered 400 for the field, not 412.
     //
     // `getWorkspaceProfile`, not `readOwnProfile`, because it is what GET seeded
-    // the form from — legacy read-through included. Versioning the other read
-    // would answer 412 to a Wiki whose profile has only ever come from the
-    // retired tenant-global file.
+    // the form from: the version has to be OF the bytes the form was composed
+    // against, or a save is conditioned on a profile the owner never saw.
     //
     // Outside the lock, like every other caller of this check: the residual
     // two-requests-in-one-instant window stays exactly as `checkWritePrecondition`

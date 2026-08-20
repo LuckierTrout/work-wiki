@@ -14,6 +14,17 @@
  * Which Wiki's profile is live is answered by `workspace-guidance.ts`, not here
  * — this module must not import `wikis.ts` (see `wiki-paths.ts` for the cycle).
  *
+ * THE RETIRED TENANT-GLOBAL SINGLETON IS NOT SPELLED HERE (DW-137). This module
+ * once read through from a Wiki's own file to that singleton and only then to
+ * empty, which made one pre-split purpose appear under EVERY Wiki that had
+ * never saved its own, with no end date and no removal milestone. It is now a
+ * BACKFILL instead: `workspace-profile-backfill.ts` owns the legacy address,
+ * copies its bytes onto each Wiki that lacks a file of its own (through
+ * {@link copyWorkspaceProfileIfAbsent}) and then removes it. So no live read
+ * path — this module, `GET /api/workspace-profile`, `workspace-guidance.ts` —
+ * knows that address any more, and retiring the migration later is one file
+ * delete.
+ *
  * WRITES ARE GUARDED TWICE. {@link putWorkspaceProfile} takes the lock KEY
  * covering this file (`wikis:<tenant>`) as a `WikiLockHeld` token minted by
  * `withWikiLock` — it does not take the lock itself, because the seeder that
@@ -37,7 +48,6 @@ import { isEnoent } from "./errors";
 import { logger } from "./logger";
 import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 import { getStorage } from "./storage";
-import { tenantForOwner, validateTenant } from "./wiki";
 import { assertWikiLockHeld, withWikiLock, type WikiLockHeld } from "./wiki-lock";
 import { wikiProfilePath } from "./wiki-paths";
 import {
@@ -55,24 +65,6 @@ export interface WorkspaceProfile extends WorkspaceProfileInput {
 
 const MAX_PROMPT_CHARS = 20_000;
 
-function tenant(owner: string): string {
-  const value = tenantForOwner(owner);
-  validateTenant(value);
-  return value;
-}
-
-/**
- * The retired tenant-global singleton. Kept as a READ-ONLY fallback address —
- * nothing in this module ever writes or deletes it.
- *
- * The LIVE address is `wikiProfilePath(owner, wikiId)` from `wiki-paths.ts`,
- * not a literal here: `wikis.ts` snapshots and restores the same file when a
- * re-template fails, and one expression is what keeps the two in step.
- */
-function legacyProfilePath(owner: string): string {
-  return `tenants/${tenant(owner)}/workspace-profile.json`;
-}
-
 export function emptyWorkspaceProfile(): WorkspaceProfile {
   return {
     version: 1,
@@ -85,7 +77,29 @@ export function emptyWorkspaceProfile(): WorkspaceProfile {
   };
 }
 
-function toProfile(raw: string): WorkspaceProfile {
+/**
+ * Stored bytes → a profile. THREE outcomes, not two.
+ *
+ *   - A JSON OBJECT the schema accepts → that profile.
+ *   - VALID JSON THAT IS NOT AN OBJECT (`[]`, `null`, `42`, `"text"`) → an
+ *     EMPTY profile, RETURNED rather than thrown. There is no field to
+ *     recover and nothing to warn twice about; the caller wanted "what does
+ *     this Wiki have", and the answer is "nothing usable".
+ *   - ANYTHING ELSE → a throw. Two rejections reach callers this way and they
+ *     treat them alike, because they are the same fact about the file:
+ *     `JSON.parse` refusing the bytes, and {@link parseWorkspaceProfileInput}
+ *     refusing what they decode to (a retired `scenario` name, a
+ *     `keyQuestions` that is not a list). Neither is fixable by reading again.
+ *
+ * THE SECOND OUTCOME IS WHY A CALLER MAY NEED MORE THAN THIS FUNCTION. It suits
+ * {@link readOwnProfile}, whose caller is about to overwrite the file anyway.
+ * It does NOT suit a caller deciding whether a file is worth relocating —
+ * `workspace-profile-backfill.ts` reads the retired tenant-global address this
+ * module no longer knows, and an empty profile there is truthy, so it decodes
+ * the JSON itself before delegating here. Exported for that caller: one parser
+ * is what keeps the two addresses agreeing on what a valid profile looks like.
+ */
+export function parseStoredWorkspaceProfile(raw: string): WorkspaceProfile {
   const parsed = JSON.parse(raw) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return emptyWorkspaceProfile();
@@ -103,25 +117,29 @@ function toProfile(raw: string): WorkspaceProfile {
 /**
  * This Wiki's OWN file, or null when it has never been written.
  *
+ * NULL IS THE "LACKS ITS OWN PROFILE" PREDICATE, and it is the only thing that
+ * distinguishes a Wiki the backfill may write from one it must leave alone —
+ * see {@link copyWorkspaceProfileIfAbsent}.
+ *
  * READ AND PARSE ARE SPLIT, and the two failures answer differently (DW-144).
  *
- *   - ENOENT → `null`, meaning "no file of its own": the ONE state that may
- *     read through to the retired tenant-global singleton.
+ *   - ENOENT → `null`, meaning "no file of its own".
  *   - UNUSABLE bytes → a warn and an EMPTY profile. Unusable covers BOTH
- *     failures {@link toProfile} can raise, because both are the same fact
- *     about the file and neither is fixable by reading it again: `JSON.parse`
- *     rejecting the bytes, and `parseWorkspaceProfileInput` rejecting what they
- *     decode to (a retired `scenario` name, a `keyQuestions` that is not a
- *     list, a JSON array where an object belongs). This is the same span
- *     {@link readLegacyTenantProfile}'s second `try` already covers, which is
- *     what keeps the two addresses degrading alike. A corrupt file is
- *     recoverable by the very write that was about to overwrite it, and
- *     rethrowing here blocked that write — {@link putWorkspaceProfile} reads
- *     this for `createdAt`, so a bad file rejected the re-template and the
- *     Settings save that would have replaced it. Empty rather than
- *     `null` on purpose: this Wiki HAS a file, so it must NOT inherit another
- *     Wiki-era profile from the legacy address, and "unknowable `createdAt`"
- *     correctly becomes "stamp now".
+ *     failures {@link parseStoredWorkspaceProfile} can raise, because both are
+ *     the same fact about the file and neither is fixable by reading it again:
+ *     `JSON.parse` rejecting the bytes, and `parseWorkspaceProfileInput`
+ *     rejecting what they decode to (a retired `scenario` name, a
+ *     `keyQuestions` that is not a list). Bytes that parse but are not an
+ *     OBJECT at all — a JSON array where a profile belongs — arrive as an empty
+ *     profile from the parser itself rather than as a throw, so they land on
+ *     this same answer by a quieter route.
+ *     A corrupt file is recoverable by the very write that was about to
+ *     overwrite it, and rethrowing here blocked that write — {@link
+ *     putWorkspaceProfile} reads this for `createdAt`, so a bad file rejected
+ *     the re-template and the Settings save that would have replaced it. Empty
+ *     rather than `null` on purpose: this Wiki HAS a file, so "unknowable
+ *     `createdAt`" correctly becomes "stamp now" — and the backfill must not
+ *     mistake corrupt bytes for an absent file and overwrite them.
  *   - ANY OTHER read error → rethrown. A directory in the file's place or a
  *     storage outage is not fixed by writing, and reporting it as an empty
  *     Workspace Purpose would show the owner a blank purpose — and let a save
@@ -139,7 +157,7 @@ async function readOwnProfile(
     throw error;
   }
   try {
-    return toProfile(raw);
+    return parseStoredWorkspaceProfile(raw);
   } catch (error) {
     logger.warn(
       "workspace-profile",
@@ -151,73 +169,68 @@ async function readOwnProfile(
 }
 
 /**
- * The retired tenant-global profile, or null when there is nothing usable there.
- *
- * NEVER THROWS for a bad file. Absent, unreadable (a directory in its place) and
- * unparseable all answer null, because this address is a read-only migration
- * courtesy and nothing that degrades may take a caller down with it. It once
- * sat on the WRITE path too — `putWorkspaceProfile` consulted it for `createdAt`
- * until that was corrected — and a throw there rejected `createWiki` and
- * `applyScenarioTemplate` for the whole tenant. It reads for {@link
- * getWorkspaceProfile}, the Settings GET and `workspace-guidance.ts` now, where
- * a throw would 500 the page or fail an ingest turn instead. The warn is what
- * keeps "we ignored your old purpose" from being silent.
- *
- * Exported for the two surfaces that have no `wikiId` to key a read on — see
- * {@link getWorkspaceProfile} and `workspace-guidance.ts`.
- */
-export async function readLegacyTenantProfile(
-  owner: string,
-): Promise<WorkspaceProfile | null> {
-  let raw: string;
-  try {
-    raw = await getStorage().readFile(legacyProfilePath(owner));
-  } catch (error) {
-    if (isEnoent(error)) return null;
-    logger.warn(
-      "workspace-profile",
-      `the legacy tenant-global profile for "${owner}" could not be read — ignoring it`,
-      error,
-    );
-    return null;
-  }
-  try {
-    return toProfile(raw);
-  } catch (error) {
-    logger.warn(
-      "workspace-profile",
-      `the legacy tenant-global profile for "${owner}" is not usable JSON — ignoring it`,
-      error,
-    );
-    return null;
-  }
-}
-
-/**
  * This Wiki's stored profile, or an empty one when it has never been saved.
  *
- * READ PATH ONLY: a Wiki with no file of its own reads through to the retired
- * tenant-global singleton, so a purpose hand-authored before per-Wiki profiles
- * is not silently lost at deploy. The next save writes the per-Wiki file and the
- * fallback stops being reached for that Wiki. Never written, never deleted — and
- * deliberately NOT consulted by {@link putWorkspaceProfile}, which would
- * otherwise stamp a Wiki created today with the legacy `createdAt`.
+ * THIS WIKI'S FILE AND NOTHING ELSE (DW-137). There was a second link in this
+ * chain — a read-through to the retired `tenants/<t>/workspace-profile.json` —
+ * so a Wiki that had never saved a profile rendered a purpose authored for a
+ * different era of the tenant, under every such Wiki, with no end date. The
+ * relocation is a one-time backfill now (`workspace-profile-backfill.ts`), so
+ * what a Wiki reads is what a Wiki was written, and a Wiki with no file reads
+ * as empty rather than borrowing.
  *
- * ONLY "no file at all" reads through. A Wiki whose own file is UNUSABLE —
- * unparseable, or rejected by the profile schema — answers empty from
- * {@link readOwnProfile} rather than null, so it stops here instead of picking
- * up a tenant-global purpose that was never this Wiki's; see that function for
- * the rest of the degradation rule.
+ * A Wiki whose own file is UNUSABLE — unparseable, or rejected by the profile
+ * schema — answers empty from {@link readOwnProfile} too, but for its own
+ * reason; see that function for the degradation rule.
  */
 export async function getWorkspaceProfile(
   owner: string,
   wikiId: string,
 ): Promise<WorkspaceProfile> {
-  return (
-    (await readOwnProfile(owner, wikiId)) ??
-    (await readLegacyTenantProfile(owner)) ??
-    emptyWorkspaceProfile()
+  return (await readOwnProfile(owner, wikiId)) ?? emptyWorkspaceProfile();
+}
+
+/**
+ * Copy a profile onto a Wiki that has NO file of its own — the one write the
+ * DW-137 backfill makes, and nothing else.
+ *
+ * WRITES ONLY INTO A GAP. A Wiki whose own file exists is left exactly as it
+ * is, usable or not: {@link readOwnProfile} answers `null` for ENOENT alone,
+ * so corrupt bytes read as an EMPTY profile and this refuses to overwrite them.
+ * That is deliberate — corrupt bytes are the owner's, and the migration's job
+ * is to fill an absence, not to adjudicate a damaged file.
+ *
+ * THE PROFILE IS CARRIED OVER WHOLE, TIMESTAMPS INCLUDED. Unlike {@link
+ * putWorkspaceProfile} this stamps nothing: the backfill RELOCATES a profile
+ * the owner already authored, so re-dating it `createdAt: now` would erase when
+ * it was actually written and make a decade-old purpose look like today's save.
+ *
+ * What lands is the parsed profile re-serialized, not the source file's bytes:
+ * every schema field plus `createdAt`/`updatedAt` survives, while keys the
+ * schema does not know are dropped and key order is normalized — the same
+ * treatment an ordinary save gives the same file.
+ *
+ * Guarded exactly like {@link putWorkspaceProfile}: a {@link WikiLockHeld}
+ * minted for THIS owner, then the read-only refusal, both before a byte moves.
+ * The lock is taken ONCE for the whole pass and this token threaded per Wiki,
+ * because `withFileLock` is not reentrant.
+ *
+ * @returns whether it wrote — the backfill's per-Wiki count.
+ */
+export async function copyWorkspaceProfileIfAbsent(
+  held: WikiLockHeld,
+  owner: string,
+  wikiId: string,
+  profile: WorkspaceProfile,
+): Promise<boolean> {
+  assertWikiLockHeld(held, owner);
+  assertWritable(READ_ONLY_REFUSAL.wikiFileWrite);
+  if ((await readOwnProfile(owner, wikiId)) !== null) return false;
+  await getStorage().writeFile(
+    wikiProfilePath(owner, wikiId),
+    JSON.stringify(profile, null, 2),
   );
+  return true;
 }
 
 /**
@@ -242,11 +255,16 @@ export async function getWorkspaceProfile(
  * for a direct library caller — a CLI command, a future MCP tool — reaching it
  * with no route at all.
  *
- * Reads THIS Wiki's own file for `createdAt`, not {@link getWorkspaceProfile}:
- * the legacy read-through belongs to the read path alone, or a Wiki created
- * today in a tenant that still has the retired singleton would be stamped with
- * that file's creation date. An UNUSABLE own file reads as empty rather than
- * throwing, so this write is exactly what repairs it.
+ * Reads THIS Wiki's own file for `createdAt`, which since DW-137 is the same
+ * file {@link getWorkspaceProfile} reads — the distinction mattered while a
+ * read-through existed, because consulting the composed reader stamped a Wiki
+ * created today with the retired singleton's creation date. An UNUSABLE own
+ * file reads as empty rather than throwing, so this write is exactly what
+ * repairs it.
+ *
+ * STAMPS, WHERE {@link copyWorkspaceProfileIfAbsent} DOES NOT: this is an
+ * owner's save, so `updatedAt` is now; the backfill is a relocation, so it
+ * preserves what it moves.
  */
 export async function putWorkspaceProfile(
   held: WikiLockHeld,

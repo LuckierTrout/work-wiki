@@ -433,6 +433,10 @@ describe("the read-only gate precedes the wiki lock", () => {
         path.resolve(__dirname, "../workspace-profile.ts"),
         "utf8",
       ),
+      "workspace-profile-backfill": await fs.readFile(
+        path.resolve(__dirname, "../workspace-profile-backfill.ts"),
+        "utf8",
+      ),
     };
 
     for (const [module, fn] of [
@@ -440,6 +444,12 @@ describe("the read-only gate precedes the wiki lock", () => {
       ["wikis", "applyScenarioTemplate"],
       ["wikis", "renameWiki"],
       ["workspace-profile", "saveWorkspaceProfile"],
+      // The DW-137 backfill: the one gated writer whose caller is a SCAN rather
+      // than an owner, so it catches the refusal and answers 0 instead of
+      // propagating it — but the gate still has to come first, or a read-only
+      // deployment queues behind every in-flight operation for the tenant
+      // before deciding it was never going to write.
+      ["workspace-profile-backfill", "backfillLegacyWorkspaceProfiles"],
     ] as const) {
       const source = sources[module];
       const start = source.indexOf(`export async function ${fn}(`);

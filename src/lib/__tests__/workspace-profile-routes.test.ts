@@ -7,7 +7,6 @@ vi.mock("@/lib/workspace-profile", async (original) => ({
   ...(await original<typeof import("@/lib/workspace-profile")>()),
   getWorkspaceProfile: vi.fn(),
   saveWorkspaceProfile: vi.fn(),
-  readLegacyTenantProfile: vi.fn(),
 }));
 
 import { GET, PUT } from "@/app/api/workspace-profile/route";
@@ -24,7 +23,6 @@ import { getCurrentWiki } from "@/lib/wikis";
 import {
   emptyWorkspaceProfile,
   getWorkspaceProfile,
-  readLegacyTenantProfile,
   saveWorkspaceProfile,
   type WorkspaceProfile,
 } from "@/lib/workspace-profile";
@@ -55,7 +53,6 @@ const mockedReadOnly = vi.mocked(isReadOnly);
 const mockedCurrentWiki = vi.mocked(getCurrentWiki);
 const mockedGet = vi.mocked(getWorkspaceProfile);
 const mockedSave = vi.mocked(saveWorkspaceProfile);
-const mockedLegacy = vi.mocked(readLegacyTenantProfile);
 
 /** The version the route publishes for {@link PROFILE}, spelled once. */
 const VERSION = objectVersion(PROFILE);
@@ -97,7 +94,6 @@ beforeEach(() => {
   mockedCurrentWiki.mockResolvedValue(WIKI);
   mockedGet.mockResolvedValue(PROFILE);
   mockedSave.mockResolvedValue(PROFILE);
-  mockedLegacy.mockResolvedValue(null);
 });
 
 describe("Workspace Purpose API", () => {
@@ -179,6 +175,11 @@ describe("Workspace Purpose API", () => {
   });
 
   it("answers an empty profile and a null wiki when the registry is empty", async () => {
+    // AND NOTHING ELSE (DW-137). This branch used to read the retired
+    // tenant-global file first so an owner mid-migration could SEE their
+    // pre-split purpose in a form that could not save it. That address is not
+    // on any live read path now — the maintenance scan relocates it once — so
+    // "no wiki" is answered with the empty profile and nothing is read at all.
     mockedCurrentWiki.mockResolvedValue(null);
     const body = await (await GET()).json();
     expect(body).toEqual({
@@ -190,21 +191,6 @@ describe("Workspace Purpose API", () => {
       version: objectVersion(emptyWorkspaceProfile()),
     });
     expect(mockedGet).not.toHaveBeenCalled();
-  });
-
-  it("shows a legacy tenant-global purpose when there is no wiki yet", async () => {
-    // Read-only and bounded to the migration window: the owner can SEE what
-    // they wrote instead of an empty form, `wiki` stays null so the form stays
-    // disabled, and nothing writes the legacy file.
-    mockedCurrentWiki.mockResolvedValue(null);
-    mockedLegacy.mockResolvedValue(PROFILE);
-    expect(await (await GET()).json()).toEqual({
-      profile: PROFILE,
-      readOnly: false,
-      wiki: null,
-      version: VERSION,
-    });
-    expect(mockedSave).not.toHaveBeenCalled();
   });
 
   it("refuses a save when there is no wiki to own the profile, and writes nothing", async () => {
@@ -385,10 +371,10 @@ describe("the write precondition on the Workspace Purpose (DW-140, DW-145)", () 
     expect(second.status).toBe(412);
   });
 
-  it("versions the profile GET seeded the form from, legacy read-through and all", async () => {
-    // `getWorkspaceProfile`, not `readOwnProfile`: a wiki whose profile has only
-    // ever come from the retired tenant-global file would otherwise be answered
-    // 412 for the version its own form was seeded with.
+  it("versions the very profile GET seeded the form from", async () => {
+    // `getWorkspaceProfile`, not some second read: the version has to be OF the
+    // bytes the form was composed against, or the save it conditions is checked
+    // against a profile the owner never had on screen.
     expect(await (await GET()).json()).toMatchObject({ version: VERSION });
     expect(mockedGet).toHaveBeenCalledWith("alice", WIKI.id);
     const response = await PUT(

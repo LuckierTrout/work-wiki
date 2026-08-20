@@ -1112,13 +1112,48 @@ describe("the two routes", () => {
       // is on the FILENAME rather than on one spelling of the interpolation,
       // because the realistic drift is a two-step derivation or a differently
       // named local helper, neither of which a `wikiDirPath(…)}/…` pattern
-      // would catch. `wikis.ts` may not name the file at all; the ONE literal
-      // left in `workspace-profile.ts` is the retired tenant-global singleton
-      // (`tenants/${tenant(owner)}/workspace-profile.json`), a DIFFERENT file
-      // kept at its one read-only site.
+      // would catch. NEITHER module may name the file: the one literal
+      // `workspace-profile.ts` used to keep was the retired tenant-global
+      // singleton it read through to, and DW-137 moved that address into the
+      // migration module below.
       const literals = source.match(/workspace-profile\.json/g) ?? [];
-      expect(literals).toHaveLength(name === "workspace-profile.ts" ? 1 : 0);
+      expect(literals, name).toHaveLength(0);
     }
+    // TWO SPELLINGS IN ALL OF `src/`, ONE EACH, AND NOWHERE ELSE (DW-137) —
+    // scanned repo-wide rather than file by file.
+    //
+    // `wiki-paths.ts` names the LIVE per-Wiki file, the helper every reader and
+    // writer addresses through (asserted above). `workspace-profile-backfill.ts`
+    // names the RETIRED tenant-global one, inside the module whose only job is
+    // to relocate that file and delete it — which is what makes retiring the
+    // whole migration a single file delete.
+    //
+    // The scan has to be repo-wide because the two read-throughs DW-137 removed
+    // were NOT in the modules checked above: one was in `workspace-guidance.ts`
+    // and one in `GET /api/workspace-profile`, each spelling the address for a
+    // surface that had no `wikiId` to key a read on. A file-by-file assertion
+    // would let the next such surface reintroduce it untouched.
+    const root = path.resolve(__dirname, "..", "..");
+    const sources = (await fs.readdir(root, { recursive: true, encoding: "utf8" }))
+      .filter((name) => name.endsWith(".ts") || name.endsWith(".tsx"))
+      .filter((name) => !name.includes("__tests__"))
+      .map((name) => path.join(root, name));
+    expect(sources.length).toBeGreaterThan(100);
+
+    // Comments are STRIPPED first: several modules quote the retired address
+    // while explaining why they no longer read it, and the rule's own
+    // documentation must not be the thing that fails.
+    const spellings: string[] = [];
+    for (const file of sources) {
+      const source = code(await fs.readFile(file, "utf8"));
+      for (const _hit of source.match(/workspace-profile\.json/g) ?? []) {
+        spellings.push(path.relative(root, file));
+      }
+    }
+    expect(spellings.sort()).toEqual([
+      "lib/wiki-paths.ts",
+      "lib/workspace-profile-backfill.ts",
+    ]);
     for (const file of [
       "workbench/artifact/route.ts",
       "workbench/preview/route.ts",

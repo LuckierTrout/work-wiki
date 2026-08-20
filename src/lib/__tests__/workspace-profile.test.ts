@@ -23,6 +23,7 @@ import {
 import { withWikiLock } from "../wiki-lock";
 import { buildWorkspaceGuidance } from "../workspace-guidance";
 import {
+  copyWorkspaceProfileIfAbsent,
   emptyWorkspaceProfile,
   getWorkspaceProfile,
   putWorkspaceProfile,
@@ -101,102 +102,6 @@ describe("workspace purpose profile", () => {
     );
   });
 
-  it("reads through to a legacy tenant-global profile and never rewrites it", async () => {
-    const wiki = await createWiki(OWNER, { name: "Legacy", scenario: "business" });
-    // A wiki created before per-Wiki profiles: no file of its own, and the
-    // retired tenant-global singleton still holding the hand-authored purpose.
-    const perWiki = abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json");
-    await fs.rm(perWiki);
-    const legacyPath = abs("tenants", TENANT, "workspace-profile.json");
-    const legacyBytes = JSON.stringify(
-      {
-        version: 1,
-        scenario: "custom",
-        purpose: "Hand-authored before the split.",
-        keyQuestions: ["Who decided?"],
-        inScope: [],
-        outOfScope: [],
-        outputLanguage: "English",
-        pageConventions: "",
-        createdAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2026-01-02T00:00:00.000Z",
-      },
-      null,
-      2,
-    );
-    await fs.writeFile(legacyPath, legacyBytes);
-
-    const readThrough = await getWorkspaceProfile(OWNER, wiki.id);
-    expect(readThrough.purpose).toBe("Hand-authored before the split.");
-    expect(readThrough.createdAt).toBe("2026-01-01T00:00:00.000Z");
-
-    await saveWorkspaceProfile(OWNER, wiki.id, {
-      ...readThrough,
-      purpose: "Migrated onto its own wiki.",
-    });
-
-    // The next save writes the per-Wiki file; the legacy one is untouched.
-    expect((await getWorkspaceProfile(OWNER, wiki.id)).purpose).toBe(
-      "Migrated onto its own wiki.",
-    );
-    expect(await fs.readFile(legacyPath, "utf8")).toBe(legacyBytes);
-    await expect(fs.stat(perWiki)).resolves.toBeTruthy();
-  });
-
-  it("treats an unusable legacy file as absent rather than blocking every write", async () => {
-    // A `SyntaxError` from `JSON.parse` — or an `EISDIR` from a directory in
-    // its place — must not escape a read-only fallback. It degrades to "no
-    // legacy profile", it does not take the caller down: on the read path that
-    // is a 500 on Settings and a failed ingest turn, and the `createWiki`
-    // assertions below pin that the write path stays clear of this address
-    // altogether (it consulted it for `createdAt` once, and a corrupt file
-    // rejected creation for the whole tenant).
-    await fs.mkdir(abs("tenants", TENANT), { recursive: true });
-    await fs.writeFile(abs("tenants", TENANT, "workspace-profile.json"), "{ not json");
-
-    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
-    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("business");
-
-    // And with no per-Wiki file either, the unusable legacy reads as empty.
-    await fs.rm(abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json"));
-    expect(await getWorkspaceProfile(OWNER, wiki.id)).toEqual(emptyWorkspaceProfile());
-
-    // The same for a directory where the file belongs.
-    await fs.rm(abs("tenants", TENANT, "workspace-profile.json"));
-    await fs.mkdir(abs("tenants", TENANT, "workspace-profile.json"));
-    expect(await getWorkspaceProfile(OWNER, wiki.id)).toEqual(emptyWorkspaceProfile());
-    await expect(
-      createWiki(OWNER, { name: "Two", scenario: "reading" }),
-    ).resolves.toBeTruthy();
-  });
-
-  it("stamps a newly seeded wiki with its own createdAt, not the legacy file's", async () => {
-    // `putWorkspaceProfile` reads THIS wiki's own file for `createdAt`. Reading
-    // through `getWorkspaceProfile` instead would inherit the retired
-    // singleton's timestamp and date a wiki created today to 2020.
-    await fs.mkdir(abs("tenants", TENANT), { recursive: true });
-    await fs.writeFile(
-      abs("tenants", TENANT, "workspace-profile.json"),
-      JSON.stringify({
-        version: 1,
-        scenario: "custom",
-        purpose: "Older than the wiki.",
-        keyQuestions: [],
-        inScope: [],
-        outOfScope: [],
-        outputLanguage: "English",
-        pageConventions: "",
-        createdAt: "2020-01-01T00:00:00.000Z",
-        updatedAt: "2020-01-01T00:00:00.000Z",
-      }),
-    );
-
-    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
-    const seeded = await getWorkspaceProfile(OWNER, wiki.id);
-    expect(seeded.createdAt).not.toBe("2020-01-01T00:00:00.000Z");
-    expect(Date.parse(seeded.createdAt!)).toBeGreaterThan(Date.parse("2024-01-01"));
-  });
-
   it("treats this wiki's OWN unparseable profile as empty rather than throwing (DW-144)", async () => {
     // The file `putWorkspaceProfile` reads for `createdAt` is the file it is
     // about to overwrite. Rethrowing the `SyntaxError` from it meant a corrupt
@@ -207,38 +112,6 @@ describe("workspace purpose profile", () => {
     await fs.writeFile(perWiki, "{ not json");
 
     expect(await getWorkspaceProfile(OWNER, wiki.id)).toEqual(emptyWorkspaceProfile());
-  });
-
-  it("does NOT read a corrupt own profile through to the legacy singleton (DW-144)", async () => {
-    // Empty, not null. A wiki with a corrupt file HAS a file of its own; the
-    // read-through exists only for wikis that never wrote one, and letting a
-    // corrupt file fall through would show the owner a purpose authored for a
-    // different era of the tenant and — worse — hand `putWorkspaceProfile` that
-    // file's `createdAt`.
-    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
-    await fs.writeFile(
-      abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json"),
-      "{ not json",
-    );
-    await fs.writeFile(
-      abs("tenants", TENANT, "workspace-profile.json"),
-      JSON.stringify({
-        version: 1,
-        scenario: "custom",
-        purpose: "Hand-authored before the split.",
-        keyQuestions: [],
-        inScope: [],
-        outOfScope: [],
-        outputLanguage: "English",
-        pageConventions: "",
-        createdAt: "2020-01-01T00:00:00.000Z",
-        updatedAt: "2020-01-01T00:00:00.000Z",
-      }),
-    );
-
-    const read = await getWorkspaceProfile(OWNER, wiki.id);
-    expect(read.purpose).not.toContain("Hand-authored before the split.");
-    expect(read).toEqual(emptyWorkspaceProfile());
   });
 
   it("lets a re-template overwrite a corrupt own profile (DW-144)", async () => {
@@ -297,13 +170,13 @@ describe("workspace purpose profile", () => {
   });
 
   it("treats a schema-REJECTED own profile as empty too, not just unparseable JSON (DW-144)", async () => {
-    // `toProfile` raises on two different things and the degradation covers
-    // both, because both are the same fact about the file: these bytes cannot
-    // become a profile, and reading them again will not change that. Valid JSON
-    // naming a scenario the schema retired is the realistic case — a rename in
-    // `workspace-profile-schema.ts` turns every stored profile on the old name
-    // into this, and rethrowing would have blocked the very save that migrates
-    // them.
+    // `parseStoredWorkspaceProfile` raises on two different things and the
+    // degradation covers both, because both are the same fact about the file:
+    // these bytes cannot become a profile, and reading them again will not
+    // change that. Valid JSON naming a scenario the schema retired is the
+    // realistic case — a rename in `workspace-profile-schema.ts` turns every
+    // stored profile on the old name into this, and rethrowing would have
+    // blocked the very save that migrates them.
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     const perWiki = abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json");
     await fs.writeFile(
@@ -314,24 +187,6 @@ describe("workspace purpose profile", () => {
         purpose: "Recoverable text.",
       }),
     );
-    // A legacy singleton is present and must NOT be reached: the wiki has a
-    // file of its own, unusable or not.
-    await fs.writeFile(
-      abs("tenants", TENANT, "workspace-profile.json"),
-      JSON.stringify({
-        version: 1,
-        scenario: "custom",
-        purpose: "Hand-authored before the split.",
-        keyQuestions: [],
-        inScope: [],
-        outOfScope: [],
-        outputLanguage: "English",
-        pageConventions: "",
-        createdAt: "2020-01-01T00:00:00.000Z",
-        updatedAt: "2020-01-01T00:00:00.000Z",
-      }),
-    );
-
     expect(await getWorkspaceProfile(OWNER, wiki.id)).toEqual(emptyWorkspaceProfile());
 
     // And the next save replaces it, which is the whole reason the read degrades.
@@ -490,6 +345,45 @@ describe("workspace purpose profile", () => {
     expect(ok.purpose).toBe("Written under this tenant's lock.");
   });
 
+  it("rejects a lock token minted for a DIFFERENT owner in the BACKFILL putter too (DW-137)", async () => {
+    // `copyWorkspaceProfileIfAbsent` is a second exported writer under
+    // `tenants/<t>/wikis/<id>/`, added by DW-137, and it demands the same proof
+    // `putWorkspaceProfile` does. The brand alone says "some wiki lock is
+    // held"; only the KEY the token carries can say it is the one covering the
+    // bytes about to be written, and a token from another tenant would
+    // serialize this write against the wrong key — the more dangerous mistake
+    // here than at the Settings putter, because the backfill loops over a whole
+    // registry inside one critical section.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const perWiki = abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json");
+    await fs.rm(perWiki);
+    const legacy: Parameters<typeof copyWorkspaceProfileIfAbsent>[3] = {
+      ...emptyWorkspaceProfile(),
+      purpose: "Relocated under the wrong tenant's lock.",
+    };
+
+    await expect(
+      withWikiLock("bob", (held) =>
+        copyWorkspaceProfileIfAbsent(held, OWNER, wiki.id, legacy),
+      ),
+    ).rejects.toThrow(/wiki lock proof mismatch/);
+
+    // Nothing written — the check runs before a byte is read or written, so the
+    // wiki still has no file of its own.
+    await expect(fs.stat(perWiki)).rejects.toThrow();
+
+    // …and the matching token is accepted, so the assertion above is evidence
+    // of the tenant check rather than of a putter that rejects everything.
+    expect(
+      await withWikiLock(OWNER, (held) =>
+        copyWorkspaceProfileIfAbsent(held, OWNER, wiki.id, legacy),
+      ),
+    ).toBe(true);
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).purpose).toBe(
+      "Relocated under the wrong tenant's lock.",
+    );
+  });
+
   it("keeps the lock proof as putWorkspaceProfile's FIRST parameter (DW-139)", async () => {
     // A source-scan pin, because the guarantee is a COMPILE-time one and no
     // runtime assertion can observe it: an unlocked caller does not throw, it
@@ -540,12 +434,13 @@ describe("guidance follows the active wiki", () => {
     expect(await buildWorkspaceGuidance(OWNER)).toBe("");
   });
 
-  it("still renders a legacy purpose while the owner has no wiki yet", async () => {
-    // The read-through is keyed on a wikiId, so an owner who upgrades with a
-    // hand-authored tenant-global profile and has not created a wiki yet would
-    // otherwise lose it from every prompt on the very deploy the fallback
-    // exists to survive. Bounded to the migration window: the first wiki they
-    // create seeds its own profile, and this branch stops being reached.
+  it("renders NOTHING for an owner with a legacy file and no wiki (DW-137)", async () => {
+    // The second copy of the read-through this module used to carry: with no
+    // wiki there is no `wikiId` to key a read on, so it read
+    // `tenants/<t>/workspace-profile.json` directly and rendered a pre-split
+    // purpose into every prompt — indefinitely, for a file nothing would ever
+    // rewrite. `workspace-profile-backfill.ts` relocates that file once from
+    // the maintenance scan instead, and no live read path knows the address.
     await fs.mkdir(abs("tenants", TENANT), { recursive: true });
     await fs.writeFile(
       abs("tenants", TENANT, "workspace-profile.json"),
@@ -561,11 +456,10 @@ describe("guidance follows the active wiki", () => {
       }),
     );
 
-    expect(await buildWorkspaceGuidance(OWNER)).toContain(
-      "Written before there were wikis.",
-    );
+    expect(await buildWorkspaceGuidance(OWNER)).toBe("");
 
-    // Once a wiki exists, its own seeded profile takes over.
+    // And a wiki created afterwards renders its OWN seeded profile, never the
+    // legacy one — the file is still sitting there untouched until a scan runs.
     await createWiki(OWNER, { name: "Ops", scenario: "business" });
     const guidance = await buildWorkspaceGuidance(OWNER);
     expect(guidance).not.toContain("Written before there were wikis.");
@@ -619,8 +513,8 @@ describe("guidance follows the active wiki", () => {
     // RETURNED, and conditions the next save on `objectVersion` of what
     // `getWorkspaceProfile` then READS BACK. Those are two different objects
     // built by two different functions — `putWorkspaceProfile` composes one from
-    // the cleaned input, `toProfile` reconstructs the other from the serialized
-    // bytes — and nothing else forces them to agree.
+    // the cleaned input, `parseStoredWorkspaceProfile` reconstructs the other
+    // from the serialized bytes — and nothing else forces them to agree.
     //
     // Asserted HERE, against a real temp-`DATA_DIR`, because both route suites
     // mock this store: their versions agree only because the same fixture object

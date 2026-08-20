@@ -10,7 +10,12 @@ import {
   type Frontmatter,
 } from "../wiki";
 import { createThread } from "../talk";
-import { scanForMaintenance, rebuildDerivedIndexes, sweepOrphanWikiDirs } from "../maintenance";
+import {
+  scanForMaintenance,
+  rebuildDerivedIndexes,
+  sweepOrphanWikiDirs,
+  backfillWorkspaceProfiles,
+} from "../maintenance";
 import { listCommonsPages } from "../commons";
 import { _resetStorage, getStorage } from "../storage";
 import { wikisRootPath } from "../wiki-paths";
@@ -447,5 +452,107 @@ describe("sweepOrphanWikiDirs — the scheduled orphan-directory GC (DW-147)", (
     );
 
     await expect(sweepOrphanWikiDirs()).resolves.toBe(0);
+  });
+});
+
+describe("backfillWorkspaceProfiles — the scheduled Workspace Purpose migration (DW-137)", () => {
+  const OWNER = "alice";
+
+  /**
+   * The retired tenant-global profile, planted where the migration reads it.
+   *
+   * Hand-joined from `tenantForOwner` rather than imported from a helper,
+   * because there deliberately IS no exported helper for this address: DW-137
+   * left it spelled once, inside `workspace-profile-backfill.ts`, and
+   * `wiki-schema-edit.test.ts` fails the build if a second spelling appears in
+   * `src/`. A test fixture is the one place the duplicate is harmless.
+   */
+  async function plantLegacyProfile(): Promise<string> {
+    const { tenantForOwner } = await import("../wiki");
+    const file = path.join(
+      tmpDir,
+      "tenants",
+      tenantForOwner(OWNER),
+      "workspace-profile.json",
+    );
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        scenario: "custom",
+        purpose: "Hand-authored before the split.",
+        keyQuestions: [],
+        inScope: [],
+        outOfScope: [],
+        outputLanguage: "English",
+        pageConventions: "",
+        createdAt: "2020-01-01T00:00:00.000Z",
+        updatedAt: "2021-06-30T00:00:00.000Z",
+      }),
+    );
+    return file;
+  }
+
+  async function exists(target: string): Promise<boolean> {
+    try {
+      await fs.stat(target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("migrates the configured owner's tenant and returns the count", async () => {
+    // THE ONLY PRODUCTION PATH INTO THE MIGRATION. `scan-route.test.ts` mocks
+    // `@/lib/maintenance` wholesale and the backfill suite calls the library
+    // function directly, so without this case an `if (1) return 0;` at the top
+    // of the wrapper leaves every other suite in the repo green while the
+    // migration never runs anywhere.
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    const { wikiProfilePath } = await import("../wiki-paths");
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    // A wiki from before per-Wiki profiles: no file of its own.
+    const own = path.join(tmpDir, ...wikiProfilePath(OWNER, wiki.id).split("/"));
+    await fs.rm(own);
+    const legacy = await plantLegacyProfile();
+
+    expect(await backfillWorkspaceProfiles()).toBe(1);
+
+    const { getWorkspaceProfile } = await import("../workspace-profile");
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).purpose).toBe(
+      "Hand-authored before the split.",
+    );
+    expect(await exists(legacy)).toBe(false);
+  });
+
+  it("is a no-op when no owner handle is configured", async () => {
+    // Single-owner deployment: with nobody configured there is no tenant to
+    // resolve, so the scan must not guess one and start writing profiles.
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    const legacy = await plantLegacyProfile();
+
+    expect(await backfillWorkspaceProfiles()).toBe(0);
+    expect(await exists(legacy)).toBe(true);
+  });
+
+  it("returns 0 instead of throwing when the migration fails", async () => {
+    // Fail-soft like `sweepOrphanWikiDirs`: this runs inside the maintenance
+    // scan, and a storage hiccup in a one-time migration must not 500 a scan
+    // that did everything else. The registry read is what breaks here — it
+    // happens under the lock, past every guard that answers 0 on its own.
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await plantLegacyProfile();
+    const storage = getStorage();
+    const readFile = storage.readFile.bind(storage);
+    vi.spyOn(storage, "readFile").mockImplementation(async (target: string) => {
+      if (target.endsWith("wikis.json")) throw new Error("the registry is gone");
+      return readFile(target);
+    });
+
+    await expect(backfillWorkspaceProfiles()).resolves.toBe(0);
   });
 });

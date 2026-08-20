@@ -344,15 +344,18 @@ describe("with no wiki, and with a failed load", () => {
     expect(saveButton().disabled).toBe(true);
   });
 
-  it("shows a legacy tenant-wide purpose without dating it as this wiki's save", async () => {
-    // The one state an existing owner actually upgrades into: a hand-authored
-    // `tenants/<t>/workspace-profile.json` and no wiki yet. The route answers
-    // its fields read-only so they can be SEEN, but "Last saved …" would date a
-    // save that no wiki owns and this disabled form cannot repeat.
+  it("never dates a wiki-less body as this wiki's save, whatever it carries", async () => {
+    // THE CLIENT'S OWN GUARD, not a claim about what the route sends. It used
+    // to be both: with no wiki the route answered the retired tenant-global
+    // profile so the owner could SEE it, and this case pinned that body. DW-137
+    // removed that read, so no route response reaches the client this way any
+    // more — but the guard is what the component owes regardless of who
+    // composes the body, because "Last saved …" would date a save that no wiki
+    // owns and this disabled form cannot repeat.
     stubGet({
       profile: {
         ...PROFILE,
-        purpose: "Written before there were wikis.",
+        purpose: "Populated, but owned by no wiki.",
         updatedAt: "2026-01-02T00:00:00.000Z",
       },
       readOnly: false,
@@ -362,7 +365,7 @@ describe("with no wiki, and with a failed load", () => {
     render(<WorkspacePurposeSettings />);
 
     await waitFor(() => expect(badge()).toBe("no wiki"));
-    expect(purposeField().value).toBe("Written before there were wikis.");
+    expect(purposeField().value).toBe("Populated, but owned by no wiki.");
     expect(screen.queryByText(/^Last saved /)).toBeNull();
     expect(formFieldset().disabled).toBe(true);
     expect(saveButton().disabled).toBe(true);

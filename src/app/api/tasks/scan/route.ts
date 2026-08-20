@@ -5,6 +5,7 @@ import {
   rebuildDerivedIndexes,
   purgeStaleJobs,
   sweepOrphanWikiDirs,
+  backfillWorkspaceProfiles,
   DEFAULT_MAINTENANCE_CAP,
 } from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
@@ -31,10 +32,11 @@ import { isOwnerBackupDue } from "@/lib/backups";
  * other than `"on"` means **dry-run** for the `maintain` queue — the scan still
  * runs and logs/returns what it WOULD enqueue, but enqueues nothing — and that
  * is all `dry: true` in the response means. It does NOT mean the request
- * changed nothing: the index rebuild, the ingest-job GC and the orphan
- * wiki-directory sweep are self-healing upkeep rather than unattended content
- * edits, so they run regardless, as do the scheduled-agent, source-monitor,
- * digest, outbox and backup blocks.
+ * changed nothing: the index rebuild, the ingest-job GC, the orphan
+ * wiki-directory sweep and the Workspace Purpose backfill are self-healing
+ * upkeep and one-time migration rather than unattended content edits, so they
+ * run regardless, as do the scheduled-agent, source-monitor, digest, outbox and
+ * backup blocks.
  *
  * `?dry=1` IS THE ONE TRUE INSPECTION SWITCH: it suppresses every one of those
  * side-effecting blocks as well as the enqueue, which is what makes it safe to
@@ -42,9 +44,12 @@ import { isOwnerBackupDue } from "@/lib/backups";
  * per-scan task cap.
  *
  * Response fields worth naming: `jobsPurged` (terminal ingest-job status files
- * deleted) and `orphanWikiDirsRemoved` (`tenants/<t>/wikis/<uuid>/` directories
+ * deleted), `orphanWikiDirsRemoved` (`tenants/<t>/wikis/<uuid>/` directories
  * no registry entry named, reclaimed for good — this route is that sweep's only
- * scheduled trigger).
+ * scheduled trigger) and `workspaceProfilesBackfilled` (Wikis handed a copy of
+ * the retired tenant-global Workspace Purpose before it is deleted, DW-137 —
+ * this route is that migration's only trigger of any kind, and the count is 0
+ * on every scan of a tenant that has nothing left to relocate).
  */
 export async function POST(req: Request) {
   const principal = getServicePrincipal(req);
@@ -170,9 +175,20 @@ export async function POST(req: Request) {
       orphanWikiDirsRemoved = await sweepOrphanWikiDirs();
     }
 
+    // Relocate the retired tenant-global Workspace Purpose onto the Wikis that
+    // have none of their own, then delete it (DW-137). Gated exactly like the
+    // sweep above and for the same reasons: it writes bytes, so `?dry=1`
+    // suppresses it, while `AUTONOMOUS_MAINTENANCE` — which gates unattended
+    // EDITS of page content — does not. This scan is the migration's only
+    // trigger, so a deployment that never scans never finishes migrating.
+    let workspaceProfilesBackfilled = 0;
+    if (!forceDry) {
+      workspaceProfilesBackfilled = await backfillWorkspaceProfiles();
+    }
+
     logger.info(
       "maintenance",
-      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued} jobsPurged=${jobsPurged} orphanWikiDirsRemoved=${orphanWikiDirsRemoved}`,
+      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued} jobsPurged=${jobsPurged} orphanWikiDirsRemoved=${orphanWikiDirsRemoved} workspaceProfilesBackfilled=${workspaceProfilesBackfilled}`,
     );
 
     return NextResponse.json({
@@ -196,6 +212,7 @@ export async function POST(req: Request) {
       backupDue,
       backupEnqueued,
       orphanWikiDirsRemoved,
+      workspaceProfilesBackfilled,
       // The candidate list — for dry-run inspection of what it would do.
       tasks: tasks.map((t) =>
         t.kind === "maintain"

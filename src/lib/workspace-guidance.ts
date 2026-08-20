@@ -18,23 +18,22 @@ import { logger } from "./logger";
 import { getCurrentWiki } from "./wikis";
 import {
   getWorkspaceProfile,
-  readLegacyTenantProfile,
   renderWorkspaceGuidance,
 } from "./workspace-profile";
 
 export async function buildWorkspaceGuidance(owner: string): Promise<string> {
   try {
     const wiki = await getCurrentWiki(owner);
-    if (!wiki) {
-      // No Wiki, so no per-Wiki profile to key a read on — but an owner who
-      // upgrades with a hand-authored `tenants/<t>/workspace-profile.json` and
-      // has not created a Wiki yet would otherwise have their purpose vanish
-      // from every prompt on the very deploy the fallback exists to survive.
-      // Read-only, and bounded to the migration window: the first Wiki they
-      // create seeds its own profile and this branch stops being reached.
-      const legacy = await readLegacyTenantProfile(owner);
-      return legacy ? renderWorkspaceGuidance(legacy) : "";
-    }
+    // No Wiki, no profile to key a read on, no guidance (DW-137). This branch
+    // used to read the retired `tenants/<t>` singleton so an owner who had not
+    // created a Wiki yet still saw their pre-split purpose in every prompt —
+    // the same read-through `getWorkspaceProfile` carried, kept a second time
+    // because this path has no `wikiId`. Both are gone: the legacy address is
+    // now relocated once by `workspace-profile-backfill.ts` and lives nowhere
+    // on a live read path. An owner with no Wiki has nothing the prompt can
+    // name, and inventing one from a retired file is exactly the behaviour that
+    // had no end date.
+    if (!wiki) return "";
     return renderWorkspaceGuidance(await getWorkspaceProfile(owner, wiki.id));
   } catch (error) {
     // Fail soft. Guidance is an ADDITION to a prompt — losing it degrades the

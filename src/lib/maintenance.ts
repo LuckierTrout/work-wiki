@@ -324,3 +324,41 @@ export async function sweepOrphanWikiDirs(): Promise<number> {
     return 0;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Workspace Purpose backfill — relocate the retired tenant-global profile
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail-soft wrapper around `backfillLegacyWorkspaceProfiles` (DW-137). Returns
+ * how many Wikis were given a copy of the retired tenant-global profile — 0 on
+ * error, and 0 when no owner handle is configured, since a deployment with no
+ * owner has no tenant to migrate.
+ *
+ * ONE-TIME AND SELF-TERMINATING, which is the whole point: the read-through it
+ * replaces had no end date, while this copies the bytes onto the Wikis that
+ * lack one, deletes the original, and thereafter costs a single missing-file
+ * read per scan. The scan is its only scheduled trigger.
+ *
+ * DELIBERATELY NOT INSIDE {@link scanForMaintenance}, for the same reason as
+ * {@link sweepOrphanWikiDirs}: that function's contract is READ-ONLY — it
+ * returns candidate tasks for the route to enqueue — and this writes bytes. It
+ * sits beside the other byte-touching steps as its own export the route calls.
+ *
+ * `await import(...)` keeps the module graph loose, matching the sweep above:
+ * the backfill pulls in `wikis.ts` and the whole scenario-template and
+ * workspace-profile subtree, and nothing else in this module needs it.
+ */
+export async function backfillWorkspaceProfiles(): Promise<number> {
+  try {
+    const owner = getOwnerHandle();
+    if (!owner) return 0;
+    const { backfillLegacyWorkspaceProfiles } = await import(
+      "./workspace-profile-backfill"
+    );
+    return await backfillLegacyWorkspaceProfiles(owner);
+  } catch (err) {
+    logger.error("maintenance", "workspace-profile backfill failed:", err);
+    return 0;
+  }
+}
