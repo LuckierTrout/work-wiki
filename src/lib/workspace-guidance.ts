@@ -12,6 +12,11 @@
  * `workspace-profile` imports it from here instead; the call signature is
  * unchanged, so switching the active Wiki now swaps which profile reaches
  * ingest, chat, query, monitoring, extraction and the agent runtime.
+ *
+ * Both reads happen on EVERY call unless the caller opts into a
+ * {@link WorkspaceGuidanceCache} — an optional, caller-owned, per-operation memo
+ * (DW-141). Only `ingest.ts` needs it today; every other prompt site asks once
+ * per operation and passes nothing.
  */
 
 import { logger } from "./logger";
@@ -21,7 +26,33 @@ import {
   renderWorkspaceGuidance,
 } from "./workspace-profile";
 
-export async function buildWorkspaceGuidance(owner: string): Promise<string> {
+/**
+ * A caller-owned memo of resolved guidance, keyed by `owner`.
+ *
+ * Deliberately a plain `Map` the CALLER creates: the handle's lifetime is
+ * exactly the lifetime of the variable holding it, so a request that makes one
+ * resolves once and a request that makes none behaves exactly as before. There
+ * is no module-level cache, no process-global, and no TTL — an ambient scope
+ * (`AsyncLocalStorage`, or a singleton keyed by owner) would memoize everywhere
+ * for free but hide the lifetime from the call site, and would silently span a
+ * long bulk run where a Purpose saved mid-run should still be picked up.
+ *
+ * Keyed by `owner` so one handle shared by two owners never crosses their
+ * guidance. Holds the PROMISE rather than the string so the `Promise.all` pairs
+ * in `ingest.ts` share one in-flight resolution instead of racing two.
+ */
+export type WorkspaceGuidanceCache = Map<string, Promise<string>>;
+
+/** A fresh, empty handle. One per request/operation — never reused across them. */
+export function createWorkspaceGuidanceCache(): WorkspaceGuidanceCache {
+  return new Map();
+}
+
+/**
+ * The uncached resolution — today's body verbatim, moved here so the cached and
+ * uncached paths cannot drift.
+ */
+async function resolveWorkspaceGuidance(owner: string): Promise<string> {
   try {
     const wiki = await getCurrentWiki(owner);
     // No Wiki, no profile to key a read on, no guidance (DW-137). This branch
@@ -46,4 +77,34 @@ export async function buildWorkspaceGuidance(owner: string): Promise<string> {
     );
     return "";
   }
+}
+
+/**
+ * The ACTIVE Wiki's Workspace Purpose, rendered for a prompt.
+ *
+ * With no `cache`, this is exactly the call it has always been: a registry read
+ * plus a profile read, every time. Pass a handle from
+ * {@link createWorkspaceGuidanceCache} to resolve at most once per owner for the
+ * life of that handle — an `ingest()` of one document calls this up to three
+ * times (system prompt, map/reduce REDUCE, reconcile) for a value that cannot
+ * change mid-document.
+ *
+ * The memo is stored BEFORE the resolution settles, so concurrent callers join
+ * the same in-flight promise rather than starting a second read.
+ *
+ * A fail-soft `""` is memoized too, and on purpose: the `catch` below means this
+ * never rejects, so a memoized promise can never poison the request, and a
+ * damaged registry that already warned once should not be re-read (and
+ * re-warned) two more times inside the same document.
+ */
+export async function buildWorkspaceGuidance(
+  owner: string,
+  cache?: WorkspaceGuidanceCache,
+): Promise<string> {
+  if (!cache) return resolveWorkspaceGuidance(owner);
+  const memo = cache.get(owner);
+  if (memo) return memo;
+  const pending = resolveWorkspaceGuidance(owner);
+  cache.set(owner, pending);
+  return pending;
 }

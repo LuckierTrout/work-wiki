@@ -3721,3 +3721,178 @@ describe("mergeSourceEntry URL normalization", () => {
     expect(result).toHaveLength(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Workspace guidance is resolved ONCE per ingest (DW-141)
+// ---------------------------------------------------------------------------
+
+import { _resetLocks } from "../lock";
+import { wikiProfilePath } from "../wiki-paths";
+import { createWiki } from "../wikis";
+import { saveWorkspaceProfile } from "../workspace-profile";
+
+describe("ingest resolves workspace guidance once per document", () => {
+  const OWNER = "alice";
+  const PURPOSE = "Track Project Lighthouse decisions.";
+  /**
+   * Half again over `MAX_LLM_INPUT_CHARS`, so `chunkText` always yields more
+   * than one chunk and synthesis takes the map/reduce branch. The repeat count
+   * is derived from the sentence's OWN length, so editing the sentence cannot
+   * silently shrink the content back under the threshold and quietly stop
+   * exercising REDUCE.
+   */
+  const FILLER_SENTENCE = "Detail line about the rollout. ";
+  const LONG_CONTENT = `Project Lighthouse status. ${FILLER_SENTENCE.repeat(
+    Math.ceil((MAX_LLM_INPUT_CHARS * 1.5) / FILLER_SENTENCE.length),
+  )}`;
+
+  let originalDataDir: string | undefined;
+  let wikiId: string;
+  /** Structurally typed: all this block needs from the spy is tearing it down. */
+  let readSpy: { mockRestore: () => void } | null = null;
+
+  beforeEach(async () => {
+    // The outer `beforeEach` already made `tmpDir` and pointed WIKI_DIR/RAW_DIR
+    // at it; add DATA_DIR so the wiki registry and profile are real bytes too.
+    originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tmpDir;
+    _resetLocks();
+    _resetStorage();
+    resetSourceIndex();
+    resetAliasIndex();
+
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    wikiId = wiki.id;
+    await saveWorkspaceProfile(OWNER, wiki.id, {
+      scenario: "custom",
+      purpose: PURPOSE,
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    });
+
+    mockedHasLLMKey.mockReturnValue(true);
+    mockedCallLLM.mockResolvedValue(
+      "CONCEPT: Project Lighthouse\n\n# Project Lighthouse\n\n## Summary\n\nMocked synthesis.",
+    );
+  });
+
+  afterEach(async () => {
+    // Restore ONLY the storage spy this block installed. `vi.restoreAllMocks()`
+    // would reach the file-wide `../llm` and `../embeddings` mocks declared at
+    // the top of this file, which every other describe here depends on.
+    readSpy?.mockRestore();
+    readSpy = null;
+    // And put the file's defaults back the way the rest of this file leaves
+    // them: `hasLLMKey` is `false` in the module mock, and `callLLM` carries no
+    // implementation.
+    mockedHasLLMKey.mockReturnValue(false);
+    mockedCallLLM.mockReset();
+    if (originalDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = originalDataDir;
+    _resetLocks();
+    _resetStorage();
+  });
+
+  /** Count `readFile` calls per path from here on (fixture reads excluded). */
+  function countReads(): (relativePath: string) => number {
+    const storage = getStorage();
+    const readFile = storage.readFile.bind(storage);
+    const seen: string[] = [];
+    readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (target: string) => {
+        seen.push(target);
+        return readFile(target);
+      });
+    return (relativePath) => seen.filter((p) => p === relativePath).length;
+  }
+
+  function systemPrompts(): string[] {
+    return mockedCallLLM.mock.calls.map((call) => String(call[0]));
+  }
+
+  it("reads the active wiki's profile once across synthesis and map/reduce", async () => {
+    // Two guidance calls today: `buildIngestSystemPrompt` and the REDUCE step.
+    // One cache handle per `ingest()` collapses them to a single profile read,
+    // and the Purpose must still reach the prompt that goes to the model.
+    const reads = countReads();
+
+    await ingest("Lighthouse Long", LONG_CONTENT, {
+      author: OWNER,
+      owner: OWNER,
+    });
+
+    // More than one LLM call ⇒ the map/reduce branch really ran.
+    expect(mockedCallLLM.mock.calls.length).toBeGreaterThan(1);
+    expect(reads(wikiProfilePath(OWNER, wikiId))).toBe(1);
+    expect(systemPrompts().some((prompt) => prompt.includes(PURPOSE))).toBe(true);
+  });
+
+  it("shares the same handle with reconcile-on-merge", async () => {
+    // Three guidance calls in one document: system prompt, REDUCE, reconcile.
+    await ingest("Lighthouse Long", LONG_CONTENT, {
+      author: OWNER,
+      owner: OWNER,
+    });
+    const pages = await listWikiPages();
+    // Assert before indexing: a first ingest that wrote nothing would otherwise
+    // surface as a TypeError here and hide the real failure.
+    expect(pages).toHaveLength(1);
+    const slug = pages[0].slug;
+
+    mockedCallLLM.mockClear();
+    const reads = countReads();
+
+    await ingest("Lighthouse Long", `${LONG_CONTENT} A second pass.`, {
+      author: OWNER,
+      owner: OWNER,
+      pinSlug: slug,
+    });
+
+    const prompts = systemPrompts();
+    expect(
+      prompts.some((prompt) =>
+        prompt.includes("You are a wiki editor maintaining a single canonical page"),
+      ),
+    ).toBe(true);
+    expect(reads(wikiProfilePath(OWNER, wikiId))).toBe(1);
+    expect(prompts.some((prompt) => prompt.includes(PURPOSE))).toBe(true);
+  });
+
+  it("still picks up a Purpose saved BETWEEN two ingests", async () => {
+    // The handle is per-document on purpose — it must never span ingests.
+    await ingest("Lighthouse One", LONG_CONTENT, {
+      author: OWNER,
+      owner: OWNER,
+    });
+
+    await saveWorkspaceProfile(OWNER, wikiId, {
+      scenario: "custom",
+      purpose: "Track the Phoenix reading shelf.",
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    });
+    mockedCallLLM.mockClear();
+
+    await ingest("Lighthouse Two", `${LONG_CONTENT} Different tail.`, {
+      author: OWNER,
+      owner: OWNER,
+    });
+
+    const prompts = systemPrompts();
+    expect(
+      prompts.some((prompt) =>
+        prompt.includes("Track the Phoenix reading shelf."),
+      ),
+    ).toBe(true);
+    // REPLACED, not appended, and no stale memo leaking in beside the fresh
+    // read: the superseded purpose must appear in NO prompt of the second run.
+    expect(prompts.some((prompt) => prompt.includes(PURPOSE))).toBe(false);
+  });
+});

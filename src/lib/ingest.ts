@@ -29,7 +29,11 @@ import {
   canonicalizeNamesTerm,
   listNamesTerms,
 } from "./names-terms";
-import { buildWorkspaceGuidance } from "./workspace-guidance";
+import {
+  buildWorkspaceGuidance,
+  createWorkspaceGuidanceCache,
+  type WorkspaceGuidanceCache,
+} from "./workspace-guidance";
 
 /**
  * Merge a provenance entry into a sources list. A real source URL supersedes a
@@ -1158,11 +1162,12 @@ export async function reconcilePage(
   existingBody: string,
   newBody: string,
   owner?: string,
+  cache?: WorkspaceGuidanceCache,
 ): Promise<{ body: string; disputed: boolean }> {
   const user = `# Current page\n\n${existingBody}\n\n# Newly ingested article (same concept)\n\n${newBody}`;
   const [workspaceGuidance, dictionaryGuidance] = owner
     ? await Promise.all([
-        buildWorkspaceGuidance(owner),
+        buildWorkspaceGuidance(owner, cache),
         buildNamesTermsGuidance(owner),
       ])
     : ["", ""];
@@ -1214,7 +1219,10 @@ export async function collectTagVocabulary(
   }
 }
 
-export async function buildIngestSystemPrompt(owner?: string): Promise<string> {
+export async function buildIngestSystemPrompt(
+  owner?: string,
+  cache?: WorkspaceGuidanceCache,
+): Promise<string> {
   // DW-19 — deliberately NO argument: the conventions are deployment-global.
   // They come from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
   // resolved inside `readActiveWikiSchema`), NOT from the `owner` parameter
@@ -1245,7 +1253,7 @@ ${vocab.join(", ")}`;
   }
   if (owner) {
     const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
-      buildWorkspaceGuidance(owner),
+      buildWorkspaceGuidance(owner, cache),
       buildNamesTermsGuidance(owner),
     ]);
     if (workspaceGuidance) prompt += `\n\n${workspaceGuidance}`;
@@ -1460,12 +1468,13 @@ async function synthesizeBody(
   title: string,
   content: string,
   owner?: string,
+  cache?: WorkspaceGuidanceCache,
 ): Promise<string> {
   if (!hasLLMKey()) {
     // Derived title so a title-less paste doesn't emit an empty `# ` H1.
     return generateFallbackPage(title, content);
   }
-  const systemPrompt = await buildIngestSystemPrompt(owner);
+  const systemPrompt = await buildIngestSystemPrompt(owner, cache);
   const chunks = chunkText(content, MAX_LLM_INPUT_CHARS);
   // Larger output budget so the ## Details section can preserve substantive
   // source content instead of being truncated.
@@ -1517,7 +1526,7 @@ async function synthesizeBody(
   }
   const [workspaceGuidance, dictionaryGuidance] = owner
     ? await Promise.all([
-        buildWorkspaceGuidance(owner),
+        buildWorkspaceGuidance(owner, cache),
         buildNamesTermsGuidance(owner),
       ])
     : ["", ""];
@@ -1580,6 +1589,12 @@ export async function ingest(
   // can scope a semantic merge to the same owner's silo.
   const actor = options?.author?.trim() || "system";
   const owner = options?.owner?.trim() || actor;
+  // ONE guidance resolution for this document (DW-141). Synthesis, the
+  // map/reduce REDUCE step and reconcile-on-merge all ask for the same active
+  // Wiki's Workspace Purpose, which cannot change mid-document. The handle is
+  // local to this call, so a Purpose saved between two ingests is still picked
+  // up by the next one.
+  const guidanceCache = createWorkspaceGuidanceCache();
 
   // Dedup by content: if identical content was already ingested (any slug),
   // attach the triggerer and skip the LLM + embedding.
@@ -1609,7 +1624,12 @@ export async function ingest(
     // text and the body is clean prose (no inline images, no `## Figures`
     // gallery, no re-hosting).
     const cleanContent = stripImageMarkdown(content);
-    wikiContent = await synthesizeBody(effectiveTitle, cleanContent, owner);
+    wikiContent = await synthesizeBody(
+      effectiveTitle,
+      cleanContent,
+      owner,
+      guidanceCache,
+    );
   }
 
   // Pull the leading `CONCEPT:` / `ALIASES:` header lines the synthesis prompt
@@ -1898,7 +1918,12 @@ export async function ingest(
       // Reconcile against the frontmatter-STRIPPED body (existing.content still
       // carries the YAML block; existing.body is the markdown) so page metadata
       // never bleeds into the merged prose.
-      const reconciled = await reconcilePage(existing.body, wikiContent, owner);
+      const reconciled = await reconcilePage(
+        existing.body,
+        wikiContent,
+        owner,
+        guidanceCache,
+      );
       wikiContent = reconciled.body;
       // Only escalate — never clear a disputed flag preserved from the existing
       // page above.

@@ -1258,7 +1258,8 @@ source_spec: `spec-per-wiki-workspace-profiles.md`
 location: src/lib/workspace-guidance.ts
 severity: low
 reason: It resolves `wikis.json` through `getCurrentWiki` and then reads the profile. Resolving the active Wiki once per request and passing it down would halve the I/O.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-workspace-guidance-request-caching
 
 ### DW-142: The Settings no-Wiki and load-failed states offer no CTA, no retry, and no aria-live announcement, and `loadFailed` is never reset.
 origin: spec-deferred f1b70803bbe7
@@ -2770,4 +2771,36 @@ source_spec: `spec-dw-136-142-301-workspace-purpose-settings-freshness.md`
 location: src/components/WorkspacePurposeSettings.tsx (save catch / feedback banner)
 severity: low
 reason: `WRITE_CONFLICT_COPY` tells the owner to copy their text and reload. `load("retry")` would now re-seed `version` from a fresh read, but the Try again control renders only under `loadFailed`, so the conflict banner has no affordance of its own. Out of scope for this bundle — the intent names the no-Wiki and load-failed states, not the conflict one.
+status: open
+
+### DW-322: `buildNamesTermsGuidance` is still uncached in the exact same `Promise.all` pairs the DW-141 handle now covers, so one document still pays up to four dictionary reads while paying one profile read.
+origin: spec-deferred 8fd5a084ba2f
+source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
+location: src/lib/names-terms.ts:327
+severity: low
+reason: All three sites threaded in this change pair `buildWorkspaceGuidance(owner, cache)` with a bare `buildNamesTermsGuidance(owner)`, and `ingest()` calls `listNamesTerms` a fourth time. `buildNamesTermsGuidance` (names-terms.ts:327) has the same read-per-call shape `buildWorkspaceGuidance` had. This spec's "Never" clause deferred it to "a different ledger entry", but no open ledger entry covers dictionary guidance caching, so the deferral has nowhere to land.
+status: open
+
+### DW-323: A manual page merge gets neither Workspace Purpose nor Names & Terms guidance, while an ingest-time reconcile of the same two bodies gets both.
+origin: spec-deferred 0fb017929a75
+source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
+location: src/lib/merge.ts:204
+severity: medium
+reason: `src/lib/merge.ts:204` calls `reconcilePage(into.body, from.body)` with no `owner`, so the guidance branch at ingest.ts:1168 is skipped entirely. The reconcile prompt is the same prompt in both cases, so the merged prose is held to a different standard depending on which door it came through. This change touched that signature (adding the cache parameter) without closing the asymmetry, which is out of DW-141's scope but worth a decision.
+status: open
+
+### DW-324: One HTTP request can still resolve guidance N times when it ingests N documents in a loop; the handle is per-`ingest()`, not per-request.
+origin: spec-deferred 3caced74045d
+source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
+location: src/app/api/ingest/batch/route.ts:152
+severity: low
+reason: `POST /api/ingest/batch`'s off-Workers fallback (src/app/api/ingest/batch/route.ts:152) loops `ingestUrl` per URL inline when the queue is unavailable, and `POST /api/tasks/run` drains tasks one per request. On Workers each URL is a separate queued request, so per-document and per-request coincide in production and the DW-141 remedy is met there. The inline fallback is the residual case: closing it needs a handle threaded through `IngestOptions` and the `ingestUrl`/`ingestPdf`/`ingestImage` wrappers, which is a design extension beyond this spec.
+status: open
+
+### DW-325: `workspace-purpose-settings.test.tsx` "adopts a recheck that answers no wiki at all" is flaky under full-suite load and can red an unrelated CI run.
+origin: spec-deferred 09cd0fe96308
+source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
+location: src/components/__tests__/workspace-purpose-settings.test.tsx:837
+severity: medium
+reason: Observed failing once during full-suite verification for this story (the badge still read "not configured" when the 1s `waitFor` expired), then passing on re-run and passing 42/42 in isolation. It is entirely fetchMock-driven, touches nothing in this change, and predates it (introduced with DW-136/142/301). It races the mount fetch against the `returnToTab()` recheck.
 status: open
