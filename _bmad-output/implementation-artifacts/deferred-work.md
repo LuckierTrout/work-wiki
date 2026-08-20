@@ -2438,7 +2438,8 @@ source_spec: `spec-dw-148-174-175-177-255-256-workbench-client-hardening.md`
 location: src/components/WikiWorkbench.tsx:152-194
 severity: medium
 reason: `page.tsx` feeds `readOnly: isReadOnly()` into the provider the card now destructures, and `WikiSwitcher` adopts the same flag with `if (readOnly) return`, `aria-disabled` and `WIKI_READ_ONLY_COPY`. The card does neither, so the header refuses up front while the canvas walks the owner into "This overwrites purpose.md, Schema, and the Workspace Purpose" before the route answers 403. Pre-existing (the card never had the flag as a prop either); this change made it available one line away without wiring it. Every fixture that mounts the card hard-codes `readOnly: false`, so no suite can express the case.
-status: open
+status: done 2026-08-20
+resolution: already resolved: Closed by commit b4df800 (sweep dw3-read-only-surface-affordances). src/components/WikiWorkbench.tsx:63 now destructures `readOnly` from useWorkbenchData(); the Create opener guards at :283 with aria-disabled :277 and WIKI_CREATE_READ_ONLY_COPY :291-296, Change template guards at :336 with aria-disabled :333 and WIKI_TEMPLATE_READ_ONLY_COPY :347-352, and both writers carry backstops at :168 and :209. Pinned by src/components/workbench/__tests__/wiki-canvas-read-only.test.tsx.
 
 ### DW-283: A write that aborts on the 15s deadline is reported as a flat failure even though the server may have applied it, and no refresh reconciles the screen.
 origin: spec-deferred 589216deb264
