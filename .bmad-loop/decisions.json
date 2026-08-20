@@ -62,15 +62,6 @@
     "label": "Make dry actually dry",
     "resolution": ""
   },
-  "DW-137": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Write a one-time backfill that copies the legacy tenant profile onto every Wiki that lacks its own, run it on read or via a maintenance op, then delete the read-through and `legacyProfilePath` along with their tests.",
-    "key": "1",
-    "label": "Backfill then remove",
-    "resolution": ""
-  },
   "DW-152": {
     "answered_at": "2026-08-19",
     "bundle_name": "",
@@ -159,24 +150,6 @@
     "intent": "Raise .wb-canvas-pad and .wb-preview-body left padding to at least the hit-strip width so the strip covers only gutter, never text, keeping the 24px target that satisfies SC 2.5.8; pin the relationship between the padding and --wb-split-hit so they cannot drift.",
     "key": "1",
     "label": "Widen the content padding to match",
-    "resolution": ""
-  },
-  "DW-217": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Run the vector gate on the resulting config in the flat branch as well, so a flat PUT that would turn effective vector search off is refused 400 with the same sentence the Workbench surface shows; pin the reproduction above as a route test.",
-    "key": "1",
-    "label": "Validate the flat branch too",
-    "resolution": ""
-  },
-  "DW-222": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Derive the provider name in vectorSearchMissingLegs from embeddingProviderLabel so the refusal and the picker always agree, and update spec-dw-73's frozen I/O matrix text in the same change, recording that the frozen expectation was renegotiated deliberately for copy consistency.",
-    "key": "1",
-    "label": "Derive the label, update the matrix",
     "resolution": ""
   },
   "DW-230": {
