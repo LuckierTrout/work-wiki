@@ -10,6 +10,7 @@ import {
 import { Alert } from "@/components/Alert";
 import { Icon } from "@/components/folio/icons";
 import {
+  ACCEPTED_DOCUMENT_ATTRIBUTE,
   BULK_DOCUMENT_UPLOAD_CONCURRENCY,
   MAX_BULK_DOCUMENTS,
   documentExtension,
@@ -22,8 +23,6 @@ import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
 import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { rememberRecentJob } from "@/lib/recent-ingests";
 
-const ACCEPTED_DOCUMENTS =
-  ".md,.markdown,.org,.txt,.rtf,.html,.htm,.pdf,.docx,.pptx,.xlsx,.odt,.ods,.odp,.epub,.mobi,.csv,.zip,text/markdown,text/plain,text/org,text/rtf,text/html,application/rtf,application/pdf,application/epub+zip,application/x-mobipocket-ebook,application/zip,application/vnd.oasis.opendocument.text,application/vnd.oasis.opendocument.spreadsheet,application/vnd.oasis.opendocument.presentation,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv";
 const MAX_POLL_ATTEMPTS = 100;
 
 type ImportStatus =
@@ -328,7 +327,7 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
         ref={inputRef}
         type="file"
         multiple
-        accept={ACCEPTED_DOCUMENTS}
+        accept={ACCEPTED_DOCUMENT_ATTRIBUTE}
         onChange={(event) => {
           addFiles(Array.from(event.target.files ?? []));
           event.target.value = "";
@@ -339,7 +338,7 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
         ref={folderInputRef}
         type="file"
         multiple
-        accept={ACCEPTED_DOCUMENTS}
+        accept={ACCEPTED_DOCUMENT_ATTRIBUTE}
         onChange={(event) => {
           addFiles(Array.from(event.target.files ?? []));
           event.target.value = "";

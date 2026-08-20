@@ -1,21 +1,58 @@
 import { MAX_DOCUMENT_SIZE } from "./constants";
+import {
+  DOCUMENT_FORMAT_LABELS,
+  SUPPORTED_DOCUMENT_EXTENSIONS,
+  SUPPORTED_DOCUMENT_MIME_TYPES,
+  extension,
+} from "./document-formats";
 
 export const MAX_BULK_DOCUMENTS = 200;
 export const BULK_DOCUMENT_UPLOAD_CONCURRENCY = 2;
 
-const SUPPORTED_EXTENSIONS = new Set([
-  "md",
-  "markdown",
-  "txt",
-  "html",
-  "htm",
-  "pdf",
-  "docx",
-  "pptx",
-  "xlsx",
-  "csv",
-  "zip",
-]);
+/**
+ * The client-side allowlist, derived from the one the server actually enforces.
+ *
+ * This used to be an eleven-entry literal, and `/api/ingest/document` grew seven
+ * formats past it (`odt`, `ods`, `odp`, `epub`, `org`, `rtf`, `mobi`) without it
+ * noticing — so dropping `plan.odt` into bulk import was refused here even
+ * though POSTing the same file to the endpoint succeeds (DW-246). The tables now
+ * live in `./document-formats`, a leaf module with no imports, precisely so this
+ * client-bundled file can read them instead of copying them.
+ */
+const SUPPORTED_EXTENSIONS: ReadonlySet<string> = new Set(
+  SUPPORTED_DOCUMENT_EXTENSIONS,
+);
+
+/**
+ * The `accept` attribute for the file input and the drop zone, as
+ * dot-extensions followed by content types.
+ *
+ * Lives here rather than in `@/components/BulkDocumentImport` because that
+ * component's hand-written copy was the FOURTH restatement of this list, and a
+ * too-narrow `accept` hides supported formats behind the browser's file picker
+ * filter — a rejection the user never even sees a reason for.
+ */
+export const ACCEPTED_DOCUMENT_ATTRIBUTE: string = [
+  ...SUPPORTED_DOCUMENT_EXTENSIONS.map((ext) => `.${ext}`),
+  ...SUPPORTED_DOCUMENT_MIME_TYPES,
+].join(",");
+
+/**
+ * The rejection sentence, built from `DOCUMENT_FORMAT_LABELS` so it names every
+ * supported format and nothing else.
+ *
+ * Labels, not `SUPPORTED_DOCUMENT_EXTENSIONS`: the extension list also carries
+ * the `EXTENSION_ALIASES` keys `markdown` and `htm`, which fold into "Markdown"
+ * and "HTML" in prose — the same distinction `prose-inventory-parity.test.ts`
+ * draws for the repo's other format sentences.
+ */
+const SUPPORTED_FORMATS_SENTENCE: string = (() => {
+  const labels = Object.values(DOCUMENT_FORMAT_LABELS);
+  const last = labels[labels.length - 1];
+  return labels.length === 1
+    ? `Use ${last}.`
+    : `Use ${labels.slice(0, -1).join(", ")}, or ${last}.`;
+})();
 
 export interface RejectedBulkDocument {
   file: File;
@@ -31,9 +68,24 @@ export function documentFileKey(file: File): string {
   return `${file.name.toLowerCase()}::${file.size}::${file.lastModified}`;
 }
 
+/**
+ * The extension this file will be badged by in the manifest, or `"file"` when
+ * the server would not accept it.
+ *
+ * Reads the extension with the extractor's own `extension()` rather than a local
+ * `split(".").pop()`. Sharing the format TABLE but not the DETECTION left two
+ * live disagreements of exactly the class DW-246 is about: `split(".").pop()`
+ * returns the WHOLE NAME when there is no dot, so a file literally named `org`
+ * (or `md`, or `csv`) passed here and then 400d at `/api/ingest/document`; and
+ * it does not trim, so `"notes.md "` was refused here though the endpoint trims
+ * and accepts it.
+ *
+ * Still the RAW extension, not the resolved format — `notes.markdown` badges
+ * "markdown", not "md".
+ */
 export function documentExtension(filename: string): string {
-  const extension = filename.split(".").pop()?.toLowerCase() ?? "";
-  return SUPPORTED_EXTENSIONS.has(extension) ? extension : "file";
+  const ext = extension(filename);
+  return SUPPORTED_EXTENSIONS.has(ext) ? ext : "file";
 }
 
 export function formatDocumentBytes(bytes: number): string {
@@ -45,7 +97,7 @@ export function formatDocumentBytes(bytes: number): string {
 function validationError(file: File): string | null {
   if (file.size === 0) return "The file is empty.";
   if (documentExtension(file.name) === "file") {
-    return "Use Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP.";
+    return SUPPORTED_FORMATS_SENTENCE;
   }
   if (file.size > MAX_DOCUMENT_SIZE) {
     return `The file is larger than ${MAX_DOCUMENT_SIZE / 1024 / 1024} MB.`;

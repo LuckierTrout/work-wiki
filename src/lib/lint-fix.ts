@@ -3,6 +3,8 @@ import { writeWikiPageWithSideEffects, deleteWikiPage } from "./lifecycle";
 import { callLLM, hasLLMKey } from "./llm";
 import { slugify } from "./slugify";
 import { serializeFrontmatter } from "./frontmatter";
+import type { AutoFixableCheckType } from "./lint-types";
+import type { LintIssue } from "./types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -661,6 +663,100 @@ export async function fixSupersededDangling(slug: string, author = "lint-fix"): 
 // Dispatcher
 // ---------------------------------------------------------------------------
 
+/** Everything a handler may need; each one takes only the parts it uses. */
+interface FixRequest {
+  slug: string;
+  targetSlug?: string;
+  message?: string;
+  author: string;
+}
+
+type FixHandler = (request: FixRequest) => Promise<FixResult>;
+
+/**
+ * The dispatch table, keyed by `AUTO_FIXABLE_CHECK_TYPES`.
+ *
+ * `Record<AutoFixableCheckType, …>` is exhaustive AND closed: a type listed in
+ * `./lint-types` with no entry here fails to compile, and an entry here that the
+ * const does not name fails too. That is what stops `@/components/LintIssueCard`
+ * — which reads the same const to decide whether to draw a Fix button — from
+ * drifting behind this table again (DW-229).
+ */
+const FIX_HANDLERS: Record<AutoFixableCheckType, FixHandler> = {
+  "orphan-page": ({ slug, author }) => fixOrphanPage(slug, author),
+  "stale-index": ({ slug, author }) => fixStaleIndex(slug, author),
+  "empty-page": ({ slug, author }) => fixEmptyPage(slug, author),
+  "missing-crossref": ({ slug, targetSlug, author }) =>
+    fixMissingCrossRef(slug, targetSlug ?? "", author),
+  "contradiction": ({ slug, targetSlug, message, author }) =>
+    fixContradiction(slug, targetSlug ?? "", message ?? "", author),
+  "missing-concept-page": ({ message, author }) =>
+    fixMissingConceptPage(message ?? "", author),
+  "broken-link": ({ slug, targetSlug, author }) =>
+    fixBrokenLink(slug, targetSlug ?? "", author),
+  "stale-page": ({ slug, author }) => fixStalePage(slug, author),
+  "unmigrated-page": ({ slug, author }) => fixUnmigratedPage(slug, author),
+  // Auto-fixable: clear the dead reference (re-verified missing first).
+  "supersedes-dangling": ({ slug, author }) => fixSupersededDangling(slug, author),
+};
+
+/**
+ * Why each remaining check type has no auto-fix, in the words the caller sees.
+ *
+ * `Exclude<LintIssue["type"], AutoFixableCheckType>` is the exact complement of
+ * the table above, so a new check type added to `ALL_CHECK_TYPES` must land in
+ * one map or the other — there is no way to add one and have it quietly fall
+ * through to the generic "not supported" text below.
+ */
+const NOT_AUTO_FIXABLE: Record<
+  Exclude<LintIssue["type"], AutoFixableCheckType>,
+  (slug: string) => string
+> = {
+  "low-confidence": () =>
+    "Low-confidence pages cannot be auto-fixed. Ingest additional sources about this topic to improve confidence.",
+  // Full auto-fix would require LLM-driven citation generation — out of scope.
+  // Users should ingest a source URL or add inline citations manually.
+  "uncited-claims": () =>
+    "Uncited-claims pages cannot be auto-fixed. Ingest a source URL for this topic or add inline citations manually.",
+  "duplicate-entity": () =>
+    "Duplicate entities require human judgment to merge. Review the alias lists and decide which page to keep.",
+  "incomplete-coverage": () =>
+    "Incomplete coverage cannot be auto-fixed. Re-ingest the source URL to refresh the page content.",
+  // Explicit, not a fall-through to the generic default: clearing `disputed`
+  // asserts that a human read the conflicting claims and decided the page is
+  // now correct. An auto-fix would clear the flag without that review, which
+  // is exactly the state the flag exists to prevent.
+  "disputed-page": (slug) =>
+    `Disputed pages cannot be auto-fixed. Reconcile the conflicting claims in "${slug}", then clear the Disputed toggle in the page editor (PATCH /api/wiki/${slug} with metadata { disputed: false }).`,
+};
+
+/**
+ * Look `type` up: own properties only, and only if it is really a string.
+ *
+ * `src/app/api/lint/fix/route.ts` destructures `type` straight off an
+ * unvalidated `await req.json()`, so the declared `string` is a claim, not a
+ * fact — the value can be any JSON shape the caller sends. Two ways that bites a
+ * table lookup, and the `switch (type)` this replaced was immune to both because
+ * `case` compares with `===`:
+ *
+ *  1. The PROTOTYPE CHAIN. A bare `FIX_HANDLERS[type]` answers `"constructor"`,
+ *     `"toString"` and every other `Object.prototype` member with an inherited
+ *     function — truthy, and then called.
+ *  2. COERCION. `hasOwnProperty.call(table, key)` runs `key` through
+ *     `ToPropertyKey`, so the array `["orphan-page"]` stringifies to
+ *     `"orphan-page"` and a POST of `{"type":["orphan-page"]}` would dispatch a
+ *     real page mutation. The `typeof` guard is what restores strict equality's
+ *     behaviour here: a non-string answers `null` and falls through to the
+ *     generic rejection, exactly as it did before.
+ *
+ * `hasOwnProperty.call` rather than `Object.hasOwn` because the build targets
+ * ES2018.
+ */
+function ownEntry<T>(table: Record<string, T>, key: string): T | null {
+  if (typeof key !== "string") return null;
+  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null;
+}
+
 /**
  * Dispatch a lint-fix request to the appropriate handler based on issue type.
  *
@@ -674,57 +770,15 @@ export async function fixLintIssue(
   message?: string,
   author = "lint-fix",
 ): Promise<FixResult> {
-  switch (type) {
-    case "orphan-page":
-      return fixOrphanPage(slug, author);
-    case "stale-index":
-      return fixStaleIndex(slug, author);
-    case "empty-page":
-      return fixEmptyPage(slug, author);
-    case "missing-crossref":
-      return fixMissingCrossRef(slug, targetSlug ?? "", author);
-    case "contradiction":
-      return fixContradiction(slug, targetSlug ?? "", message ?? "", author);
-    case "missing-concept-page":
-      return fixMissingConceptPage(message ?? "", author);
-    case "broken-link":
-      return fixBrokenLink(slug, targetSlug ?? "", author);
-    case "stale-page":
-      return fixStalePage(slug, author);
-    case "unmigrated-page":
-      return fixUnmigratedPage(slug, author);
-    case "low-confidence":
-      throw new FixValidationError(
-        "Low-confidence pages cannot be auto-fixed. Ingest additional sources about this topic to improve confidence.",
-      );
-    case "uncited-claims":
-      // Full auto-fix would require LLM-driven citation generation — out of scope.
-      // Users should ingest a source URL or add inline citations manually.
-      throw new FixValidationError(
-        "Uncited-claims pages cannot be auto-fixed. Ingest a source URL for this topic or add inline citations manually.",
-      );
-    case "duplicate-entity":
-      throw new FixValidationError(
-        "Duplicate entities require human judgment to merge. Review the alias lists and decide which page to keep.",
-      );
-    case "supersedes-dangling":
-      // Auto-fixable: clear the dead reference (re-verified missing first).
-      return fixSupersededDangling(slug, author);
-    case "incomplete-coverage":
-      throw new FixValidationError(
-        "Incomplete coverage cannot be auto-fixed. Re-ingest the source URL to refresh the page content.",
-      );
-    case "disputed-page":
-      // Explicit, not a fall-through to the generic default: clearing `disputed`
-      // asserts that a human read the conflicting claims and decided the page is
-      // now correct. An auto-fix would clear the flag without that review, which
-      // is exactly the state the flag exists to prevent.
-      throw new FixValidationError(
-        `Disputed pages cannot be auto-fixed. Reconcile the conflicting claims in "${slug}", then clear the Disputed toggle in the page editor (PATCH /api/wiki/${slug} with metadata { disputed: false }).`,
-      );
-    default:
-      throw new FixValidationError(
-        "Auto-fix not supported for this issue type",
-      );
+  const handler = ownEntry<FixHandler>(FIX_HANDLERS, type);
+  if (handler) {
+    return handler({ slug, targetSlug, message, author });
   }
+
+  const explain = ownEntry<(slug: string) => string>(NOT_AUTO_FIXABLE, type);
+  if (explain) {
+    throw new FixValidationError(explain(slug));
+  }
+
+  throw new FixValidationError("Auto-fix not supported for this issue type");
 }

@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import {
   LintFilterControls,
   checkTypeLabels,
 } from "@/components/LintFilterControls";
 import { LintIssueCard } from "@/components/LintIssueCard";
-import { ALL_CHECK_TYPES } from "@/lib/lint-types";
+import {
+  ALL_CHECK_TYPES,
+  AUTO_FIXABLE_CHECK_TYPES,
+} from "@/lib/lint-types";
 import type { LintIssue } from "@/lib/types";
 
 /**
@@ -140,12 +143,10 @@ describe("lint check-type parity", () => {
 /**
  * `disputed-page` is human-resolved.
  *
- * `LintIssueCard` decides fixability from its own `fixableTypes` set, which is
- * NOT derived from `ALL_CHECK_TYPES` — so a new check type lands there as a
- * non-fixable issue by omission, silently. That default is the intended one
- * here (clearing `disputed` asserts a human reconciled the claims), but an
- * intended-by-omission behaviour is one careless `fixableTypes.add` away from
- * shipping a button that would call an endpoint guaranteed to 400.
+ * Named on its own, rather than left to the roster-wide assertions below,
+ * because the REASON matters: clearing `disputed` asserts a human reconciled the
+ * conflicting claims, so this card must stay button-less even though every
+ * mechanism around it makes adding a fix easy.
  */
 describe("a disputed-page issue offers no Fix button", () => {
   function renderCard() {
@@ -178,6 +179,123 @@ describe("a disputed-page issue offers no Fix button", () => {
 
   it("renders no button at all, so no auto-fix can be triggered", () => {
     renderCard();
+
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+  });
+});
+
+/**
+ * Fixability parity between `fixLintIssue` and the card, MOUNTED.
+ *
+ * `LintIssueCard` used to decide fixability from its OWN nine-entry
+ * `fixableTypes` set. `supersedes-dangling` became auto-fixable in
+ * `@/lib/lint-fix` (`fixSupersededDangling`) and the copy never learned it, so
+ * that issue rendered with no Fix button at all and the only way to clear a
+ * dangling reference was to call the API by hand (DW-229). Nothing observed it,
+ * for the same reason DW-75 went unobserved: a missing button and a check nobody
+ * can fix look identical.
+ *
+ * Both halves now read `AUTO_FIXABLE_CHECK_TYPES` and `tsc` closes the
+ * dispatcher against it — but a const import is not a button, exactly as a total
+ * label map was not a toggle. So the assertion is again against the rendered
+ * tree: one button per fixable type, zero for the rest, iterated from the
+ * library's lists rather than any literal restated here.
+ */
+
+const HUMAN_ONLY_CHECK_TYPES = ALL_CHECK_TYPES.filter(
+  (type) => !(AUTO_FIXABLE_CHECK_TYPES as readonly string[]).includes(type),
+);
+
+function renderIssue(overrides: Partial<LintIssue> & Pick<LintIssue, "type">) {
+  const issue: LintIssue = {
+    slug: "some-page",
+    severity: "warning",
+    // Satisfies `missing-concept-page`'s message precondition; every other type
+    // ignores the message when deciding fixability.
+    message: 'Concept "Widgets" is mentioned in some-page but has no dedicated page.',
+    target: "other-page",
+    ...overrides,
+  };
+  return {
+    issue,
+    onFix: (() => {
+      const onFix = vi.fn();
+      render(
+        <ul>
+          <LintIssueCard
+            issue={issue}
+            isFixing={false}
+            fixMessage={null}
+            onFix={onFix}
+            hrefForSlug={(slug) => `/u/yopedia/${slug}`}
+          />
+        </ul>,
+      );
+      return onFix;
+    })(),
+  };
+}
+
+describe("lint fixability parity", () => {
+  it.each(AUTO_FIXABLE_CHECK_TYPES)(
+    "offers a Fix button that reaches onFix: %s",
+    (type) => {
+      const { issue, onFix } = renderIssue({ type });
+
+      const button = screen.getByRole("button");
+      fireEvent.click(button);
+
+      expect(onFix).toHaveBeenCalledWith(issue, "other-page");
+      // That each label is the type's OWN — not the generic "Fix" fallback a
+      // missing entry would produce — is the distinctness case three tests
+      // down. Asserting `textContent` is truthy here would not show it: "Fix"
+      // is truthy, and so is every other string the button could hold.
+    },
+  );
+
+  it.each(HUMAN_ONLY_CHECK_TYPES)(
+    "renders no button at all, so no auto-fix can be triggered: %s",
+    (type) => {
+      renderIssue({ type });
+
+      expect(screen.queryAllByRole("button")).toHaveLength(0);
+    },
+  );
+
+  it("draws every fixable type a distinct, non-generic label", () => {
+    const labels = AUTO_FIXABLE_CHECK_TYPES.map((type) => {
+      renderIssue({ type });
+      const text = screen.getByRole("button").textContent;
+      cleanup();
+      return text;
+    });
+
+    // A type whose label were missing would fall back to "Fix", which
+    // `missing-crossref` legitimately uses — so the tell is a DUPLICATE, not the
+    // word itself.
+    expect(new Set(labels).size).toBe(AUTO_FIXABLE_CHECK_TYPES.length);
+  });
+
+  /**
+   * The card's extra preconditions (`LintIssueCard.tsx`), which are NOT part of
+   * the fixable set: three types need a `target` and one needs a parseable
+   * message, because `POST /api/lint/fix` would 400 without them. Pinned here so
+   * deriving the set from `AUTO_FIXABLE_CHECK_TYPES` cannot quietly drop them.
+   */
+  it.each(["missing-crossref", "contradiction", "broken-link"] as const)(
+    "withholds the button when the target it would post is absent: %s",
+    (type) => {
+      renderIssue({ type, target: undefined });
+
+      expect(screen.queryAllByRole("button")).toHaveLength(0);
+    },
+  );
+
+  it("withholds the button when a missing-concept-page message is unparseable", () => {
+    renderIssue({
+      type: "missing-concept-page",
+      message: "Coverage looks thin around widgets.",
+    });
 
     expect(screen.queryAllByRole("button")).toHaveLength(0);
   });

@@ -2028,7 +2028,8 @@ source_spec: `spec-dw-75-76-lint-check-parity-and-disputed-surface.md`
 location: src/components/LintIssueCard.tsx:25
 severity: medium
 reason: `src/components/LintIssueCard.tsx:25-35` lists nine types. `fixLintIssue` auto-fixes `supersedes-dangling` via `fixSupersededDangling` (`src/lib/lint-fix.ts:710-712`), and `SCHEMA.md` advertises it as one of the ten fixable checks. This is the same hand-copied-list drift class as DW-75, in the sibling list this story did not touch; nothing observes it.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-hand-copied-list-parity
 
 ### DW-230: Disputed transitions still write talk reconciliation threads that no surface can read, since talk's HTTP routes are retired.
 origin: spec-deferred 7895126181f4
@@ -2166,7 +2167,8 @@ source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: src/lib/bulk-document-import.ts:6-18
 severity: medium
 reason: `src/lib/bulk-document-import.ts:6-18` keeps its own `SUPPORTED_EXTENSIONS` (md, markdown, txt, html, htm, pdf, docx, pptx, xlsx, csv, zip) with none of `odt/ods/odp/epub/org/rtf/mobi`, and its rejection copy at :48 restates the narrow list. `bulk-document-import.test.ts:46` actively pins that stale wording. Unlike the Worker this module lives in `src/lib` and CAN import `SUPPORTED_DOCUMENT_EXTENSIONS`, so the duplication is not forced. Dragging `plan.odt` into bulk import is rejected client-side even though POSTing the same file to `/api/ingest/document` succeeds. The 700-character `accept` string at `src/components/BulkDocumentImport.tsx:26` is a fourth copy, likewise underived and untested.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-hand-copied-list-parity
 
 ### DW-247: The acknowledgement tells a sender that a cap-truncated *supported* attachment was "unsupported", and understates the skipped count past 20 attachments.
 origin: spec-deferred 21bb2bd1fe8b
@@ -2989,4 +2991,28 @@ source_spec: `spec-dw-132-249-prose-inventory-parity.md`
 location: src/lib/__tests__/bulk-document-import.test.ts:45
 severity: low
 reason: `src/lib/__tests__/bulk-document-import.test.ts:45` asserts `/Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP/i` — a literal that would have to be edited alongside the very change it is meant to catch. This is the pattern `prose-inventory-parity.test.ts`'s header explicitly rules out; it would be replaced by adopting the site.
+status: open
+
+### DW-346: `POST /api/lint/fix`'s JSDoc is a sixth un-derived restatement of the fixable list and names only five of the ten types.
+origin: spec-deferred 4043386addcd
+source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
+location: src/app/api/lint/fix/route.ts:17
+severity: medium
+reason: `src/app/api/lint/fix/route.ts:17-30` lists `missing-crossref`, `orphan-page`, `stale-index`, `empty-page` and `contradiction` under "Supported issue types", omitting `broken-link`, `missing-concept-page`, `stale-page`, `unmigrated-page` and `supersedes-dangling` — the very type DW-229 was about. This story derived every executable copy of the list and left the one an integrator reads. It is a doc comment, so nothing observes it; the repo's own convention for pinning a prose inventory it cannot generate is `prose-inventory-parity.test.ts`.
+status: open
+
+### DW-347: Bulk import's `accept` advertises 21 MIME types its validator never consults, so a file the picker admits by content type alone is still refused client-side.
+origin: spec-deferred 4e813d060c28
+source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
+location: src/lib/bulk-document-import.ts:80
+severity: medium
+reason: `validationError` (`src/lib/bulk-document-import.ts`) branches only on `documentExtension(file.name)` and ignores `file.type` entirely, while `ACCEPTED_DOCUMENT_ATTRIBUTE` now derives from extensions AND `SUPPORTED_DOCUMENT_MIME_TYPES`. An extension-less file carrying `application/pdf` therefore passes the picker and is rejected by the manifest, though `detectDocumentFormat` at `/api/ingest/document` accepts it on the MIME arm. This is the residual half of DW-246's class (client narrower than server); the intent named the list, not the MIME arm, so it is out of this story's scope.
+status: open
+
+### DW-348: The two untrusted lint-fix doors accept an unvalidated `type` even though `AUTO_FIXABLE_CHECK_TYPES` now exists as a tuple to validate against.
+origin: spec-deferred ac2df2d3e945
+source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
+location: src/app/api/lint/fix/route.ts:54
+severity: medium
+reason: `src/app/api/lint/fix/route.ts:54-56` destructures `type` off a raw `await req.json()` with no schema at all, and `src/lib/mcp-http.ts:490` declares it as free-form `str(...)`. `src/mcp.ts:2465` does validate, but against `z.enum(ALL_CHECK_TYPES)` rather than the fixable subset. The `ownEntry` guard added by this story is currently the only defense; `z.enum(AUTO_FIXABLE_CHECK_TYPES)` at the door would make it a second line rather than the sole one.
 status: open

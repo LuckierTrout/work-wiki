@@ -1,28 +1,30 @@
 import { unzipSync, zlibSync } from "fflate";
 import { MAX_CONTENT_LENGTH, MAX_DOCUMENT_SIZE } from "./constants";
+import { detectDocumentFormat, ownLookup } from "./document-formats";
+import type { DocumentFormat } from "./document-formats";
 import { ClientInputError } from "./errors";
 import { extractTitle, htmlToMarkdown } from "./html-parse";
 import { describeImage } from "./vision";
 
-export const DOCUMENT_FORMATS = [
-  "docx",
-  "pptx",
-  "xlsx",
-  "csv",
-  "md",
-  "txt",
-  "html",
-  "pdf",
-  "zip",
-  "odt",
-  "ods",
-  "odp",
-  "epub",
-  "org",
-  "rtf",
-  "mobi",
-] as const;
-export type DocumentFormat = (typeof DOCUMENT_FORMATS)[number];
+/**
+ * The format tables moved to `./document-formats` (a leaf module with no
+ * imports) so the bulk-import client could stop hand-copying them (DW-246).
+ * They are re-exported here, under the same names, because this module has been
+ * their public address since the extractor was written — `@/app/api/ingest/…`,
+ * `./vault-explorer`, `email-ingest-allowlist-parity.test.ts` and
+ * `prose-inventory-parity.test.ts` all import them from here and none had to
+ * change.
+ */
+export {
+  DOCUMENT_FORMATS,
+  DOCUMENT_FORMAT_LABELS,
+  SUPPORTED_DOCUMENT_EXTENSIONS,
+  SUPPORTED_DOCUMENT_MIME_TYPES,
+  detectDocumentFormat,
+  isSupportedDocument,
+} from "./document-formats";
+export type { DocumentFormat } from "./document-formats";
+
 type OfficeFormat = "docx" | "pptx" | "xlsx";
 
 const MAX_ARCHIVE_TEXT_BYTES = 12 * 1024 * 1024;
@@ -38,97 +40,6 @@ const MAX_ZIP_ENTRY_BYTES = 10 * 1024 * 1024;
 const MAX_ZIP_TOTAL_BYTES = 30 * 1024 * 1024;
 const MAX_PDF_IMAGES = 8;
 const MAX_PDF_IMAGE_PIXELS = 12_000_000;
-
-const MIME_FORMATS: Record<string, DocumentFormat> = {
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
-  "text/csv": "csv",
-  "application/csv": "csv",
-  "text/markdown": "md",
-  "text/x-markdown": "md",
-  "text/plain": "txt",
-  "text/html": "html",
-  "application/xhtml+xml": "html",
-  "application/pdf": "pdf",
-  "application/zip": "zip",
-  "application/x-zip-compressed": "zip",
-  "application/vnd.oasis.opendocument.text": "odt",
-  "application/vnd.oasis.opendocument.spreadsheet": "ods",
-  "application/vnd.oasis.opendocument.presentation": "odp",
-  "application/epub+zip": "epub",
-  "text/org": "org",
-  "application/rtf": "rtf",
-  "text/rtf": "rtf",
-  "application/x-mobipocket-ebook": "mobi",
-};
-
-/**
- * Extensions that are not themselves `DocumentFormat` members but name one.
- * Lifted out of `detectDocumentFormat` so the exported extension allowlist below
- * is derived from the same table the detector consults — a hand-copied list
- * would drift silently the moment an alias is added here.
- */
-const EXTENSION_ALIASES: Record<string, DocumentFormat> = {
-  markdown: "md",
-  htm: "html",
-};
-
-/**
- * Every filename extension `detectDocumentFormat` accepts, and every content
- * type it accepts. Exported so `email-ingest-allowlist-parity.test.ts` can pin
- * the Cloudflare Worker's duplicate allowlist against the extractor's real
- * behaviour: the Worker bundle cannot import `src/lib`, so the two lists must
- * stay duplicated in source and the test is what keeps them in agreement.
- */
-export const SUPPORTED_DOCUMENT_EXTENSIONS: readonly string[] = [
-  // Deduped: promoting an alias key into `DOCUMENT_FORMATS` (plausible for
-  // `htm`) would otherwise fail the parity test on a length mismatch for a
-  // reason that has nothing to do with the two allowlists drifting apart.
-  ...new Set<string>([...DOCUMENT_FORMATS, ...Object.keys(EXTENSION_ALIASES)]),
-];
-export const SUPPORTED_DOCUMENT_MIME_TYPES: readonly string[] =
-  Object.keys(MIME_FORMATS);
-
-/**
- * The token each format is called by in user-facing prose. Four hand-written
- * sentences enumerate the supported formats:
- * `workers/email-ingest/index.ts` (a Cloudflare Worker reply string, in a
- * bundle that cannot import `src/lib` at all), `workers/email-ingest/README.md`
- * (Markdown), `src/components/EmailIngestSettings.tsx` (a JSX bullet) and
- * `src/app/api/ingest/document/route.ts` (an API error message).
- *
- * The last two COULD import a sentence generated from this map. Generating at
- * only those two would leave the Worker string and the README unpinned and
- * split one convention into two, so `prose-inventory-parity.test.ts` instead
- * reads all six of the repo's prose inventories back out of their files and
- * compares their tokens to a derived set — this map being the derived set for
- * these four.
- *
- * It lives here, next to `DOCUMENT_FORMATS`, because `Record<DocumentFormat, …>`
- * is exhaustive at compile time: a format added above cannot land without a
- * label, and once it has one the four prose tests name it as unmentioned. The
- * labels are the prose spelling, not a mechanical upper-casing — `md` is
- * written "Markdown" and `org` is written "Org".
- */
-export const DOCUMENT_FORMAT_LABELS: Record<DocumentFormat, string> = {
-  docx: "DOCX",
-  pptx: "PPTX",
-  xlsx: "XLSX",
-  csv: "CSV",
-  md: "Markdown",
-  txt: "TXT",
-  html: "HTML",
-  pdf: "PDF",
-  zip: "ZIP",
-  odt: "ODT",
-  ods: "ODS",
-  odp: "ODP",
-  epub: "EPUB",
-  org: "Org",
-  rtf: "RTF",
-  mobi: "MOBI",
-};
 
 export interface ExtractedDocument {
   format: DocumentFormat;
@@ -161,46 +72,6 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
   bmp: "image/bmp",
   ico: "image/x-icon",
 };
-
-function extension(filename: string): string {
-  const match = filename.trim().toLowerCase().match(/\.([a-z0-9]+)$/);
-  return match?.[1] ?? "";
-}
-
-/**
- * Look a key up in one of the format tables WITHOUT walking the prototype
- * chain.
- *
- * A bare `TABLE[key]` answers `"constructor"`, `"valueOf"`, `"toString"` and
- * every other `Object.prototype` member with an inherited function, and `?? null`
- * does NOT rescue it — the inherited value is neither `null` nor `undefined`.
- * `detectDocumentFormat("weird.constructor")` therefore returned `Object` (a
- * truthy non-format), `isSupportedDocument` returned true for it, and the
- * "Unsupported document type" 400 gate in `src/app/api/ingest/document/route.ts`
- * stopped firing. `hasOwnProperty.call` rather than `Object.hasOwn` because the
- * build targets ES2018.
- */
-function ownLookup<T>(table: Record<string, T>, key: string): T | null {
-  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null;
-}
-
-export function detectDocumentFormat(
-  filename: string,
-  contentType?: string,
-): DocumentFormat | null {
-  const ext = extension(filename);
-  const alias = ownLookup(EXTENSION_ALIASES, ext);
-  if (alias) return alias;
-  if (DOCUMENT_FORMATS.includes(ext as DocumentFormat)) {
-    return ext as DocumentFormat;
-  }
-  const mime = contentType?.split(";", 1)[0]?.trim().toLowerCase();
-  return mime ? ownLookup(MIME_FORMATS, mime) : null;
-}
-
-export function isSupportedDocument(filename: string, contentType?: string): boolean {
-  return detectDocumentFormat(filename, contentType) !== null;
-}
 
 function decodeXml(value: string): string {
   return value.replace(
