@@ -47,6 +47,9 @@ function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSe
     envEmbeddingProvider: null,
     envEmbeddingModel: null,
     envEmbeddingApiKeyProviders: [],
+    // Not on Workers, which is irrelevant to this file's `openai` selection —
+    // the binding leg fires for `workers-ai` only (DW-225).
+    hasWorkersAiBinding: false,
     firecrawlBaseUrl: null,
     hasFirecrawlApiKey: false,
     language: "English",

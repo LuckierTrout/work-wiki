@@ -184,6 +184,35 @@ export const SETTINGS_VECTOR_PROVIDER_COPY =
   "Vector search needs the embedding provider chosen explicitly, not auto-detected.";
 
 /**
+ * The second sentence of a model refusal the ENVIRONMENT owns (DW-218).
+ *
+ * `EMBEDDING_MODEL` wins over anything typed or stored in all three feeders, so
+ * a refusal that named only the namespace sent the owner to a box whose value
+ * the gate never reads: they type a supported `@cf/` id, save successfully, and
+ * the switch still will not turn on. Naming the VARIABLE is the only form of
+ * this sentence an owner can act on. It NAMES the Embedding model box rather
+ * than saying "here", because it rides on the CHECKBOX's sentence rather than on
+ * the model field's — the model row already carries
+ * {@link settingsEnvOverrideCopy} saying where that value comes from, and "here"
+ * read from the checkbox would point at the checkbox.
+ */
+export const SETTINGS_VECTOR_ENV_MODEL_NOTE =
+  "That value comes from EMBEDDING_MODEL, so a model typed in the Embedding model box cannot lift this until that variable is unset.";
+
+/**
+ * The second sentence of the Workers AI BINDING refusal (DW-225).
+ *
+ * `workers-ai` is self-transporting — it needs no endpoint and no key — but the
+ * transport it carries is the Cloudflare `AI` binding, which exists only on the
+ * Workers runtime. Off Workers `resolveEmbeddingProvider` returns `null` for
+ * it forever, so a switch the gate let the owner turn on would embed nothing,
+ * silently, on every Docker deployment. The sentence names the binding and the
+ * two ways out.
+ */
+export const SETTINGS_VECTOR_BINDING_NOTE =
+  "Workers AI embeds through the Cloudflare AI binding, which exists only on the Workers runtime — bind ai in wrangler.jsonc, or choose another embedding provider.";
+
+/**
  * The environment's overrides, said out loud.
  *
  * `EMBEDDING_PROVIDER` and `EMBEDDING_MODEL` win at runtime and a save cannot
@@ -302,6 +331,18 @@ export interface WorkbenchSettingsPayload {
    * resolve to `null`.
    */
   envEmbeddingApiKeyProviders: string[];
+  /**
+   * Can this DEPLOYMENT reach the Cloudflare `AI` binding? (DW-225)
+   *
+   * A RUNTIME fact, not a stored one, and the browser has no way to ask: it is
+   * `getWorkersAiBinding() !== null`, read once per request by the route and
+   * served here so the browser's half of the vector rule sees exactly what the
+   * route's half sees. Without it the switch turns on for a `workers-ai`
+   * deployment where `resolveEmbeddingProvider` always returns `null` — a switch
+   * that reads as on and embeds nothing, on every Docker deployment. It is not a
+   * secret and names nothing: it is one boolean about the runtime.
+   */
+  hasWorkersAiBinding: boolean;
   firecrawlBaseUrl: string | null;
   hasFirecrawlApiKey: boolean;
   /** Fixed. There is no locale picker anywhere in this surface. */
@@ -398,6 +439,12 @@ export function isWorkbenchSettingsPayload(
     typeof payload.vectorSearchEnabled === "boolean" &&
     typeof payload.hasCustomApiKey === "boolean" &&
     typeof payload.hasEmbeddingApiKey === "boolean" &&
+    // REQUIRED as a boolean, unlike `version`: this one feeds the vector rule,
+    // and a missing value has no safe reading. Defaulting it to `true` would
+    // enable the switch on a deployment with no binding; defaulting it to
+    // `false` would refuse `workers-ai` on Workers itself. The route always
+    // sends it, so absence means the payload is not one.
+    typeof payload.hasWorkersAiBinding === "boolean" &&
     Array.isArray(payload.envEmbeddingApiKeyProviders) &&
     payload.envEmbeddingApiKeyProviders.every((p) => typeof p === "string") &&
     typeof payload.hasFirecrawlApiKey === "boolean" &&
@@ -424,6 +471,33 @@ export interface VectorSearchInputs {
   baseUrl: string | null;
   model: string | null;
   hasKey: boolean;
+  /**
+   * WHERE {@link model} came from, which decides who can act on a mismatch
+   * (DW-218/DW-223).
+   *
+   * `"env"` means `EMBEDDING_MODEL` supplied it — every feeder takes that
+   * override ahead of anything typed or stored, so the editable box is NOT the
+   * thing that is wrong and typing into it changes nothing. `"stored"` means the
+   * value is the one the box edits. The refusal appends
+   * {@link SETTINGS_VECTOR_ENV_MODEL_NOTE} for the first and marks the input
+   * `aria-invalid` only for the second.
+   *
+   * No default: a constructor that forgot it would silently claim the box is at
+   * fault for a value the owner cannot reach from here.
+   */
+  modelOrigin: "env" | "stored";
+  /**
+   * Can this deployment reach the Cloudflare `AI` binding? (DW-225)
+   *
+   * TRI-STATE, and the third state is load-bearing. `null` means "not knowable
+   * here" — `getVectorSearchSettings()` runs inside `config.ts`, which cannot
+   * import `embeddings.ts` without a cycle — and the binding leg is NOT applied,
+   * which is exactly today's answer for that caller. The route reads
+   * `getWorkersAiBinding() !== null` once per request and the browser receives
+   * the boolean on the payload, so both halves of the one rule see the same
+   * fact.
+   */
+  hasWorkersAiBinding: boolean | null;
 }
 
 /**
@@ -468,6 +542,12 @@ const SELF_TRANSPORTING_EMBEDDING_PROVIDERS: ReadonlySet<string> = new Set([
  *    then overrides, embedding with a model the owner never chose (DW-73).
  *  - The KEY and the ENDPOINT are required only where the provider does not
  *    supply them itself (see {@link SELF_TRANSPORTING_EMBEDDING_PROVIDERS}).
+ *  - The BINDING, for `workers-ai` only: being self-transporting means the
+ *    Cloudflare `AI` binding IS its transport, and off the Workers runtime there
+ *    is no such binding — `resolveEmbeddingProvider` returns `null` forever, so
+ *    the switch would read as on and embed nothing (DW-225). Applied only when
+ *    the caller actually knows; see
+ *    {@link VectorSearchInputs.hasWorkersAiBinding}.
  *
  * What this deliberately does NOT do is teach `hasEmbeddingSupport()` about it.
  * Story 2.9 owns the ingest embed step and Story 3.4 the search merge; moving
@@ -478,33 +558,83 @@ export function canEnableVectorSearch(v: VectorSearchInputs): boolean {
   return vectorSearchMissingLegs(v).length === 0;
 }
 
+/** Which control an unmet leg is about. See {@link VectorSearchLeg}. */
+export type VectorSearchLegField =
+  | "provider"
+  | "endpoint"
+  | "model"
+  | "key"
+  | "binding";
+
+/**
+ * One unmet leg, as the thing that is missing plus who owns it.
+ *
+ * A bare `string[]` could only ever produce ONE sentence, announced on ONE
+ * control — which is how the model complaint ended up as the vector checkbox's
+ * description while the embedding-model input that holds the wrong value carried
+ * nothing at all (DW-223). The `field` is what lets a second surface — the model
+ * row — ask for its own leg, and the `note` is what lets a refusal name the
+ * thing that OWNS it (`EMBEDDING_MODEL`, the Cloudflare `AI` binding) rather
+ * than only the shape the value should have had.
+ */
+export interface VectorSearchLeg {
+  /** The control this leg is about. */
+  field: VectorSearchLegField;
+  /** The noun phrase the refusal sentence lists, in leg order. */
+  phrase: string;
+  /**
+   * A second sentence naming what owns the problem, when the phrase alone
+   * cannot be acted on. Appended to the refusal, never substituted for it.
+   */
+  note?: string;
+}
+
 /** Which legs are unmet, in the order the sentence names them. */
-function vectorSearchMissingLegs(v: VectorSearchInputs): string[] {
+function vectorSearchMissingLegs(v: VectorSearchInputs): VectorSearchLeg[] {
   if (!v.provider || !isEmbeddingProvider(v.provider)) {
-    return ["an embedding provider"];
+    return [{ field: "provider", phrase: "an embedding provider" }];
   }
-  const missing: string[] = [];
+  const missing: VectorSearchLeg[] = [];
   if (!SELF_TRANSPORTING_EMBEDDING_PROVIDERS.has(v.provider) && !v.baseUrl) {
-    missing.push("an endpoint");
+    missing.push({ field: "endpoint", phrase: "an endpoint" });
   }
   if (!v.model) {
-    missing.push("a model");
+    missing.push({ field: "model", phrase: "a model" });
   } else if (!embeddingModelMatchesProvider(v.provider, v.model)) {
     // The SAME predicate `resolveEmbeddingModelName` applies, so the gate cannot
     // refuse a combination the resolver would have honoured, or accept one it
     // would silently override.
-    missing.push(
-      v.provider === "workers-ai"
-        ? // NAMING the ids, not the namespace (DW-220): "in the @cf/ namespace"
-          // is wrong advice for `@cf/llava-hf/llava-1.5-7b-hf`, which already is
-          // — and which `ai.run()` refuses. The list comes from the catalog, so
-          // adding a model to the table adds it to this sentence.
-          `a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")})`
-        : `a model id outside the Workers AI ${WORKERS_AI_MODEL_PREFIX} namespace`,
-    );
+    missing.push({
+      field: "model",
+      phrase:
+        v.provider === "workers-ai"
+          ? // NAMING the ids, not the namespace (DW-220): "in the @cf/ namespace"
+            // is wrong advice for `@cf/llava-hf/llava-1.5-7b-hf`, which already is
+            // — and which `ai.run()` refuses. The list comes from the catalog, so
+            // adding a model to the table adds it to this sentence.
+            `a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")})`
+          : `a model id outside the Workers AI ${WORKERS_AI_MODEL_PREFIX} namespace`,
+      // Only when the environment owns the value: naming the variable is what
+      // makes the sentence actionable, and saying it for a STORED mismatch would
+      // send the owner to a variable that is not set (DW-218).
+      ...(v.modelOrigin === "env" ? { note: SETTINGS_VECTOR_ENV_MODEL_NOTE } : {}),
+    });
   }
   if (!SELF_TRANSPORTING_EMBEDDING_PROVIDERS.has(v.provider) && !v.hasKey) {
-    missing.push("an API key");
+    missing.push({ field: "key", phrase: "an API key" });
+  }
+  // The transport leg for the one provider whose transport is a RUNTIME fact
+  // rather than a stored value (DW-225). `SELF_TRANSPORTING_EMBEDDING_PROVIDERS`
+  // exempts `workers-ai` from the endpoint and the key precisely because the
+  // binding supplies both — so where the binding is absent, nothing is left.
+  // `null` is "not knowable here" and applies nothing: see
+  // {@link VectorSearchInputs.hasWorkersAiBinding}.
+  if (v.provider === "workers-ai" && v.hasWorkersAiBinding === false) {
+    missing.push({
+      field: "binding",
+      phrase: "the Cloudflare AI binding",
+      note: SETTINGS_VECTOR_BINDING_NOTE,
+    });
   }
   return missing;
 }
@@ -518,11 +648,52 @@ function vectorSearchMissingLegs(v: VectorSearchInputs): string[] {
 export function vectorSearchMissingCopy(v: VectorSearchInputs): string {
   const missing = vectorSearchMissingLegs(v);
   if (missing.length === 0) return "";
+  return [vectorSearchLegSentence(missing), ...missing.map((leg) => leg.note)]
+    .filter((part): part is string => typeof part === "string" && part.length > 0)
+    .join(" ");
+}
+
+/** The one refusal sentence, without any leg's note. */
+function vectorSearchLegSentence(legs: readonly VectorSearchLeg[]): string {
+  const phrases = legs.map((leg) => leg.phrase);
   const list =
-    missing.length === 1
-      ? missing[0]
-      : `${missing.slice(0, -1).join(", ")} and ${missing[missing.length - 1]}`;
+    phrases.length === 1
+      ? phrases[0]
+      : `${phrases.slice(0, -1).join(", ")} and ${phrases[phrases.length - 1]}`;
   return `Vector search needs ${list} before it can be turned on.`;
+}
+
+/**
+ * What the EMBEDDING-MODEL INPUT itself has to say, or `null` when it has
+ * nothing (DW-223).
+ *
+ * The refusal used to be announced only as the vector checkbox's
+ * `aria-describedby`, while the box holding the wrong value carried no
+ * description and no `aria-invalid` — and the ordinary way into that state is
+ * changing the PROVIDER select, which touches neither control. So the model leg
+ * is offered separately here, for the row that owns the value.
+ *
+ * `copy` is the model leg's sentence ALONE: the `EMBEDDING_MODEL` note stays on
+ * the checkbox, because this row already carries
+ * {@link settingsEnvOverrideCopy} saying where the value comes from and a second
+ * sentence about the same variable would only repeat it.
+ *
+ * `invalid` is true only when the BOX'S OWN value is the wrong one — a mismatch
+ * with `modelOrigin: "stored"`. An env-owned mismatch is described without being
+ * marked, because marking a field the owner cannot fix from here is a dead end.
+ * An EMPTY box is neither: it holds no wrong value, so a bare "a model" leg
+ * produces no issue at all and the checkbox's own sentence carries it.
+ */
+export function vectorSearchModelIssue(
+  v: VectorSearchInputs,
+): { copy: string; invalid: boolean } | null {
+  if (!v.model) return null;
+  const leg = vectorSearchMissingLegs(v).find((entry) => entry.field === "model");
+  if (!leg) return null;
+  return {
+    copy: vectorSearchLegSentence([leg]),
+    invalid: v.modelOrigin === "stored",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -590,6 +761,13 @@ export interface WorkbenchSettingsStored {
   envEmbeddingModel: string | null;
   /** See {@link WorkbenchSettingsPayload.envEmbeddingApiKeyProviders}. */
   envEmbeddingApiKeyProviders: string[];
+  /**
+   * The RUNTIME half — see {@link WorkbenchSettingsPayload.hasWorkersAiBinding}.
+   *
+   * Two-state here, where {@link VectorSearchInputs} is tri-state: the route
+   * knows the answer, so there is no "not knowable" for this caller to spell.
+   */
+  hasWorkersAiBinding: boolean;
 }
 
 /**
@@ -598,10 +776,21 @@ export interface WorkbenchSettingsStored {
  * Returns the patch rather than a bare `true` so the caller cannot forget to use
  * the narrowed value, and one sentence rather than a field list because the
  * surface shows the server's sentence verbatim.
+ *
+ * `stored` is what the patch is MERGED ONTO — for the route, the post-legacy-merge
+ * config, so an `embeddingModel` set by the flat field in the same request counts
+ * toward the gate. `baseline` is what the store held BEFORE the request, and it
+ * exists only to answer "did this request move anything the rule reads" (DW-219).
+ * The two differ exactly when a body carries both a flat legacy field and a
+ * `workbench` key: with one argument the flat move would be baked into BOTH
+ * sides of the comparison and would compare equal to itself, skipping the very
+ * gate the flat field was supposed to have entered. It defaults to `stored`, so
+ * a caller with no legacy path — every caller but the route — is unchanged.
  */
 export function validateWorkbenchSettingsPatch(
   value: unknown,
   stored: WorkbenchSettingsStored,
+  baseline: WorkbenchSettingsStored = stored,
 ): WorkbenchSettingsValidation {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ok: false, error: SETTINGS_INVALID_BODY_COPY };
@@ -684,18 +873,82 @@ export function validateWorkbenchSettingsPatch(
   // lands — an endpoint set in the same request counts, and a key already in the
   // store counts. The client disables the control with the same predicate; this
   // is what makes it a rule rather than a disabled button.
+  //
+  // But only for a patch that actually MOVES something the rule reads (DW-219).
+  // `settingsSaveBody` sends `vectorSearchEnabled`, `embeddingProvider`,
+  // `embeddingModel` and `embeddingBaseUrl` on EVERY save, so re-running the
+  // whole rule whenever the merged flag is on answered 400 to a chat-model or
+  // timeout edit on any deployment already storing a mismatch — a surface the
+  // owner cannot leave, since the refusal names a field their edit never
+  // touched. "Touched" therefore cannot be read as key PRESENCE; it is a VALUE
+  // comparison of the merged inputs against the stored-only ones.
+  //
+  // Little escapes through the skip: `getVectorSearchSettings()` still
+  // intersects the stored flag with this same predicate, so a stored mismatch of
+  // PROVIDER, ENDPOINT, MODEL or KEY still reads as OFF to every consumer.
+  //
+  // The BINDING leg is the one exception, and it is deliberate rather than a
+  // hole. `getVectorSearchSettings()` passes `hasWorkersAiBinding: null` because
+  // it cannot know (see {@link VectorSearchInputs.hasWorkersAiBinding}), so a
+  // stored `workers-ai` flag on a deployment with no binding still reads as ON
+  // there. Nothing embeds on the strength of it: `resolveEmbeddingProvider`
+  // returns `null` with no binding, so the embed path refuses independently —
+  // which is exactly the disagreement the leg exists to report on the SURFACE,
+  // where the owner can act on it.
   const enabled =
     typeof patch.vectorSearchEnabled === "boolean"
       ? patch.vectorSearchEnabled
       : stored.vectorSearchEnabled;
   if (enabled) {
     const merged = mergedVectorInputs(patch as WorkbenchSettingsPatch, stored);
-    if (!canEnableVectorSearch(merged)) {
+    // What the store held BEFORE this request — `baseline`, not `stored`, so a
+    // flat legacy field moved earlier in the same request is a MOVE rather than
+    // part of the unchanged background. See the parameter's note.
+    const current = mergedVectorInputs({}, baseline);
+    const turningOn = !baseline.vectorSearchEnabled;
+    if (
+      (turningOn || !vectorInputsEqual(current, merged)) &&
+      !canEnableVectorSearch(merged)
+    ) {
       return { ok: false, error: vectorSearchMissingCopy(merged) };
     }
   }
 
   return { ok: true, patch: patch as WorkbenchSettingsPatch };
+}
+
+/**
+ * Every key of {@link VectorSearchInputs}, as a value.
+ *
+ * `satisfies Record<keyof VectorSearchInputs, true>` is what makes this
+ * EXHAUSTIVE: a field added to the interface without being added here is a type
+ * error, where a plain `Array<keyof VectorSearchInputs>` would have accepted any
+ * subset and let a new input be silently skipped by the comparison below.
+ */
+const VECTOR_INPUT_KEYS = {
+  provider: true,
+  baseUrl: true,
+  model: true,
+  hasKey: true,
+  modelOrigin: true,
+  hasWorkersAiBinding: true,
+} satisfies Record<keyof VectorSearchInputs, true>;
+
+/**
+ * Does this request leave every input the vector rule reads exactly where it
+ * was?
+ *
+ * Field by field over {@link VECTOR_INPUT_KEYS}. Two of those fields cannot
+ * differ between the two sides TODAY — no patch can move `modelOrigin` or
+ * `hasWorkersAiBinding`, which come from the environment and the runtime — so
+ * they are compared for completeness rather than because they vary. That is the
+ * point of the exhaustive list: the day one of them becomes patchable, this
+ * comparison already reads it.
+ */
+function vectorInputsEqual(a: VectorSearchInputs, b: VectorSearchInputs): boolean {
+  return (Object.keys(VECTOR_INPUT_KEYS) as Array<keyof VectorSearchInputs>).every(
+    (key) => a[key] === b[key],
+  );
 }
 
 /**
@@ -735,6 +988,12 @@ function mergedVectorInputs(
     baseUrl: resolve(patch.embeddingBaseUrl, stored.embeddingBaseUrl),
     model: stored.envEmbeddingModel ?? resolve(patch.embeddingModel, stored.embeddingModel),
     hasKey,
+    // The same `??` the line above spells, read as a question about ORIGIN: the
+    // env override wins, so when there is one the model box is not what the gate
+    // is looking at.
+    modelOrigin: stored.envEmbeddingModel !== null ? "env" : "stored",
+    // A runtime fact no patch can move — it arrives on `stored` from the route.
+    hasWorkersAiBinding: stored.hasWorkersAiBinding,
   };
 }
 
@@ -921,6 +1180,11 @@ export function draftVectorInputs(
     baseUrl: draftText(draft.embeddingBaseUrl),
     model: payload.envEmbeddingModel ?? draftText(draft.embeddingModel),
     hasKey,
+    // Same reading as the route's `mergedVectorInputs`: the override wins, so
+    // with one set the editable box is not the value being checked.
+    modelOrigin: payload.envEmbeddingModel !== null ? "env" : "stored",
+    // Served on the payload precisely because the browser cannot ask.
+    hasWorkersAiBinding: payload.hasWorkersAiBinding,
   };
 }
 

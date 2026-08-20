@@ -9,6 +9,7 @@ import { getStorage } from "./storage";
 import {
   SETTINGS_LANGUAGE_VALUE,
   canEnableVectorSearch,
+  type VectorSearchInputs,
   type WorkbenchSettingsPatch,
   type WorkbenchSettingsStored,
   type WorkbenchSettingsValues,
@@ -815,15 +816,39 @@ export interface VectorSearchSettings {
 export function getVectorSearchSettings(): VectorSearchSettings {
   const cfg = loadConfigSync();
   const provider = envEmbeddingProvider() ?? nonEmpty(cfg.embeddingProvider);
-  const inputs = {
+  const envModel = nonEmpty(process.env.EMBEDDING_MODEL);
+  const inputs: VectorSearchInputs = {
     provider,
     baseUrl: nonEmpty(cfg.embeddingBaseUrl),
-    model: nonEmpty(process.env.EMBEDDING_MODEL) ?? nonEmpty(cfg.embeddingModel),
+    model: envModel ?? nonEmpty(cfg.embeddingModel),
     hasKey: embeddingKeyPresent(cfg, provider),
+    // The same `??` above, read as a question about origin.
+    modelOrigin: envModel !== null ? "env" : "stored",
+    // NOT KNOWN HERE, and deliberately left that way (DW-225).
+    //
+    // `getWorkersAiBinding()` lives in `embeddings.ts`, which imports THIS
+    // module; the one edge this file already has in that direction
+    // (`hasEmbeddingSupport`) is as far as that cycle is allowed to go, and
+    // `getVectorSearchSettings` is a SYNC CACHE READ that any code path may call
+    // off a Workers request scope, where `getCloudflareContext()` throws and the
+    // answer would be a misleading `false` rather than "unknown". So this caller
+    // takes no runtime parameter and spells the third state instead: `null`
+    // applies no binding leg, which is this function's answer today exactly.
+    // Nothing is lost by it — the embed path refuses independently, since
+    // `resolveEmbeddingProvider` returns `null` for `workers-ai` with no
+    // binding. The ROUTE, which is always inside a request, is the one caller
+    // that passes the real fact in.
+    hasWorkersAiBinding: null,
   };
   return {
+    // The four DECLARED fields, named rather than spread: the two inputs above
+    // that exist only for the gate must not leak onto `VectorSearchSettings`,
+    // where a consumer could read `hasWorkersAiBinding: null` as "no binding".
     enabled: cfg.vectorSearchEnabled === true && canEnableVectorSearch(inputs),
-    ...inputs,
+    provider: inputs.provider,
+    baseUrl: inputs.baseUrl,
+    model: inputs.model,
+    hasKey: inputs.hasKey,
   };
 }
 
@@ -944,8 +969,19 @@ export function getFirecrawlSettings(): FirecrawlSettings {
  * NO STORED KEY IS EVER IN HERE — the three secrets become `has*ApiKey`
  * booleans. AD-23 puts the keys in the kernel store; it does not put them back
  * on the browser's screen.
+ *
+ * `hasWorkersAiBinding` arrives as a PARAMETER rather than being read here
+ * (DW-225): it is `getWorkersAiBinding() !== null`, which only makes sense
+ * inside a Workers request scope and lives in `embeddings.ts`. The route reads
+ * it once and hands it to both this resolver and
+ * {@link workbenchSettingsStored}, so both halves of the one vector rule see the
+ * same fact. It is required, with no default, because neither default is safe:
+ * `true` would enable the switch on a deployment with no binding and `false`
+ * would refuse `workers-ai` on Workers itself.
  */
-export function getWorkbenchSettings(): WorkbenchSettingsValues {
+export function getWorkbenchSettings(
+  hasWorkersAiBinding: boolean,
+): WorkbenchSettingsValues {
   const cfg = loadConfigSync();
   const firecrawl = getFirecrawlSettings();
   const envProvider = envEmbeddingProvider();
@@ -979,6 +1015,8 @@ export function getWorkbenchSettings(): WorkbenchSettingsValues {
     envEmbeddingProvider: envProvider,
     envEmbeddingModel: nonEmpty(process.env.EMBEDDING_MODEL),
     envEmbeddingApiKeyProviders: envEmbeddingApiKeyProviders(),
+    // The RUNTIME fact the browser cannot ask for, passed in by the route.
+    hasWorkersAiBinding,
     firecrawlBaseUrl: firecrawl.baseUrl,
     hasFirecrawlApiKey: firecrawl.hasKey,
     language: SETTINGS_LANGUAGE_VALUE,
@@ -994,8 +1032,17 @@ export function getWorkbenchSettings(): WorkbenchSettingsValues {
  * of the same `PUT` may have already moved `embeddingModel` — so it cannot use
  * `getWorkbenchSettings()`, which reads the cache. One expression of "what the
  * vector rule sees" for both.
+ *
+ * `hasWorkersAiBinding` is the same runtime fact the payload carries, and it
+ * comes from the same one read in the route — see {@link getWorkbenchSettings}.
+ * If these two disagreed, the browser and the route would answer the vector rule
+ * differently for the same deployment, which is precisely what this seam exists
+ * to rule out.
  */
-export function workbenchSettingsStored(cfg: AppConfig): WorkbenchSettingsStored {
+export function workbenchSettingsStored(
+  cfg: AppConfig,
+  hasWorkersAiBinding: boolean,
+): WorkbenchSettingsStored {
   return {
     vectorSearchEnabled: cfg.vectorSearchEnabled === true,
     // The CONFIG halves — what a patch can move.
@@ -1008,6 +1055,7 @@ export function workbenchSettingsStored(cfg: AppConfig): WorkbenchSettingsStored
     envEmbeddingProvider: envEmbeddingProvider(),
     envEmbeddingModel: nonEmpty(process.env.EMBEDDING_MODEL),
     envEmbeddingApiKeyProviders: envEmbeddingApiKeyProviders(),
+    hasWorkersAiBinding,
   };
 }
 

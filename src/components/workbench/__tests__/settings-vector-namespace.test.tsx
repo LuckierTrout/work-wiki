@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
+import { WORKERS_AI_EMBEDDING_MODEL_IDS } from "@/lib/providers";
 import {
   SETTINGS_LOADING_COPY,
+  SETTINGS_VECTOR_BINDING_NOTE,
+  SETTINGS_VECTOR_ENV_MODEL_NOTE,
   SETTINGS_VECTOR_HINT_COPY,
+  settingsEnvOverrideCopy,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
 
@@ -39,6 +43,11 @@ function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSe
     envEmbeddingProvider: null,
     envEmbeddingModel: null,
     envEmbeddingApiKeyProviders: [],
+    // ON Workers. Every case in this file selects `workers-ai`, and without the
+    // binding the gate would refuse for a SECOND reason (DW-225) — which would
+    // change every sentence asserted below and leave nothing here about the
+    // namespace at all. The binding leg has its own cases at the end.
+    hasWorkersAiBinding: true,
     firecrawlBaseUrl: null,
     hasFirecrawlApiKey: false,
     language: "English",
@@ -109,8 +118,15 @@ async function mount(stored: WorkbenchSettingsPayload) {
   return view;
 }
 
-const UNSUPPORTED_WORKERS_MODEL =
-  "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.";
+/**
+ * The sentence SHAPE is typed out — the point of a mounted assertion is the
+ * string a screen reader announces, so building it by calling the copy function
+ * would assert only that the component calls the function. The ID LIST is
+ * derived from the catalog, because a stale literal there is a silent hole: add
+ * a supported model and this expectation would go on naming the old four while
+ * the surface named five.
+ */
+const UNSUPPORTED_WORKERS_MODEL = `Vector search needs a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) before it can be turned on.`;
 const OUT_OF_NAMESPACE =
   "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.";
 
@@ -209,5 +225,143 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     expect(announcedFor(checkbox)).toBe(SETTINGS_VECTOR_HINT_COPY);
     fireEvent.click(checkbox);
     await waitFor(() => expect(checkbox.checked).toBe(true));
+  });
+});
+
+describe("the MODEL INPUT carries its own complaint (DW-223)", () => {
+  /**
+   * The box the refusal is about. Announced through the same resolver the
+   * checkbox uses, because "the model field says so" is a claim about which span
+   * is wired to which control — the one thing a node suite cannot observe.
+   */
+  function modelInput(): HTMLInputElement {
+    return screen.getByLabelText("Embedding model") as HTMLInputElement;
+  }
+
+  it("marks the box invalid and describes it when the STORE holds the wrong id", async () => {
+    await mount(payload());
+    // The value in the box IS the wrong one, so the box is what is marked.
+    expect(modelInput().value).toBe("text-embedding-3-small");
+    expect(modelInput().getAttribute("aria-invalid")).toBe("true");
+    expect(announcedFor(modelInput())).toBe(UNSUPPORTED_WORKERS_MODEL);
+    // The `EMBEDDING_MODEL` note is NOT here — no variable is set, and this row
+    // is about the value it edits.
+    expect(announcedFor(modelInput())).not.toContain("EMBEDDING_MODEL");
+  });
+
+  it("describes an ENV-owned mismatch beside the env sentence, without marking it", async () => {
+    // `EMBEDDING_MODEL` wins over the box in every feeder, so the box holds
+    // nothing wrong — marking it would point the owner at a control that cannot
+    // fix it. The complaint still has to be readable ON the row that is about
+    // the model, which is what the description carries.
+    await mount(
+      payload({ embeddingModel: null, envEmbeddingModel: "text-embedding-3-small" }),
+    );
+    expect(modelInput().value).toBe("");
+    expect(modelInput().getAttribute("aria-invalid")).toBeNull();
+    const announced = announcedFor(modelInput());
+    expect(announced).toContain(
+      settingsEnvOverrideCopy("model", "text-embedding-3-small"),
+    );
+    expect(announced).toContain(UNSUPPORTED_WORKERS_MODEL);
+    // And the variable is named where the refusal is: on the checkbox.
+    const checkbox = screen.getByLabelText("Enable vector search");
+    expect(announcedFor(checkbox)).toBe(
+      `${UNSUPPORTED_WORKERS_MODEL} ${SETTINGS_VECTOR_ENV_MODEL_NOTE}`,
+    );
+  });
+
+  it("says nothing at all when the id matches the provider", async () => {
+    await mount(payload({ embeddingModel: "@cf/baai/bge-m3" }));
+    expect(modelInput().getAttribute("aria-invalid")).toBeNull();
+    // No hint at all: with no env override and no complaint there is nothing for
+    // this row to describe.
+    expect(modelInput().getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("says nothing while the provider is still unchosen", async () => {
+    // The gate has exactly one leg here — "an embedding provider" — and it is
+    // not this row's. A model complaint before a provider is picked would be a
+    // complaint about a rule that has not been reached.
+    await mount(payload({ embeddingProvider: null }));
+    expect(modelInput().getAttribute("aria-invalid")).toBeNull();
+    expect(modelInput().getAttribute("aria-describedby")).toBeNull();
+    expect(announcedFor(screen.getByLabelText("Enable vector search"))).toBe(
+      "Vector search needs an embedding provider before it can be turned on.",
+    );
+  });
+
+  it("describes but does NOT mark on a read-only deployment", async () => {
+    // `YOPEDIA_READONLY` makes every box on this surface unfixable, which is the
+    // same dead end that leaves an env-owned mismatch described-but-unmarked:
+    // `aria-invalid` tells the owner "this field is wrong, fix it" about a field
+    // they cannot fix. The reason still has to be announced, so only the MARK is
+    // withheld.
+    await mount(payload({ readOnly: true }));
+    expect(modelInput().value).toBe("text-embedding-3-small");
+    expect(modelInput().readOnly).toBe(true);
+    expect(modelInput().getAttribute("aria-invalid")).toBeNull();
+    expect(announcedFor(modelInput())).toBe(UNSUPPORTED_WORKERS_MODEL);
+  });
+
+  it("marks the box the moment the PROVIDER select moves under it", async () => {
+    // The ordinary way into this state, and the reason the complaint could not
+    // stay on the checkbox alone: the owner changes a control that touches
+    // neither the model box nor the switch, and the model they saved months ago
+    // is suddenly the wrong one.
+    await mount(
+      payload({
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingBaseUrl: "https://embed.example",
+        hasEmbeddingApiKey: true,
+      }),
+    );
+    expect(modelInput().getAttribute("aria-invalid")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Embedding provider"), {
+      target: { value: "workers-ai" },
+    });
+
+    await waitFor(() =>
+      expect(modelInput().getAttribute("aria-invalid")).toBe("true"),
+    );
+    expect(announcedFor(modelInput())).toBe(UNSUPPORTED_WORKERS_MODEL);
+    // The box still holds what the owner stored — the complaint describes it,
+    // it does not rewrite it.
+    expect(modelInput().value).toBe("text-embedding-3-small");
+  });
+});
+
+describe("the vector switch names the Cloudflare AI binding (DW-225)", () => {
+  it("refuses a Workers AI selection off the Workers runtime", async () => {
+    // Nothing about the stored config is wrong: the provider is explicit and
+    // the id is supported. What is missing is the runtime the provider needs.
+    await mount(
+      payload({ embeddingModel: "@cf/baai/bge-m3", hasWorkersAiBinding: false }),
+    );
+    const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
+    expect(checkbox.getAttribute("aria-disabled")).toBe("true");
+    expect(announcedFor(checkbox)).toBe(
+      `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    );
+    // The model row is silent — the id is not what is wrong.
+    expect(
+      (screen.getByLabelText("Embedding model") as HTMLInputElement).getAttribute(
+        "aria-invalid",
+      ),
+    ).toBeNull();
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(checkbox.checked).toBe(false));
+    expectNoSaveAttempted();
+  });
+
+  it("allows the same selection where the binding exists", async () => {
+    await mount(
+      payload({ embeddingModel: "@cf/baai/bge-m3", hasWorkersAiBinding: true }),
+    );
+    const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
+    expect(checkbox.getAttribute("aria-disabled")).toBeNull();
+    expect(announcedFor(checkbox)).toBe(SETTINGS_VECTOR_HINT_COPY);
   });
 });

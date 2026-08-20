@@ -1897,7 +1897,8 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/lib/workbench-settings.ts (vectorSearchMissingCopy) with src/lib/config.ts:512
 severity: medium
 reason: All three feeders take the env value ahead of anything typed or stored (`mergedVectorInputs`, `draftVectorInputs`, `src/lib/config.ts:512`), so the refusal stands even after the owner types a `@cf/` id and saves — pinned by the new test "does not let a TYPED matching id lift a refusal the env override owns". The copy names the namespace but never names the variable, and `VectorSearchInputs` carries no origin field, so an origin-aware sentence ("unset EMBEDDING_MODEL") is a shape change to the predicate's inputs rather than a wording fix. Pre-DW-73 that deployment ran with the provider default instead.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-vector-gate-surface-feedback
 
 ### DW-219: A deployment already storing a namespace mismatch with vector search on now gets a 400 on EVERY Workbench settings save, including edits to unrelated fields.
 origin: spec-deferred 1eee0ecfc70f
@@ -1905,7 +1906,8 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/lib/workbench-settings.ts (validateWorkbenchSettingsPatch)
 severity: medium
 reason: `settingsSaveBody` always carries `vectorSearchEnabled` (`src/lib/workbench-settings.ts`), and `validateWorkbenchSettingsPatch` re-runs the vector rule whenever the resulting flag is true, so a chat-model or timeout edit is refused with the namespace sentence until the model is fixed or the switch unchecked. The mechanism is pre-existing and identical for the endpoint/key legs; DW-73 adds one more state that triggers it. The owner can recover (the switch may always be turned OFF), so this is friction, not a trap.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-vector-gate-surface-feedback
 
 ### DW-220: The gate checks the namespace but not that the id is a usable Workers AI EMBEDDING model, so a bare `@cf/` or a vision id passes.
 origin: spec-deferred 90d558e058af
@@ -1940,7 +1942,8 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/components/workbench/SettingsCanvas.tsx (textRow "embeddingModel")
 severity: low
 reason: `SettingsCanvas.tsx:519` renders `vectorSearchMissingCopy` as the checkbox's `aria-describedby` hint; the model input built by `textRow` has no `aria-invalid` and no description tying the failure to it. Changing the provider select (`:445-448`) leaves the model untouched, so the ordinary way into this state is an edit to a control that shows no error at all.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-vector-gate-surface-feedback
 
 ### DW-224: The path that actually embeds is untaught about the namespace rule, so the owner's model choice is still replaced without a word wherever the gate is not consulted.
 origin: spec-deferred 29b372e0cc6c
@@ -1957,7 +1960,8 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/lib/workbench-settings.ts (vectorSearchMissingLegs) with src/lib/embeddings.ts:55-72
 severity: medium
 reason: `resolveEmbeddingProvider` returns `getWorkersAiBinding() ? override : null` (`src/lib/embeddings.ts:100-102`), and `getWorkersAiBinding()` returns null off the Workers runtime — silently, by design. `vectorSearchMissingLegs` treats `workers-ai` as self-transporting and asks only for a provider and an in-namespace model, so on Docker the switch turns on and every embed resolves to no provider at all. Pre-existing: the same was true before DW-73 with any model id. Teaching the gate would mean giving a client-safe predicate a runtime-only fact, which is a shape change rather than a leg.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-vector-gate-surface-feedback
 
 ### DW-226: `resolveEmbeddingModelName` drops a mismatched override with no log, while its sibling misconfiguration warns.
 origin: spec-deferred 75c0edb48a0f
@@ -2369,4 +2373,44 @@ source_spec: `spec-dw-220-221-224-226-227-embedding-resolution.md`
 location: src/lib/embeddings.ts:hasEmbeddingSupport with src/lib/ingest.ts:989
 severity: medium
 reason: DW-224's ledger coordinates are `hasEmbeddingSupport` with `src/lib/ingest.ts:989`, and neither file changed. Under the intent's reading ("stops embedding under the substituted default WITHOUT A WORD") the fix is the warning, and the spec's Never list pins that reading because `src/lib/workbench-settings.ts` and `src/lib/config.ts` both record that Story 2.9 (embed after ingest) and Story 3.4 (search merge) own teaching `hasEmbeddingSupport()` the vector gate. So the harm the ledger measured — a corpus quietly embedded with a model the owner did not choose — is now diagnosable but not prevented, and the tightened predicate moves two more inputs (a bare `@cf/`, a `@cf/` vision id) from "fails at ai.run()" into "substitutes the default". Closing it means refusing to embed on a mismatch, which belongs to those stories.
+status: open
+
+### DW-277: The new Cloudflare-binding refusal is announced only on the vector checkbox; the embedding-provider select that produces the state carries no complaint and no `aria-invalid`.
+origin: spec-deferred c1aba6d1ed22
+source_spec: `spec-dw-218-219-223-225-vector-gate-surface.md`
+location: src/components/workbench/SettingsCanvas.tsx (embeddingProvider select) with src/lib/workbench-settings.ts:vectorSearchModelIssue
+severity: low
+reason: DW-223's own argument is that "the ordinary way into that state is changing the provider select, which touches neither control" — and selecting Workers AI on a deployment with no binding is exactly that shape. `VectorSearchLegField` now enumerates `provider | endpoint | model | key | binding`, but only the `model` leg has a consumer (`vectorSearchModelIssue`); the provider, endpoint and key rows stay silent. The bundle's intent names only the embedding-model field, so wiring a second field-level complaint is new scope rather than part of this change.
+status: open
+
+### DW-278: Every settings read and save now calls `getWorkersAiBinding()`, so a Workers deployment with `AI` unbound emits one WARN per settings request on a path that previously logged nothing.
+origin: spec-deferred cdd17a74d9ff
+source_spec: `spec-dw-218-219-223-225-vector-gate-surface.md`
+location: src/app/api/settings/route.ts with src/lib/embeddings.ts:56-73
+severity: low
+reason: `getWorkersAiBinding()` warns when it is ON the Workers runtime with the binding missing (`src/lib/embeddings.ts:64-71`), and the route now calls it unconditionally in `GET` and in `PUT`. The amplification is the same shape as the already-deferred "warnings fire per resolution rather than once per distinct misconfiguration" item from the DW-220 bundle, and closing it means a once-per-misconfiguration guard in `embeddings.ts` rather than a change to this seam.
+status: open
+
+### DW-279: There is no copy for the "stored on, effectively off" state the DW-219 scoping makes durable — the checkbox renders checked and unrefused beside a sentence saying vector search cannot be turned on.
+origin: spec-deferred d35e879954cf
+source_spec: `spec-dw-218-219-223-225-vector-gate-surface.md`
+location: src/components/workbench/SettingsCanvas.tsx (vectorSearchEnabled hint)
+severity: low
+reason: `vectorRefused` is `stored.readOnly || (!vectorAllowed && !values.vectorSearchEnabled)`, so an already-on switch stays operable by design (an owner must be able to undo it). Pre-existing — the mounted case "leaves an ALREADY-ON switch checked, refused, and turn-off-able" pinned it before this bundle — but DW-219 makes the state survivable across unrelated saves rather than being cleared at the next one. Closing it means a distinct sentence for "on but inactive", which is a copy decision no ledger entry in this bundle asks for.
+status: open
+
+### DW-280: `textRow` never appends the read-only sentence through `describedBy()`, unlike every other refusable control on the surface.
+origin: spec-deferred eedddaf19e0d
+source_spec: `spec-dw-218-219-223-225-vector-gate-surface.md`
+location: src/components/workbench/SettingsCanvas.tsx:textRow
+severity: low
+reason: `providerRow`, the embedding-provider select and the vector checkbox all wrap their hint id in `describedBy(...)`, which appends `SETTINGS_READ_ONLY_COPY` on a read-only deployment; `textRow` hardcodes `aria-describedby={hint ? hintId : undefined}`. Pre-existing for all seven text rows. This bundle made the gap slightly more visible by giving the embedding-model row a complaint (the mark itself is now suppressed under `readOnly`), but the fix belongs to every text row at once.
+status: open
+
+### DW-281: With `EMBEDDING_PROVIDER=workers-ai` the binding refusal advises choosing another embedding provider, which the env-locked select cannot do.
+origin: spec-deferred d621d1cdd313
+source_spec: `spec-dw-218-219-223-225-vector-gate-surface.md`
+location: src/lib/workbench-settings.ts (SETTINGS_VECTOR_BINDING_NOTE) with mergedVectorInputs
+severity: low
+reason: `mergedVectorInputs` and `draftVectorInputs` both take `envEmbeddingProvider` ahead of anything stored or typed, so the provider leg can be owned by the environment exactly as the model leg can — but `VectorSearchInputs` gained an origin field for the MODEL only, which is what this bundle's intent asked for. Naming `EMBEDDING_PROVIDER` in the binding note would need a second origin field, the same shape change DW-218 made for the model.
 status: open

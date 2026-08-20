@@ -70,6 +70,14 @@ vi.mock("@opennextjs/cloudflare", () => ({
     throw new Error("no cloudflare context");
   }),
 }));
+/**
+ * The route's owner gate. There is no Clerk session in a node suite, and what
+ * the one route case below is about is what the route does WITH a principal;
+ * ownership itself stays real, driven by `NEXT_PUBLIC_OWNER_HANDLE`.
+ */
+vi.mock("@/lib/auth", () => ({
+  getPrincipal: vi.fn(async () => ({ id: "user_1", handle: "owner" })),
+}));
 
 import {
   _resetConfigCache,
@@ -96,6 +104,8 @@ import {
   hasLLMKey,
 } from "../llm";
 import { _resetStorage } from "../storage";
+import { readConfig } from "../config";
+import { IF_MATCH_HEADER, formatIfMatch } from "../write-precondition";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 const mockGetCfContext = getCloudflareContext as ReturnType<typeof vi.fn>;
@@ -110,6 +120,7 @@ let savedEnv: Record<string, string | undefined>;
 
 const ENV_KEYS = [
   "DATA_DIR",
+  "NEXT_PUBLIC_OWNER_HANDLE",
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
   "GOOGLE_GENERATIVE_AI_API_KEY",
@@ -133,6 +144,7 @@ beforeEach(async () => {
     delete process.env[key];
   }
   process.env.DATA_DIR = tmpDir;
+  process.env.NEXT_PUBLIC_OWNER_HANDLE = "owner";
   vi.clearAllMocks();
   // `clearAllMocks` keeps implementations, but the nested `chat`/`embedding`
   // spies are created per call, so re-assert the factories to be safe.
@@ -165,6 +177,23 @@ async function store(config: AppConfig): Promise<void> {
   await saveConfig(config);
   _resetConfigCache();
   await loadConfig();
+}
+
+/**
+ * A `PUT /api/settings` turning the vector switch on, carrying the write
+ * precondition the store currently holds (DW-63).
+ */
+async function turnVectorSearchOn(): Promise<Request> {
+  const read = await readConfig();
+  if (read.status !== "ok") throw new Error("store is unreadable");
+  return new Request("http://local/api/settings", {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      [IF_MATCH_HEADER]: formatIfMatch(read.version),
+    },
+    body: JSON.stringify({ workbench: { vectorSearchEnabled: true } }),
+  });
 }
 
 /** The options object the last `generateText` call was given. */
@@ -582,27 +611,64 @@ describe("the stored embedding credential and endpoint are read", () => {
     // one flat "an env key exists" boolean let the switch turn on for a
     // provider that then embeds nothing.
     await store({});
-    expect(getWorkbenchSettings().envEmbeddingApiKeyProviders).toEqual([]);
+    expect(getWorkbenchSettings(false).envEmbeddingApiKeyProviders).toEqual([]);
 
     process.env.OPENAI_API_KEY = "sk-env";
     _resetConfigCache();
     await loadConfig();
-    expect(getWorkbenchSettings().envEmbeddingApiKeyProviders).toEqual(["openai"]);
+    expect(getWorkbenchSettings(false).envEmbeddingApiKeyProviders).toEqual(["openai"]);
 
     // Set-but-empty is not a credential.
     process.env.OPENAI_API_KEY = "";
     process.env.GOOGLE_GENERATIVE_AI_API_KEY = "g-env";
     _resetConfigCache();
     await loadConfig();
-    expect(getWorkbenchSettings().envEmbeddingApiKeyProviders).toEqual(["google"]);
+    expect(getWorkbenchSettings(false).envEmbeddingApiKeyProviders).toEqual(["google"]);
   });
 
   it("keeps `hasEmbeddingApiKey` about the STORE, so Remove is never offered for an env key", async () => {
     process.env.OPENAI_API_KEY = "sk-env";
     await store({ embeddingProvider: "openai" });
-    expect(getWorkbenchSettings().hasEmbeddingApiKey).toBe(false);
+    expect(getWorkbenchSettings(false).hasEmbeddingApiKey).toBe(false);
 
     await store({ embeddingProvider: "openai", embeddingApiKey: "sk-stored" });
-    expect(getWorkbenchSettings().hasEmbeddingApiKey).toBe(true);
+    expect(getWorkbenchSettings(false).hasEmbeddingApiKey).toBe(true);
+  });
+
+  it("reports the Cloudflare AI binding as the route reads it (DW-225)", () => {
+    // The payload's one RUNTIME fact. `getWorkbenchSettings` does not read it
+    // itself — `config.ts` is a sync cache read that any path may call off a
+    // Workers request scope, where `getCloudflareContext()` throws and the
+    // answer would be a misleading `false` rather than "unknown". So the route
+    // reads `getWorkersAiBinding() !== null` once and hands it in, and this is
+    // what "hands it in" means.
+    expect(getWorkbenchSettings(true).hasWorkersAiBinding).toBe(true);
+    expect(getWorkbenchSettings(false).hasWorkersAiBinding).toBe(false);
+  });
+
+  it("refuses a workers-ai deployment with no binding, end to end through the route", async () => {
+    // The DW-225 state: nothing about the stored config is wrong — the provider
+    // is explicit and the id is supported — but off the Workers runtime
+    // `resolveEmbeddingProvider` returns `null` forever, so a switch the gate
+    // let the owner turn on would embed nothing. `getCloudflareContext` throws
+    // here by default, exactly as it does on Docker.
+    mockGetCfContext.mockImplementation(noCloudflareContext);
+    await store({ embeddingProvider: "workers-ai", embeddingModel: "@cf/baai/bge-m3" });
+    // The embed path already refuses on its own — this is the fact the gate was
+    // disagreeing with.
+    expect(hasEmbeddingSupport()).toBe(false);
+
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(await turnVectorSearchOn());
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toContain(
+      "the Cloudflare AI binding",
+    );
+
+    // Bound, and the very same request lands — the only thing that changed is
+    // the runtime fact the route reads.
+    mockGetCfContext.mockReturnValue({ env: { AI: { run: vi.fn() } } });
+    const bound = await PUT(await turnVectorSearchOn());
+    expect(bound.status).toBe(200);
   });
 });

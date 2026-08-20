@@ -61,9 +61,24 @@ You only need **one** provider. The app auto-detects which key is set.
 provider reaches Cloudflare through the `AI` binding declared in
 `wrangler.jsonc`, which does not exist in the Docker/compose deployment this
 document describes. Off Workers the binding resolves to nothing and the override
-is dropped **silently** — embeddings are then disabled entirely, with no error in
-the logs. On Docker, set this to `openai`, `google`, or `ollama`, or leave it
-unset and let the app auto-detect.
+is dropped by the **embedding path** silently — embeddings are then disabled
+entirely, with no error in the logs. On Docker, set this to `openai`, `google`,
+or `ollama`, or leave it unset and let the app auto-detect.
+
+**The Workbench Settings surface no longer stays quiet about it.** Selecting
+Cloudflare Workers AI as the embedding provider on a deployment with no `AI`
+binding now refuses the vector-search switch by name — *"Vector search needs the
+Cloudflare AI binding before it can be turned on"* — and a save that tries is
+rejected with the same sentence plus the two ways out (bind `ai` in
+`wrangler.jsonc`, or choose another embedding provider). This is the one place
+the missing binding is reported before content is ingested; the log stays silent
+because `getWorkersAiBinding()` only warns when it is ON the Workers runtime with
+`AI` unbound, which is a misconfiguration rather than "not Cloudflare".
+
+The same limit applies here as to the model rule below: the older `/settings`
+page saves the embedding provider through a flat request that never enters this
+gate, so `workers-ai` selected there is still stored silently on a deployment
+with no binding. The refusal guards the Workbench switch, not the config file.
 
 Those are not safe answers by themselves, though: `openai` and `google` are
 dropped just as silently when the matching key is missing (`OPENAI_API_KEY` /
@@ -111,6 +126,29 @@ Two separate things happen to an id the resolved provider cannot serve:
   refusal only names a model rule once an embedding provider has actually been
   chosen — with the provider left to auto-detection the switch refuses for the
   missing provider instead.
+
+  When the mismatched id came from **this variable** rather than from the
+  Settings store, the refusal says so: it appends *"That value comes from
+  `EMBEDDING_MODEL`, so a model typed here cannot lift this until that variable
+  is unset."* Without that sentence the message named only the id rule, and
+  typing a supported id into the Embedding model box changed nothing — the
+  override wins at runtime and the switch stayed off. The box itself is marked
+  invalid only when the **stored** value is the wrong one, because that is the
+  only case editing it can fix.
+
+  An unrelated Workbench save — a chat model, an LLM timeout — is **not** refused
+  by a mismatch it did not create, even on a deployment whose stored vector
+  switch is on. The gate re-runs when the save turns the switch on or moves one
+  of the values it reads (the embedding provider, model, endpoint or key). A
+  stored **model** mismatch still reads as vector search **off** to the rest of
+  the app until it is fixed or the switch is turned off.
+
+  A missing **`AI` binding** is the exception to that last sentence: the
+  server-side accessor that reports the effective switch cannot ask whether the
+  binding exists, so it keeps reporting a stored `workers-ai` switch as on. That
+  costs nothing — the embedding path resolves no provider without the binding and
+  so embeds nothing either way — but it means the Settings refusal, not the
+  effective switch, is where a missing binding shows up.
 - **The embedding path substitutes the provider default, and says so.** The
   mismatched id is ignored and embedding continues with the default for the
   resolved provider (`@cf/baai/bge-m3` for Workers AI,

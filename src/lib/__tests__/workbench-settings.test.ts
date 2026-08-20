@@ -33,6 +33,29 @@ vi.mock("@/lib/auth", () => ({
   getPrincipal: vi.fn(async () => principal.current),
 }));
 
+/**
+ * The Cloudflare `AI` binding the route now reads (DW-225).
+ *
+ * `getWorkersAiBinding()` calls `getCloudflareContext()`, which THROWS off the
+ * Workers runtime — so the default here throws too, which is the honest answer
+ * for a node suite and for the Docker deployment `DEPLOY.md` describes. That
+ * makes `workers-ai` REFUSED by default in this file, which is the whole point
+ * of the leg; the cases that are about a Workers deployment opt in through
+ * {@link onWorkers}.
+ */
+const cloudflare = vi.hoisted(() => ({ ai: null as unknown }));
+vi.mock("@opennextjs/cloudflare", () => ({
+  getCloudflareContext: () => {
+    if (cloudflare.ai === null) throw new Error("no cloudflare context");
+    return { env: { AI: cloudflare.ai } };
+  },
+}));
+
+/** Put this test on the Workers runtime with the `AI` binding bound. */
+function onWorkers(): void {
+  cloudflare.ai = { run: vi.fn() };
+}
+
 import {
   CONFIG_UNREADABLE_COPY,
   UNSTAMPED_CONFIG_VERSION,
@@ -79,6 +102,8 @@ import {
   SETTINGS_SAVE_BAR_COPY,
   SETTINGS_SAVE_FAILED_COPY,
   SETTINGS_CATEGORIES,
+  SETTINGS_VECTOR_BINDING_NOTE,
+  SETTINGS_VECTOR_ENV_MODEL_NOTE,
   canEnableVectorSearch,
   draftCanEnableVectorSearch,
   draftVectorInputs,
@@ -91,7 +116,9 @@ import {
   settingsSaveBody,
   validateWorkbenchSettingsPatch,
   vectorSearchMissingCopy,
+  vectorSearchModelIssue,
   type SettingsFetch,
+  type VectorSearchInputs,
   type WorkbenchSettingsPayload,
 } from "../workbench-settings";
 
@@ -145,6 +172,8 @@ beforeEach(async () => {
   process.env.DATA_DIR = tmpDir;
   process.env.NEXT_PUBLIC_OWNER_HANDLE = "christianlee";
   principal.current = { id: "user_1", handle: "christianlee" };
+  // Off the Workers runtime unless a case says otherwise — see `onWorkers`.
+  cloudflare.ai = null;
   _resetConfigCache();
   _resetStorage();
 });
@@ -234,6 +263,9 @@ function emptyPayload(): WorkbenchSettingsPayload {
     envEmbeddingProvider: null,
     envEmbeddingModel: null,
     envEmbeddingApiKeyProviders: [],
+    // The Docker/compose answer, which is what a "fresh deployment" means for
+    // every case in this file that does not say otherwise (DW-225).
+    hasWorkersAiBinding: false,
     firecrawlBaseUrl: null,
     hasFirecrawlApiKey: false,
     language: SETTINGS_LANGUAGE_VALUE,
@@ -301,17 +333,49 @@ describe("the settings nav vocabulary", () => {
 // The vector predicate — ONE rule
 // ---------------------------------------------------------------------------
 
+/**
+ * A {@link VectorSearchInputs} from the four legs a case is ABOUT, with the two
+ * facts DW-218/DW-225 added at their "not in play" values: `"stored"` (the
+ * editable box holds the model, so the box is what a mismatch is about) and
+ * `null` (this caller cannot know whether a Cloudflare `AI` binding exists, so
+ * the binding leg is not applied). The cases that are ABOUT either fact pass it
+ * explicitly, which is what keeps every other case here reading as it did.
+ */
+type VectorLegs = Omit<VectorSearchInputs, "modelOrigin" | "hasWorkersAiBinding"> &
+  Partial<Pick<VectorSearchInputs, "modelOrigin" | "hasWorkersAiBinding">>;
+
+function vectorInputs(legs: VectorLegs): VectorSearchInputs {
+  return { modelOrigin: "stored", hasWorkersAiBinding: null, ...legs };
+}
+
+/** {@link canEnableVectorSearch} over {@link vectorInputs}. */
+function canEnable(legs: VectorLegs): boolean {
+  return canEnableVectorSearch(vectorInputs(legs));
+}
+
+/** {@link vectorSearchMissingCopy} over {@link vectorInputs}. */
+function missingCopy(legs: VectorLegs): string {
+  return vectorSearchMissingCopy(vectorInputs(legs));
+}
+
+/**
+ * The model refusal under `workers-ai`, spelled once. Built from the catalog
+ * rather than typed, so adding a supported id updates the expectation with the
+ * sentence instead of leaving a stale literal behind.
+ */
+const UNSUPPORTED_WORKERS_MODEL = `Vector search needs a supported Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) before it can be turned on.`;
+
 describe("canEnableVectorSearch", () => {
   it("requires an EXPLICIT embedding provider before anything else", () => {
     // `resolveEmbeddingProvider`'s auto-detect branch consults env vars only, so
     // without this leg an owner could satisfy endpoint + model + stored key,
     // turn the switch on, and still resolve no embedding provider at all.
     const legs = { baseUrl: "https://e", model: "m", hasKey: true };
-    expect(canEnableVectorSearch({ provider: null, ...legs })).toBe(false);
-    expect(canEnableVectorSearch({ provider: "", ...legs })).toBe(false);
+    expect(canEnable({ provider: null, ...legs })).toBe(false);
+    expect(canEnable({ provider: "", ...legs })).toBe(false);
     // A provider that cannot embed is not a selection either.
-    expect(canEnableVectorSearch({ provider: "anthropic", ...legs })).toBe(false);
-    expect(canEnableVectorSearch({ provider: "openai", ...legs })).toBe(true);
+    expect(canEnable({ provider: "anthropic", ...legs })).toBe(false);
+    expect(canEnable({ provider: "openai", ...legs })).toBe(true);
   });
 
   it("requires all three legs for a KEYED provider, in every combination", () => {
@@ -327,7 +391,7 @@ describe("canEnableVectorSearch", () => {
     ];
     for (const provider of ["openai", "google"]) {
       for (const [baseUrl, model, hasKey, expected] of cases) {
-        expect(canEnableVectorSearch({ provider, baseUrl, model, hasKey })).toBe(expected);
+        expect(canEnable({ provider, baseUrl, model, hasKey })).toBe(expected);
       }
     }
   });
@@ -344,11 +408,11 @@ describe("canEnableVectorSearch", () => {
       ["ollama", "m"],
       ["workers-ai", "@cf/baai/bge-m3"],
     ] as const) {
-      expect(canEnableVectorSearch({ provider, baseUrl: null, model, hasKey: false })).toBe(
+      expect(canEnable({ provider, baseUrl: null, model, hasKey: false })).toBe(
         true,
       );
       expect(
-        canEnableVectorSearch({ provider, baseUrl: null, model: null, hasKey: false }),
+        canEnable({ provider, baseUrl: null, model: null, hasKey: false }),
       ).toBe(false);
     }
   });
@@ -359,7 +423,7 @@ describe("canEnableVectorSearch", () => {
     // falls back to the provider default otherwise. Accepting the mismatch here
     // would turn the switch on and then embed with a model nobody selected.
     expect(
-      canEnableVectorSearch({
+      canEnable({
         provider: "workers-ai",
         baseUrl: null,
         model: "text-embedding-3-small",
@@ -367,7 +431,7 @@ describe("canEnableVectorSearch", () => {
       }),
     ).toBe(false);
     expect(
-      canEnableVectorSearch({
+      canEnable({
         provider: "openai",
         baseUrl: "https://e",
         model: "@cf/baai/bge-m3",
@@ -376,7 +440,7 @@ describe("canEnableVectorSearch", () => {
     ).toBe(false);
     // Both matching cases still pass — the rule is an equality, not a ban.
     expect(
-      canEnableVectorSearch({
+      canEnable({
         provider: "workers-ai",
         baseUrl: null,
         model: "@cf/baai/bge-m3",
@@ -384,7 +448,7 @@ describe("canEnableVectorSearch", () => {
       }),
     ).toBe(true);
     expect(
-      canEnableVectorSearch({
+      canEnable({
         provider: "openai",
         baseUrl: "https://e",
         model: "text-embedding-3-small",
@@ -398,7 +462,7 @@ describe("canEnableVectorSearch", () => {
     // self-transporting, so there is no endpoint or key leg beside it to make
     // the sentence non-empty for the wrong reason.
     expect(
-      canEnableVectorSearch({
+      canEnable({
         provider: "ollama",
         baseUrl: null,
         model: "@cf/baai/bge-m3",
@@ -406,7 +470,7 @@ describe("canEnableVectorSearch", () => {
       }),
     ).toBe(false);
     expect(
-      vectorSearchMissingCopy({
+      missingCopy({
         provider: "ollama",
         baseUrl: null,
         model: "@cf/baai/bge-m3",
@@ -417,7 +481,7 @@ describe("canEnableVectorSearch", () => {
     );
     // Google is a keyed provider, and gets the same answer OpenAI does.
     expect(
-      canEnableVectorSearch({
+      canEnable({
         provider: "google",
         baseUrl: "https://e",
         model: "@cf/baai/bge-m3",
@@ -425,7 +489,7 @@ describe("canEnableVectorSearch", () => {
       }),
     ).toBe(false);
     expect(
-      canEnableVectorSearch({
+      canEnable({
         provider: "google",
         baseUrl: "https://e",
         model: "gemini-embedding-001",
@@ -436,10 +500,10 @@ describe("canEnableVectorSearch", () => {
 
   it("treats the empty string as unset, not as set to nothing", () => {
     expect(
-      canEnableVectorSearch({ provider: "openai", baseUrl: "", model: "m", hasKey: true }),
+      canEnable({ provider: "openai", baseUrl: "", model: "m", hasKey: true }),
     ).toBe(false);
     expect(
-      canEnableVectorSearch({
+      canEnable({
         provider: "openai",
         baseUrl: "https://e",
         model: "",
@@ -450,7 +514,7 @@ describe("canEnableVectorSearch", () => {
 
   it("names what is missing FOR THE SELECTED PROVIDER", () => {
     expect(
-      vectorSearchMissingCopy({
+      missingCopy({
         provider: null,
         baseUrl: "https://e",
         model: "m",
@@ -458,7 +522,7 @@ describe("canEnableVectorSearch", () => {
       }),
     ).toBe("Vector search needs an embedding provider before it can be turned on.");
     expect(
-      vectorSearchMissingCopy({
+      missingCopy({
         provider: "openai",
         baseUrl: null,
         model: null,
@@ -468,7 +532,7 @@ describe("canEnableVectorSearch", () => {
       "Vector search needs an endpoint, a model and an API key before it can be turned on.",
     );
     expect(
-      vectorSearchMissingCopy({
+      missingCopy({
         provider: "openai",
         baseUrl: "https://e",
         model: "m",
@@ -477,7 +541,7 @@ describe("canEnableVectorSearch", () => {
     ).toBe("Vector search needs an API key before it can be turned on.");
     // Ollama is never told to find a key it does not have.
     expect(
-      vectorSearchMissingCopy({
+      missingCopy({
         provider: "ollama",
         baseUrl: null,
         model: null,
@@ -486,7 +550,7 @@ describe("canEnableVectorSearch", () => {
     ).toBe("Vector search needs a model before it can be turned on.");
     // Nothing missing is not a sentence — the caller shows the ordinary hint.
     expect(
-      vectorSearchMissingCopy({
+      missingCopy({
         provider: "openai",
         baseUrl: "https://e",
         model: "m",
@@ -497,7 +561,7 @@ describe("canEnableVectorSearch", () => {
 
   it("names the NAMESPACE rather than repeating \"a model\" (DW-73)", () => {
     expect(
-      vectorSearchMissingCopy({
+      missingCopy({
         provider: "workers-ai",
         baseUrl: null,
         model: "text-embedding-3-small",
@@ -507,7 +571,7 @@ describe("canEnableVectorSearch", () => {
       "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
     );
     expect(
-      vectorSearchMissingCopy({
+      missingCopy({
         provider: "openai",
         baseUrl: "https://e",
         model: "@cf/baai/bge-m3",
@@ -519,7 +583,7 @@ describe("canEnableVectorSearch", () => {
     // A leg, not a separate sentence: it composes with the others in leg order
     // instead of hiding them.
     expect(
-      vectorSearchMissingCopy({
+      missingCopy({
         provider: "openai",
         baseUrl: "https://e",
         model: "@cf/baai/bge-m3",
@@ -533,7 +597,7 @@ describe("canEnableVectorSearch", () => {
     // `vectorSearchMissingLegs` pushes them in. A two-leg case alone cannot
     // tell "second" from "last".
     expect(
-      vectorSearchMissingCopy({
+      missingCopy({
         provider: "openai",
         baseUrl: null,
         model: "@cf/baai/bge-m3",
@@ -545,7 +609,7 @@ describe("canEnableVectorSearch", () => {
     // No model at all is still just "a model" — the namespace clause needs a
     // value to complain about.
     expect(
-      vectorSearchMissingCopy({
+      missingCopy({
         provider: "workers-ai",
         baseUrl: null,
         model: null,
@@ -554,7 +618,7 @@ describe("canEnableVectorSearch", () => {
     ).toBe("Vector search needs a model before it can be turned on.");
     // And an id that matches its provider is not named at all.
     expect(
-      vectorSearchMissingCopy({
+      missingCopy({
         provider: "workers-ai",
         baseUrl: null,
         model: "@cf/baai/bge-m3",
@@ -570,7 +634,7 @@ describe("canEnableVectorSearch", () => {
     // where it used to fail.
     for (const model of ["@cf/", "@cf/llava-hf/llava-1.5-7b-hf", "constructor"]) {
       expect(
-        canEnableVectorSearch({
+        canEnable({
           provider: "workers-ai",
           baseUrl: null,
           model,
@@ -578,7 +642,7 @@ describe("canEnableVectorSearch", () => {
         }),
       ).toBe(false);
       expect(
-        vectorSearchMissingCopy({
+        missingCopy({
           provider: "workers-ai",
           baseUrl: null,
           model,
@@ -595,7 +659,7 @@ describe("canEnableVectorSearch", () => {
     // sentence sends the owner somewhere the switch still says no.
     for (const model of WORKERS_AI_EMBEDDING_MODEL_IDS) {
       expect(
-        canEnableVectorSearch({
+        canEnable({
           provider: "workers-ai",
           baseUrl: null,
           model,
@@ -603,6 +667,162 @@ describe("canEnableVectorSearch", () => {
         }),
       ).toBe(true);
     }
+  });
+
+  it("names EMBEDDING_MODEL only when the ENVIRONMENT owns the mismatch (DW-218)", () => {
+    // The same four legs, twice, differing only in ORIGIN. Without the note the
+    // sentence sends the owner to a box whose value the gate never reads: they
+    // type a supported id, save successfully, and the switch still will not turn
+    // on. With it for a STORED mismatch it would send them to a variable that is
+    // not set. Both directions, because either alone reads as an accident.
+    const legs = {
+      provider: "workers-ai",
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: false,
+      hasWorkersAiBinding: true,
+    } as const;
+    expect(missingCopy({ ...legs, modelOrigin: "env" })).toBe(
+      `${UNSUPPORTED_WORKERS_MODEL} ${SETTINGS_VECTOR_ENV_MODEL_NOTE}`,
+    );
+    expect(missingCopy({ ...legs, modelOrigin: "stored" })).toBe(
+      UNSUPPORTED_WORKERS_MODEL,
+    );
+    // The note NAMES the variable — that is the whole content of the fix.
+    expect(SETTINGS_VECTOR_ENV_MODEL_NOTE).toContain("EMBEDDING_MODEL");
+  });
+
+  it("adds a BINDING leg for Workers AI with no Cloudflare AI binding (DW-225)", () => {
+    // `workers-ai` is exempt from the endpoint and the key BECAUSE the binding
+    // supplies both, so off Workers nothing is left — the switch turned on for a
+    // deployment where `resolveEmbeddingProvider` returns `null` forever.
+    const legs = {
+      provider: "workers-ai",
+      baseUrl: null,
+      model: "@cf/baai/bge-m3",
+      hasKey: false,
+    } as const;
+    expect(canEnable({ ...legs, hasWorkersAiBinding: false })).toBe(false);
+    expect(missingCopy({ ...legs, hasWorkersAiBinding: false })).toBe(
+      `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    );
+    // Bound: nothing missing at all.
+    expect(canEnable({ ...legs, hasWorkersAiBinding: true })).toBe(true);
+    // NOT KNOWABLE: the leg is not applied, which is the pre-change answer and
+    // the one `getVectorSearchSettings()` has to keep giving.
+    expect(canEnable({ ...legs, hasWorkersAiBinding: null })).toBe(true);
+  });
+
+  it("applies the binding leg to NO other provider", () => {
+    // The exemption it complements is `workers-ai`-only; a missing binding says
+    // nothing about Ollama, which reaches its own server over HTTP.
+    expect(
+      canEnable({
+        provider: "ollama",
+        baseUrl: null,
+        model: "nomic-embed-text",
+        hasKey: false,
+        hasWorkersAiBinding: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("composes the binding leg with the model leg rather than hiding it", () => {
+    // Both wrong at once: the sentence lists both, in leg order, and carries
+    // both notes. A refusal that named one would send the owner round twice.
+    expect(
+      missingCopy({
+        provider: "workers-ai",
+        baseUrl: null,
+        model: "text-embedding-3-small",
+        hasKey: false,
+        modelOrigin: "env",
+        hasWorkersAiBinding: false,
+      }),
+    ).toBe(
+      "Vector search needs a supported Workers AI model id " +
+        `(${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) and the Cloudflare AI binding ` +
+        `before it can be turned on. ${SETTINGS_VECTOR_ENV_MODEL_NOTE} ` +
+        SETTINGS_VECTOR_BINDING_NOTE,
+    );
+  });
+});
+
+describe("vectorSearchModelIssue — what the MODEL BOX says about itself (DW-223)", () => {
+  const workersAi = {
+    provider: "workers-ai",
+    baseUrl: null,
+    hasKey: false,
+    hasWorkersAiBinding: true,
+  } as const;
+
+  it("marks the box invalid when the box's OWN value is the wrong one", () => {
+    expect(
+      vectorSearchModelIssue(
+        vectorInputs({ ...workersAi, model: "text-embedding-3-small", modelOrigin: "stored" }),
+      ),
+    ).toEqual({ copy: UNSUPPORTED_WORKERS_MODEL, invalid: true });
+  });
+
+  it("describes but does NOT mark an env-owned mismatch", () => {
+    // `EMBEDDING_MODEL` wins over the box, so the box is not what is wrong and
+    // marking it is a dead end — the owner still needs to know what the gate is
+    // unhappy about, which is why the copy is the same.
+    expect(
+      vectorSearchModelIssue(
+        vectorInputs({ ...workersAi, model: "text-embedding-3-small", modelOrigin: "env" }),
+      ),
+    ).toEqual({ copy: UNSUPPORTED_WORKERS_MODEL, invalid: false });
+  });
+
+  it("says nothing when the id matches, when the box is empty, or when no provider is chosen", () => {
+    // A matching id: no complaint.
+    expect(
+      vectorSearchModelIssue(vectorInputs({ ...workersAi, model: "@cf/baai/bge-m3" })),
+    ).toBeNull();
+    // An EMPTY box holds no wrong value — the checkbox's own "needs a model"
+    // sentence carries that, and marking an empty optional field invalid would
+    // be a complaint about a state the owner has not entered.
+    expect(vectorSearchModelIssue(vectorInputs({ ...workersAi, model: null }))).toBeNull();
+    // No provider: the gate has exactly ONE leg, and it is not this row's.
+    const noProvider = vectorInputs({
+      provider: null,
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: false,
+    });
+    expect(vectorSearchModelIssue(noProvider)).toBeNull();
+    expect(vectorSearchMissingCopy(noProvider)).toBe(
+      "Vector search needs an embedding provider before it can be turned on.",
+    );
+  });
+
+  it("carries the leg's sentence ALONE, never the EMBEDDING_MODEL note", () => {
+    // The model row already carries `settingsEnvOverrideCopy` saying where the
+    // value comes from; a second sentence about the same variable would only
+    // repeat it, so the note stays on the checkbox.
+    const issue = vectorSearchModelIssue(
+      vectorInputs({ ...workersAi, model: "text-embedding-3-small", modelOrigin: "env" }),
+    );
+    expect(issue?.copy).not.toContain("EMBEDDING_MODEL");
+  });
+
+  it("is not disturbed by the OTHER legs being unmet", () => {
+    // A keyed provider missing its endpoint and key still gets exactly the model
+    // sentence here — the row speaks for its own field, not for the switch.
+    expect(
+      vectorSearchModelIssue(
+        vectorInputs({
+          provider: "openai",
+          baseUrl: null,
+          model: "@cf/baai/bge-m3",
+          hasKey: false,
+        }),
+      ),
+    ).toEqual({
+      copy: "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
+      invalid: true,
+    });
   });
 });
 
@@ -678,7 +898,10 @@ describe("the settings draft", () => {
       llmTimeoutSeconds: "1.5",
     });
     expect(body.llmTimeoutSeconds).toBe(1.5);
-    const refusal = validateWorkbenchSettingsPatch(body, workbenchSettingsStored({}));
+    const refusal = validateWorkbenchSettingsPatch(
+      body,
+      workbenchSettingsStored({}, false),
+    );
     expect(refusal).toEqual({ ok: false, error: SETTINGS_INVALID_TIMEOUT_COPY });
   });
 
@@ -743,7 +966,7 @@ describe("the settings draft", () => {
 function storedState(
   over: Partial<ReturnType<typeof workbenchSettingsStored>> = {},
 ): ReturnType<typeof workbenchSettingsStored> {
-  return { ...workbenchSettingsStored({}), ...over };
+  return { ...workbenchSettingsStored({}, false), ...over };
 }
 
 describe("validateWorkbenchSettingsPatch", () => {
@@ -932,6 +1155,90 @@ describe("validateWorkbenchSettingsPatch", () => {
       ).ok,
     ).toBe(true);
   });
+
+  describe("the gate runs only for a patch that MOVES it (DW-219)", () => {
+    /** A deployment already storing a mismatch, with the switch on. */
+    const mismatch = () =>
+      storedState({
+        vectorSearchEnabled: true,
+        embeddingProvider: "workers-ai",
+        embeddingModel: "text-embedding-3-small",
+        hasWorkersAiBinding: true,
+      });
+
+    it("accepts an edit that touches nothing the rule reads", () => {
+      // `settingsSaveBody` sends `vectorSearchEnabled`, `embeddingProvider`,
+      // `embeddingModel` and `embeddingBaseUrl` on EVERY save, so a PRESENCE
+      // test would fix nothing — the body below is the real one a timeout edit
+      // produces, with every vector field riding at its stored value.
+      const body = {
+        chatModel: "gpt-4o",
+        llmTimeoutSeconds: 90,
+        vectorSearchEnabled: true,
+        embeddingProvider: "workers-ai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingBaseUrl: null,
+      };
+      expect(validateWorkbenchSettingsPatch(body, mismatch()).ok).toBe(true);
+    });
+
+    it("still refuses an edit that moves one of the inputs", () => {
+      // Moving the PROVIDER re-opens the whole question, and the answer is a
+      // fresh one: `text-embedding-3-small` is fine for OpenAI, so what is now
+      // missing is the endpoint and the key this provider needs.
+      expect(
+        validateWorkbenchSettingsPatch(
+          { vectorSearchEnabled: true, embeddingProvider: "openai" },
+          mismatch(),
+        ),
+      ).toEqual({
+        ok: false,
+        error: "Vector search needs an endpoint and an API key before it can be turned on.",
+      });
+      // And moving the MODEL to another unsupported id keeps the model leg.
+      expect(
+        validateWorkbenchSettingsPatch(
+          { embeddingModel: "@cf/llava-hf/llava-1.5-7b-hf" },
+          mismatch(),
+        ),
+      ).toEqual({ ok: false, error: UNSUPPORTED_WORKERS_MODEL });
+    });
+
+    it("still refuses TURNING IT ON even when no input moved", () => {
+      // The flag itself is not one of the inputs `vectorInputsEqual` compares,
+      // so "turning on" has to be its own term — without it a stored-off
+      // deployment could switch on over an unchanged mismatch.
+      expect(
+        validateWorkbenchSettingsPatch(
+          { vectorSearchEnabled: true },
+          { ...mismatch(), vectorSearchEnabled: false },
+        ).ok,
+      ).toBe(false);
+    });
+
+    it("still allows turning it OFF over the same mismatch", () => {
+      expect(
+        validateWorkbenchSettingsPatch({ vectorSearchEnabled: false }, mismatch()).ok,
+      ).toBe(true);
+    });
+
+    it("re-checks when a leg goes missing under an already-on switch", () => {
+      // The pre-existing guarantee this scope must not break: the patch moves
+      // `hasKey`, so the rule runs even though the flag is untouched.
+      expect(
+        validateWorkbenchSettingsPatch(
+          { embeddingApiKey: null },
+          storedState({
+            vectorSearchEnabled: true,
+            embeddingProvider: "openai",
+            embeddingBaseUrl: "https://embed.example",
+            embeddingModel: "m",
+            hasEmbeddingApiKey: true,
+          }),
+        ).ok,
+      ).toBe(false);
+    });
+  });
 });
 
 describe("the client and the route read the same vector rule", () => {
@@ -945,6 +1252,8 @@ describe("the client and the route read the same vector rule", () => {
     name: string;
     env: { provider?: string; model?: string; key?: string };
     config: AppConfig;
+    /** The RUNTIME fact both halves must be handed. Default: off Workers. */
+    binding?: boolean;
   }> = [
     { name: "nothing configured", env: {}, config: {} },
     {
@@ -979,6 +1288,27 @@ describe("the client and the route read the same vector rule", () => {
       env: {},
       config: { embeddingProvider: "ollama", embeddingModel: "nomic-embed-text" },
     },
+    // The three situations the two new inputs introduce. Each must be answered
+    // identically by both halves, or the browser disables a control the route
+    // would accept — or enables one it refuses.
+    {
+      name: "Workers AI WITH the Cloudflare AI binding",
+      env: {},
+      config: { embeddingProvider: "workers-ai", embeddingModel: "@cf/baai/bge-m3" },
+      binding: true,
+    },
+    {
+      name: "Workers AI WITHOUT the Cloudflare AI binding",
+      env: {},
+      config: { embeddingProvider: "workers-ai", embeddingModel: "@cf/baai/bge-m3" },
+      binding: false,
+    },
+    {
+      name: "the model the environment forces cannot be served by the provider",
+      env: { model: "text-embedding-3-small" },
+      config: { embeddingProvider: "workers-ai" },
+      binding: true,
+    },
   ];
 
   for (const situation of situations) {
@@ -987,15 +1317,18 @@ describe("the client and the route read the same vector rule", () => {
       if (situation.env.model) process.env.EMBEDDING_MODEL = situation.env.model;
       if (situation.env.key) process.env.OPENAI_API_KEY = situation.env.key;
       await store(situation.config);
+      // ONE read of the runtime fact, handed to BOTH halves — exactly what the
+      // route does per request. Two reads is the shape that lets them drift.
+      const binding = situation.binding ?? false;
 
-      const payload = getWorkbenchSettings();
+      const payload = getWorkbenchSettings(binding);
       const draft = settingsDraftFromPayload(payload);
       // The BROWSER's answer, from the payload alone…
       const client = draftCanEnableVectorSearch(draft, payload);
       // …and the ROUTE's, for the very patch that draft would send.
       const route = validateWorkbenchSettingsPatch(
         { ...settingsSaveBody(draft), vectorSearchEnabled: true },
-        workbenchSettingsStored(situation.config),
+        workbenchSettingsStored(situation.config, binding),
       ).ok;
       expect({ situation: situation.name, client }).toEqual({
         situation: situation.name,
@@ -1011,7 +1344,7 @@ describe("the client and the route read the same vector rule", () => {
       embeddingBaseUrl: "https://embed.example",
       embeddingApiKey: "sk-1",
     });
-    const payload = getWorkbenchSettings();
+    const payload = getWorkbenchSettings(false);
     // The box stays empty — showing an env value in an editable field would
     // persist it on the next save…
     expect(payload.embeddingModel).toBeNull();
@@ -1029,21 +1362,33 @@ describe("the client and the route read the same vector rule", () => {
     // namespace leg — the mismatch can arrive without the owner ever touching
     // the model box, which is exactly the stale-override case
     // `resolveEmbeddingModelName` was written for.
+    // ON Workers, so the ONLY unmet leg is the model — this case is about
+    // WHERE the model came from, and a missing binding would add a second leg
+    // and a second note to every sentence below.
+    onWorkers();
     process.env.EMBEDDING_MODEL = "text-embedding-3-small";
     await store({ embeddingProvider: "workers-ai", vectorSearchEnabled: true });
 
-    const payload = getWorkbenchSettings();
+    const payload = getWorkbenchSettings(true);
     expect(payload.envEmbeddingModel).toBe("text-embedding-3-small");
 
-    // The browser refuses, and says why…
+    // The browser refuses, and says why — INCLUDING which variable owns the
+    // value, without which the sentence points at a box the gate never reads
+    // (DW-218).
     const draft = settingsDraftFromPayload(payload);
     expect(draftCanEnableVectorSearch(draft, payload)).toBe(false);
     expect(vectorSearchMissingCopy(draftVectorInputs(draft, payload))).toBe(
-      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
+      `${UNSUPPORTED_WORKERS_MODEL} ${SETTINGS_VECTOR_ENV_MODEL_NOTE}`,
     );
+    expect(SETTINGS_VECTOR_ENV_MODEL_NOTE).toContain("EMBEDDING_MODEL");
     // …the already-stored `true` reads as off…
     expect(getVectorSearchSettings().enabled).toBe(false);
-    // …and the route refuses the save with the same sentence.
+    // …and the route refuses the save with the same sentence. The flag is put
+    // back to OFF first so this is a genuine TURN-ON: since DW-219 the gate is
+    // scoped to patches that move it, and a store that already holds `true` is
+    // not moved by a patch repeating `true` (that skip is pinned in its own
+    // cases under `PUT /api/settings`).
+    await store({ embeddingProvider: "workers-ai" });
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(
       await put({
@@ -1052,8 +1397,105 @@ describe("the client and the route read the same vector rule", () => {
     );
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
+      `${UNSUPPORTED_WORKERS_MODEL} ${SETTINGS_VECTOR_ENV_MODEL_NOTE}`,
     );
+  });
+
+  it("does NOT name EMBEDDING_MODEL when the STORE owns the mismatch (DW-218)", async () => {
+    // The other half of the same rule. Naming a variable that is not set would
+    // send the owner to a shell they have nothing to change — the box IS what is
+    // wrong here, and the model row says so with `aria-invalid` instead.
+    onWorkers();
+    await store({
+      embeddingProvider: "workers-ai",
+      embeddingModel: "text-embedding-3-small",
+    });
+
+    const payload = getWorkbenchSettings(true);
+    expect(payload.envEmbeddingModel).toBeNull();
+    const draft = settingsDraftFromPayload(payload);
+    const inputs = draftVectorInputs(draft, payload);
+    expect(inputs.modelOrigin).toBe("stored");
+    expect(vectorSearchMissingCopy(inputs)).toBe(UNSUPPORTED_WORKERS_MODEL);
+    expect(vectorSearchModelIssue(inputs)).toEqual({
+      copy: UNSUPPORTED_WORKERS_MODEL,
+      invalid: true,
+    });
+  });
+
+  it("refuses Workers AI off the Workers runtime, naming the binding (DW-225)", async () => {
+    // `SELF_TRANSPORTING_EMBEDDING_PROVIDERS` exempts `workers-ai` from the
+    // endpoint and the key precisely BECAUSE the Cloudflare `AI` binding
+    // supplies both — so on Docker, where no such binding exists, the old gate
+    // turned the switch on for a deployment whose `resolveEmbeddingProvider`
+    // returns `null` forever. Nothing about the stored config is wrong here: the
+    // id is supported and the provider is explicit.
+    await store({
+      embeddingProvider: "workers-ai",
+      embeddingModel: "@cf/baai/bge-m3",
+    });
+
+    const payload = getWorkbenchSettings(false);
+    expect(payload.hasWorkersAiBinding).toBe(false);
+    const draft = settingsDraftFromPayload(payload);
+    expect(draftCanEnableVectorSearch(draft, payload)).toBe(false);
+    const sentence = vectorSearchMissingCopy(draftVectorInputs(draft, payload));
+    expect(sentence).toBe(
+      `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    );
+    // The model row has nothing to complain about — the id is fine.
+    expect(vectorSearchModelIssue(draftVectorInputs(draft, payload))).toBeNull();
+
+    // And the route, which reads the binding for itself, answers the same.
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(await put({ workbench: { vectorSearchEnabled: true } }));
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(sentence);
+  });
+
+  it("allows the same deployment once the binding is bound (DW-225)", async () => {
+    onWorkers();
+    await store({
+      embeddingProvider: "workers-ai",
+      embeddingModel: "@cf/baai/bge-m3",
+    });
+
+    const payload = getWorkbenchSettings(true);
+    expect(payload.hasWorkersAiBinding).toBe(true);
+    expect(
+      draftCanEnableVectorSearch(settingsDraftFromPayload(payload), payload),
+    ).toBe(true);
+
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(await put({ workbench: { vectorSearchEnabled: true } }));
+    expect(response.status).toBe(200);
+    // The landed save RE-SEEDS the draft from this body, so the fact has to be
+    // on it too — a PUT response that dropped it would hand the surface a
+    // payload its own type guard rejects, and the canvas would report a save
+    // that landed as a failure.
+    const body = (await response.json()) as { workbench: WorkbenchSettingsPayload };
+    expect(body.workbench.hasWorkersAiBinding).toBe(true);
+    expect(isWorkbenchSettingsPayload(body.workbench)).toBe(true);
+  });
+
+  it("does not apply the binding leg where the fact is not knowable", async () => {
+    // `getVectorSearchSettings()` runs inside `config.ts` and passes `null`, so
+    // it answers exactly as it did before this change even though this process
+    // is nowhere near a Workers runtime. The embed path refuses independently.
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "@cf/baai/bge-m3",
+    });
+    expect(getVectorSearchSettings().enabled).toBe(true);
+    // And the two gate-only inputs do not leak onto the settings object.
+    expect(Object.keys(getVectorSearchSettings()).sort()).toEqual([
+      "baseUrl",
+      "enabled",
+      "hasKey",
+      "model",
+      "provider",
+    ]);
   });
 
   it("does not let a TYPED matching id lift a refusal the env override owns", async () => {
@@ -1061,10 +1503,11 @@ describe("the client and the route read the same vector rule", () => {
     // WINS over the box in every feeder, so typing a `@cf/` id fixes nothing
     // until `EMBEDDING_MODEL` is unset. Pinning it is what keeps a later
     // "helpful" change to the precedence from passing unnoticed.
+    onWorkers();
     process.env.EMBEDDING_MODEL = "text-embedding-3-small";
     await store({ embeddingProvider: "workers-ai" });
 
-    const payload = getWorkbenchSettings();
+    const payload = getWorkbenchSettings(true);
     const typed = {
       ...settingsDraftFromPayload(payload),
       embeddingModel: "@cf/baai/bge-m3",
@@ -1082,7 +1525,7 @@ describe("the client and the route read the same vector rule", () => {
     );
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
+      `${UNSUPPORTED_WORKERS_MODEL} ${SETTINGS_VECTOR_ENV_MODEL_NOTE}`,
     );
   });
 });
@@ -1103,7 +1546,7 @@ describe("the editing payload serves the STORED vector flag", () => {
     // …but the surface must still show the owner's own stored decision, because
     // `settingsSaveBody` always sends this field back: serving the intersected
     // value would make the next timeout edit silently rewrite `true` to `false`.
-    const payload = getWorkbenchSettings();
+    const payload = getWorkbenchSettings(false);
     expect(payload.vectorSearchEnabled).toBe(true);
     expect(settingsSaveBody(settingsDraftFromPayload(payload)).vectorSearchEnabled).toBe(
       true,
@@ -1410,6 +1853,28 @@ describe("the settings client", () => {
       expect(
         isWorkbenchSettingsPayload({ ...emptyPayload(), version }),
       ).toBe(false);
+    }
+  });
+
+  it("REQUIRES `hasWorkersAiBinding`, unlike the version (DW-225)", () => {
+    // The one field on this payload with no safe default, so it is the one
+    // absence that is NOT degraded over. `true` would enable the switch on a
+    // deployment with no binding and `false` would refuse `workers-ai` on
+    // Workers itself, so a payload without it is not one — the surface shows the
+    // load-failed sentence rather than guessing.
+    const { hasWorkersAiBinding: _dropped, ...without } = emptyPayload();
+    expect(isWorkbenchSettingsPayload(without)).toBe(false);
+    for (const value of [null, "false", 0, 1]) {
+      expect(
+        isWorkbenchSettingsPayload({ ...emptyPayload(), hasWorkersAiBinding: value }),
+      ).toBe(false);
+    }
+    // Both booleans are accepted, so the guard is about TYPE, not about which
+    // deployment this is.
+    for (const value of [true, false]) {
+      expect(
+        isWorkbenchSettingsPayload({ ...emptyPayload(), hasWorkersAiBinding: value }),
+      ).toBe(true);
     }
   });
 });
@@ -1737,6 +2202,11 @@ describe("PUT /api/settings", () => {
     // DW-73: the gate used to accept any non-empty model, and
     // `resolveEmbeddingModelName` then discarded this one for `@cf/baai/bge-m3`
     // without a word. Now the route says so and writes nothing.
+    //
+    // ON Workers, so the MODEL is the only unmet leg: off the runtime the
+    // binding leg (DW-225) would refuse this same request for a second reason
+    // and the sentence below would no longer be about DW-73 at all.
+    onWorkers();
     await store({ provider: "openai" });
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(
@@ -1750,9 +2220,7 @@ describe("PUT /api/settings", () => {
     );
     expect(response.status).toBe(400);
     const body = (await response.json()) as { error: string };
-    expect(body.error).toBe(
-      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
-    );
+    expect(body.error).toBe(UNSUPPORTED_WORKERS_MODEL);
     expect(await stored()).toEqual({ provider: "openai" });
   });
 
@@ -1780,20 +2248,19 @@ describe("PUT /api/settings", () => {
     expect(await stored()).toEqual({ provider: "openai" });
   });
 
-  it("refuses an UNRELATED edit while the STORED config holds a mismatch", async () => {
-    // Every other route case here puts the offending model IN the request. This
-    // one does not: the mismatch is already in the store and the patch touches
-    // only `chatModel`. `validateWorkbenchSettingsPatch` takes the flag from the
-    // patch when present and from the STORE otherwise, then re-runs the whole
-    // rule over the merged inputs — so the namespace leg is not scoped to the
-    // fields being edited. Narrowing it to the patch would leave every other
-    // route test in this file green, which is the regression this case exists
-    // to catch.
+  it("ACCEPTS an unrelated edit while the STORED config holds a mismatch (DW-219)", async () => {
+    // The inversion this spec makes, and the reason it is a bug rather than a
+    // strictness: `settingsSaveBody` sends `vectorSearchEnabled` on EVERY save,
+    // so re-running the whole rule whenever the merged flag was on answered 400
+    // to a chat-model or a timeout edit on any deployment already storing a
+    // mismatch — naming a field the owner's edit never touched, with no way out
+    // of the surface except turning the switch off.
     //
-    // It is also the friction this spec's `deferred` list records: until the
-    // model is fixed or the switch turned off, unrelated Workbench saves are
-    // refused with the namespace sentence. Recovery is always available (the
-    // switch may be turned OFF), so the behaviour is pinned, not softened.
+    // The gate is now scoped to patches that MOVE something it reads. Nothing
+    // escapes: `getVectorSearchSettings()` still intersects the stored flag with
+    // the same predicate, so the mismatch still reads as vector-OFF (asserted
+    // below), and the switch cannot be turned on while it stands.
+    onWorkers();
     await store({
       vectorSearchEnabled: true,
       embeddingProvider: "workers-ai",
@@ -1802,12 +2269,39 @@ describe("PUT /api/settings", () => {
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(await put({ workbench: { chatModel: "gpt-4o" } }));
 
+    expect(response.status).toBe(200);
+    // The edit landed, and the owner's own stored flag was NOT rewritten by it.
+    expect(await stored()).toMatchObject({
+      chatModel: "gpt-4o",
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "text-embedding-3-small",
+    });
+    await loadConfig();
+    // …while the effective answer is still off, which is what makes the skip
+    // safe rather than a hole.
+    expect(getVectorSearchSettings().enabled).toBe(false);
+  });
+
+  it("still refuses an edit that MOVES a vector input over the same store (DW-219)", async () => {
+    // The other side of the scope. `embeddingModel` is one of the inputs the
+    // rule reads, so this patch re-opens the question — and the answer is still
+    // no, with the sentence, and nothing written.
+    onWorkers();
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "text-embedding-3-small",
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(
+      await put({ workbench: { embeddingModel: "@cf/llava-hf/llava-1.5-7b-hf" } }),
+    );
+
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
+      UNSUPPORTED_WORKERS_MODEL,
     );
-    // The unrelated edit did NOT land — the refusal precedes `saveConfig`, so
-    // the store is byte-for-byte what it was.
     expect(await stored()).toEqual({
       vectorSearchEnabled: true,
       embeddingProvider: "workers-ai",
@@ -1815,7 +2309,83 @@ describe("PUT /api/settings", () => {
     });
   });
 
+  it("still refuses TURNING IT ON over a mismatch, and allows turning it OFF (DW-219)", async () => {
+    // The two doors the scope must leave exactly where they were. Turning ON is
+    // always re-checked even when no input moved; turning OFF is always allowed,
+    // which is the owner's way out of the state above.
+    onWorkers();
+    await store({
+      embeddingProvider: "workers-ai",
+      embeddingModel: "text-embedding-3-small",
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+    const refused = await PUT(
+      await put({ workbench: { vectorSearchEnabled: true } }),
+    );
+    expect(refused.status).toBe(400);
+    expect(((await refused.json()) as { error: string }).error).toBe(
+      UNSUPPORTED_WORKERS_MODEL,
+    );
+
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "text-embedding-3-small",
+    });
+    const allowed = await PUT(
+      await put({ workbench: { vectorSearchEnabled: false } }),
+    );
+    expect(allowed.status).toBe(200);
+    expect(await stored()).toMatchObject({ vectorSearchEnabled: false });
+  });
+
+  it("ACCEPTS a typed id over an ALREADY-ON env mismatch, and stays off (DW-218 x DW-219)", async () => {
+    // CHARACTERIZATION of the corner where the two fixes meet, written down
+    // because it is surprising rather than because it is wrong.
+    //
+    // `EMBEDDING_MODEL` owns the mismatch and the switch is ALREADY stored on.
+    // The owner types a supported `@cf/` id and saves: the override still wins,
+    // so the merged inputs are identical to the ones already stored, nothing
+    // moved, and the switch is not being turned on — so the gate does not run
+    // and the save is answered 200. Before DW-219 it was 400.
+    //
+    // It is not a regression, for two reasons. Nothing was enabled: the flag was
+    // already on, and effective vector search stays OFF (asserted below) because
+    // `getVectorSearchSettings()` intersects the flag with the same predicate.
+    // And the refusal is still on screen — the checkbox announces the sentence
+    // WITH the `EMBEDDING_MODEL` note, which is the DW-218 fix telling the owner
+    // that the box they just typed into is not the one that matters.
+    onWorkers();
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+    await store({ vectorSearchEnabled: true, embeddingProvider: "workers-ai" });
+
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(
+      await put({
+        workbench: { vectorSearchEnabled: true, embeddingModel: "@cf/baai/bge-m3" },
+      }),
+    );
+    expect(response.status).toBe(200);
+
+    // The typed id was stored — it is what applies the day the variable is
+    // unset — while the effective switch is still off underneath it.
+    await loadConfig();
+    expect(await stored()).toMatchObject({ embeddingModel: "@cf/baai/bge-m3" });
+    expect(getVectorSearchSettings().enabled).toBe(false);
+
+    // And the surface still says why, naming the variable that owns it.
+    const payload = getWorkbenchSettings(true);
+    const draft = settingsDraftFromPayload(payload);
+    expect(vectorSearchMissingCopy(draftVectorInputs(draft, payload))).toBe(
+      `${UNSUPPORTED_WORKERS_MODEL} ${SETTINGS_VECTOR_ENV_MODEL_NOTE}`,
+    );
+  });
+
   it("turns vector search on for a Workers AI id under Workers AI", async () => {
+    // ON Workers: `workers-ai` is self-transporting THROUGH the Cloudflare `AI`
+    // binding, so without one the save is refused by the binding leg (DW-225) —
+    // see the case below, which is the same request off the runtime.
+    onWorkers();
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(
       await put({
@@ -1831,6 +2401,62 @@ describe("PUT /api/settings", () => {
     expect(getVectorSearchSettings().enabled).toBe(true);
   });
 
+  it("SERVES the binding it read, on GET, in both directions (DW-225)", async () => {
+    // The value, not just the type. `isWorkbenchSettingsPayload` only checks
+    // that the field is a boolean, and the agreement table hands one local
+    // boolean to both halves — so a `GET` that hardcoded `false` (or dropped the
+    // read entirely) would leave every other case in this repo green while the
+    // browser's half of the rule ran on a fiction.
+    await store({ embeddingProvider: "workers-ai", embeddingModel: "@cf/baai/bge-m3" });
+    const { GET } = await import("@/app/api/settings/route");
+
+    const offWorkers = (await (await GET()).json()) as {
+      workbench: WorkbenchSettingsPayload;
+    };
+    expect(offWorkers.workbench.hasWorkersAiBinding).toBe(false);
+    // …and the browser, fed only that body, refuses.
+    expect(
+      draftCanEnableVectorSearch(
+        settingsDraftFromPayload(offWorkers.workbench),
+        offWorkers.workbench,
+      ),
+    ).toBe(false);
+
+    onWorkers();
+    const onRuntime = (await (await GET()).json()) as {
+      workbench: WorkbenchSettingsPayload;
+    };
+    expect(onRuntime.workbench.hasWorkersAiBinding).toBe(true);
+    expect(
+      draftCanEnableVectorSearch(
+        settingsDraftFromPayload(onRuntime.workbench),
+        onRuntime.workbench,
+      ),
+    ).toBe(true);
+  });
+
+  it("refuses the SAME request off the Workers runtime (DW-225)", async () => {
+    // No `onWorkers()`: `getCloudflareContext()` throws, `getWorkersAiBinding()`
+    // is `null`, and the switch would otherwise turn on for a deployment where
+    // `resolveEmbeddingProvider` returns `null` forever.
+    await store({ provider: "openai" });
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(
+      await put({
+        workbench: {
+          vectorSearchEnabled: true,
+          embeddingProvider: "workers-ai",
+          embeddingModel: "@cf/baai/bge-m3",
+        },
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    );
+    expect(await stored()).toEqual({ provider: "openai" });
+  });
+
   it("reads a STORED namespace mismatch as vector-off", async () => {
     // Bytes that arrived another way (a hand-edited config, an older release)
     // get the same answer as a save would: off, with the Settings sentence
@@ -1841,14 +2467,13 @@ describe("PUT /api/settings", () => {
       embeddingModel: "text-embedding-3-small",
     });
     expect(getVectorSearchSettings().enabled).toBe(false);
-    const payload = getWorkbenchSettings();
+    // ON Workers, so the model is the only leg this case is about.
+    const payload = getWorkbenchSettings(true);
     expect(
       vectorSearchMissingCopy(
         draftVectorInputs(settingsDraftFromPayload(payload), payload),
       ),
-    ).toBe(
-      "Vector search needs a supported Workers AI model id (@cf/baai/bge-small-en-v1.5, @cf/baai/bge-base-en-v1.5, @cf/baai/bge-large-en-v1.5, @cf/baai/bge-m3) before it can be turned on.",
-    );
+    ).toBe(UNSUPPORTED_WORKERS_MODEL);
   });
 
   it("turns vector search on when the endpoint, the model and the key all arrive", async () => {
@@ -2226,6 +2851,43 @@ describe("PUT /api/settings", () => {
     });
   });
 
+  it("REFUSES a flat embedding field that breaks the gate beside a workbench key", async () => {
+    // The refusal direction of the case above, and the one the DW-219 scoping
+    // could quietly drop. The gate now re-runs only when the request MOVES an
+    // input — and the flat `embeddingModel` branch has ALREADY landed on the
+    // object the patch is merged onto by the time the validator sees it. Handed
+    // that same object as both the merge target and the "what did this request
+    // move" baseline, the flat move would compare equal to itself and skip the
+    // gate. So the route passes `existing` — the PRE-request config — as the
+    // baseline, and this is what that argument buys.
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingBaseUrl: "https://embed.example",
+      embeddingApiKey: "sk-embed",
+      embeddingModel: "text-embedding-3-small",
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+    const response = await PUT(
+      await put({
+        // Flat, and a namespace mismatch for the stored `openai` selection…
+        embeddingModel: "@cf/baai/bge-m3",
+        // …beside a `workbench` key that moves nothing the rule reads.
+        workbench: { chatModel: "gpt-4o" },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      "Vector search needs a model id outside the Workers AI @cf/ namespace before it can be turned on.",
+    );
+    // Nothing written — not the flat field, not the chat model.
+    expect(await stored()).toMatchObject({
+      embeddingModel: "text-embedding-3-small",
+    });
+    expect(await stored()).not.toMatchObject({ chatModel: "gpt-4o" });
+  });
+
   it("lets a FLAT-ONLY body store a namespace mismatch the gate never runs on", async () => {
     // CHARACTERIZATION, not endorsement. The case above passes only because its
     // body also carries `workbench`, which is what makes the route enter the
@@ -2341,7 +3003,7 @@ describe("the workload resolvers", () => {
       hasKey: true,
     });
     // The resolver reports presence; it does not hand the key back.
-    expect(JSON.stringify(getWorkbenchSettings())).not.toContain("fc-1");
+    expect(JSON.stringify(getWorkbenchSettings(false))).not.toContain("fc-1");
   });
 
   it("refuses to report a hand-forced vector switch as on", async () => {

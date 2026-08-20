@@ -12,6 +12,16 @@ import {
 } from "@/lib/config";
 import { getEffectiveProvider } from "@/lib/config";
 import { validateWorkbenchSettingsPatch } from "@/lib/workbench-settings";
+/**
+ * The ONE place the Cloudflare `AI` binding is read for the settings surface
+ * (DW-225).
+ *
+ * Server-only, so importing `embeddings.ts` here is fine — `workbench-settings.ts`
+ * must stay client-safe and `config.ts` must not deepen its edge into the embed
+ * path, which is why the fact travels as DATA from this route into both halves
+ * of the vector rule rather than being called from either.
+ */
+import { getWorkersAiBinding } from "@/lib/embeddings";
 import {
   PROVIDER_INFO,
   EMBEDDING_PROVIDERS,
@@ -73,6 +83,11 @@ export async function GET() {
   // hand-edited config re-serialized in another key order is not a conflict
   // with itself — nothing about the bytes is read at all.
   const version = read.version;
+  // Read ONCE and handed to the resolver: `workers-ai` is self-transporting
+  // through this binding, so off Workers the vector switch must refuse rather
+  // than turn on for a deployment that would embed nothing (DW-225). The browser
+  // has no way to ask, so the answer rides on the payload.
+  const hasWorkersAiBinding = getWorkersAiBinding() !== null;
   // ONE settings API. Story 1.9's fields ride under ONE nested `workbench` key
   // beside the frozen legacy object — widening `EffectiveSettings` would force
   // edits to `settings-route.test.ts`'s whole-object fixture and to
@@ -84,7 +99,7 @@ export async function GET() {
   return Response.json({
     ...settings,
     version,
-    workbench: { ...getWorkbenchSettings(), version },
+    workbench: { ...getWorkbenchSettings(hasWorkersAiBinding), version },
   });
 }
 
@@ -105,6 +120,11 @@ export async function PUT(request: Request) {
       { status: 403 },
     );
   }
+
+  // ONE read per request, shared by the state the patch is VALIDATED against and
+  // the payload the response re-seeds the draft from — two reads could differ
+  // and would make the refusal and the redraw disagree (DW-225).
+  const hasWorkersAiBinding = getWorkersAiBinding() !== null;
 
   try {
     const body = (await request.json()) as Partial<AppConfig> & {
@@ -328,11 +348,21 @@ export async function PUT(request: Request) {
     // than a disabled button. `workbenchSettingsStored(updated)` is deliberately
     // the post-legacy-merge object: an `embeddingModel` set by the flat field in
     // this same request counts toward the gate.
+    //
+    // …which is precisely why the THIRD argument is `existing` rather than
+    // `updated` (DW-219). The gate now re-runs only when the request MOVES
+    // something the rule reads, and that question has to be asked against what
+    // the store held BEFORE this request. Handed `updated` for both, a flat
+    // `embeddingModel` would already be baked into the "before" picture, compare
+    // equal to itself, and skip the gate — silently undoing the promise the
+    // paragraph above makes. `updated` stays the MERGE TARGET; `existing` is the
+    // BASELINE the move is measured from.
     let merged = updated;
     if (body.workbench !== undefined) {
       const validation = validateWorkbenchSettingsPatch(
         body.workbench,
-        workbenchSettingsStored(updated),
+        workbenchSettingsStored(updated, hasWorkersAiBinding),
+        workbenchSettingsStored(existing, hasWorkersAiBinding),
       );
       if (!validation.ok) {
         // Nothing is written: the refusal happens before `saveConfig`, so a
@@ -358,7 +388,7 @@ export async function PUT(request: Request) {
       version,
       // The fresh stored values, so a landed save re-seeds the surface's draft
       // from what the kernel actually holds rather than from what was sent.
-      workbench: { ...getWorkbenchSettings(), version },
+      workbench: { ...getWorkbenchSettings(hasWorkersAiBinding), version },
     });
   } catch (err) {
     const message = getErrorMessage(err);

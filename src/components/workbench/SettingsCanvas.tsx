@@ -46,6 +46,7 @@ import {
   settingsEnvOverrideCopy,
   settingsSaveBody,
   vectorSearchMissingCopy,
+  vectorSearchModelIssue,
   type SettingsCategoryId,
   type SettingsDraft,
   type WorkbenchSettingsPayload,
@@ -241,6 +242,11 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
   const vectorInputs = draftVectorInputs(draft, payload);
   const vectorAllowed = draftCanEnableVectorSearch(draft, payload);
   const vectorBlocked = vectorSearchMissingCopy(vectorInputs);
+  // What the embedding-model INPUT has to say about itself (DW-223). The
+  // refusal used to be announced only as the checkbox's description, while the
+  // box holding the wrong value carried nothing — and the ordinary way into that
+  // state is changing the provider select, which touches neither control.
+  const vectorModelIssue = vectorSearchModelIssue(vectorInputs);
   // The vector switch's WHOLE refusal predicate, named once so the attribute
   // that announces it and the handler that enforces it cannot drift into
   // disagreeing about when the toggle is refused. Turning it OFF is always
@@ -278,10 +284,17 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
     return stored.readOnly ? `${hintId} ${readOnlyNoteId}` : hintId;
   }
 
+  /**
+   * @param invalid Marks the control `aria-invalid` — reserved for a box whose
+   *   OWN value is the thing being complained about. A complaint the owner
+   *   cannot fix from this box (an `EMBEDDING_MODEL` override, say) is described
+   *   without being marked, because marking it is a dead end.
+   */
   function textRow(
     key: "chatModel" | "ingestModel" | "customBaseUrl" | "embeddingModel" | "embeddingBaseUrl" | "firecrawlBaseUrl" | "llmTimeoutSeconds",
     label: string,
     hint?: string,
+    invalid?: boolean,
   ) {
     const id = field(key);
     const hintId = `${id}-hint`;
@@ -302,6 +315,13 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
           // A range printed beside a box is invisible to a screen reader; the
           // accepted values have to be part of the control's own description.
           aria-describedby={hint ? hintId : undefined}
+          // Only when this box holds the wrong value — see the parameter's note.
+          // NEVER on a read-only deployment: the same rule that leaves an
+          // env-owned mismatch described-but-unmarked applies whole here, since
+          // `YOPEDIA_READONLY` makes every box unfixable. The DESCRIPTION still
+          // rides, so the reason is announced; only the "this field is wrong,
+          // fix it" mark is withheld, because there is nothing to fix it with.
+          aria-invalid={(invalid && !stored.readOnly) || undefined}
         />
         {hint && (
           <span className="wb-set-hint" id={hintId}>
@@ -485,9 +505,20 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
             {textRow(
               "embeddingModel",
               "Embedding model",
-              stored.envEmbeddingModel
-                ? settingsEnvOverrideCopy("model", stored.envEmbeddingModel)
-                : undefined,
+              // The env sentence first (where the value comes from), then the
+              // gate's complaint about it (what is wrong with it). Both are the
+              // control's OWN description, so a screen reader reads them on the
+              // field rather than leaving the complaint on a checkbox three rows
+              // down.
+              [
+                stored.envEmbeddingModel
+                  ? settingsEnvOverrideCopy("model", stored.envEmbeddingModel)
+                  : null,
+                vectorModelIssue?.copy ?? null,
+              ]
+                .filter((part): part is string => part !== null)
+                .join(" ") || undefined,
+              vectorModelIssue?.invalid,
             )}
             {textRow("embeddingBaseUrl", "Embedding endpoint")}
             {secretRow(
