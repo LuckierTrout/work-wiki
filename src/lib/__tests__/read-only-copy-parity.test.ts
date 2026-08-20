@@ -18,10 +18,44 @@
  * component modules for their exported copy needs no DOM.
  */
 import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { READ_ONLY_REFUSAL } from "../read-only";
+import {
+  WIKI_CREATE_READ_ONLY_COPY,
+  WIKI_TEMPLATE_READ_ONLY_COPY,
+} from "../workbench-tree";
 import { DELETE_PAGE_READ_ONLY_COPY } from "@/components/DeletePageButton";
 import { REINGEST_READ_ONLY_COPY } from "@/components/ReingestButton";
 import { REVERT_READ_ONLY_COPY } from "@/components/RevisionHistory";
+import { WORKSPACE_PURPOSE_READ_ONLY_COPY } from "@/components/WorkspacePurposeSettings";
+
+/**
+ * A route's own 403 sentence, read out of its source.
+ *
+ * Three of the doors below spell their refusal INLINE rather than through
+ * `READ_ONLY_REFUSAL` — they gate at the HTTP layer on `isReadOnly()` instead of
+ * reaching a kernel writer — so there is no constant to compare against and a
+ * literal restated here would only pin this file to itself. Reading the handler
+ * means a reworded route body fails on the next run, which is the whole point.
+ */
+async function routeSource(route: string): Promise<string> {
+  return readFile(path.resolve(__dirname, "../../app/api", route), "utf8");
+}
+
+/**
+ * The sentence as the handler SERVES it, not as the file merely mentions it.
+ *
+ * A bare `toContain(sentence)` matches anywhere — a comment quoting the old
+ * wording, or a dead branch left behind by the rewrite — so a route that
+ * reworded its actual response body would still pass while the owner read one
+ * sentence before pressing and another in the 403 afterwards. All three
+ * handlers below answer through `NextResponse.json({ error: "…" }, …)`, so the
+ * `error:` key is what gets pinned.
+ */
+function servedAs(sentence: string): string {
+  return `error: ${JSON.stringify(sentence)}`;
+}
 
 describe("client refusal copy mirrors the server's", () => {
   it("Delete says exactly what DELETE /api/wiki/[slug] answers", () => {
@@ -47,6 +81,38 @@ describe("client refusal copy mirrors the server's", () => {
     // either sentence actionable.
     expect(READ_ONLY_REFUSAL.pageWrite).toContain("read-only");
     expect(REVERT_READ_ONLY_COPY).toContain("read-only");
+  });
+
+  it("Change template says exactly what POST /api/wikis/[id]/template answers", async () => {
+    // The canvas card opened a DESTRUCTIVE confirm onto this 403 (DW-189), so
+    // the sentence the owner now reads instead of confirming has to be the one
+    // the door would have answered afterwards.
+    const route = await routeSource("wikis/[id]/template/route.ts");
+    expect(route).toContain(servedAs(WIKI_TEMPLATE_READ_ONLY_COPY));
+    // …and not by accident of a substring: the switcher's four-verb sentence
+    // does not cover templates, which is why this constant exists at all.
+    expect(WIKI_TEMPLATE_READ_ONLY_COPY).not.toBe(WIKI_CREATE_READ_ONLY_COPY);
+  });
+
+  it("the canvas's Create Wiki says exactly what POST /api/wikis answers", async () => {
+    const route = await routeSource("wikis/route.ts");
+    expect(route).toContain(servedAs(WIKI_CREATE_READ_ONLY_COPY));
+  });
+
+  it("Workspace Purpose is narrower than the Settings sentence behind it, on purpose", async () => {
+    // `PUT /api/workspace-profile` refuses with a sentence about SETTINGS —
+    // true of every field that surface owns, and unhelpful beside a form that
+    // edits one thing. Recorded as a difference rather than left to look like
+    // the re-ingest bug above.
+    const route = await routeSource("workspace-profile/route.ts");
+    const served = "Settings are read-only in this deployment.";
+    expect(route).toContain(servedAs(served));
+    expect(WORKSPACE_PURPOSE_READ_ONLY_COPY).not.toBe(served);
+    expect(WORKSPACE_PURPOSE_READ_ONLY_COPY).toContain("Workspace Purpose");
+    // Both still name the deployment state, which is what makes either
+    // sentence actionable.
+    expect(served).toContain("read-only");
+    expect(WORKSPACE_PURPOSE_READ_ONLY_COPY).toContain("read-only");
   });
 
   it("every server sentence names read-only and reads as a sentence", () => {

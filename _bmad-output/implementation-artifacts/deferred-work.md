@@ -1668,7 +1668,8 @@ source_spec: `spec-dw-37-read-only-deployment-consistency.md`
 location: src/components/WikiWorkbench.tsx:193
 severity: low
 reason: `PUT /api/wikis/[id]/template` has consulted isReadOnly() since before this work (src/app/api/wikis/[id]/template/route.ts:24), but the canvas card's Change template button (src/components/WikiWorkbench.tsx:193) opens its confirm dialog unconditionally — the same confirm-then-403 shape DW-149 names, one card away from the switcher this bundle fixed. Pre-existing; the bundle names WikiSwitcher only, and the canvas card is not under the shell seam this change threaded readOnly through.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw3-read-only-surface-affordances
 
 ### DW-190: `POST /api/ingest/reingest` rewrites an entire page body with no isReadOnly() gate, and its control sits on the same article action bar as the Delete button this bundle just gated.
 origin: spec-deferred 948ef5e14a2f
@@ -1685,7 +1686,8 @@ source_spec: `spec-dw-37-read-only-deployment-consistency.md`
 location: src/components/WorkspacePurposeSettings.tsx:223
 severity: medium
 reason: src/components/WorkspacePurposeSettings.tsx:223 is `<fieldset disabled={loading || saving || readOnly || !wiki}>` around every field and the Save button (:331 disables Save again). `disabled` on a fieldset removes every descendant from the tab order, so a keyboard or screen-reader user cannot read the stored Workspace Purpose at all — the exact harm DW-65 names for the Settings selects, on a surface the bundle did not name. The file already renders the read-only sentence at :344, so only the refusal mechanism is wrong. Pre-existing; the spec's Code Map cites this file only as the copy pattern to follow.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw3-read-only-surface-affordances
 
 ### DW-192: `loadConfig()` answers `{}` for an UNREADABLE config as well as an absent one, so the settings route can merge a patch into an empty object and `saveConfig` writes away every stored field.
 origin: spec-deferred 4b41f7d77923
@@ -2564,4 +2566,36 @@ source_spec: `spec-dw-161-164-storage-write-integrity.md`
 location: src/lib/research-projects.ts:117
 severity: low
 reason: The create guard added here makes the slice unreachable on the create path, but `updateResearchProject`/`deleteResearchProject` still route through it, so a registry that is already over cap (only reachable if `MAX_PROJECTS` is ever lowered) loses its oldest entries with no error and no log. Left deliberately: removing the backstop changes behaviour no ledger entry asks about.
+status: open
+
+### DW-299: `/settings` still refuses read-only by disabling its whole form fieldset — the identical DW-191 defect, one section above the form this change fixed.
+origin: spec-deferred 32fcc7e0ed24
+source_spec: `spec-dw-189-191-read-only-surface-affordances.md`
+location: src/app/settings/page.tsx:118
+severity: medium
+reason: `src/app/settings/page.tsx:118` is `<fieldset disabled={readOnly} className="max-w-4xl disabled:opacity-60">` around `ProviderForm`, `StructuredKnowledgeSettings`, `EmbeddingSettings`, the Save submit (`:161`) and `Test Connection` (`:167`) — and that same page renders `<WorkspacePurposeSettings />` at `:205`. So after this change one scroll of `/settings` refuses read-only two contradictory ways: the lower form keeps every stored value readable and in the tab order, the upper one still removes the stored provider, model, base URL, embedding model and the (non-writing) `Test Connection` button from it entirely. `SettingsCanvas` — the Workbench twin of that same form — already refuses per control. No suite mounts `src/app/settings/page.tsx` at all (no test file references it), so the inconsistency is invisible in both directions. Pre-existing; the bundle intent names WorkspacePurposeSettings and WikiWorkbench only.
+status: open
+
+### DW-300: `/api/names-terms` and `/api/email/settings` have no `isReadOnly()` gate, so those Settings forms silently SUCCEED on a read-only deployment.
+origin: spec-deferred 62ef6bcca620
+source_spec: `spec-dw-189-191-read-only-surface-affordances.md`
+location: src/app/api/names-terms/route.ts:23
+severity: medium
+reason: `src/app/api/names-terms/route.ts:23` (POST), `src/app/api/names-terms/[id]/route.ts:15,39` (PUT, DELETE) and `src/app/api/email/settings/route.ts:45` (PUT) contain no `isReadOnly` reference and reach no kernel writer, so `YOPEDIA_READONLY=1` does not refuse them. `NamesTermsSettings` and `EmailIngestSettings` render immediately below `WorkspacePurposeSettings` on the same page, so the owner now meets three behaviours in one column: a form that refuses and says so, a form that refuses by removing itself from the tab order (the entry above), and two that write. Pre-existing and wider than a surface fix — the doors need gating before their surfaces can mirror anything.
+status: open
+
+### DW-301: The `!wiki` leg of WorkspacePurposeSettings' fieldset carries the same tab-order harm DW-191 named, on bytes the route answers so they can be READ.
+origin: spec-deferred 4ca76f982d23
+source_spec: `spec-dw-189-191-read-only-surface-affordances.md`
+location: src/components/WorkspacePurposeSettings.tsx:283
+severity: medium
+reason: After this change the gate is `disabled={loading || saving || !wiki}`. The `!wiki` leg is also true after a FAILED load, and the route deliberately answers a retired tenant-global profile's fields with `wiki: null` "so the owner can SEE them" (the component's own comment at :83-88, pinned by `workspace-purpose-settings.test.tsx:203` which reads `purposeField().value`). A disabled fieldset removes all of it from the tab order, so exactly the text that case exists to show is unreachable by keyboard and screen reader. Not fixed here because the bundle intent names only the read-only refusal mechanism, and the fix is a different decision (a form with nothing to save is not the same as a deployment that refuses to save).
+status: open
+
+### DW-302: `WIKI_READ_ONLY_COPY` is the one client refusal sentence with no case in `read-only-copy-parity.test.ts`, and it demonstrably differs from its route.
+origin: spec-deferred c4e48f3e8686
+source_spec: `spec-dw-189-191-read-only-surface-affordances.md`
+location: src/lib/__tests__/read-only-copy-parity.test.ts
+severity: low
+reason: This change added parity cases for `WIKI_TEMPLATE_READ_ONLY_COPY`, `WIKI_CREATE_READ_ONLY_COPY` and `WORKSPACE_PURPOSE_READ_ONLY_COPY`, and the second of those proves `POST /api/wikis` answers "Wikis cannot be created while this deployment is read-only." — so the switcher's four-verb `WIKI_READ_ONLY_COPY` (src/lib/workbench-tree.ts:120) does not match any single door it sits in front of. That is defensible (it covers four routes at once, like the Revert narrowing already recorded), but it is unrecorded: the suite's own header says every client constant is compared "CHARACTER-IDENTICAL where the door answers its own refusal, and explicitly recorded where it deliberately does not", and this one is neither. Pre-existing (DW-37 shipped it unpinned).
 status: open

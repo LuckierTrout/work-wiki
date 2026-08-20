@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { WorkspacePurposeSettings } from "@/components/WorkspacePurposeSettings";
+import {
+  WORKSPACE_PURPOSE_READ_ONLY_COPY,
+  WorkspacePurposeSettings,
+} from "@/components/WorkspacePurposeSettings";
 import { emptyWorkspaceProfile, type WorkspaceProfile } from "@/lib/workspace-profile";
 
 /**
@@ -81,6 +84,33 @@ function purposeField(): HTMLTextAreaElement {
   return screen.getByPlaceholderText(
     "What should this workspace help you understand, remember, or accomplish?",
   ) as HTMLTextAreaElement;
+}
+
+/** The scenario picker — the one control on this form with no `readonly`. */
+function scenarioSelect(): HTMLSelectElement {
+  return screen.getByRole("combobox") as HTMLSelectElement;
+}
+
+function draftButton(): HTMLButtonElement {
+  return screen.getByRole("button", {
+    name: "Load scenario draft",
+  }) as HTMLButtonElement;
+}
+
+/**
+ * Whether `element`'s `aria-describedby` reaches a node holding `text`.
+ *
+ * Resolved through the DOM rather than compared as a string: the attribute takes
+ * a space-separated LIST of ids, and an assertion on the raw value would pass
+ * against an id nothing renders — which is precisely the failure mode of
+ * pointing a refused control at a sentence that is not on screen.
+ */
+function describedByText(element: Element): string {
+  return (element.getAttribute("aria-describedby") ?? "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent?.trim() ?? "")
+    .join(" ");
 }
 
 describe("the form names the wiki whose purpose it is showing", () => {
@@ -206,5 +236,165 @@ describe("with no wiki, and with a failed load", () => {
     expect(screen.getByText("Storage is unavailable.")).toBeTruthy();
     expect(formFieldset().disabled).toBe(true);
     expect(saveButton().disabled).toBe(true);
+  });
+});
+
+describe("on a read-only deployment the form refuses without going silent", () => {
+  /**
+   * The whole point of the case (DW-191). `disabled` on the `<fieldset>` took
+   * every descendant out of the tab order, so a keyboard or screen-reader owner
+   * could not READ the stored Workspace Purpose at all — the form refused by
+   * hiding itself. Read-only means read-only, not hidden.
+   */
+  beforeEach(() => {
+    stubGet({ profile: PROFILE, readOnly: true, wiki: WIKI });
+  });
+
+  it("keeps every stored value readable and in the tab order", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(purposeField().value).toBe("Track decisions."));
+
+    // The gate the fieldset still carries is `loading || saving || !wiki` — and
+    // none of those hold here, so nothing on this form reports `disabled`.
+    expect(formFieldset().disabled).toBe(false);
+    expect(formFieldset().hasAttribute("disabled")).toBe(false);
+    expect(purposeField().readOnly).toBe(true);
+    expect(purposeField().disabled).toBe(false);
+    // Reachable, not merely undisabled.
+    purposeField().focus();
+    expect(document.activeElement).toBe(purposeField());
+
+    // Every other text field, so a `readOnly` added to one box and forgotten on
+    // the next four is a failure rather than a passing sample.
+    for (const placeholder of [
+      "One question per line",
+      "One boundary per line",
+      "One exclusion per line",
+      "English",
+      "How should work-wiki organize, qualify, and connect generated knowledge?",
+    ]) {
+      const field = screen.getByPlaceholderText(placeholder) as
+        | HTMLInputElement
+        | HTMLTextAreaElement;
+      expect(field.readOnly, placeholder).toBe(true);
+      expect(field.hasAttribute("disabled"), placeholder).toBe(false);
+      expect(describedByText(field), placeholder).toContain(
+        WORKSPACE_PURPOSE_READ_ONLY_COPY,
+      );
+    }
+  });
+
+  it("marks the picker and both buttons aria-disabled rather than disabled", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(purposeField().value).toBe("Track decisions."));
+
+    // A <select> has no `readonly`, so the picker takes the attribute instead —
+    // and `disabled` would take the scenario this wiki runs on out of reach.
+    for (const control of [scenarioSelect(), draftButton(), saveButton()]) {
+      expect(control.getAttribute("aria-disabled")).toBe("true");
+      expect(control.hasAttribute("disabled")).toBe(false);
+      // "dimmed" and nothing else is what an `aria-disabled` control announces
+      // without this: the sentence IS the refusal.
+      expect(describedByText(control)).toContain(WORKSPACE_PURPOSE_READ_ONLY_COPY);
+    }
+    expect(screen.getByText(WORKSPACE_PURPOSE_READ_ONLY_COPY)).toBeTruthy();
+  });
+
+  it("issues no PUT when the owner submits anyway", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(purposeField().value).toBe("Track decisions."));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.submit(saveButton().closest("form")!);
+
+    // Still just the GET — and no feedback banner, because nothing happened.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Workspace Purpose saved/)).toBeNull();
+    expect(saveButton().textContent).toBe("Save Workspace Purpose");
+  });
+
+  it("does not overwrite the stored purpose with a scenario draft", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(purposeField().value).toBe("Track decisions."));
+
+    fireEvent.click(draftButton());
+
+    // The refusal has to land BEFORE the state change: the owner came here to
+    // read a purpose they cannot save back, and a template draft painted over
+    // it destroys the only copy on screen.
+    expect(purposeField().value).toBe("Track decisions.");
+    expect(screen.queryByText(/template loaded as a draft/)).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a change fired on the scenario picker", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(purposeField().value).toBe("Track decisions."));
+    expect(scenarioSelect().value).toBe("business");
+
+    // `aria-disabled` does NOT stop interaction — the early return in the
+    // handler is the only thing refusing this control, and without this case
+    // deleting that guard leaves the whole suite green while the picker moves
+    // off the scenario the wiki is actually running on.
+    fireEvent.change(scenarioSelect(), { target: { value: "research" } });
+
+    expect(scenarioSelect().value).toBe("business");
+    expect(screen.queryByText(/template loaded as a draft/)).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps Load scenario draft reachable when the scenario has no template", async () => {
+    // Read-only AND `custom`, which is reachable: `!selectedTemplate` is value
+    // state and would otherwise win, taking the button — and the only
+    // `aria-describedby` pointer to the refusal — out of the tab order. That is
+    // the harm this change removes, so the deployment state has to outrank it.
+    stubGet({
+      profile: { ...PROFILE, scenario: "custom" },
+      readOnly: true,
+      wiki: WIKI,
+    });
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(scenarioSelect().value).toBe("custom"));
+
+    const draft = draftButton();
+    expect(draft.hasAttribute("disabled")).toBe(false);
+    expect(draft.getAttribute("aria-disabled")).toBe("true");
+    draft.focus();
+    expect(document.activeElement).toBe(draft);
+    expect(describedByText(draft)).toContain(WORKSPACE_PURPOSE_READ_ONLY_COPY);
+
+    fireEvent.click(draft);
+    expect(purposeField().value).toBe("Track decisions.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still disables Load scenario draft with no template on a writable deployment", async () => {
+    // The value-state leg is unchanged where it is the only one in play.
+    stubGet({
+      profile: { ...PROFILE, scenario: "custom" },
+      readOnly: false,
+      wiki: WIKI,
+    });
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(scenarioSelect().value).toBe("custom"));
+
+    expect(draftButton().disabled).toBe(true);
+  });
+
+  it("leaves a writable deployment exactly as it was", async () => {
+    stubGet({ profile: PROFILE, readOnly: false, wiki: WIKI });
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    expect(screen.queryByText(WORKSPACE_PURPOSE_READ_ONLY_COPY)).toBeNull();
+    expect(purposeField().readOnly).toBe(false);
+    expect(purposeField().hasAttribute("aria-describedby")).toBe(false);
+    expect(scenarioSelect().hasAttribute("aria-disabled")).toBe(false);
+    expect(saveButton().hasAttribute("aria-disabled")).toBe(false);
+
+    fireEvent.click(draftButton());
+    await waitFor(() =>
+      expect(screen.getByText(/template loaded as a draft/)).toBeTruthy(),
+    );
   });
 });

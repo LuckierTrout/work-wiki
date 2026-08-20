@@ -121,6 +121,38 @@ export const WIKI_READ_ONLY_COPY =
   "Wikis cannot be created, switched, renamed or deleted while this deployment is read-only.";
 
 /**
+ * The Wiki canvas card's refusal for `Change template` (DW-189).
+ *
+ * `WIKI_READ_ONLY_COPY` above does NOT cover templates — it names creating,
+ * switching, renaming and deleting — so the canvas cannot borrow it and say
+ * something true about four other actions instead of the one the owner is
+ * standing in front of. Character-identical to what
+ * `POST /api/wikis/[id]/template` answers, which is what
+ * `read-only-copy-parity.test.ts` pins: the button opens onto a destructive
+ * confirm, and a sentence before the press that differs from the 403 body after
+ * it is exactly the drift that file exists to catch.
+ *
+ * TWO constants rather than one merged sentence, for the reason the canvas's
+ * own branches give: `Change template` renders only WITH a current wiki and
+ * `Create Wiki` only WITHOUT one, so a sentence naming both would always name
+ * an action the owner cannot see beside either. Not `role="alert"` — nothing
+ * failed; this is the deployment's standing state.
+ */
+export const WIKI_TEMPLATE_READ_ONLY_COPY =
+  "Templates cannot be applied while this deployment is read-only.";
+
+/**
+ * The Wiki canvas card's refusal for the empty state's `Create Wiki` (DW-282).
+ *
+ * The sibling of {@link WIKI_TEMPLATE_READ_ONLY_COPY}, mirroring
+ * `POST /api/wikis` character-for-character. Narrower than
+ * {@link WIKI_READ_ONLY_COPY} on purpose: the header switcher refuses four
+ * actions at once and says so, while the empty state offers exactly one.
+ */
+export const WIKI_CREATE_READ_ONLY_COPY =
+  "Wikis cannot be created while this deployment is read-only.";
+
+/**
  * The page index — not the registry — is what failed. Named separately because
  * the registry sentence would be a false statement here: the switcher above the
  * tree is at that moment happily listing the wikis it claims could not load.

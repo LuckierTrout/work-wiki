@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CreateWikiDialog } from "@/components/CreateWikiDialog";
 import { useWorkbenchData } from "@/components/workbench/WorkbenchData";
@@ -13,6 +13,10 @@ import {
 } from "@/lib/wiki-scenarios";
 import { PREVIEW_UNSELECTED_COPY } from "@/lib/workbench-preview";
 import { failureMessage, send } from "@/lib/workbench-request";
+import {
+  WIKI_CREATE_READ_ONLY_COPY,
+  WIKI_TEMPLATE_READ_ONLY_COPY,
+} from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -50,8 +54,24 @@ export function WikiWorkbench() {
    * their wikis do not exist and invite them to create a duplicate — which
    * seeds a second wiki, makes it the active one, and moves every prompt onto
    * its template. Say the read failed instead.
+   *
+   * `readOnly` is `YOPEDIA_READONLY`, already on this context and already read
+   * by the header switcher — so the card takes it from here rather than growing
+   * the prop it deliberately does not have (DW-174). Both of its write actions
+   * sit in front of routes that answer 403 on such a deployment.
    */
-  const { wikis, currentWikiId, registryUnavailable } = useWorkbenchData();
+  const { wikis, currentWikiId, registryUnavailable, readOnly } =
+    useWorkbenchData();
+  /**
+   * Ids for the two standing refusal sentences below (DW-189, DW-282).
+   *
+   * Two, not one: `Change template` and this card's create action sit in
+   * MUTUALLY EXCLUSIVE branches, so a single shared node would be unmounted for
+   * whichever branch is not on screen and the surviving control's
+   * `aria-describedby` would resolve to nothing at all.
+   */
+  const templateNoteId = useId();
+  const createNoteId = useId();
   const [createOpen, setCreateOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [pendingScenario, setPendingScenario] = useState<CreatableScenario>("business");
@@ -139,6 +159,13 @@ export function WikiWorkbench() {
   }, [createOpen]);
 
   async function create(input: { name: string; scenario: CreatableScenario }) {
+    // A BACKSTOP behind the opener's own refusal, not a replacement for it.
+    // `readOnly` arrives on a SERVER render, so `router.refresh()` and
+    // `DataVersionWatcher` can flip it to true while this dialog is already
+    // open — and the reset effect above keys on the active wiki, which such a
+    // refresh need not move. Without this the owner's Create would POST into a
+    // 403 the surface has meanwhile started refusing on screen.
+    if (readOnly) return;
     // Behind `CreateWikiDialog`'s own `disabled={busy}` and its `submit`'s
     // Enter guard, never instead of them — a second POST seeds a second wiki.
     if (busy) return;
@@ -175,6 +202,11 @@ export function WikiWorkbench() {
   }
 
   async function applyTemplate() {
+    // Same backstop as `create`, and it matters more here: a mid-flight flip to
+    // read-only leaves an already-open DESTRUCTIVE confirm on screen, and its
+    // Overwrite would post into the 403 this change exists to stop AFTER the
+    // owner has agreed to an irreversible rewrite.
+    if (readOnly) return;
     if (!current) return;
     // Behind the confirm's `disabled={busy}`. A second POST rewrites this
     // wiki's purpose.md, Schema and Workspace Purpose all over again.
@@ -230,14 +262,25 @@ export function WikiWorkbench() {
           <p className="text-sm text-foreground/60">No wiki yet.</p>
           <button
             type="button"
-            className="btn primary mt-4"
+            className={`btn primary mt-4${readOnly ? " opacity-60" : ""}`}
             // The one window this card can seed a duplicate wiki in: the create
             // has landed, the refresh has not, and `No wiki yet.` is already
             // false. `disabled`, not `aria-disabled`: this is transient, like
             // `switching` in the header, not a standing refusal a screen-reader
             // user needs a sentence for.
             disabled={awaitingCreate}
+            // The deployment's standing refusal, which is the opposite case:
+            // `POST /api/wikis` has answered 403 since before this card existed,
+            // and `disabled` here would take the owner's only explanation of the
+            // empty state out of the tab order along with the button. See
+            // `WikiSwitcherProps.readOnly` for the convention.
+            aria-disabled={readOnly || undefined}
+            aria-describedby={readOnly ? createNoteId : undefined}
             onClick={() => {
+              // BEFORE the dialog opens, never after: a form the owner fills in
+              // and submits before being refused is worse than a control that
+              // says up front it will not run.
+              if (readOnly) return;
               if (awaitingCreate) return;
               setCreateError(null);
               setCreateOpen(true);
@@ -245,6 +288,14 @@ export function WikiWorkbench() {
           >
             Create Wiki
           </button>
+          {readOnly && (
+            <p
+              id={createNoteId}
+              className="mt-3 text-sm text-amber-700 dark:text-amber-400"
+            >
+              {WIKI_CREATE_READ_ONLY_COPY}
+            </p>
+          )}
         </div>
       ) : (
         <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
@@ -269,8 +320,20 @@ export function WikiWorkbench() {
 
             <button
               type="button"
-              className="btn ghost mt-4 w-full justify-center"
+              className={`btn ghost mt-4 w-full justify-center${
+                readOnly ? " opacity-60" : ""
+              }`}
+              // `POST /api/wikis/[id]/template` answers 403 on a read-only
+              // deployment, and the dialog this opens is a DESTRUCTIVE confirm
+              // naming an irreversible overwrite of purpose.md, the Schema and
+              // the Workspace Purpose. Refusing after the owner has confirmed
+              // that is the confirm-then-403 shape; the refusal belongs here,
+              // before the overlay. `aria-disabled` rather than `disabled` for
+              // the reason `WikiSwitcherProps.readOnly` states in full.
+              aria-disabled={readOnly || undefined}
+              aria-describedby={readOnly ? templateNoteId : undefined}
               onClick={() => {
+                if (readOnly) return;
                 setPendingScenario(current.scenario);
                 setTemplateError(null);
                 setTemplateOpen(true);
@@ -278,6 +341,17 @@ export function WikiWorkbench() {
             >
               Change template
             </button>
+            {/* The only thing on screen that says why the button above refuses:
+                an `aria-disabled` control with no description announces
+                "dimmed" and nothing else. Not `role="alert"` — nothing failed. */}
+            {readOnly && (
+              <p
+                id={templateNoteId}
+                className="mt-3 text-sm text-amber-700 dark:text-amber-400"
+              >
+                {WIKI_TEMPLATE_READ_ONLY_COPY}
+              </p>
+            )}
           </div>
 
           {/* The undocked stand-in for the Preview column. `display: none` while

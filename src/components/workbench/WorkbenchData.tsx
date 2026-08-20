@@ -60,7 +60,10 @@ export interface WorkbenchData {
    * server already holds, so it travels this seam rather than through a new
    * route and a client fetch. The shell hands it to `WikiSwitcher`, whose four
    * controls all sit in front of routes that answer 403 on such a deployment;
-   * `SettingsCanvas` gets the same fact from its own payload's `readOnly`.
+   * `WikiWorkbench` reads it STRAIGHT OFF this context — the card takes no
+   * props (DW-174) — to refuse `Change template` and its empty state's create
+   * action before either opens a dialog; and `SettingsCanvas` gets the same
+   * fact from its own payload's `readOnly`.
    *
    * Defaults to `false`: "not read-only" is the ordinary deployment, and a
    * consumer outside the provider must not lock its controls on the strength of

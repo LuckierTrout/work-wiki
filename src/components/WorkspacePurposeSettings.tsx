@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { WorkspaceProfile } from "@/lib/workspace-profile";
 import { SCENARIO_LABELS } from "@/lib/wiki-scenarios";
 import {
@@ -11,6 +11,22 @@ import {
 } from "@/lib/workspace-profile-schema";
 
 type Feedback = { ok: boolean; message: string } | null;
+
+/**
+ * Why every control on this form refuses on a read-only deployment (DW-191).
+ *
+ * Exported because it is the sentence the refused controls POINT AT through
+ * `aria-describedby`, and because `read-only-copy-parity.test.ts` pins it
+ * against what `PUT /api/workspace-profile` answers. It NARROWS that sentence
+ * on purpose: the route says "Settings are read-only in this deployment.",
+ * which is true of every field the Settings surface owns and useless beside a
+ * form that edits one thing. The parity suite records the divergence rather
+ * than letting it look like the drift it is otherwise indistinguishable from.
+ *
+ * Copy says work-wiki; the runtime identifier stays `YOPEDIA_READONLY`.
+ */
+export const WORKSPACE_PURPOSE_READ_ONLY_COPY =
+  "Workspace Purpose cannot be changed while this deployment is read-only.";
 
 /** The Wiki this purpose belongs to, as the route names it. */
 type ActiveWiki = { id: string; name: string };
@@ -57,6 +73,26 @@ export function WorkspacePurposeSettings() {
   // distinction WikiWorkbench draws with `unavailable`). The error banner below
   // says what actually happened; this keeps the intro from contradicting it.
   const [loadFailed, setLoadFailed] = useState(false);
+  /**
+   * The read-only sentence's id, so every control refused for that reason can
+   * resolve it through `aria-describedby`.
+   *
+   * `aria-disabled` on its own announces "dimmed" and nothing about why, and a
+   * `readOnly` textarea announces "read only" and nothing about why either —
+   * the sentence below the form is the only place the reason is stated at all.
+   * Rendered only while `readOnly`, so the attribute is only ever set when
+   * there is a node with this id to point at.
+   */
+  const readOnlyNoteId = useId();
+  /**
+   * `aria-describedby` for a control this deployment may refuse.
+   *
+   * Every control here already has its meaning in its own `<label>`, so unlike
+   * `SettingsCanvas.describedBy` there is no hint id to append to — but the
+   * shape is the same, and a control that grows a hint should append rather
+   * than replace.
+   */
+  const describedBy = readOnly ? readOnlyNoteId : undefined;
 
   function placeProfile(value: WorkspaceProfileInput, updatedAt?: string | null) {
     setProfile({
@@ -112,6 +148,12 @@ export function WorkspacePurposeSettings() {
       : WORKSPACE_SCENARIO_TEMPLATES[profile.scenario];
 
   function applyTemplate() {
+    // THE EARLY RETURN IS THE WHOLE REFUSAL — `WikiSwitcherProps.readOnly` owns
+    // the rationale for this convention. Here it also protects what the owner
+    // came to read: this handler overwrites every field with template bytes, so
+    // without the guard an `aria-disabled` button they can still activate would
+    // paint a draft over the stored purpose they can no longer save back.
+    if (readOnly) return;
     if (!selectedTemplate) return;
     placeProfile(selectedTemplate, savedAt);
     setFeedback({
@@ -124,6 +166,11 @@ export function WorkspacePurposeSettings() {
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
+    // Before the `setSaving`, so a refused deployment never flashes "Saving…"
+    // over a request it will not make. The route answers 403 either way; this is
+    // what keeps the submit button from being a control that says it refuses and
+    // then behaves as though it did not.
+    if (readOnly) return;
     setSaving(true);
     setFeedback(null);
     const input: WorkspaceProfileInput = {
@@ -218,21 +265,47 @@ export function WorkspacePurposeSettings() {
         className="mt-6 overflow-hidden rounded-2xl border border-foreground/15 bg-foreground/[0.018]"
       >
         {/* No active wiki means the PUT would be refused, so the controls stay
-            shut rather than collecting edits the server will throw away. */}
-        <fieldset
-          disabled={loading || saving || readOnly || !wiki}
-          className="disabled:opacity-60"
-        >
+            shut rather than collecting edits the server will throw away.
+
+            `readOnly` is deliberately NOT one of these legs any more (DW-191).
+            `disabled` on a fieldset takes every descendant out of the tab order,
+            so on a read-only deployment the whole stored Workspace Purpose —
+            text the owner is entitled to READ — became unreachable by keyboard
+            and by screen reader. Read-only means read-only, not hidden; each
+            control below states its own refusal instead, following the
+            convention `WikiSwitcherProps.readOnly` documents. The other three
+            legs keep the fieldset: `loading` and `saving` are transient, and
+            `!wiki` is a separate defect with the same shape, not this one.
+
+            And NOT dimmed as a whole either. A read-only `opacity-60` here would
+            fade the stored purpose, key questions and scope lists — the exact
+            text this change exists to keep readable — so it would be the sighted
+            half of the same defect, trading one group of owners for another. The
+            visible affordance is the refusal stated where it applies: the amber
+            sentence below the form, and `opacity-60` on the three CONTROLS that
+            refuse, which carry no content of their own. (A field-chrome cue
+            without a contrast loss is available if one is ever wanted — see
+            `.wb-set-input[readonly]` in `globals.css`, which recolours the box
+            rather than the value.) */}
+        <fieldset disabled={loading || saving || !wiki} className="disabled:opacity-60">
           <div className="grid gap-5 border-b border-foreground/10 p-5 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
             <div>
               <label className="text-sm font-medium text-foreground/75">
                 Starting scenario
                 <select
                   value={profile.scenario}
+                  // `aria-disabled`, never `disabled`: a <select> has no
+                  // `readonly`, and `disabled` would take the picker out of the
+                  // tab order along with the scenario this wiki is running on —
+                  // see `SettingsCanvas.providerRow`, which refuses the same way
+                  // for the same reason.
+                  aria-disabled={readOnly || undefined}
                   onChange={(event) => {
+                    if (readOnly) return;
                     setProfile({ ...profile, scenario: event.target.value as WorkspaceScenario });
                     setFeedback(null);
                   }}
+                  aria-describedby={describedBy}
                   className="mt-1.5 block w-full rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none focus:border-foreground/35"
                 >
                   {Object.entries(SCENARIO_LABELS).map(([value, label]) => (
@@ -242,8 +315,20 @@ export function WorkspacePurposeSettings() {
               </label>
               <button
                 type="button"
-                className="btn ghost mt-3 w-full justify-center"
-                disabled={!selectedTemplate}
+                className={`btn ghost mt-3 w-full justify-center${
+                  readOnly ? " opacity-60" : ""
+                }`}
+                // `!selectedTemplate` is VALUE state (the custom scenario has
+                // no template to load), so it keeps `disabled` — but it YIELDS
+                // to the deployment state. Both at once is reachable (read-only
+                // with `custom` selected), and `disabled` would win: the button
+                // would leave the tab order carrying the only `aria-describedby`
+                // pointer some owners have to the refusal, which is the exact
+                // harm this change exists to remove. `applyTemplate()` guards
+                // both conditions, so a writable deployment is unaffected.
+                disabled={!readOnly && !selectedTemplate}
+                aria-disabled={readOnly || undefined}
+                aria-describedby={describedBy}
                 onClick={applyTemplate}
               >
                 Load scenario draft
@@ -262,6 +347,8 @@ export function WorkspacePurposeSettings() {
                 rows={6}
                 onChange={(event) => setProfile({ ...profile, purpose: event.target.value })}
                 placeholder="What should this workspace help you understand, remember, or accomplish?"
+                readOnly={readOnly}
+                aria-describedby={describedBy}
                 className="mt-1.5 block w-full resize-y rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm leading-6 text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
               />
             </label>
@@ -275,6 +362,8 @@ export function WorkspacePurposeSettings() {
                 rows={6}
                 onChange={(event) => setKeyQuestions(event.target.value)}
                 placeholder="One question per line"
+                readOnly={readOnly}
+                aria-describedby={describedBy}
                 className="mt-1.5 block w-full resize-y rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm leading-6 text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
               />
             </label>
@@ -285,6 +374,8 @@ export function WorkspacePurposeSettings() {
                 rows={6}
                 onChange={(event) => setInScope(event.target.value)}
                 placeholder="One boundary per line"
+                readOnly={readOnly}
+                aria-describedby={describedBy}
                 className="mt-1.5 block w-full resize-y rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm leading-6 text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
               />
             </label>
@@ -295,6 +386,8 @@ export function WorkspacePurposeSettings() {
                 rows={6}
                 onChange={(event) => setOutOfScope(event.target.value)}
                 placeholder="One exclusion per line"
+                readOnly={readOnly}
+                aria-describedby={describedBy}
                 className="mt-1.5 block w-full resize-y rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm leading-6 text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
               />
             </label>
@@ -308,6 +401,8 @@ export function WorkspacePurposeSettings() {
                 maxLength={80}
                 onChange={(event) => setProfile({ ...profile, outputLanguage: event.target.value })}
                 placeholder="English"
+                readOnly={readOnly}
+                aria-describedby={describedBy}
                 className="mt-1.5 block w-full rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
               />
             </label>
@@ -319,6 +414,8 @@ export function WorkspacePurposeSettings() {
                 rows={4}
                 onChange={(event) => setProfile({ ...profile, pageConventions: event.target.value })}
                 placeholder="How should work-wiki organize, qualify, and connect generated knowledge?"
+                readOnly={readOnly}
+                aria-describedby={describedBy}
                 className="mt-1.5 block w-full resize-y rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm leading-6 text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
               />
             </label>
@@ -327,8 +424,14 @@ export function WorkspacePurposeSettings() {
           <div className="flex flex-wrap items-center gap-3 border-t border-foreground/10 px-5 py-4">
             <button
               type="submit"
-              className="btn primary"
-              disabled={saving || readOnly || !wiki}
+              className={`btn primary${readOnly ? " opacity-60" : ""}`}
+              // `saving` and `!wiki` keep `disabled` — one transient, one the
+              // separate unnamed defect this change deliberately does not widen
+              // into. Read-only takes `aria-disabled` so the owner can still
+              // reach the button and hear why it refuses.
+              disabled={saving || !wiki}
+              aria-disabled={readOnly || undefined}
+              aria-describedby={describedBy}
             >
               {saving ? "Saving…" : "Save Workspace Purpose"}
             </button>
@@ -341,9 +444,16 @@ export function WorkspacePurposeSettings() {
         </fieldset>
       </form>
 
+      {/* Identified so every refused control above can point at it: this is the
+          only place the reason for their refusal is stated at all. Not
+          `role="alert"` — nothing failed; it is the deployment's standing
+          state. */}
       {readOnly && (
-        <p className="mt-3 text-sm text-amber-700 dark:text-amber-400">
-          Workspace Purpose cannot be changed while this deployment is read-only.
+        <p
+          id={readOnlyNoteId}
+          className="mt-3 text-sm text-amber-700 dark:text-amber-400"
+        >
+          {WORKSPACE_PURPOSE_READ_ONLY_COPY}
         </p>
       )}
       {feedback && (
