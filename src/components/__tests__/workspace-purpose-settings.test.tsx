@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireVisibilityChange } from "../../../vitest.setup.dom";
 import {
   WORKSPACE_PURPOSE_READ_ONLY_COPY,
   WorkspacePurposeSettings,
@@ -23,6 +24,14 @@ import {
  */
 
 const WIKI = { id: "00000000-0000-4000-8000-000000000001", name: "Acme Ops" };
+
+/**
+ * The wiki the owner switches to IN ANOTHER TAB — a different id AND a
+ * different name, so a recheck that adopted only half the answer (the name for
+ * the intro, say, but not the id the next save is conditioned on) is a failure
+ * here rather than a passing sample.
+ */
+const OTHER_WIKI = { id: "00000000-0000-4000-8000-000000000002", name: "Beta Lab" };
 
 const PROFILE: WorkspaceProfile = {
   ...emptyWorkspaceProfile(),
@@ -56,6 +65,38 @@ let fetchMock: ReturnType<typeof vi.fn>;
 function stubGet(body: unknown, options?: { ok?: boolean; status?: number }) {
   fetchMock = vi.fn(async () => answer(body, options));
   vi.stubGlobal("fetch", fetchMock);
+}
+
+/** A promise this test resolves by hand, so it can act while a request is open. */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settleIt) => {
+    resolve = settleIt;
+  });
+  return { promise, resolve };
+}
+
+/** `fetch` for the MOUNT load, held open until the returned gate is resolved. */
+function stubPendingGet(): { resolve: (value: Response) => void } {
+  const gate = deferred<Response>();
+  fetchMock = vi.fn(() => gate.promise);
+  vi.stubGlobal("fetch", fetchMock);
+  return gate;
+}
+
+/**
+ * Let everything that was going to happen, happen.
+ *
+ * `await Promise.resolve()` is ONE microtask, and every negative assertion here
+ * ("no second request was issued") is only as strong as the settling in front
+ * of it — a request two awaits deep would pass that check while doing exactly
+ * what the case forbids. A macrotask turn inside `act` drains the microtask
+ * queue and flushes the React work it produced.
+ */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 }
 
 beforeEach(() => {
@@ -117,6 +158,11 @@ function draftButton(): HTMLButtonElement {
   return screen.getByRole("button", {
     name: "Load scenario draft",
   }) as HTMLButtonElement;
+}
+
+/** The load-failed state's way out of itself (DW-142). */
+function tryAgainButton(): HTMLButtonElement {
+  return screen.getByRole("button", { name: "Try again" }) as HTMLButtonElement;
 }
 
 /**
@@ -253,29 +299,28 @@ describe("the form carries the version it was seeded with (DW-145)", () => {
     );
   });
 
-  it("sends NO precondition after a failed load, so the refusal is the truthful one", async () => {
-    // WHAT THIS PINS, EXACTLY: that a form whose load failed sends no
-    // precondition, so the route answers the truthful 428 — "could not be
-    // checked" — rather than 412, "changed somewhere else", for a change nobody
-    // made. That is the reasoning `useSettings.fetchSettings` applies.
+  it("issues no PUT at all after a failed load, so there is no precondition to get wrong", async () => {
+    // THIS CASE USED TO PIN THE 428 PATH from this surface: a form whose load
+    // failed sent no `If-Match`, so the route answered "could not be checked"
+    // rather than "changed somewhere else". It cannot pin that any more, and
+    // the reason is the fix rather than a lost assertion — a failed load leaves
+    // no wiki, and `save()` now early-returns on `!wiki` (DW-301), so the
+    // request is refused here instead of being sent and rejected there.
     //
-    // WHAT IT DOES NOT PIN: the `setVersion(null)` in the component's `.catch`.
-    // This component loads exactly ONCE, at mount, and the state already starts
-    // `null`, so deleting that line would leave this case green. The clear is
-    // defensive against a refetch this component does not yet perform, and it
-    // becomes load-bearing — and observable — the moment one is added. Nothing
-    // is added to production code to make it observable today.
+    // The no-version-therefore-no-precondition rule is still pinned, by the
+    // case below it: a save that answers no version leaves the next one
+    // unconditioned. The 428 the route answers for it lives in
+    // `workspace-profile-routes.test.ts`.
     stubGet({ error: "Storage is unavailable." }, { ok: false, status: 500 });
     render(<WorkspacePurposeSettings />);
     await waitFor(() => expect(screen.getByText("unavailable")).toBeTruthy());
 
-    // The fieldset is shut with no wiki, so the PUT is driven the way a
-    // non-form caller would — through the submit handler the button points at.
-    fetchMock.mockResolvedValueOnce(answer({ profile: PROFILE, wiki: null }));
+    // Driven the way a non-form caller would — through the submit handler the
+    // button points at, which `aria-disabled` does not stop.
     fireEvent.submit(saveButton().closest("form")!);
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(sentIfMatch(fetchMock.mock.calls[1])).toBeUndefined();
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("sends no precondition again once a save answered none", async () => {
@@ -323,7 +368,15 @@ describe("the form carries the version it was seeded with (DW-145)", () => {
 });
 
 describe("with no wiki, and with a failed load", () => {
-  it("says a wiki is needed and collects no edits", async () => {
+  /**
+   * The wiki-less body is READABLE (DW-301). `disabled` on the `<fieldset>`
+   * took every descendant out of the tab order, so the profile the route still
+   * answers — text the owner is entitled to read — was displayed and
+   * unreachable by keyboard and by screen reader. Exactly the DW-191 defect,
+   * one leg later. Each control refuses for itself instead, pointing at the
+   * intro paragraph for the reason.
+   */
+  it("says a wiki is needed, keeps the body reachable, and collects no edits", async () => {
     stubGet({
       profile: emptyWorkspaceProfile(),
       readOnly: false,
@@ -336,12 +389,69 @@ describe("with no wiki, and with a failed load", () => {
       expect(screen.getByText(/Create a wiki first/)).toBeTruthy(),
     );
     expect(screen.getByText("no wiki")).toBeTruthy();
-    // Disabled all the way down: a form that accepted keystrokes here would be
-    // collecting edits the route refuses with a 400. The fieldset is what
-    // carries it, and the textarea is inside it.
-    expect(formFieldset().disabled).toBe(true);
+    // Not shut: the gate is `loading || saving` now, and neither holds.
+    expect(formFieldset().disabled).toBe(false);
     expect(formFieldset().contains(purposeField())).toBe(true);
-    expect(saveButton().disabled).toBe(true);
+    expect(purposeField().readOnly).toBe(true);
+    expect(purposeField().hasAttribute("disabled")).toBe(false);
+    purposeField().focus();
+    expect(document.activeElement).toBe(purposeField());
+    // Every refused control resolves an ON-SCREEN sentence, and it is the intro
+    // paragraph — the one place that tells "no wiki" apart from "the load
+    // failed" — rather than a second copy of the same claim.
+    for (const control of [purposeField(), scenarioSelect(), draftButton(), saveButton()]) {
+      expect(describedByText(control)).toContain("Create a wiki first");
+    }
+    for (const control of [scenarioSelect(), draftButton(), saveButton()]) {
+      expect(control.getAttribute("aria-disabled")).toBe("true");
+      expect(control.hasAttribute("disabled")).toBe(false);
+    }
+    // And a way out of the state, which is `/` — the only place a wiki is
+    // created (DW-142).
+    const link = screen.getByRole("link", { name: "Create a wiki" });
+    expect(link.getAttribute("href")).toBe("/");
+  });
+
+  it("issues no PUT when a wiki-less form is submitted by any route", async () => {
+    stubGet({
+      profile: emptyWorkspaceProfile(),
+      readOnly: false,
+      wiki: null,
+      version: objectVersion(emptyWorkspaceProfile()),
+    });
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(badge()).toBe("no wiki"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // `aria-disabled` does NOT stop activation, so the early return in `save()`
+    // is the whole refusal — and submitting the form bypasses the button
+    // entirely, which is the route a keyboard Enter takes.
+    fireEvent.submit(saveButton().closest("form")!);
+    fireEvent.click(saveButton());
+
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Workspace Purpose saved/)).toBeNull();
+  });
+
+  it("refuses the scenario picker and the draft button without shutting them", async () => {
+    stubGet({
+      profile: { ...PROFILE, purpose: "Owned by no wiki." },
+      readOnly: false,
+      wiki: null,
+      version: VERSION,
+    });
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(badge()).toBe("no wiki"));
+
+    fireEvent.change(scenarioSelect(), { target: { value: "research" } });
+    expect(scenarioSelect().value).toBe("business");
+
+    // The template would paint over the values the route answered for READING,
+    // which is the whole point of keeping them on screen.
+    fireEvent.click(draftButton());
+    expect(purposeField().value).toBe("Owned by no wiki.");
+    expect(screen.queryByText(/template loaded as a draft/)).toBeNull();
   });
 
   it("never dates a wiki-less body as this wiki's save, whatever it carries", async () => {
@@ -351,7 +461,7 @@ describe("with no wiki, and with a failed load", () => {
     // removed that read, so no route response reaches the client this way any
     // more — but the guard is what the component owes regardless of who
     // composes the body, because "Last saved …" would date a save that no wiki
-    // owns and this disabled form cannot repeat.
+    // owns and this form cannot repeat.
     stubGet({
       profile: {
         ...PROFILE,
@@ -367,8 +477,8 @@ describe("with no wiki, and with a failed load", () => {
     await waitFor(() => expect(badge()).toBe("no wiki"));
     expect(purposeField().value).toBe("Populated, but owned by no wiki.");
     expect(screen.queryByText(/^Last saved /)).toBeNull();
-    expect(formFieldset().disabled).toBe(true);
-    expect(saveButton().disabled).toBe(true);
+    expect(purposeField().readOnly).toBe(true);
+    expect(saveButton().getAttribute("aria-disabled")).toBe("true");
   });
 
   it("does not claim a missing wiki when the load itself failed", async () => {
@@ -381,9 +491,568 @@ describe("with no wiki, and with a failed load", () => {
     await waitFor(() => expect(screen.getByText("unavailable")).toBeTruthy());
     expect(screen.getByText(/The active wiki couldn’t be loaded/)).toBeTruthy();
     expect(screen.queryByText(/Create a wiki first/)).toBeNull();
-    expect(screen.getByText("Storage is unavailable.")).toBeTruthy();
-    expect(formFieldset().disabled).toBe(true);
-    expect(saveButton().disabled).toBe(true);
+    // Announced, not merely rendered: nothing else on this surface says the
+    // load failed (DW-142).
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Storage is unavailable.",
+    );
+    // The failed state offers the retry, and NOT the create link — which would
+    // be the registry claim the intro just refused to make.
+    expect(tryAgainButton()).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Create a wiki" })).toBeNull();
+    // Refused, but reachable — same contract as the wiki-less body.
+    expect(formFieldset().disabled).toBe(false);
+    expect(saveButton().getAttribute("aria-disabled")).toBe("true");
+    expect(describedByText(saveButton())).toContain(
+      "The active wiki couldn’t be loaded",
+    );
+  });
+});
+
+describe("the failed load is not a dead end (DW-142)", () => {
+  beforeEach(() => {
+    stubGet({ error: "Storage is unavailable." }, { ok: false, status: 500 });
+  });
+
+  it("clears the failure and seeds the form when Try again succeeds", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(screen.getByText("unavailable")).toBeTruthy());
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: PROFILE, readOnly: false, wiki: WIKI, version: VERSION }),
+    );
+    fireEvent.click(tryAgainButton());
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/This purpose belongs to “Acme Ops”\./),
+      ).toBeTruthy(),
+    );
+    expect(badge()).toBe("not configured");
+    expect(screen.queryByText("Storage is unavailable.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    // Editable again, all the way down: the retry re-seeds the same state the
+    // mount does, because it is the same function.
+    expect(purposeField().readOnly).toBe(false);
+    expect(purposeField().hasAttribute("aria-describedby")).toBe(false);
+    expect(saveButton().hasAttribute("aria-disabled")).toBe(false);
+
+    // And the version it re-seeded is the one the retry's answer named.
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: PROFILE, wiki: WIKI, version: VERSION }),
+    );
+    fireEvent.submit(saveButton().closest("form")!);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(sentIfMatch(fetchMock.mock.calls[2])).toBe(formatIfMatch(VERSION));
+  });
+
+  it("keeps Try again mounted and focused for the length of its own request", async () => {
+    // `loadFailed` is cleared the moment the attempt starts, so a button
+    // rendered on that alone unmounts under the finger that pressed it and
+    // drops keyboard focus to `<body>` — on the one change whose subject is
+    // reachability.
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(screen.getByText("unavailable")).toBeTruthy());
+
+    const gate = deferred<Response>();
+    fetchMock.mockImplementationOnce(() => gate.promise);
+    tryAgainButton().focus();
+    fireEvent.click(tryAgainButton());
+    await settle();
+
+    // Still there, still holding focus, and saying what it is doing.
+    const retrying = screen.getByRole("button", { name: "Trying again…" });
+    expect(document.activeElement).toBe(retrying);
+    // `aria-disabled`, not `disabled`: disabling the focused element is what
+    // moves focus to `<body>`, which is the harm this case exists to catch.
+    expect(retrying.hasAttribute("disabled")).toBe(false);
+    expect(retrying.getAttribute("aria-disabled")).toBe("true");
+
+    // And a second press while it is running issues no second request.
+    fireEvent.click(retrying);
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    gate.resolve(
+      answer({ profile: PROFILE, readOnly: false, wiki: WIKI, version: VERSION }),
+    );
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+    expect(screen.queryByRole("button", { name: "Trying again…" })).toBeNull();
+  });
+
+  it("re-arms the same failed state when the retry fails too", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(screen.getByText("unavailable")).toBeTruthy());
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "Storage is still unavailable." }, { ok: false, status: 500 }),
+    );
+    fireEvent.click(tryAgainButton());
+
+    await waitFor(() =>
+      expect(screen.getByText("Storage is still unavailable.")).toBeTruthy(),
+    );
+    expect(badge()).toBe("unavailable");
+    expect(tryAgainButton()).toBeTruthy();
+    // The intro still refuses to claim the registry is empty.
+    expect(screen.queryByText(/Create a wiki first/)).toBeNull();
+  });
+});
+
+describe("the form re-reads the active wiki when the tab comes back (DW-136)", () => {
+  /** Hidden, then visible — the switch is made in ANOTHER tab. */
+  function returnToTab() {
+    fireVisibilityChange("hidden");
+    fireVisibilityChange("visible");
+  }
+
+  it("leaves an unsaved draft alone when the wiki has not changed", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    fireEvent.change(purposeField(), {
+      target: { value: "Minutes of work the owner must not lose." },
+    });
+
+    // The SAME wiki, but a different profile and version behind it: if the
+    // recheck adopted anything at all, both the draft and the precondition
+    // would move here.
+    const moved = { ...PROFILE, purpose: "Someone else’s bytes." };
+    fetchMock.mockResolvedValueOnce(
+      answer({
+        profile: moved,
+        readOnly: false,
+        wiki: WIKI,
+        version: objectVersion(moved),
+      }),
+    );
+    returnToTab();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    expect(purposeField().value).toBe(
+      "Minutes of work the owner must not lose.",
+    );
+    expect(screen.queryByText(/active wiki changed/)).toBeNull();
+    expect(badge()).toBe("not configured");
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: PROFILE, wiki: WIKI, version: VERSION }),
+    );
+    fireEvent.submit(saveButton().closest("form")!);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(sentIfMatch(fetchMock.mock.calls[2])).toBe(formatIfMatch(VERSION));
+  });
+
+  it("re-seeds from the new wiki, and the next save carries its id and version", async () => {
+    const otherProfile: WorkspaceProfile = {
+      ...PROFILE,
+      purpose: "Beta Lab’s own purpose.",
+      updatedAt: "2026-08-02T09:00:00.000Z",
+    };
+    const otherVersion = objectVersion(otherProfile);
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+    fireEvent.change(purposeField(), { target: { value: "A draft for Acme." } });
+
+    fetchMock.mockResolvedValueOnce(
+      answer({
+        profile: otherProfile,
+        readOnly: false,
+        wiki: OTHER_WIKI,
+        version: otherVersion,
+      }),
+    );
+    returnToTab();
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/This purpose belongs to “Beta Lab”\./),
+      ).toBeTruthy(),
+    );
+    // The draft is gone — stated, not silent, which is the trade the recheck
+    // makes: keeping it on screen under a new wiki's name is the mislabelling.
+    expect(purposeField().value).toBe("Beta Lab’s own purpose.");
+    expect(screen.getByRole("alert").textContent).toContain(
+      "The active wiki changed to “Beta Lab”",
+    );
+    // And nothing of Acme's survives the swap: this receipt is Beta Lab's.
+    expect(badge()).toBe("active");
+    expect(screen.getByText(/^Last saved /)).toBeTruthy();
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: otherProfile, wiki: OTHER_WIKI, version: otherVersion }),
+    );
+    fireEvent.submit(saveButton().closest("form")!);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const [, init] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).wikiId).toBe(OTHER_WIKI.id);
+    expect(sentIfMatch(fetchMock.mock.calls[2])).toBe(formatIfMatch(otherVersion));
+  });
+
+  it("changes nothing when the recheck itself fails", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+    fireEvent.change(purposeField(), { target: { value: "Still here." } });
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "Storage is unavailable." }, { ok: false, status: 500 }),
+    );
+    returnToTab();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    // A background read nobody asked for must not take a loaded, editable form
+    // away from the owner.
+    expect(purposeField().value).toBe("Still here.");
+    expect(badge()).toBe("not configured");
+    expect(screen.queryByText("Storage is unavailable.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(formFieldset().disabled).toBe(false);
+
+    // And the version it was holding is untouched, so the next save is still
+    // conditioned on the read it was seeded from.
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: PROFILE, wiki: WIKI, version: VERSION }),
+    );
+    fireEvent.submit(saveButton().closest("form")!);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(sentIfMatch(fetchMock.mock.calls[2])).toBe(formatIfMatch(VERSION));
+  });
+
+  it("re-reads on a window focus, for two side-by-side windows", async () => {
+    // `visibilitychange` never fires when BOTH windows are on screen — the
+    // Workbench in one and this form in the other — which is exactly the
+    // arrangement that leaves this form naming a wiki that is no longer active.
+    const otherProfile: WorkspaceProfile = { ...PROFILE, purpose: "Beta Lab’s own." };
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    fetchMock.mockResolvedValueOnce(
+      answer({
+        profile: otherProfile,
+        readOnly: false,
+        wiki: OTHER_WIKI,
+        version: objectVersion(otherProfile),
+      }),
+    );
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() =>
+      expect(screen.getByText(/This purpose belongs to “Beta Lab”\./)).toBeTruthy(),
+    );
+    expect(purposeField().value).toBe("Beta Lab’s own.");
+  });
+
+  it("says plainly what changed, and claims no loss, when nothing was edited", async () => {
+    // A red alert asserting discarded work over a background switch that
+    // discarded nothing is the same mislabelling with the sign flipped — and it
+    // trains the owner to ignore the banner that will one day be telling the
+    // truth.
+    const otherProfile: WorkspaceProfile = { ...PROFILE, purpose: "Beta Lab’s own." };
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    fetchMock.mockResolvedValueOnce(
+      answer({
+        profile: otherProfile,
+        readOnly: false,
+        wiki: OTHER_WIKI,
+        version: objectVersion(otherProfile),
+      }),
+    );
+    returnToTab();
+
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain(
+        "The active wiki changed to “Beta Lab”",
+      ),
+    );
+    expect(screen.queryByText(/discarded/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("counts a scenario draft as unsaved work, and says so when it goes", async () => {
+    // The template writes every field through the same seeding path a server
+    // answer uses. If that path re-baselined "unchanged", a loaded draft would
+    // be discarded silently while the banner reported a clean switch.
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+    fireEvent.click(draftButton());
+    await waitFor(() =>
+      expect(screen.getByText(/template loaded as a draft/)).toBeTruthy(),
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: PROFILE, readOnly: false, wiki: OTHER_WIKI, version: VERSION }),
+    );
+    returnToTab();
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain(
+        "Your unsaved edits to the previous wiki were discarded",
+      ),
+    );
+  });
+
+  it("does not call a first wiki a change from a previous one", async () => {
+    stubGet({
+      profile: emptyWorkspaceProfile(),
+      readOnly: false,
+      wiki: null,
+      version: objectVersion(emptyWorkspaceProfile()),
+    });
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(badge()).toBe("no wiki"));
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: PROFILE, readOnly: false, wiki: WIKI, version: VERSION }),
+    );
+    returnToTab();
+
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain(
+        "This workspace now has an active wiki, “Acme Ops”",
+      ),
+    );
+    // Nothing "changed to" a wiki from a wiki that never existed, and nothing
+    // was discarded — a wiki-less form collects no edits to lose.
+    expect(screen.queryByText(/The active wiki changed to/)).toBeNull();
+    expect(screen.queryByText(/discarded/)).toBeNull();
+    expect(purposeField().readOnly).toBe(false);
+  });
+
+  it("adopts a recheck that answers no wiki at all", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    fetchMock.mockResolvedValueOnce(
+      answer({
+        profile: emptyWorkspaceProfile(),
+        readOnly: false,
+        wiki: null,
+        version: objectVersion(emptyWorkspaceProfile()),
+      }),
+    );
+    returnToTab();
+
+    await waitFor(() => expect(badge()).toBe("no wiki"));
+    expect(screen.getByRole("status").textContent).toContain(
+      "The active wiki is gone, so there is nothing to edit here now.",
+    );
+    // Refused, but readable and reachable — the same contract as a mount that
+    // answered no wiki.
+    expect(formFieldset().disabled).toBe(false);
+    expect(purposeField().readOnly).toBe(true);
+    expect(describedByText(saveButton())).toContain("Create a wiki first");
+    expect(screen.queryByText(/^Last saved /)).toBeNull();
+
+    fireEvent.submit(saveButton().closest("form")!);
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not start while the mount GET is still pending", async () => {
+    const gate = stubPendingGet();
+    render(<WorkspacePurposeSettings />);
+
+    returnToTab();
+    await settle();
+    // One GET, not two: the mount's own answer is about to arrive, and a
+    // recheck comparing against a wiki id no render has been seeded with yet
+    // would announce a change nobody made.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    gate.resolve(
+      answer({ profile: PROFILE, readOnly: false, wiki: WIKI, version: VERSION }),
+    );
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+    expect(screen.queryByText(/active wiki/)).not.toBeNull();
+    expect(screen.queryByText(/The active wiki changed/)).toBeNull();
+  });
+
+  it("does not start while a save is still pending", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    const gate = deferred<Response>();
+    fetchMock.mockImplementationOnce(() => gate.promise);
+    fireEvent.submit(saveButton().closest("form")!);
+    await settle();
+
+    returnToTab();
+    await settle();
+    // The GET and the PUT, and nothing else: the write in flight owns which
+    // wiki this form ends up describing.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    gate.resolve(answer({ profile: PROFILE, wiki: WIKI, version: VERSION }));
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain(
+        "Workspace Purpose saved",
+      ),
+    );
+  });
+
+  it("abandons a recheck that was already in flight when the owner saved", async () => {
+    // The window the stand-down check cannot see: the recheck STARTED legally,
+    // and the save began during its round trip. Adopting the answer afterwards
+    // overwrites what was just written and replaces the confirmation with an
+    // alert about a switch the owner never made.
+    const saved: WorkspaceProfile = { ...PROFILE, purpose: "Saved by the owner." };
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    const gate = deferred<Response>();
+    fetchMock.mockImplementationOnce(() => gate.promise);
+    returnToTab();
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: saved, wiki: WIKI, version: objectVersion(saved) }),
+    );
+    fireEvent.submit(saveButton().closest("form")!);
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain(
+        "Workspace Purpose saved",
+      ),
+    );
+
+    // …and only NOW does the recheck's GET come back, carrying another wiki.
+    gate.resolve(
+      answer({
+        profile: { ...PROFILE, purpose: "Beta Lab’s own." },
+        readOnly: false,
+        wiki: OTHER_WIKI,
+        version: objectVersion(PROFILE),
+      }),
+    );
+    await settle();
+
+    expect(purposeField().value).toBe("Saved by the owner.");
+    expect(screen.getByText(/This purpose belongs to “Acme Ops”\./)).toBeTruthy();
+    expect(screen.queryByText(/The active wiki changed/)).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain(
+      "Workspace Purpose saved",
+    );
+  });
+
+  it("runs one recheck at a time, however fast the tab is switched", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    const gate = deferred<Response>();
+    fetchMock.mockImplementationOnce(() => gate.promise);
+    returnToTab();
+    returnToTab();
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+
+    // Two overlapping GETs would both compare the same pre-adopt snapshot, so
+    // both could adopt and both could announce.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    gate.resolve(
+      answer({ profile: PROFILE, readOnly: false, wiki: OTHER_WIKI, version: VERSION }),
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/This purpose belongs to “Beta Lab”\./)).toBeTruthy(),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("stands down while the failure surface is up, so Try again owns recovery", async () => {
+    stubGet({ error: "Storage is unavailable." }, { ok: false, status: 500 });
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(screen.getByText("unavailable")).toBeTruthy());
+
+    returnToTab();
+    await settle();
+
+    // No second GET: a recheck here would adopt a wiki as though it had
+    // "changed" from the nothing a failed load left behind, announcing a switch
+    // that never happened while `unavailable` stood over a seeded form.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(tryAgainButton()).toBeTruthy();
+  });
+
+  it("stops listening once the form unmounts", async () => {
+    const { unmount } = render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    unmount();
+    fireVisibilityChange("hidden");
+    fireVisibilityChange("visible");
+    window.dispatchEvent(new Event("focus"));
+
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("read-only AND wiki-less at once", () => {
+  // Both refusals are reachable together and neither is a special case of the
+  // other, so every stub in the two suites above holds one of them constant —
+  // which leaves the composed state, the one the `describedBy` join exists for,
+  // rendered by nothing.
+  beforeEach(() => {
+    stubGet({ profile: PROFILE, readOnly: true, wiki: null, version: VERSION });
+  });
+
+  it("states BOTH reasons on every refused control", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(badge()).toBe("no wiki"));
+
+    for (const control of [purposeField(), scenarioSelect(), draftButton(), saveButton()]) {
+      const described = describedByText(control);
+      // A control that named one of the two would be describing half of why it
+      // will not run, and the owner would fix the half they were told about.
+      expect(described).toContain(WORKSPACE_PURPOSE_READ_ONLY_COPY);
+      expect(described).toContain("Create a wiki first");
+      expect((control.getAttribute("aria-describedby") ?? "").split(/\s+/)).toHaveLength(2);
+    }
+    expect(purposeField().readOnly).toBe(true);
+    expect(formFieldset().disabled).toBe(false);
+  });
+
+  it("offers no Create a wiki link on a deployment that refuses creation", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(badge()).toBe("no wiki"));
+
+    // `POST /api/wikis` answers 403 here, so the link would send the owner to
+    // `/` for something that surface has already refused. The amber sentence is
+    // the answer they actually need.
+    expect(screen.queryByRole("link", { name: "Create a wiki" })).toBeNull();
+    expect(screen.getByText(WORKSPACE_PURPOSE_READ_ONLY_COPY)).toBeTruthy();
+    // Still stated, just not as an invitation.
+    expect(screen.getByText(/Create a wiki first/)).toBeTruthy();
+  });
+});
+
+describe("the feedback banner announces itself", () => {
+  it("is a polite status for a confirmation and an alert for a refusal", async () => {
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: PROFILE, wiki: WIKI, version: VERSION }),
+    );
+    fireEvent.submit(saveButton().closest("form")!);
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain(
+        "Workspace Purpose saved",
+      ),
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: WRITE_CONFLICT_COPY }, { ok: false, status: 412 }),
+    );
+    fireEvent.submit(saveButton().closest("form")!);
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain(
+        WRITE_CONFLICT_COPY,
+      ),
+    );
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });
 
@@ -402,8 +1071,8 @@ describe("on a read-only deployment the form refuses without going silent", () =
     render(<WorkspacePurposeSettings />);
     await waitFor(() => expect(purposeField().value).toBe("Track decisions."));
 
-    // The gate the fieldset still carries is `loading || saving || !wiki` — and
-    // none of those hold here, so nothing on this form reports `disabled`.
+    // The gate the fieldset still carries is `loading || saving` — and neither
+    // holds here, so nothing on this form reports `disabled`.
     expect(formFieldset().disabled).toBe(false);
     expect(formFieldset().hasAttribute("disabled")).toBe(false);
     expect(purposeField().readOnly).toBe(true);

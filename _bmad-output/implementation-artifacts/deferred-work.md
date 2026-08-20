@@ -1213,7 +1213,8 @@ source_spec: `spec-per-wiki-workspace-profiles.md`
 location: src/components/WorkspacePurposeSettings.tsx
 severity: medium
 reason: `WorkspacePurposeSettings.tsx` loads the active Wiki in a `useEffect` with an empty dependency array, and `router.refresh()` from the Wiki switcher re-renders server components without remounting a client component. The save is now safe — the route refuses on a `wikiId` mismatch — but the owner sees a stale Wiki name until reload.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-workspace-purpose-settings-freshness
 
 ### DW-137: The legacy tenant-global profile is read through by every pre-change Wiki in a tenant, so one purpose appears under all of them until each is individually saved.
 origin: spec-deferred 425c83c35758
@@ -1265,7 +1266,8 @@ source_spec: `spec-per-wiki-workspace-profiles.md`
 location: src/components/WorkspacePurposeSettings.tsx
 severity: low
 reason: "Create a wiki first" does not link to where a Wiki is created, and a transient GET failure leaves the form permanently disabled until a full reload — `WikiWorkbench` at least says "Reload to try again".
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-workspace-purpose-settings-freshness
 
 ### DW-143: A failure of the profile write in `seedWikiArtifacts` leaves `schema.md` on the new template and the profile on the old one.
 origin: spec-deferred 51c4bb218e74
@@ -2607,7 +2609,8 @@ source_spec: `spec-dw-189-191-read-only-surface-affordances.md`
 location: src/components/WorkspacePurposeSettings.tsx:283
 severity: medium
 reason: After this change the gate is `disabled={loading || saving || !wiki}`. The `!wiki` leg is also true after a FAILED load, and the route deliberately answers a retired tenant-global profile's fields with `wiki: null` "so the owner can SEE them" (the component's own comment at :83-88, pinned by `workspace-purpose-settings.test.tsx:203` which reads `purposeField().value`). A disabled fieldset removes all of it from the tab order, so exactly the text that case exists to show is unreachable by keyboard and screen reader. Not fixed here because the bundle intent names only the read-only refusal mechanism, and the fix is a different decision (a form with nothing to save is not the same as a deployment that refuses to save).
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw4-workspace-purpose-settings-freshness
 
 ### DW-302: `WIKI_READ_ONLY_COPY` is the one client refusal sentence with no case in `read-only-copy-parity.test.ts`, and it demonstrably differs from its route.
 origin: spec-deferred c4e48f3e8686
@@ -2751,4 +2754,20 @@ source_spec: `spec-dw-140-145-workspace-profile-route-preconditions.md`
 location: src/app/api/workspace-profile/route.ts
 severity: low
 reason: The route's own comment above the registry read states the rule: "a registry that cannot be READ is not the caller's input being wrong. GET answers 500 for that exact condition, and answering 400 here would tell the owner their edit was rejected when storage was merely unreadable." This pass gave the precondition READ its own 500 branch, but `saveWorkspaceProfile` still throws into the generic `catch` that returns 400 — so an unwritable store (an EACCES, a full disk, a lock timeout) surfaces as a raw machine-authored sentence at 400, the same class of message DW-140 removed from this route. Pre-existing: the write has thrown into that catch since the route was written, and this change did not move it.
+status: open
+
+### DW-320: `save()` has no unmount guard, so a PUT that resolves after the form unmounts still writes state.
+origin: spec-deferred df488f2bd6a3
+source_spec: `spec-dw-136-142-301-workspace-purpose-settings-freshness.md`
+location: src/components/WorkspacePurposeSettings.tsx (save)
+severity: medium
+reason: The component's cancelled guard has only ever covered the load path (it was `let cancelled` in the mount effect before this change and is `cancelledRef`/`answerSeqRef` after it). `save()`'s `.then` path calls `placeProfile`, `setVersion`, `setWiki`, `setFeedback` and `setSaving` with no such check. Pre-existing; this change did not introduce or widen it, and it was surfaced incidentally by review.
+status: open
+
+### DW-321: After a 412 write conflict this form still offers no in-page way to re-seed its version; the only recovery is a full reload.
+origin: spec-deferred 8ca1e9659b2e
+source_spec: `spec-dw-136-142-301-workspace-purpose-settings-freshness.md`
+location: src/components/WorkspacePurposeSettings.tsx (save catch / feedback banner)
+severity: low
+reason: `WRITE_CONFLICT_COPY` tells the owner to copy their text and reload. `load("retry")` would now re-seed `version` from a fresh read, but the Try again control renders only under `loadFailed`, so the conflict banner has no affordance of its own. Out of scope for this bundle — the intent names the no-Wiki and load-failed states, not the conflict one.
 status: open
