@@ -3,6 +3,10 @@ import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { WikiWorkbench } from "@/components/WikiWorkbench";
+import {
+  WorkbenchDataProvider,
+  type WorkbenchData,
+} from "@/components/workbench/WorkbenchData";
 import { useDialogA11y } from "@/hooks/useDialogA11y";
 import type { WikiRecord } from "@/lib/wikis";
 
@@ -35,7 +39,29 @@ const WIKI: WikiRecord = {
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
 
-/** The subset of `Response` `WikiWorkbench.send` reads — `status` included. */
+/**
+ * `WikiWorkbench` takes no props (DW-174) — its wikis arrive through the
+ * provider, the same seam `page.tsx` uses.
+ */
+function workbenchData(
+  wikis: readonly WikiRecord[],
+  currentWikiId: string | null,
+): WorkbenchData {
+  return {
+    wikis,
+    currentWikiId,
+    registryUnavailable: false,
+    knowledge: [],
+    knowledgeUnavailable: false,
+    files: [],
+    filesUnavailable: false,
+    filesTruncated: false,
+    dataVersion: 0,
+    readOnly: false,
+  };
+}
+
+/** The subset of `Response` the shared `send` helper reads — `status` included. */
 function answer(body: unknown, { ok = true, status = 200 } = {}) {
   return { ok, status, json: async () => body } as unknown as Response;
 }
@@ -201,7 +227,24 @@ describe("opening and closing", () => {
     // button, so the opener is detached by close time. Focusing a detached node
     // is a silent no-op that drops the keyboard user on <body> — the whole
     // reason `fallbackFocusRef` exists.
-    render(<WikiWorkbench initialWikis={[]} initialCurrentId={null} />);
+    //
+    // The card is no longer optimistic (DW-174): what replaces the empty state
+    // is the SERVER render `router.refresh()` asks for, so the spy has to stand
+    // in for it. Delivering the new working set from the refresh — rather than
+    // after it — is what really happens, and it is what puts the unmount in the
+    // same commit as the dialog's close, which is the case this test is about.
+    const view = render(
+      <WorkbenchDataProvider value={workbenchData([], null)}>
+        <WikiWorkbench />
+      </WorkbenchDataProvider>,
+    );
+    refresh.mockImplementationOnce(() => {
+      view.rerender(
+        <WorkbenchDataProvider value={workbenchData([WIKI], WIKI.id)}>
+          <WikiWorkbench />
+        </WorkbenchDataProvider>,
+      );
+    });
     const opener = screen.getByRole("button", { name: "Create Wiki" });
     opener.focus();
     fireEvent.click(opener);

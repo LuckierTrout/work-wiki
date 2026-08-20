@@ -9,7 +9,12 @@ import {
   WIKI_READ_ONLY_COPY,
   WIKI_SCOPE_COPY,
 } from "@/lib/workbench-tree";
-import { MAX_WIKI_NAME_CHARS, type CreatableScenario } from "@/lib/wiki-scenarios";
+import {
+  MAX_WIKI_NAME_CHARS,
+  wikiOptionLabel,
+  type CreatableScenario,
+} from "@/lib/wiki-scenarios";
+import { failureMessage, send } from "@/lib/workbench-request";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -21,8 +26,9 @@ import type { WikiRecord } from "@/lib/wikis";
  * `create-wiki-ui.test.ts` froze literal counts inside `WikiWorkbench.tsx`;
  * DW-33 retired that copy, so one viewport no longer offers two switchers and
  * two create controls. The canvas card keeps `Change template`, its artifact
- * receipt and the wiki heading — and it remounts with fresh props when this
- * header switches, because `page.tsx` keys it on the current Wiki id.
+ * receipt and the wiki heading — and it follows this header without a remount,
+ * because it reads the same `WorkbenchData` these props come from rather than
+ * seeding state from props of its own.
  *
  * A native `<select>`, not a popover. A hand-rolled listbox owns its own
  * roving focus, typeahead, Esc and outside-click dismissal, and — the part no
@@ -65,40 +71,6 @@ export interface WikiSwitcherProps {
    * same convention and point back here rather than restating it.
    */
   readOnly?: boolean;
-}
-
-/**
- * A request that never settles would leave `switching` true for the rest of the
- * session and the switcher disabled with no error to explain it. `finally`
- * cannot rescue a promise that never resolves, so the deadline is the rescue.
- */
-const REQUEST_TIMEOUT_MS = 15_000;
-
-async function send<T>(url: string, init: RequestInit): Promise<T> {
-  // `init` FIRST: both of the fields below are invariants of this helper, and
-  // spreading the caller over them would let a future call silently drop the
-  // JSON content type or the deadline the comment above promises.
-  const response = await fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init.headers },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
-  return body;
-}
-
-/**
- * What to show the owner. A timeout's own message ("signal timed out") names
- * the mechanism rather than the thing that failed, so those fall back to the
- * caller's sentence; a server-supplied message is always preferred.
- */
-function failureMessage(cause: unknown, fallback: string): string {
-  if (cause instanceof Error) {
-    if (cause.name === "TimeoutError" || cause.name === "AbortError") return fallback;
-    if (cause.message) return cause.message;
-  }
-  return fallback;
 }
 
 export function WikiSwitcher({
@@ -190,6 +162,11 @@ export function WikiSwitcher({
   }
 
   async function create(input: { name: string; scenario: CreatableScenario }) {
+    // BEHIND the confirm's own `disabled={busy}`, never instead of it. The
+    // button being dead is what the owner sees; this is what makes a second
+    // entry impossible — `CreateWikiDialog.submit` also carries Enter, and a
+    // handler that only the pointer path guards is a handler with a hole.
+    if (busy) return;
     setBusy(true);
     setCreateError(null);
     try {
@@ -214,6 +191,11 @@ export function WikiSwitcher({
   }
 
   async function rename(wiki: WikiRecord, name: string) {
+    // Two ways in — the confirm button and the input's Enter — so the guard
+    // sits on the handler rather than on either of them. A second PATCH could
+    // settle out of order and leave the registry naming whichever answer
+    // happened to land last.
+    if (busy) return;
     setBusy(true);
     setRenameError(null);
     try {
@@ -234,6 +216,10 @@ export function WikiSwitcher({
   }
 
   async function remove(wiki: WikiRecord) {
+    // The irreversible one. A second DELETE issued behind the first answers 404
+    // and paints a failure over an operation that in fact succeeded — and the
+    // `refocusNewRef` bookkeeping below would run twice against one list.
+    if (busy) return;
     setBusy(true);
     setDeleteError(null);
     try {
@@ -331,9 +317,12 @@ export function WikiSwitcher({
                     void switchWiki(event.target.value);
                   }}
                 >
+                  {/* Name alone is not unique, so the label carries the
+                      template, the created date and the head of the id — one
+                      spelling, shared with the delete picker below (DW-148). */}
                   {wikis.map((wiki) => (
                     <option key={wiki.id} value={wiki.id}>
-                      {wiki.name}
+                      {wikiOptionLabel(wiki)}
                     </option>
                   ))}
                 </select>
@@ -519,9 +508,12 @@ export function WikiSwitcher({
               disabled={busy}
               onChange={(event) => setDeleteTargetId(event.target.value)}
             >
+              {/* The same disambiguated label the switcher uses, and it matters
+                  most here: two wikis called `Acme` offered as bare names make
+                  an irreversible delete a coin flip. */}
               {deletable.map((wiki) => (
                 <option key={wiki.id} value={wiki.id}>
-                  {wiki.name}
+                  {wikiOptionLabel(wiki)}
                 </option>
               ))}
             </select>

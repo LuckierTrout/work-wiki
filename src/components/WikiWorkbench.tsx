@@ -1,15 +1,18 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CreateWikiDialog } from "@/components/CreateWikiDialog";
+import { useWorkbenchData } from "@/components/workbench/WorkbenchData";
 import {
   CREATABLE_SCENARIOS,
   SCENARIO_LABELS,
   WIKI_ARTIFACT_FILES,
   type CreatableScenario,
 } from "@/lib/wiki-scenarios";
+import { PREVIEW_UNSELECTED_COPY } from "@/lib/workbench-preview";
+import { failureMessage, send } from "@/lib/workbench-request";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -23,67 +26,122 @@ import type { WikiRecord } from "@/lib/wikis";
  * one viewport never offers two of either.
  *
  * The seeded file names are inert text here — opening one into a rendered
- * Preview is the shell's docked `PreviewColumn`. `Select a file to preview.` is
- * this card's undocked stand-in for that column and is mutually exclusive with
- * it: `wb-canvas-preview-note` is hidden by CSS while `.wb-shell` carries
+ * Preview is the shell's docked `PreviewColumn`. {@link PREVIEW_UNSELECTED_COPY}
+ * is this card's undocked stand-in for that column and is mutually exclusive
+ * with it: `wb-canvas-preview-note` is hidden by CSS while `.wb-shell` carries
  * `data-preview="true"` (DW-39), because the canvas reaches the shell as
  * `children` and cannot read that state as a prop.
+ *
+ * It takes NO PROPS (DW-174). Everything it renders is read from
+ * `WorkbenchData` — the same context the header switcher reads — so a rename
+ * or a switch made there reaches this card on the next render rather than only
+ * on a remount. It used to seed `useState` from props behind a wiki-id `key` in
+ * `page.tsx`; a Rename left the heading naming the old wiki because the key had
+ * not moved, and the key itself was a second wire carrying facts the provider
+ * already held.
  */
 
-export interface WikiWorkbenchProps {
-  initialWikis: WikiRecord[];
-  initialCurrentId: string | null;
-  /**
-   * The server could not read the registry, so `initialWikis` is a degraded
-   * placeholder rather than an observation. Rendering the ordinary empty state
-   * here would tell the owner their wikis do not exist and invite them to
-   * create a duplicate — which seeds a second wiki, makes it the active one,
-   * and moves every prompt onto its template. Say the read failed instead.
-   */
-  unavailable?: boolean;
-}
-
-async function send<T>(url: string, init: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
-  return body;
-}
-
-export function WikiWorkbench({
-  initialWikis,
-  initialCurrentId,
-  unavailable = false,
-}: WikiWorkbenchProps) {
+export function WikiWorkbench() {
   const router = useRouter();
-  const [wikis, setWikis] = useState<WikiRecord[]>(initialWikis);
-  const [currentId, setCurrentId] = useState<string | null>(initialCurrentId);
+  /**
+   * The card's whole data input. `registryUnavailable` says the server could
+   * not read the registry, so `wikis` is a degraded placeholder rather than an
+   * observation: rendering the ordinary empty state on it would tell the owner
+   * their wikis do not exist and invite them to create a duplicate — which
+   * seeds a second wiki, makes it the active one, and moves every prompt onto
+   * its template. Say the read failed instead.
+   */
+  const { wikis, currentWikiId, registryUnavailable } = useWorkbenchData();
   const [createOpen, setCreateOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [pendingScenario, setPendingScenario] = useState<CreatableScenario>("business");
   const [busy, setBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [templateError, setTemplateError] = useState<string | null>(null);
+  /**
+   * A create that SUCCEEDED and whose server render has not arrived yet.
+   *
+   * The card is not optimistic, so on success the dialog closes and the empty
+   * state — `No wiki yet.` and an enabled `Create Wiki` — is still on screen
+   * for the length of `router.refresh()`. Nothing enforces unique wiki names,
+   * so a second press in that window seeds a SECOND wiki and makes it active,
+   * moving every prompt onto its template. The door stays shut until a new
+   * server render lands (the effect below), which is the only thing that can
+   * tell the owner the first one worked.
+   */
+  const [awaitingCreate, setAwaitingCreate] = useState(false);
   // Confirming Create Wiki unmounts the empty state that holds the opening
   // button, so the dialogs need somewhere else to put focus on close.
   const headingRef = useRef<HTMLHeadingElement>(null);
+  /**
+   * Set by a create that succeeded; consumed by the effect below.
+   *
+   * `useDialogA11y` only reaches `fallbackFocusRef` when the opener is already
+   * DETACHED at close time, which is not what a create does any more: the close
+   * happens first, focus is restored to a `Create Wiki` button that is still
+   * mounted because the card is no longer optimistic, and only then does the
+   * refresh replace the empty state and take that button away — dropping the
+   * keyboard user on <body> with no dialog left to blame. So a successful
+   * create moves focus EXPLICITLY, exactly as `WikiSwitcher.remove` does.
+   */
+  const refocusHeadingRef = useRef(false);
 
-  const current = wikis.find((wiki) => wiki.id === currentId) ?? null;
+  const current = wikis.find((wiki) => wiki.id === currentWikiId) ?? null;
+  // `current?.id`, not just `currentWikiId`: the record can also go away
+  // UNDER the id (a refresh that answers a shorter list), and the dialogs
+  // below are aimed at the record, not at the id.
+  const currentId = current?.id ?? null;
 
-  function replace(wiki: WikiRecord) {
-    setWikis((existing) => {
-      const index = existing.findIndex((item) => item.id === wiki.id);
-      if (index === -1) return [...existing, wiki];
-      const next = [...existing];
-      next[index] = wiki;
-      return next;
-    });
-  }
+  /**
+   * A new active Wiki invalidates every decision these dialogs are holding.
+   *
+   * The remount key in `page.tsx` used to do this by destroying the component;
+   * dropping it (DW-174) is what makes the reset explicit. Without it a
+   * `Change template` confirm opened against one Wiki survives a header switch
+   * while `current` moves underneath it — and `confirmDisabled` compares
+   * `pendingScenario` to the NEW wiki's scenario, so a confirm that was correctly
+   * dead can come alive and overwrite the purpose.md, Schema and Workspace
+   * Purpose of a Wiki the owner never opened the dialog for.
+   *
+   * Keyed on the ACTIVE WIKI only — never on `wikis` as a whole. Any page write
+   * moves the shell's `dataVersion` and re-renders the tree, and a dialog that
+   * vanished mid-confirm because somebody ingested a source would be its own
+   * defect.
+   */
+  useEffect(() => {
+    setCreateOpen(false);
+    setTemplateOpen(false);
+    setCreateError(null);
+    setTemplateError(null);
+  }, [currentWikiId, currentId]);
+
+  /**
+   * The create door reopens when a server render lands — whatever it says.
+   *
+   * `wikis` is a fresh array on every server render (`page.tsx` reads the
+   * registry each time), so its identity is the arrival signal. Deliberately
+   * NOT "when the new wiki appears": a refresh that answers without it must
+   * still give the owner their button back rather than leaving a control dead
+   * with no explanation.
+   */
+  useEffect(() => {
+    setAwaitingCreate(false);
+  }, [wikis, currentWikiId]);
+
+  // React flushes every effect TEARDOWN before any effect body, so this lands
+  // after `useDialogA11y` has restored focus to the `Create Wiki` button — the
+  // button the arriving server render is about to unmount. Doing it any earlier
+  // would simply be overwritten.
+  useEffect(() => {
+    if (createOpen || !refocusHeadingRef.current) return;
+    refocusHeadingRef.current = false;
+    headingRef.current?.focus();
+  }, [createOpen]);
 
   async function create(input: { name: string; scenario: CreatableScenario }) {
+    // Behind `CreateWikiDialog`'s own `disabled={busy}` and its `submit`'s
+    // Enter guard, never instead of them — a second POST seeds a second wiki.
+    if (busy) return;
     setBusy(true);
     setCreateError(null);
     try {
@@ -91,19 +149,26 @@ export function WikiWorkbench({
         method: "POST",
         body: JSON.stringify(input),
       });
-      // A 2xx whose body is not the documented shape must not reach state:
-      // pushing `undefined` here crashes the very next render on `wiki.id`,
-      // which is a blank page rather than the error message below.
+      // A 2xx whose body is not the documented shape must not reach state: a
+      // refresh fired on it would close the dialog over a create that never
+      // happened, leaving the empty state behind and no message at all.
       if (!wiki?.id) throw new Error("Couldn’t create the wiki.");
-      setWikis((existing) => [...existing, wiki]);
-      setCurrentId(wiki.id);
+      // Deliberately NOT optimistic, for the reason `WikiSwitcher.create`
+      // states: the provider is this card's single source, and a record written
+      // into local state would be a second one. The empty state stays on screen
+      // for the length of the refresh — stale but real, and with its one action
+      // shut so the owner cannot seed a second wiki into that window.
+      setAwaitingCreate(true);
+      // Claimed BEFORE the close, consumed by the effect that runs once the
+      // dialog has finished restoring focus to the doomed opener.
+      refocusHeadingRef.current = true;
       setCreateOpen(false);
       // The page is force-dynamic and this seeded a new wiki — its own
       // purpose.md, Schema and Workspace Purpose — and made it active, so the
       // wiki-derived server output is stale until the tree is refetched.
       router.refresh();
     } catch (cause) {
-      setCreateError(cause instanceof Error ? cause.message : "Couldn’t create the wiki.");
+      setCreateError(failureMessage(cause, "Couldn’t create the wiki."));
     } finally {
       setBusy(false);
     }
@@ -111,6 +176,9 @@ export function WikiWorkbench({
 
   async function applyTemplate() {
     if (!current) return;
+    // Behind the confirm's `disabled={busy}`. A second POST rewrites this
+    // wiki's purpose.md, Schema and Workspace Purpose all over again.
+    if (busy) return;
     setBusy(true);
     setTemplateError(null);
     try {
@@ -118,16 +186,18 @@ export function WikiWorkbench({
         `/api/wikis/${encodeURIComponent(current.id)}/template`,
         { method: "POST", body: JSON.stringify({ scenario: pendingScenario }) },
       );
+      // A 2xx whose body is not the documented shape must not close the dialog:
+      // the refresh below would then paint the OLD template as if the overwrite
+      // had landed, with nothing on screen saying otherwise.
       if (!wiki?.id) throw new Error("Couldn’t apply the template.");
-      replace(wiki);
       setTemplateOpen(false);
+      // The refreshed server render is what moves this card onto the new
+      // template — there is no local copy of the record to replace.
       router.refresh();
     } catch (cause) {
       // Into the dialog, not the section: the overlay stays open on failure
       // and its backdrop covers everything this component renders behind it.
-      setTemplateError(
-        cause instanceof Error ? cause.message : "Couldn’t apply the template.",
-      );
+      setTemplateError(failureMessage(cause, "Couldn’t apply the template."));
     } finally {
       setBusy(false);
     }
@@ -145,7 +215,7 @@ export function WikiWorkbench({
         Wiki
       </h2>
 
-      {unavailable ? (
+      {registryUnavailable ? (
         // NOT the empty state: "No wiki yet." would be a claim about the
         // registry that this render cannot make, and its Create Wiki button
         // would seed a duplicate wiki and move every prompt onto its template
@@ -161,7 +231,14 @@ export function WikiWorkbench({
           <button
             type="button"
             className="btn primary mt-4"
+            // The one window this card can seed a duplicate wiki in: the create
+            // has landed, the refresh has not, and `No wiki yet.` is already
+            // false. `disabled`, not `aria-disabled`: this is transient, like
+            // `switching` in the header, not a standing refusal a screen-reader
+            // user needs a sentence for.
+            disabled={awaitingCreate}
             onClick={() => {
+              if (awaitingCreate) return;
               setCreateError(null);
               setCreateOpen(true);
             }}
@@ -207,7 +284,7 @@ export function WikiWorkbench({
               the real column is docked, decided in CSS off the shell's
               `data-preview` (DW-39) — this card cannot see that state. */}
           <div className="wb-canvas-preview-note rounded-xl border border-foreground/15 p-6">
-            <p className="text-sm text-foreground/50">Select a file to preview.</p>
+            <p className="text-sm text-foreground/50">{PREVIEW_UNSELECTED_COPY}</p>
           </div>
         </div>
       )}
@@ -222,7 +299,11 @@ export function WikiWorkbench({
       />
 
       <ConfirmDialog
-        open={templateOpen}
+        // Gated on the RECORD, not just the flag, the same way the header gates
+        // its Rename confirm: `applyTemplate` returns early without `current`,
+        // so a dialog left open over a vanished wiki would answer its own
+        // confirm with silence — a button that does nothing and says nothing.
+        open={templateOpen && current !== null}
         title="Change Scenario Template"
         confirmLabel="Overwrite"
         cancelLabel="Cancel"

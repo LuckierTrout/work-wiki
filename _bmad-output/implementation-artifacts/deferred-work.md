@@ -1311,7 +1311,8 @@ source_spec: `spec-wiki-rename-and-delete.md`
 location: src/components/workbench/WikiSwitcher.tsx
 severity: low
 reason: Neither `parseWikiName` nor the registry enforces uniqueness, and every `<option>` in `WikiSwitcher` (pre-existing) and in the delete picker (new) carries only `wiki.name` — no scenario, created date, or id fragment.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-wiki-workbench-client-hardening
 
 ### DW-149: WikiSwitcher offers its write controls with no client-side read-only signal, so on a read-only deployment the 403 arrives only after the owner has confirmed.
 origin: spec-deferred 8a87b42369f8
@@ -1526,7 +1527,8 @@ source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
 location: src/components/WikiWorkbench.tsx:62-63 with src/app/page.tsx:135
 severity: medium
 reason: `WikiWorkbench` seeds `useState(initialWikis)`/`useState(initialCurrentId)` from props, and `page.tsx:135` keys it on the wiki ID — which a rename does not change. So `router.refresh()` delivers the new name, the key stays the same, the card does not remount, and `current.name` keeps the pre-rename string while the header switcher shows the new one. Pre-existing (it shipped with rename), and the root fix is the one `spec-1-4` recorded as blocked by the now-lifted freeze: have the card read `wikis`/`currentWikiId` from `WorkbenchDataProvider`, which already carries both, instead of seeding local state and keying the remount.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-wiki-workbench-client-hardening
 
 ### DW-175: `WikiWorkbench.send()` has no request deadline, so a hung create or re-template leaves the dialog spinning for the session.
 origin: spec-deferred f456e0d80acd
@@ -1534,7 +1536,8 @@ source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
 location: src/components/WikiWorkbench.tsx:38-46
 severity: medium
 reason: `WikiSwitcher.tsx:42-47` documents exactly this failure and guards it with `AbortSignal.timeout(REQUEST_TIMEOUT_MS)`; the near-identical helper at `WikiWorkbench.tsx:46-54` has neither that nor `failureMessage`, and `finally` cannot rescue a promise that never settles — `busy` stays true. It also spreads `...init` AFTER `headers`, the ordering `WikiSwitcher.tsx:50-52` warns against. With switching gone the two helpers differ only in hardening, so they should be one shared module.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-wiki-workbench-client-hardening
 
 ### DW-176: The zero-wiki viewport shows two byte-identical `No wiki yet.` sentences.
 origin: spec-deferred 5b12d4aa3439
@@ -1551,7 +1554,8 @@ source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
 location: src/components/WikiWorkbench.tsx:210
 severity: low
 reason: `TREE_NO_WIKI_COPY`, `TREE_UNAVAILABLE_COPY`, `WIKI_SCOPE_COPY` and `PREVIEW_EMPTY_COPY` all live in `src/lib/`, so a copy change is one edit and the node suite can execute it. This AC-quoted sentence is inline in the component and restated in `create-wiki-ui.test.ts` and `wiki-canvas-duplication.test.tsx`. Extracting it changes what `create-wiki-ui.test.ts:128` freezes, so it belongs with a deliberate copy-consolidation pass.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-wiki-workbench-client-hardening
 
 ### DW-178: Collapsing the left column now leaves no Wiki switch, create, rename or delete control reachable.
 origin: spec-deferred e9c63e7fce1e
@@ -2204,7 +2208,8 @@ source_spec: `spec-dw-105-109-dom-tests-dialogs-and-rail.md`
 location: src/components/workbench/WikiSwitcher.tsx:236
 severity: medium
 reason: `dialog-busy-gate.test.tsx` drives the gate through `WikiWorkbench` (template overwrite and create), which is enough to fail on a dropped `disabled={busy}`. But `rename()` and `remove()` in `WikiSwitcher.tsx` have no handler-level `if (busy) return` behind the button's `disabled`, unlike `CreateWikiDialog.submit`. Delete is the irreversible one, and a double-submit there is exactly the failure DW-107 describes.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-wiki-workbench-client-hardening
 
 ### DW-256: Only `create()`'s `!wiki?.id` malformed-2xx guard is tested; the identical guards in `applyTemplate`, `rename` and `remove` are not.
 origin: spec-deferred 63ffcaa5467c
@@ -2212,7 +2217,8 @@ source_spec: `spec-dw-105-109-dom-tests-dialogs-and-rail.md`
 location: src/components/WikiWorkbench.tsx:121
 severity: low
 reason: `create-wiki-flow.test.tsx` now answers `create` with `{}` and 200 and asserts the message rather than a blank render. `applyTemplate` (WikiWorkbench.tsx:121) and `rename`/`remove` (WikiSwitcher.tsx:225, :244) carry the same guard against the same failure — a 2xx whose body is not the documented shape — and deleting any of them leaves the suite green.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-wiki-workbench-client-hardening
 
 ### DW-257: `IconRail`'s "exactly one `aria-current` control" rule and its mode-select callbacks have no mounted pin.
 origin: spec-deferred 336890cf909d
@@ -2413,4 +2419,44 @@ source_spec: `spec-dw-218-219-223-225-vector-gate-surface.md`
 location: src/lib/workbench-settings.ts (SETTINGS_VECTOR_BINDING_NOTE) with mergedVectorInputs
 severity: low
 reason: `mergedVectorInputs` and `draftVectorInputs` both take `envEmbeddingProvider` ahead of anything stored or typed, so the provider leg can be owned by the environment exactly as the model leg can — but `VectorSearchInputs` gained an origin field for the MODEL only, which is what this bundle's intent asked for. Naming `EMBEDDING_PROVIDER` in the binding note would need a second origin field, the same shape change DW-218 made for the model.
+status: open
+
+### DW-282: The Wiki canvas card reads `WorkbenchData` but ignores its `readOnly` flag, so on a read-only deployment `Create Wiki` and `Change template` still open and only meet a 403 after the destructive confir
+origin: spec-deferred bdeb7e2db60a
+source_spec: `spec-dw-148-174-175-177-255-256-workbench-client-hardening.md`
+location: src/components/WikiWorkbench.tsx:152-194
+severity: medium
+reason: `page.tsx` feeds `readOnly: isReadOnly()` into the provider the card now destructures, and `WikiSwitcher` adopts the same flag with `if (readOnly) return`, `aria-disabled` and `WIKI_READ_ONLY_COPY`. The card does neither, so the header refuses up front while the canvas walks the owner into "This overwrites purpose.md, Schema, and the Workspace Purpose" before the route answers 403. Pre-existing (the card never had the flag as a prop either); this change made it available one line away without wiring it. Every fixture that mounts the card hard-codes `readOnly: false`, so no suite can express the case.
+status: open
+
+### DW-283: A write that aborts on the 15s deadline is reported as a flat failure even though the server may have applied it, and no refresh reconciles the screen.
+origin: spec-deferred 589216deb264
+source_spec: `spec-dw-148-174-175-177-255-256-workbench-client-hardening.md`
+location: src/lib/workbench-request.ts (failureMessage) with WikiWorkbench.tsx:91,118
+severity: medium
+reason: `failureMessage` maps `TimeoutError`/`AbortError` onto the caller's sentence — "Couldn't apply the template." / "Couldn't create the wiki." — and the catch path deliberately skips `router.refresh()`. A re-template that took longer than the client deadline has still rewritten purpose.md, schema.md and the Workspace Purpose, so the owner is told it failed over a write that landed and may retry it. `WikiSwitcher` has shipped this behaviour since the deadline was introduced; this change extended it to the card's two writes, so a fix belongs to both.
+status: open
+
+### DW-284: The Rename and Change-template confirms never name the wiki they act on, which is the same premise DW-148 fixed for the pickers.
+origin: spec-deferred 18943a232416
+source_spec: `spec-dw-148-174-175-177-255-256-workbench-client-hardening.md`
+location: src/components/workbench/WikiSwitcher.tsx (Rename body) and WikiWorkbench.tsx (template body)
+severity: low
+reason: DW-148's premise is that a bare name does not identify a wiki. The Delete confirm leans entirely on its `<select>`, and the Rename and Change-template bodies say "this wiki" with no target named at all — so the two confirms that rewrite or rename an artifact set identify their target less precisely than the picker that chooses it.
+status: open
+
+### DW-285: `No wiki yet.` and `Your wikis couldn't be loaded. Reload to try again.` are still inline literals in the card while every other sentence it shows is an exported constant.
+origin: spec-deferred f852398160ce
+source_spec: `spec-dw-148-174-175-177-255-256-workbench-client-hardening.md`
+location: src/components/WikiWorkbench.tsx:151,146
+severity: low
+reason: DW-177 named only the preview sentence, and extracting it leaves the card the one component that both imports a copy constant and restates two sentences of its own. `TREE_NO_WIKI_COPY` and `TREE_UNAVAILABLE_COPY` already exist in `workbench-tree.ts` for the left column's versions of the same two states, so the card is a second definition of both wordings.
+status: open
+
+### DW-286: A network-level `fetch` rejection reaches the owner verbatim as "Failed to fetch", the same class of defect `failureMessage`'s abort branch exists to prevent.
+origin: spec-deferred 7b64629d64ad
+source_spec: `spec-dw-148-174-175-177-255-256-workbench-client-hardening.md`
+location: src/lib/workbench-request.ts (failureMessage)
+severity: low
+reason: `failureMessage` special-cases `TimeoutError`/`AbortError` because those name the mechanism rather than the thing that failed, then returns `cause.message` for anything else. An offline browser rejects with `TypeError: Failed to fetch` (or `NetworkError when attempting to fetch resource`), which is exactly as mechanism-named and sails straight through to the dialog. Carried over verbatim from `WikiSwitcher`; nothing covers a `TypeError` rejection.
 status: open

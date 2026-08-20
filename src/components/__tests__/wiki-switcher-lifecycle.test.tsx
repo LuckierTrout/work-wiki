@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { WikiSwitcher } from "@/components/workbench/WikiSwitcher";
 import { WIKI_READ_ONLY_COPY, WIKI_SCOPE_COPY } from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
@@ -85,6 +85,20 @@ function mount(wikis: readonly WikiRecord[] = [CURRENT, OTHER]) {
 }
 
 /**
+ * Arm a `fetch` this test resolves BY HAND, so a second press lands while the
+ * first request is still in flight. `mockImplementationOnce`, so a later call
+ * falls back to the settling default and a missing gate shows up as a second
+ * call rather than as a hang.
+ */
+function deferNextRequest(): (value: Response) => void {
+  let release!: (value: Response) => void;
+  fetchMock.mockImplementationOnce(
+    () => new Promise<Response>((resolve) => (release = resolve)),
+  );
+  return (value) => release(value);
+}
+
+/**
  * Switch to `id` and let the request settle, WITHOUT the server tree catching
  * up — `router.refresh()` is a spy here, so `currentWikiId` stays on the old
  * Wiki exactly as it does for the length of a real round trip. This is the
@@ -141,6 +155,12 @@ describe("Rename", () => {
     // but because this request crosses the network as a declared JSON body, and
     // proxies, logs and any future body-parsing middleware read the label.
     expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
+    // The deadline, observed at the COMPONENT boundary rather than only in the
+    // helper's own unit test (DW-175). A rewrite that dropped `send` for a bare
+    // `fetch` would keep the URL, the method and the body exactly as asserted
+    // above — the signal is the only thing that would go, and with it the one
+    // thing that can end a request that never settles.
+    expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(JSON.parse(String(init.body))).toEqual({ name: "Q4 plan" });
     expect(refresh).toHaveBeenCalledTimes(1);
   });
@@ -201,6 +221,65 @@ describe("Rename", () => {
     // Inside the overlay — the backdrop covers everything rendered behind it.
     expect(screen.getByRole("dialog", { name: "Rename Wiki" }).contains(alert)).toBe(true);
     expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("issues exactly ONE PATCH when the confirm is pressed twice (DW-255)", async () => {
+    // Two PATCHes can settle out of order, leaving the registry on whichever
+    // answer happened to land last. Both ways into this dialog are pressed —
+    // the confirm button and the input's Enter.
+    //
+    // What this OBSERVES is the outermost surface: one request, whatever
+    // refused the second press. It cannot attribute the refusal to `rename()`'s
+    // own `if (busy) return`, because the button is `disabled` (React
+    // dispatches no click) and the Enter path is stopped by the input's own
+    // guard first. The handler guard is defence in depth behind both, and only
+    // a source scan can see that it is still there —
+    // `workbench-left-column.test.ts` holds that pin.
+    const release = deferNextRequest();
+    mount();
+    fireEvent.click(button("Rename Wiki"));
+    const input = screen.getByLabelText("Wiki name");
+    fireEvent.change(input, { target: { value: "Q4 plan" } });
+    fireEvent.click(button("Rename"));
+
+    // The confirm's accessible NAME changes while busy, so re-querying
+    // "Rename" would throw instead of asserting.
+    const confirm = button("Working…");
+    expect(confirm.disabled).toBe(true);
+    fireEvent.click(confirm);
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release(answer({ wiki: CURRENT }));
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("guards a 2xx whose body carries no wiki at all (DW-256)", async () => {
+    // The one failure a green request makes look like success: closing the
+    // dialog and refreshing on this would show the OLD name back as though the
+    // rename had landed, with nothing on screen saying it had not.
+    fetchMock.mockResolvedValueOnce(answer({}));
+    mount();
+    fireEvent.click(button("Rename Wiki"));
+    fireEvent.change(screen.getByLabelText("Wiki name"), {
+      target: { value: "Q4 plan" },
+    });
+
+    fireEvent.click(button("Rename"));
+
+    const alert = await screen.findByRole("alert");
+    // This operation's OWN sentence — not create's, and not delete's.
+    expect(alert.textContent).toBe("Couldn’t rename the wiki.");
+    expect(screen.getByRole("dialog", { name: "Rename Wiki" }).contains(alert)).toBe(true);
+    expect(refresh).not.toHaveBeenCalled();
+    // …and the confirm is pressable again rather than stranded on "Working…".
+    expect(button("Rename").disabled).toBe(false);
   });
 });
 
@@ -312,6 +391,55 @@ describe("Delete", () => {
     );
     expect(screen.getByRole("dialog", { name: "Delete Wiki" }).contains(alert)).toBe(true);
     expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("issues exactly ONE DELETE when the confirm is pressed twice (DW-255)", async () => {
+    // A second DELETE behind the first answers 404 and paints a failure over an
+    // operation that in fact succeeded — on the one control here that cannot be
+    // undone. One request is the claim; which of the two guards refused the
+    // second press is not observable from out here (see the rename case above).
+    const release = deferNextRequest();
+    mount();
+    fireEvent.click(button("Delete Wiki"));
+    fireEvent.click(button("Delete"));
+
+    const confirm = button("Working…");
+    expect(confirm.disabled).toBe(true);
+    fireEvent.click(confirm);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(`/api/wikis/${OTHER_ENCODED}`);
+
+    await act(async () => {
+      release(answer({ wiki: OTHER }));
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("guards a 2xx whose body carries no wiki at all (DW-256)", async () => {
+    // Closing on this would take the row off screen and refresh, so the owner
+    // reads a delete that never happened — and the wiki reappears on the next
+    // load with no explanation.
+    fetchMock.mockResolvedValueOnce(answer({}));
+    mount();
+    fireEvent.click(button("Delete Wiki"));
+
+    fireEvent.click(button("Delete"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Couldn’t delete the wiki.");
+    expect(screen.getByRole("dialog", { name: "Delete Wiki" }).contains(alert)).toBe(true);
+    expect(refresh).not.toHaveBeenCalled();
+    // Nothing left the list behind the overlay.
+    const picker = screen.getByLabelText("Wiki to delete") as HTMLSelectElement;
+    expect([...picker.options].map((option) => option.value)).toEqual([OTHER.id]);
+    expect(
+      [...(screen.getByLabelText("Active wiki") as HTMLSelectElement).options],
+    ).toHaveLength(2);
+    expect(button("Delete").disabled).toBe(false);
   });
 });
 
@@ -668,5 +796,72 @@ describe("a read-only deployment (DW-37)", () => {
     expect(select.getAttribute("aria-describedby")).not.toContain(" ");
     expect(document.getElementById(select.getAttribute("aria-describedby")!)?.textContent)
       .toBe(WIKI_SCOPE_COPY);
+  });
+});
+
+describe("the option labels (DW-148)", () => {
+  /**
+   * Nothing enforces unique Wiki names, so two rows spelled `Acme` are a state
+   * the registry really reaches — and one of the two pickers below fronts an
+   * IRREVERSIBLE delete. Same name, different template, different day,
+   * different id: the label has to separate them on the strength of the three
+   * facts that are not the name.
+   */
+  const TWIN_A: WikiRecord = {
+    id: "wiki 7/8",
+    name: "Acme",
+    scenario: "research",
+    createdAt: "2026-03-03T00:00:00.000Z",
+    updatedAt: "2026-03-03T00:00:00.000Z",
+  };
+  const TWIN_B: WikiRecord = {
+    id: "wiki 9/0",
+    name: "Acme",
+    scenario: "reading",
+    createdAt: "2026-04-04T00:00:00.000Z",
+    updatedAt: "2026-04-04T00:00:00.000Z",
+  };
+
+  function textsOf(select: HTMLSelectElement): string[] {
+    return [...select.options].map((option) => option.textContent ?? "");
+  }
+
+  it("distinguishes two same-named wikis in the switcher", () => {
+    mount([CURRENT, TWIN_A, TWIN_B]);
+
+    const texts = textsOf(screen.getByLabelText("Active wiki") as HTMLSelectElement);
+    expect(new Set(texts).size).toBe(texts.length);
+    for (const wiki of [CURRENT, TWIN_A, TWIN_B]) {
+      const text = texts[[CURRENT, TWIN_A, TWIN_B].indexOf(wiki)];
+      expect(text).toContain(wiki.name);
+      // The head of the UUID — the one discriminator nothing else on screen
+      // repeats, and the reason two wikis made from one template on one day
+      // still differ.
+      expect(text).toContain(wiki.id.slice(0, 8));
+      expect(text).toContain(wiki.createdAt.slice(0, 10));
+    }
+  });
+
+  it("distinguishes them in the delete picker too, from the same helper", () => {
+    // The picker that matters: both twins are deletable here (neither is
+    // active), so bare names would make an irreversible choice a coin flip.
+    mount([CURRENT, TWIN_A, TWIN_B]);
+    fireEvent.click(button("Delete Wiki"));
+
+    const picker = screen.getByLabelText("Wiki to delete") as HTMLSelectElement;
+    const texts = textsOf(picker);
+    expect([...picker.options].map((option) => option.value)).toEqual([
+      TWIN_A.id,
+      TWIN_B.id,
+    ]);
+    expect(new Set(texts).size).toBe(texts.length);
+
+    // ONE spelling for both pickers: the delete row reads exactly as the
+    // switcher row for the same wiki, so the owner is not asked to match two
+    // different renderings of the same registry.
+    const switcherTexts = textsOf(
+      screen.getByLabelText("Active wiki") as HTMLSelectElement,
+    );
+    expect(texts).toEqual([switcherTexts[1], switcherTexts[2]]);
   });
 });

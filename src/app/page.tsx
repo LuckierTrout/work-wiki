@@ -134,15 +134,11 @@ export default async function Home() {
           the shell because the shell must stay router-free. */}
       <DataVersionWatcher />
       <Workbench>
-        {/* Keyed on the current Wiki: Story 1.2's card seeds `useState` from its
-            props, so a `router.refresh()` triggered by the HEADER switcher would
-            otherwise leave the canvas naming the previous Wiki. */}
-        <WikiWorkbench
-          key={wikiRegistry.registry.currentId ?? "none"}
-          initialWikis={wikiRegistry.registry.wikis}
-          initialCurrentId={wikiRegistry.registry.currentId}
-          unavailable={wikiRegistry.unavailable}
-        />
+        {/* Bare, and unkeyed: the card reads `wikis`, `currentWikiId` and
+            `registryUnavailable` off the provider above, so a remount is no
+            longer how it learns about a switch — and a rename, which never
+            moved the old key, now reaches it too (DW-174). */}
+        <WikiWorkbench />
       </Workbench>
     </WorkbenchDataProvider>
   );

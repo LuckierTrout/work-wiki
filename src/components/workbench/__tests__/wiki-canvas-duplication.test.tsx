@@ -8,6 +8,7 @@ import {
   WorkbenchDataProvider,
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
+import { PREVIEW_UNSELECTED_COPY } from "@/lib/workbench-preview";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -47,7 +48,12 @@ const OTHER: WikiRecord = {
   updatedAt: "2026-01-02T00:00:00.000Z",
 };
 
-const PREVIEW_SENTENCE = "Select a file to preview.";
+/**
+ * Sourced from the module that owns it, never restated: a literal here would go
+ * on matching the card after the sentence was reworded, and this file's four
+ * DW-39 assertions would all pass against text nobody renders any more.
+ */
+const PREVIEW_SENTENCE = PREVIEW_UNSELECTED_COPY;
 const PREVIEW_NOTE_SELECTOR = '.wb-shell[data-preview="true"] .wb-canvas-preview-note';
 
 /**
@@ -191,7 +197,7 @@ async function renderShell(
   const view = render(
     <WorkbenchDataProvider value={data(wikis, currentWikiId, knowledge)}>
       <Workbench>
-        <WikiWorkbench initialWikis={[...wikis]} initialCurrentId={currentWikiId} />
+        <WikiWorkbench />
       </Workbench>
     </WorkbenchDataProvider>,
   );
@@ -208,24 +214,20 @@ function currentWikiWrites(): unknown[][] {
 }
 
 /**
- * The shell as `page.tsx:130-140` really builds it — the canvas card KEYED on
- * the live wiki id.
+ * The shell exactly as `page.tsx` builds it — the canvas card BARE, with no key
+ * and no props, reading the provider the header switcher reads (DW-174).
  *
- * That key is load-bearing in a way it was not before DW-33: the card used to
- * call `setCurrentId` from its own `switchWiki`, so it tracked a switch made
- * there without help. With the card's switcher retired, a remount is the only
- * thing that moves its `useState`-seeded `currentId` — and that id is what
- * `applyTemplate` aims its overwrite at.
+ * The key it used to carry was a workaround for state this card no longer has:
+ * `initialCurrentId` seeded a `useState`, so only a remount could move it. A
+ * key on the wiki id could carry a SWITCH and never a RENAME, which is why the
+ * heading went on naming the old wiki until a reload. Re-rendering this helper
+ * with a new provider value is now the whole seam.
  */
-function keyedShell(wikis: readonly WikiRecord[], currentWikiId: string | null) {
+function providerShell(wikis: readonly WikiRecord[], currentWikiId: string | null) {
   return (
     <WorkbenchDataProvider value={data(wikis, currentWikiId)}>
       <Workbench>
-        <WikiWorkbench
-          key={currentWikiId ?? "none"}
-          initialWikis={[...wikis]}
-          initialCurrentId={currentWikiId}
-        />
+        <WikiWorkbench />
       </Workbench>
     </WorkbenchDataProvider>
   );
@@ -403,13 +405,14 @@ describe("one Wiki switcher and one create control per viewport (DW-33)", () => 
     expect(refresh).not.toHaveBeenCalled();
   });
 
-  it("follows a header switch onto the new wiki through the remount page.tsx keys", async () => {
+  it("follows a header switch onto the new wiki through the provider (DW-174)", async () => {
     // End to end across the seam the retirement made load-bearing: switch from
     // the header, deliver what `router.refresh()` would (the server render with
     // the new live wiki), and check the canvas both NAMES that wiki and aims its
-    // one remaining write at it. Without the key the card would keep the old id
-    // and `Change template` would overwrite the wiki the owner just left.
-    const { rerender, container } = render(keyedShell([CURRENT, OTHER], CURRENT.id));
+    // one remaining write at it. Reading the id off the provider is what makes
+    // that true; the card that seeded `useState` from props needed a remount and
+    // would otherwise have overwritten the wiki the owner just left.
+    const { rerender, container } = render(providerShell([CURRENT, OTHER], CURRENT.id));
     await act(async () => {});
     expect(
       within(container.querySelector(".wb-canvas") as HTMLElement).getByText(CURRENT.name),
@@ -421,7 +424,7 @@ describe("one Wiki switcher and one create control per viewport (DW-33)", () => 
     await act(async () => {});
     expect(refresh).toHaveBeenCalledTimes(1);
 
-    rerender(keyedShell([CURRENT, OTHER], OTHER.id));
+    rerender(providerShell([CURRENT, OTHER], OTHER.id));
     await act(async () => {});
 
     const canvas = container.querySelector(".wb-canvas") as HTMLElement;
@@ -443,31 +446,88 @@ describe("one Wiki switcher and one create control per viewport (DW-33)", () => 
     );
   });
 
-  it("goes stale without that key, which is why page.tsx carries one", async () => {
-    // The control case for the test above, and the reason `page.tsx:135` is not
-    // decorative. `workbench-left-column.test.ts` pins the key's literal in
-    // `page.tsx`; this makes the CONSEQUENCE of dropping it executable, so the
-    // seam cannot be removed as tidy-up on the belief that fresh props alone
-    // would carry the card. They do not: `initialCurrentId` seeds `useState`.
-    const unkeyed = (wikis: readonly WikiRecord[], currentWikiId: string) => (
-      <WorkbenchDataProvider value={data(wikis, currentWikiId)}>
-        <Workbench>
-          <WikiWorkbench initialWikis={[...wikis]} initialCurrentId={currentWikiId} />
-        </Workbench>
-      </WorkbenchDataProvider>
-    );
-    const { rerender, container } = render(unkeyed([CURRENT, OTHER], CURRENT.id));
+  it("drops an open template confirm when the active wiki moves under it", async () => {
+    // The state reset the remount key used to provide for free. `current` is
+    // derived live from context now, but `templateOpen` and `pendingScenario`
+    // are not — so a confirm opened against CURRENT, correctly dead because it
+    // still names CURRENT's own template, would come ALIVE the moment a header
+    // switch moved `current` to OTHER (a `reading` wiki) and `confirmDisabled`
+    // started comparing `research` to `reading`. Overwrite would then rewrite
+    // the purpose.md, Schema and Workspace Purpose of a wiki the owner never
+    // opened this dialog for.
+    const { rerender } = render(providerShell([CURRENT, OTHER], CURRENT.id));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: /change template/i }));
+    fireEvent.change(screen.getByLabelText("Scenario Template"), {
+      target: { value: "research" },
+    });
+    expect(screen.getByRole("dialog", { name: "Change Scenario Template" })).toBeTruthy();
+
+    // What `router.refresh()` delivers after a header switch.
+    rerender(providerShell([CURRENT, OTHER], OTHER.id));
     await act(async () => {});
 
-    rerender(unkeyed([CURRENT, OTHER], OTHER.id));
+    // Gone, not merely re-aimed: the owner picked a template for a wiki they
+    // are no longer on, and re-aiming it would be the same overwrite with a
+    // different explanation.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter((call) => String(call[0]).includes("/template")),
+    ).toHaveLength(0);
+
+    // …and reopening starts from the NEW wiki's own template, so the confirm is
+    // dead again rather than inheriting the old pick.
+    fireEvent.click(screen.getByRole("button", { name: /change template/i }));
+    expect(
+      (screen.getByLabelText("Scenario Template") as HTMLSelectElement).value,
+    ).toBe(OTHER.scenario);
+    expect((screen.getByRole("button", { name: "Overwrite" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
+  it("closes the template confirm when the wiki goes away under the id", async () => {
+    // `applyTemplate` returns early with no `current`, so a dialog left open
+    // over a vanished record answers its own confirm with silence — a button
+    // that neither writes nor says why. The record can go without the id going:
+    // a refresh that answers a shorter list is enough.
+    const { rerender } = render(providerShell([CURRENT, OTHER], CURRENT.id));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: /change template/i }));
+    expect(screen.getByRole("dialog", { name: "Change Scenario Template" })).toBeTruthy();
+
+    rerender(providerShell([OTHER], CURRENT.id));
     await act(async () => {});
 
-    // The header's <select> followed the prop; the canvas did not.
-    expect((screen.getByLabelText(/active wiki/i) as HTMLSelectElement).value).toBe(
-      OTHER.id,
-    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // The card fell back to the empty state rather than rendering half a card.
+    expect(screen.getByText("No wiki yet.")).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.filter((call) => String(call[0]).includes("/template")),
+    ).toHaveLength(0);
+  });
+
+  it("renames in place when the provider re-renders the SAME wiki id (DW-174)", async () => {
+    // The case no key could ever carry, and the defect that retired it: a header
+    // Rename moves the record's `name` and leaves `currentId` exactly where it
+    // was, so `key={currentId}` does not change and the card never remounts.
+    // With the props gone there is nothing left to go stale — this is a plain
+    // re-render with a new provider value, and no remount happens at all.
+    const { rerender, container } = render(providerShell([CURRENT, OTHER], CURRENT.id));
+    await act(async () => {});
     const canvas = container.querySelector(".wb-canvas") as HTMLElement;
-    expect(within(canvas).getByText(CURRENT.name)).toBeTruthy();
+    const heading = within(canvas).getByText(CURRENT.name);
+
+    const renamed: WikiRecord = { ...CURRENT, name: "Acme Renamed" };
+    rerender(providerShell([renamed, OTHER], CURRENT.id));
+    await act(async () => {});
+
+    expect(within(canvas).getByText("Acme Renamed")).toBeTruthy();
+    expect(within(canvas).queryByText(CURRENT.name)).toBeNull();
+    // The SAME node carries the new text: a remount would have replaced it, and
+    // "no remount" is the half of this claim a text query cannot see.
+    expect(heading.isConnected).toBe(true);
+    expect(heading.textContent).toBe("Acme Renamed");
   });
 
   it("keeps the read-failure branch a claim-free alert with no create action", async () => {
@@ -475,16 +535,14 @@ describe("one Wiki switcher and one create control per viewport (DW-33)", () => 
     // from this card: "No wiki yet." is a claim about the registry that a failed
     // read cannot make, and its primary action would seed a duplicate wiki on a
     // transient error.
-    // `page.tsx:113,138` feeds the card's `unavailable` prop and the provider's
-    // `registryUnavailable` from the SAME `wikiRegistry.unavailable`, so the
-    // flag is raised on both here. Set on the card alone, the header would go on
-    // offering New Wiki beside a canvas saying the registry could not be read —
-    // a document the real composition never produces, and one that cannot
-    // answer the matrix row's "no create action" beyond the canvas.
+    // One flag, one wire: the card reads the provider's `registryUnavailable`
+    // rather than a prop of its own (DW-174), so the header and the canvas
+    // cannot disagree about whether the registry was read — the document where
+    // New Wiki sits beside a canvas saying the read failed is now unbuildable.
     const { container } = render(
       <WorkbenchDataProvider value={data([], null, [], true)}>
         <Workbench>
-          <WikiWorkbench initialWikis={[]} initialCurrentId={null} unavailable />
+          <WikiWorkbench />
         </Workbench>
       </WorkbenchDataProvider>,
     );
@@ -506,9 +564,11 @@ describe("one Wiki switcher and one create control per viewport (DW-33)", () => 
 describe("exactly one preview surface at a time (DW-39)", () => {
   it("hides the canvas sentence under a host that says the Preview is docked", () => {
     render(
-      <div className="wb-shell" data-preview="true">
-        <WikiWorkbench initialWikis={[CURRENT, OTHER]} initialCurrentId={CURRENT.id} />
-      </div>,
+      <WorkbenchDataProvider value={data([CURRENT, OTHER], CURRENT.id)}>
+        <div className="wb-shell" data-preview="true">
+          <WikiWorkbench />
+        </div>
+      </WorkbenchDataProvider>,
     );
 
     const note = screen.getByText(PREVIEW_SENTENCE).closest(".wb-canvas-preview-note");
@@ -518,9 +578,11 @@ describe("exactly one preview surface at a time (DW-39)", () => {
 
   it("leaves it on screen while nothing is docked", () => {
     render(
-      <div className="wb-shell" data-preview="false">
-        <WikiWorkbench initialWikis={[CURRENT, OTHER]} initialCurrentId={CURRENT.id} />
-      </div>,
+      <WorkbenchDataProvider value={data([CURRENT, OTHER], CURRENT.id)}>
+        <div className="wb-shell" data-preview="false">
+          <WikiWorkbench />
+        </div>
+      </WorkbenchDataProvider>,
     );
 
     // The control case: without it, a rule that matched EVERY `.wb-shell`

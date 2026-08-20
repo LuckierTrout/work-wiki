@@ -94,6 +94,35 @@ export function isEditableArtifactFile(value: unknown): value is EditableArtifac
 /** Longest accepted Wiki name — shared by the input parser and the dialog. */
 export const MAX_WIKI_NAME_CHARS = 80;
 
+/**
+ * The text of one `<option>` in a Wiki picker — the switcher's and the delete
+ * dialog's alike, so the two cannot spell the same row differently.
+ *
+ * Name alone is not unique (nothing enforces it) and Delete is irreversible, so
+ * every option carries three more discriminators — the template it was made
+ * from, the day it was made, and the head of its UUID, which nothing else on
+ * screen repeats.
+ *
+ * The date is SLICED off the ISO string rather than formatted through `Intl`,
+ * so the label carries no ambient time zone and cannot drift with the machine
+ * that renders it.
+ *
+ * The parameter is structural rather than `WikiRecord`, so this module needs no
+ * import from `wikis.ts` — which would drag the storage provider into the
+ * client chunk.
+ */
+export function wikiOptionLabel(wiki: {
+  id: string;
+  name: string;
+  scenario: CreatableScenario;
+  createdAt: string;
+}): string {
+  return `${wiki.name} — ${SCENARIO_LABELS[wiki.scenario]} · ${wiki.createdAt.slice(
+    0,
+    10,
+  )} · ${wiki.id.slice(0, 8)}`;
+}
+
 /** Whether a value names one of the five creatable scenarios. */
 export function isCreatableScenario(value: unknown): value is CreatableScenario {
   return (

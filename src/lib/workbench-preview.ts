@@ -344,6 +344,19 @@ export const PREVIEW_FAILED_COPY = "This file couldn’t be loaded.";
 /** The file exists and holds nothing. Not an error, and not "couldn't load". */
 export const PREVIEW_EMPTY_COPY = "This file is empty.";
 
+/**
+ * Nothing is picked yet — the Wiki canvas card's undocked stand-in for the
+ * Preview column, and mutually exclusive with it: `wb-canvas-preview-note` is
+ * hidden by CSS while `.wb-shell` carries `data-preview="true"` (DW-39),
+ * because the canvas reaches the shell as `children` and cannot read that state
+ * as a prop.
+ *
+ * Here rather than inline in `WikiWorkbench.tsx` so it sits beside the three
+ * sentences the docked column shows in its place — one module owns every
+ * sentence that can occupy that slot, and rewording it is one edit.
+ */
+export const PREVIEW_UNSELECTED_COPY = "Select a file to preview.";
+
 /** A format this reader does not render — a PDF, an image, an extensionless blob. */
 export const PREVIEW_UNSUPPORTED_COPY = "This file can’t be previewed here.";
 

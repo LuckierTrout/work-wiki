@@ -226,10 +226,59 @@ describe("WikiSwitcher", () => {
     // from the canvas card would leave this control naming the previous Wiki —
     // and re-picking the option it already shows fires no change event.
     expect(source).toMatch(/setPendingId\(null\);\s*\n\s*\}, \[currentWikiId\]\)/);
-    // Every request has a deadline, so `switching` cannot be stranded true by a
-    // fetch that never settles — `finally` alone cannot rescue that.
-    expect(source).toContain("AbortSignal.timeout(REQUEST_TIMEOUT_MS)");
     expect(source).toContain("setSwitching(false)");
+  });
+
+  it("takes its deadline from the shared helper rather than redefining one", async () => {
+    // Every request has a deadline, so `switching` cannot be stranded true by a
+    // fetch that never settles — `finally` alone cannot rescue that. The
+    // deadline, the JSON content type and the `...init` FIRST spread order now
+    // live in ONE module (DW-175): the canvas card had a copy of `send` that
+    // armed no signal at all, so a hung create left its `busy` flag up for the
+    // session.
+    const helper = await readFile(path.join(SRC, "lib/workbench-request.ts"), "utf8");
+    expect(helper).toContain("AbortSignal.timeout(REQUEST_TIMEOUT_MS)");
+    // Client-safe: this module is imported by two `"use client"` components.
+    expect(helper).not.toMatch(/from "node:/);
+    // Its behaviour — the content type, the deadline and the `...init` FIRST
+    // spread order — is EXERCISED in `workbench-request.test.ts`, and the
+    // deadline is observed again at each component's own boundary in the two
+    // mounted suites. What is left to a scan is only that the two components
+    // consume this module rather than forking it again.
+
+    // Imported, not restated — in BOTH consumers.
+    for (const component of ["workbench/WikiSwitcher.tsx", "WikiWorkbench.tsx"]) {
+      const consumer = await readFile(path.join(SRC, "components", component), "utf8");
+      expect(consumer).toContain('from "@/lib/workbench-request"');
+      expect(consumer).not.toContain("const REQUEST_TIMEOUT_MS");
+      expect(consumer).not.toContain("async function send<T>");
+      expect(consumer).not.toContain("function failureMessage(");
+    }
+  });
+
+  it("keeps a handler-level in-flight guard on every write, not only on the button", async () => {
+    // The one invariant here that ONLY a scan can hold (DW-255).
+    //
+    // The mounted suites press each confirm twice and observe one request —
+    // which is the behaviour that matters, but it cannot say WHICH guard
+    // refused the second press: React dispatches no click on a `disabled`
+    // button, so deleting every `if (busy) return` below leaves those tests
+    // green. An unreachable line is invisible to a mounted test and obvious to
+    // a scan, so this is where it is pinned.
+    //
+    // The guards are defence in depth, and the depth is the point: `disabled`
+    // is a rendering decision that a restyle, a `ConfirmDialog` rewrite, or one
+    // more keyboard path into the same handler can undo — `CreateWikiDialog`
+    // already carries Enter past its own button, which is why `submit` has the
+    // same line.
+    const switcher = await read("WikiSwitcher.tsx");
+    // `create`, `rename`, `remove` — every write behind a dialog. `switchWiki`
+    // is guarded on `switching`, its own flag, asserted separately above.
+    expect(switcher.match(/if \(busy\) return;/g) ?? []).toHaveLength(3);
+
+    const card = await readFile(path.join(SRC, "components/WikiWorkbench.tsx"), "utf8");
+    // `create` and `applyTemplate` — the card's two writes.
+    expect(card.match(/if \(busy\) return;/g) ?? []).toHaveLength(2);
   });
 
   it("labels the switcher for assistive tech and names the create control", async () => {
@@ -592,9 +641,16 @@ describe("page.tsx loads the trees from the authenticated principal", () => {
     expect(source).toContain("fileListing.unavailable || pageIndex.unavailable");
     // The registry and the page index are independent, so they share a round.
     expect(source).toContain("await Promise.all([");
-    // Story 1.2's card seeds `useState` from its props, so a header switch
-    // followed by `router.refresh()` would leave it naming the previous Wiki.
-    expect(source).toContain('key={wikiRegistry.registry.currentId ?? "none"}');
+    // The card is rendered BARE and unkeyed (DW-174): it reads `wikis`,
+    // `currentWikiId` and `registryUnavailable` off the provider above it, so
+    // the remount key that used to carry a switch — and could never carry a
+    // RENAME, which leaves `currentId` untouched — is gone with the props it
+    // stood in for. The consequence is executed in
+    // `workbench/__tests__/wiki-canvas-duplication.test.tsx`.
+    expect(source).not.toContain("key={wikiRegistry.registry.currentId");
+    expect(source).not.toMatch(/initialWikis|initialCurrentId/);
+    expect(source).toContain("<WikiWorkbench />");
+    expect(source).toContain("registryUnavailable: wikiRegistry.unavailable");
     // No client fetch of tree data, and no second listing path.
     expect(source).not.toContain("fetch(");
   });

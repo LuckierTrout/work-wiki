@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { WikiWorkbench } from "@/components/WikiWorkbench";
+import {
+  WorkbenchDataProvider,
+  type WorkbenchData,
+} from "@/components/workbench/WorkbenchData";
 import { CREATABLE_SCENARIOS } from "@/lib/wiki-scenarios";
 import type { WikiRecord } from "@/lib/wikis";
 
@@ -17,6 +21,9 @@ import type { WikiRecord } from "@/lib/wikis";
  * The dialogs are driven from the real `WikiWorkbench` rather than mounted
  * bare: `busy` is that component's state, and a test that passed the prop in
  * itself would pin the dialog's rendering of a flag rather than the gate.
+ *
+ * The card takes no props (DW-174), so every render below hands it its wikis
+ * through a `WorkbenchDataProvider` — the same seam `page.tsx` uses.
  */
 
 const { router } = vi.hoisted(() => ({ router: { refresh: vi.fn() } }));
@@ -31,7 +38,32 @@ const WIKI: WikiRecord = {
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
 
-/** The subset of `Response` `WikiWorkbench.send` reads — `status` included. */
+/** The card's whole data input, defaulted to "nothing else loaded". */
+function data(wikis: readonly WikiRecord[], currentWikiId: string | null): WorkbenchData {
+  return {
+    wikis,
+    currentWikiId,
+    registryUnavailable: false,
+    knowledge: [],
+    knowledgeUnavailable: false,
+    files: [],
+    filesUnavailable: false,
+    filesTruncated: false,
+    dataVersion: 0,
+    readOnly: false,
+  };
+}
+
+/** The card under the provider, exactly as `page.tsx` composes it. */
+function mount(wikis: readonly WikiRecord[], currentWikiId: string | null) {
+  return render(
+    <WorkbenchDataProvider value={data(wikis, currentWikiId)}>
+      <WikiWorkbench />
+    </WorkbenchDataProvider>,
+  );
+}
+
+/** The subset of `Response` the shared `send` helper reads — `status` included. */
 function answer(body: unknown, { ok = true, status = 200 } = {}) {
   return { ok, status, json: async () => body } as unknown as Response;
 }
@@ -82,7 +114,7 @@ function deferNextRequest(): { release: (value: Response) => void } {
 /** Open the template confirm, pick a different template, and start the POST. */
 function startOverwrite() {
   const { release } = deferNextRequest();
-  render(<WikiWorkbench initialWikis={[WIKI]} initialCurrentId={WIKI.id} />);
+  mount([WIKI], WIKI.id);
   fireEvent.click(button("Change template"));
   fireEvent.change(screen.getByLabelText("Scenario Template"), {
     target: { value: "research" },
@@ -98,7 +130,7 @@ function startOverwrite() {
 /** Open Create Wiki from the empty state and start the POST. */
 function startCreate() {
   const { release } = deferNextRequest();
-  render(<WikiWorkbench initialWikis={[]} initialCurrentId={null} />);
+  mount([], null);
   fireEvent.click(button("Create Wiki"));
   const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
   const form = dialog.querySelector("form") as HTMLFormElement;
@@ -114,6 +146,8 @@ describe("the Overwrite confirm", () => {
     // The second press, on the very control the owner sees. Without
     // `disabled={busy}` this reaches `applyTemplate` again and the wiki's
     // purpose.md, Schema and Workspace Purpose are rewritten a second time.
+    // The handler's own `if (busy) return` sits behind that and is not
+    // observable here — `workbench-left-column.test.ts` pins it by scan.
     fireEvent.click(confirm);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -218,8 +252,11 @@ describe("the Create submit", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).toBeNull();
-    // One wiki seeded, not two.
-    expect(screen.getByText(WIKI.name)).toBeTruthy();
+    // One wiki seeded, not two — counted at the route, because the card is no
+    // longer optimistic (DW-174): the provider is its single source, so the
+    // empty state stays put until the server render that `router.refresh()`
+    // asks for arrives with the new record.
+    expect(screen.getByText("No wiki yet.")).toBeTruthy();
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 

@@ -21,6 +21,7 @@ import {
   SCENARIO_LABELS,
   WIKI_ARTIFACT_FILES,
 } from "../wiki-scenarios";
+import { PREVIEW_UNSELECTED_COPY } from "../workbench-preview";
 
 const COMPONENTS = path.resolve(__dirname, "../../components");
 
@@ -141,7 +142,25 @@ describe("WikiWorkbench empty state and preview copy", () => {
   it("uses the AC's exact sentences", async () => {
     const source = await read("WikiWorkbench.tsx");
     expect(source).toContain("No wiki yet.");
-    expect(source).toContain("Select a file to preview.");
+  });
+
+  it("takes the preview sentence from the module that owns it, not a literal", async () => {
+    // DW-177: every sibling sentence the Preview slot can show is an exported
+    // constant in `workbench-preview.ts`, and this one was the lone inline
+    // literal — the card restated it while `PREVIEW_EMPTY_COPY` and friends were
+    // imported one file away.
+    //
+    // The sentence is READ from the constant here, never retyped: the wording
+    // now has exactly one definition in `src`, so rewording it is a single edit
+    // and no green test can be left asserting the old text. What is pinned is
+    // the invariant a scan can actually keep — that the component imports the
+    // constant and restates nothing.
+    expect(PREVIEW_UNSELECTED_COPY.length).toBeGreaterThan(0);
+
+    const source = await read("WikiWorkbench.tsx");
+    expect(source).toContain("PREVIEW_UNSELECTED_COPY");
+    expect(source).toContain('from "@/lib/workbench-preview"');
+    expect(source).not.toContain(PREVIEW_UNSELECTED_COPY);
   });
 
   it("offers a single primary Create Wiki action on the empty state", async () => {
@@ -226,7 +245,7 @@ describe("WikiWorkbench empty state and preview copy", () => {
   });
 
   it("hands the preview sentence's visibility to the shell's own state (DW-39)", async () => {
-    // A docked Preview column and "Select a file to preview." describe the same
+    // A docked Preview column and `PREVIEW_UNSELECTED_COPY` describe the same
     // slot, so both on screen at once is a contradiction. The canvas reaches the
     // shell as `children` and cannot read `previewOpen`, so the class is the
     // seam and the stylesheet decides. (The rule is EXERCISED — not just
@@ -248,7 +267,11 @@ describe("WikiWorkbench empty state and preview copy", () => {
     // workbench cannot make it, and its primary action would seed a duplicate
     // wiki and move every prompt onto its template on a transient error.
     const workbench = await read("WikiWorkbench.tsx");
-    expect(workbench).toContain("unavailable");
+    // The flag arrives on the provider, not as a prop of this card (DW-174):
+    // one wire from `wikiRegistry.unavailable`, so the header and the canvas
+    // cannot disagree about whether the registry was read.
+    expect(workbench).toContain("registryUnavailable");
+    expect(workbench).toContain("useWorkbenchData()");
     expect(workbench).toContain("Your wikis couldn’t be loaded.");
 
     const page = await readFile(
@@ -256,7 +279,7 @@ describe("WikiWorkbench empty state and preview copy", () => {
       "utf8",
     );
     expect(page).toContain("unavailable: true");
-    expect(page).toContain("unavailable={wikiRegistry.unavailable}");
+    expect(page).toContain("registryUnavailable: wikiRegistry.unavailable");
   });
 
   it("resets the create dialog on close, so reopening never paints a stale attempt", async () => {
@@ -276,7 +299,10 @@ describe("WikiWorkbench empty state and preview copy", () => {
   });
 
   it("refetches the server tree after each of its own kernel writes", async () => {
-    const source = await read("WikiWorkbench.tsx");
+    // Comment-stripped, like the DW-33 negatives below: this counts CALLS, and
+    // the file's own prose explains the refresh several times over — a
+    // paragraph naming it must not read as a third write.
+    const source = stripComments(await read("WikiWorkbench.tsx"));
     // Two writes left on this card, and both make the server render stale:
     // `create` (seeds a wiki and makes it active) and `applyTemplate`
     // (rewrites purpose.md, Schema and the Workspace Purpose — the live wiki
