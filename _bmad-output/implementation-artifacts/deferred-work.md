@@ -1591,7 +1591,8 @@ source_spec: `spec-dw-34-workbench-preview-announcements.md`
 location: src/components/workbench/PreviewColumn.tsx (the fetch handler's `gone` branch, and `canEdit`)
 severity: medium
 reason: The `gone` branch deliberately keeps the last payload, so `canEditPreview(payload)` is still true and the header goes on rendering `Edit` while the body shows `This file couldn't be loaded.`. `save()`'s guard compares `previewWriteTarget(payloadRef.current)?.key` against that same stale payload, so it passes and posts. Pre-existing — the old `failed` branch kept the payload the same way — but DW-54 narrowing `gone` to mean exactly "the row is not there" is what makes it legible as a defect rather than as one undifferentiated failure.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-preview-column-refresh-affordances
 
 ### DW-182: A live region rewritten with the identical string is not re-announced, so two consecutive silent refreshes that both change the body report as one.
 origin: spec-deferred df75dfff157b
@@ -1599,7 +1600,8 @@ source_spec: `spec-dw-34-workbench-preview-announcements.md`
 location: src/components/workbench/PreviewColumn.tsx and src/components/workbench/Workbench.tsx (both polite regions)
 severity: medium
 reason: `refreshAnnouncement` is set to the same `PREVIEW_UPDATED_COPY` literal each time, leaving the text node unchanged, and most assistive tech announces only on change. The shell's own region has had this shape since Story 1.3 (`setAnnouncement(workbenchMode(next).label)` re-announces nothing when the mode already showing is re-picked), so this is a house-wide property of both announcers rather than something this change introduced — but repeated same-page rewrites are the common case for DW-50 specifically. Fixing it needs a decision about the mechanism (a keyed node, an alternating suffix) that no test in a node or jsdom project can verify.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-preview-column-refresh-affordances
 
 ### DW-183: An unreachable refresh is the one refresh outcome that is never announced — the stale strip is a purely visual affordance.
 origin: spec-deferred 0fba34343eca
@@ -1607,7 +1609,8 @@ source_spec: `spec-dw-34-workbench-preview-announcements.md`
 location: src/components/workbench/PreviewColumn.tsx (the stale strip)
 severity: low
 reason: A successful silent swap says `Preview updated` and a 404 mounts a `role="alert"` body sentence, but an unreachable read only renders `.wb-preview-stale`, which carries no live region. A screen-reader user goes on reading bytes with no way to learn the column stopped being able to refresh them. Not required by DW-54's recorded decision (which asks for an indicator with a retry, not a sentence), and announcing every blip politely would chatter — so the wording and the threshold are a copy decision rather than a wiring fix.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-preview-column-refresh-affordances
 
 ### DW-184: Pressing `Retry` produces no in-flight feedback, so a slow retry is indistinguishable from a broken button.
 origin: spec-deferred 8a133c7a6465
@@ -1615,7 +1618,8 @@ source_spec: `spec-dw-34-workbench-preview-announcements.md`
 location: src/components/workbench/PreviewColumn.tsx (the `Retry` control)
 severity: low
 reason: A retry takes the silent-refresh path, so `loading` stays false by design (the point is not to flash `Loading…` at a reader), the strip renders unchanged, and a second failure is a no-op re-render. Adding an `aria-busy`/disabled pending state means a fifth flag in the column and a decision about whether the strip's label should change while a read is in flight.
-status: open
+status: done 2026-08-19
+resolution: resolved by sweep bundle dw3-preview-column-refresh-affordances
 
 ### DW-185: No CSS layout rule in this repo is verified by anything that lays out a page — every breakpoint claim is a text scan of `globals.css`.
 origin: spec-deferred 8bd6d98814e7
@@ -2459,4 +2463,12 @@ source_spec: `spec-dw-148-174-175-177-255-256-workbench-client-hardening.md`
 location: src/lib/workbench-request.ts (failureMessage)
 severity: low
 reason: `failureMessage` special-cases `TimeoutError`/`AbortError` because those name the mechanism rather than the thing that failed, then returns `cause.message` for anything else. An offline browser rejects with `TypeError: Failed to fetch` (or `NetworkError when attempting to fetch resource`), which is exactly as mechanism-named and sails straight through to the dialog. Carried over verbatim from `WikiSwitcher`; nothing covers a `TypeError` rejection.
+status: open
+
+### DW-287: Nothing in either vitest project can verify that the live-region repeat mark is actually re-announced by assistive technology.
+origin: spec-deferred 0a52fb9a4a49
+source_spec: `spec-dw-181-184-preview-refresh-affordances.md`
+location: src/lib/live-region.ts and src/components/workbench/__tests__/preview-announcements.test.tsx
+severity: low
+reason: DW-182's fix is an alternating U+200B appended to a repeated sentence. The node and jsdom suites prove only that the region's string CHANGED — which was never in doubt. Whether NVDA, JAWS or VoiceOver re-utters on that change, and whether any of them normalises the mark away before diffing, is asserted in prose only. The DW-182 ledger entry predicted this ("no test in a node or jsdom project can verify"), and the repo already records the equivalent gap for CSS. Without a browser/AT project the suite reads as if the mechanism is proven.
 status: open

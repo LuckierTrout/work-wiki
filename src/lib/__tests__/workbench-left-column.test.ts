@@ -480,9 +480,14 @@ describe("PreviewColumn is view-first over a rendered body", () => {
     expect(source).toContain("setSaving(false)");
     // A save that lands after the owner picked another row must not stamp this
     // draft onto that row's payload, nor pull focus off what they just clicked.
-    expect(source).toContain(
-      "if (previewWriteTarget(payloadRef.current)?.key !== target.key) return;",
+    // …and since DW-181 through `previewEditTarget`, so `gone` is inside the
+    // same comparison: the 404 branch KEEPS the payload on purpose, and a guard
+    // reading that payload alone passed and posted over a row the server had
+    // already deleted.
+    expect(source).toMatch(
+      /if \(\s*previewEditTarget\(\{ gone: goneRef\.current, payload: payloadRef\.current \}\)\?\.key !==\s*target\.key\s*\)\s*return;/,
     );
+    expect(source).not.toContain("previewWriteTarget(payloadRef.current)");
     // The draft is keyed to the TARGET it was SEEDED from, not to whatever the
     // column happens to be showing when Save is pressed. Reading `payload?.slug`
     // there would write page A's text under page B's slug the moment the editor
@@ -512,7 +517,7 @@ describe("PreviewColumn is view-first over a rendered body", () => {
     expect(source).toContain("draft.trim().length === 0");
     // Both edit conditions live in one executed function — dropping the
     // truncation half means saving a prefix over the whole page.
-    expect(source).toContain("canEditPreview(payload)");
+    expect(source).toContain("canEditPreview({ gone, payload })");
     expect(source).not.toContain("payload?.truncated === false");
     // Every request has a deadline; `finally` cannot rescue one that never
     // settles, which would strand the busy flag with no error to explain it.

@@ -9,14 +9,19 @@ import { SPLIT_WIDE_QUERY } from "@/lib/workbench-split";
 import {
   PREVIEW_CLOSED_COPY,
   PREVIEW_EDIT_CONFIRM_LABEL,
+  PREVIEW_EDIT_CONFIRM_TITLE,
   PREVIEW_EDIT_COPY,
+  PREVIEW_EDIT_SCHEMA_CONFIRM_TITLE,
   PREVIEW_FAILED_COPY,
   PREVIEW_REMOVED_COPY,
   PREVIEW_RETRY_COPY,
+  PREVIEW_RETRYING_COPY,
+  PREVIEW_STALE_ANNOUNCEMENT_COPY,
   PREVIEW_UNREACHABLE_COPY,
   PREVIEW_UPDATED_COPY,
   previewDockAnnouncement,
 } from "@/lib/workbench-preview";
+import { LIVE_REGION_REPEAT_MARK, announcementSentence } from "@/lib/live-region";
 import { buildFileTree } from "@/lib/workbench-tree";
 import { writeStoredSelection } from "@/lib/workbench-state";
 import { setMediaQuery } from "../../../../vitest.setup.dom";
@@ -91,6 +96,27 @@ function payload(name: string, body: string) {
 }
 
 /**
+ * …and what it answers for the Wiki's Schema (Story 1.8), which is editable and
+ * is NOT a page: no `slug`, an `artifact` instead, and its own confirm copy.
+ *
+ * Handed back for whatever row the test picked — the stub answers by fixture,
+ * not by URL, and every derivation under test reads the PAYLOAD rather than the
+ * selection. That is enough to put the Schema's gate on screen, which is the
+ * only thing these cases need it for.
+ */
+function schemaPayload() {
+  return {
+    name: "schema.md",
+    path: "schema.md",
+    artifact: "schema.md" as const,
+    format: "markdown" as const,
+    body: "# Schema",
+    truncated: false,
+    editable: true,
+  };
+}
+
+/**
  * What the next preview read should do. Reassigned per test rather than
  * re-stubbed, so a rerender that triggers a second read picks up the new
  * behaviour without the fixture having to know when the read happens.
@@ -106,6 +132,11 @@ let reads: string[] = [];
 
 beforeEach(() => {
   window.localStorage.clear();
+  // …and the URL, which is jsdom state shared by every test in this file. The
+  // shell seeds its mode from `?mode=` at mount and `selectMode` pushes an
+  // entry, so a case that switches modes would otherwise hand every case after
+  // it a shell that opens on some other surface — with no tree rows in it.
+  window.history.replaceState(null, "", "/");
   reads = [];
   answer = () => ({
     ok: true,
@@ -182,16 +213,34 @@ async function refresh(
  * which is all of them. `[length - 1]` then covers a second announcer added as
  * a direct child of the shell; the shell's own is the final one.
  */
-function announced(): string {
+function announcedRaw(): string {
   const regions = document.querySelectorAll('.wb-shell > .wb-sr-only[aria-live="polite"]');
   return regions[regions.length - 1]?.textContent ?? "";
 }
 
-/** …and what the COLUMN's own region says. */
-function columnAnnounced(): string {
+/** …and what the COLUMN's own region says, likewise verbatim. */
+function columnAnnouncedRaw(): string {
   return (
     document.querySelector('.wb-preview .wb-sr-only[aria-live="polite"]')?.textContent ?? ""
   );
+}
+
+/**
+ * The SENTENCE either region is reading — the repeat mark stripped (DW-182).
+ *
+ * A region that has to say the same thing twice carries an invisible mark on
+ * the second write, because an identical string is what a screen reader cannot
+ * tell from no write at all. That mark is not spoken, so every assertion about
+ * what a reader HEARS compares against copy through here; the two `…Raw`
+ * readers above are for the assertions about what the region DID, which is
+ * exactly "its text changed".
+ */
+function announced(): string {
+  return announcementSentence(announcedRaw());
+}
+
+function columnAnnounced(): string {
+  return announcementSentence(columnAnnouncedRaw());
 }
 
 function preview(): HTMLElement | null {
@@ -806,5 +855,424 @@ describe("gone is not the same as unreachable (DW-54)", () => {
       // next render restores the row and the click below toggles it back off.
       window.localStorage.clear();
     }
+  });
+});
+
+describe("a 404 takes the Edit affordance with the body (DW-181)", () => {
+  it("withdraws Edit on a refresh that answers 404, and restores it when the row answers again", async () => {
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    expect(screen.getByRole("button", { name: PREVIEW_EDIT_COPY })).toBeTruthy();
+
+    // THE bug. The `gone` branch KEEPS the last payload on purpose (DW-54), so
+    // asked about the payload alone `canEditPreview` stays true: the header
+    // went on offering `Edit` over a body the 404 had already replaced, and
+    // `save()`'s guard — comparing against that same kept payload — passed and
+    // posted to a row the server said was not there.
+    answer = () => ({ ok: false, status: 404, json: async () => ({ error: "Not found." }) });
+    await refresh(view, { ...DATA, dataVersion: 1 });
+
+    expect(screen.getByText(PREVIEW_FAILED_COPY)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: PREVIEW_EDIT_COPY })).toBeNull();
+
+    // …and the gate is a READ of current state, not a latch: the row answering
+    // again brings the control back with the bytes.
+    answer = () => ({
+      ok: true,
+      status: 200,
+      json: async () => payload("Alpha", "# Alpha restored"),
+    });
+    await refresh(view, { ...DATA, dataVersion: 2 });
+
+    expect(screen.getByText("Alpha restored")).toBeTruthy();
+    expect(screen.getByRole("button", { name: PREVIEW_EDIT_COPY })).toBeTruthy();
+  });
+
+  it("keeps Edit when a refresh answers 200 with different bytes", async () => {
+    // The gate closes on `gone` and on nothing else. A same-row refresh that
+    // simply changed the file is the ordinary case, and withdrawing the editor
+    // for it would make every write in the system take `Edit` away.
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+
+    answer = () => ({
+      ok: true,
+      status: 200,
+      json: async () => payload("Alpha", "# Alpha rewritten"),
+    });
+    await refresh(view, { ...DATA, dataVersion: 1 });
+
+    expect(screen.getByText("Alpha rewritten")).toBeTruthy();
+    expect(screen.getByRole("button", { name: PREVIEW_EDIT_COPY })).toBeTruthy();
+  });
+
+  it("takes an OPEN confirm gate with it, rather than re-wording it", async () => {
+    // `Edit` unmounts on the 404's render, but the dialog it opened would go on
+    // standing — and its sentences come from the same derivation, which now
+    // answers `null`. `previewEditCopy(null)` is the PAGE copy, so the Schema's
+    // gate would silently re-title itself to "Edit this page?" mid-read and
+    // offer to open an editor with nowhere at all to save to.
+    answer = () => ({ ok: true, status: 200, json: async () => schemaPayload() });
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_COPY }));
+    expect(screen.getByText(PREVIEW_EDIT_SCHEMA_CONFIRM_TITLE)).toBeTruthy();
+
+    answer = () => ({ ok: false, status: 404, json: async () => ({ error: "Not found." }) });
+    await refresh(view, { ...DATA, dataVersion: 1 });
+
+    // Gone, not re-worded: no dialog at all, and above all not the page's gate
+    // standing where the Schema's was.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("button", { name: PREVIEW_EDIT_CONFIRM_LABEL })).toBeNull();
+    expect(screen.queryByText(PREVIEW_EDIT_SCHEMA_CONFIRM_TITLE)).toBeNull();
+    expect(screen.queryByText(PREVIEW_EDIT_CONFIRM_TITLE)).toBeNull();
+    expect(screen.getByText(PREVIEW_FAILED_COPY)).toBeTruthy();
+  });
+
+  it("leaves no way to reach the editor around the withdrawn control", async () => {
+    // Belt and braces on the same path: even if a dialog somehow survived,
+    // `startEditing` asks the SAME derivation again, so a confirm press seeds
+    // no editor. Driven through the handler the dialog would call.
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_COPY }));
+    expect(screen.getByRole("button", { name: PREVIEW_EDIT_CONFIRM_LABEL })).toBeTruthy();
+
+    answer = () => ({ ok: false, status: 404, json: async () => ({ error: "Not found." }) });
+    await refresh(view, { ...DATA, dataVersion: 1 });
+
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: PREVIEW_EDIT_COPY })).toBeNull();
+    expect(screen.getByText(PREVIEW_FAILED_COPY)).toBeTruthy();
+  });
+});
+
+describe("a region that has to repeat itself is still heard (DW-182)", () => {
+  it("changes the column's region on a SECOND body swap reading the same sentence", async () => {
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+
+    answer = () => ({
+      ok: true,
+      status: 200,
+      json: async () => payload("Alpha", "# Alpha two"),
+    });
+    await refresh(view, { ...DATA, dataVersion: 1 });
+    const first = columnAnnouncedRaw();
+    expect(columnAnnounced()).toBe(PREVIEW_UPDATED_COPY);
+
+    answer = () => ({
+      ok: true,
+      status: 200,
+      json: async () => payload("Alpha", "# Alpha three"),
+    });
+    await refresh(view, { ...DATA, dataVersion: 2 });
+    const second = columnAnnouncedRaw();
+
+    expect(screen.getByText("Alpha three")).toBeTruthy();
+    // THE bug: most assistive tech announces a live region on CHANGE, so
+    // writing `Preview updated` over `Preview updated` is indistinguishable
+    // from not writing at all — two consecutive silent refreshes reported as
+    // one, and the second body swap went unmentioned.
+    expect(second).not.toBe(first);
+    expect(second).toBe(first + LIVE_REGION_REPEAT_MARK);
+    // …while the sentence a reader HEARS is unchanged: the mark is invisible
+    // and unspoken.
+    expect(columnAnnounced()).toBe(PREVIEW_UPDATED_COPY);
+    // And it alternates rather than accumulating — a third swap takes it off
+    // again, so the region never grows a tail of marks.
+    answer = () => ({
+      ok: true,
+      status: 200,
+      json: async () => payload("Alpha", "# Alpha four"),
+    });
+    await refresh(view, { ...DATA, dataVersion: 3 });
+    expect(columnAnnouncedRaw()).toBe(first);
+    expect(columnAnnounced()).toBe(PREVIEW_UPDATED_COPY);
+  });
+
+  it("changes the SHELL's region when the owner re-picks the same surface", async () => {
+    // The shell's region reports which surface is showing, and `selectMode`
+    // announces the label whether or not the mode moved. Re-pressing the rail
+    // item already current therefore reads the SAME sentence a second time —
+    // and before this the region did not move, so nothing was heard at all.
+    await renderShell();
+    const chat = () => screen.getByRole("button", { name: "Chat" });
+
+    fireEvent.click(chat());
+    await act(async () => {});
+    const first = announcedRaw();
+    expect(announced()).toBe("Chat");
+
+    fireEvent.click(chat());
+    await act(async () => {});
+
+    expect(announced()).toBe("Chat");
+    expect(announcedRaw()).not.toBe(first);
+    expect(announcedRaw()).toBe(first + LIVE_REGION_REPEAT_MARK);
+  });
+
+  it("never marks a CLEARED region — silence is silence", async () => {
+    // The reset path writes `""` rather than going through the repeat
+    // mechanism: a lone mark is still a content change, and some
+    // implementations read that as an empty utterance on every fresh pick.
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    answer = () => ({
+      ok: true,
+      status: 200,
+      json: async () => payload("Alpha", "# Alpha rewritten"),
+    });
+    await refresh(view, { ...DATA, dataVersion: 1 });
+    expect(columnAnnounced()).toBe(PREVIEW_UPDATED_COPY);
+
+    answer = () => ({ ok: false, status: 404, json: async () => ({ error: "Not found." }) });
+    fireEvent.click(row("Beta"));
+    await act(async () => {});
+
+    expect(columnAnnouncedRaw()).toBe("");
+  });
+});
+
+describe("an unreachable refresh eventually says so (DW-183)", () => {
+  it("stays silent for one blip and announces the second in a row", async () => {
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    expect(columnAnnouncedRaw()).toBe("");
+
+    answer = () => new TypeError("network down");
+    await refresh(view, { ...DATA, dataVersion: 1 });
+
+    // The strip shows and the region stays empty: one failed read heals on the
+    // next read that already happens, and a sentence for it would land in a
+    // reader's ear for a condition that was over before they heard it.
+    expect(screen.getByText(PREVIEW_UNREACHABLE_COPY)).toBeTruthy();
+    expect(columnAnnouncedRaw()).toBe("");
+
+    await refresh(view, { ...DATA, dataVersion: 2 });
+
+    // Two in a row means the self-healing did not happen, so a reader who
+    // cannot see the strip is now reading bytes with no way of knowing they
+    // are stale. Polite, in the column's OWN region beside `Preview updated` —
+    // never an alert, because nothing was lost.
+    expect(columnAnnounced()).toBe(PREVIEW_STALE_ANNOUNCEMENT_COPY);
+    expect(document.querySelector('.wb-preview [role="alert"]')).toBeNull();
+
+    // …and said ONCE per run, not on every bump for as long as the outage runs.
+    const said = columnAnnouncedRaw();
+    await refresh(view, { ...DATA, dataVersion: 3 });
+    expect(columnAnnouncedRaw()).toBe(said);
+    await refresh(view, { ...DATA, dataVersion: 4 });
+    expect(columnAnnouncedRaw()).toBe(said);
+  });
+
+  it("starts the run over once a read lands again", async () => {
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    answer = () => new TypeError("network down");
+    await refresh(view, { ...DATA, dataVersion: 1 });
+    await refresh(view, { ...DATA, dataVersion: 2 });
+    expect(columnAnnounced()).toBe(PREVIEW_STALE_ANNOUNCEMENT_COPY);
+
+    // A read that LANDS ends the run — the strip is gone and the bytes on
+    // screen are current again.
+    answer = () => ({
+      ok: true,
+      status: 200,
+      json: async () => payload("Alpha", "# Alpha healed"),
+    });
+    await refresh(view, { ...DATA, dataVersion: 3 });
+    expect(screen.queryByText(PREVIEW_UNREACHABLE_COPY)).toBeNull();
+    // The healed read swapped the body, so the region reports THAT — and this
+    // is the exact value the blip below must leave untouched.
+    expect(columnAnnounced()).toBe(PREVIEW_UPDATED_COPY);
+    const healed = columnAnnouncedRaw();
+
+    // …so the NEXT single blip is a first blip again, and silent. Asserted as
+    // "the region did not move at all", not as "it does not read the stale
+    // sentence": the region holds `Preview updated` here, so a `not.toBe`
+    // against the stale copy would pass for almost any regression.
+    answer = () => new TypeError("network down");
+    await refresh(view, { ...DATA, dataVersion: 4 });
+    expect(screen.getByText(PREVIEW_UNREACHABLE_COPY)).toBeTruthy();
+    expect(columnAnnouncedRaw()).toBe(healed);
+    expect(columnAnnounced()).toBe(PREVIEW_UPDATED_COPY);
+  });
+
+  it("says nothing about a last version for a row that never loaded one", async () => {
+    // The strip needs last-good bytes, and this row has none: its very FIRST
+    // read failed, so the body is `This file couldn’t be loaded.` and
+    // `previewStaleNotice` shows no strip. Gated on the failure run alone, the
+    // second consecutive failure still reaches the threshold and the region
+    // says "showing the last version that loaded" over a body saying nothing
+    // loaded — a sentence contradicting the screen, with the strip absent.
+    answer = () => new TypeError("network down");
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    expect(screen.getByText(PREVIEW_FAILED_COPY)).toBeTruthy();
+    expect(screen.queryByText(PREVIEW_UNREACHABLE_COPY)).toBeNull();
+    expect(columnAnnouncedRaw()).toBe("");
+
+    // The second consecutive failure — a bump, so the run is NOT reset.
+    await refresh(view, { ...DATA, dataVersion: 1 });
+
+    expect(screen.getByText(PREVIEW_FAILED_COPY)).toBeTruthy();
+    expect(screen.queryByText(PREVIEW_UNREACHABLE_COPY)).toBeNull();
+    expect(columnAnnouncedRaw()).toBe("");
+
+    // …and it stays silent however long the run gets, so this cannot be
+    // satisfied by moving the threshold rather than by asking about the bytes.
+    await refresh(view, { ...DATA, dataVersion: 2 });
+    await refresh(view, { ...DATA, dataVersion: 3 });
+    expect(columnAnnouncedRaw()).toBe("");
+  });
+
+  it("does not carry a failure run across a pick", async () => {
+    // The run belongs to the row it was counted for. Carried over, one earlier
+    // failure elsewhere would make the new row's FIRST blip announce.
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    answer = () => new TypeError("network down");
+    await refresh(view, { ...DATA, dataVersion: 1 });
+    expect(columnAnnouncedRaw()).toBe("");
+
+    answer = () => ({
+      ok: true,
+      status: 200,
+      json: async () => payload("Beta", "# Beta"),
+    });
+    fireEvent.click(row("Beta"));
+    await act(async () => {});
+
+    answer = () => new TypeError("network down");
+    await refresh(view, { ...DATA, dataVersion: 2 });
+
+    expect(screen.getByText(PREVIEW_UNREACHABLE_COPY)).toBeTruthy();
+    expect(columnAnnouncedRaw()).toBe("");
+  });
+});
+
+describe("Retry reports that it is working (DW-184)", () => {
+  it("is aria-busy, disabled and relabelled while the read is in flight", async () => {
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    answer = () => new TypeError("network down");
+    await refresh(view, { ...DATA, dataVersion: 1 });
+
+    const idle = screen.getByRole("button", {
+      name: PREVIEW_RETRY_COPY,
+    }) as HTMLButtonElement;
+    expect(idle.getAttribute("aria-busy")).toBe("false");
+    expect(idle.disabled).toBe(false);
+
+    // A read that has not settled. Held open deliberately: the whole defect is
+    // that the window between the press and the answer looked exactly like a
+    // control that does nothing.
+    const settle: Array<(value: unknown) => void> = [];
+    answer = () => new Promise<unknown>((resolve) => settle.push(resolve));
+    fireEvent.click(idle);
+    await act(async () => {});
+
+    const busy = screen.getByRole("button", {
+      name: PREVIEW_RETRYING_COPY,
+    }) as HTMLButtonElement;
+    expect(busy.getAttribute("aria-busy")).toBe("true");
+    expect(busy.disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: PREVIEW_RETRY_COPY })).toBeNull();
+    // The strip's SENTENCE does not move: the bytes below are still the last
+    // ones that loaded, which is exactly what it says. Only the control reports.
+    expect(screen.getByText(PREVIEW_UNREACHABLE_COPY)).toBeTruthy();
+    expect(previewBodyText()).toContain("Alpha");
+
+    await act(async () => {
+      for (const resolve of settle) resolve({ ok: false, status: 500, json: async () => ({}) });
+    });
+
+    // It settled unreachable AGAIN, so the strip stays — and the control is
+    // pressable again rather than stuck reporting a read that is over.
+    expect(screen.getByText(PREVIEW_UNREACHABLE_COPY)).toBeTruthy();
+    const recovered = screen.getByRole("button", {
+      name: PREVIEW_RETRY_COPY,
+    }) as HTMLButtonElement;
+    expect(recovered.getAttribute("aria-busy")).toBe("false");
+    expect(recovered.disabled).toBe(false);
+  });
+
+  it("issues exactly one read while it is busy, however many times it is pressed", async () => {
+    // `disabled` is not decoration: a second press bumps the nonce again, which
+    // re-runs the effect and ABORTS the read the first press started.
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    answer = () => new TypeError("network down");
+    await refresh(view, { ...DATA, dataVersion: 1 });
+    const attempts = reads.length;
+
+    const settle: Array<(value: unknown) => void> = [];
+    answer = () => new Promise<unknown>((resolve) => settle.push(resolve));
+    const retry = screen.getByRole("button", { name: PREVIEW_RETRY_COPY });
+    fireEvent.click(retry);
+    await act(async () => {});
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+    await act(async () => {});
+
+    expect(reads.length).toBe(attempts + 1);
+
+    await act(async () => {
+      for (const resolve of settle) resolve({ ok: false, status: 500, json: async () => ({}) });
+    });
+    expect(
+      (screen.getByRole("button", { name: PREVIEW_RETRY_COPY }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+
+  it("clears the busy flag when a pick lands while a retry is in flight", async () => {
+    // The reset path owns everything that belonged to the previous row. Left
+    // set, the flag would come back with the next strip and disable a control
+    // for a read that settled minutes ago.
+    const view = await renderShell();
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    answer = () => new TypeError("network down");
+    await refresh(view, { ...DATA, dataVersion: 1 });
+
+    const settle: Array<(value: unknown) => void> = [];
+    answer = () => new Promise<unknown>((resolve) => settle.push(resolve));
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_RETRY_COPY }));
+    await act(async () => {});
+    expect(screen.getByRole("button", { name: PREVIEW_RETRYING_COPY })).toBeTruthy();
+
+    answer = () => ({
+      ok: true,
+      status: 200,
+      json: async () => payload("Beta", "# Beta"),
+    });
+    fireEvent.click(row("Beta"));
+    await act(async () => {});
+    for (const resolve of settle) resolve({ ok: false, status: 500, json: async () => ({}) });
+    await act(async () => {});
+
+    expect(previewBodyText()).toContain("Beta");
+    answer = () => new TypeError("network down");
+    await refresh(view, { ...DATA, dataVersion: 2 });
+    const back = screen.getByRole("button", {
+      name: PREVIEW_RETRY_COPY,
+    }) as HTMLButtonElement;
+    expect(back.disabled).toBe(false);
   });
 });

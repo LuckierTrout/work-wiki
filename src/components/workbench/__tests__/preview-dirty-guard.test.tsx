@@ -14,6 +14,7 @@ import {
   PREVIEW_KEEP_EDITING_COPY,
   PREVIEW_SAVE_COPY,
 } from "@/lib/workbench-preview";
+import { announcementSentence } from "@/lib/live-region";
 import { WRITE_CONFLICT_COPY } from "@/lib/write-precondition";
 import { buildFileTree } from "@/lib/workbench-tree";
 import {
@@ -145,10 +146,18 @@ function row(name: string): HTMLElement {
   return screen.getByRole("button", { name });
 }
 
-/** The SHELL's polite region — the child combinator excludes the column's own. */
+/**
+ * The SHELL's polite region — the child combinator excludes the column's own.
+ *
+ * Through `announcementSentence`, because a region that has to say the same
+ * thing twice carries an invisible repeat mark on the second write (DW-182).
+ * The mark is not spoken, so every assertion here is about the SENTENCE; read
+ * verbatim, the first repeated announcement anywhere in the shell would fail a
+ * case in this file on a one-character diff nobody can see.
+ */
 function announced(): string {
   const regions = document.querySelectorAll('.wb-shell > .wb-sr-only[aria-live="polite"]');
-  return regions[regions.length - 1]?.textContent ?? "";
+  return announcementSentence(regions[regions.length - 1]?.textContent ?? "");
 }
 
 function preview(): HTMLElement | null {

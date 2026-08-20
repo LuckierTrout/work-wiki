@@ -3214,7 +3214,7 @@ describe("the Settings components stay inside the shell", () => {
     // be able to turn back off — and closing announces the surface the owner
     // lands on, the way `selectMode` does.
     expect(shell).toContain("if (settingsOpen) {");
-    expect(shell).toContain("setAnnouncement(workbenchMode(mode).label)");
+    expect(shell).toContain("announce(workbenchMode(mode).label)");
     expect(shell).toContain("onToggleSettings={toggleSettings}");
     // A collapsed left column would hide the settings nav entirely, and
     // `collapsed` is durable — so the shell reports the surface and CSS

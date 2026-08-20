@@ -46,11 +46,14 @@ import {
   PREVIEW_MAX_CHARS,
   PREVIEW_REMOVED_COPY,
   PREVIEW_RETRY_COPY,
+  PREVIEW_RETRYING_COPY,
   PREVIEW_ROUTE,
   PREVIEW_SAVE_FAILED_COPY,
   PREVIEW_TIMEOUT_REASON,
   PREVIEW_TRUNCATED_COPY,
+  PREVIEW_STALE_ANNOUNCEMENT_COPY,
   PREVIEW_UNREACHABLE_COPY,
+  PREVIEW_UNREACHABLE_STREAK,
   PREVIEW_UPDATED_COPY,
   WIKILINK_MISSING_COPY,
   artifactWriteUrl,
@@ -61,10 +64,12 @@ import {
   previewBodyState,
   previewDockAnnouncement,
   previewDraftDirty,
+  previewEditTarget,
   previewFileKind,
   previewRefreshAnnouncement,
   previewRequestUrl,
   previewStaleNotice,
+  previewUnreachableAnnouncement,
   previewWriteTarget,
   savePreviewBody,
   type PreviewFetch,
@@ -503,15 +508,19 @@ describe("capPreviewBody", () => {
 
 describe("canEditPreview", () => {
   const editable: PreviewPayload = { ...PAYLOAD_SHAPE, editable: true, truncated: false };
+  /** The live column: bytes on screen and the route still answering. */
+  const showing = (payload: PreviewPayload | null) => ({ gone: false, payload });
 
   it("offers the editor only for an editable, whole body", () => {
-    expect(canEditPreview(editable)).toBe(true);
-    expect(canEditPreview(null)).toBe(false);
-    expect(canEditPreview({ ...editable, editable: false })).toBe(false);
+    expect(canEditPreview(showing(editable))).toBe(true);
+    expect(canEditPreview(showing(null))).toBe(false);
+    expect(canEditPreview(showing({ ...editable, editable: false }))).toBe(false);
     // The half that is easy to drop: the editor is seeded with `body`, which for
     // a capped page is a PREFIX, and saving it would replace the whole page.
-    expect(canEditPreview({ ...editable, truncated: true })).toBe(false);
-    expect(canEditPreview({ ...editable, editable: false, truncated: true })).toBe(false);
+    expect(canEditPreview(showing({ ...editable, truncated: true }))).toBe(false);
+    expect(
+      canEditPreview(showing({ ...editable, editable: false, truncated: true })),
+    ).toBe(false);
   });
 
   it("refuses a payload that is editable but names no target at all", () => {
@@ -521,8 +530,8 @@ describe("canEditPreview", () => {
     // `isPreviewPayload` does not check it, so this is the only thing that
     // refuses it.
     const { slug: _slug, ...slugless } = editable;
-    expect(canEditPreview(slugless as PreviewPayload)).toBe(false);
-    expect(canEditPreview({ ...editable, slug: "" })).toBe(false);
+    expect(canEditPreview(showing(slugless as PreviewPayload))).toBe(false);
+    expect(canEditPreview(showing({ ...editable, slug: "" }))).toBe(false);
   });
 
   it("offers the editor for the editable artifact, which has no slug", () => {
@@ -530,15 +539,161 @@ describe("canEditPreview", () => {
     // slug-or-nothing rule would have refused it forever.
     const { slug: _slug, ...base } = editable;
     const schema = { ...base, artifact: "schema.md" } as PreviewPayload;
-    expect(canEditPreview(schema)).toBe(true);
+    expect(canEditPreview(showing(schema))).toBe(true);
     // The server still decides, and truncation still refuses — saving a capped
     // prefix over an executable Schema is the same mistake as over a page.
-    expect(canEditPreview({ ...schema, editable: false })).toBe(false);
-    expect(canEditPreview({ ...schema, truncated: true })).toBe(false);
+    expect(canEditPreview(showing({ ...schema, editable: false }))).toBe(false);
+    expect(canEditPreview(showing({ ...schema, truncated: true }))).toBe(false);
     // The allowlist is the gate, not "any string in `artifact`".
     expect(
-      canEditPreview({ ...base, artifact: "purpose.md" } as unknown as PreviewPayload),
+      canEditPreview(
+        showing({ ...base, artifact: "purpose.md" } as unknown as PreviewPayload),
+      ),
     ).toBe(false);
+  });
+
+  it("refuses everything a 404 replaced, however editable the kept payload is", () => {
+    // DW-181. The `gone` branch KEEPS the payload on purpose (DW-54), so every
+    // one of these describes bytes that WERE editable and are no longer on
+    // screen. Asked about the payload alone this answers `true` for all of them.
+    const { slug: _slug, ...base } = editable;
+    for (const payload of [
+      editable,
+      { ...base, artifact: "schema.md" } as PreviewPayload,
+      { ...editable, version: "v9" },
+    ]) {
+      expect(canEditPreview({ gone: true, payload })).toBe(false);
+      expect(canEditPreview({ gone: false, payload })).toBe(true);
+    }
+  });
+});
+
+describe("previewEditTarget (DW-181)", () => {
+  const editable: PreviewPayload = { ...PAYLOAD_SHAPE, editable: true, truncated: false };
+
+  it("is previewWriteTarget for a column the route is still answering", () => {
+    // Not a second rule: `gone: false` is the whole of the old behaviour, so
+    // Story 1.8's page/artifact split cannot drift out of this one.
+    const { slug: _slug, ...base } = editable;
+    for (const payload of [
+      editable,
+      { ...editable, truncated: true },
+      { ...editable, editable: false },
+      { ...base, artifact: "schema.md" } as PreviewPayload,
+      base as PreviewPayload,
+      null,
+    ]) {
+      expect(previewEditTarget({ gone: false, payload })).toEqual(
+        previewWriteTarget(payload),
+      );
+    }
+  });
+
+  it("answers null over a 404, for both kinds", () => {
+    const { slug: _slug, ...base } = editable;
+    const schema = { ...base, artifact: "schema.md" } as PreviewPayload;
+    // The page and the Schema both have somewhere to write, and both lose it
+    // the moment the route says the row is not there. The affordance, the
+    // confirm copy, `startEditing` and BOTH of `save()`'s guards read this, so
+    // this `null` is what refuses the write as well as the button.
+    expect(previewWriteTarget(editable)).not.toBeNull();
+    expect(previewWriteTarget(schema)).not.toBeNull();
+    expect(previewEditTarget({ gone: true, payload: editable })).toBeNull();
+    expect(previewEditTarget({ gone: true, payload: schema })).toBeNull();
+    expect(previewEditTarget({ gone: true, payload: null })).toBeNull();
+  });
+
+  it("is exactly what canEditPreview asks, on both sides of `gone`", () => {
+    const { slug: _slug, ...base } = editable;
+    for (const gone of [false, true]) {
+      for (const payload of [
+        editable,
+        { ...editable, truncated: true },
+        { ...base, artifact: "schema.md" } as PreviewPayload,
+        null,
+      ]) {
+        expect(canEditPreview({ gone, payload })).toBe(
+          previewEditTarget({ gone, payload }) !== null,
+        );
+      }
+    }
+  });
+});
+
+describe("previewUnreachableAnnouncement (DW-183)", () => {
+  /** Bytes on screen — the state the strip and the sentence are both about. */
+  const shown: PreviewPayload = { ...PAYLOAD_SHAPE, editable: true, truncated: false };
+
+  it("stays silent for a single blip", () => {
+    // One failed read heals on the next read that already happens, with the
+    // bytes on screen unchanged throughout. A sentence in a reader's ear for a
+    // condition that is already over is chatter.
+    expect(previewUnreachableAnnouncement({ failures: 1, payload: shown })).toBeNull();
+    expect(previewUnreachableAnnouncement({ failures: 0, payload: shown })).toBeNull();
+  });
+
+  it("says it on the second consecutive failure", () => {
+    expect(PREVIEW_UNREACHABLE_STREAK).toBe(2);
+    expect(
+      previewUnreachableAnnouncement({
+        failures: PREVIEW_UNREACHABLE_STREAK,
+        payload: shown,
+      }),
+    ).toBe(PREVIEW_STALE_ANNOUNCEMENT_COPY);
+  });
+
+  it("says it ONCE, not on every failure after that", () => {
+    // Exactly ON the threshold, never at-or-above. With `>=` — and with DW-182's
+    // mark making a repeat audible again — a reader would be told the same thing
+    // on every `dataVersion` bump in the system for as long as the outage ran.
+    for (const failures of [3, 4, 12, 99]) {
+      expect(previewUnreachableAnnouncement({ failures, payload: shown })).toBeNull();
+    }
+  });
+
+  it("says nothing at all when there is no last version to be showing", () => {
+    // The sentence claims bytes are on screen. With no payload the column is
+    // rendering `PREVIEW_FAILED_COPY` and `previewStaleNotice` shows no strip —
+    // that row's FIRST read failed, so nothing ever loaded. Announcing there
+    // would contradict the body, with no strip beside it to be the visual half.
+    for (const failures of [0, 1, PREVIEW_UNREACHABLE_STREAK, 3, 99]) {
+      expect(previewUnreachableAnnouncement({ failures, payload: null })).toBeNull();
+    }
+  });
+
+  it("agrees with the strip on every failure count", () => {
+    // The two are one decision seen twice — an announcement with no strip is a
+    // sentence about a screen that does not say it. `previewStaleNotice`'s other
+    // terms are pinned to the state this branch actually runs in: the result was
+    // unreachable, the read has settled, and `previewFetchPlan` refuses to fetch
+    // at all while the editor is open.
+    for (const payload of [shown, null]) {
+      for (const failures of [1, PREVIEW_UNREACHABLE_STREAK, 3]) {
+        const spoken = previewUnreachableAnnouncement({ failures, payload }) !== null;
+        const visible = previewStaleNotice({
+          loading: false,
+          gone: false,
+          unreachable: true,
+          editing: false,
+          payload,
+        });
+        expect(spoken && !visible).toBe(false);
+      }
+    }
+  });
+
+  it("says the strip's own sentence, named for the surface", () => {
+    // Built FROM the strip's copy, so the sentence on screen and the sentence a
+    // reader hears cannot drift into two accounts of one fact.
+    expect(PREVIEW_STALE_ANNOUNCEMENT_COPY).toContain(PREVIEW_UNREACHABLE_COPY);
+    expect(PREVIEW_STALE_ANNOUNCEMENT_COPY).toContain("Preview");
+    // …and NOT the same string, or `getByText` could not tell the strip from the
+    // region — a live announcement arrives with none of the strip's surroundings
+    // and has to name the surface it is about.
+    expect(PREVIEW_STALE_ANNOUNCEMENT_COPY).not.toBe(PREVIEW_UNREACHABLE_COPY);
+    // Not the body's failure sentence either: nothing was lost.
+    expect(PREVIEW_STALE_ANNOUNCEMENT_COPY).not.toContain(PREVIEW_FAILED_COPY);
+    expect(PREVIEW_STALE_ANNOUNCEMENT_COPY).not.toContain("'");
   });
 });
 
@@ -640,7 +795,8 @@ describe("previewWriteTarget", () => {
   it("is exactly what canEditPreview asks", () => {
     // Not two rules that agree today: one is defined as the other, so the
     // truncation half cannot be dropped from the edit control without also
-    // dropping it from the save.
+    // dropping it from the save. Through `previewEditTarget` since DW-181,
+    // which adds `gone` to the same one derivation rather than beside it.
     const { slug: _slug, ...base } = editable;
     for (const payload of [
       editable,
@@ -649,7 +805,9 @@ describe("previewWriteTarget", () => {
       { ...base, artifact: "schema.md" } as PreviewPayload,
       base as PreviewPayload,
     ]) {
-      expect(canEditPreview(payload)).toBe(previewWriteTarget(payload) !== null);
+      expect(canEditPreview({ gone: false, payload })).toBe(
+        previewWriteTarget(payload) !== null,
+      );
     }
   });
 });
@@ -879,6 +1037,11 @@ describe("the announcement copy", () => {
     expect(PREVIEW_UNREACHABLE_COPY).not.toBe(PREVIEW_FAILED_COPY);
     expect(PREVIEW_UPDATED_COPY).toBe("Preview updated");
     expect(PREVIEW_RETRY_COPY).toBe("Retry");
+    // …and the busy label is the control's own, in the same register as
+    // `Saving…` — never a rewrite of the strip's sentence, which stays true
+    // for as long as the bytes below it are the last ones that loaded.
+    expect(PREVIEW_RETRYING_COPY).toBe("Retrying…");
+    expect(PREVIEW_RETRYING_COPY).not.toBe(PREVIEW_RETRY_COPY);
   });
 
   it("uses typographic apostrophes, like every other sentence here", () => {
@@ -887,7 +1050,9 @@ describe("the announcement copy", () => {
       PREVIEW_REMOVED_COPY,
       PREVIEW_UPDATED_COPY,
       PREVIEW_UNREACHABLE_COPY,
+      PREVIEW_STALE_ANNOUNCEMENT_COPY,
       PREVIEW_RETRY_COPY,
+      PREVIEW_RETRYING_COPY,
       PREVIEW_DISCARD_CONFIRM_TITLE,
       PREVIEW_DISCARD_CONFIRM_BODY,
       PREVIEW_DISCARD_CONFIRM_LABEL,

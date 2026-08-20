@@ -138,19 +138,61 @@ export interface PreviewPayload {
 }
 
 /**
- * May the confirm-gated editor be offered for this payload?
+ * What the column is CURRENTLY showing, as far as "may this be edited" is
+ * concerned (DW-181).
+ *
+ * Two facts, not one, because the column deliberately holds them apart: a 404
+ * KEEPS the last-good payload (DW-54's decision — `gone` replaces the BODY, it
+ * does not clear what was read), so `payload` alone cannot answer this. It
+ * still describes bytes that were editable, and every derivation built on it
+ * alone goes on saying so over a body a 404 has already replaced.
+ */
+export interface PreviewEditInput {
+  /** The route answered 404 for the row on screen: there is nothing to write to. */
+  gone: boolean;
+  /** The last payload that landed — kept across a 404, hence the flag above. */
+  payload: PreviewPayload | null;
+}
+
+/**
+ * THE write-target derivation: where `Save` would go for what is on screen, or
+ * `null` when there is nowhere.
+ *
+ * {@link previewWriteTarget} answers the same question about a PAYLOAD; this
+ * one answers it about the COLUMN, and the difference is the whole of DW-181. A
+ * refresh that answers 404 leaves the payload standing on purpose, so
+ * `previewWriteTarget(payload)` stays non-null over a body that now reads
+ * `This file couldn’t be loaded.` — the header went on offering `Edit`, and
+ * `save()`'s guard, which compares against that same stale payload, passed and
+ * posted a body to a row the server had already deleted.
+ *
+ * One derivation rather than a `gone` term added at each site: the affordance,
+ * the confirm copy, `startEditing` and BOTH of `save()`'s guards ask this, so
+ * the control and the write can only ever refuse together. A `gone` check typed
+ * beside the button alone would withdraw the affordance and leave the write.
+ */
+export function previewEditTarget(input: PreviewEditInput): PreviewWriteTarget | null {
+  if (input.gone) return null;
+  return previewWriteTarget(input.payload);
+}
+
+/**
+ * May the confirm-gated editor be offered for what the column is showing?
  *
  * Exactly "is there somewhere for `Save` to go", which is
- * {@link previewWriteTarget}. Expressing it that way rather than as a second
+ * {@link previewEditTarget}. Expressing it that way rather than as a second
  * list of conditions is what keeps the truncation rule ATTACHED to the decision
  * instead of sitting beside it: the editor is seeded with `payload.body`, which
  * for a capped file is a PREFIX, and saving that replaces a whole page — or,
  * since Story 1.8, a whole executable Schema — with its first
  * {@link PREVIEW_MAX_CHARS} characters. Inline in JSX, deleting half of the old
  * pair left the entire suite green.
+ *
+ * Takes the same {@link PreviewEditInput} as the target it is defined from, so
+ * the two cannot be asked different questions (DW-181).
  */
-export function canEditPreview(payload: PreviewPayload | null): boolean {
-  return previewWriteTarget(payload) !== null;
+export function canEditPreview(input: PreviewEditInput): boolean {
+  return previewEditTarget(input) !== null;
 }
 
 /**
@@ -432,8 +474,33 @@ export const PREVIEW_UPDATED_COPY = "Preview updated";
 export const PREVIEW_UNREACHABLE_COPY =
   "Couldn’t refresh — showing the last version that loaded.";
 
+/**
+ * The SPOKEN form of the strip above (DW-183).
+ *
+ * Built FROM {@link PREVIEW_UNREACHABLE_COPY} rather than written out a second
+ * time, so the sentence a reader hears and the sentence on screen cannot drift
+ * into two accounts of one fact.
+ *
+ * Prefixed, and that is the only difference: the strip is read in place, above
+ * the bytes it is about, and the column header is right there. A live-region
+ * announcement arrives with no surroundings at all — "Couldn’t refresh" alone
+ * could be about the trees, the Wiki switcher or a save, so it has to name
+ * which surface it is about, exactly as the shell's own dock sentence does.
+ */
+export const PREVIEW_STALE_ANNOUNCEMENT_COPY = `Preview: ${PREVIEW_UNREACHABLE_COPY}`;
+
 /** The one control beside it. Self-healing means this is a shortcut, not the cure. */
 export const PREVIEW_RETRY_COPY = "Retry";
+
+/**
+ * …and what that control says while the read it started is still in flight
+ * (DW-184).
+ *
+ * The same shape as {@link PREVIEW_SAVING_COPY}: the label is the busy report
+ * a sighted owner gets, `aria-busy` and `disabled` are the rest of it, and a
+ * slow retry stops being indistinguishable from a broken button.
+ */
+export const PREVIEW_RETRYING_COPY = "Retrying…";
 
 /** The escape hatch out of view-first. */
 export const PREVIEW_EDIT_COPY = "Edit";
@@ -616,6 +683,67 @@ export function previewRefreshAnnouncement(input: {
   const same =
     input.shown.body === input.next.body && input.shown.truncated === input.next.truncated;
   return same ? null : PREVIEW_UPDATED_COPY;
+}
+
+/**
+ * How many CONSECUTIVE unreachable reads it takes before the column says so
+ * out loud (DW-183).
+ *
+ * Two, not one. A single failed read is the ordinary case this feature was
+ * built for — a dropped packet, a proxy hiccup, one bad `dataVersion` bump —
+ * and it heals on the next read that already happens, with the bytes on screen
+ * unchanged throughout. Announcing it would put a failure sentence in a
+ * reader's ear for a condition that was over before they finished hearing it,
+ * on a screen where nothing moved.
+ *
+ * Two in a row is different: the first read's self-healing did not happen, so
+ * the strip is going to keep standing, and a reader who cannot see it is now
+ * reading bytes they have no way of knowing are stale.
+ */
+export const PREVIEW_UNREACHABLE_STREAK = 2;
+
+/**
+ * What the COLUMN's polite region should say about a read that could not be
+ * reached, or `null` for "say nothing" (DW-183).
+ *
+ * `failures` is the length of the CURRENT run of unreachable results — reset
+ * by any read that lands, `ok` or `gone`, and by a fresh pick.
+ *
+ * Exactly ON the threshold, never at-or-above: the sentence is said ONCE per
+ * run. `>=` would re-announce on every subsequent failure, and since the region
+ * re-announces a repeated sentence now (DW-182's mark), that would be a reader
+ * told the same thing on every `dataVersion` bump in the system for as long as
+ * the outage lasted — chatter with no new information in it, which is the
+ * failure mode `previewRefreshAnnouncement` already refuses for the `ok` case.
+ *
+ * `payload` is the SAME term {@link previewStaleNotice} takes, and it is here so
+ * the spoken form and the strip can only ever agree. A row whose very FIRST read
+ * failed holds no payload: the body is {@link PREVIEW_FAILED_COPY} and no strip
+ * appears, because there is no last version that loaded. A second consecutive
+ * failure on that row still reaches the threshold, and without this term the
+ * region would say "showing the last version that loaded" over a body that says
+ * the file could not be loaded at all — a sentence contradicting the screen, and
+ * the exact conflation DW-54 drew the strip's two states apart to prevent.
+ *
+ * The other four terms of `previewStaleNotice` are deliberately NOT here.
+ * `unreachable` is what this branch is; `gone` and `loading` are settled by the
+ * time a result is being classified; and `editing` cannot be true for a read
+ * that ran at all, because `previewFetchPlan` answers `fetch: false` for every
+ * run while the editor is open. `payload` is the one that can genuinely
+ * disagree.
+ *
+ * Polite, and it lands in the column's OWN region beside `Preview updated` —
+ * never `role="alert"`. Nothing was lost: the bytes are still on screen and
+ * still the most recent true thing this column knows.
+ */
+export function previewUnreachableAnnouncement(input: {
+  failures: number;
+  payload: PreviewPayload | null;
+}): string | null {
+  if (input.payload === null) return null;
+  return input.failures === PREVIEW_UNREACHABLE_STREAK
+    ? PREVIEW_STALE_ANNOUNCEMENT_COPY
+    : null;
 }
 
 // ---------------------------------------------------------------------------

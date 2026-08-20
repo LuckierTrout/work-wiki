@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { APP_NAME } from "@/lib/brand";
+import { nextAnnouncement } from "@/lib/live-region";
 import { useSidecarStatus } from "@/hooks/useSidecarStatus";
 import {
   DEFAULT_WORKBENCH_MODE,
@@ -191,6 +192,27 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // stored mode on load is not a change the owner made, and announcing it would
   // report a mode switch that never happened. Only `selectMode` fills this in.
   const [announcement, setAnnouncement] = useState("");
+  /**
+   * THE way anything writes that region (DW-182).
+   *
+   * A live region is announced when its content CHANGES, so `setAnnouncement`
+   * called with the sentence already in there is indistinguishable from not
+   * calling it: re-picking a surface whose label matches the one just spoken —
+   * closing Settings back onto the mode it was opened from, two picks that
+   * resolve to the same name — reported nothing at all. `nextAnnouncement`
+   * alternates an invisible mark onto a repeat so the value always moves; the
+   * sentence a reader hears is unchanged.
+   *
+   * A state UPDATER, because the comparison is against what the region holds
+   * NOW rather than against whatever a closure captured — and pure, so the
+   * StrictMode double-invoke every other updater in this file is careful about
+   * costs nothing here.
+   *
+   * Stable (`[]`), so the callbacks and the effect below can depend on it.
+   */
+  const announce = useCallback((sentence: string) => {
+    setAnnouncement((current) => nextAnnouncement(current, sentence));
+  }, []);
   // The owner's PREFERRED column widths — what they dragged to, not what fits.
   // `clampSplitWidths` reduces them to the frame at render, so narrowing the
   // window never quietly rewrites the layout they chose.
@@ -450,8 +472,9 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     // Spoken only when there was something to see go: this is the one undock the
     // owner did not ask for, and a column that simply vanished mid-read is
     // indistinguishable from a bug.
-    if (action === "report") setAnnouncement(PREVIEW_REMOVED_COPY);
+    if (action === "report") announce(PREVIEW_REMOVED_COPY);
   }, [
+    announce,
     mounted,
     knowledge,
     files,
@@ -506,14 +529,14 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       // Outside any state updater, the rule `toggleCollapsed` already follows —
       // React invokes updaters twice under StrictMode.
       writeStoredMode(next);
-      setAnnouncement(workbenchMode(next).label);
+      announce(workbenchMode(next).label);
       // Leaving Settings is what DISCARDS the draft: `SettingsCanvas` owns it,
       // so unmounting the surface is the whole of "unsaved edits are discarded
       // on leave". No diff, no prompt, nothing sent.
       setSettingsOpen(false);
       closeSheet();
     },
-    [closeSheet],
+    [announce, closeSheet],
   );
 
   const selectMode = useCallback(
@@ -572,18 +595,18 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   const toggleSettings = useCallback(() => {
     if (settingsOpen) {
       setSettingsOpen(false);
-      setAnnouncement(workbenchMode(mode).label);
+      announce(workbenchMode(mode).label);
     } else {
       setSettingsOpen(true);
-      setAnnouncement(settingsAnnouncement(settingsCategory(settingsCategoryId).label));
+      announce(settingsAnnouncement(settingsCategory(settingsCategoryId).label));
     }
     closeSheet();
-  }, [closeSheet, mode, settingsCategoryId, settingsOpen]);
+  }, [announce, closeSheet, mode, settingsCategoryId, settingsOpen]);
 
   const selectSettingsCategory = useCallback((next: SettingsCategoryId) => {
     setSettingsCategoryId(next);
-    setAnnouncement(settingsAnnouncement(settingsCategory(next).label));
-  }, []);
+    announce(settingsAnnouncement(settingsCategory(next).label));
+  }, [announce]);
 
   // The storage write is deliberately OUTSIDE the updater: an updater must be
   // pure, and React invokes it twice under StrictMode. Same rule `setSheetClosed`
@@ -625,13 +648,13 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     // The owner is picking, so a dock from here on is a change they made — see
     // the reveal effect below, which stays out of the mount restore.
     ownerPickedRef.current = true;
-    setAnnouncement(
+    announce(
       isSameSelection(liveRef.current.selection, next)
         ? PREVIEW_CLOSED_COPY
         : previewDockAnnouncement(selectionName(next, groups, nodes)),
     );
     setSelection((current) => (isSameSelection(current, next) ? null : next));
-  }, []);
+  }, [announce]);
 
   // …and WHETHER it may happen. The Preview's fetch effect closes the editor on
   // every new pick, so before DW-36 one stray click on a tree row silently
@@ -701,7 +724,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       // the updater, for the same StrictMode reason `selectRow` gives.
       if (!isSameSelection(liveRef.current.selection, next)) {
         const { knowledge: groups, files: nodes } = latestRef.current;
-        setAnnouncement(previewDockAnnouncement(selectionName(next, groups, nodes)));
+        announce(previewDockAnnouncement(selectionName(next, groups, nodes)));
       }
       setSelection((current) => {
         // Returning the SAME object makes React bail out. Without this, a link
@@ -712,7 +735,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
         return isSameSelection(current, next) ? current : next;
       });
     },
-    [treeTab, files],
+    [announce, treeTab, files],
   );
 
   // Esc closes the sheet — on the BUBBLE phase, deliberately. `useDialogA11y`

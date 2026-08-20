@@ -164,7 +164,13 @@ describe("Workbench shell", () => {
     expect(source).toContain('aria-live="polite"');
     expect(source).toMatch(/aria-live="polite"[\s\S]{0,120}\{announcement\}/);
     expect(source).toContain('useState("")');
-    expect(source).toContain("setAnnouncement(workbenchMode(next).label)");
+    // Through the shell's one `announce` (DW-182), never `setAnnouncement`
+    // directly: a region announces on CHANGE, so writing the label already in
+    // there is indistinguishable from not writing at all, and re-picking a
+    // surface whose label matches reported nothing.
+    expect(source).toContain("announce(workbenchMode(next).label)");
+    expect(source).toContain("nextAnnouncement(current, sentence)");
+    expect(source.match(/setAnnouncement\(/g) ?? []).toHaveLength(1);
   });
 
   it("does not chase focus onto a hidden trigger", async () => {

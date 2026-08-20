@@ -24,6 +24,7 @@ import {
   PREVIEW_SAVE_COPY,
   PREVIEW_SAVING_COPY,
   PREVIEW_RETRY_COPY,
+  PREVIEW_RETRYING_COPY,
   PREVIEW_TRUNCATED_COPY,
   PREVIEW_TIMEOUT_REASON,
   PREVIEW_UNREACHABLE_COPY,
@@ -33,14 +34,16 @@ import {
   previewBodyState,
   previewDraftDirty,
   previewEditCopy,
+  previewEditTarget,
   previewRefreshAnnouncement,
   previewRequestUrl,
   previewStaleNotice,
-  previewWriteTarget,
+  previewUnreachableAnnouncement,
   savePreviewBody,
   type PreviewPayload,
   type PreviewWriteTarget,
 } from "@/lib/workbench-preview";
+import { nextAnnouncement } from "@/lib/live-region";
 import {
   findKnowledgePage,
   readableSlugsFromKnowledge,
@@ -70,7 +73,7 @@ import { PreviewBody } from "./PreviewBody";
  * write path — and the Wiki's `schema.md` saves through
  * `PUT /api/workbench/artifact`, which is the only writer for bytes the page
  * route cannot address. WHICH of the two, and which sentences the dialog shows,
- * are `previewWriteTarget` and `previewEditCopy`: functions the node suite
+ * are `previewEditTarget` and `previewEditCopy`: functions the node suite
  * executes, because this repo has no DOM test environment and a rule typed into
  * JSX here could only ever be grepped for.
  *
@@ -184,6 +187,12 @@ function PreviewPane({
   payloadRef.current = payload;
   // The route answered 404: the row is not there. Replaces the body.
   const [gone, setGone] = useState(false);
+  // …and the same fact readable from an async callback, beside `payloadRef` and
+  // for the same reason. It is HALF of the edit decision (DW-181): the `gone`
+  // branch deliberately keeps the payload, so `save()`'s guards would otherwise
+  // go on measuring a target derived from bytes a 404 has already replaced.
+  const goneRef = useRef(false);
+  goneRef.current = gone;
   // The read did not land at all — a blip, a 5xx, the deadline, a body that was
   // not a payload. Two flags rather than one, because they are two facts and a
   // single `failed` is what made a dropped packet look like a deletion (DW-54).
@@ -194,6 +203,17 @@ function PreviewPane({
   // — including the rule that an open editor defers it — instead of becoming a
   // second request path with its own reset semantics.
   const [retryNonce, setRetryNonce] = useState(0);
+  // Is the read `Retry` started still in flight (DW-184)? Drives `aria-busy`,
+  // `disabled` and the control's label. State rather than a ref because three
+  // attributes render from it — the opposite of `failuresRef` below, which
+  // nothing renders from.
+  const [retrying, setRetrying] = useState(false);
+  // How many unreachable reads have landed IN A ROW. Read and written inside
+  // the same settle callback, and no element shows it, so a ref rather than
+  // state: as state it would cost a render per failure for a value nothing
+  // renders. WHETHER a run of this length is worth a sentence is
+  // `previewUnreachableAnnouncement`, never a comparison typed here.
+  const failuresRef = useRef(0);
   // What the column's OWN polite region says. Separate from the shell's, which
   // reports which surface is showing; a body swapped underneath a reader is a
   // change to what they are reading, not to where they are (DW-50).
@@ -287,8 +307,16 @@ function PreviewPane({
       setPayload(null);
       // A new row has nothing to have been updated FROM, and the shell already
       // announced the dock. Clearing keeps a sentence about the previous row
-      // from being re-read when this region next changes.
+      // from being re-read when this region next changes. A plain `""` rather
+      // than `nextAnnouncement`: clearing is a request for SILENCE, and the
+      // repeat mark exists to make a sentence heard again.
       setRefreshAnnouncement("");
+      // The failure run belongs to the row it was counted for. Carried across a
+      // pick, one earlier failure elsewhere would make this row's FIRST blip
+      // announce.
+      failuresRef.current = 0;
+      // A retry in flight for the previous row is not a retry for this one.
+      setRetrying(false);
       // A pick abandons an open editor: the column is about to show another
       // file's bytes, and a textarea holding this one's draft over that one's
       // header is the state `save`'s target check also refuses.
@@ -317,29 +345,75 @@ function PreviewPane({
         // an unguarded announcement would chatter at a reader whose screen did
         // not change. `??` to the empty string, because a live region's content
         // is a string and `null` would render the word.
-        setRefreshAnnouncement(
+        //
+        // Computed OUT HERE and only then handed to the updater: React invokes
+        // an updater twice under StrictMode and requires it to be pure, so the
+        // ref read belongs on this side of it. The updater itself is
+        // `nextAnnouncement` and nothing else (DW-182) — writing the same
+        // sentence into the region a second time is what a screen reader cannot
+        // tell from not writing at all, so two consecutive silent refreshes
+        // used to report as one.
+        const sentence =
           previewRefreshAnnouncement({
             reset: plan.reset,
             shown: payloadRef.current,
             next: result.payload,
-          }) ?? "",
-        );
+          }) ?? "";
+        setRefreshAnnouncement((current) => nextAnnouncement(current, sentence));
         setPayload(result.payload);
         setGone(false);
         setUnreachable(false);
+        // The read landed, so whatever run of failures preceded it is over.
+        failuresRef.current = 0;
       } else if (result.status === "gone") {
         // A page another actor just deleted must not keep rendering as if it
         // were there — the body is replaced, and no stale strip appears over a
         // replacement that is not stale.
         setGone(true);
         setUnreachable(false);
+        // A 404 takes the WHOLE edit path with it, dialog included (DW-181).
+        // `Edit` unmounts on this render because `previewEditTarget` now
+        // answers `null`, but a confirm the owner opened a moment ago would
+        // otherwise go on standing — and its sentences come from that same
+        // `null`, so a Schema dialog would silently re-title itself to the page
+        // copy mid-read and offer to open an editor with nowhere to save to.
+        setConfirmOpen(false);
+        // A 404 is an ANSWER: the route was reached and said the row is not
+        // there. It ends the run for the same reason `ok` does.
+        failuresRef.current = 0;
       } else {
         // The read could not be reached. The last-good bytes STAY: they are the
         // most recent true thing this column knows, and replacing them with a
         // failure sentence because of one dropped packet is the bug DW-54 is.
         setUnreachable(true);
+        // …but the strip that says so is purely visual, and a reader who cannot
+        // see it goes on reading bytes with no way of knowing they are stale
+        // (DW-183). WHEN that is worth saying is the executed
+        // `previewUnreachableAnnouncement`: not on the first blip, which heals
+        // on the next read that already happens, and not again on the third.
+        failuresRef.current += 1;
+        // `payloadRef.current` rather than `result`: this branch deliberately
+        // leaves the payload alone, so what is on screen is what the last read
+        // left — including `null`, on a row whose very first read failed. The
+        // strip takes the same term, so the sentence and the strip cannot
+        // disagree about whether there is a last version to be showing.
+        const staleSentence = previewUnreachableAnnouncement({
+          failures: failuresRef.current,
+          payload: payloadRef.current,
+        });
+        // `null` LEAVES the region as it is rather than clearing it: silence is
+        // what is being asked for, and this branch has no opinion about the
+        // sentence some other branch put there.
+        if (staleSentence !== null) {
+          setRefreshAnnouncement((current) => nextAnnouncement(current, staleSentence));
+        }
       }
       setLoading(false);
+      // Whatever this read was, it SETTLED — so the control that may have
+      // started it is pressable again. Cleared on every non-stale outcome, not
+      // only the failing one: a retry that succeeds unmounts the strip anyway,
+      // and a flag left true would come back with it.
+      setRetrying(false);
     });
 
     return () => {
@@ -385,16 +459,16 @@ function PreviewPane({
 
   const startEditing = useCallback(() => {
     if (!payload) return;
-    // The target is captured HERE, from the payload the body was rendered from
-    // — not re-derived at Save. `canEditPreview` is the same predicate, so the
-    // `Edit` control was on screen only when this was non-null WHEN IT WAS
-    // PRESSED — but a silent same-row refresh (Story 1.7) can replace the
-    // payload while this dialog is open, and the new one may be truncated or no
-    // longer editable. Opening the editor then would seed `editingTargetRef`
-    // with `null`, and `Save` would neither write nor say why: the outcome
-    // `previewWriteTarget` documents as the worst of the three. So the dialog
-    // closes and the column stays view-first instead.
-    const target = previewWriteTarget(payload);
+    // The target is captured HERE, from what the column was showing — not
+    // re-derived at Save. `canEditPreview` is the same predicate, so the `Edit`
+    // control was on screen only when this was non-null WHEN IT WAS PRESSED —
+    // but a silent same-row refresh (Story 1.7) can replace the payload while
+    // this dialog is open, and the new one may be truncated, no longer editable,
+    // or a 404 that left the old payload standing (DW-181). Opening the editor
+    // then would seed `editingTargetRef` with `null`, and `Save` would neither
+    // write nor say why: the outcome `previewWriteTarget` documents as the worst
+    // of the three. So the dialog closes and the column stays view-first instead.
+    const target = previewEditTarget({ gone, payload });
     if (!target) {
       setConfirmOpen(false);
       return;
@@ -415,7 +489,7 @@ function PreviewPane({
     setSaveError(null);
     setConfirmOpen(false);
     setEditing(true);
-  }, [payload]);
+  }, [gone, payload]);
 
   const save = useCallback(async () => {
     const target = editingTargetRef.current;
@@ -426,7 +500,19 @@ function PreviewPane({
     // always is — the selection effect closes the editor — and the check is here
     // so that a change to the effect cannot turn the editor into a cross-file
     // overwrite without something refusing.
-    if (previewWriteTarget(payloadRef.current)?.key !== target.key) return;
+    //
+    // The `gone` term is DEFENCE IN DEPTH, not the live refusal, and cannot fire
+    // as the column stands: `previewFetchPlan` answers `fetch: false` for every
+    // same-row run while `editing`, so no 404 can land under an open editor, and
+    // a different-row run resets and closes the editor before any result
+    // arrives. It is here because it is the same one derivation the affordance
+    // reads (DW-181) — a rule the write asks in a weaker form than the button is
+    // how the button came to be withdrawn while the write went on posting.
+    if (
+      previewEditTarget({ gone: goneRef.current, payload: payloadRef.current })?.key !==
+      target.key
+    )
+      return;
     setSaving(true);
     setSaveError(null);
     // The request, the write route and the "server's sentence, else the Copy
@@ -445,7 +531,11 @@ function PreviewPane({
     // would put file A's text under file B's header — and the focus restore
     // would pull focus off whatever they just clicked. The write is done and
     // the shell will notice it either way — the bump already landed.
-    if (previewWriteTarget(payloadRef.current)?.key !== target.key) return;
+    if (
+      previewEditTarget({ gone: goneRef.current, payload: payloadRef.current })?.key !==
+      target.key
+    )
+      return;
     if (result.status === "ok") {
       // Back to view-first showing what was saved. The body is the text that
       // just went over the wire, so no second read is needed to be truthful —
@@ -491,14 +581,20 @@ function PreviewPane({
   const name = selectionName(selection, knowledge, files);
 
   // Every condition lives in one executed function — see `canEditPreview`, which
-  // is `previewWriteTarget(payload) !== null`. Left inline, dropping the
+  // is `previewEditTarget({ gone, payload }) !== null`. Left inline, dropping the
   // truncation half kept the whole suite green.
-  const canEdit = canEditPreview(payload);
+  //
+  // `gone` is an INPUT rather than a second condition beside it (DW-181): a 404
+  // deliberately keeps the last payload, so asked about the payload alone this
+  // stays true and the header goes on offering `Edit` over a body the 404 has
+  // already replaced. The affordance and both of `save()`'s guards read the same
+  // derivation, so they can only refuse together.
+  const canEdit = canEditPreview({ gone, payload });
   // WHICH sentences the confirm dialog shows — a page's or the Schema's —
   // decided by an executed function rather than a ternary in the JSX below. A
   // dialog that promised to update "its index and links" while overwriting the
   // Schema is a wording bug no source scan can see.
-  const editCopy = previewEditCopy(previewWriteTarget(payload));
+  const editCopy = previewEditCopy(previewEditTarget({ gone, payload }));
 
   function body() {
     // WHICH state this is, decided by an executed function rather than by four
@@ -594,6 +690,11 @@ function PreviewPane({
           and nothing was deleted. */}
       {previewStaleNotice({ loading, gone, unreachable, editing, payload }) && (
         <div className="wb-preview-stale">
+          {/* The sentence does NOT change while the retry is in flight: the
+              bytes below are still the last ones that loaded, which is exactly
+              what it says, and rewriting it to `Refreshing…` would replace a
+              true statement about the body with a report about the button. The
+              control carries its own busy state instead. */}
           <p className="wb-preview-stale-note">{PREVIEW_UNREACHABLE_COPY}</p>
           <button
             type="button"
@@ -602,9 +703,19 @@ function PreviewPane({
             // reader of its own: one request path, one plan, one set of reset
             // rules. `Date.now()` would also be a new value every press, and a
             // counter cannot collide with itself twice in the same millisecond.
-            onClick={() => setRetryNonce((nonce) => nonce + 1)}
+            onClick={() => {
+              setRetrying(true);
+              setRetryNonce((nonce) => nonce + 1);
+            }}
+            // DW-184. Without these a slow retry is indistinguishable from a
+            // broken button: the strip does not move, the body does not move,
+            // and the only evidence the press did anything is a request nobody
+            // can see. `disabled` also stops a second press from bumping the
+            // nonce again and aborting the read the first one started.
+            disabled={retrying}
+            aria-busy={retrying}
           >
-            {PREVIEW_RETRY_COPY}
+            {retrying ? PREVIEW_RETRYING_COPY : PREVIEW_RETRY_COPY}
           </button>
         </div>
       )}
@@ -613,7 +724,13 @@ function PreviewPane({
           the shell reports which SURFACE is showing, and a body replaced
           underneath a reader is a change to what they are reading. Empty
           whenever there is nothing to report, so a restore, a pick and an
-          unchanged refresh are all silent. */}
+          unchanged refresh are all silent.
+
+          The node STAYS MOUNTED and only its text changes — a region has to
+          exist before its content moves for the move to be observed at all, so
+          keying this and remounting it is the one mechanism assistive tech
+          handles least reliably. Repeats are handled inside the text instead,
+          by `nextAnnouncement` (DW-182). */}
       <p className="wb-sr-only" aria-live="polite">
         {refreshAnnouncement}
       </p>

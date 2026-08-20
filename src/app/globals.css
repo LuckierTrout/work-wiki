@@ -3409,8 +3409,18 @@ body:has(.wb-shell) {
   font-size: 12px;
   cursor: pointer;
 }
-.wb-preview-retry:hover {
+/* Narrowed to a control that can still be pressed (DW-184): while the retry it
+   started is in flight it is `disabled`, and a button that refuses every click
+   must not light up under the pointer. */
+.wb-preview-retry:not([disabled]):hover {
   background: var(--wb-rail-hover);
+}
+/* The shell's one disabled treatment, the same pair `.wb-preview-action[disabled]`
+   uses — no new token and no new colour, because the state is already spelled by
+   the label (`Retrying…`) and by `aria-busy`. */
+.wb-preview-retry[disabled] {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* ===========================================================================

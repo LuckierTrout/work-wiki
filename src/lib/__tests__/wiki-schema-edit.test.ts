@@ -285,7 +285,11 @@ describe("previewEditCopy", () => {
 
   it("routes the Schema somewhere other than the page write path", () => {
     expect(previewWriteTarget(schema)?.url).not.toContain("/api/wiki/");
-    expect(canEditPreview(schema)).toBe(true);
+    expect(canEditPreview({ gone: false, payload: schema })).toBe(true);
+    // …and a 404 withdraws the Schema's editor exactly as it does a page's
+    // (DW-181): the kept payload still names an artifact, so the payload alone
+    // goes on answering `true` over a body the 404 already replaced.
+    expect(canEditPreview({ gone: true, payload: schema })).toBe(false);
   });
 });
 
@@ -947,10 +951,17 @@ describe("the shared editor gained a second target without forking", () => {
     // Both guards — before the request and after it — are the target key, not
     // the payload's slug: a page and the Schema now differ in URL as well as in
     // identity, so a slug comparison would pass while the URL pointed elsewhere.
+    //
+    // …and through `previewEditTarget` since DW-181, so `gone` is part of the
+    // same comparison: the 404 branch KEEPS the payload, and a guard built on
+    // `previewWriteTarget(payloadRef.current)` alone therefore passed and posted
+    // over a row the server had already deleted.
     expect(
-      save.match(/if \(previewWriteTarget\(payloadRef\.current\)\?\.key !== target\.key\) return;/g) ??
-        [],
+      save.match(
+        /if \(\s*previewEditTarget\(\{ gone: goneRef\.current, payload: payloadRef\.current \}\)\?\.key !==\s*target\.key\s*\)\s*return;/g,
+      ) ?? [],
     ).toHaveLength(2);
+    expect(save).not.toContain("previewWriteTarget(payloadRef.current)");
     expect(save).not.toContain("payloadRef.current?.slug");
     expect(save).toContain("const target = editingTargetRef.current;");
     // The fallback sentence comes from the executed copy function, so a Schema
@@ -961,7 +972,7 @@ describe("the shared editor gained a second target without forking", () => {
 
   it("takes the confirm dialog's sentences from the executed copy function", async () => {
     const source = await read("PreviewColumn.tsx");
-    expect(source).toContain("previewEditCopy(previewWriteTarget(payload))");
+    expect(source).toContain("previewEditCopy(previewEditTarget({ gone, payload }))");
     expect(source).toContain("title={editCopy.confirmTitle}");
     expect(source).toContain("body={editCopy.confirmBody}");
     // No ternary in the JSX, and no second copy of either sentence.
@@ -975,14 +986,14 @@ describe("the shared editor gained a second target without forking", () => {
     const source = await read("PreviewColumn.tsx");
     const start = source.slice(
       source.indexOf("const startEditing = useCallback"),
-      source.indexOf("}, [payload]);"),
+      source.indexOf("}, [gone, payload]);"),
     );
     // A silent same-row refresh (Story 1.7) can replace the payload while this
     // dialog is open, and the new one may be truncated or no longer editable.
     // Without this guard the editor opens with a null target and `Save` neither
     // writes nor says why — and `startEditing` runs behind a confirm click, so
     // no test that never mounts the component would ever see it.
-    expect(start).toContain("const target = previewWriteTarget(payload);");
+    expect(start).toContain("const target = previewEditTarget({ gone, payload });");
     expect(start).toMatch(/if \(!target\) \{\s*\n\s*setConfirmOpen\(false\);\s*\n\s*return;\s*\n\s*\}/);
     // …and the guard is BEFORE the editor opens, not after it.
     expect(start.indexOf("if (!target)")).toBeLessThan(start.indexOf("setEditing(true)"));
@@ -996,7 +1007,7 @@ describe("the shared editor gained a second target without forking", () => {
     expect(source).toContain("onConfirm={startEditing}");
     expect(source).toContain("readOnly={saving}");
     expect(source).toContain("draft.trim().length === 0");
-    expect(source).toContain("canEditPreview(payload)");
+    expect(source).toContain("canEditPreview({ gone, payload })");
   });
 });
 

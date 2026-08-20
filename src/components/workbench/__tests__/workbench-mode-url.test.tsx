@@ -10,6 +10,7 @@ import {
   writeStoredMode,
   writeStoredSelection,
 } from "@/lib/workbench-state";
+import { announcementSentence } from "@/lib/live-region";
 
 /**
  * DW-27 — the active mode mirrored into `?mode=`, MOUNTED.
@@ -160,10 +161,16 @@ function current(): string | null {
  * - `[length - 1]` covers the remaining case, a second announcer added as a
  *   direct child of the shell. The shell's is the final one, and taking the
  *   last match keeps this reading it rather than whatever is inserted above.
+ *
+ * The text goes through `announcementSentence`, because a region that has to
+ * say the same thing twice carries an invisible repeat mark on the second write
+ * (DW-182). The mark is not spoken, so every assertion here is about the
+ * SENTENCE; read verbatim, the first repeated announcement anywhere in the
+ * shell would fail a case in this file on a one-character diff nobody can see.
  */
 function announced(): string {
   const regions = document.querySelectorAll('.wb-shell > .wb-sr-only[aria-live="polite"]');
-  return regions[regions.length - 1]?.textContent ?? "";
+  return announcementSentence(regions[regions.length - 1]?.textContent ?? "");
 }
 
 /** How long to wait for a traversal jsdom may never perform. */
