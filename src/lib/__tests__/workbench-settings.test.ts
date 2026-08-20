@@ -110,6 +110,7 @@ import {
   draftCanEnableVectorSearch,
   draftVectorInputs,
   fetchWorkbenchSettings,
+  flatMovableVectorLegs,
   isWorkbenchSettingsPayload,
   saveWorkbenchSettings,
   settingsAnnouncement,
@@ -123,6 +124,7 @@ import {
   vectorSearchMissingCopy,
   type SettingsFetch,
   type VectorSearchInputs,
+  type VectorSearchLegField,
   type WorkbenchSettingsPayload,
 } from "../workbench-settings";
 
@@ -1486,6 +1488,303 @@ describe("validateWorkbenchSettingsPatch", () => {
           }),
         ).ok,
       ).toBe(false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scoping the vector refusal to legs the requesting surface can move (DW-303)
+// ---------------------------------------------------------------------------
+
+describe("flatMovableVectorLegs", () => {
+  const legs = (body: Record<string, unknown>): VectorSearchLegField[] =>
+    [...flatMovableVectorLegs(body)].sort();
+
+  it("claims nothing for a body carrying neither embedding key", () => {
+    // The chat-model edit that DW-219 already lets through the gate: it can move
+    // no vector leg at all, so no vector sentence could be about it.
+    expect(legs({})).toEqual([]);
+    expect(legs({ model: "gpt-4o", ollamaBaseUrl: "http://h:11434" })).toEqual([]);
+  });
+
+  it("claims the MODEL leg for embeddingModel", () => {
+    expect(legs({ embeddingModel: "text-embedding-3-large" })).toEqual(["model"]);
+  });
+
+  it("claims the PROVIDER and BINDING legs for embeddingProvider", () => {
+    // Derived from `VECTOR_LEG_CONTROL`, not hand-listed. The binding leg has no
+    // control of its own and maps to the provider select — the only thing that
+    // can move it — so a body that can move the provider can move it too
+    // (DW-277).
+    expect(legs({ embeddingProvider: "openai" })).toEqual(["binding", "provider"]);
+  });
+
+  it("reads PRESENCE, not value", () => {
+    // A key the body carries is a move whatever it moves the field TO: `null` is
+    // a clear, which moves the leg exactly as a new id does. An explicit
+    // `undefined` is the absent case — it is what the route's own merge branches
+    // skip on, so it must claim nothing here either.
+    expect(legs({ embeddingModel: null, embeddingProvider: null })).toEqual([
+      "binding",
+      "model",
+      "provider",
+    ]);
+    expect(legs({ embeddingModel: "" })).toEqual(["model"]);
+    expect(legs({ embeddingModel: undefined, embeddingProvider: undefined })).toEqual([]);
+  });
+});
+
+describe("validateWorkbenchSettingsPatch — actionableLegs (DW-303)", () => {
+  /**
+   * An `openai` configuration switched ON and ALREADY unsatisfiable on the two
+   * legs the flat `/settings` page renders no control for.
+   */
+  const brokenOpenai = () =>
+    storedState({
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+    });
+
+  const MISSING_TRANSPORT =
+    "Vector search needs an endpoint and an API key before it can be turned on.";
+
+  it("an OMITTED fourth argument refuses exactly as before, and an EMPTY set is its opposite", () => {
+    // The default is what keeps every caller but the flat-only route path
+    // unchanged, so the two have to be pinned against each other: omitted means
+    // "this surface reaches every control", an empty set means "it reaches
+    // none". Same three other arguments, opposite answers.
+    const baseline = brokenOpenai();
+    const merged = storedState({
+      ...baseline,
+      embeddingModel: "text-embedding-3-large",
+    });
+
+    expect(validateWorkbenchSettingsPatch({}, merged, baseline)).toEqual({
+      ok: false,
+      error: MISSING_TRANSPORT,
+    });
+    expect(
+      validateWorkbenchSettingsPatch({}, merged, baseline, new Set()).ok,
+    ).toBe(true);
+  });
+
+  it("REFUSES an unmet leg that is actionable even though the baseline was already broken", () => {
+    // PIN FOR THE `actionableLegs` HALF ALONE. The baseline cannot be enabled —
+    // no model, no endpoint, no key — so the "did this request break it" half
+    // answers NO, and only "does the sentence name something this body could
+    // move" can produce this refusal. Delete that half and this case passes with
+    // a 200.
+    const baseline = storedState({
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+    });
+    expect(
+      canEnableVectorSearch({
+        provider: "openai",
+        baseUrl: null,
+        model: null,
+        hasKey: false,
+        modelOrigin: "stored",
+        providerOrigin: "stored",
+        hasWorkersAiBinding: false,
+      }),
+    ).toBe(false);
+    const merged = storedState({ ...baseline, embeddingModel: "@cf/baai/bge-m3" });
+
+    expect(
+      validateWorkbenchSettingsPatch(
+        {},
+        merged,
+        baseline,
+        flatMovableVectorLegs({ embeddingModel: "@cf/baai/bge-m3" }),
+      ),
+    ).toEqual({
+      ok: false,
+      error:
+        "Vector search needs an endpoint, a model id outside the Cloudflare Workers AI @cf/ namespace and an API key before it can be turned on.",
+    });
+  });
+
+  it("ALLOWS choosing a provider the baseline did not have", () => {
+    // PIN FOR THE SHAPE A SET-DIFF PREDICATE GETS WRONG.
+    // `vectorSearchMissingLegs` early-returns the provider leg ALONE, so this
+    // baseline reports `[provider]` while the merge reports the `[endpoint,
+    // key]` that leg was hiding. A per-leg "was it unmet before" test reads both
+    // as newly unmet and answers the unactionable sentence, on a request that
+    // made an already-broken configuration no more broken.
+    const baseline = storedState({
+      vectorSearchEnabled: true,
+      embeddingModel: "text-embedding-3-small",
+    });
+    const merged = storedState({ ...baseline, embeddingProvider: "openai" });
+
+    expect(
+      validateWorkbenchSettingsPatch(
+        {},
+        merged,
+        baseline,
+        flatMovableVectorLegs({ embeddingProvider: "openai" }),
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("REFUSES on the BINDING leg alone, because embeddingProvider CLAIMS it", () => {
+    // PIN FOR THE `binding` HALF OF THE CLAIM. Everywhere else the binding leg
+    // rides along with legs that are claimed anyway, so set equality is the only
+    // thing that notices it — drop `binding` from `flatMovableVectorLegs` and
+    // nothing but that one assertion fails.
+    //
+    // Here it is the ONLY unmet leg: `workers-ai` is self-transporting so there
+    // is no endpoint or key leg, the model is a catalog id, and the baseline is
+    // unsatisfiable purely because no Cloudflare `AI` binding is bound. That
+    // makes `canEnableVectorSearch(current)` false, so the "did this request
+    // break it" half cannot produce the refusal either — the binding claim is
+    // the whole reason this answers 400.
+    const baseline = storedState({
+      vectorSearchEnabled: true,
+      embeddingProvider: "workers-ai",
+      embeddingModel: "@cf/baai/bge-m3",
+      hasWorkersAiBinding: false,
+    });
+    expect(
+      canEnableVectorSearch({
+        provider: "workers-ai",
+        baseUrl: null,
+        model: "@cf/baai/bge-m3",
+        hasKey: false,
+        modelOrigin: "stored",
+        providerOrigin: "stored",
+        hasWorkersAiBinding: false,
+      }),
+    ).toBe(false);
+    // The merge moves the model to ANOTHER valid catalog id, so the model leg is
+    // met on both sides and cannot be what the sentence is about.
+    const merged = storedState({
+      ...baseline,
+      embeddingModel: "@cf/baai/bge-large-en-v1.5",
+    });
+    const claimed = flatMovableVectorLegs({
+      embeddingProvider: "workers-ai",
+      embeddingModel: "@cf/baai/bge-large-en-v1.5",
+    });
+
+    expect(validateWorkbenchSettingsPatch({}, merged, baseline, claimed)).toEqual({
+      ok: false,
+      error: `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    });
+
+    // …and the same call with `binding` removed from the claimed set ALLOWS it.
+    // That is the discriminator: the provider and model legs are both met, so
+    // `binding` is the only member of the set the refusal can be reached
+    // through.
+    const withoutBinding = new Set([...claimed].filter((leg) => leg !== "binding"));
+    expect(
+      validateWorkbenchSettingsPatch({}, merged, baseline, withoutBinding).ok,
+    ).toBe(true);
+  });
+
+  it("REFUSES on unactionable legs when the request BROKE a working configuration (DW-217)", () => {
+    // PIN FOR THE `canEnableVectorSearch(current)` HALF ALONE. `ollama` is
+    // self-transporting, so the baseline IS satisfiable; switching to `openai`
+    // leaves the endpoint and key legs unmet, and neither is in
+    // `actionableLegs`. Delete that half and this silently switches effective
+    // vector search off.
+    const baseline = storedState({
+      vectorSearchEnabled: true,
+      embeddingProvider: "ollama",
+      embeddingModel: "nomic-embed-text",
+    });
+    expect(
+      canEnableVectorSearch({
+        provider: "ollama",
+        baseUrl: null,
+        model: "nomic-embed-text",
+        hasKey: false,
+        modelOrigin: "stored",
+        providerOrigin: "stored",
+        hasWorkersAiBinding: false,
+      }),
+    ).toBe(true);
+    const merged = storedState({ ...baseline, embeddingProvider: "openai" });
+
+    expect(
+      validateWorkbenchSettingsPatch(
+        {},
+        merged,
+        baseline,
+        flatMovableVectorLegs({ embeddingProvider: "openai" }),
+      ),
+    ).toEqual({ ok: false, error: MISSING_TRANSPORT });
+  });
+
+  it("never scopes a patch that is TURNING IT ON", () => {
+    // Asking for vector search makes every leg the request's business, whatever
+    // the requesting surface can reach.
+    const baseline = storedState({
+      vectorSearchEnabled: false,
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+    });
+
+    expect(
+      validateWorkbenchSettingsPatch(
+        { vectorSearchEnabled: true },
+        storedState({ ...baseline, vectorSearchEnabled: true }),
+        baseline,
+        new Set(),
+      ),
+    ).toEqual({ ok: false, error: MISSING_TRANSPORT });
+  });
+
+  it("leaves a scoped patch that satisfies every leg alone", () => {
+    // Scoping only ever suppresses a refusal; it never invents one.
+    const baseline = storedState({
+      vectorSearchEnabled: true,
+      embeddingProvider: "ollama",
+      embeddingModel: "nomic-embed-text",
+    });
+    const merged = storedState({ ...baseline, embeddingModel: "mxbai-embed-large" });
+
+    expect(
+      validateWorkbenchSettingsPatch(
+        {},
+        merged,
+        baseline,
+        flatMovableVectorLegs({ embeddingModel: "mxbai-embed-large" }),
+      ).ok,
+    ).toBe(true);
+  });
+});
+
+describe("validateWorkbenchSettingsPatch — the baseline argument (DW-306)", () => {
+  it("measures the move against `baseline`, where a two-argument call compares it to itself", () => {
+    // The one case the third argument exists for, at the parameter itself rather
+    // than only through the route body that reaches it. `stored` is the
+    // post-legacy-merge object, so a flat `embeddingModel` set earlier in the
+    // same request is ALREADY baked into it — handed that for both sides, the
+    // move compares equal to itself, `vectorInputsEqual` answers true and the
+    // gate is skipped.
+    const satisfied = {
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingBaseUrl: "https://embed.example",
+      hasEmbeddingApiKey: true,
+    };
+    const baseline = storedState({
+      ...satisfied,
+      embeddingModel: "text-embedding-3-small",
+    });
+    // The flat move has already landed on the merge target.
+    const stored = storedState({ ...satisfied, embeddingModel: "@cf/baai/bge-m3" });
+
+    // Two arguments: the move is invisible, so an empty patch changes nothing.
+    expect(validateWorkbenchSettingsPatch({}, stored).ok).toBe(true);
+    // Three: the move is measured from what the store held BEFORE the request.
+    expect(validateWorkbenchSettingsPatch({}, stored, baseline)).toEqual({
+      ok: false,
+      error:
+        "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.",
     });
   });
 });

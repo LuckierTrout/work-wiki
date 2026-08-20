@@ -37,7 +37,10 @@ import {
 } from "@/lib/write-precondition";
 import { getWorkersAiBinding } from "@/lib/embeddings";
 import type { Ai } from "@/lib/storage/cloudflare-types";
-import { vectorSearchMissingCopy } from "@/lib/workbench-settings";
+import {
+  SETTINGS_INVALID_URL_COPY,
+  vectorSearchMissingCopy,
+} from "@/lib/workbench-settings";
 
 const mockedBinding = vi.mocked(getWorkersAiBinding);
 const mockedPrincipal = vi.mocked(getPrincipal);
@@ -648,5 +651,303 @@ describe("PUT /api/settings — flat field normalization (DW-275)", () => {
 
     expect(response.status).toBe(400);
     expect(mockedSave).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The flat `ollamaBaseUrl` passes the workbench URL rule (DW-304)
+// ---------------------------------------------------------------------------
+
+describe("PUT /api/settings — the flat ollamaBaseUrl URL rule (DW-304)", () => {
+  beforeEach(() => {
+    mockedRead.mockResolvedValue({
+      status: "ok",
+      config: { ollamaBaseUrl: "http://h:11434/api" },
+      version: STORED_VERSION,
+    });
+  });
+
+  it("REFUSES a value that is not an absolute http(s) URL", async () => {
+    // This was the ONE endpoint stored on a bare `typeof` check while every
+    // workbench endpoint had to pass `isAbsoluteHttpUrl` — so these values
+    // reached `getOllamaBaseUrl()`, which reads the stored string literally, and
+    // from there the provider SDK.
+    const { PUT } = await import("@/app/api/settings/route");
+
+    // `localhost:11434` is the classic Ollama misconfiguration and the most
+    // likely bad value of the four: it PARSES — `new URL` reads `localhost:` as
+    // the scheme and `11434` as the path — so only the protocol half of
+    // `isAbsoluteHttpUrl` refuses it.
+    for (const value of [
+      "not-a-url",
+      "file:///etc/passwd",
+      "/api",
+      "localhost:11434",
+    ]) {
+      mockedSave.mockClear();
+      const response = await PUT(request({ ollamaBaseUrl: value }));
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: SETTINGS_INVALID_URL_COPY });
+      // Refused BEFORE the write: the stored endpoint is untouched.
+      expect(mockedSave).not.toHaveBeenCalled();
+    }
+  });
+
+  it("answers the SAME sentence the workbench endpoints answer", async () => {
+    // One rule, one wording — the route never re-types the copy.
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const flat = await PUT(request({ ollamaBaseUrl: "not-a-url" }));
+    const nested = await PUT(request({ workbench: { customBaseUrl: "not-a-url" } }));
+
+    expect(flat.status).toBe(400);
+    expect(nested.status).toBe(400);
+    expect(((await flat.json()) as { error: string }).error).toBe(
+      ((await nested.json()) as { error: string }).error,
+    );
+  });
+
+  it("ACCEPTS an absolute URL, trimmed", async () => {
+    // DISTINCT from the seeded value, so a route that ignored `body.ollamaBaseUrl`
+    // outright and re-saved `{...existing}` cannot pass this by accident.
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({ ollamaBaseUrl: "  https://ollama.example:11434/api " }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({
+      ollamaBaseUrl: "https://ollama.example:11434/api",
+    });
+  });
+
+  it("still DELETES on every blank form — the URL rule does not apply to a clear", async () => {
+    // The rule fires only on a value that is going to be STORED. `null`, `""`
+    // and whitespace all mean "remove the endpoint", and none of them is an
+    // invalid URL the owner needs telling about.
+    const { PUT } = await import("@/app/api/settings/route");
+
+    for (const value of [null, "", "   "]) {
+      mockedSave.mockClear();
+      const response = await PUT(request({ ollamaBaseUrl: value }));
+      expect(response.status).toBe(200);
+      expect(mockedSave).toHaveBeenCalledWith({});
+    }
+  });
+
+  it("diverges from the workbench loop on WHITESPACE, deliberately", async () => {
+    // The same predicate, not byte-identical handling of blanks — and the route
+    // comment says so, which makes it a claim the suite has to carry. The
+    // workbench URL loop skips the literal `""` only, so a whitespace-only
+    // endpoint reaches `isAbsoluteHttpUrl("")` there and is REFUSED; the flat
+    // path treats every blank form as a clear, which the case above pins.
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ workbench: { customBaseUrl: "   " } }));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: SETTINGS_INVALID_URL_COPY });
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `structuredKnowledgeModel` decides its delete like its three siblings (DW-305)
+// ---------------------------------------------------------------------------
+
+describe("PUT /api/settings — structuredKnowledgeModel normalization (DW-305)", () => {
+  beforeEach(() => {
+    mockedRead.mockResolvedValue({
+      status: "ok",
+      config: { structuredKnowledgeModel: "gpt-4o" },
+      version: STORED_VERSION,
+    });
+  });
+
+  it("DELETES the stored model on null", async () => {
+    // `useSettings` sends exactly this for an emptied box.
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ structuredKnowledgeModel: null }));
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({});
+  });
+
+  it("TRIMS a padded model rather than storing the padding", async () => {
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ structuredKnowledgeModel: "  gpt-4o-mini  " }));
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({ structuredKnowledgeModel: "gpt-4o-mini" });
+  });
+
+  it("still refuses `\"\"` and whitespace above the merge", async () => {
+    // Which is WHY the `=== ""` arm this replaced was unreachable: the non-empty
+    // check answers 400 first. Pinned so the uniform `trimmed.length === 0`
+    // branch cannot be read as a loosening.
+    const { PUT } = await import("@/app/api/settings/route");
+
+    for (const value of ["", "   "]) {
+      mockedSave.mockClear();
+      const response = await PUT(request({ structuredKnowledgeModel: value }));
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "Structured Knowledge model must be a non-empty string",
+      });
+      expect(mockedSave).not.toHaveBeenCalled();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The flat refusal is SCOPED to legs the flat page can act on (DW-303, DW-306)
+// ---------------------------------------------------------------------------
+
+describe("PUT /api/settings — the flat vector refusal names only actionable legs (DW-303)", () => {
+  /**
+   * An `openai` vector configuration that is switched ON and was ALREADY
+   * unsatisfiable — on the endpoint and the key, the two legs `/settings`
+   * renders no control for.
+   */
+  const ALREADY_BROKEN = {
+    vectorSearchEnabled: true,
+    embeddingProvider: "openai",
+    embeddingModel: "text-embedding-3-small",
+  } as const;
+
+  function store(config: Record<string, unknown>): void {
+    mockedRead.mockResolvedValue({
+      status: "ok",
+      config: config as never,
+      version: STORED_VERSION,
+    });
+  }
+
+  it("ALLOWS an embedding-model edit whose only unmet legs were unmet BEFORE the request", async () => {
+    // THE DW-303 REPRODUCTION. The owner edits the one embedding control
+    // `/settings` shows; the refusal used to demand an endpoint and an API key,
+    // neither of which exists on that page — a surface the owner cannot leave.
+    // The request made nothing worse, so it lands.
+    store({ ...ALREADY_BROKEN });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ embeddingModel: "text-embedding-3-large" }));
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({
+      ...ALREADY_BROKEN,
+      embeddingModel: "text-embedding-3-large",
+    });
+  });
+
+  it("still REFUSES when an unmet leg IS one this body could move", async () => {
+    // Same already-broken store, but clearing the model makes the MODEL leg
+    // unmet — and the model box is right there on the page. The sentence names
+    // it alongside the two legs that are not actionable, because the refusal is
+    // the Workbench's one sentence rather than a per-surface re-write.
+    store({ ...ALREADY_BROKEN });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ embeddingModel: null }));
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      "Vector search needs an endpoint, a model and an API key before it can be turned on.",
+    );
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("still REFUSES a flat move that BREAKS a configuration that worked (DW-217)", async () => {
+    // `ollama` is self-transporting, so the stored config is satisfiable.
+    // Switching to `openai` leaves the endpoint and key legs unmet — legs no
+    // flat field can fill — and that is precisely why it must refuse rather than
+    // silently switch effective vector search off.
+    store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "ollama",
+      embeddingModel: "nomic-embed-text",
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ embeddingProvider: "openai" }));
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      "Vector search needs an endpoint and an API key before it can be turned on.",
+    );
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("ALLOWS choosing a provider where the baseline had none — the hidden legs are not this request's doing", async () => {
+    // THE SHAPE A SET-DIFF PREDICATE GETS WRONG. `vectorSearchMissingLegs`
+    // early-returns the provider leg ALONE, so the baseline reports `[provider]`
+    // and the merge reports the `[endpoint, key]` that leg was hiding — a set
+    // diff reads both as newly unmet and refuses with the unactionable sentence,
+    // on a request that made an already-broken configuration no more broken.
+    store({ vectorSearchEnabled: true, embeddingModel: "text-embedding-3-small" });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ embeddingProvider: "openai" }));
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({
+      vectorSearchEnabled: true,
+      embeddingModel: "text-embedding-3-small",
+      embeddingProvider: "openai",
+    });
+  });
+
+  it("does NOT scope a body that carries a workbench key (DW-306)", async () => {
+    // A `workbench` key means the Workbench sent it, and that surface renders
+    // every embedding control — so every leg is actionable there and the refusal
+    // is unchanged from today. The flat move is measured against the PRE-request
+    // baseline, which is the one case the third argument exists for: handed the
+    // post-legacy-merge object for both, the flat `embeddingModel` would compare
+    // equal to itself and skip the gate.
+    store({ ...ALREADY_BROKEN });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({
+        embeddingModel: "text-embedding-3-large",
+        workbench: { chatModel: "gpt-4o" },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      "Vector search needs an endpoint and an API key before it can be turned on.",
+    );
+    // Nothing written — not the flat field, not the chat model.
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("saves a combined flat + workbench body that satisfies every leg (DW-306)", async () => {
+    // The allowed twin: the same combined shape, where the `workbench` half
+    // supplies the two legs the flat half cannot. Proof the refusal above is
+    // about the LEGS and not about the combined body itself.
+    store({ ...ALREADY_BROKEN });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({
+        embeddingModel: "text-embedding-3-large",
+        workbench: {
+          embeddingBaseUrl: "https://embed.example",
+          embeddingApiKey: "sk-embed",
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({
+      ...ALREADY_BROKEN,
+      embeddingModel: "text-embedding-3-large",
+      embeddingBaseUrl: "https://embed.example",
+      embeddingApiKey: "sk-embed",
+    });
   });
 });

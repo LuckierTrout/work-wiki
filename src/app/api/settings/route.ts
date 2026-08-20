@@ -11,7 +11,12 @@ import {
   type AppConfig,
 } from "@/lib/config";
 import { getEffectiveProvider } from "@/lib/config";
-import { validateWorkbenchSettingsPatch } from "@/lib/workbench-settings";
+import {
+  SETTINGS_INVALID_URL_COPY,
+  flatMovableVectorLegs,
+  isAbsoluteHttpUrl,
+  validateWorkbenchSettingsPatch,
+} from "@/lib/workbench-settings";
 /**
  * The ONE place the Cloudflare `AI` binding is read for the settings surface
  * (DW-225).
@@ -211,6 +216,23 @@ export async function PUT(request: Request) {
           { status: 400 },
         );
       }
+      // THE SAME URL RULE EVERY WORKBENCH ENDPOINT PASSES (DW-304). Without it
+      // this was the one endpoint stored on a bare `typeof` check, so
+      // `"not-a-url"`, `"/api"` or `file:///etc/passwd` landed in the config and
+      // `getOllamaBaseUrl()` — which reads the stored value literally — handed it
+      // to the provider SDK.
+      //
+      // The same PREDICATE as `validateWorkbenchSettingsPatch`'s URL loop
+      // (`isAbsoluteHttpUrl` over the trimmed value, refused with the same
+      // sentence), but not byte-identical handling of whitespace: that loop skips
+      // the literal `""` only, so a whitespace-only endpoint is refused there.
+      // Here every blank form — `null`, `""` and whitespace — is a CLEAR, which
+      // is what the merge branch below already does with it, so the rule applies
+      // only to a value that is going to be stored.
+      const trimmed = body.ollamaBaseUrl.trim();
+      if (trimmed.length > 0 && !isAbsoluteHttpUrl(trimmed)) {
+        return Response.json({ error: SETTINGS_INVALID_URL_COPY }, { status: 400 });
+      }
     }
 
     // Validate embeddingModel if provided — TYPE only, like `ollamaBaseUrl`:
@@ -299,14 +321,23 @@ export async function PUT(request: Request) {
     }
 
     if (body.structuredKnowledgeModel !== undefined) {
-      if (
-        body.structuredKnowledgeModel === null ||
-        body.structuredKnowledgeModel === ""
-      ) {
+      // The delete decided on `trimmed`, like `model`, `ollamaBaseUrl` and
+      // `embeddingModel` (DW-305). The literal `=== ""` arm this replaces was
+      // the one field out of four that asked a different question — and an
+      // unreachable one at that, since the non-empty check above already answers
+      // 400 for `""` and for whitespace. Uniform now, so the day the check above
+      // changes shape this branch does not become the odd behaviour out.
+      //
+      // The `typeof` ternary is belt-and-braces: a non-string was refused above
+      // and must never be what turns a malformed body into a delete.
+      const trimmed =
+        typeof body.structuredKnowledgeModel === "string"
+          ? body.structuredKnowledgeModel.trim()
+          : "";
+      if (body.structuredKnowledgeModel === null || trimmed.length === 0) {
         delete updated.structuredKnowledgeModel;
       } else {
-        updated.structuredKnowledgeModel =
-          body.structuredKnowledgeModel.trim();
+        updated.structuredKnowledgeModel = trimmed;
       }
     }
 
@@ -395,11 +426,25 @@ export async function PUT(request: Request) {
     // and whether the patch is APPLIED, and the two readings are inverses of
     // each other. Written twice they could drift into validating `{}` and then
     // applying it, or validating a patch and then dropping it.
+    //
+    // …and the FOURTH argument is decided by that same one fact, for the same
+    // reason (DW-303). A body carrying a `workbench` key came from a surface
+    // that renders every embedding control, so any leg it is refused over is one
+    // the owner can go and fix — `undefined` is "scope nothing". A flat-only
+    // body came from `/settings`, which renders no embedding provider, endpoint
+    // or key at all, so being refused over those legs leaves the owner nothing
+    // to do; `flatMovableVectorLegs` narrows WHETHER the gate refuses at all —
+    // not the sentence, which is `vectorSearchMissingCopy(merged)` verbatim
+    // either way — to requests naming a leg this body could have moved, while a
+    // configuration this request BROKE still refuses over any leg at all. Three
+    // readings of one fact, all written from the same expression so they cannot
+    // drift into scoping a patch that was never applied.
     const hasWorkbenchKey = body.workbench !== undefined;
     const validation = validateWorkbenchSettingsPatch(
       hasWorkbenchKey ? body.workbench : {},
       workbenchSettingsStored(updated, hasWorkersAiBinding),
       workbenchSettingsStored(existing, hasWorkersAiBinding),
+      hasWorkbenchKey ? undefined : flatMovableVectorLegs(body),
     );
     if (!validation.ok) {
       // Nothing is written: the refusal happens before `saveConfig`, so a

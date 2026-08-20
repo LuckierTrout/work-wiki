@@ -2627,7 +2627,8 @@ source_spec: `spec-dw-217-275-settings-flat-branch-validation.md`
 location: src/app/api/settings/route.ts:390-410
 severity: medium
 reason: `vectorSearchMissingLegs` reads provider, endpoint, model, key and binding, but the flat vocabulary carries only `embeddingProvider` and `embeddingModel`, and `src/hooks/useSettings.ts` renders no embedding-provider, endpoint or key control at all. On a deployment already storing an unsatisfied vector config (say openai with no endpoint), an owner editing the embedding model from /settings now gets "Vector search needs an endpoint and an API key before it can be turned on." from a page with no endpoint box. The Workbench surface is the way out, so it is not a dead end, but the refusal names fields the surface that produced it cannot show. Closing it would mean either scoping the flat refusal to legs the request could have moved, or serving `VectorSearchLeg.field` on the response so the surface can say something actionable.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-settings-flat-branch-uniformity
 
 ### DW-304: The flat `ollamaBaseUrl` is stored with no absolute-http validation, unlike every endpoint in the `workbench` patch.
 origin: spec-deferred 4592c0a3844b
@@ -2635,7 +2636,8 @@ source_spec: `spec-dw-217-275-settings-flat-branch-validation.md`
 location: src/app/api/settings/route.ts:311-327
 severity: medium
 reason: `validateWorkbenchSettingsPatch` refuses `customBaseUrl`, `embeddingBaseUrl` and `firecrawlBaseUrl` unless `isAbsoluteHttpUrl(raw.trim())`. The flat branch type-checks only, so `"not-a-url"` or a `file:` URL is stored and `getOllamaBaseUrl()` (src/lib/config.ts:239) hands it straight to the provider SDK. Pre-existing; this bundle's intent named only the trim.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-settings-flat-branch-uniformity
 
 ### DW-305: `structuredKnowledgeModel` is the one flat text field still deciding its delete on the literal empty string rather than on the trimmed value.
 origin: spec-deferred 3bf4aaa1f56f
@@ -2643,7 +2645,8 @@ source_spec: `spec-dw-217-275-settings-flat-branch-validation.md`
 location: src/app/api/settings/route.ts:290-305
 severity: low
 reason: It already trims on store, and the non-empty check above answers 400 for a whitespace-only value, so there is no observable difference today. It is a uniformity gap rather than a defect: `model`, `ollamaBaseUrl` and `embeddingModel` now all decide the delete on `trimmed.length === 0`.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-settings-flat-branch-uniformity
 
 ### DW-306: A body carrying BOTH a flat legacy field and a `workbench` key -- the only case `validateWorkbenchSettingsPatch`'s `baseline` parameter exists for -- has no test at any surface.
 origin: spec-deferred 68068f7435ec
@@ -2651,7 +2654,8 @@ source_spec: `spec-dw-217-275-settings-flat-branch-validation.md`
 location: src/lib/workbench-settings.ts:790
 severity: medium
 reason: DW-219 added the third `baseline` argument precisely so a flat move in the same request is measured against what the store held BEFORE the request rather than against itself. Every test in `settings-route.test.ts` and `workbench-settings.test.ts` sends the flat move and the nested move as separate requests, so the argument that justifies the parameter is unexercised. Pre-existing since DW-219; this change widened the parameter's role without adding the case.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw5-settings-flat-branch-uniformity
 
 ### DW-307: `secretRow` never routes its description through `describedBy()`, so the three API-key rows are the last controls on the Settings surface that a read-only deployment refuses without saying why.
 origin: spec-deferred c188b4ff4f4e
@@ -2803,4 +2807,28 @@ source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
 location: src/components/__tests__/workspace-purpose-settings.test.tsx:837
 severity: medium
 reason: Observed failing once during full-suite verification for this story (the badge still read "not configured" when the 1s `waitFor` expired), then passing on re-run and passing 42/42 in isolation. It is entirely fetchMock-driven, touches nothing in this change, and predates it (introduced with DW-136/142/301). It races the mount fetch against the `returnToTab()` recheck.
+status: open
+
+### DW-326: DW-304's URL rule is write-time only: a value stored before this change, or one supplied through OLLAMA_BASE_URL, still reaches the provider SDK unvalidated.
+origin: spec-deferred b7a9d467256f
+source_spec: `spec-dw-303-306-settings-flat-branch-uniformity.md`
+location: src/lib/config.ts:239
+severity: medium
+reason: `getOllamaBaseUrl()` (src/lib/config.ts) returns the stored string literally and prefers `process.env.OLLAMA_BASE_URL` over it; neither path calls `isAbsoluteHttpUrl`. So a deployment that stored `file:///etc/passwd` or `localhost:11434` before this change keeps handing it to the SDK, and an operator can still set the env var to anything. The new refusal closes the write door only. No backfill and no read-side guard were in this bundle's scope — the intent named the workbench branch's check, which is a write-time check.
+status: open
+
+### DW-327: A flat save that the new scoping ALLOWS lands with no signal on /settings that the stored vector switch is on but inactive.
+origin: spec-deferred 66f5fc6223a9
+source_spec: `spec-dw-303-306-settings-flat-branch-uniformity.md`
+location: src/hooks/useSettings.ts
+severity: medium
+reason: Before this change the owner got a refusal they could not act on; now the save answers 200 and `vectorSearchEnabled` stays stored-on while `getVectorSearchSettings()` still intersects it to off. `vectorSearchInactiveCopy` exists for exactly this "switched on but cannot run" state, but it is rendered only by the Workbench's `SettingsCanvas`; `/settings` shows nothing about vector state at all. Closing it means either an advisory in the 200 response or wiring the existing copy into the flat surface — both were out of scope here (this bundle's intent forbids widening the response shape and adding embedding controls to /settings).
+status: open
+
+### DW-328: All four flat text fields resolve a non-string to `""` before deciding the delete, so the belt-and-braces fallback points AT deletion rather than away from it.
+origin: spec-deferred f1908ff9cbf1
+source_spec: `spec-dw-303-306-settings-flat-branch-uniformity.md`
+location: src/app/api/settings/route.ts:321-395
+severity: low
+reason: `model`, `ollamaBaseUrl`, `embeddingModel` and now `structuredKnowledgeModel` all read `typeof x === "string" ? x.trim() : ""` and then treat `trimmed.length === 0` as DELETE. Each comment says the ternary "must never be what turns a malformed body into a delete", but `""` is exactly the delete arm — the only thing preventing it is the non-string 400 above the merge. Unreachable today and identical across all four, so fixing one alone would break the uniformity DW-305 was about; the fix is to make all four fall back to leaving the field untouched.
 status: open

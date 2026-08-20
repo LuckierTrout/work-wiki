@@ -782,6 +782,46 @@ const VECTOR_LEG_CONTROL = {
   binding: "provider",
 } satisfies Record<VectorSearchLegField, VectorSearchControl>;
 
+/**
+ * Which vector legs a LEGACY FLAT body could have moved — the legs a refusal
+ * aimed at that surface is allowed to name (DW-303).
+ *
+ * The flat `/settings` page renders exactly ONE control the vector rule reads —
+ * the embedding model. There is no embedding-provider select, no embedding
+ * endpoint box and no embedding API-key box anywhere on it; the Workbench owns
+ * all three. So a refusal naming the endpoint or the key gives an owner on that
+ * page nothing to do, and {@link validateWorkbenchSettingsPatch} uses this set
+ * to suppress exactly those.
+ *
+ * PRESENCE, not value: a key the body carries is a move this request makes,
+ * whatever it moves the field TO — `null` (a clear) moves the leg just as a new
+ * id does. That is the API contract rather than a description of what the page
+ * sends; `useSettings` sends `embeddingModel` only when its box is non-empty and
+ * never sends `embeddingProvider` at all, so the provider half here serves
+ * direct API callers.
+ *
+ * Derived from {@link VECTOR_LEG_CONTROL} rather than hand-listed, which is why
+ * `embeddingProvider` claims the `binding` leg as well: the binding leg has no
+ * control of its own and maps to the provider select, so a body that can move
+ * the provider can move the binding leg too.
+ */
+export function flatMovableVectorLegs(body: {
+  embeddingProvider?: unknown;
+  embeddingModel?: unknown;
+}): ReadonlySet<VectorSearchLegField> {
+  const legs = new Set<VectorSearchLegField>();
+  const claim = (control: VectorSearchControl): void => {
+    for (const [field, owner] of Object.entries(VECTOR_LEG_CONTROL) as Array<
+      [VectorSearchLegField, VectorSearchControl]
+    >) {
+      if (owner === control) legs.add(field);
+    }
+  };
+  if (body.embeddingProvider !== undefined) claim("provider");
+  if (body.embeddingModel !== undefined) claim("model");
+  return legs;
+}
+
 /** Does this control hold a value at all? See {@link vectorSearchFieldIssue}. */
 function vectorControlHasValue(v: VectorSearchInputs, control: VectorSearchControl): boolean {
   switch (control) {
@@ -962,11 +1002,19 @@ export interface WorkbenchSettingsStored {
  * sides of the comparison and would compare equal to itself, skipping the very
  * gate the flat field was supposed to have entered. It defaults to `stored`, so
  * a caller with no legacy path — every caller but the route — is unchanged.
+ *
+ * `actionableLegs` is the set of vector legs the REQUESTING SURFACE can move —
+ * see {@link flatMovableVectorLegs} and the vector rule below. Omitted (the
+ * default) means "this surface reaches every control", which is today's
+ * behaviour and what every caller but the flat-only route path wants. An EMPTY
+ * set is its opposite, not its equal: it says the surface can move nothing, so
+ * only a configuration this request BROKE can produce a refusal.
  */
 export function validateWorkbenchSettingsPatch(
   value: unknown,
   stored: WorkbenchSettingsStored,
   baseline: WorkbenchSettingsStored = stored,
+  actionableLegs?: ReadonlySet<VectorSearchLegField>,
 ): WorkbenchSettingsValidation {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ok: false, error: SETTINGS_INVALID_BODY_COPY };
@@ -1086,7 +1134,49 @@ export function validateWorkbenchSettingsPatch(
       (turningOn || !vectorInputsEqual(current, merged)) &&
       !canEnableVectorSearch(merged)
     ) {
-      return { ok: false, error: vectorSearchMissingCopy(merged) };
+      // A refusal has to be one the requesting surface can DO something about
+      // (DW-303). The flat `/settings` page renders no embedding endpoint and no
+      // embedding key, so an owner editing the embedding model on a deployment
+      // whose stored config was already missing both used to be told to supply
+      // two boxes that do not exist there — and had no way to land the edit.
+      //
+      // Two questions, and the refusal survives either one:
+      //
+      //   - `canEnableVectorSearch(current)` — it WORKED before this request, so
+      //     this request broke it. That is always the request's business, and it
+      //     is what keeps DW-217 shut: switching `embeddingProvider` from
+      //     `ollama` to `openai` leaves the endpoint and key legs unmet even
+      //     though no flat field can supply either, and silently switching
+      //     effective vector search off is exactly the outcome the gate exists
+      //     to prevent.
+      //   - some unmet leg is one `actionableLegs` names, so the sentence points
+      //     at a control the surface actually shows.
+      //
+      // "Did this request break it" is asked about the CONFIGURATION, never by
+      // diffing leg SETS. `vectorSearchMissingLegs` early-returns the provider
+      // leg ALONE when the provider is absent or invalid — the remaining
+      // questions cannot be asked until a provider is chosen — so an
+      // already-broken baseline reports `[provider]` while the merge reports the
+      // legs that were hidden behind it, and a set diff reads every one of those
+      // as newly unmet. `canEnableVectorSearch` cannot be distorted that way.
+      //
+      // `turningOn` is exempt: a request that switches the flag ON is asking for
+      // vector search, and every leg is then its business.
+      //
+      // A FLAG rather than an early `ok: true`, so this function keeps ONE
+      // success exit. A second one here is harmless only for as long as nothing
+      // follows the vector rule — and the next check appended below it would be
+      // silently skipped for every scoped request.
+      let suppressed = false;
+      if (actionableLegs && !turningOn) {
+        const brokeIt = canEnableVectorSearch(current);
+        suppressed =
+          !brokeIt &&
+          !vectorSearchMissingLegs(merged).some((leg) => actionableLegs.has(leg.field));
+      }
+      if (!suppressed) {
+        return { ok: false, error: vectorSearchMissingCopy(merged) };
+      }
     }
   }
 
