@@ -71,15 +71,6 @@
     "label": "Backfill then remove",
     "resolution": ""
   },
-  "DW-150": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Skip any directory whose newest entry is younger than a grace window (minutes, not seconds) so an in-flight create can never be swept, document the window beside `sweepOrphans`, and add a test that pins a freshly seeded directory as unsweepable.",
-    "key": "1",
-    "label": "mtime grace period",
-    "resolution": ""
-  },
   "DW-152": {
     "answered_at": "2026-08-19",
     "bundle_name": "",
@@ -143,15 +134,6 @@
     "label": "Add a browser project",
     "resolution": ""
   },
-  "DW-188": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Enforce `isReadOnly()` inside the kernel writers (`writeWikiPageWithSideEffects`, `patchMetadata`, `deleteWikiPage`, `writeWikiArtifact`) so every caller inherits it, and reduce the HTTP-layer checks to the ones that shape the response, resolving DW-196 in the same move.",
-    "key": "2",
-    "label": "Move the gate into the library",
-    "resolution": ""
-  },
   "DW-196": {
     "answered_at": "2026-08-19",
     "bundle_name": "",
@@ -159,15 +141,6 @@
     "intent": "",
     "key": "3",
     "label": "Decide with the Epic 2 ingest writer",
-    "resolution": ""
-  },
-  "DW-198": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Replace the content-derived version with an opaque token generated on each successful `saveConfig` and stored beside the config, served as the precondition and compared on `PUT`. This restores the AD-23 boundary and keeps the guard's coverage of the secret fields; update `write-precondition.ts`'s docs so `objectVersion` is no longer presented as the settings scheme.",
-    "key": "1",
-    "label": "Stamp an opaque token",
     "resolution": ""
   },
   "DW-202": {
