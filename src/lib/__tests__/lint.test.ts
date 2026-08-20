@@ -1295,6 +1295,15 @@ describe("checkIncompleteCoverage", () => {
     expect(issues).toHaveLength(0);
   });
 
+  // 30 pages, each costing a page write plus a raw-source write, plus the index
+  // write — every one of them a whole-file write that since DW-161 fsyncs a tmp
+  // file before renaming it into place. Measured here: ~35ms before the change,
+  // ~0.5s after it solo, and ~4.9s under the full parallel suite, i.e. sitting
+  // right on the default 5s budget. Same situation as the query-history cap row
+  // and the contributors trust-score row: the durability cost is intended, but
+  // it leaves no headroom, so the row goes flaky on a loaded or slower machine
+  // without an explicit budget. Only the budget moves; the cap assertion below
+  // is untouched.
   it("processes at most MAX_COVERAGE_CHECKS pages per run", async () => {
     mockedHasLLMKey.mockReturnValue(true);
 
@@ -1318,7 +1327,7 @@ describe("checkIncompleteCoverage", () => {
 
     // The LLM should have been called at most MAX_COVERAGE_CHECKS times
     expect(mockedCallLLM).toHaveBeenCalledTimes(MAX_COVERAGE_CHECKS);
-  });
+  }, 30_000);
 });
 
 // ---------------------------------------------------------------------------

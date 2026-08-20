@@ -383,14 +383,13 @@ async function seedWikiArtifacts(owner: string, wiki: WikiRecord): Promise<void>
 /*
  * The storage provider has NO transaction, and this deliberately does not add
  * one — no journal, no write-ahead log, no two-phase commit. `seedWikiArtifacts`
- * plus `writeRegistry` is four sequential `writeFile` calls, each meant to be
- * atomic on its own (with the provider caveat noted at
- * {@link applyScenarioTemplate}'s catch) and none atomic together, so a fault at
- * ANY ONE of the four used to leave durable wreckage: a create left a
- * `wikis/<id>/` directory no registry entry
- * named, and a re-template left `purpose.md`/`schema.md` on the NEW template
- * beside a `workspace-profile.json` still on the old one — one Wiki describing
- * two templates to every prompt that reads it.
+ * plus `writeRegistry` is four sequential `writeFile` calls, each atomic on its
+ * own (tmp + rename in the filesystem provider, single-object PUT in R2) and
+ * none atomic together, so a fault at ANY ONE of the four used to leave durable
+ * wreckage: a create left a `wikis/<id>/` directory no registry entry named,
+ * and a re-template left `purpose.md`/`schema.md` on the NEW template beside a
+ * `workspace-profile.json` still on the old one — one Wiki describing two
+ * templates to every prompt that reads it.
  *
  * What closes it is a compensation around each caller, and the two callers need
  * DIFFERENT ones:
@@ -916,12 +915,13 @@ export async function applyScenarioTemplate(
       // means those bytes never landed and the stored `scenario` is still the
       // old one the snapshot belongs to.
       //
-      // That rests on the INTERFACE contract, which the default provider does
-      // not yet honour: `FilesystemStorageProvider.writeFile` is a bare
-      // `fs.writeFile`, not the write-to-tmp + rename the contract describes.
-      // A torn write there would leave a truncated file that this compensation
-      // cannot detect and would happily restore around — a separate durability
-      // gap in the provider, not one DW-20/DW-143 closes.
+      // Both providers honour that contract: R2 does a single-object PUT and
+      // `FilesystemStorageProvider` writes a sibling tmp file and renames it
+      // over the destination (DW-161), so no write this compensation reasons
+      // about can leave a truncated file it would restore around. What the
+      // contract still does not promise is durability of the newest bytes
+      // across a power loss — but that leaves the PREVIOUS whole file, which is
+      // exactly the state this branch already handles.
       await restoreSeededFiles(snapshot);
       throw error;
     }

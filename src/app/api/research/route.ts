@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
-import { getErrorMessage } from "@/lib/errors";
+import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import {
   createResearchProject,
   listResearchProjects,
@@ -43,7 +43,15 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ project }, { status: 201 });
   } catch (error) {
+    // A `ClientInputError` is the caller's fault by construction (the
+    // MAX_PROJECTS refusal), so it is a 400 by TYPE rather than by matching its
+    // message — the `src/app/api/wikis/route.ts` idiom. The message regex stays
+    // for the validation throws in `cleanInput` that predate that class.
     const message = getErrorMessage(error);
-    return NextResponse.json({ error: message }, { status: /required|invalid/i.test(message) ? 400 : 500 });
+    const status =
+      error instanceof ClientInputError || /required|invalid/i.test(message)
+        ? 400
+        : 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

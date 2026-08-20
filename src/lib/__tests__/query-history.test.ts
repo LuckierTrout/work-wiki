@@ -138,6 +138,22 @@ describe("storage placement + isolation", () => {
     expect(siloFile("alice")).toContain(path.join("tenants", "alice"));
   });
 
+  // 208 sequential appends, and every one of them rewrites the whole silo
+  // through `StorageProvider.writeFile` — which since DW-161 fsyncs a tmp file
+  // before renaming it into place. That is a few milliseconds of real disk sync
+  // per append: measured here, ~100ms before the change and ~2.5s after it when
+  // this file runs alone.
+  //
+  // 2.5s still fits the default 5s budget, so the problem is not the solo
+  // number — it is that the HEADROOM is gone. Under the full parallel suite,
+  // where 249 files contend for the same disk, this row was measured at ~24s.
+  // A default-budget row here is therefore not slow, it is FLAKY: it passes
+  // locally and fails on a loaded machine or a slower CI runner. The cost is
+  // the durability guarantee working, not a regression to chase, so only the
+  // budget moves — no assertion is weakened.
+  //
+  // 60s rather than 30s because 30s left only ~20% headroom over the observed
+  // worst case, which is the same too-thin margin in a new place.
   it("the cap is per-owner: one owner at 200 doesn't trim another", async () => {
     for (let i = 0; i < 205; i++) {
       await appendQuery(entry("alice", { question: `a${i}`, timestamp: new Date(2025, 0, 1, 0, 0, i).toISOString() }));
@@ -147,7 +163,7 @@ describe("storage placement + isolation", () => {
     }
     expect(await listQueries(undefined, "alice")).toHaveLength(200);
     expect(await listQueries(undefined, "bob")).toHaveLength(3);
-  });
+  }, 60_000);
 
   it("never clobbers history when a read fails (corrupt file → throws, untouched)", async () => {
     await fs.mkdir(path.dirname(siloFile(OWNER)), { recursive: true });

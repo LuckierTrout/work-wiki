@@ -1422,7 +1422,8 @@ source_spec: `spec-dw-20-wiki-create-and-template-atomicity.md`
 location: src/lib/storage/filesystem.ts:78
 severity: medium
 reason: `src/lib/storage/types.ts` states "`writeFile` must be atomic from the caller's perspective — partial writes should never be visible. The filesystem provider uses write-to-tmp + rename". `filesystem.ts` does `await fs.writeFile(abs, content, "utf-8")` with no tmp file. A torn write (ENOSPC, process death mid-write) therefore CAN leave a truncated file — including `wikis.json`, which `normalizeRegistry` then degrades to an empty registry. The compensation added for DW-20/DW-143 reasons from the interface contract and cannot detect a torn write; the comment at `applyScenarioTemplate`'s catch now says so explicitly. Pre-existing: both the implementation and the contradicting doc predate this change.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw3-storage-write-integrity
 
 ### DW-162: A half-created FIRST Wiki's directory is unreclaimable, because the orphan sweep bails on an empty registry and has no scheduled caller.
 origin: spec-deferred b2027da91fa3
@@ -1449,7 +1450,8 @@ source_spec: `spec-dw-20-wiki-create-and-template-atomicity.md`
 location: src/lib/research-projects.ts
 severity: low
 reason: DW-20's reason cites `research-projects.ts` as "the registry idiom the spec directs this module to mirror — has the same property". `createResearchProject` is still an unguarded push-then-`writeProjects`. The bundle intent scoped the work to `src/lib/wikis.ts`'s two functions, so this was left alone deliberately; recording it so the divergence between the two registries is tracked rather than forgotten.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw3-storage-write-integrity
 
 ### DW-165: Follow-up review still recommended for dw-wiki-create-and-template-atomicity after the damping cap was spent
 origin: review-budget-followup
@@ -2506,4 +2508,60 @@ source_spec: `spec-dw-147-150-162-orphan-wiki-sweep-hardening.md`
 location: src/lib/wikis.ts (discardCreatedWikiDirectory)
 severity: low
 reason: The marker is written when `discardCreatedWikiDirectory`'s `deleteDirectory` fails, and nothing removes it except the directory's own deletion. If a `writeRegistry` landed on the store but reported failure, the compensation runs against a directory the registry DOES name; the tombstone is then harmless while the registry stands (`known.has(id)` skips it) but authorises deletion if that `wikis.json` is later lost. Requires three unlikely faults in sequence, hence low.
+status: open
+
+### DW-292: A tmp file stranded by process death is hidden from every listing surface and nothing ever reclaims it.
+origin: spec-deferred 470152434e7b
+source_spec: `spec-dw-161-164-storage-write-integrity.md`
+location: src/lib/storage/filesystem.ts
+severity: low
+reason: `atomicWrite`'s cleanup only covers a REJECTED write inside a live process. A SIGKILL between `fs.open(tmp)` and `fs.rename` leaves a `.tmp-<uuid>.tmp` on disk, and the new `listFiles` filter now hides it from all ~20 listing call sites, from `sweepOrphans` (which only considers directories matching `WIKI_ID_RE`) and from backups. Nothing sweeps them, so they accumulate silently. Closing it means a reaper — its own story, the way DW-162 was for the orphan-directory sweep.
+status: open
+
+### DW-293: Every whole-file write now costs a real fsync, and nothing bounds that on the production paths that write in a loop.
+origin: spec-deferred 76acb44f9ed6
+source_spec: `spec-dw-161-164-storage-write-integrity.md`
+location: src/lib/storage/filesystem.ts
+severity: medium
+reason: Measured under the full parallel suite: contributors 27ms -> 5091ms, lint 35ms -> 4854ms, query-history 102ms -> 24204ms. The same per-write cost is paid by `portable-archive.ts` on import (one write per archive entry), `backups.ts` on restore (one per asset), `embeddings.ts` on rebuild (each `upsertEmbedding` rewrites AND fsyncs the whole `.indexes/embeddings.json`) and by ingest. The cost is the durability guarantee working as specified, not a defect — but no benchmark, batching, or bound exists for those paths.
+status: open
+
+### DW-294: `POST /api/research` has no `isReadOnly()` gate, unlike ~20 sibling write routes.
+origin: spec-deferred a0e0feee7f8f
+source_spec: `spec-dw-161-164-storage-write-integrity.md`
+location: src/app/api/research/route.ts
+severity: medium
+reason: `src/app/api/wikis/route.ts` refuses creates with 403 when the deployment is read-only and most write routes do the same. The research create writes to storage and does not. Pre-existing; this change touched only the error classification in the same handler.
+status: open
+
+### DW-295: `POST /api/research` answers 500 for a malformed or non-object JSON body.
+origin: spec-deferred eb0c1ee445f5
+source_spec: `spec-dw-161-164-storage-write-integrity.md`
+location: src/app/api/research/route.ts
+severity: low
+reason: `await request.json()` sits inside the handler's `try`, and a parser message contains neither "required" nor "invalid", so a caller-fault parse error is reported as a server fault and the raw parser message is echoed to the client. `src/app/api/wikis/route.ts` handles this with an explicit 400. Pre-existing; unchanged by this work.
+status: open
+
+### DW-296: The `/required|invalid/i` message regex still routes genuine server faults to 400.
+origin: spec-deferred 912df682cec9
+source_spec: `spec-dw-161-164-storage-write-integrity.md`
+location: src/app/api/research/route.ts:50
+severity: low
+reason: The regex matches `EINVAL: invalid argument, ...` and any storage or library error mentioning "invalid", so a 5xx can be reported as a 400 the client will retry forever. The clean fix is small and was deliberately not taken here: `cleanInput`'s two plain `Error` throws could become `ClientInputError`, after which the regex can be deleted entirely.
+status: open
+
+### DW-297: `readProjects` degrades a non-array registry JSON to an empty list, so a corrupt registry passes the new cap check and is then overwritten.
+origin: spec-deferred 92cc58b8d547
+source_spec: `spec-dw-161-164-storage-write-integrity.md`
+location: src/lib/research-projects.ts:110
+severity: low
+reason: `Array.isArray(parsed) ? parsed : []` treats a registry that parsed as an object, string or number as "no projects". The create then sees 0, clears the `MAX_PROJECTS` guard, and `writeProjects` replaces the file — the same shape as the `normalizeRegistry` degradation DW-161 was raised about, one module over. Pre-existing and untouched by this change.
+status: open
+
+### DW-298: `writeProjects`' `slice(-MAX_PROJECTS)` can still silently evict for a legacy over-cap registry reached through update or delete.
+origin: spec-deferred c398ace2e4f5
+source_spec: `spec-dw-161-164-storage-write-integrity.md`
+location: src/lib/research-projects.ts:117
+severity: low
+reason: The create guard added here makes the slice unreachable on the create path, but `updateResearchProject`/`deleteResearchProject` still route through it, so a registry that is already over cap (only reachable if `MAX_PROJECTS` is ever lowered) loses its oldest entries with no error and no log. Left deliberately: removing the backstop changes behaviour no ledger entry asks about.
 status: open

@@ -303,4 +303,215 @@ describe("FilesystemStorageProvider", () => {
       expect(results).toHaveLength(1);
     });
   });
+  // -------------------------------------------------------------------------
+  // Atomic whole-file writes (DW-161)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The provider promises (`storage/types.ts`) that a caller never sees a
+   * partial file. What makes that true is that every whole-file write lands on
+   * a sibling tmp file and is `rename`d over the destination, so the
+   * destination name only ever points at a COMPLETE file. These rows assert the
+   * mechanism, not just the outcome: a bare `fs.writeFile` passes every
+   * round-trip assertion above while still truncating in place.
+   */
+  describe("atomic whole-file writes", () => {
+    /** The inode of a path — the observable that separates rename from truncate. */
+    async function inodeOf(rel: string): Promise<bigint> {
+      const st = await fs.stat(path.join(tmpDir, rel), { bigint: true });
+      return st.ino;
+    }
+
+    /** Scratch files `atomicWrite` leaves behind if it does not clean up. */
+    async function tmpArtifactsIn(rel: string): Promise<string[]> {
+      const entries = await fs.readdir(path.join(tmpDir, rel));
+      return entries.filter((name) => /^\.tmp-.*\.tmp$/.test(name));
+    }
+
+    it("replaces the destination by rename, not by truncating it in place", async () => {
+      await provider.writeFile("a.md", "old");
+      const before = await inodeOf("a.md");
+
+      await provider.writeFile("a.md", "new");
+
+      expect(await provider.readFile("a.md")).toBe("new");
+      expect(await inodeOf("a.md")).not.toBe(before);
+    });
+
+    it("leaves a reader holding the old file seeing the old bytes", async () => {
+      await provider.writeFile("a.md", "old");
+      // Opened BEFORE the write: it holds the old inode, which a rename leaves
+      // intact and a truncate would blow away underneath it.
+      const reader = await fs.open(path.join(tmpDir, "a.md"), "r");
+      try {
+        await provider.writeFile("a.md", "brand new and longer");
+        expect((await reader.readFile("utf-8"))).toBe("old");
+      } finally {
+        await reader.close();
+      }
+      expect(await provider.readFile("a.md")).toBe("brand new and longer");
+    });
+
+    it("leaves no tmp residue after a successful write", async () => {
+      await provider.writeFile("dir/a.md", "one");
+      await provider.writeFile("dir/a.md", "two");
+
+      expect(await fs.readdir(path.join(tmpDir, "dir"))).toEqual(["a.md"]);
+      expect(await tmpArtifactsIn("dir")).toEqual([]);
+    });
+
+    it("cleans up and leaves the destination untouched when the write cannot complete", async () => {
+      // A directory is a destination `rename` can never replace (its emptiness
+      // is irrelevant — renaming a file onto ANY directory fails), so this
+      // faults at the LAST step, after the tmp file already exists. The child
+      // file is what gives the untouched-destination assertion something to
+      // check.
+      await provider.writeFile("blocked/child.md", "keep me");
+
+      await expect(provider.writeFile("blocked", "nope")).rejects.toThrow();
+
+      expect(await fs.readdir(path.join(tmpDir, "blocked"))).toEqual(["child.md"]);
+      expect(await provider.readFile("blocked/child.md")).toBe("keep me");
+      expect(await tmpArtifactsIn(".")).toEqual([]);
+    });
+
+    it("preserves the mode of an overwritten file", async () => {
+      await provider.writeFile("secret.md", "v1");
+      await fs.chmod(path.join(tmpDir, "secret.md"), 0o600);
+
+      await provider.writeFile("secret.md", "v2");
+
+      const st = await fs.stat(path.join(tmpDir, "secret.md"));
+      expect(st.mode & 0o777).toBe(0o600);
+      expect(await provider.readFile("secret.md")).toBe("v2");
+    });
+
+    it("gives a new file the same default mode a plain write would", async () => {
+      await provider.writeFile("plain.md", "atomic");
+      await fs.writeFile(path.join(tmpDir, "control.md"), "control", "utf-8");
+
+      const [written, control] = await Promise.all([
+        fs.stat(path.join(tmpDir, "plain.md")),
+        fs.stat(path.join(tmpDir, "control.md")),
+      ]);
+      expect(written.mode & 0o777).toBe(control.mode & 0o777);
+    });
+
+    it("never blends or truncates under concurrent writes to one path", async () => {
+      const contents = Array.from({ length: 10 }, (_, i) => `content-${i}`.repeat(200));
+
+      await Promise.all(contents.map((c) => provider.writeFile("hot.md", c)));
+
+      // No lock is promised, so which one wins is undefined — that it is exactly
+      // ONE of them, whole, is the guarantee.
+      expect(contents).toContain(await provider.readFile("hot.md"));
+      expect(await tmpArtifactsIn(".")).toEqual([]);
+    });
+
+    it("hides tmp artifacts from listFiles while keeping other dot-entries", async () => {
+      await provider.writeFile("dir/page.md", "content");
+      // `.discarded` is the control: a real marker `sweepOrphans` depends on, so
+      // the filter must be tmp-shaped, not "anything dot-prefixed".
+      await fs.writeFile(path.join(tmpDir, "dir", ".discarded"), "", "utf-8");
+      await fs.writeFile(
+        path.join(tmpDir, "dir", ".tmp-11111111-2222-3333-4444-555555555555.tmp"),
+        "leftover from a crash",
+        "utf-8",
+      );
+
+      const names = (await provider.listFiles("dir")).map((e) => e.name).sort();
+      expect(names).toEqual([".discarded", "page.md"]);
+    });
+
+    it("replaces by rename for writeAsset too", async () => {
+      await provider.writeAsset("img.bin", new Uint8Array([1, 2, 3]).buffer);
+      const before = await inodeOf("img.bin");
+
+      await provider.writeAsset("img.bin", new Uint8Array([9]).buffer);
+
+      expect(await inodeOf("img.bin")).not.toBe(before);
+      expect(Buffer.from(await provider.readAsset("img.bin"))).toEqual(Buffer.from([9]));
+      expect(await tmpArtifactsIn(".")).toEqual([]);
+    });
+
+    it("replaces by rename for a matching writeFileIfMatch", async () => {
+      await provider.writeFile("cas.md", "v1");
+      const before = await inodeOf("cas.md");
+      const { etag } = await provider.readFileWithEtag("cas.md");
+
+      expect(await provider.writeFileIfMatch("cas.md", "v2", etag)).toBe(true);
+
+      expect(await inodeOf("cas.md")).not.toBe(before);
+      expect(await provider.readFile("cas.md")).toBe("v2");
+      expect(await tmpArtifactsIn(".")).toEqual([]);
+    });
+
+    it("replaces by rename for putIndex", async () => {
+      await provider.putIndex("cfg", { v: 1 });
+      const before = await inodeOf(".indexes/cfg.json");
+
+      await provider.putIndex("cfg", { v: 2 });
+
+      expect(await inodeOf(".indexes/cfg.json")).not.toBe(before);
+      expect(await provider.getIndex("cfg")).toEqual({ v: 2 });
+      expect(await tmpArtifactsIn(".indexes")).toEqual([]);
+    });
+
+    it("replaces by rename for upsertEmbedding", async () => {
+      await provider.upsertEmbedding("a", [1, 0], {});
+      const before = await inodeOf(".indexes/embeddings.json");
+
+      await provider.upsertEmbedding("b", [0, 1], {});
+
+      expect(await inodeOf(".indexes/embeddings.json")).not.toBe(before);
+      expect(await provider.getEmbeddingById("b")).not.toBeNull();
+      expect(await tmpArtifactsIn(".indexes")).toEqual([]);
+    });
+
+    /**
+     * The fsync has NO in-process observable: remove `handle.sync()` and every
+     * other row here still passes, because within one process the page cache
+     * serves the same bytes either way. What it buys is crash behaviour, which
+     * a unit test cannot stage — so it is pinned STRUCTURALLY instead, the way
+     * `wiki-schema-edit.test.ts` pins route shape.
+     *
+     * Ordering is the whole point, not presence: syncing AFTER the rename would
+     * publish the name before the bytes are durable, which is the exact bug the
+     * sync exists to prevent.
+     */
+    it("fsyncs the tmp file BEFORE the rename publishes it", async () => {
+      const source = await fs.readFile(
+        path.resolve(__dirname, "../storage/filesystem.ts"),
+        "utf8",
+      );
+      // Comments stripped first: this docblock and `atomicWrite`'s both discuss
+      // `sync()` and the rename in prose, and a substring scan would otherwise
+      // be satisfied by the explanation rather than by the code it explains.
+      const code = source
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "");
+      const body = code.slice(
+        code.indexOf("private async atomicWrite("),
+        code.indexOf("async readFile("),
+      );
+      expect(body).not.toBe("");
+
+      const sync = body.indexOf("handle.sync()");
+      const rename = body.indexOf("fs.rename(tmp, absPath)");
+      expect(sync).toBeGreaterThan(-1);
+      expect(rename).toBeGreaterThan(-1);
+      expect(sync).toBeLessThan(rename);
+    });
+
+    it("keeps listIndexKeys free of tmp artifacts", async () => {
+      await provider.putIndex("cfg", { v: 1 });
+      await fs.writeFile(
+        path.join(tmpDir, ".indexes", ".tmp-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.tmp"),
+        "leftover",
+        "utf-8",
+      );
+
+      expect(await provider.listIndexKeys("")).toEqual(["cfg"]);
+    });
+  });
 });
