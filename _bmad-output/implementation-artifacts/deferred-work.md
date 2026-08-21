@@ -3426,7 +3426,9 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/lib/patch-metadata.ts:106-140
 severity: medium
 reason: `patchMetadata`'s realm ACL (`src/lib/patch-metadata.ts:106`) runs above the owner-only visibility guard, so `{ visibility: "private" }` on a public, non-agent-scoped, non-artifact page is now refused for its own owner over both REST and MCP, and that guard is unreachable for them. This follows directly from the recorded DW-121 decision (metadata is refused wherever body is), and the visibility-guard suite had to reseed onto an `html` artifact to keep exercising the guard at all — which is the signal that the plain-public path changed underneath it. In this deployment the human is the site owner and therefore an admin, so it does not bite here; a multi-user deployment would feel it, and there is no non-admin exit from the realm.
-status: open
+status: done 2026-08-21
+resolution: closed by human decision: The DW-121 rule stands as recorded — metadata is refused wherever body is — and a public knowledge page is taken private by an admin or a service principal only.
+decision: 2026-08-21 Keep the realm closed — The DW-121 rule stands as recorded — metadata is refused wherever body is — and a public knowledge page is taken private by an admin or a service principal only.
 
 ### DW-392: Revert is still offered to signed-out viewers on every page the realm does not restrict.
 origin: spec-deferred 5acd94afc307
