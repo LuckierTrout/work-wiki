@@ -188,6 +188,15 @@
     "label": "Widen for worst-case encoding",
     "resolution": ""
   },
+  "DW-362": {
+    "answered_at": "2026-08-21",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Derive MAX_RAW_EMAIL_BYTES from a stated aggregate budget (up to MAX_EMAIL_ATTACHMENTS documents, or an explicit total) so the advertised attachment count is actually reachable, re-pin the parity test, and add a multi-document aggregate case.",
+    "key": "1",
+    "label": "Derive an aggregate budget",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

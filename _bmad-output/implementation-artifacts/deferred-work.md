@@ -3192,6 +3192,7 @@ location: workers/email-ingest/index.ts:59
 severity: medium
 reason: `MAX_EMAIL_ATTACHMENTS` is 10 and `MAX_DOCUMENT_SIZE` is 10 MB, so the advertised envelope is up to ten documents; ten 2 MB documents encode to roughly 27 MB and are bounced by `MAX_RAW_EMAIL_BYTES` (14.4 MB) with "larger than 13.7 MB". The per-message cap and the per-email attachment cap describe incompatible envelopes, which also makes the new over-cap acknowledgement line unreachable for anything but small files. Pre-existing and worse before this change (the cap was 10 MB); distinct from the aggregate-memory item above, which is about the forwarding copies rather than the gate.
 status: open
+decision: 2026-08-21 Derive an aggregate budget — Derive MAX_RAW_EMAIL_BYTES from a stated aggregate budget (up to MAX_EMAIL_ATTACHMENTS documents, or an explicit total) so the advertised attachment count is actually reachable, re-pin the parity test, and add a multi-document aggregate case.
 decision: 2026-08-20 Derive an aggregate budget — Derive MAX_RAW_EMAIL_BYTES from a stated aggregate budget (up to MAX_EMAIL_ATTACHMENTS documents, or an explicit total) so the advertised attachment count is actually reachable, re-pin the parity test, and add a multi-document aggregate case.
 
 ### DW-363: The second copy of the site-URL trim -- the one that builds the sender-visible acknowledgement links -- is pinned by nothing.
