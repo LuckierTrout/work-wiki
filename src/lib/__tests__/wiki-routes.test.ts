@@ -12,11 +12,17 @@ vi.mock("@/lib/auth", () => ({
 import {
   beginPageCache,
   ensureDirectories,
+  readLog,
   readWikiPage,
   readWikiPageWithFrontmatter,
   serializeFrontmatter,
   writeWikiPageWithSideEffects,
 } from "../wiki";
+import {
+  PAGE_UNREADABLE_COPY,
+  PAGE_UNREADABLE_STATUS,
+} from "../page-read-failure";
+import { DATA_VERSION_KEY } from "../data-version";
 import {
   WRITE_CONFLICT_COPY,
   WRITE_PRECONDITION_REQUIRED_COPY,
@@ -1745,5 +1751,157 @@ describe("PUT /api/wiki/[slug] — the write precondition", () => {
     expect(doc).toContain("If-Match");
     expect(doc).toContain("428");
     expect(doc).toContain("412");
+    // 503 is a wire status like the other two (DW-378): a page that could not
+    // be READ is not the 404 the opening line describes, and an automated
+    // caller reading this docblock has to know the difference — a 503 is worth
+    // retrying, a 404 is not.
+    expect(doc).toContain("503");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A page that could not be READ is not a page that is not THERE (DW-378)
+//
+// `readWikiPage` answered `null` for both, so `PUT` turned a storage blip into
+// `page not found: <slug>` — a 404 about existence, decided before the write
+// precondition was ever consulted. These pin the two apart AT THE DOOR: the
+// unreadable page is 503 with one sentence, and the absent page is still the
+// 404 it always was.
+// ---------------------------------------------------------------------------
+describe("PUT /api/wiki/[slug] — the page could not be read", () => {
+  const ORIGINAL = "# Unreadable\n\nwhat is actually stored.\n";
+
+  async function seed(slug: string): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    await writeWikiPageWithSideEffects({
+      slug,
+      title: slug,
+      content: serializeFrontmatter(
+        {
+          created: today,
+          confidence: 0.5,
+          authors: ["original-author"],
+          owner: "test-user",
+          visibility: "private",
+          contributors: [],
+          expiry: "2099-01-01",
+          sources: [],
+        },
+        ORIGINAL,
+      ),
+      summary: "a test page",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+  }
+
+  async function put(slug: string, headers: Record<string, string>) {
+    const { PUT } = await import("@/app/api/wiki/[slug]/route");
+    return PUT(
+      new Request(`http://localhost/api/wiki/${slug}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ content: "# Mine\n\nmy draft.\n" }),
+      }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+
+  /**
+   * Make the storage reads of THIS page fail with a NON-ENOENT error — the silo
+   * path and the flat path alike, so the route meets the same refusal whichever
+   * one it would have taken. Everything else (the index, the log) still reads
+   * for real, which is what lets the assertions below observe that nothing was
+   * written.
+   *
+   * The two paths are matched EXACTLY, computed through the same helpers the
+   * code under test uses. A `p.endsWith(`${slug}.md`)` test would also catch any
+   * other slug ending in these characters and any revision or backup key sharing
+   * the suffix — so a passing test would not establish WHICH read failed, which
+   * is the whole claim.
+   */
+  async function failReadsOfPage(slug: string, owner = "test-user") {
+    const { getStorage } = await import("../storage");
+    const { tenantForOwner, tenantWikiRelPath, wikiRelPath } = await import("../wiki");
+    const targets = new Set([
+      wikiRelPath(`${slug}.md`),
+      tenantWikiRelPath(tenantForOwner(owner), `${slug}.md`),
+    ]);
+    const storage = getStorage();
+    const real = storage.readFile.bind(storage);
+    return vi.spyOn(storage, "readFile").mockImplementation(async (p: string) => {
+      if (targets.has(p)) {
+        const err = new Error(`EIO: i/o error, read '${p}'`) as NodeJS.ErrnoException;
+        err.code = "EIO";
+        throw err;
+      }
+      return real(p);
+    });
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("answers 503 with the one sentence, and writes nothing", async () => {
+    await seed("unreadable-page");
+    const before = (await readWikiPageWithFrontmatter("unreadable-page"))!.content;
+    const ifMatch = await currentIfMatch("unreadable-page");
+    const logBefore = (await readLog()) ?? "";
+
+    await failReadsOfPage("unreadable-page");
+    // Every derived-index write in the lifecycle pipeline goes through
+    // `putIndex` — the `data-version` counter `bumpDataVersion` raises and the
+    // `pages` metadata index `syncPageIndexForPage` upserts. Watching the call
+    // itself rather than comparing counter VALUES keeps this deterministic:
+    // this suite leaves `DATA_DIR` unset, so the counter lives at the repo root
+    // and is shared with whatever else the runner has in flight.
+    const { getStorage } = await import("../storage");
+    const putIndexSpy = vi.spyOn(getStorage(), "putIndex");
+    const response = await put("unreadable-page", ifMatch);
+
+    // NOT 404 (the lie), NOT 500 (a server fault the owner cannot act on).
+    expect(response.status).toBe(PAGE_UNREADABLE_STATUS);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: PAGE_UNREADABLE_COPY });
+
+    vi.restoreAllMocks();
+    // The file is byte-for-byte what it was, and no activity line was appended:
+    // the refusal happened before the writer was ever reached.
+    expect((await readWikiPageWithFrontmatter("unreadable-page", { fresh: true }))!.content).toBe(
+      before,
+    );
+    expect((await readLog()) ?? "").toBe(logBefore);
+    // …and no derived index moved. `dataVersion` is the signal every open
+    // surface watches: a bump against a refused save sends every column
+    // re-fetching bytes that never changed, and would be evidence the writer
+    // HAD been reached. Nothing was upserted into the `pages` index either.
+    expect(putIndexSpy).not.toHaveBeenCalled();
+    expect(putIndexSpy.mock.calls.map(([key]) => key)).not.toContain(
+      DATA_VERSION_KEY,
+    );
+  });
+
+  it("answers 503 even with a well-formed If-Match — the read refuses first", async () => {
+    // The precondition never runs: its left-hand side is exactly the bytes the
+    // read failed to produce. A 412 here would be a claim about a comparison
+    // nobody made.
+    await seed("unreadable-precondition");
+    const ifMatch = await currentIfMatch("unreadable-precondition");
+    expect(ifMatch["If-Match"]).toBeTruthy();
+
+    await failReadsOfPage("unreadable-precondition");
+    const response = await put("unreadable-precondition", ifMatch);
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: PAGE_UNREADABLE_COPY });
+  });
+
+  it("still answers 404 for a page that genuinely is not there", async () => {
+    // The other half of the pair: the 404 this bundle narrows, not removes.
+    const response = await put("no-such-page", { "If-Match": '"abc123"' });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "page not found: no-such-page" });
   });
 });

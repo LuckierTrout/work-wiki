@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -29,6 +29,10 @@ import {
   Frontmatter,
 } from "../wiki";
 import { _resetStorage } from "../storage";
+import {
+  PAGE_UNREADABLE_COPY,
+  isPageUnreadableError,
+} from "../page-read-failure";
 import type { IndexEntry } from "../types";
 
 let tmpDir: string;
@@ -2285,6 +2289,170 @@ describe("silo-primary reads", () => {
 
     const exists = await (await import("../wiki")).wikiPageExists("exists-flat");
     expect(exists).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The fresh read REFUSES a failed read (DW-378, DW-380)
+//
+// `readWikiPage` answers `null` for a page that is ABSENT and for one whose
+// bytes could not be READ, and it widens from a FAILED silo read to the flat
+// file. For a precondition-bearing read both are lies: the first becomes
+// `page not found` at the `PUT` door, and the second derives a version from a
+// different file than the write targets. These pin the refusal AND — the part
+// ~40 callers depend on — that the UNQUALIFIED read is byte-for-byte unchanged.
+//
+// The failure is injected by spying on the storage singleton's `readFile` for
+// ONE path, so the other path stays genuinely readable and "never read the
+// other one" is observable rather than assumed.
+// ---------------------------------------------------------------------------
+describe("readWikiPage — a fresh read that FAILS", () => {
+  /** Not ENOENT: the class of failure that must not be reported as "absent". */
+  function eio(path: string): NodeJS.ErrnoException {
+    const err = new Error(`EIO: i/o error, read '${path}'`) as NodeJS.ErrnoException;
+    err.code = "EIO";
+    return err;
+  }
+
+  /**
+   * Fail `readFile` for exactly one storage-relative path; everything else
+   * reads for real. Returns the spy so a test can assert which paths were tried.
+   */
+  async function failReadsOf(relPath: string) {
+    const { getStorage } = await import("../storage");
+    const storage = getStorage();
+    const real = storage.readFile.bind(storage);
+    return vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (p: string) => {
+        if (p === relPath) throw eio(p);
+        return real(p);
+      });
+  }
+
+  /** A page-index entry pointing the read at `tenants/<owner>/wiki/<slug>.md`. */
+  async function seedSilo(slug: string, owner: string, content: string | null) {
+    const { getStorage } = await import("../storage");
+    const storage = getStorage();
+    await storage.putIndex("pages", {
+      [slug]: { slug, title: slug, summary: "s", owner },
+    });
+    if (content !== null) {
+      await storage.writeFile(`tenants/${owner}/wiki/${slug}.md`, content);
+    }
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("REJECTS on a non-ENOENT silo failure, and never reads the flat file", async () => {
+    await ensureDirectories();
+    await seedSilo("silo-eio", "alice", "# Silo\n\nsilo bytes.");
+    // A DIFFERENT file at the flat path: if the read widened, the version it
+    // derived would describe these bytes while the write targets the silo one.
+    await writeWikiPage("silo-eio", "# Flat\n\nflat bytes.");
+
+    const spy = await failReadsOf("tenants/alice/wiki/silo-eio.md");
+
+    await expect(readWikiPage("silo-eio", { fresh: true })).rejects.toMatchObject({
+      name: "PageUnreadableError",
+      message: PAGE_UNREADABLE_COPY,
+    });
+    // The refusal is classified by NAME, never `instanceof` — a duplicated
+    // module graph must not turn the route's 503 back into a 500. Written as
+    // try/unreachable rather than `.catch(cb)`: a callback that never runs
+    // because the promise RESOLVED asserts nothing and the test still passes.
+    try {
+      await readWikiPage("silo-eio", { fresh: true });
+      expect.unreachable("a fresh read of an unreadable silo file must reject");
+    } catch (err) {
+      expect(isPageUnreadableError(err)).toBe(true);
+      expect((err as { cause?: unknown }).cause).toMatchObject({ code: "EIO" });
+    }
+    // DW-380: the flat file is never consulted.
+    expect(spy.mock.calls.map(([p]) => p)).not.toContain("wiki/silo-eio.md");
+  });
+
+  it("still widens to flat on a silo ENOENT — absent is not a failure", async () => {
+    await ensureDirectories();
+    await seedSilo("silo-absent", "bob", null); // index names a tenant, no file
+    await writeWikiPage("silo-absent", "# Flat\n\nstill on flat.");
+
+    const page = await readWikiPage("silo-absent", { fresh: true });
+    expect(page!.content).toContain("still on flat.");
+    expect(page!.path).toBe(path.join(tmpDir, "wiki", "silo-absent.md"));
+  });
+
+  it("REJECTS on a non-ENOENT flat failure instead of answering null", async () => {
+    await ensureDirectories();
+    await writeWikiPage("flat-eio", "# Flat\n\nflat bytes.");
+    await failReadsOf("wiki/flat-eio.md");
+
+    const cleanup = beginPageCache();
+    try {
+      await expect(readWikiPage("flat-eio", { fresh: true })).rejects.toMatchObject({
+        name: "PageUnreadableError",
+        message: PAGE_UNREADABLE_COPY,
+      });
+      // Nothing cached: a refusal must not leave a negative entry behind for
+      // the next reader to inherit.
+      expect(_getPageCacheSize()).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("resolves null for a page that is genuinely absent, and caches nothing", async () => {
+    await ensureDirectories();
+
+    const cleanup = beginPageCache();
+    try {
+      expect(await readWikiPage("never-existed", { fresh: true })).toBeNull();
+      expect(_getPageCacheSize()).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("leaves the UNQUALIFIED read widening to flat on the same silo failure", async () => {
+    await ensureDirectories();
+    await seedSilo("silo-eio-unqualified", "carol", "# Silo\n\nsilo bytes.");
+    await writeWikiPage("silo-eio-unqualified", "# Flat\n\nflat bytes.");
+    await failReadsOf("tenants/carol/wiki/silo-eio-unqualified.md");
+
+    // Byte for byte what it does today: warn, fall back, answer the flat page.
+    const page = await readWikiPage("silo-eio-unqualified");
+    expect(page!.content).toContain("flat bytes.");
+    expect(page!.path).toBe(path.join(tmpDir, "wiki", "silo-eio-unqualified.md"));
+  });
+
+  it("leaves the UNQUALIFIED read answering null (and caching it) on a flat failure", async () => {
+    await ensureDirectories();
+    await writeWikiPage("flat-eio-unqualified", "# Flat\n\nflat bytes.");
+    await failReadsOf("wiki/flat-eio-unqualified.md");
+
+    const cleanup = beginPageCache();
+    try {
+      expect(await readWikiPage("flat-eio-unqualified")).toBeNull();
+      // The negative entry is still seeded — the swallow this bundle did NOT
+      // change.
+      expect(_getPageCacheSize()).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("propagates the refusal through readWikiPageWithFrontmatter", async () => {
+    await ensureDirectories();
+    await writeWikiPage("fm-eio", "---\nowner: alice\n---\n\n# FM\n\nbody.");
+    await failReadsOf("wiki/fm-eio.md");
+
+    await expect(
+      readWikiPageWithFrontmatter("fm-eio", { fresh: true }),
+    ).rejects.toMatchObject({ name: "PageUnreadableError" });
+    // The unqualified read through the same helper is unchanged.
+    expect(await readWikiPageWithFrontmatter("fm-eio")).toBeNull();
   });
 });
 

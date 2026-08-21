@@ -3333,7 +3333,8 @@ source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.m
 location: src/lib/wiki.ts:409, src/app/api/wiki/[slug]/route.ts:161
 severity: medium
 reason: `src/lib/wiki.ts:409-419` warns and returns `null` for every non-ENOENT read failure, and `PUT /api/wiki/[slug]` turns that `null` into `page not found: <slug>` before the precondition is ever consulted. This bundle made exactly the opposite call one layer over: when `writeWikiArtifact` is given an `expectedVersion`, a failed pre-write read rethrows rather than being read as "absent", because "absent" is answered as a conflict and a blip is not one. The page path keeps the older behaviour, so the same transient failure is a 404 on one surface and a 500 on the other. Pre-existing — the swallow predates the precondition and this change only added the `fresh` option beside it — and closing it means changing `readWikiPage`'s null contract, which ~40 callers depend on.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-wiki-read-failure-contract
 
 ### DW-379: The other read-modify-write merge bases still read through `pageCache`, so the staleness DW-195 closed for the precondition-bearing reads is open on every path that merges into cached bytes and writes
 origin: spec-deferred 620dd58d504a
@@ -3349,7 +3350,8 @@ source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.m
 location: src/lib/wiki.ts:389
 severity: medium
 reason: `src/lib/wiki.ts:389-401` warns on a non-ENOENT silo failure and falls through to `wikiRelPath(...)`, which is the legacy flat file. `fresh` bypasses `pageCache` but not that fallback, so a transient silo failure on a precondition-bearing read hands the editor the version of the flat copy while `writeWikiPageWithSideEffects` resolves the tenant path — a precondition computed over one file and compared against another. Pre-existing: the fallback predates the version entirely and exists so a not-yet-migrated page still reads. Closing it means letting a precondition-bearing read refuse rather than widen, which needs the same null-contract change the entry above names.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-wiki-read-failure-contract
 
 ### DW-381: The re-template confirm still presents the Schema overwrite as unrecoverable, which DW-213 has just made false.
 origin: spec-deferred 612a8939a001
@@ -3657,4 +3659,44 @@ source_spec: `spec-dw-293-371-filesystem-write-path-integrity.md`
 location: src/lib/storage/filesystem.ts
 severity: low
 reason: `writeFileIfMatch` now stages and fsyncs the replacement, re-reads the destination to compare an exact content hash, and only then renames — so a writer that lands between the comparison and the rename still loses its update. Closing it needs a lock or a new storage primitive, which DW-371 scoped out and this spec's Block If names explicitly. Recorded in the `writeFileIfMatch` and `saveConfig` docblocks rather than hidden.
+status: open
+
+### DW-419: `wikiPageExists` is the untouched near-twin of the read this bundle fixed and now contradicts it: it widens from a non-ENOENT silo failure to the flat file, and rethrows a non-ENOENT flat failure raw
+origin: spec-deferred 8e49b61373aa
+source_spec: `spec-dw-378-380-wiki-read-failure-contract.md`
+location: src/lib/wiki.ts:289
+severity: low
+reason: `src/lib/wiki.ts` `wikiPageExists` warns on a non-ENOENT silo failure and falls through to `wikiRelPath(...)` — the same widening DW-380 closed for the fresh read, 100 lines above it — and its flat catch does `throw err`, so a caller sees an unclassified errno whose message carries an absolute server path rather than `PAGE_UNREADABLE_COPY`. Pre-existing and out of this bundle's `fresh`-scoped reach: `wikiPageExists` has no `fresh` option and returns a boolean, so it has no "precondition-bearing" mode to gate on.
+status: open
+
+### DW-420: `GET /api/workbench/preview?kind=file` still degrades an unreadable `wiki/<slug>.md` to the shared 404, and that door seeds the same `PUT /api/wiki/[slug]` precondition the `kind=page` door now refuse
+origin: spec-deferred b1179af399c7
+source_spec: `spec-dw-378-380-wiki-read-failure-contract.md`
+location: src/lib/workbench-files.ts (readSafely) via src/app/api/workbench/preview/route.ts
+severity: medium
+reason: The Files tab reaches the same bytes through `readWorkbenchFile` -> `readSafely` (`src/lib/workbench-files.ts`), which swallows every non-ENOENT error into `null`, so the route answers `notFound()`. The payload it would otherwise serve carries a `version` for the same page `PUT`, so this is DW-378's lie surviving on a second read door of the same route. Closing it means giving `readSafely` a refusing mode, which is outside the `fresh`-scoped contract this bundle established; the route comment names the residual.
+status: open
+
+### DW-421: `PATCH` and `DELETE /api/wiki/[slug]` still answer `page not found` for a page whose bytes could not be read, and `DELETE`'s catch maps an unknown error to 400.
+origin: spec-deferred 9e74cdc9694d
+source_spec: `spec-dw-378-380-wiki-read-failure-contract.md`
+location: src/app/api/wiki/[slug]/route.ts:47, src/lib/patch-metadata.ts
+severity: medium
+reason: `patchMetadata` reads unqualified, so a non-ENOENT storage failure becomes `null` -> `code = "NOT_FOUND"` -> 404 at the `PATCH` door; `DELETE` reads unqualified at `src/app/api/wiki/[slug]/route.ts:47` and answers the same 404 on `!existing`. Both verbs MUTATE the page, so both make the existence claim DW-378 names — the intent scoped this bundle to the `fresh` path and neither verb takes one. `DELETE`'s catch additionally classifies anything that is not "page not found" as 400, so it would mis-answer `PageUnreadableError` as a client error if it ever gained a fresh read.
+status: open
+
+### DW-422: A failed PAGE-INDEX read re-opens both lies for a silo-resident page, because `getPageIndex` is fail-soft and a fresh read skips the silo branch entirely when it answers `null`.
+origin: spec-deferred 3b5753753c86
+source_spec: `spec-dw-378-380-wiki-read-failure-contract.md`
+location: src/lib/wiki.ts:416 via src/lib/page-index.ts
+severity: medium
+reason: `getPageIndex` logs and returns `null` on its own storage failure (`src/lib/page-index.ts`). `readWikiPage` then never computes a silo path: a silo-only page meets ENOENT on the flat path and resolves `null` (DW-378's 404, unfixed), and a page with a stale flat copy yields a version over a file the write will not target (DW-380, unfixed). The intent enumerates "a non-ENOENT silo or page failure"; an index failure is neither, so closing it needs its own decision about whether a precondition-bearing read may proceed without the index.
+status: open
+
+### DW-423: `PUT /api/workbench/artifact` relays the raw errno message as owner-facing copy when its precondition-bearing read fails.
+origin: spec-deferred c35a0bf9c596
+source_spec: `spec-dw-378-380-wiki-read-failure-contract.md`
+location: src/app/api/workbench/artifact/route.ts:86
+severity: medium
+reason: `writeWikiArtifact` rethrows the read failure raw when `expectedVersion` was supplied (`src/lib/wikis.ts:920`), and the route maps anything that is not read-only / write-conflict / `ClientInputError` to 500 with `getErrorMessage(error)`. `savePreviewBody` relays a served `{ error }` verbatim for any non-502/504 status, so in the same Preview editor a page save now shows `PAGE_UNREADABLE_COPY` while an artifact save shows `EIO: i/o error, read '/abs/server/path/...'`. Pre-existing; the sibling half of the divergence DW-378 named.
 status: open

@@ -106,6 +106,10 @@ vi.mock("next/navigation", () => ({
 import EditWikiPage from "../page";
 import { contentVersion } from "@/lib/write-precondition";
 import { WRITE_DENIAL_REALM } from "@/lib/write-denial";
+import {
+  PageUnreadableError,
+  isPageUnreadableError,
+} from "@/lib/page-read-failure";
 
 /**
  * The realm explanation, matched across whitespace: JSX joins the source lines
@@ -239,6 +243,43 @@ describe("edit page — the write-precondition seam (DW-38, DW-51)", () => {
       "transformers",
       { fresh: true },
     );
+  });
+
+  it("does NOT claim the page is missing when the fresh read FAILED (DW-378)", async () => {
+    // The third `fresh: true` caller, and the one with no route around it. Its
+    // `!page` branch renders "Page not found — No wiki page exists for …",
+    // which for a non-ENOENT storage failure is a claim about existence the
+    // failed read never established. Since DW-378 the rejection escapes to
+    // `src/app/u/[handle]/[slug]/error.tsx` instead, which is the intended
+    // outcome: a hard failure rather than a false statement about what exists,
+    // and no new copy is owed because at page LOAD there is no draft to protect.
+    //
+    // PINNED BECAUSE THE OBVIOUS LOCAL FIX IS THE BUG. Seeing "Page error" on
+    // this screen invites wrapping the read in a `try/catch` that sets
+    // `page = null` — which silently restores exactly the lie DW-378 removed,
+    // with every other test in this file still green.
+    const { readWikiPageWithFrontmatter } = await import("@/lib/wiki");
+    vi.mocked(readWikiPageWithFrontmatter).mockRejectedValueOnce(
+      new PageUnreadableError(),
+    );
+
+    let html: string | null = null;
+    let caught: unknown = null;
+    try {
+      html = await renderEditPage();
+    } catch (err) {
+      caught = err;
+    }
+
+    // Nothing rendered, and in particular not the missing-page screen. Asserted
+    // over `html ?? ""` so a future swallow that DOES render is caught by this
+    // line rather than merely by the one below.
+    expect(html ?? "").not.toContain("Page not found");
+    expect(html ?? "").not.toContain("No wiki page exists");
+    expect(html).toBeNull();
+    // …and the refusal is what came out, classified the way the routes classify
+    // it, so the error boundary receives the real failure rather than a render.
+    expect(isPageUnreadableError(caught)).toBe(true);
   });
 });
 

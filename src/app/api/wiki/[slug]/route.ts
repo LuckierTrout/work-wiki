@@ -14,6 +14,11 @@ import { resolveWriteDenial } from "@/lib/write-denial";
 import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { getErrorMessage } from "@/lib/errors";
+import {
+  PAGE_UNREADABLE_COPY,
+  PAGE_UNREADABLE_STATUS,
+  isPageUnreadableError,
+} from "@/lib/page-read-failure";
 import { patchMetadata } from "@/lib/patch-metadata";
 import {
   IF_MATCH_HEADER,
@@ -92,9 +97,11 @@ export async function DELETE(
 /**
  * PUT /api/wiki/[slug]
  *
- * Replace the body of an existing wiki page. Returns 404 when the slug
- * doesn't exist — edit is strictly an update operation, use the ingest flow
- * (or a future create endpoint) to add new pages.
+ * Replace the body of an existing wiki page. Returns 404 when the slug does not
+ * exist — edit is strictly an update operation, use the ingest flow (or a future
+ * create endpoint) to add new pages. A page that exists but whose bytes could
+ * not be READ is a DIFFERENT answer: 503, not that 404 — see the outcome list
+ * below (DW-378).
  *
  * Body: `{ content: string }` — the new markdown **body** (no YAML
  * frontmatter). The editor never exposes the YAML block to users; the
@@ -117,12 +124,16 @@ export async function DELETE(
  *     If-Match: "w1:1a-0f3c…"
  *
  * The version is what `GET /api/workbench/preview` serves and what a previous
- * successful `PUT` answered with. Three outcomes:
+ * successful `PUT` answered with. Four outcomes:
  *
  *   - absent, `*`, unquoted, weak, or a list → 428, `{ error }` carrying
  *     `WRITE_PRECONDITION_REQUIRED_COPY`; nothing is written.
  *   - present but not the stored file's version → 412, `{ error }` carrying
  *     `WRITE_CONFLICT_COPY`; nothing is written.
+ *   - the page could not be READ at all (a non-ENOENT storage failure, so the
+ *     precondition has no left-hand side to compare against) → 503, `{ error }`
+ *     carrying `PAGE_UNREADABLE_COPY`; nothing is written, and this is reached
+ *     BEFORE the header is ever examined (DW-378).
  *   - matching → the write and all its side effects run, and the response
  *     carries the NEW version, so a caller can save again without a re-read.
  *
@@ -306,6 +317,28 @@ export async function PUT(
     // read-only would be answered as a 400 about the slug.
     if (isReadOnlyError(err)) {
       return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
+    // The fresh read above FAILED rather than found nothing (DW-378). Before
+    // this branch that failure arrived as `null` and was answered
+    // `page not found: <slug>` — a 404 about existence, for a page whose bytes
+    // nobody could read. 503 says what is true and what to do about it, the
+    // same shape `PUT /api/settings` already answers for an unreadable store.
+    // Above the `invalid slug` ladder because that classifier string-matches a
+    // message and would otherwise decide this one.
+    //
+    // It lands BELOW the ACL cloak, so an existing-but-unreadable page answers
+    // 503 where an absent one answers 404. The cloak needs `existing.frontmatter`
+    // — precisely what the failed read did not produce — so there is nothing to
+    // cloak WITH. The residual is not that the difference is unreachable:
+    // resource-exhaustion classes (EMFILE/ENFILE/ENOMEM, or an R2 5xx surfaced
+    // as non-ENOENT) are request-driven. It is that no caller can induce the
+    // failure RELIABLY or SELECTIVELY for a slug they choose, and on a
+    // single-owner private deployment that is accepted deliberately.
+    if (isPageUnreadableError(err)) {
+      return NextResponse.json(
+        { error: PAGE_UNREADABLE_COPY },
+        { status: PAGE_UNREADABLE_STATUS },
+      );
     }
     const message = getErrorMessage(err);
     const status = message.toLowerCase().startsWith("invalid slug") ? 400 : 500;

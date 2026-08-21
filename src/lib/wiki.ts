@@ -4,6 +4,7 @@ import { withFileLock } from "./lock";
 import { logger } from "./logger";
 import { saveRevision } from "./revisions";
 import { isEnoent } from "./errors";
+import { PAGE_UNREADABLE_COPY, PageUnreadableError } from "./page-read-failure";
 import { getStorage } from "./storage";
 import {
   getWikiDir as _getWikiDir,
@@ -354,7 +355,18 @@ export interface ReadWikiPageOptions {
    * overwrite. Both produce a 412 against a write nobody made, or a match
    * against bytes that are gone.
    *
-   * Default `false`: caching stays exactly as it was for every existing caller.
+   * IT ALSO CHANGES WHAT A FAILED READ ANSWERS (DW-378, DW-380). A fresh read
+   * REFUSES rather than lies: a non-ENOENT storage failure throws
+   * {@link import("./page-read-failure").PageUnreadableError} instead of
+   * widening from a failed silo read to the flat file (which would derive a
+   * version from a DIFFERENT file than the write targets) and instead of
+   * returning `null` (which the `PUT` door answers as `page not found`, a claim
+   * about existence that the failed read did not establish). ENOENT is
+   * untouched in both modes: a missing page is still `null`, still a 404.
+   *
+   * Default `false`: caching stays exactly as it was for every existing caller,
+   * AND so does the failure behaviour — an unqualified read still warns, still
+   * widens to flat, still caches the negative entry and still answers `null`.
    */
   fresh?: boolean;
 }
@@ -365,6 +377,14 @@ export interface ReadWikiPageOptions {
  *
  * Pass `{ fresh: true }` when the bytes (or their version) are about to back a
  * write precondition — see {@link ReadWikiPageOptions.fresh}.
+ *
+ * THROWS ONLY ON THE FRESH PATH (DW-378, DW-380). An unqualified read never
+ * throws for a storage failure: it warns, widens to the flat file, caches the
+ * negative entry and answers `null`, exactly as ~40 callers rely on. A FRESH
+ * read rejects with
+ * {@link import("./page-read-failure").PageUnreadableError} when storage fails
+ * with anything other than ENOENT — on either path, and without reading the
+ * other one. A page that is genuinely absent is still `null` in both modes.
  */
 export async function readWikiPage(
   slug: string,
@@ -403,6 +423,25 @@ export async function readWikiPage(
       // Content came from the silo — resolve the absolute path
       actualPath = path.join(getDataDir(), siloPath);
     } catch (e) {
+      if (fresh && !isEnoent(e)) {
+        // A precondition-bearing read must not widen to a DIFFERENT file
+        // (DW-380): the version would describe the flat file while the write
+        // targets the silo one. Absent (ENOENT) still widens — that is the
+        // migration fallback working as intended.
+        //
+        // LOGGED HERE OR NOWHERE. This throw skips the `logger.warn` below, and
+        // BOTH doors that consume a fresh read return before their own logging
+        // (the `PUT`'s 503 branch sits above the ladder, the Preview's above
+        // `logger.error`). Without this line a storage incident on the write
+        // path would leave no server-side trace at all, while the unqualified
+        // read of the same file still warned.
+        logger.error(
+          "wiki",
+          `fresh silo read failed for "${slug}" at ${siloPath}; refusing rather than falling back to flat:`,
+          e,
+        );
+        throw new PageUnreadableError(PAGE_UNREADABLE_COPY, { cause: e });
+      }
       if (!isEnoent(e)) {
         logger.warn("wiki", `silo read failed for "${slug}", falling back to flat:`, e);
       }
@@ -416,6 +455,22 @@ export async function readWikiPage(
       content = await storage.readFile(wikiRelPath(`${slug}.md`));
       actualPath = flatPath;
     } catch (err) {
+      if (fresh && !isEnoent(err)) {
+        // ABSENT and UNREADABLE are not the same answer (DW-378). `null` here
+        // becomes `page not found: <slug>` at the `PUT` door, a 404 about
+        // existence answered before the precondition is ever consulted — for a
+        // page that may well exist. ENOENT still resolves `null`.
+        //
+        // Logged for the same reason as the silo branch above: this throw skips
+        // the `logger.warn` below and neither consuming route logs, so this is
+        // the only trace the incident leaves.
+        logger.error(
+          "wiki",
+          `fresh read failed for "${slug}" at ${wikiRelPath(`${slug}.md`)}; refusing rather than answering "not found":`,
+          err,
+        );
+        throw new PageUnreadableError(PAGE_UNREADABLE_COPY, { cause: err });
+      }
       if (!isEnoent(err)) {
         logger.warn("wiki", `readWikiPage failed for "${slug}":`, err);
       }
@@ -455,7 +510,11 @@ export async function readWikiPage(
  * Throws when the file exists but its frontmatter block is malformed.
  *
  * `options` is forwarded verbatim to {@link readWikiPage} — pass
- * `{ fresh: true }` when the bytes are about to back a write precondition.
+ * `{ fresh: true }` when the bytes are about to back a write precondition. A
+ * FRESH read's refusal
+ * ({@link import("./page-read-failure").PageUnreadableError}, DW-378/DW-380)
+ * propagates through here unchanged; an unqualified read still answers `null`
+ * for a failed read exactly as before.
  */
 export async function readWikiPageWithFrontmatter(
   slug: string,
