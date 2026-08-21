@@ -1925,6 +1925,7 @@ location: src/lib/wiki-artifact-revisions.ts, src/lib/backups.ts:56-85
 severity: medium
 reason: Every `writeWikiArtifact` writes a full copy under `tenants/<t>/wikis/<id>/revisions/<file>/` with no retention policy (deliberate — page revisions have none either), and `listWikiArtifactRevisions` stats every revision on each GET with an unbounded `Promise.all`. `src/lib/backups.ts` walks all of `tenants/<t>` against `MAX_BACKUP_FILES = 10_000` / `MAX_BACKUP_BYTES = 2 GB` and throws "Backup exceeds the safety limit" rather than degrading. Page revisions spread across slugs; these pile into one directory per artifact.
 status: open
+decision: 2026-08-21 Cap revisions and degrade backups — Add a retention cap with pruning in saveWikiArtifactRevision plus a bounded listing, and make the backup walk truncate-with-a-flag at MAX_BACKUP_FILES/MAX_BACKUP_BYTES instead of throwing.
 decision: 2026-08-20 Cap revisions and degrade backups — Add a retention cap with pruning in saveWikiArtifactRevision plus a bounded listing, and make the backup walk truncate-with-a-flag at MAX_BACKUP_FILES/MAX_BACKUP_BYTES instead of throwing.
 
 ### DW-216: Follow-up review still recommended for dw2-per-wiki-artifact-revisions after the damping cap was spent

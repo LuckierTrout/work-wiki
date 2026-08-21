@@ -134,6 +134,15 @@
     "label": "Widen the content padding to match",
     "resolution": ""
   },
+  "DW-215": {
+    "answered_at": "2026-08-21",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a retention cap with pruning in saveWikiArtifactRevision plus a bounded listing, and make the backup walk truncate-with-a-flag at MAX_BACKUP_FILES/MAX_BACKUP_BYTES instead of throwing.",
+    "key": "1",
+    "label": "Cap revisions and degrade backups",
+    "resolution": ""
+  },
   "DW-253": {
     "answered_at": "2026-08-20",
     "bundle_name": "",
