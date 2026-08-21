@@ -802,6 +802,253 @@ describe("searchByVector", () => {
     expect(bigger.warnings).toEqual(warnings);
   });
 
+  it("SPEAKS again after the corpus is REBUILT and drifts a second time", async () => {
+    // DW-332. Drift is the one identity in the Set that is fixed IN-process:
+    // `rebuildVectorStore` is the fix and it runs in the same isolate. Without
+    // a re-arm, the ONCE throttle turns "you fixed it and broke it again" into
+    // silence for the rest of the process — the second outage is the one an
+    // operator has no breadcrumb for.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Drifted: the line is said.
+      const one = await searchByVector("one", 10);
+      // 2. Rebuild — the corpus is re-embedded under the ACTIVE model, so the
+      //    next query keeps a match. That kept match is the signal, and it
+      //    re-arms `drift:text-embedding-3-small`.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+      const two = await searchByVector("two", 10);
+      // 3. Drift again under the SAME active model.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      const three = await searchByVector("three", 10);
+      return [one, two, three];
+    });
+
+    // Twice, not once — and the second line is byte-identical to the first,
+    // because the identity that drifted is the same one.
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toBe(warnings[0]);
+    expect(warnings[1]).toContain('active="text-embedding-3-small"');
+    // Pin the CAUSE too, not just the effect: the middle query is the one that
+    // KEPT a match, which is the only thing that re-arms. Asserting warnings
+    // alone would still pass if step 2 had somehow dropped everything and the
+    // second line came from somewhere else.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["page-a"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("does NOT re-arm while the drift is still standing", async () => {
+    // The re-arm is gated on a KEPT match, not on a query having run. A corpus
+    // that keeps drifting has never proved itself answerable, so the throttle
+    // must still hold across any number of queries.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    await seedVector("page-b", [0, 1, 0], "old-model", "b");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => [
+      await searchByVector("one", 10),
+      await searchByVector("two", 10),
+      await searchByVector("three", 10),
+    ]);
+
+    // The gate, not just the throttle: EVERY query kept nothing, which is the
+    // precondition for the re-arm never having run. Without this the test is
+    // satisfied by a `warnOnceAbout` that simply works, and would keep passing
+    // if the re-arm gate loosened to "a query ran" or "the store had hits".
+    expect(result).toEqual([[], [], []]);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("re-arms ONLY the drift key — other warning FAMILIES keep theirs", async () => {
+    // The Set has four key namespaces and exactly one of them re-arms. A
+    // wholesale `warnedMisconfigurations.clear()` here would satisfy every
+    // drift test in this file while silently un-throttling the other three
+    // families — the DW-273/DW-278 noise those keys exist to suppress.
+    await seedVector("kept", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    // On the Workers runtime with `AI` unbound → `binding:workers-ai`. Provider
+    // auto-detect still lands on openai via the API key.
+    mockGetCfContext.mockReturnValue({ env: {} });
+    // An openai-unservable override → `model:openai:@cf/baai/bge-m3`. The
+    // ACTIVE model falls back to the default the corpus was seeded with, so
+    // this does not itself create drift.
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3";
+
+    const first = await withWarnSpy(() => {
+      getWorkersAiBinding();
+      return getEmbeddingModelName();
+    });
+    expect(first.result).toBe(DEFAULT_TEST_MODEL);
+    expect(first.warnings).toHaveLength(2);
+
+    // A healthy read: `kept.length > 0`, so the re-arm runs. Both other keys
+    // are already burnt, so this window is silent.
+    const read = await withWarnSpy(() => searchByVector("q", 10));
+    expect(read.result.map((r) => r.slug)).toEqual(["kept"]);
+    expect(read.warnings).toEqual([]);
+
+    // Re-provoke both other families: still silent. Their keys survived.
+    const after = await withWarnSpy(() => {
+      getWorkersAiBinding();
+      getEmbeddingModelName();
+    });
+    expect(after.warnings).toEqual([]);
+  });
+
+  it("re-arms ONLY the read's OWN drift identity, not every drift key", async () => {
+    // Two active models are two drift identities. A read that is answerable
+    // under A says nothing about whether the corpus is answerable under B, so
+    // B's burnt key must survive A's re-arm.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { warnings } = await withWarnSpy(async () => {
+      // 1. Drift under B — B's key is burnt.
+      process.env.EMBEDDING_MODEL = "text-embedding-3-large";
+      await searchByVector("one", 10);
+      // 2. Switch to A and give it a vector to keep: re-arms `drift:A` only.
+      delete process.env.EMBEDDING_MODEL;
+      await seedVector("page-b", [1, 0, 0], DEFAULT_TEST_MODEL, "b");
+      const healthy = await searchByVector("two", 10);
+      expect(healthy.map((r) => r.slug)).toContain("page-b");
+      // 3. Back to B, which is still drifted (neither vector is tagged B).
+      process.env.EMBEDDING_MODEL = "text-embedding-3-large";
+      await searchByVector("three", 10);
+    });
+
+    // ONE line, from step 1. Step 3 stayed silent because B was never re-armed.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('active="text-embedding-3-large"');
+  });
+
+  it("re-arms on the SAME snapshot the filter used, never a re-derived model", async () => {
+    // The mirror of the one-snapshot test below, for the DELETE. Re-deriving
+    // the model after `embedText`'s round-trip can straddle the 5 s cache
+    // expiry — and on the re-arm path that is worse than on the warn path: it
+    // would un-burn a DIFFERENT model's key on evidence about this one.
+    await seedVector("page-a", [1, 0, 0], "text-embedding-3-large", "a");
+    const cfgSmall = {
+      embeddingProvider: "openai",
+      embeddingApiKey: "sk-stored",
+      embeddingModel: "text-embedding-3-small",
+    };
+    const cfgLarge = { ...cfgSmall, embeddingModel: "text-embedding-3-large" };
+
+    // 1. Burn `drift:text-embedding-3-small` — the corpus IS drifted under it.
+    mockLoadConfigSync.mockReturnValue(cfgSmall);
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    const drifted = await withWarnSpy(() => searchByVector("one", 10));
+    expect(drifted.warnings).toHaveLength(1);
+    expect(drifted.warnings[0]).toContain('active="text-embedding-3-small"');
+
+    // 2. A query whose config cache turns over mid-`embed()`: the snapshot says
+    //    `-large` (and the hit is KEPT under it), while a re-read would say
+    //    `-small`. The re-arm must delete `drift:text-embedding-3-large`.
+    mockLoadConfigSync.mockReturnValue(cfgLarge);
+    mockEmbed.mockImplementation(async () => {
+      mockLoadConfigSync.mockReturnValue(cfgSmall);
+      return { embedding: [1, 0, 0] };
+    });
+    const straddle = await withWarnSpy(() => searchByVector("two", 10));
+    expect(straddle.result.map((r) => r.slug)).toEqual(["page-a"]);
+    expect(straddle.warnings).toEqual([]);
+
+    // 3. `-small` is STILL burnt. A re-derived name would have deleted it in
+    //    step 2 and this genuinely-drifted read would speak a second time.
+    mockLoadConfigSync.mockReturnValue(cfgSmall);
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    const again = await withWarnSpy(() => searchByVector("three", 10));
+    expect(again.result).toEqual([]);
+    expect(again.warnings).toEqual([]);
+  });
+
+  it("does NOT re-arm when the query THROWS", async () => {
+    // The re-arm lives on the success path inside the `try`. A throw means no
+    // read completed, so nothing was established and the burnt key stays burnt.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { warnings } = await withWarnSpy(async () => {
+      await searchByVector("one", 10); // drifted → the line is said
+      // A mismatched-dimension vector makes the scan throw (the mid-migration
+      // case). `searchByVector` degrades to [] through its catch.
+      await seedVector("bad", [1, 0], "old-model", "b");
+      expect(await searchByVector("two", 10)).toEqual([]);
+      await removeEmbedding("bad");
+      await searchByVector("three", 10); // still drifted
+    });
+
+    // Still ONE drift line. (The catch adds its own query-failed warning to the
+    // window, which is why this filters rather than counting everything.)
+    expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(1);
+    expect(warnings.some((w) => w.includes("query failed"))).toBe(true);
+  });
+
+  it("SPEAKS again after a REAL rebuildVectorStore, not a simulated one", async () => {
+    // Every comment on this feature names `rebuildVectorStore` as the
+    // in-process fix; this drives the actual function rather than hand-rolling
+    // it from remove+seed. It tests THROUGH the rebuild — nothing re-arms FROM
+    // it, which stays `searchByVector`'s job alone.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    mockListWikiPages.mockResolvedValue([
+      { title: "Page A", slug: "page-a", summary: "Summary A" },
+    ]);
+    mockReadWikiPage.mockResolvedValue({
+      slug: "page-a",
+      title: "Page A",
+      content: "Content A",
+      path: "/fake/page-a.md",
+    });
+
+    const { warnings } = await withWarnSpy(async () => {
+      await searchByVector("one", 10); // drifted → the line is said
+
+      const rebuilt = await rebuildVectorStore();
+      expect(rebuilt.embedded).toBe(1);
+      expect(rebuilt.model).toBe(DEFAULT_TEST_MODEL);
+
+      // The rebuild re-tagged the vector, so this read keeps it and re-arms.
+      const healthy = await searchByVector("two", 10);
+      expect(healthy.map((r) => r.slug)).toEqual(["page-a"]);
+
+      // Drift again under the SAME active model.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      await searchByVector("three", 10);
+    });
+
+    expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(2);
+  });
+
+  it("re-arms SILENTLY on a healthy corpus that never drifted", async () => {
+    // Deleting a key that was never set is a no-op: no warning, and results
+    // are exactly what they were before the re-arm existed.
+    await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    await seedVector("page-b", [0, 1, 0], DEFAULT_TEST_MODEL, "b");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => [
+      await searchByVector("one", 10),
+      await searchByVector("two", 10),
+    ]);
+
+    expect(warnings).toEqual([]);
+    expect(result[0].map((r) => r.slug)).toEqual(["page-a", "page-b"]);
+    expect(result[1]).toEqual(result[0]);
+  });
+
   it("SPEAKS again when the ACTIVE MODEL changes and still drifts", async () => {
     // A changed misconfiguration is a new identity. The corpus is untouched;
     // what moved is the model the deployment now embeds with, and an owner

@@ -49,12 +49,23 @@ import { logger } from "./logger";
  * a CHANGED misconfiguration is a new key and speaks again — the guard
  * suppresses repetition, never information.
  *
- * The trade-off that buys, stated plainly: a misconfiguration fixed and then
- * re-introduced with the IDENTICAL value stays silent for the rest of the
- * process. The key is the identity and nothing clears it; re-arming a key when
- * a misconfiguration goes away is deliberately out of scope — it would mean
- * carrying "resolved" state through every resolution for a case a restart (or
- * a new isolate) already fixes.
+ * The trade-off that buys, stated plainly and scoped: for THREE of the four
+ * identities — the stale `EMBEDDING_MODEL`, the unservable override, the
+ * unbound `AI` binding — one that is fixed and then re-introduced with the
+ * IDENTICAL value stays silent for the rest of the process. Nothing clears
+ * those three keys, deliberately: each is env/binding state that a restart (or
+ * a new isolate) already fixes, so carrying "resolved" state through every
+ * resolution for them would be dead weight.
+ *
+ * `drift:<active model>` is the ONE deliberate exception (DW-332). Drift is
+ * different in kind: it is fixed IN-process, by `rebuildVectorStore`, with no
+ * restart involved — and `searchByVector` already computes the signal that a
+ * rebuild has landed (`kept.length > 0`, in the same branch chain that decides
+ * whether to warn), so it re-arms that single key there through
+ * `rearmWarningAbout`. Without it, a corpus that drifts, is rebuilt, and drifts
+ * again under the SAME active model would be silent for the rest of the
+ * process. Exactly one key re-arms; the other three never do — and the signal
+ * is narrower than "the corpus is healthy", which the branch itself records.
  *
  * ONE warning in this module is left UNGUARDED on purpose and should stay that
  * way: `runWorkersAiEmbedding`'s unexpected-response-shape line. That line
@@ -80,6 +91,22 @@ function warnOnceAbout(key: string, message: string): void {
   if (warnedMisconfigurations.has(key)) return;
   warnedMisconfigurations.add(key);
   logger.warn("embeddings", message);
+}
+
+/**
+ * Forget `key` so the NEXT occurrence of this identity speaks again.
+ *
+ * The counterpart to `warnOnceAbout`, for the one misconfiguration a caller can
+ * see EVIDENCE of ending from inside the process: embedding-model drift,
+ * cleared by a corpus rebuild (DW-332) — see the re-arm branch in
+ * `searchByVector` for how strong that evidence is and is not. Deleting a key
+ * that was never set is a silent no-op, so a caller can re-arm unconditionally
+ * on its success path without first asking whether it ever warned. Named rather
+ * than an inline `.delete` at the call site so the Set keeps exactly two
+ * mutators plus the test-only reset, all greppable from here.
+ */
+function rearmWarningAbout(key: string): void {
+  warnedMisconfigurations.delete(key);
 }
 
 /**
@@ -802,8 +829,18 @@ export function cosineSimilarity(a: number[], b: number[]): number {
  * drift line would fire for a corpus that has not drifted. Before the throttle
  * that mis-fire corrected itself on the next query; now it would BURN the
  * `drift:<model>` key, and a later REAL drift under that same active model
- * would be silent for the rest of the process. The model that embedded and the
+ * would be silent until something re-armed it. The model that embedded and the
  * model the filter compares against have to come from the same read.
+ *
+ * The key does re-arm, on exactly one signal: a read that KEEPS at least one
+ * match under the active model (DW-332) — the signal that a rebuild has landed,
+ * which is what makes rebuild-then-re-drift under the same model audible a
+ * second time. That delete is subject to this same one-snapshot rule, and for a
+ * sharper reason than the warn: it must use the SAME `currentModel` the filter
+ * compared against, never a second `getEmbeddingModelName()` read, because a
+ * re-derived name straddling the expiry would re-arm a DIFFERENT identity than
+ * the one this read said anything about — un-burning some other model's key on
+ * evidence that has nothing to do with it.
  */
 export async function searchByVector(
   query: string,
@@ -835,7 +872,14 @@ export async function searchByVector(
     // re-armed the warning for every distinct number of hits and defeated the
     // throttle. An active model that CHANGES and still drifts is a new identity
     // and speaks again.
-    if (matches.length > 0 && kept.length === 0) {
+    if (kept.length > 0) {
+      // Re-arm (DW-332; rationale on `warnedMisconfigurations`). A kept match
+      // establishes only that THIS read was answerable under the active model,
+      // not that the whole corpus is: `modelMatches` keeps unlabelled legacy
+      // vectors, and `queryEmbeddings` slices to topK BEFORE this filter. An
+      // early re-arm costs a repeated line; a missing one loses the next outage.
+      rearmWarningAbout(`drift:${currentModel}`);
+    } else if (matches.length > 0) {
       warnOnceAbout(
         `drift:${currentModel}`,
         "searchByVector: the model filter dropped every match " +

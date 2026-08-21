@@ -2948,7 +2948,8 @@ source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
 location: src/lib/embeddings.ts (searchByVector, warnedMisconfigurations)
 severity: medium
 reason: `warnedMisconfigurations` is documented as never clearing, on the argument that "a restart (or a new isolate) already fixes" the case. That holds for the three env/binding misconfigurations it was written for, but not for drift: drift is fixed by REBUILDING THE CORPUS, which happens in the same process. `searchByVector` already holds the counter-signal that proves the drift is over — `kept.length > 0` — and could delete the key there. The intent said only "bring it under the same throttle", and the module's recorded trade-off argues the other way, so whether drift should be the one identity that re-arms is a decision neither contains.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-embeddings-drift-warning-rearm
 decision: 2026-08-21 Re-arm drift only — Delete only the drift:<active model> key from warnedMisconfigurations on a successful read where kept.length > 0, leaving every other member of the Never clause intact, and cover rebuild-then-re-drift in the embeddings warning suite.
 decision: 2026-08-20 Re-arm drift only — Delete only the drift:<active model> key from warnedMisconfigurations on a successful read where kept.length > 0, leaving every other member of the Never clause intact, and cover rebuild-then-re-drift in the embeddings warning suite.
 
@@ -3528,4 +3529,28 @@ source_spec: `spec-dw-368-370-provider-selection-truthfulness.md`
 location: src/lib/config.ts:865
 severity: medium
 reason: `providerIsConfigured` at `src/lib/config.ts:865-867` tests only the two credential halves, and `DEFAULT_MODELS` deliberately carries no `custom` entry, so `getConfiguredModel` throws "The Custom provider needs a model name" (`src/lib/llm.ts:406-410`) for a deployment the badge calls ready. Pre-existing and independent of this change's pointer.
+status: open
+
+### DW-404: The re-arm gate `kept.length > 0` is a property of the per-query top-K window, not of the corpus, so a partially-rebuilt (mixed-model) corpus can oscillate warn -> re-arm -> warn and revert DW-310's o
+origin: spec-deferred 2b8128268e58
+source_spec: `spec-dw-332-embedding-drift-warning-rearm.md`
+location: src/lib/embeddings.ts (searchByVector re-arm branch)
+severity: medium
+reason: `queryEmbeddings` sorts and slices to `topK` BEFORE `searchByVector` applies the model filter (src/lib/storage/filesystem.ts queryEmbeddings; contract in src/lib/storage/types.ts). With one stale-tagged and one current-tagged vector and `topK: 1`, eight alternating queries emitted FOUR drift lines instead of one. This is not contrived: `rebuildVectorStore` upserts page by page with no bulk swap, so the store is mixed for the whole duration of the very operation the re-arm exists to detect, and it deliberately leaves stale orphans behind. The tighter gate (`kept.length === matches.length`, or a rebuild-completion epoch) was NOT applied because the recorded 2026-08-21 decision names `kept.length > 0` as the trigger verbatim; narrowing it is a decision this run does not hold.
+status: open
+
+### DW-405: A single unlabelled legacy vector satisfies `kept.length > 0` and re-arms `drift:<active model>` on a corpus where every labelled vector is still stale, so a genuinely un-rebuilt corpus can repeat the
+origin: spec-deferred f6e0ffb78ddc
+source_spec: `spec-dw-332-embedding-drift-warning-rearm.md`
+location: src/lib/embeddings.ts (searchByVector re-arm branch, modelMatches)
+severity: medium
+reason: `modelMatches` deliberately returns true when `metadata.model` is absent (pre-migration / KV-fallback vectors must survive the filter — pinned by the existing test "keeps unlabelled (legacy) vectors with no model metadata"). Seeding one unlabelled vector plus stale-tagged ones and alternating three queries produced TWO drift lines where the throttle should give one. A gate of `kept.some((m) => m.metadata.model === currentModel)` would close it, but that also narrows the decided `kept.length > 0` trigger. The inline comment at the re-arm branch was corrected to stop claiming corpus-level proof.
+status: open
+
+### DW-406: `relatedByVector` runs the same model filter but neither warns nor re-arms, so a deployment whose only vector traffic is page-render related lookups observes neither the drift nor its recovery.
+origin: spec-deferred da6f7511b5fb
+source_spec: `spec-dw-332-embedding-drift-warning-rearm.md`
+location: src/lib/embeddings.ts (relatedByVector)
+severity: low
+reason: src/lib/embeddings.ts relatedByVector applies `modelMatches` and silently returns [] on a drifted corpus. That muteness predates this change (DW-310 scoped the breadcrumb to searchByVector), but with drift now modelled as CLEARABLE state the asymmetry is newly consequential: a rebuild proven out only through relatedByVector never re-arms the key. Worth either one sentence of recorded rationale or a decision to widen the door.
 status: open
