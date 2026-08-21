@@ -23,11 +23,15 @@ import {
   WRITE_CONFLICT_STATUS,
   WRITE_PRECONDITION_REQUIRED_COPY,
   WRITE_PRECONDITION_REQUIRED_STATUS,
+  checkVersionPrecondition,
   checkWritePrecondition,
   contentVersion,
   formatIfMatch,
+  isWriteConflictError,
   objectVersion,
   parseIfMatch,
+  scopedContentVersion,
+  WriteConflictError,
 } from "../write-precondition";
 
 // ---------------------------------------------------------------------------
@@ -100,6 +104,85 @@ describe("contentVersion", () => {
     // platform API.
     expect(contentVersion("x")).not.toContain("[object");
     expect(contentVersion("x")).toHaveLength("w1:1-".length + 16);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scopedContentVersion (DW-200)
+// ---------------------------------------------------------------------------
+
+describe("scopedContentVersion", () => {
+  const SEEDED = "# Schema\n\n## Page conventions\n\nWrite it down.\n";
+
+  it("answers the same string for the same scope and bytes, every time", () => {
+    expect(scopedContentVersion("wiki-a", SEEDED)).toBe(
+      scopedContentVersion("wiki-a", SEEDED),
+    );
+  });
+
+  it("separates two Wikis holding BYTE-IDENTICAL content", () => {
+    // The whole reason this function exists: two Wikis seeded from one
+    // template hold the same `schema.md`, so a token read from one would
+    // otherwise be a valid precondition for the other's file.
+    expect(scopedContentVersion("wiki-a", SEEDED)).not.toBe(
+      scopedContentVersion("wiki-b", SEEDED),
+    );
+  });
+
+  it("still separates two different bodies under ONE scope", () => {
+    expect(scopedContentVersion("wiki-a", SEEDED)).not.toBe(
+      scopedContentVersion("wiki-a", `${SEEDED}one more line\n`),
+    );
+  });
+
+  it("makes the scope/content boundary unambiguous", () => {
+    // Without the length prefix both of these hash the string "abc", so a
+    // token read under one scope would match content stored under another —
+    // the cross-Wiki match this closes, reintroduced by concatenation.
+    expect(scopedContentVersion("ab", "c")).not.toBe(
+      scopedContentVersion("a", "bc"),
+    );
+    // And the degenerate ends of the same boundary.
+    expect(scopedContentVersion("", "abc")).not.toBe(
+      scopedContentVersion("a", "bc"),
+    );
+    expect(scopedContentVersion("abc", "")).not.toBe(
+      scopedContentVersion("ab", "c"),
+    );
+  });
+
+  it("carries its OWN scheme prefix, so it can never be read as an unscoped one", () => {
+    const scoped = scopedContentVersion("wiki-a", SEEDED);
+    expect(scoped.startsWith("w1s:")).toBe(true);
+    expect(contentVersion(SEEDED).startsWith("w1:")).toBe(true);
+    // Not merely a different prefix on the same digest: the two are different
+    // strings end to end, for every input.
+    expect(scoped).not.toBe(contentVersion(SEEDED));
+    // …and no scoped token is ever an unscoped one, whatever the scope.
+    for (const scope of ["", "a", "wiki-a", "0".repeat(64)]) {
+      expect(scopedContentVersion(scope, SEEDED)).not.toBe(contentVersion(SEEDED));
+    }
+  });
+
+  it("names no Wiki in the token it produces", () => {
+    // The version is relayed by the browser, so the id must not be legible in
+    // it. This is not a secrecy claim about the hash — it is the check that
+    // nobody concatenated the id in plaintext.
+    const id = "11111111-2222-4333-8444-555555555555";
+    expect(scopedContentVersion(id, SEEDED)).not.toContain(id);
+  });
+
+  it("is stable across astral characters and a lone surrogate", () => {
+    // The same property `contentVersion` guarantees, through the wrapper: the
+    // scope prefix must not disturb how the content is hashed.
+    for (const body of ["🌵", "\uD800", `${SEEDED}🌵`]) {
+      expect(scopedContentVersion("wiki-a", body)).toBe(
+        scopedContentVersion("wiki-a", body),
+      );
+    }
+    expect(scopedContentVersion("wiki-a", "🌵")).not.toBe(
+      scopedContentVersion("wiki-a", "\uD800"),
+    );
   });
 });
 
@@ -371,6 +454,107 @@ describe("checkWritePrecondition", () => {
 });
 
 // ---------------------------------------------------------------------------
+// checkVersionPrecondition + WriteConflictError (DW-193)
+// ---------------------------------------------------------------------------
+
+describe("checkVersionPrecondition", () => {
+  const STORED = contentVersion("# Alpha\n");
+
+  it("passes when the supplied version is the current one", () => {
+    expect(checkVersionPrecondition(STORED, STORED)).toEqual({ ok: true });
+  });
+
+  it("refuses a version that is not the current one with the conflict", () => {
+    expect(checkVersionPrecondition(STORED, contentVersion("# Beta\n"))).toEqual({
+      ok: false,
+      status: WRITE_CONFLICT_STATUS,
+      error: WRITE_CONFLICT_COPY,
+    });
+  });
+
+  it("refuses against a target that is GONE — a missing file matches nothing", () => {
+    expect(checkVersionPrecondition(STORED, null)).toEqual({
+      ok: false,
+      status: WRITE_CONFLICT_STATUS,
+      error: WRITE_CONFLICT_COPY,
+    });
+  });
+
+  it("refuses an absent version with the 428, not the conflict", () => {
+    // `null` is what `parseIfMatch` answers for a missing, wildcard, unquoted
+    // or listed header — the "could not be checked" fact, which is different
+    // from "was checked and did not match".
+    expect(checkVersionPrecondition(null, STORED)).toEqual({
+      ok: false,
+      status: WRITE_PRECONDITION_REQUIRED_STATUS,
+      error: WRITE_PRECONDITION_REQUIRED_COPY,
+    });
+    // Even when the target is gone too: nothing was checkable, so the caller's
+    // request is the fact to report.
+    expect(checkVersionPrecondition(null, null)).toEqual({
+      ok: false,
+      status: WRITE_PRECONDITION_REQUIRED_STATUS,
+      error: WRITE_PRECONDITION_REQUIRED_COPY,
+    });
+  });
+
+  it("is the ONE comparison — `checkWritePrecondition` is it, with the header parsed", () => {
+    // Not two expressions of "does this match": the header-level check must
+    // answer exactly what the parsed-version check answers, for every header
+    // shape, or a route that runs one half would accept what the other refuses.
+    for (const header of [
+      null,
+      undefined,
+      "*",
+      "",
+      STORED,
+      formatIfMatch(STORED),
+      formatIfMatch(contentVersion("# Beta\n")),
+      `${formatIfMatch(STORED)}, "other"`,
+      `W/${formatIfMatch(STORED)}`,
+    ]) {
+      expect([header, checkWritePrecondition(header, STORED)]).toEqual([
+        header,
+        checkVersionPrecondition(parseIfMatch(header), STORED),
+      ]);
+    }
+  });
+});
+
+describe("WriteConflictError", () => {
+  it("carries the shared sentence and nothing of its own", () => {
+    expect(new WriteConflictError().message).toBe(WRITE_CONFLICT_COPY);
+  });
+
+  it("is recognised by NAME, so a duplicated module graph cannot turn a 412 into a 500", () => {
+    const err = new WriteConflictError();
+    expect(err.name).toBe("WriteConflictError");
+    expect(isWriteConflictError(err)).toBe(true);
+    // A structurally identical error from a SECOND copy of this module — what
+    // vitest's two projects, bundler chunking and the stdio MCP entry point
+    // actually produce — is still classified.
+    const duplicate = new Error(WRITE_CONFLICT_COPY);
+    duplicate.name = "WriteConflictError";
+    expect(isWriteConflictError(duplicate)).toBe(true);
+  });
+
+  it("does not classify anything else", () => {
+    for (const other of [
+      null,
+      undefined,
+      WRITE_CONFLICT_COPY,
+      new Error(WRITE_CONFLICT_COPY),
+      { name: "WriteConflictError" },
+    ]) {
+      expect([String(other), isWriteConflictError(other)]).toEqual([
+        String(other),
+        false,
+      ]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ONE wording, in ONE module — the wiring a node suite cannot execute
 // ---------------------------------------------------------------------------
 
@@ -416,23 +600,64 @@ describe("the conflict sentence has exactly one owner", () => {
   });
 
   it("is reached only through this module, on every write route", async () => {
+    // THE THREE ROUTES THAT READ THEIR OWN MERGE BASE run the whole guard in
+    // place. The check is the shared function, never a comparison typed at the
+    // route — two expressions of "does this match" is how one route starts
+    // accepting what another refuses.
     for (const route of [
       "app/api/wiki/[slug]/route.ts",
-      "app/api/workbench/artifact/route.ts",
       "app/api/settings/route.ts",
       "app/api/workspace-profile/route.ts",
     ]) {
       const source = await read(route);
-      expect(source).toContain('from "@/lib/write-precondition"');
-      // The check is the shared function, never a comparison typed at the route
-      // — two expressions of "does this match" is how one route starts
-      // accepting what another refuses.
-      expect(source).toContain("checkWritePrecondition(");
-      expect(source).toContain("IF_MATCH_HEADER");
+      expect([route, source.includes('from "@/lib/write-precondition"')]).toEqual([
+        route,
+        true,
+      ]);
+      expect([route, source.includes("checkWritePrecondition(")]).toEqual([
+        route,
+        true,
+      ]);
+      expect([route, source.includes("IF_MATCH_HEADER")]).toEqual([route, true]);
       // …and the status codes come from the outcome, not from a literal.
       expect(source).not.toMatch(/status: 412|, 412\)/);
       expect(source).not.toMatch(/status: 428|, 428\)/);
     }
+
+    // THE ARTIFACT ROUTE RUNS HALF OF IT (DW-193), and the half it keeps is
+    // pinned precisely — accepting "it mentions `parseIfMatch`" would let it
+    // parse the header, never compare anything, and stay green.
+    const artifact = await read("app/api/workbench/artifact/route.ts");
+    expect(artifact).toContain('from "@/lib/write-precondition"');
+    expect(artifact).toContain("IF_MATCH_HEADER");
+    // It reads the header through this module…
+    expect(artifact).toContain("parseIfMatch(");
+    // …and it does NOT compare in place: the comparison it would otherwise run
+    // is the one that moved inside the lock.
+    expect(artifact).not.toContain("checkWritePrecondition(");
+    // …so the parsed version MUST reach the writer, or nothing is checked at
+    // all. This is the assertion that makes the two halves add up to one guard.
+    // Bounded to the CALL's own argument list (no `;` crosses it), so a later
+    // mention of the word elsewhere in the file cannot satisfy this.
+    expect(artifact).toMatch(/writeWikiArtifact\([^;]*\bexpectedVersion\b[^;]*\)/);
+    expect(artifact).not.toMatch(/status: 412|, 412\)/);
+    expect(artifact).not.toMatch(/status: 428|, 428\)/);
+
+    // THE HALF THAT MOVED still lives in this module, not in the writer.
+    const writer = await read("lib/wikis.ts");
+    expect(writer).toContain('from "./write-precondition"');
+    expect(writer).toContain("checkVersionPrecondition(");
+    // It compares against the SCOPED version (DW-200), not the content-only
+    // one, so a token read from one Wiki matches no other.
+    expect(writer).toContain("scopedContentVersion(");
+    // The writer never re-types either sentence and never answers a status: it
+    // throws, and the route maps it. (`412` appears in prose there, which is
+    // why this scans for the answer shape rather than for the number.)
+    for (const copy of [WRITE_CONFLICT_COPY, WRITE_PRECONDITION_REQUIRED_COPY]) {
+      expect(writer).not.toContain(copy.slice(0, 40));
+    }
+    expect(writer).not.toMatch(/status: 412|, 412\)/);
+    expect(writer).not.toMatch(/status: 428|, 428\)/);
   });
 
   it("is not gated onto the routes DW-38/51/56/63 do not name", async () => {

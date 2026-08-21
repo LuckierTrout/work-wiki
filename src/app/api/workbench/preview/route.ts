@@ -6,9 +6,12 @@ import { logger } from "@/lib/logger";
 import { stripFrontmatterBlock } from "@/lib/markdown";
 import { isOwnerHandle } from "@/lib/owner";
 import { listReadableWikiPages, readWikiPage } from "@/lib/wiki";
-import { isEditableArtifactFile } from "@/lib/wiki-scenarios";
+import {
+  isEditableArtifactFile,
+  type EditableArtifactFile,
+} from "@/lib/wiki-scenarios";
 import { getWikiRegistry } from "@/lib/wikis";
-import { contentVersion } from "@/lib/write-precondition";
+import { contentVersion, scopedContentVersion } from "@/lib/write-precondition";
 import { readWorkbenchFile, wikiLeafSlug, workbenchFileExists } from "@/lib/workbench-files";
 import {
   capPreviewBody,
@@ -124,7 +127,14 @@ async function handle(request: Request) {
     // all, so a timing difference cannot answer what the status code will not.
     if (!readableSlugs.has(slug)) return notFound();
 
-    const page = await readWikiPage(slug);
+    // FRESH (DW-195). This read SEEDS a precondition: `version` below is what
+    // the editor sends back as `If-Match`. `pageCache` is module-global and
+    // ref-counted around bulk scans (lint, search, query, dataview), so a scan
+    // running concurrently can hold a superseded entry open — and serving that
+    // entry would hand the editor a version of bytes that are no longer stored,
+    // producing a 412 against a write nobody made. A fresh read neither
+    // consults nor mutates the cache, so the scan holding it is unaffected.
+    const page = await readWikiPage(slug, { fresh: true });
     if (!page) return notFound();
 
     const { body, truncated } = capPreviewBody(bodyFor("markdown", page.content));
@@ -197,13 +207,28 @@ async function handle(request: Request) {
       ? (wikiLeafSlug(segments[1]) ?? undefined)
       : undefined;
 
-  // The Schema (Story 1.8). A single-segment display path that is in
-  // `EDITABLE_ARTIFACT_FILES` and got this far has already been resolved through
-  // `readWorkbenchFile` → `readWikiArtifact`, which needs `currentId` and the
-  // file to exist — so reaching here means this Wiki genuinely has one. The
-  // allowlist is the SAME constant the write route gates on, so what the column
-  // is offered and what the server will accept cannot drift.
-  const artifact = isEditableArtifactFile(displayPath) ? displayPath : undefined;
+  // The Schema (Story 1.8), derived as a SCOPE rather than as a flag.
+  //
+  // A single-segment display path that is in `EDITABLE_ARTIFACT_FILES` and got
+  // this far has already been resolved through `readWorkbenchFile` →
+  // `readWikiArtifact`, which needs `currentId` and the file to exist — so
+  // reaching here means this Wiki genuinely has one. The allowlist is the SAME
+  // constant the write route gates on, so what the column is offered and what
+  // the server will accept cannot drift.
+  //
+  // KEEPING THE ID AND THE FLAG IN ONE VALUE IS THE POINT (DW-200). Deriving
+  // `artifact` on its own and then reaching for `currentId` at the version
+  // leaves a branch where the two disagree, and the only thing that branch can
+  // emit is an unscoped artifact token — precisely what DW-200 exists to
+  // eliminate, and a token no writer will ever match. Narrowing once here makes
+  // "an artifact without its scope" unrepresentable rather than merely
+  // documented as impossible.
+  let artifact: EditableArtifactFile | undefined;
+  let artifactScope: string | null = null;
+  if (isEditableArtifactFile(displayPath) && currentId !== null) {
+    artifact = displayPath;
+    artifactScope = currentId;
+  }
 
   // Decided AFTER `artifact`, because whether the YAML block is stripped depends
   // on it — see `bodyFor`. An artifact is whole-file in both directions.
@@ -225,7 +250,22 @@ async function handle(request: Request) {
     // format read nothing at all, so it carries no version: there is no editor
     // for it, so no save can start from it, and inventing a version for the
     // empty string would be a claim about a file nobody looked at.
-    ...(format === "unsupported" ? {} : { version: contentVersion(content) }),
+    //
+    // SCOPED for the artifact (DW-200): two Wikis seeded from one template hold
+    // byte-identical `schema.md` files, so an unscoped token read from one
+    // would match the other's and land a draft on the wrong Wiki. The scope is
+    // the SAME narrowed value `artifact` came from, so the payload cannot carry
+    // an artifact without the binding its version needs. Everything else
+    // (`wiki/`, `raw/`) is tenant-global and keeps the unscoped version the page
+    // write compares against.
+    ...(format === "unsupported"
+      ? {}
+      : {
+          version:
+            artifactScope === null
+              ? contentVersion(content)
+              : scopedContentVersion(artifactScope, content),
+        }),
     // Editable where a Page lives, or where the editable artifact does.
     // `purpose.md` and everything under `raw/` stay read-only: the first is
     // deliberately out of Story 1.8's scope (it has no runtime reader and its

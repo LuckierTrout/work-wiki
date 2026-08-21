@@ -10,7 +10,9 @@ vi.mock("@/lib/auth", () => ({
 }));
 
 import {
+  beginPageCache,
   ensureDirectories,
+  readWikiPage,
   readWikiPageWithFrontmatter,
   serializeFrontmatter,
   writeWikiPageWithSideEffects,
@@ -1540,5 +1542,170 @@ describe("PUT /api/wiki/[slug] — the write precondition", () => {
     // …and an unknown slug is a 404 whatever the header says.
     expect((await put("pc-ghost", null)).status).toBe(404);
     expect((await put("pc-ghost", formatIfMatch(seeded))).status).toBe(404);
+  });
+
+  // -------------------------------------------------------------------------
+  // The merge base is the STORED file, not a cached one (DW-195)
+  // -------------------------------------------------------------------------
+
+  it("checks against storage while a stale page cache is open", async () => {
+    // `pageCache` is module-global and ref-counted around bulk scans, so one
+    // can be holding a superseded entry open when this request arrives.
+    // Checking `If-Match` against that entry accepts a save whose merge base is
+    // gone — clobbering the stored file and merging the new body into
+    // frontmatter that is no longer there — and refuses one that matches what
+    // is actually stored.
+    await seed("pc-cached");
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the cache.
+      const cached = (await readWikiPage("pc-cached"))!;
+      const cachedVersion = contentVersion(cached.content);
+
+      // The file moves underneath it. Written DIRECTLY, bypassing
+      // `writeWikiPage` — which invalidates — because a stale entry is exactly
+      // what this row is about. (In production the same state arises from a
+      // scan that re-read the entry after an invalidation.)
+      const stored = cached.content.replace(
+        "what the other actor stored.",
+        "what the other actor stored, LATER.",
+      );
+      expect(stored).not.toBe(cached.content);
+      await fs.writeFile(cached.path, stored, "utf-8");
+      // The cache is genuinely stale: a cached read still serves the old bytes.
+      expect((await readWikiPage("pc-cached"))!.content).toBe(cached.content);
+
+      // THE CACHED VERSION IS TRIED FIRST, while the entry is still stale —
+      // this is the assertion that fails without the fresh read, where the
+      // merge base is the cached copy, the header matches it, and the save
+      // lands 200 on top of bytes it never saw.
+      const refused = await put("pc-cached", formatIfMatch(cachedVersion), "# Clobber\n\nclobber.\n");
+      expect(refused.status).toBe(412);
+      expect(await refused.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+      // Nothing was written: the later bytes are intact, byte for byte.
+      expect(await fs.readFile(cached.path, "utf-8")).toBe(stored);
+
+      // The entry is STILL stale — a refused save writes nothing, so nothing
+      // invalidated it — and the version of the STORED bytes lands against it.
+      expect((await readWikiPage("pc-cached"))!.content).toBe(cached.content);
+      const landed = await put(
+        "pc-cached",
+        formatIfMatch(contentVersion(stored)),
+        "# Mine\n\nmine.\n",
+      );
+      expect(landed.status).toBe(200);
+      expect(
+        (await readWikiPageWithFrontmatter("pc-cached", { fresh: true }))!.content,
+      ).toContain("mine.");
+      // The merge base was the LATER file, so what it carried survived the
+      // merge rather than being reverted to the cached copy's frontmatter.
+      expect(
+        (await readWikiPageWithFrontmatter("pc-cached", { fresh: true }))!.content,
+      ).not.toContain("clobber.");
+    } finally {
+      cleanup();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // The service token is not exempt (DW-194)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The caller `src/middleware.ts` lets past the Clerk gate: no session, a
+   * bearer token resolved IN-ROUTE by `getServicePrincipal`.
+   *
+   * `canWriteFrontmatter` returns true for any `service:`-prefixed principal,
+   * so this caller reaches the precondition with no ACL detour — which is
+   * exactly why the header requirement has to be asserted for it rather than
+   * inferred from the browser cases above.
+   */
+  async function asService(): Promise<void> {
+    mockedGetPrincipal.mockResolvedValueOnce(null);
+    const { getServicePrincipal } = await import("@/lib/auth");
+    vi.mocked(getServicePrincipal).mockReturnValueOnce({
+      id: "service:robot",
+      handle: "robot",
+    });
+  }
+
+  /** The WHOLE stored file — the string the precondition is derived from. */
+  async function storedFile(slug: string): Promise<string> {
+    return (await readWikiPageWithFrontmatter(slug, { fresh: true }))!.content;
+  }
+
+  it("refuses a service-token write with NO If-Match — 428, page unchanged", async () => {
+    await seed("svc-none");
+    const before = await storedFile("svc-none");
+
+    await asService();
+    const response = await put("svc-none", null);
+
+    expect(response.status).toBe(428);
+    // The SAME body shape and the SAME sentence every other caller gets — a
+    // machine caller is not told anything a browser is not.
+    expect(await response.json()).toEqual({
+      error: WRITE_PRECONDITION_REQUIRED_COPY,
+    });
+    expect(await storedFile("svc-none")).toBe(before);
+    expect(before).toContain("what the other actor stored.");
+  });
+
+  it("refuses a service-token write with a STALE If-Match — 412, page unchanged", async () => {
+    await seed("svc-stale");
+    // The version the automated caller last saw…
+    const stale = contentVersion(await storedFile("svc-stale"));
+    // …and then another actor stores something else, through the same route.
+    expect(
+      (await put("svc-stale", formatIfMatch(stale), "# Theirs\n\ntheirs.\n")).status,
+    ).toBe(200);
+    const theirs = await storedFile("svc-stale");
+    expect(theirs).toContain("theirs.");
+
+    await asService();
+    const response = await put("svc-stale", formatIfMatch(stale), "# Robot\n\nmine.\n");
+
+    expect(response.status).toBe(412);
+    expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    expect(await storedFile("svc-stale")).toBe(theirs);
+  });
+
+  it("lands a service-token write with a MATCHING If-Match, and answers the new version", async () => {
+    await seed("svc-ok");
+    const current = contentVersion(await storedFile("svc-ok"));
+
+    await asService();
+    const response = await put("svc-ok", formatIfMatch(current), "# Robot\n\nmine.\n");
+
+    expect(response.status).toBe(200);
+    const stored = await storedFile("svc-ok");
+    expect(stored).toContain("mine.");
+    // The write and its side effects ran, and the answer carries the version of
+    // what landed so the caller can save again without a re-read.
+    const body = (await response.json()) as { version?: string };
+    expect(body.version).toBe(contentVersion(stored));
+  });
+
+  it("states the requirement where a non-browser caller reads it", async () => {
+    // `/api/wiki/<slug>` authenticates IN-ROUTE, so the middleware's exemption
+    // list is the first thing an automated caller reads — and authenticating is
+    // not sufficient to write. The route's own docblock carries the full
+    // contract; both are asserted so neither can quietly drop it.
+    const middleware = await fs.readFile(
+      path.resolve(__dirname, "../../middleware.ts"),
+      "utf8",
+    );
+    expect(middleware).toContain("If-Match");
+    expect(middleware).toContain("428");
+    expect(middleware).toContain("412");
+
+    const route = await fs.readFile(
+      path.resolve(__dirname, "../../app/api/wiki/[slug]/route.ts"),
+      "utf8",
+    );
+    const doc = route.slice(0, route.indexOf("export async function PUT"));
+    expect(doc).toContain("If-Match");
+    expect(doc).toContain("428");
+    expect(doc).toContain("412");
   });
 });

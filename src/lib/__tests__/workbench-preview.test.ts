@@ -91,10 +91,17 @@ import {
   WRITE_PRECONDITION_REQUIRED_COPY,
   contentVersion,
   formatIfMatch,
+  scopedContentVersion,
 } from "../write-precondition";
 import { readWorkbenchFile } from "../workbench-files";
 import { wikiArtifactPath, wikiRegistryPath } from "../wikis";
-import { tenantForOwner, tenantRawRelPath, tenantWikiRelPath } from "../wiki";
+import {
+  beginPageCache,
+  readWikiPage,
+  tenantForOwner,
+  tenantRawRelPath,
+  tenantWikiRelPath,
+} from "../wiki";
 import { getDataDir } from "../paths";
 import { _resetStorage } from "../storage";
 import { createElement } from "react";
@@ -1624,6 +1631,37 @@ describe("GET /api/workbench/preview", () => {
     expect("version" in blob).toBe(false);
   });
 
+  it("serves the STORED body and version while a stale page cache is open", async () => {
+    // `pageCache` is module-global and ref-counted around bulk scans (lint,
+    // search, query, dataview), so one can be holding a superseded entry open
+    // when this request arrives. Serving that entry hands the editor a version
+    // of bytes that are no longer stored, and the first save is refused 412
+    // against a write nobody made. The Preview's read is therefore `fresh`.
+    await writePage("stale", "# Stale\n\nOriginal.");
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the cache…
+      await readWikiPage("stale");
+      // …and then the file moves underneath it.
+      const stored = "---\ntitle: stale\ntype: concept\n---\n\n# Stale\n\nStored.\n";
+      await fs.writeFile(path.join(root, "wiki", "stale.md"), stored, "utf-8");
+
+      const payload = await (await get("kind=page&slug=stale")).json();
+
+      expect(payload.body).toContain("Stored.");
+      expect(payload.body).not.toContain("Original.");
+      // The version describes the bytes it just served — the whole stored file,
+      // YAML block included, which is what `PUT /api/wiki/[slug]` compares.
+      expect(payload.version).toBe(contentVersion(stored));
+
+      // The scan's cache entry is left exactly as it was: this read neither
+      // consulted nor mutated it.
+      expect((await readWikiPage("stale"))!.content).toContain("Original.");
+    } finally {
+      cleanup();
+    }
+  });
+
   it("versions the RAW bytes of a capped body, not the prefix it served", async () => {
     // The editor is refused for a truncated payload anyway, but a version over
     // the prefix would be a claim about a file the route did not serve.
@@ -1743,10 +1781,24 @@ describe("GET /api/workbench/preview", () => {
       // An artifact has no slug — it is not a Page and never acquires one.
       expect(schema.slug).toBeUndefined();
 
+      // THE VERSION IS SCOPED BY THE WIKI (DW-200). Two Wikis seeded from one
+      // template hold byte-identical `schema.md` files, so a content-only token
+      // read from one is a valid precondition for the other's — which is how a
+      // draft lands on the Wiki it was never opened against. This is the exact
+      // string `PUT /api/workbench/artifact` compares inside its lock.
+      const schemaBytes = "# Schema\n\n## Page conventions\n\nKeep it short.\n";
+      expect(schema.version).toBe(scopedContentVersion(WIKI_ID, schemaBytes));
+      expect(schema.version).not.toBe(contentVersion(schemaBytes));
+
       const purpose = await (await get("kind=file&path=purpose.md")).json();
       expect(purpose).toMatchObject({ format: "markdown", editable: false });
       expect(purpose.artifact).toBeUndefined();
       expect(purpose.slug).toBeUndefined();
+      // Everything that is NOT the editable artifact keeps the unscoped
+      // version, which is what `PUT /api/wiki/[slug]` compares. `purpose.md`
+      // has no write path at all, so nothing compares its version and it is
+      // versioned like the tenant-global files it sits beside.
+      expect(purpose.version).toBe(contentVersion("# Purpose\n"));
 
       // An artifact is WHOLE-FILE: the write route stores `content` verbatim and
       // owns no frontmatter for it, so a leading `---` block must survive the

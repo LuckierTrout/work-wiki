@@ -107,6 +107,38 @@ export async function DELETE(
  *   4. Re-serializes `frontmatter + body` via {@link serializeFrontmatter}
  *      and writes through {@link writeWikiPageWithSideEffects} so the
  *      index, cross-references, and activity log all stay consistent.
+ *
+ * THE WIRE CONTRACT, FOR EVERY CALLER INCLUDING THE SERVICE TOKEN (DW-194).
+ * `If-Match` is REQUIRED. It carries the version of the WHOLE stored file —
+ * YAML frontmatter block included, not just the body this request sends —
+ * quoted as a strong validator, exactly as `formatIfMatch` produces it:
+ *
+ *     If-Match: "w1:1a-0f3c…"
+ *
+ * The version is what `GET /api/workbench/preview` serves and what a previous
+ * successful `PUT` answered with. Three outcomes:
+ *
+ *   - absent, `*`, unquoted, weak, or a list → 428, `{ error }` carrying
+ *     `WRITE_PRECONDITION_REQUIRED_COPY`; nothing is written.
+ *   - present but not the stored file's version → 412, `{ error }` carrying
+ *     `WRITE_CONFLICT_COPY`; nothing is written.
+ *   - matching → the write and all its side effects run, and the response
+ *     carries the NEW version, so a caller can save again without a re-read.
+ *
+ * THIS HANDLER HAS NO UNCONDITIONAL PATH — and the claim stops there. A machine
+ * caller holding the service bearer token gets the same three answers from THIS
+ * verb on THIS route that a browser does, because a guard a caller opts out of
+ * by omitting a header is not a guard; so an automated writer that wants to
+ * `PUT` a body must read the page (or keep the version its last write answered)
+ * before it saves. It is NOT a claim about what that caller can do elsewhere:
+ * the same token still rewrites this page's frontmatter through {@link PATCH}
+ * below with no header at all, and its body through the MCP tools, which call
+ * `writeWikiPageWithSideEffects` and `patchMetadata` directly. DW-194 gated one
+ * verb on one path; the rest is unchanged and is listed in `src/middleware.ts`.
+ *
+ * `/api/wiki/<slug>` authenticates IN-ROUTE rather than at the middleware gate,
+ * which is why that file states the requirement beside the exemption too: the
+ * list of in-route-auth paths is where a non-browser caller looks first.
  */
 export async function PUT(
   req: Request,
@@ -153,7 +185,13 @@ export async function PUT(
     const principal = (await getPrincipal()) ?? getServicePrincipal(req);
     const authorStr = principal?.handle;
 
-    const existing = await readWikiPageWithFrontmatter(slug);
+    // FRESH (DW-195). These bytes are the merge base AND the precondition's
+    // left-hand side. `pageCache` is module-global and ref-counted around bulk
+    // scans, so a concurrent scan can hold a superseded entry open — checking
+    // `If-Match` against that entry would refuse a save that matches the stored
+    // file, or accept one against bytes that are already gone. A fresh read
+    // neither consults nor mutates the cache.
+    const existing = await readWikiPageWithFrontmatter(slug, { fresh: true });
     if (!existing) {
       return NextResponse.json(
         { error: `page not found: ${slug}` },

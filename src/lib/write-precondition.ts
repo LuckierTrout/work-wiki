@@ -51,10 +51,17 @@
  * caller inherits a serializer that does not answer "no change" for two
  * genuinely different values — which is what the settings one silently got.
  *
- * WHAT THIS DOES NOT CLOSE. The check sits immediately before the write, not
+ * WHAT THIS DOES NOT CLOSE, AND WHERE THAT CHANGED (DW-193). For the PAGE and
+ * SETTINGS writes the check still sits immediately before the write rather than
  * inside a lock, so two requests in flight at the same instant can still
- * interleave. That residual is pre-existing and distinct; this closes the window
- * an OPEN EDITOR creates, which is the one measured in minutes.
+ * interleave — neither has a lock to reuse (the page write's would be per-slug
+ * and does not exist; the settings write is guarded by its stored token
+ * instead). The ARTIFACT write no longer has that gap: `writeWikiArtifact`
+ * already takes `wikis:<tenant>`, so its precondition is re-checked INSIDE that
+ * one acquisition, against the same bytes it reads for the revision snapshot.
+ * See {@link checkVersionPrecondition} and {@link WriteConflictError}. What this
+ * module has always closed, for every surface, is the window an OPEN EDITOR
+ * creates — the one measured in minutes.
  */
 
 // ---------------------------------------------------------------------------
@@ -129,6 +136,22 @@ function hex32(value: number): string {
 }
 
 /**
+ * The two passes, the length and the scheme prefix — the whole shape of a
+ * version, spelled once.
+ *
+ * `scheme` is what keeps two versions computed over the same string but under
+ * different RULES from ever comparing equal: {@link contentVersion} hashes the
+ * bytes alone, {@link scopedContentVersion} hashes a scope AND the bytes, and a
+ * token from one must never be a match on the other's surface.
+ */
+function versionOf(scheme: string, input: string): string {
+  const length = input.length.toString(36);
+  return `${scheme}:${length}-${hex32(
+    fnv1a32(input, OFFSET_BASIS_A, FNV_PRIME),
+  )}${hex32(fnv1a32(input, OFFSET_BASIS_B, MIX_PRIME))}`;
+}
+
+/**
  * The version of a string of bytes.
  *
  * A CHANGE DETECTOR, NOT A DIGEST. It is not a cryptographic hash, not an
@@ -146,10 +169,43 @@ function hex32(value: number): string {
  * can never be mistaken for a match.
  */
 export function contentVersion(content: string): string {
-  const length = content.length.toString(36);
-  return `w1:${length}-${hex32(
-    fnv1a32(content, OFFSET_BASIS_A, FNV_PRIME),
-  )}${hex32(fnv1a32(content, OFFSET_BASIS_B, MIX_PRIME))}`;
+  return versionOf("w1", content);
+}
+
+/**
+ * The version of a string of bytes AS STORED AT ONE PLACE (DW-200).
+ *
+ * WHY CONTENT ALONE IS NOT ENOUGH. Two Wikis seeded from one template hold
+ * byte-identical `schema.md` files. A draft opened against Wiki A, held while
+ * the owner switches the active Wiki to B, and then saved, carries a version
+ * that {@link contentVersion} says matches B's file — because it does, byte for
+ * byte. The precondition passes and A's edit lands on B. Binding the resolved
+ * Wiki id into the version makes the token describe WHICH copy it was read
+ * from, so it matches no other.
+ *
+ * THE SCOPE IS SERVER-DERIVED, NEVER CALLER-SUPPLIED. Every caller passes an id
+ * the SERVER resolved — the registry's `currentId`, or the id a route already
+ * gated on. Nothing in a payload, a header or a query names it. The token stays
+ * opaque: the id is not recoverable from the hash, and confirming a guessed one
+ * needs the id itself, which the owner already holds.
+ *
+ * LENGTH-PREFIXED so the scope/content boundary is unambiguous for ANY content:
+ * without it `("ab", "c")` and `("a", "bc")` hash the same string and so share a
+ * version, which would reopen the very cross-Wiki match this closes.
+ *
+ * Its OWN scheme (`w1s:`) rather than `w1:`, so a scoped token can never be
+ * mistaken for an unscoped one on a surface that computes the other.
+ *
+ * THE LENGTH FIELD MEANS SOMETHING DIFFERENT HERE. {@link contentVersion} sells
+ * its number as the length of the content; this one is the length of the
+ * COMPOSED input — `<scopeLen>:<scope><content>` — so it runs longer than the
+ * file by the scope and its prefix. The two tokens sit side by side in headers
+ * and log lines, so read the number against the scheme that precedes it: `w1:`
+ * is the file, `w1s:` is the file plus its binding. Neither is a length anyone
+ * should compute a file size from; both are there to make a version legible.
+ */
+export function scopedContentVersion(scope: string, content: string): string {
+  return versionOf("w1s", `${scope.length.toString(36)}:${scope}${content}`);
 }
 
 /**
@@ -336,14 +392,24 @@ export function objectVersion(value: unknown): string {
  * `{ content }` envelope all carry it the same way, and no route has to reserve
  * a key name inside a payload it also validates.
  *
- * It is NOT checked before the body is parsed. Each route checks at its own
- * merge base — after the read whose bytes it compares against, and after the
- * refusals that must not leak whether a target exists (the page route's ACL
- * cloak). One visible consequence: a stale save that ALSO carries an invalid
- * field is answered 400 for the field, not 412 for the conflict, and meets the
- * conflict only once the field is fixed. That ordering is deliberate — a
- * request that would be refused anyway should not learn a version — but it does
- * mean the refusals are not strictly prioritized by this header.
+ * It is NOT checked before the body is parsed. A route that reads its own merge
+ * base checks at that merge base — after the read whose bytes it compares
+ * against, and after the refusals that must not leak whether a target exists
+ * (the page route's ACL cloak). One visible consequence: a stale save that ALSO
+ * carries an invalid field is answered 400 for the field, not 412 for the
+ * conflict, and meets the conflict only once the field is fixed. That ordering
+ * is deliberate — a request that would be refused anyway should not learn a
+ * version — but it does mean the refusals are not strictly prioritized by this
+ * header.
+ *
+ * THE ARTIFACT ROUTE READS NO BYTES AT ALL (DW-193). `PUT
+ * /api/workbench/artifact` calls {@link parseIfMatch} with nothing in hand: a
+ * `null` is answered 428 there and then, and the parsed version travels into
+ * `writeWikiArtifact`, where the comparison runs inside the `wikis:<tenant>`
+ * lock against the bytes that writer already reads. So "checks at its own merge
+ * base" describes the page, settings and workspace-profile routes; for the
+ * artifact, the header is read at the route and the merge base is reached one
+ * layer down. See {@link checkVersionPrecondition}.
  */
 export const IF_MATCH_HEADER = "If-Match";
 
@@ -405,6 +471,39 @@ export const WRITE_CONFLICT_COPY =
 export const WRITE_PRECONDITION_REQUIRED_COPY =
   "This save could not be checked against the stored version, so it was not applied. Your text is still here — copy it, reload, and apply it to the current version.";
 
+/**
+ * A refused-because-stale save, thrown from INSIDE a writer (DW-193).
+ *
+ * A route that reads its own merge base checks the precondition itself and
+ * answers directly. A writer that already holds the lock the check has to run
+ * under cannot — it returns `void`, and its callers destructure nothing, so a
+ * nullable "refused" return would be silently dropped at every call site. The
+ * refusal therefore travels as a thrown error, exactly as the read-only refusal
+ * does (`src/lib/read-only.ts`), and the route maps it back to the 412 it would
+ * otherwise have answered itself.
+ *
+ * The message is {@link WRITE_CONFLICT_COPY} verbatim: one sentence, one owner.
+ * Nothing re-types it.
+ */
+export class WriteConflictError extends Error {
+  constructor(message: string = WRITE_CONFLICT_COPY) {
+    super(message);
+    this.name = "WriteConflictError";
+  }
+}
+
+/**
+ * Is this the conflict refusal?
+ *
+ * Matches on `err.name` rather than `instanceof`, for the same reason
+ * {@link import("./read-only").isReadOnlyError} does: a duplicated module graph
+ * (vitest's two projects, bundler chunking, the stdio MCP entry point) would
+ * otherwise turn a route's 412 back into a 500.
+ */
+export function isWriteConflictError(err: unknown): boolean {
+  return err instanceof Error && err.name === "WriteConflictError";
+}
+
 // ---------------------------------------------------------------------------
 // The check
 // ---------------------------------------------------------------------------
@@ -445,7 +544,28 @@ export function checkWritePrecondition(
   header: string | null | undefined,
   current: string | null,
 ): PreconditionOutcome {
-  const supplied = parseIfMatch(header);
+  return checkVersionPrecondition(parseIfMatch(header), current);
+}
+
+/**
+ * The COMPARISON, with the header already read out of the request.
+ *
+ * The same three outcomes {@link checkWritePrecondition} answers, over an
+ * already-parsed version. It exists because DW-193 splits the guard across two
+ * places: the "no usable header" half is a fact about the REQUEST and is
+ * answered at the route before any lock is taken, while the "does not match"
+ * half is a fact about the STORE and is only stable inside the critical section
+ * that is about to overwrite it. Both halves run THIS function, so the two
+ * cannot drift and neither re-types a sentence.
+ *
+ * `supplied` is `null` for a header that was absent or unusable —
+ * {@link parseIfMatch} already collapsed those into one — and `current` is
+ * `null` for a target that is GONE, which matches no version.
+ */
+export function checkVersionPrecondition(
+  supplied: string | null,
+  current: string | null,
+): PreconditionOutcome {
   if (supplied === null) {
     return {
       ok: false,

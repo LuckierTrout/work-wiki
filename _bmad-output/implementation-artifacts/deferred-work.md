@@ -1728,7 +1728,8 @@ source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/app/api/workbench/artifact/route.ts:149, src/lib/wikis.ts:556
 severity: medium
 reason: `src/app/api/workbench/artifact/route.ts` calls `readWikiArtifact` for the precondition, then `writeWikiArtifact`, which wraps its put in `withFileLock(wikiLockKey(owner))` (`src/lib/wikis.ts:556`). Moving the read and the check inside that same critical section would close the window at zero design cost — no new lock and no new lock ordering, which is what this spec's Never clause actually forbids. Not done here because it needs a precondition parameter threaded into `writeWikiArtifact` and an unlocked internal getter, and because the other two routes would then carry a weaker guarantee than this one.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-write-precondition-and-version-freshness
 
 ### DW-194: Requiring `If-Match` is an undocumented wire-contract change for the service-token REST path, which `middleware.ts` still describes as an unconditional write.
 origin: spec-deferred 40d3b352a7ca
@@ -1736,7 +1737,8 @@ source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/middleware.ts:30, src/app/api/wiki/[slug]/route.ts:174
 severity: medium
 reason: `src/middleware.ts:30-31` documents `/api/wiki/<slug>` mutations as authenticated by "Clerk session OR the system service token", and the PUT handler resolves `getServicePrincipal(req)` for exactly that caller. Any external agent issuing an unconditional `PUT` now receives a 428 carrying a sentence written for a human editor. No in-repo caller exists (verified: `tools/`, `scripts/`, `integrations/`, `workers/`, `skills/` carry no `api/wiki` or `api/settings` request), so nothing breaks in this tree — but no doc, and no test, covers the service-principal path against the guard. DW-38 names "Epic 8's loopback API" as a future third writer that would inherit this requirement.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-write-precondition-and-version-freshness
 
 ### DW-195: `readWikiPage`'s in-process `pageCache` can serve the Preview a stale body and now a stale VERSION, producing a 412 against a write the reader was never shown.
 origin: spec-deferred e8332ca1afef
@@ -1744,7 +1746,8 @@ source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/lib/wiki.ts:334, src/app/api/workbench/preview/route.ts:142
 severity: medium
 reason: `src/lib/wiki.ts:334-337` returns a cached page whenever `pageCache` is active, and `GET /api/workbench/preview` derives the version from exactly that value. The cache is ref-counted around bulk scans rather than held per-request, so no route in this bundle activates it today; the staleness is pre-existing for `body` and the version merely inherits it.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-write-precondition-and-version-freshness
 
 ### DW-196: The kernel page writer stays unguarded, so the ~18 non-HTTP callers of `writeWikiPageWithSideEffects` — including the ingest and agent writers DW-38 names as the reason the guard is needed — still clo
 origin: spec-deferred cd37d8d20782
@@ -1789,7 +1792,8 @@ source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/app/api/workbench/artifact/route.ts:129
 severity: medium
 reason: `PUT /api/workbench/artifact` resolves `currentId` from the registry at request time and checks the precondition against THAT Wiki's artifact. Two Wikis seeded from the same template hold byte-identical `schema.md`, so the version matches and the draft is written to a Wiki it was never read from. Pre-existing and strictly improved by this change — the write was unconditional before, so the same draft landed on the other Wiki whatever its bytes were — but the guard does not close it, because a content version cannot distinguish two files that genuinely hold the same content. Closing it means binding the seeded Wiki id to the request, which no DW entry in this bundle names.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-write-precondition-and-version-freshness
 
 ### DW-201: Follow-up review still recommended for dw-write-preconditions-and-conflict-surface after the damping cap was spent
 origin: review-budget-followup
@@ -3285,4 +3289,28 @@ source_spec: `spec-dw-48-data-version-refresh-retry.md`
 location: src/components/workbench/DataVersionWatcher.tsx (run), src/lib/workbench-data-version.ts (DATA_VERSION_REFRESH_ATTEMPTS)
 severity: medium
 reason: `run()` has three triggers: the `DATA_VERSION_POLL_MS` interval, `visibilitychange` -> visible, and the `requestDataVersionCheck()` save nudge (`PreviewColumn.tsx`). Every qualifying poll from any of them spends an attempt, so three alt-tabs or three saves that all still answer the same version drive `attempts` from 0 to `DATA_VERSION_REFRESH_ATTEMPTS` in milliseconds and re-strand that version — the DW-48 symptom, now probabilistic rather than certain. The same shape covers an in-flight `router.refresh()` still rendering when the next tick fires: a merely slow re-render reads as "did not catch up" and burns an attempt. A wall-clock window (which DW-48's own wording offered as an alternative to a count) or an in-flight guard would close it; both are refresh-policy decisions beyond the bounded-count reading this story implemented, and the count reading is strictly better than the single-shot stamp it replaced in every case.
+status: open
+
+### DW-378: `readWikiPage` answers `null` for a page that is UNREADABLE as well as one that is absent, so a storage blip on the page write's merge-base read is reported as `404 page not found`.
+origin: spec-deferred e2c2f3bbd280
+source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.md`
+location: src/lib/wiki.ts:409, src/app/api/wiki/[slug]/route.ts:161
+severity: medium
+reason: `src/lib/wiki.ts:409-419` warns and returns `null` for every non-ENOENT read failure, and `PUT /api/wiki/[slug]` turns that `null` into `page not found: <slug>` before the precondition is ever consulted. This bundle made exactly the opposite call one layer over: when `writeWikiArtifact` is given an `expectedVersion`, a failed pre-write read rethrows rather than being read as "absent", because "absent" is answered as a conflict and a blip is not one. The page path keeps the older behaviour, so the same transient failure is a 404 on one surface and a 500 on the other. Pre-existing — the swallow predates the precondition and this change only added the `fresh` option beside it — and closing it means changing `readWikiPage`'s null contract, which ~40 callers depend on.
+status: open
+
+### DW-379: The other read-modify-write merge bases still read through `pageCache`, so the staleness DW-195 closed for the precondition-bearing reads is open on every path that merges into cached bytes and writes
+origin: spec-deferred 620dd58d504a
+source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.md`
+location: src/lib/patch-metadata.ts, src/lib/merge.ts, src/lib/lint-fix.ts
+severity: medium
+reason: `src/lib/patch-metadata.ts` (the `PATCH` frontmatter merge), the page revert in `src/app/api/wiki/[slug]/revisions/route.ts`, `src/lib/merge.ts` and several sites in `src/lib/lint-fix.ts` all call `readWikiPage` / `readWikiPageWithFrontmatter` without `{ fresh: true }` and then write the merged result. A bulk scan (`lint.ts`, `search.ts`, `query.ts`, `dataview.ts`) holding a superseded entry open across one of those requests makes the merge base a file that is no longer stored, and the write lands it back. Pre-existing and unrelated to the precondition — none of these routes is gated, and the spec's Never clause forbids gating them — but "do not gate it" is a different decision from "let it merge into cached bytes". Closing it is a sweep over those call sites, not a change to this guard.
+status: open
+
+### DW-380: A fresh read still falls back from a FAILED silo read to the flat copy, so a version can describe bytes at a path the write will not target.
+origin: spec-deferred 60eded0bf0fa
+source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.md`
+location: src/lib/wiki.ts:389
+severity: medium
+reason: `src/lib/wiki.ts:389-401` warns on a non-ENOENT silo failure and falls through to `wikiRelPath(...)`, which is the legacy flat file. `fresh` bypasses `pageCache` but not that fallback, so a transient silo failure on a precondition-bearing read hands the editor the version of the flat copy while `writeWikiPageWithSideEffects` resolves the tenant path — a precondition computed over one file and compared against another. Pre-existing: the fallback predates the version entirely and exists so a not-yet-migrated page still reads. Closing it means letting a precondition-bearing read refuse rather than widen, which needs the same null-contract change the entry above names.
 status: open

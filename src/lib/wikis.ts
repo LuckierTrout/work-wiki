@@ -85,6 +85,12 @@ import {
   wikisRootPath,
 } from "./wiki-paths";
 import { saveWikiArtifactRevision } from "./wiki-artifact-revisions";
+import {
+  WRITE_CONFLICT_STATUS,
+  WriteConflictError,
+  checkVersionPrecondition,
+  scopedContentVersion,
+} from "./write-precondition";
 import { putWorkspaceProfile } from "./workspace-profile";
 import type { WorkspaceProfileInput } from "./workspace-profile-schema";
 
@@ -712,14 +718,46 @@ function normalizeArtifactEditReason(
  * {@link EditableArtifactFile} — which is also what keeps the log line below
  * honest, since it names the Schema. The seeder writes both artifacts through
  * {@link putWikiArtifact}, which takes the wider type and owns no tail.
+ *
+ * THE WRITE PRECONDITION LIVES IN HERE (DW-193). A route that checked
+ * `If-Match` against its own pre-lock read left a check-to-write gap: two saves
+ * carrying the same valid version both passed the check and both landed, the
+ * second silently clobbering the first. The mismatch half of the guard
+ * therefore moved INSIDE the one `withWikiLock` acquisition this function
+ * already makes, above the revision snapshot and above the put, comparing
+ * against the bytes it already reads for that snapshot — one read, one critical
+ * section, no new lock key and no new ordering.
+ *
+ * `expectedVersion` is a {@link scopedContentVersion} over `wikiId` and the
+ * stored bytes, and it is OPTIONAL: a caller that supplies none writes exactly
+ * as this function did before. When one IS supplied, the pre-write read stops
+ * being fail-soft — a read that throws refuses the save with its own error
+ * rather than being read as "absent", because "absent" would be answered as a
+ * conflict and a storage blip is not one. A mismatch (or a genuinely missing
+ * file, which matches no version) throws {@link WriteConflictError}, so nothing
+ * is written: no snapshot, no bytes, no log line, no `dataVersion` bump.
+ *
+ * WHY AN OPTIONS OBJECT. `reason` is a free string; a second free string beside
+ * it invites the two to be swapped at a call site, silently turning a
+ * precondition into a log line. Two named fields cannot be transposed.
  */
 export async function writeWikiArtifact(
   owner: string,
   wikiId: string,
   file: EditableArtifactFile,
   content: string,
-  reason?: string,
+  options?: {
+    /** What the activity log and the snapshot's sidecar say this edit was. */
+    reason?: string;
+    /**
+     * The {@link scopedContentVersion} the caller believes is stored. Supplied
+     * → the save is refused with {@link WriteConflictError} unless the bytes
+     * read inside the lock still hash to it. Omitted → an unconditional write.
+     */
+    expectedVersion?: string;
+  },
 ): Promise<void> {
+  const { reason, expectedVersion } = options ?? {};
   // Deployment read-only (DW-188), answered BEFORE the lock is taken and before
   // a single byte is read. The Schema is EXECUTABLE at runtime, so a read-only
   // deployment must not rewrite it through any caller — both of today's callers
@@ -750,20 +788,64 @@ export async function writeWikiArtifact(
     // of the artifact read) and anything else is warned; the snapshot write
     // warns UNCONDITIONALLY, because it has no legitimate absent case.
     //
-    // BOTH ARE FAIL-SOFT, in the same spirit as `writeWikiPage`: the save
-    // proceeds either way. A save that reaches storage is never reported as
-    // failed because history could not be recorded — the alternative loses the
-    // owner's new bytes to protect their old ones.
+    // BOTH ARE FAIL-SOFT AS FAR AS HISTORY GOES, in the same spirit as
+    // `writeWikiPage`: neither a failed read nor a failed snapshot stops the
+    // save, because a save that reaches storage must never be reported as
+    // failed merely because history could not be recorded — the alternative
+    // loses the owner's new bytes to protect their old ones.
+    //
+    // WITH ONE EXCEPTION, AND IT IS THE READ (DW-193). This read also serves
+    // the PRECONDITION: when `expectedVersion` was supplied these are the bytes
+    // the guard compares, read here inside the lock so the fact they establish
+    // is still true when `putWikiArtifact` runs a few lines below. Its result
+    // is then no longer only history's input, and "the read failed" and "there
+    // is nothing there" — the same value to the snapshot, which wants no
+    // history entry either way — are OPPOSITE answers to the guard, where
+    // `null` means the artifact is gone and the save is refused. So the catch
+    // below is conditional: a storage blip must never be reported to the owner
+    // as somebody else's save. The SNAPSHOT stays fail-soft unconditionally;
+    // only the read changes, and only for a precondition-bearing caller.
     let existing: string | null = null;
     try {
       existing = await readWikiArtifact(owner, wikiId, file);
     } catch (error) {
+      if (expectedVersion !== undefined) throw error;
       logger.warn(
         "wikis",
         `reading "${file}" before overwriting it failed — the save proceeds, but the replaced bytes are not in this wiki's history`,
         error,
       );
     }
+
+    // THE COMPARISON, above the snapshot and above the put, so a refusal writes
+    // NOTHING. The version is scoped by `wikiId` (DW-200): two Wikis seeded
+    // from one template hold byte-identical artifacts, and an unscoped token
+    // read from one would match the other's file exactly.
+    //
+    // ONE comparison function, shared with the route that answers the 428 half
+    // — neither side re-types the conflict sentence.
+    if (expectedVersion !== undefined) {
+      const outcome = checkVersionPrecondition(
+        expectedVersion,
+        existing === null ? null : scopedContentVersion(wikiId, existing),
+      );
+      if (!outcome.ok) {
+        // THE OUTCOME IS ASSERTED, NOT COLLAPSED. `checkVersionPrecondition`
+        // has a 428 branch for a `null` supplied version, which cannot be
+        // reached here — `expectedVersion` is a `string` inside this guard —
+        // but throwing `WriteConflictError` for ANY non-ok outcome would pair
+        // the 412 status with the 428 sentence if that ever stopped being true.
+        // A status and a sentence that disagree is worse than a crash, so the
+        // impossible branch is a programmer error with its own name.
+        if (outcome.status !== WRITE_CONFLICT_STATUS) {
+          throw new Error(
+            `writeWikiArtifact: unexpected precondition outcome ${outcome.status} for "${file}"`,
+          );
+        }
+        throw new WriteConflictError(outcome.error);
+      }
+    }
+
     // `null` is the FIRST WRITE: there is nothing to snapshot and nothing to
     // warn about.
     if (existing !== null) {

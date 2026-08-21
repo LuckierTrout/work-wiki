@@ -13,7 +13,7 @@ import {
 } from "@/lib/wiki-artifact-revisions";
 import { isEditableArtifactFile, type EditableArtifactFile } from "@/lib/wiki-scenarios";
 import { getWikiRegistry, writeWikiArtifact } from "@/lib/wikis";
-import { contentVersion } from "@/lib/write-precondition";
+import { scopedContentVersion } from "@/lib/write-precondition";
 
 /**
  * GET/POST /api/workbench/artifact/revisions?path=schema.md — artifact history
@@ -266,16 +266,20 @@ export async function POST(request: Request) {
     // shows instead of a bare edit, and it is also recorded in the sidecar of
     // the snapshot this revert takes of the bytes it is replacing — so the
     // history says which entry undid what.
-    await writeWikiArtifact(
-      owner,
-      wikiId,
-      file,
-      content,
-      `reverted to revision ${new Date(timestamp).toISOString()}`,
-    );
+    // UNGATED, deliberately: no `expectedVersion` is passed. A revert names the
+    // revision it is restoring, and the caller that picked it from the list was
+    // never seeded with the CURRENT bytes — there is no version for it to hold.
+    // The `reason` rides the options object beside it, where the two named
+    // fields cannot be transposed (DW-193).
+    await writeWikiArtifact(owner, wikiId, file, content, {
+      reason: `reverted to revision ${new Date(timestamp).toISOString()}`,
+    });
     // The version of what landed — `content` is stored verbatim — so an editor
-    // holding this file open can save again without a reload.
-    return json({ ok: true, version: contentVersion(content) });
+    // holding this file open can save again without a reload. SCOPED by the
+    // Wiki this route already gated on (DW-200), so it is the same token the
+    // Preview serves and the artifact `PUT` compares; an unscoped one would
+    // match another Wiki's byte-identical artifact.
+    return json({ ok: true, version: scopedContentVersion(wikiId, content) });
   } catch (error) {
     return fail(error, "reverting an artifact failed");
   }

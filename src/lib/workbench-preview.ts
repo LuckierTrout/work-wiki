@@ -117,9 +117,23 @@ export interface PreviewPayload {
   /** The body was longer than {@link PREVIEW_MAX_CHARS} and was sliced. */
   truncated: boolean;
   /**
-   * The WRITE PRECONDITION for these bytes — `contentVersion` of the whole
-   * stored file, which for a page is the YAML block INCLUDED even though
+   * The WRITE PRECONDITION for these bytes — the version of the whole stored
+   * file, which for a page is the YAML block INCLUDED even though
    * {@link PreviewPayload.body} strips it (DW-38/51/56).
+   *
+   * WHICH VERSION, PER BRANCH (DW-200). For an {@link PreviewPayload.artifact}
+   * it is `scopedContentVersion(<the server-resolved Wiki id>, content)`, whose
+   * `w1s:` scheme is the ONLY thing `PUT /api/workbench/artifact` accepts —
+   * two Wikis seeded from one template hold byte-identical `schema.md` files,
+   * so a content-only token read from one would be a valid precondition for
+   * the other's. For every other kind — a page, a `wiki/` leaf, a `raw/`
+   * source — it is `contentVersion(content)` under `w1:`, which is what `PUT
+   * /api/wiki/[slug]` compares. The two schemes never match each other, so a
+   * token cannot be replayed across the two write routes.
+   *
+   * EITHER WAY IT IS OPAQUE TO THE CLIENT. The column relays the string it was
+   * given and parses nothing out of it; no surface may branch on the scheme,
+   * and no Wiki id is recoverable from the token.
    *
    * Optional because a payload can exist for bytes that were never read: an
    * `unsupported` format is answered from a existence check alone, and there is

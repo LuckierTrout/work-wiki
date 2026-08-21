@@ -53,9 +53,11 @@ import {
   scenarioTemplate,
   type WikiArtifactFile,
 } from "../wiki-scenarios";
+import { listWikiArtifactRevisions } from "../wiki-artifact-revisions";
 import {
   createWiki,
   getWikiRegistry,
+  setCurrentWiki,
   readWikiArtifact,
   wikiArtifactPath,
   writeWikiArtifact,
@@ -64,8 +66,8 @@ import {
 import {
   WRITE_CONFLICT_COPY,
   WRITE_PRECONDITION_REQUIRED_COPY,
-  contentVersion,
   formatIfMatch,
+  scopedContentVersion,
 } from "../write-precondition";
 import {
   PREVIEW_EDIT_CONFIRM_BODY,
@@ -368,9 +370,13 @@ describe("editing the Schema", () => {
         : null;
     const version =
       ifMatch === undefined
-        ? stored === null
+        ? stored === null || wiki === null
           ? null
-          : contentVersion(stored)
+          // SCOPED by the Wiki the server resolved (DW-200) — the same string
+          // the route computes and the writer compares. An unscoped one would
+          // be refused now, and would have matched another Wiki's identical
+          // artifact before.
+          : scopedContentVersion(wiki, stored)
         : ifMatch;
     return PUT(
       new Request(`http://localhost/api/workbench/artifact${query}`, {
@@ -499,7 +505,7 @@ describe("editing the Schema", () => {
     // reload (DW-56).
     await expect(response.json()).resolves.toEqual({
       ok: true,
-      version: contentVersion(EDITED),
+      version: scopedContentVersion(wiki.id, EDITED),
     });
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
 
@@ -617,37 +623,49 @@ describe("editing the Schema", () => {
     const response = await put(
       "?path=schema.md",
       { content: EDITED },
-      contentVersion(seeded),
+      scopedContentVersion(wiki.id, seeded),
     );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       ok: true,
-      version: contentVersion(EDITED),
+      version: scopedContentVersion(wiki.id, EDITED),
     });
     expect(await readSchema(wiki)).toBe(EDITED);
   });
 
-  it("refuses a STALE save with 412 and never reaches the writer", async () => {
+  it("refuses a STALE save with 412, and the writer commits nothing", async () => {
     const wiki = await seed();
     // The version the editor was seeded with…
-    const seeded = contentVersion(await readSchema(wiki));
+    const seeded = scopedContentVersion(wiki.id, await readSchema(wiki));
     // …and then the Schema is rewritten underneath it.
     const theirs = `${EDITED}\nWritten by somebody else.\n`;
     await writeWikiArtifact(OWNER, wiki.id, "schema.md", theirs);
     const versionAfterTheirs = await readDataVersion();
+    // That write snapshotted the seed, so the trail has exactly one entry to
+    // compare against.
+    const revisionsBefore = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md");
 
     const response = await put("?path=schema.md", { content: EDITED }, seeded);
 
     expect(response.status).toBe(412);
     expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
-    // `writeWikiArtifact` owns the tail, so "never reached" is observable: the
-    // other actor's bytes are intact, the log gained no second entry, and the
-    // refresh counter did not move.
+    // THE WRITER IS ENTERED — since DW-193 it takes the `wikis:<tenant>` lock
+    // and reads the current bytes, which is exactly how it learns the version
+    // no longer matches — and then throws out of the lock before committing
+    // anything. So what is observable is not "never called" but "nothing
+    // landed", which is the property that actually matters: the other actor's
+    // bytes are intact, no revision snapshot was taken, the log gained no
+    // second entry, and the refresh counter did not move.
     expect(await readSchema(wiki)).toBe(theirs);
     expect(await readDataVersion()).toBe(versionAfterTheirs);
     expect(((await readLog()) ?? "").match(/^## \[\d{4}-\d{2}-\d{2}\] edit \| /gm) ?? []).toHaveLength(
       1,
+    );
+    // The comparison runs ABOVE the snapshot, so the refusal did not record a
+    // revision of bytes it was not going to replace.
+    expect(await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md")).toEqual(
+      revisionsBefore,
     );
   });
 
@@ -670,7 +688,7 @@ describe("editing the Schema", () => {
   it("refuses a save into a Schema that VANISHED — a missing file matches nothing", async () => {
     const wiki = await seed();
     const before = await readDataVersion();
-    const seeded = contentVersion(await readSchema(wiki));
+    const seeded = scopedContentVersion(wiki.id, await readSchema(wiki));
     await getStorage().deleteFile(wikiArtifactPath(OWNER, wiki.id, "schema.md"));
 
     const response = await put("?path=schema.md", { content: EDITED }, seeded);
@@ -686,7 +704,7 @@ describe("editing the Schema", () => {
     const first = await put(
       "?path=schema.md",
       { content: EDITED },
-      contentVersion(await readSchema(wiki)),
+      scopedContentVersion(wiki.id, await readSchema(wiki)),
     );
     expect(first.status).toBe(200);
     const { version } = (await first.json()) as { version: string };
@@ -703,7 +721,7 @@ describe("editing the Schema", () => {
     const wiki = await seed();
     const seeded = await readSchema(wiki);
     const { PUT } = await import("@/app/api/workbench/artifact/route");
-    for (const header of ["*", contentVersion(seeded), ""]) {
+    for (const header of ["*", scopedContentVersion(wiki.id, seeded), ""]) {
       const response = await PUT(
         new Request("http://localhost/api/workbench/artifact?path=schema.md", {
           method: "PUT",
@@ -714,6 +732,120 @@ describe("editing the Schema", () => {
       expect(response.status).toBe(428);
     }
     expect(await readSchema(wiki)).toBe(seeded);
+  });
+
+  // -------------------------------------------------------------------------
+  // The check-to-write window (DW-193) and the Wiki the version names (DW-200)
+  // -------------------------------------------------------------------------
+
+  it("lands exactly ONE of two saves carrying the same valid version", async () => {
+    // The gap this closes: both requests read the same bytes, both pass a check
+    // run OUTSIDE the writer's lock, and both then write — the second silently
+    // clobbering the first. Checking inside the one `wikis:<tenant>` acquisition
+    // `writeWikiArtifact` already makes means the loser sees the winner's bytes
+    // and is refused. Before the change both of these answer 200.
+    const wiki = await seed();
+    const seeded = scopedContentVersion(wiki.id, await readSchema(wiki));
+    const mine = `${EDITED}\nMine.\n`;
+    const theirs = `${EDITED}\nTheirs.\n`;
+
+    const [a, b] = await Promise.all([
+      put("?path=schema.md", { content: mine }, seeded),
+      put("?path=schema.md", { content: theirs }, seeded),
+    ]);
+
+    const statuses = [a.status, b.status].sort((x, y) => x - y);
+    expect(statuses).toEqual([200, 412]);
+
+    // The stored bytes are the WINNER's, whole — not a blend, and not the
+    // loser's overwrite of them.
+    const winner = a.status === 200 ? mine : theirs;
+    expect(await readSchema(wiki)).toBe(winner);
+
+    // The loser was refused with the shared sentence, and its draft is its own
+    // to keep — nothing about it reached storage.
+    const loser = a.status === 412 ? a : b;
+    expect(await loser.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+
+    // ONE edit reached the tail, so the trail says one edit happened.
+    expect(
+      ((await readLog()) ?? "").match(/^## \[\d{4}-\d{2}-\d{2}\] edit \| /gm) ?? [],
+    ).toHaveLength(1);
+  });
+
+  it("refuses a draft seeded from ANOTHER Wiki, even when the bytes are identical", async () => {
+    // A ROUND TRIP THROUGH THE TWO SURFACES THE INTENT NAMES, not a version
+    // hand-computed in the test: the Preview PRODUCES the token and the artifact
+    // `PUT` CONSUMES it, so a change that moved both to a new scheme — or back
+    // to a content-only one — cannot stay green here.
+    //
+    // Two Wikis from one template hold byte-identical `schema.md` files. A
+    // draft opened against A, held while the active Wiki becomes B, and then
+    // saved would pass a content-only check — because the content genuinely
+    // matches — and land A's edit on B's Schema.
+    const a = await seed();
+    const b = await createWiki(OWNER, { name: "Second", scenario: "research" });
+    const bSeeded = await readSchema(b);
+    // The premise, asserted rather than assumed: if the seeder ever stops
+    // producing identical bytes this row silently stops testing anything.
+    expect(await readSchema(a)).toBe(bSeeded);
+
+    // The owner is on Wiki A and opens the Schema. The version the editor holds
+    // is whatever the Preview served — nothing here computes it.
+    await setCurrentWiki(OWNER, a.id);
+    const opened = await (await get("kind=file&path=schema.md")).json();
+    expect(opened.artifact).toBe("schema.md");
+    expect(typeof opened.version).toBe("string");
+
+    // …and then the active Wiki switches to B while that draft is still open.
+    await setCurrentWiki(OWNER, b.id);
+    expect((await getWikiRegistry(OWNER)).currentId).toBe(b.id);
+
+    const response = await put("?path=schema.md", { content: EDITED }, opened.version);
+
+    expect(response.status).toBe(412);
+    expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    // B is untouched — and so is A, which was never addressed.
+    expect(await readSchema(b)).toBe(bSeeded);
+    expect(await readSchema(a)).toBe(bSeeded);
+
+    // The SAME token still works on the Wiki it was read from, so this is a
+    // refusal about WHICH Wiki, not a token that stopped matching anything.
+    await setCurrentWiki(OWNER, a.id);
+    const back = await put("?path=schema.md", { content: EDITED }, opened.version);
+    expect(back.status).toBe(200);
+    expect(await readSchema(a)).toBe(EDITED);
+    expect(await readSchema(b)).toBe(bSeeded);
+  });
+
+  it("reports a FAILED pre-write read as a server error, never as a conflict", async () => {
+    // "The read threw" and "there is nothing there" are the same value to the
+    // revision snapshot and opposite answers to the guard. Collapsing them
+    // would tell the owner somebody else saved when in fact storage hiccuped —
+    // and would send them to reload a page that is fine.
+    const wiki = await seed();
+    const before = await readDataVersion();
+    const seeded = await readSchema(wiki);
+    const version = scopedContentVersion(wiki.id, seeded);
+
+    const storage = getStorage();
+    const artifact = wikiArtifactPath(OWNER, wiki.id, "schema.md");
+    const real = storage.readFile.bind(storage);
+    vi.spyOn(storage, "readFile").mockImplementation(async (key: string) => {
+      if (key === artifact) throw new Error("the disk went away");
+      return real(key);
+    });
+
+    const response = await put("?path=schema.md", { content: EDITED }, version);
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "the disk went away" });
+
+    vi.restoreAllMocks();
+    // Nothing was written: not the bytes, not the log, not the counter.
+    expect(await readSchema(wiki)).toBe(seeded);
+    expect(await readDataVersion()).toBe(before);
+    expect(await readLog()).toBeNull();
   });
 
   it("does not offer the Schema for editing on a read-only deployment", async () => {

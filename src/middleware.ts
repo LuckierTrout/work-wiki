@@ -31,6 +31,25 @@ const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 //   - /api/wiki/<slug>/revisions   — Clerk session OR the system service token
 //   - /api/mcp                    — remote MCP: Bearer agent/service token
 // This is not a hole.
+//
+// ONE VERB ON ONE PATH ALSO REQUIRES `If-Match` (DW-194): `PUT /api/wiki/<slug>`.
+// The header carries the version of the whole stored file (frontmatter block
+// included), quoted as a strong validator, and that is true for a service-token
+// caller exactly as it is for a browser session: no header — or `*`, unquoted,
+// weak, or a list — is 428, a version that is not the stored one is 412, and in
+// both cases nothing is written. The route's own docblock states the full
+// contract; it is noted here because this list is where a non-browser caller
+// looks to learn how to authenticate, and authenticating alone is not enough to
+// PUT a page body.
+//
+// EVERYTHING ELSE IN THIS LIST IS STILL UNCONDITIONAL, deliberately. DW-194
+// gated one verb, not this exemption list: `PATCH /api/wiki/<slug>` (metadata),
+// `POST /api/wiki`, `POST /api/wiki/<slug>/revisions`, every `/api/ingest/*`
+// path and `/api/mcp` — whose tools reach `writeWikiPageWithSideEffects` and
+// `patchMetadata` directly — all write with no precondition of any kind. So a
+// bearer token that is refused a `PUT` for a missing header can still rewrite
+// the same page's frontmatter through `PATCH`, and its body through MCP. Do not
+// read the line above as a claim about this list as a whole.
 const IN_ROUTE_AUTH_PATHS = new Set([
   "/api/agents/seed",
   // Remote (HTTP) MCP endpoint — authenticates in-route via a Bearer token

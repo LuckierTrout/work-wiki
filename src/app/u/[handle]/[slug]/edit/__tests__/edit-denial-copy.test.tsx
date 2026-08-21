@@ -222,6 +222,24 @@ describe("edit page — the write-precondition seam (DW-38, DW-51)", () => {
       contentVersion(publicPage.body),
     );
   });
+
+  it("seeds that version from a CACHE-BYPASSING read (DW-195)", async () => {
+    process.env.ADMIN_HANDLES = "alice";
+
+    await renderEditPage();
+
+    // `pageCache` is module-global and ref-counted around bulk scans, so one
+    // can be holding a superseded entry open when this screen renders. Seeding
+    // `initialVersion` from that entry hands the editor a version of bytes that
+    // are no longer stored, and the owner's first save is refused 412 against a
+    // write nobody made. `{ fresh: true }` is the whole of the fix, and this
+    // one argument is the only place it appears on this screen.
+    const { readWikiPageWithFrontmatter } = await import("@/lib/wiki");
+    expect(vi.mocked(readWikiPageWithFrontmatter)).toHaveBeenCalledWith(
+      "transformers",
+      { fresh: true },
+    );
+  });
 });
 
 describe("edit page — denial copy for a public knowledge page", () => {

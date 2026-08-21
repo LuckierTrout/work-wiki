@@ -18,7 +18,14 @@ interface EditPageProps {
 export default async function EditWikiPage({ params }: EditPageProps) {
   const { handle: encodedHandle, slug: encodedSlug } = await params;
   const slug = decodeSlug(encodedSlug);
-  const page = await readWikiPageWithFrontmatter(slug);
+  // FRESH (DW-195). This read SEEDS the precondition — `initialVersion` below
+  // is what the editor sends back as `If-Match`. `pageCache` is module-global
+  // and ref-counted around bulk scans, so a concurrent scan can hold a
+  // superseded entry open; seeding from it would hand the editor a version of
+  // bytes that are no longer stored, and the first save would be refused 412
+  // against a write nobody made. A fresh read neither consults nor mutates the
+  // cache, so the scan holding it is unaffected.
+  const page = await readWikiPageWithFrontmatter(slug, { fresh: true });
   const principal = await getPrincipal();
 
   // A private page the viewer can't read is indistinguishable from missing.

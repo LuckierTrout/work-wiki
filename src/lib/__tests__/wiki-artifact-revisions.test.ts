@@ -55,7 +55,7 @@ import {
   writeWikiArtifact,
   type WikiRecord,
 } from "../wikis";
-import { contentVersion } from "../write-precondition";
+import { contentVersion, scopedContentVersion } from "../write-precondition";
 
 const OWNER = "yuanhao";
 
@@ -296,7 +296,7 @@ describe("per-Wiki artifact revisions", () => {
       wiki.id,
       "schema.md",
       FIRST_EDIT,
-      "  reverted   to\n## [2026-08-18] delete | injected\nrevision 7  ",
+      { reason: "  reverted   to\n## [2026-08-18] delete | injected\nrevision 7  " },
     );
 
     const [only] = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md");
@@ -313,14 +313,18 @@ describe("per-Wiki artifact revisions", () => {
   it("treats a whitespace-only reason as ABSENT in both records, and caps a long one", async () => {
     const wiki = await seed();
 
-    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT, "   \n\t ");
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT, {
+      reason: "   \n\t ",
+    });
     const [blank] = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md");
     // Neither record carries it — the two cannot disagree about whether the
     // edit had a summary.
     expect(blank.reason).toBeUndefined();
     expect((await readLog()) ?? "").toContain(`Wiki: ${wiki.id}\n`);
 
-    await writeWikiArtifact(OWNER, wiki.id, "schema.md", SECOND_EDIT, "x".repeat(500));
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", SECOND_EDIT, {
+      reason: "x".repeat(500),
+    });
     const [long] = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md");
     expect(long.reason).toBe("x".repeat(200));
     expect((await readLog()) ?? "").toContain(`Wiki: ${wiki.id} · ${"x".repeat(200)}\n`);
@@ -330,7 +334,9 @@ describe("per-Wiki artifact revisions", () => {
     // two halves and record a lone surrogate — invalid text — in both the
     // sidecar's JSON and the tenant-global log line.
     const withAstral = `${"x".repeat(199)}🌵${"y".repeat(20)}`;
-    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT, withAstral);
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT, {
+      reason: withAstral,
+    });
     const [astral] = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md");
     expect(astral.reason).toBe(`${"x".repeat(199)}🌵`);
     expect([...(astral.reason ?? "")]).toHaveLength(200);
@@ -661,6 +667,39 @@ describe("per-Wiki artifact revisions", () => {
   // POST — revert
   // -------------------------------------------------------------------------
 
+  it("stays UNGATED — a revert carries no precondition and needs none", async () => {
+    // The revert names the revision it is restoring; the caller that picked it
+    // from the list was never seeded with the CURRENT bytes, so there is no
+    // version for it to hold. DW-193 gated the direct artifact `PUT` and
+    // deliberately left this route alone — `post` sends no `If-Match` at all,
+    // and the answer is a 200, not the 428 the gated route would give.
+    const wiki = await seed();
+    const seeded = await readSchema(wiki);
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT);
+    const revisions = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md");
+
+    const res = await post("path=schema.md", {
+      action: "revert",
+      timestamp: revisions[0].timestamp,
+    });
+
+    expect(res.status).toBe(200);
+    expect(await readSchema(wiki)).toBe(seeded);
+
+    // The wire fact, stated once and not re-derived from source text: this
+    // route reads no `If-Match` at all. A source SLICE around the writer call
+    // would pin formatting rather than behaviour — reflowing the call or
+    // writing a comment containing `});` would change what is scanned without
+    // changing anything — and the 200 above already pins the property that
+    // matters, so only the import-level fact is scanned here.
+    const source = await fs.readFile(
+      path.resolve(__dirname, "../../app/api/workbench/artifact/revisions/route.ts"),
+      "utf8",
+    );
+    expect(source).not.toContain("IF_MATCH_HEADER");
+    expect(source).not.toContain("parseIfMatch");
+  });
+
   it("reverts to a revision, snapshots what it replaced, logs it and bumps the signal", async () => {
     const wiki = await seed();
     const seeded = await readSchema(wiki);
@@ -678,7 +717,16 @@ describe("per-Wiki artifact revisions", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, version: contentVersion(seeded) });
+    // SCOPED by the Wiki this route already gated on (DW-200) — the same token
+    // the Preview serves and the artifact `PUT` compares, so an editor holding
+    // the file open can save straight back with it.
+    expect(await res.json()).toEqual({
+      ok: true,
+      version: scopedContentVersion(wiki.id, seeded),
+    });
+    // Not the unscoped one: a content-only token would match another Wiki's
+    // byte-identical seeded artifact.
+    expect(scopedContentVersion(wiki.id, seeded)).not.toBe(contentVersion(seeded));
     // The artifact is the seed again…
     expect(await readSchema(wiki)).toBe(seeded);
     // …and the revert is itself undoable: a THIRD revision holds the bytes it

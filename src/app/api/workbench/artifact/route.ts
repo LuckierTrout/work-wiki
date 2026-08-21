@@ -7,12 +7,16 @@ import { logger } from "@/lib/logger";
 import { isOwnerHandle } from "@/lib/owner";
 import { PAGE_CONVENTIONS_REQUIRED_COPY, hasPageConventions } from "@/lib/schema-source";
 import { isEditableArtifactFile } from "@/lib/wiki-scenarios";
-import { getWikiRegistry, readWikiArtifact, writeWikiArtifact } from "@/lib/wikis";
+import { getWikiRegistry, writeWikiArtifact } from "@/lib/wikis";
 import { PREVIEW_MAX_CHARS } from "@/lib/workbench-preview";
 import {
   IF_MATCH_HEADER,
-  checkWritePrecondition,
-  contentVersion,
+  WRITE_CONFLICT_STATUS,
+  WRITE_PRECONDITION_REQUIRED_COPY,
+  WRITE_PRECONDITION_REQUIRED_STATUS,
+  isWriteConflictError,
+  parseIfMatch,
+  scopedContentVersion,
 } from "@/lib/write-precondition";
 
 /**
@@ -67,6 +71,14 @@ export async function PUT(request: Request) {
     // refused save as a server fault.
     if (isReadOnlyError(error)) {
       return json({ error: getErrorMessage(error) }, 403);
+    }
+    // The 412 half of the write precondition (DW-193). It is refused INSIDE
+    // `writeWikiArtifact`'s lock — the only moment "these are still the stored
+    // bytes" is true when the overwrite happens — so it arrives here as a
+    // thrown error rather than as a branch in `handle`. The message is
+    // `WRITE_CONFLICT_COPY`, carried from the one module that owns it.
+    if (isWriteConflictError(error)) {
+      return json({ error: getErrorMessage(error) }, WRITE_CONFLICT_STATUS);
     }
     // A `ClientInputError` is the caller's input — `wikis.ts` throws it for an
     // unparseable owner or Wiki id — and everything else is ours. Without this
@@ -144,32 +156,56 @@ async function handle(request: Request) {
     return json({ error: "Wiki not found." }, 404);
   }
 
-  // THE WRITE PRECONDITION (DW-56). The Schema editor is exactly the surface
-  // this guard exists for: an owner can have it open for minutes while an
-  // ingest, a re-template or a second tab rewrites `schema.md` underneath them,
-  // and an unconditional save would replace the executable Schema with a draft
-  // seeded before that.
+  // THE WRITE PRECONDITION (DW-56), SPLIT IN TWO (DW-193). The Schema editor is
+  // exactly the surface this guard exists for: an owner can have it open for
+  // minutes while an ingest, a re-template or a second tab rewrites `schema.md`
+  // underneath them, and an unconditional save would replace the executable
+  // Schema with a draft seeded before that.
   //
-  // The read is the SAME unlocked raw read the Preview served these bytes from
-  // (`readWorkbenchFile` → `readWikiArtifact`), so the two sides hash one
-  // string. `null` is an artifact that is GONE, and a missing file matches no
-  // version — a save into a hole is the lost update, not an exception to it.
-  const current = await readWikiArtifact(principal.handle, currentId, target);
-  const precondition = checkWritePrecondition(
-    request.headers.get(IF_MATCH_HEADER),
-    current === null ? null : contentVersion(current),
-  );
-  if (!precondition.ok) {
+  // THE 428 IS ANSWERED HERE. A missing or unusable header is a fact about the
+  // REQUEST — it needs no bytes to decide, and refusing it above the writer
+  // keeps a malformed caller from taking the tenant lock at all.
+  //
+  // THE 412 IS NOT. A mismatched version is a fact about the STORE, and the
+  // only moment that fact is stable is inside the critical section that is
+  // about to overwrite it — so the parsed version is handed to
+  // `writeWikiArtifact`, which re-checks it under the `wikis:<tenant>` lock it
+  // already takes and throws `WriteConflictError`. The route reading its own
+  // pre-lock copy here would be the check-to-write gap this closes.
+  // THE DEPLOY WINDOW, ONCE. The version scheme changed with DW-200, so an
+  // editor that was already open when this deployed still holds an unscoped
+  // `w1:` token. It matches nothing under `w1s:`, so the first save after the
+  // deploy is answered 412 with the "changed somewhere else" sentence even
+  // though nothing changed. That is a one-time cost for the editors open across
+  // one deploy, the draft is kept, and the recovery is exactly the reload the
+  // sentence already asks for — after which the editor is seeded with a scoped
+  // token and the case cannot recur.
+  //
+  // DELIBERATELY NOT SNIFFED. Detecting a `w1:` token here to answer something
+  // softer would mean this route understanding two schemes, and the one thing
+  // that must stay true is that a token from another scheme — or another Wiki —
+  // matches nothing. A refusal that keeps the draft is the correct answer to a
+  // precondition this server cannot verify.
+  const expectedVersion = parseIfMatch(request.headers.get(IF_MATCH_HEADER));
+  if (expectedVersion === null) {
     // Refused ABOVE the writer, so `writeWikiArtifact` is never reached: no
     // bytes, no activity-log line, no `dataVersion` bump.
-    return json({ error: precondition.error }, precondition.status);
+    return json(
+      { error: WRITE_PRECONDITION_REQUIRED_COPY },
+      WRITE_PRECONDITION_REQUIRED_STATUS,
+    );
   }
 
   // One writer, and it owns the tail: the bytes, then the activity log and the
   // `dataVersion` bump, both fail-soft. A log or counter hiccup after the bytes
   // landed must never be reported to the owner as a failed save.
-  await writeWikiArtifact(principal.handle, currentId, target, content);
+  await writeWikiArtifact(principal.handle, currentId, target, content, {
+    expectedVersion,
+  });
   // The version of what landed — `content` is stored verbatim — so the editor
-  // can save again without a reload.
-  return json({ ok: true, version: contentVersion(content) });
+  // can save again without a reload. SCOPED by the Wiki the server resolved
+  // (DW-200), matching what the Preview serves and what the writer compares, so
+  // a token read from one Wiki matches no other. The browser still names no
+  // Wiki: it only relays the opaque string.
+  return json({ ok: true, version: scopedContentVersion(currentId, content) });
 }
