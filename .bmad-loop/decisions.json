@@ -8,15 +8,6 @@
     "label": "Stub configurable rects",
     "resolution": ""
   },
-  "DW-121": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Make canWritePage refuse \"metadata\" wherever it refuses \"body\" for the commons realm, so the docblock's \"collectively editable\" claim is retired and the edit page's single gate becomes the accurate one; update patch-metadata.ts and the authz tests to match.",
-    "key": "2",
-    "label": "Narrow the authz rule",
-    "resolution": ""
-  },
   "DW-125": {
     "answered_at": "2026-08-19",
     "bundle_name": "",
@@ -143,15 +134,6 @@
     "label": "Widen the content padding to match",
     "resolution": ""
   },
-  "DW-230": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Remove the ensureReconciliationThread calls from ingest.ts, merge.ts and patch-metadata.ts so a disputed transition no longer writes a thread nothing can read, leaving the DW-76 disputed-pages view and clear action as the whole loop; keep the talk module for the surfaces that still read existing threads.",
-    "key": "1",
-    "label": "Stop writing the threads",
-    "resolution": ""
-  },
   "DW-253": {
     "answered_at": "2026-08-20",
     "bundle_name": "",
@@ -159,15 +141,6 @@
     "intent": "Change the route to skip an attachment over `MAX_DOCUMENT_SIZE` rather than 400 the request, ingest the body and the remaining attachments, and name the dropped file in the acknowledgement alongside the existing skipped-attachment sentence. Add a per-attachment size pre-filter in the Worker so an oversized part is never forwarded, and add the missing end-to-end case for an email whose attachments are all unsupported but which carries a body.",
     "key": "1",
     "label": "Drop the oversized attachment",
-    "resolution": ""
-  },
-  "DW-272": {
-    "answered_at": "2026-08-20",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Move the version token inside the config object (or replace the scheme with the storage layer's `writeFileIfMatch` compare-and-set, already exposed at `src/lib/storage/r2.ts:193`) so one object carries both the bytes and the token and no read can pair them inconsistently on any backend. Migrate an existing two-file deployment on first read, delete the now-unreachable token-file branches together with the EISDIR tests that only a filesystem can produce, and add coverage for a compare-and-set that loses.",
-    "key": "1",
-    "label": "Single object via writeFileIfMatch",
     "resolution": ""
   },
   "DW-293": {
@@ -186,24 +159,6 @@
     "intent": "",
     "key": "2",
     "label": "Wait for DW-14",
-    "resolution": ""
-  },
-  "DW-61": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Delete the legacy /settings route and ProviderForm now that the Workbench Settings surface covers models, embeddings and keys, redirecting /settings into the shell's Settings mode and updating the tests that pin the old route. Resolves DW-62's shortcut question in the same move.",
-    "key": "1",
-    "label": "Retire the legacy page",
-    "resolution": ""
-  },
-  "DW-62": {
-    "answered_at": "2026-08-17",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Change g s to select the Workbench's Settings mode instead of pushing /settings, so the keyboard path matches the rail control and never unmounts the shell, and retarget the keyboard-shortcuts.test.ts pins at :102-105 and :203. Consistent with retiring the legacy page under DW-61.",
-    "key": "1",
-    "label": "Retarget to the in-shell surface",
     "resolution": ""
   }
 }
