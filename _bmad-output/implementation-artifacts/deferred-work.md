@@ -584,6 +584,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `callLLMStream` is not retry-wrapped, so its single `AbortSignal.timeout` measures total stream duration rather than time-to-first-response: a 30s deadline set to catch hangs would truncate every answer that takes longer than 30s to finish. Separately, `AbortSignal.timeout` raises a `TimeoutError` whose message matches none of `RETRYABLE_MESSAGES`, so it propagates verbatim — "The operation was aborted due to timeout" is exactly the transport vocabulary this repo's copy rules exclude. Both need Chat's streaming semantics (Epic 3) to decide what a deadline means for a stream and which sentence the owner should see.
 status: open
+decision: 2026-08-20 Keep deadline, fix the copy — Leave the whole-stream deadline as the frozen decision has it and only map TimeoutError/AbortError to an owner-facing sentence in src/app/api/query/stream/route.ts, with a test pinning it.
 
 ### DW-65: On a read-only deployment the Settings selects and checkbox are `disabled`, which takes them out of the tab order, so a keyboard user cannot even read the stored provider.
 origin: spec-deferred e6bf2b886405
@@ -625,6 +626,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `embeddingApiKeyFor` reads the same stored value for `openai` and `google`, and `settingsSaveBody` omits an untouched secret — so an owner who stored an OpenAI key and then picks Google sends that key to Google while the hint still reads "A key is stored." Keying the field per provider (or labelling which vendor the stored key belongs to) is a store-shape decision this story's acceptance does not settle; the vector gate's env leg was made provider-aware in this pass, but the STORED key deliberately stayed vendor-agnostic so a provider changed in the draft can still answer the gate before it is saved.
 status: open
+decision: 2026-08-20 Clear the key on switch — Drop the stored embedding key and its has* flag whenever the embedding provider changes, so a switch never reuses another vendor's secret; no stored shape change, and the owner re-enters the key for the new vendor.
 
 ### DW-70: The Embeddings category offers an endpoint field that is never read for `ollama` or `workers-ai`.
 origin: spec-deferred 9c4aafe22ebe
@@ -649,6 +651,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `_createEmbeddingModel` reads `loadConfigSync().embeddingBaseUrl` and applies it to the `openai` and `google` branches alike, with nothing tying the value to the provider it was typed for. This is the endpoint twin of the already-recorded vendor-agnostic `embeddingApiKey`, and it has the same resolution: keying the field per provider is a store-shape decision this story's acceptance does not settle. Nothing breaks today — the pair is usually changed together — but the silent reuse is real.
 status: open
+decision: 2026-08-20 Clear the base URL on switch — Clear the stored embeddingBaseUrl whenever the embedding provider changes, so an endpoint typed for one vendor is never sent to another; no stored shape change.
 
 ### DW-73: A `workers-ai` embedding model outside the `@cf/` namespace satisfies the vector gate and is then silently discarded at resolution time.
 origin: spec-deferred e96831d64aed
@@ -1906,6 +1909,7 @@ location: src/lib/wiki-artifact-revisions.ts, src/lib/backups.ts:56-85
 severity: medium
 reason: Every `writeWikiArtifact` writes a full copy under `tenants/<t>/wikis/<id>/revisions/<file>/` with no retention policy (deliberate — page revisions have none either), and `listWikiArtifactRevisions` stats every revision on each GET with an unbounded `Promise.all`. `src/lib/backups.ts` walks all of `tenants/<t>` against `MAX_BACKUP_FILES = 10_000` / `MAX_BACKUP_BYTES = 2 GB` and throws "Backup exceeds the safety limit" rather than degrading. Page revisions spread across slugs; these pile into one directory per artifact.
 status: open
+decision: 2026-08-20 Cap revisions and degrade backups — Add a retention cap with pruning in saveWikiArtifactRevision plus a bounded listing, and make the backup walk truncate-with-a-flag at MAX_BACKUP_FILES/MAX_BACKUP_BYTES instead of throwing.
 
 ### DW-216: Follow-up review still recommended for dw2-per-wiki-artifact-revisions after the damping cap was spent
 origin: review-budget-followup
@@ -2834,6 +2838,7 @@ location: src/lib/merge.ts:204
 severity: medium
 reason: `src/lib/merge.ts:204` calls `reconcilePage(into.body, from.body)` with no `owner`, so the guidance branch at ingest.ts:1168 is skipped entirely. The reconcile prompt is the same prompt in both cases, so the merged prose is held to a different standard depending on which door it came through. This change touched that signature (adding the cache parameter) without closing the asymmetry, which is out of DW-141's scope but worth a decision.
 status: open
+decision: 2026-08-20 Guide the merge door — Resolve the accountable owner from into.frontmatter.owner (falling back to the acting principal) and pass it plus a fresh createWorkspaceGuidanceCache() into reconcilePage from merge.ts, with a test pinning which owner's guidance a cross-owner merge uses.
 
 ### DW-324: One HTTP request can still resolve guidance N times when it ingests N documents in a loop; the handle is per-`ingest()`, not per-request.
 origin: spec-deferred 3caced74045d
@@ -2906,6 +2911,7 @@ location: src/lib/embeddings.ts (searchByVector, warnedMisconfigurations)
 severity: medium
 reason: `warnedMisconfigurations` is documented as never clearing, on the argument that "a restart (or a new isolate) already fixes" the case. That holds for the three env/binding misconfigurations it was written for, but not for drift: drift is fixed by REBUILDING THE CORPUS, which happens in the same process. `searchByVector` already holds the counter-signal that proves the drift is over — `kept.length > 0` — and could delete the key there. The intent said only "bring it under the same throttle", and the module's recorded trade-off argues the other way, so whether drift should be the one identity that re-arms is a decision neither contains.
 status: open
+decision: 2026-08-20 Re-arm drift only — Delete only the drift:<active model> key from warnedMisconfigurations on a successful read where kept.length > 0, leaving every other member of the Never clause intact, and cover rebuild-then-re-drift in the embeddings warning suite.
 
 ### DW-333: A whitespace-only `EMBEDDING_PROVIDER` is truthy, shadows a valid stored provider, and is now attributed to the environment while quoting a blank string.
 origin: spec-deferred 2dbdb2eb9569
@@ -3115,6 +3121,7 @@ location: workers/email-ingest/index.ts
 severity: medium
 reason: Many clients send text/* attachments and non-ASCII bodies as quoted-printable, which expands up to roughly 3x for byte-dense content — far beyond base64's 4/3. A large .csv or .txt attachment can therefore still be refused below the advertised per-document ceiling, for the same reason DW-104 described for base64.
 status: open
+decision: 2026-08-20 Widen for worst-case encoding — Derive MAX_RAW_EMAIL_BYTES from the worst-case transfer encoding (a quoted-printable expansion factor rather than base64's ~1.37), re-pin the parity test, and record the new derivation beside the constant.
 
 ### DW-359: Inline MIME parts (signature logos, embedded images) are counted as unsupported attachments and reported to the sender as skipped.
 origin: spec-deferred b0f13e11e949
@@ -3147,6 +3154,7 @@ location: workers/email-ingest/index.ts:59
 severity: medium
 reason: `MAX_EMAIL_ATTACHMENTS` is 10 and `MAX_DOCUMENT_SIZE` is 10 MB, so the advertised envelope is up to ten documents; ten 2 MB documents encode to roughly 27 MB and are bounced by `MAX_RAW_EMAIL_BYTES` (14.4 MB) with "larger than 13.7 MB". The per-message cap and the per-email attachment cap describe incompatible envelopes, which also makes the new over-cap acknowledgement line unreachable for anything but small files. Pre-existing and worse before this change (the cap was 10 MB); distinct from the aggregate-memory item above, which is about the forwarding copies rather than the gate.
 status: open
+decision: 2026-08-20 Derive an aggregate budget — Derive MAX_RAW_EMAIL_BYTES from a stated aggregate budget (up to MAX_EMAIL_ATTACHMENTS documents, or an explicit total) so the advertised attachment count is actually reachable, re-pin the parity test, and add a multi-document aggregate case.
 
 ### DW-363: The second copy of the site-URL trim -- the one that builds the sender-visible acknowledgement links -- is pinned by nothing.
 origin: spec-deferred 5a52b035362e
