@@ -2869,6 +2869,7 @@ location: src/lib/merge.ts:204
 severity: medium
 reason: `src/lib/merge.ts:204` calls `reconcilePage(into.body, from.body)` with no `owner`, so the guidance branch at ingest.ts:1168 is skipped entirely. The reconcile prompt is the same prompt in both cases, so the merged prose is held to a different standard depending on which door it came through. This change touched that signature (adding the cache parameter) without closing the asymmetry, which is out of DW-141's scope but worth a decision.
 status: open
+decision: 2026-08-21 Guide the merge door — Resolve the accountable owner from into.frontmatter.owner (falling back to the acting principal) and pass it plus a fresh createWorkspaceGuidanceCache() into reconcilePage from merge.ts, with a test pinning which owner's guidance a cross-owner merge uses.
 decision: 2026-08-20 Guide the merge door — Resolve the accountable owner from into.frontmatter.owner (falling back to the acting principal) and pass it plus a fresh createWorkspaceGuidanceCache() into reconcilePage from merge.ts, with a test pinning which owner's guidance a cross-owner merge uses.
 
 ### DW-324: One HTTP request can still resolve guidance N times when it ingests N documents in a loop; the handle is per-`ingest()`, not per-request.
