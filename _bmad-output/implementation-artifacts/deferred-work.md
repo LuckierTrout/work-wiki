@@ -3158,6 +3158,7 @@ location: workers/email-ingest/index.ts
 severity: medium
 reason: Many clients send text/* attachments and non-ASCII bodies as quoted-printable, which expands up to roughly 3x for byte-dense content — far beyond base64's 4/3. A large .csv or .txt attachment can therefore still be refused below the advertised per-document ceiling, for the same reason DW-104 described for base64.
 status: open
+decision: 2026-08-21 Widen for worst-case encoding — Derive MAX_RAW_EMAIL_BYTES from the worst-case transfer encoding (a quoted-printable expansion factor rather than base64's ~1.37), re-pin the parity test, and record the new derivation beside the constant.
 decision: 2026-08-20 Widen for worst-case encoding — Derive MAX_RAW_EMAIL_BYTES from the worst-case transfer encoding (a quoted-printable expansion factor rather than base64's ~1.37), re-pin the parity test, and record the new derivation beside the constant.
 
 ### DW-359: Inline MIME parts (signature logos, embedded images) are counted as unsupported attachments and reported to the sender as skipped.

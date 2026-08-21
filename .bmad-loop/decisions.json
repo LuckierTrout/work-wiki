@@ -179,6 +179,15 @@
     "label": "Re-arm drift only",
     "resolution": ""
   },
+  "DW-358": {
+    "answered_at": "2026-08-21",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Derive MAX_RAW_EMAIL_BYTES from the worst-case transfer encoding (a quoted-printable expansion factor rather than base64's ~1.37), re-pin the parity test, and record the new derivation beside the constant.",
+    "key": "1",
+    "label": "Widen for worst-case encoding",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
