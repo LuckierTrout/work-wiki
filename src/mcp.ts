@@ -68,6 +68,7 @@ import { canReadFrontmatter, canWriteFrontmatter } from "./lib/authz";
 import { resolveWriteDenial } from "./lib/write-denial";
 import type { Principal } from "./lib/auth";
 import { extractSummary, ingest, ingestUrl, ingestImage, ingestPdf, ingestXMention, reingest, readLedger, type LedgerEntry, type IngestOptions } from "./lib/ingest";
+import { createGuidanceCache } from "./lib/guidance-cache";
 import { query, saveAnswerToWiki, type QueryFormat } from "./lib/query";
 import { listQueries, type QueryHistoryEntry } from "./lib/query-history";
 import { isUrl } from "./lib/fetch";
@@ -524,12 +525,25 @@ export async function handleBatchIngest(args: {
   let succeeded = 0;
   let failed = 0;
 
+  // ONE guidance memo for this whole batch (DW-395), mirroring the HTTP batch
+  // door (`POST /api/ingest/batch`). Without it, every URL of a single agent
+  // action re-resolves the active Wiki's Workspace Purpose and re-reads the
+  // owner's Names & Terms dictionary from scratch, N times over.
+  //
+  // The scope is exactly ONE `handleBatchIngest` call — one agent action, one
+  // consistent set of guidance — so a Purpose or dictionary edit landing
+  // mid-batch is deliberately invisible to the rest of that batch, and the next
+  // call mints its own handle and sees it. Every URL here runs INLINE (this
+  // door has no queue), so the handle never has to survive serialization.
+  const guidanceCache = createGuidanceCache();
+
   for (const url of urls) {
     try {
       const result: IngestResult = await ingestUrl(url, {
         ...(tags && tags.length > 0 ? { tags } : {}),
         ...(owner ? { owner, author: owner } : {}),
         ...(triggeredBy ? { triggeredBy } : {}),
+        guidanceCache,
       });
       results.push({ url, slug: result.primarySlug });
       succeeded++;

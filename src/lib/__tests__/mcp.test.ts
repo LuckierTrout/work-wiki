@@ -45,8 +45,11 @@ import {
   createMcpServer,
 } from "../../mcp";
 import { vaultIdFor, listVaults, getVault, createVault } from "../vault";
-import { readWikiPageWithFrontmatter } from "../wiki";
-import { _resetStorage } from "../storage";
+import { readWikiPageWithFrontmatter, tenantForOwner } from "../wiki";
+import { createNamesTerm } from "../names-terms";
+import { resetSourceIndex } from "../source-index";
+import { resetAliasIndex } from "../alias-index";
+import { _resetStorage, getStorage } from "../storage";
 import { _resetConfigCache } from "../config";
 import { parseFrontmatter } from "../frontmatter";
 import { registerAgent } from "../agents";
@@ -108,6 +111,10 @@ vi.mock("../llm", async (importOriginal) => {
 
 import { fetchUrlContent } from "../fetch";
 import { fetchXPostContent } from "../x-post";
+// REAL, not mocked: the `../llm` mock above spreads `importOriginal`, so this is
+// the genuine provider probe. The DW-395 block asserts on it to pin its no-LLM
+// premise instead of assuming one deleted env var is enough.
+import { hasLLMKey } from "../llm";
 const mockedFetchUrlContent = vi.mocked(fetchUrlContent);
 const mockedFetchXPostContent = vi.mocked(fetchXPostContent);
 
@@ -1676,6 +1683,250 @@ describe("batch_ingest_urls", () => {
       }
       _resetConfigCache();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // One request-scoped guidance handle per batch (DW-395)
+  //
+  // `handleBatchIngest` mints ONE `GuidanceCache` and hands it to every
+  // `ingestUrl` of the batch, so an agent action resolves the Workspace Purpose
+  // and reads the Names & Terms dictionary once instead of once per URL.
+  //
+  // Unlike the HTTP door's tests (`ingest-routes.test.ts`), this file does NOT
+  // module-mock `@/lib/ingest` — the handle is therefore invisible as a call
+  // argument here. What IS observable is the consequence, so these assert on
+  // storage read counts through the real ingest graph.
+  //
+  // Two pieces of ambient state have to be pinned for those counts to mean
+  // anything; both are enforced in `beforeEach` rather than assumed:
+  //
+  //   1. The NO-LLM branch of `synthesizeBody`, which reads the dictionary
+  //      exactly once per document. `hasLLMKey` is real in this file (the
+  //      `../llm` mock spreads `importOriginal`), and it consults EVERY
+  //      provider env var plus the config file — so deleting
+  //      `ANTHROPIC_API_KEY` alone is not enough. With, say, `OPENAI_API_KEY`
+  //      set in a dev environment, ingest would take the LLM branch and these
+  //      tests would silently stop being a regression pin.
+  //   2. The module-global URL/content dedup caches. `cachedIndex` in
+  //      `source-index.ts` (and its sibling in `alias-index.ts`) survives
+  //      `_resetStorage()`, so a URL another test already ingested can take
+  //      `ingestUrl`'s dedup early-return — which returns BEFORE the
+  //      dictionary is ever read. Reset them here, and give every test below
+  //      its own URL prefix so no URL is shared with another test in this file.
+  // -------------------------------------------------------------------------
+  describe("request-scoped guidance cache", () => {
+    const CACHE_OWNER = "tester";
+    const DICTIONARY = `tenants/${tenantForOwner(CACHE_OWNER)}/names-terms.json`;
+
+    /** Every env var `detectEnvProvider` (config.ts) treats as a provider signal. */
+    const PROVIDER_ENV_VARS = [
+      "ANTHROPIC_API_KEY",
+      "OPENAI_API_KEY",
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+      "DEEPSEEK_API_KEY",
+      "OLLAMA_API_KEY",
+      "OLLAMA_BASE_URL",
+      "OLLAMA_MODEL",
+    ] as const;
+
+    let savedProviderEnv: Record<string, string | undefined> = {};
+    let readSpy: { mockRestore: () => void } | null = null;
+
+    beforeEach(async () => {
+      savedProviderEnv = {};
+      for (const name of PROVIDER_ENV_VARS) {
+        savedProviderEnv[name] = process.env[name];
+        delete process.env[name];
+      }
+      _resetConfigCache();
+      // Assert the premise LOUDLY. If any path still flips this — a config file
+      // selecting `ollama`/`custom`, a provider var added to `detectEnvProvider`
+      // and not to the list above — the block fails here instead of quietly
+      // running a different ingest branch with different read counts.
+      expect(hasLLMKey()).toBe(false);
+
+      // Process-global dedup caches: `_resetStorage()` in the outer `beforeEach`
+      // does not clear them, and a stale hit skips the dictionary read entirely.
+      resetSourceIndex();
+      resetAliasIndex();
+
+      // The dictionary has to EXIST for its reads to be worth counting.
+      await createNamesTerm(CACHE_OWNER, {
+        kind: "project",
+        canonical: "Project Lighthouse",
+      });
+    });
+
+    afterEach(() => {
+      // Restore ONLY this block's storage spy — `vi.restoreAllMocks()` would
+      // reach the file-wide `../fetch` / `../llm` / `../vision` mocks that every
+      // other describe here depends on.
+      readSpy?.mockRestore();
+      readSpy = null;
+      for (const name of PROVIDER_ENV_VARS) {
+        const value = savedProviderEnv[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      _resetConfigCache();
+    });
+
+    /**
+     * Record every `readFile` from here on — installed AFTER the fixture is
+     * written, so only the reads the batch itself makes are counted. The path is
+     * recorded BEFORE the await so a rejecting read (ENOENT on an owner with no
+     * dictionary yet) still counts.
+     */
+    function recordReads(): {
+      count: (relativePath: string) => number;
+      contents: (relativePath: string) => string[];
+    } {
+      // One spy per test. A second install would double-wrap `readFile` on the
+      // storage singleton and orphan the first spy, which `afterEach` (holding
+      // only the latest) could never restore — leaking it into other describes.
+      if (readSpy) {
+        throw new Error("recordReads() is already installed for this test");
+      }
+      const storage = getStorage();
+      const readFile = storage.readFile.bind(storage);
+      const seen: string[] = [];
+      const values: Record<string, string[]> = {};
+      readSpy = vi
+        .spyOn(storage, "readFile")
+        .mockImplementation(async (target: string) => {
+          seen.push(target);
+          const value = await readFile(target);
+          (values[target] ??= []).push(value);
+          return value;
+        });
+      return {
+        count: (relativePath) => seen.filter((p) => p === relativePath).length,
+        contents: (relativePath) => values[relativePath] ?? [],
+      };
+    }
+
+    it("reads the Names & Terms dictionary ONCE for a two-URL batch", async () => {
+      const reads = recordReads();
+
+      const result = await handleBatchIngest({
+        urls: [
+          "https://example.com/dw395-once-a",
+          "https://example.com/dw395-once-b",
+        ],
+        owner: CACHE_OWNER,
+      });
+
+      // Per-URL results are unchanged — the collapse is invisible to the caller.
+      expect(result.total).toBe(2);
+      expect(result.succeeded).toBe(2);
+      expect(result.failed).toBe(0);
+      expect(result.results.map((r) => r.url)).toEqual([
+        "https://example.com/dw395-once-a",
+        "https://example.com/dw395-once-b",
+      ]);
+      for (const r of result.results) {
+        expect(r.slug).toBeTruthy();
+        expect(r.error).toBeUndefined();
+      }
+
+      // One handle for the whole batch → one read. Before DW-395 this was 2:
+      // each `ingestUrl` reached `ingest()` with no handle and minted its own.
+      expect(reads.count(DICTIONARY)).toBe(1);
+    });
+
+    it("mints a fresh handle per call, so an entry saved between calls is picked up", async () => {
+      const reads = recordReads();
+
+      await handleBatchIngest({
+        urls: [
+          "https://example.com/dw395-fresh-first-a",
+          "https://example.com/dw395-fresh-first-b",
+        ],
+        owner: CACHE_OWNER,
+      });
+      const afterFirstBatch = reads.count(DICTIONARY);
+
+      // `createNamesTerm` is read-modify-write, so it makes a dictionary read of
+      // its own — the batch counts below are taken as DELTAS around it.
+      await createNamesTerm(CACHE_OWNER, {
+        kind: "term",
+        canonical: "Beacon Protocol",
+      });
+      const beforeSecondBatch = reads.count(DICTIONARY);
+
+      await handleBatchIngest({
+        urls: [
+          "https://example.com/dw395-fresh-second-a",
+          "https://example.com/dw395-fresh-second-b",
+        ],
+        owner: CACHE_OWNER,
+      });
+
+      expect(afterFirstBatch).toBe(1);
+      // The second call re-read rather than being served a handle carried over
+      // from the first — no memo spans two agent actions.
+      expect(reads.count(DICTIONARY) - beforeSecondBatch).toBe(1);
+
+      // And that re-read saw the entry written between the two calls.
+      const seenContents = reads.contents(DICTIONARY);
+      expect(seenContents[0]).not.toContain("Beacon Protocol");
+      expect(seenContents[seenContents.length - 1]).toContain("Beacon Protocol");
+    });
+
+    it("keeps the handle alive across a mid-batch per-URL failure", async () => {
+      mockedFetchUrlContent.mockImplementation(async (url: string) => {
+        if (url === "https://example.com/dw395-fail-a") {
+          throw new Error("fetch exploded");
+        }
+        return {
+          title: `Mocked page for ${url}`,
+          content: `Mocked content fetched from ${url}`,
+        };
+      });
+      const reads = recordReads();
+
+      const result = await handleBatchIngest({
+        urls: [
+          "https://example.com/dw395-fail-a",
+          "https://example.com/dw395-fail-b",
+          "https://example.com/dw395-fail-c",
+        ],
+        owner: CACHE_OWNER,
+      });
+
+      // Per-URL error isolation is unchanged: the throw is recorded on its own
+      // result and the rest of the batch still ingests.
+      expect(result.total).toBe(3);
+      expect(result.failed).toBe(1);
+      expect(result.succeeded).toBe(2);
+      expect(result.results[0].error).toContain("fetch exploded");
+      expect(result.results[0].slug).toBeUndefined();
+      expect(result.results[1].slug).toBeTruthy();
+      expect(result.results[2].slug).toBeTruthy();
+
+      // The throw did not discard the handle — the two URLs that DID ingest
+      // still shared it, so one read covered both.
+      expect(reads.count(DICTIONARY)).toBe(1);
+    });
+
+    it("shares one handle under the \"system\" owner fallback when no owner is passed", async () => {
+      const systemDictionary = `tenants/${tenantForOwner("system")}/names-terms.json`;
+      const reads = recordReads();
+
+      const result = await handleBatchIngest({
+        urls: [
+          "https://example.com/dw395-system-a",
+          "https://example.com/dw395-system-b",
+        ],
+      });
+
+      expect(result.succeeded).toBe(2);
+      // One shared handle keyed by `ingest()`'s "system" fallback — the missing
+      // dictionary still resolves (to `[]`) exactly once for the batch.
+      expect(reads.count(systemDictionary)).toBe(1);
+      // ...and it never touched the named owner's dictionary.
+      expect(reads.count(DICTIONARY)).toBe(0);
+    });
   });
 });
 

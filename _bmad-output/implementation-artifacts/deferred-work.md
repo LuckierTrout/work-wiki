@@ -3480,7 +3480,8 @@ source_spec: `spec-dw-322-324-dictionary-guidance-and-request-cache.md`
 location: src/mcp.ts:528
 severity: medium
 reason: `handleIngestBatch` (src/mcp.ts:526-532) calls `ingestUrl(url, {...})` sequentially inside a `for` loop, so every URL of one agent action resolves the Workspace Purpose and re-reads the dictionary from scratch. The remedy is now one line — add `guidanceCache: createGuidanceCache()` to that options literal — but DW-324 names `src/app/api/ingest/batch/route.ts` specifically and this spec's scope was held to the HTTP door, so the MCP door was deliberately not touched.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-mcp-batch-guidance-cache
 
 ### DW-396: `IngestOptions` now carries a live, non-serializable object guarded only by the convention that queue task payloads are hand-written literals.
 origin: spec-deferred f8d8c4c6caab
@@ -3784,4 +3785,20 @@ source_spec: `spec-dw-389-392-393-authz-gate-fallout-corrections.md`
 location: src/lib/mcp-http.ts:434
 severity: low
 reason: DW-389 named two sites and they now read one owner (`disputedClearInstruction`). `src/lib/mcp-http.ts:434` tells agents "clearing the flag is a human review", while the new clause tells humans that on a public knowledge page only an agent or a site admin can clear it. Pre-existing copy at a site outside the intent's two, so it was not moved with them, but it is the next place this fact can drift.
+status: open
+
+### DW-434: `describe("batch_ingest_urls")` pins `vaultId` but nothing else the MCP batch options literal carries — `tags` and `triggeredBy` reach the ingested pages and the ledger untested.
+origin: spec-deferred 674ea9f09987
+source_spec: `spec-dw-395-mcp-batch-guidance-cache.md`
+location: src/lib/__tests__/mcp.test.ts:1591
+severity: low
+reason: The options literal at `src/mcp.ts:542-548` conditionally spreads `tags`, `owner`/`author` and `triggeredBy` into every `ingestUrl` of the batch. Of those, only the vault filing that happens AFTER the call has a test ("files each successfully ingested page into the provided vault"). A slip in one of the three conditional spreads — an inverted guard, a dropped key — would leave the whole MCP suite green. DW-395 edited this exact literal, which is what surfaced the gap; the gap itself predates it.
+status: open
+
+### DW-435: The pre-existing `mcp.test.ts` cases force the no-LLM ingest path by deleting only `ANTHROPIC_API_KEY`, which does not actually guarantee it.
+origin: spec-deferred 6e3150110ef6
+source_spec: `spec-dw-395-mcp-batch-guidance-cache.md`
+location: src/lib/__tests__/mcp.test.ts:1611
+severity: low
+reason: `hasLLMKey()` (`src/lib/llm.ts:204`) delegates to `detectEnvProvider()` (`src/lib/config.ts:801`), which also honours `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `DEEPSEEK_API_KEY`, `OLLAMA_API_KEY`, `OLLAMA_BASE_URL`/`OLLAMA_MODEL`, plus config-file `ollama`/`custom` providers. On a machine with any of those set, the sibling batch and ingest cases in this file silently exercise the LLM branch their comments say they avoid. DW-395's own new block was hardened against this (all seven vars cleared plus an `expect(hasLLMKey()).toBe(false)` guard); the cases around it were left as found.
 status: open
