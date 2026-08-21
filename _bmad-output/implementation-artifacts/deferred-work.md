@@ -2947,6 +2947,7 @@ location: src/lib/embeddings.ts (searchByVector, warnedMisconfigurations)
 severity: medium
 reason: `warnedMisconfigurations` is documented as never clearing, on the argument that "a restart (or a new isolate) already fixes" the case. That holds for the three env/binding misconfigurations it was written for, but not for drift: drift is fixed by REBUILDING THE CORPUS, which happens in the same process. `searchByVector` already holds the counter-signal that proves the drift is over — `kept.length > 0` — and could delete the key there. The intent said only "bring it under the same throttle", and the module's recorded trade-off argues the other way, so whether drift should be the one identity that re-arms is a decision neither contains.
 status: open
+decision: 2026-08-21 Re-arm drift only — Delete only the drift:<active model> key from warnedMisconfigurations on a successful read where kept.length > 0, leaving every other member of the Never clause intact, and cover rebuild-then-re-drift in the embeddings warning suite.
 decision: 2026-08-20 Re-arm drift only — Delete only the drift:<active model> key from warnedMisconfigurations on a successful read where kept.length > 0, leaving every other member of the Never clause intact, and cover rebuild-then-re-drift in the embeddings warning suite.
 
 ### DW-333: A whitespace-only `EMBEDDING_PROVIDER` is truthy, shadows a valid stored provider, and is now attributed to the environment while quoting a blank string.

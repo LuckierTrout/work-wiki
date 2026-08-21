@@ -170,6 +170,15 @@
     "label": "Guide the merge door",
     "resolution": ""
   },
+  "DW-332": {
+    "answered_at": "2026-08-21",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Delete only the drift:<active model> key from warnedMisconfigurations on a successful read where kept.length > 0, leaving every other member of the Never clause intact, and cover rebuild-then-re-drift in the embeddings warning suite.",
+    "key": "1",
+    "label": "Re-arm drift only",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
