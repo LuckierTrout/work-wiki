@@ -588,6 +588,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `callLLMStream` is not retry-wrapped, so its single `AbortSignal.timeout` measures total stream duration rather than time-to-first-response: a 30s deadline set to catch hangs would truncate every answer that takes longer than 30s to finish. Separately, `AbortSignal.timeout` raises a `TimeoutError` whose message matches none of `RETRYABLE_MESSAGES`, so it propagates verbatim — "The operation was aborted due to timeout" is exactly the transport vocabulary this repo's copy rules exclude. Both need Chat's streaming semantics (Epic 3) to decide what a deadline means for a stream and which sentence the owner should see.
 status: open
+decision: 2026-08-21 Keep deadline, fix the copy — Leave the whole-stream deadline as the frozen decision has it and only map TimeoutError/AbortError to an owner-facing sentence in src/app/api/query/stream/route.ts, with a test pinning it.
 decision: 2026-08-20 Keep deadline, fix the copy — Leave the whole-stream deadline as the frozen decision has it and only map TimeoutError/AbortError to an owner-facing sentence in src/app/api/query/stream/route.ts, with a test pinning it.
 
 ### DW-65: On a read-only deployment the Settings selects and checkbox are `disabled`, which takes them out of the tab order, so a keyboard user cannot even read the stored provider.

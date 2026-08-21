@@ -160,5 +160,14 @@
     "key": "2",
     "label": "Wait for DW-14",
     "resolution": ""
+  },
+  "DW-64": {
+    "answered_at": "2026-08-21",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Leave the whole-stream deadline as the frozen decision has it and only map TimeoutError/AbortError to an owner-facing sentence in src/app/api/query/stream/route.ts, with a test pinning it.",
+    "key": "2",
+    "label": "Keep deadline, fix the copy",
+    "resolution": ""
   }
 }
