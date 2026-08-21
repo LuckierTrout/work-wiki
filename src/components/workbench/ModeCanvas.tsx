@@ -37,6 +37,19 @@ import type { SidecarStatus } from "@/lib/sidecar";
  * published through {@link SurfaceVisibilityProvider} for `useDialogA11y` to
  * stand down on.
  *
+ * SETTINGS HIDES THIS SECTION rather than replacing it (DW-373). The shell used
+ * to render `SettingsCanvas` INSTEAD of this component, which unmounted the very
+ * subtree the paragraph above exists to keep: opening Settings — by the rail
+ * control or by `g s` — destroyed the dialog, the typed name and the error that
+ * a mode switch preserves. So the shell renders both canvases and passes
+ * `hidden` here, and the withdrawal happens at the `<section>` — one level up
+ * from `.wb-canvas-mode`, because a wrapper cannot hide the element that
+ * contains it. The a11y contracts move up with it: a hidden section carries
+ * neither {@link CANVAS_ID} nor the negative tab index (the SHOWING canvas owns
+ * both, and an id must be unique), and `visible` is published `false` for the
+ * same reason a mode switch does it — `hidden` withdraws pixels, the a11y tree
+ * and the tab order, and nothing a dialog did to the document.
+ *
  * ONE `<section>` for both, rather than one per branch: `CANVAS_ID` is the skip
  * link's target, an id must be unique, and the negative tab index that makes it
  * a landing place belongs to whatever holds that id. The stub subtree is still
@@ -48,6 +61,14 @@ export interface ModeCanvasProps {
   mode: WorkbenchModeId;
   sidecar: SidecarStatus;
   headingId: string;
+  /**
+   * Is another canvas — Settings — on screen in this one's place (DW-373)?
+   *
+   * Required rather than defaulted: a caller that forgot it would silently put
+   * a second `#wb-canvas` on the page, which is exactly the failure the
+   * conditional id below exists to prevent.
+   */
+  hidden: boolean;
   children: ReactNode;
 }
 
@@ -58,15 +79,27 @@ export interface ModeCanvasProps {
  */
 export const CANVAS_ID = "wb-canvas";
 
-export function ModeCanvas({ mode, sidecar, headingId, children }: ModeCanvasProps) {
+export function ModeCanvas({
+  mode,
+  sidecar,
+  headingId,
+  hidden,
+  children,
+}: ModeCanvasProps) {
   const surface = workbenchMode(mode);
   const wikiActive = mode === "wiki";
 
   return (
     <section
       className="wb-canvas"
-      id={CANVAS_ID}
-      tabIndex={-1}
+      hidden={hidden}
+      // The canvas that is SHOWING owns the skip link's target and the negative
+      // tab index that makes it a landing place. While Settings is up, this
+      // section is hidden and `SettingsCanvas` carries both — so the id an
+      // author must keep unique stays unique, and the bypass has exactly one
+      // destination rather than two with the browser left to pick.
+      id={hidden ? undefined : CANVAS_ID}
+      tabIndex={hidden ? undefined : -1}
       // Whichever heading is actually on screen. The Wiki canvas already owns
       // one — `WikiWorkbench`'s `#wiki-workbench-heading`, which is also both of
       // its dialogs' fallback focus target — so the section borrows it rather
@@ -75,7 +108,7 @@ export function ModeCanvas({ mode, sidecar, headingId, children }: ModeCanvasPro
       // to the stub's instead of naming a node no reader can reach.
       aria-labelledby={wikiActive ? "wiki-workbench-heading" : headingId}
     >
-      <SurfaceVisibilityProvider visible={wikiActive}>
+      <SurfaceVisibilityProvider visible={wikiActive && !hidden}>
         <div className="wb-canvas-mode" hidden={!wikiActive}>
           {children}
         </div>

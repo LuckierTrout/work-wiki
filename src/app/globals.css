@@ -2690,6 +2690,23 @@ body:has(.wb-shell) {
 .wb-canvas-mode[hidden] {
   display: none;
 }
+/* The mode canvas itself stays MOUNTED while Settings is showing (DW-373) and
+   goes off screen behind `hidden` too — Settings used to REPLACE it, which
+   unmounted the Wiki subtree the rule above exists to keep, dialog and draft
+   included. Two `.wb-canvas` sections then sit at `grid-column: 3`, and this is
+   what keeps exactly one of them on screen.
+
+   Stated rather than left to the user-agent sheet for the same reason as above,
+   and more sharply: `.wb-canvas` sets no `display` of its own today, so the
+   first author rule that gives it one — a `display: grid` for an inner layout,
+   say — would silently put the hidden canvas back on top of Settings.
+
+   Deliberately outside every media query: the canvas is hidden at all three
+   widths whenever Settings is showing. A rule wrapped in `@media (min-width: …)`
+   would put it back on screen at every width the wrapper missed. */
+.wb-canvas[hidden] {
+  display: none;
+}
 .wb-surface-title {
   margin: 0 0 var(--wb-space-3);
   font-size: var(--wb-title-size);

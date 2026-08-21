@@ -4682,10 +4682,43 @@ describe("the Settings components stay inside the shell", () => {
     expect(canvas).toContain('import { CANVAS_ID } from "./ModeCanvas"');
     expect(canvas).toContain("id={CANVAS_ID}");
     expect(canvas).toContain("tabIndex={-1}");
-    // One canvas at a time, so the skip link keeps exactly one target.
+    // BOTH canvases mount while Settings is open (DW-373) and exactly one is
+    // SHOWING, which is what keeps the skip link pointing at one target: the
+    // mode canvas renders unconditionally and drops the id behind `hidden`,
+    // and Settings is the conditional one — its unmount on close is the whole
+    // of "unsaved edits are discarded on leave".
+    //
+    // Pinned as the two shapes rather than as the old `"{settingsOpen ? ("`
+    // substring: that assertion read as "one canvas at a time" but would have
+    // gone on passing against the left column's own ternary further up the
+    // file, which is to say it pinned nothing here at all.
     const shell = await readComponent("Workbench.tsx");
-    expect(shell).toContain("{settingsOpen ? (");
-    expect(shell).toContain("<SettingsCanvas category={settingsCategoryId}");
+    // Each element is read as its own slice — its tag through the `>` that
+    // closes the opening tag — so what follows pins WHAT is passed rather than
+    // the order the props happen to sit in or the column the formatter wrapped
+    // them at. A case named for the canvas id must not fail on a rewrap.
+    const opening = (tag: string) => {
+      const start = shell.indexOf(`<${tag}`);
+      expect(start).toBeGreaterThan(-1);
+      return shell.slice(start, shell.indexOf(">", start) + 1);
+    };
+    // Settings is the CONDITIONAL one: its unmount on close is the discard.
+    expect(shell).toContain("{settingsOpen && (");
+    expect(opening("SettingsCanvas")).toContain("category={settingsCategoryId}");
+    expect(opening("SettingsCanvas")).toContain("headingId={settingsHeadingId}");
+    // The mode canvas is the unconditional one, withdrawn by the same flag.
+    expect(opening("ModeCanvas")).toContain("headingId={headingId}");
+    expect(opening("ModeCanvas")).toContain("hidden={settingsOpen}");
+    // …and Settings comes FIRST in the JSX, which is not cosmetic: several
+    // suites read `document.querySelector(".wb-canvas")` to mean "the canvas the
+    // owner is looking at", and that is only true while the showing one leads in
+    // document order. Swapping the two blocks changes nothing else at all, so
+    // without this line nothing at all would notice.
+    expect(shell.indexOf("<SettingsCanvas")).toBeLessThan(shell.indexOf("<ModeCanvas"));
+    // Two heading ids, because both canvases render an `<h2 id=…>` and one
+    // `useId` between them would be a duplicate id the moment Settings opened
+    // over a non-Wiki mode.
+    expect(shell).toContain("const settingsHeadingId = useId();");
   });
 
   it("makes the shell own which surface is showing, and undocks the Preview", async () => {

@@ -526,8 +526,20 @@ describe("the shell owns the viewport at /", () => {
     // the Wiki subtree mounted in every mode (DW-26) puts both branches inside
     // one section, and one is what an id has to be: a second `#wb-canvas` would
     // give the skip link two targets and leave the browser to pick.
-    expect(canvas.match(/id=\{CANVAS_ID\}/g) ?? []).toHaveLength(1);
-    expect(canvas.match(/tabIndex=\{-1\}/g) ?? []).toHaveLength(1);
+    //
+    // The patterns allow the attribute VALUE to be conditional, because it now
+    // is: Settings mounts its own canvas beside this one (DW-373) and this
+    // section goes behind `hidden` carrying neither the id nor the tab index,
+    // so the two are never in the document at once. What still has to be one is
+    // the number of PLACES either is spelled — a second `id={…CANVAS_ID}` here
+    // is the duplicate this counts against.
+    expect(canvas.match(/id=\{[^{}]*CANVAS_ID\}/g) ?? []).toHaveLength(1);
+    expect(canvas.match(/tabIndex=\{[^{}]*-1\}/g) ?? []).toHaveLength(1);
+    // …and the withdrawal is conditioned on the prop the shell passes, not on
+    // anything this file decides for itself.
+    expect(canvas).toContain("hidden={hidden}");
+    expect(canvas).toContain("id={hidden ? undefined : CANVAS_ID}");
+    expect(canvas).toContain("tabIndex={hidden ? undefined : -1}");
   });
 
   it("the landing page mounts the Workbench and no metrics dashboard", async () => {

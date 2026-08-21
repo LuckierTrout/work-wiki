@@ -78,8 +78,15 @@ import { CANVAS_ID } from "./ModeCanvas";
  * `fetchImpl` drives them without a socket.
  *
  * It takes {@link CANVAS_ID} and `tabIndex={-1}` from `ModeCanvas` while it is
- * open, so the skip link keeps exactly one target and the id stays unique — the
- * shell renders one canvas or the other, never both.
+ * open, so the skip link keeps exactly one target and the id stays unique. The
+ * shell renders this surface BESIDE the mode canvas rather than instead of it
+ * (DW-373) — that section stays mounted and goes behind `hidden`, so an open
+ * Create Wiki dialog and its draft survive a trip through Settings — and the
+ * hidden section drops the id and the tab index precisely so this one can carry
+ * them. Both are in the document; only this one is showing.
+ *
+ * None of which touches the discard rule above: THIS component is still
+ * unmounted the moment Settings closes, which is what throws the draft away.
  *
  * The surface is owner-gated by the same route that stores the bytes: this
  * component never decides who may save, it relays a 403/404 as copy.
@@ -812,8 +819,9 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
  * The canvas element itself, shared by all three states.
  *
  * It carries {@link CANVAS_ID} and `tabIndex={-1}` because the Settings surface
- * REPLACES `ModeCanvas` while it is open — the skip link points at one id, and
- * two elements answering to it would be a duplicate id and an ambiguous bypass.
+ * is the one SHOWING while it is open — the skip link points at one id, and two
+ * elements answering to it would be a duplicate id and an ambiguous bypass. The
+ * mode canvas is still mounted beside it (DW-373), hidden, carrying neither.
  */
 function Frame({
   headingId,
