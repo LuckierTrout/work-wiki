@@ -31,6 +31,7 @@ vi.mock("@/lib/auth", () => ({
 }));
 import { stripFrontmatterBlock } from "../markdown";
 import {
+  ARTIFACT_REVISIONS_ROUTE,
   ARTIFACT_WRITE_ROUTE,
   PAGE_WRITE_ROUTE,
   PREVIEW_CANCEL_COPY,
@@ -42,6 +43,13 @@ import {
   PREVIEW_EDIT_CONFIRM_LABEL,
   PREVIEW_EDIT_CONFIRM_TITLE,
   PREVIEW_FAILED_COPY,
+  PREVIEW_HISTORY_EMPTY_COPY,
+  PREVIEW_HISTORY_FAILED_COPY,
+  PREVIEW_HISTORY_READ_ONLY_COPY,
+  PREVIEW_HISTORY_REVERTED_COPY,
+  PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE,
+  PREVIEW_HISTORY_REVERT_FAILED_COPY,
+  PREVIEW_HISTORY_VIEW_FAILED_COPY,
   PREVIEW_KEEP_EDITING_COPY,
   PREVIEW_MAX_CHARS,
   PREVIEW_REMOVED_COPY,
@@ -56,9 +64,16 @@ import {
   PREVIEW_UNREACHABLE_STREAK,
   PREVIEW_UPDATED_COPY,
   WIKILINK_MISSING_COPY,
+  artifactRevisionDate,
+  artifactRevisionLabel,
+  artifactRevisionMeta,
+  artifactRevisionSize,
+  artifactRevisionsUrl,
   artifactWriteUrl,
   canEditPreview,
   capPreviewBody,
+  fetchArtifactRevision,
+  fetchArtifactRevisions,
   fetchPreview,
   pageWriteUrl,
   previewBodyState,
@@ -66,12 +81,16 @@ import {
   previewDraftDirty,
   previewEditTarget,
   previewFileKind,
+  previewHistoryRevertConfirmBody,
+  previewHistoryTarget,
   previewRefreshAnnouncement,
   previewRequestUrl,
   previewStaleNotice,
   previewUnreachableAnnouncement,
   previewWriteTarget,
+  revertArtifactRevision,
   savePreviewBody,
+  type ArtifactRevisionSummary,
   type PreviewFetch,
   type PreviewPayload,
 } from "../workbench-preview";
@@ -2526,5 +2545,496 @@ describe("PreviewBody renders", () => {
     );
     expect(html).not.toContain('href=""');
     expect(html).not.toContain('src=""');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The History panel's client (DW-214)
+// ---------------------------------------------------------------------------
+//
+// `GET/POST /api/workbench/artifact/revisions` shipped with DW-59 and had no
+// caller at all. These are the rules that give it one, executed here rather
+// than typed into a React effect: which URL each request goes to, when the
+// panel exists, and — for all three helpers — the `savePreviewBody` contract of
+// resolving a union, relaying only a server sentence, and otherwise falling
+// back to the Copy table.
+
+const REVISION: ArtifactRevisionSummary = {
+  timestamp: 1_700_000_000_000,
+  date: new Date(1_700_000_000_000).toISOString(),
+  file: "schema.md",
+  sizeBytes: 412,
+};
+
+describe("artifactRevisionsUrl", () => {
+  it("names the FILE and nothing else for a listing", () => {
+    // No tenant, no Wiki id, no storage key — the route re-derives all three
+    // from the session, and this URL carries nothing a caller could widen.
+    expect(artifactRevisionsUrl("schema.md")).toBe(
+      "/api/workbench/artifact/revisions?path=schema.md",
+    );
+    expect(artifactRevisionsUrl("schema.md")).toContain(ARTIFACT_REVISIONS_ROUTE);
+  });
+
+  it("adds the timestamp for a read of one entry", () => {
+    expect(artifactRevisionsUrl("schema.md", 1_700_000_000_000)).toBe(
+      "/api/workbench/artifact/revisions?path=schema.md&timestamp=1700000000000",
+    );
+  });
+
+  it("is a CHILD of the write route, not a second address for it", () => {
+    // The route file describes itself that way, and the pair is what keeps one
+    // `EDITABLE_ARTIFACT_FILES` allowlist across both halves.
+    expect(ARTIFACT_REVISIONS_ROUTE.startsWith(`${ARTIFACT_WRITE_ROUTE}/`)).toBe(true);
+    expect(artifactRevisionsUrl("schema.md")).not.toBe(artifactWriteUrl("schema.md"));
+  });
+});
+
+describe("previewHistoryTarget (DW-214)", () => {
+  const artifact: PreviewPayload = {
+    name: "schema.md",
+    path: "schema.md",
+    artifact: "schema.md",
+    format: "markdown",
+    body: "# Schema",
+    truncated: false,
+    editable: true,
+  };
+
+  it("answers the artifact for an artifact row that is on screen", () => {
+    expect(previewHistoryTarget({ gone: false, editing: false, payload: artifact })).toBe(
+      "schema.md",
+    );
+  });
+
+  it("answers null for a PAGE — a page's history is not this route's", () => {
+    const page: PreviewPayload = {
+      name: "Alpha",
+      path: "wiki/alpha.md",
+      slug: "alpha",
+      format: "markdown",
+      body: "# Alpha",
+      truncated: false,
+      editable: true,
+    };
+    expect(previewHistoryTarget({ gone: false, editing: false, payload: page })).toBeNull();
+  });
+
+  it("answers null for a 404, even though the payload survives it", () => {
+    // The same `gone` term `previewEditTarget` takes (DW-181): a 404 KEEPS the
+    // last payload, so asked about the payload alone the panel would offer to
+    // revert a row the route says is not there.
+    expect(previewHistoryTarget({ gone: true, editing: false, payload: artifact })).toBeNull();
+  });
+
+  it("answers null while the editor is open", () => {
+    // The load-bearing refusal: a revert under an open draft replaces the bytes
+    // that draft is measured against, and the precondition it holds would then
+    // refuse the owner's own save as a conflict they caused from this panel.
+    expect(previewHistoryTarget({ gone: false, editing: true, payload: artifact })).toBeNull();
+  });
+
+  it("answers null with no payload at all", () => {
+    expect(previewHistoryTarget({ gone: false, editing: false, payload: null })).toBeNull();
+  });
+
+  it("does NOT refuse a truncated or non-editable artifact", () => {
+    // Both are facts about WRITING the current bytes (`previewWriteTarget`
+    // refuses them), and neither says anything about the stored revisions —
+    // the listing is a read the route answers even on a read-only deployment.
+    expect(
+      previewHistoryTarget({
+        gone: false,
+        editing: false,
+        payload: { ...artifact, truncated: true },
+      }),
+    ).toBe("schema.md");
+    expect(
+      previewHistoryTarget({
+        gone: false,
+        editing: false,
+        payload: { ...artifact, editable: false },
+      }),
+    ).toBe("schema.md");
+    // …while the editor's own derivation refuses both, which is the difference.
+    expect(
+      previewEditTarget({ gone: false, payload: { ...artifact, truncated: true } }),
+    ).toBeNull();
+  });
+});
+
+describe("artifactRevisionLabel", () => {
+  it("prints date and size for an unattributed revision, with no undefined", () => {
+    const label = artifactRevisionLabel(REVISION);
+    expect(label).toContain(artifactRevisionSize(REVISION));
+    expect(label).not.toContain("undefined");
+    expect(label.split(" · ")).toHaveLength(2);
+  });
+
+  it("appends the author and the reason when the sidecar carried them", () => {
+    const label = artifactRevisionLabel({
+      ...REVISION,
+      author: "yuanhao",
+      reason: "replaced by the Reading Scenario Template",
+    });
+    expect(label).toContain("yuanhao");
+    expect(label).toContain("replaced by the Reading Scenario Template");
+    expect(label.split(" · ")).toHaveLength(4);
+  });
+
+  it("drops a blank author or reason rather than printing an empty field", () => {
+    const label = artifactRevisionLabel({ ...REVISION, author: "", reason: "" });
+    expect(label.split(" · ")).toHaveLength(2);
+  });
+
+  it("is the date followed by exactly what artifactRevisionMeta answers", () => {
+    // The panel cannot use the one-string form — it wraps the date in a `<time>`
+    // — so the two halves have to compose back into it, or the dialog and the
+    // list would describe one revision two ways.
+    const attributed = { ...REVISION, author: "yuanhao", reason: "reverted" };
+    expect(artifactRevisionLabel(attributed)).toBe(
+      [artifactRevisionDate(attributed), ...artifactRevisionMeta(attributed)].join(" · "),
+    );
+    expect(artifactRevisionMeta(attributed)).toEqual([
+      artifactRevisionSize(attributed),
+      "yuanhao",
+      "reverted",
+    ]);
+  });
+
+  it("shows a size a person can read, on RevisionItem's own thresholds", () => {
+    // `184320 bytes` is a number nobody can size at a glance, and the page
+    // history beside this one has always said `180.0 KB`.
+    expect(artifactRevisionSize({ ...REVISION, sizeBytes: 0 })).toBe("0 B");
+    expect(artifactRevisionSize({ ...REVISION, sizeBytes: 1023 })).toBe("1023 B");
+    expect(artifactRevisionSize({ ...REVISION, sizeBytes: 1024 })).toBe("1.0 KB");
+    expect(artifactRevisionSize({ ...REVISION, sizeBytes: 184_320 })).toBe("180.0 KB");
+  });
+
+  it("derives the shown instant from the TIMESTAMP, not from `date`", () => {
+    // The two are the same moment, and `timestamp` is the one the controls send
+    // back — so a row that is listed and a row that is reverted cannot describe
+    // different things. A disagreeing `date` must not move what is displayed.
+    const lying = { ...REVISION, date: new Date(0).toISOString() };
+    expect(artifactRevisionDate(lying)).toBe(new Date(REVISION.timestamp).toLocaleString());
+  });
+});
+
+describe("previewHistoryRevertConfirmBody (DW-214)", () => {
+  it("NAMES the version it is about, ahead of the consequence", () => {
+    // Every row opens the same dialog. A static body is a destructive confirm
+    // that never says which of a column of identical Revert buttons opened it.
+    const revision = { ...REVISION, author: "yuanhao", reason: "an earlier edit" };
+    const body = previewHistoryRevertConfirmBody(revision);
+    expect(body).toContain(artifactRevisionLabel(revision));
+    expect(body).toContain(PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE);
+    expect(body.indexOf("Restoring the version from")).toBeLessThan(
+      body.indexOf(PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE),
+    );
+  });
+
+  it("two different entries produce two different sentences", () => {
+    expect(previewHistoryRevertConfirmBody(REVISION)).not.toBe(
+      previewHistoryRevertConfirmBody({ ...REVISION, timestamp: REVISION.timestamp + 86_400_000 }),
+    );
+  });
+
+  it("answers the consequence alone for a null entry — total, not meaningful", () => {
+    expect(previewHistoryRevertConfirmBody(null)).toBe(
+      PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE,
+    );
+  });
+});
+
+describe("fetchArtifactRevisions", () => {
+  it("GETs the listing URL and returns the rows", async () => {
+    const { fetchImpl, calls } = stubFetch(() => jsonResponse(200, { revisions: [REVISION] }));
+    await expect(
+      fetchArtifactRevisions("schema.md", { fetchImpl }),
+    ).resolves.toEqual({ status: "ok", revisions: [REVISION] });
+    expect(calls[0].url).toBe("/api/workbench/artifact/revisions?path=schema.md");
+    expect(calls[0].init?.method).toBeUndefined();
+  });
+
+  it("treats an EMPTY history as ok, not as a failure", async () => {
+    // An artifact nobody has overwritten has no history. Reported as an error,
+    // the panel would show a failure over an entirely ordinary state.
+    const { fetchImpl } = stubFetch(() => jsonResponse(200, { revisions: [] }));
+    await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
+      status: "ok",
+      revisions: [],
+    });
+  });
+
+  it("relays the server's own sentence on a refusal", async () => {
+    for (const [status, error] of [
+      [403, "Only the workspace owner can edit the Schema."],
+      [404, "Wiki not found."],
+      [400, "That file can’t be edited here."],
+    ] as const) {
+      const { fetchImpl } = stubFetch(() => jsonResponse(status, { error }));
+      await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
+        status: "error",
+        message: error,
+      });
+    }
+  });
+
+  it("falls back to the Copy sentence for an unparseable or blank body", async () => {
+    const { fetchImpl } = stubFetch(() => jsonResponse(500, undefined));
+    await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
+      status: "error",
+      message: PREVIEW_HISTORY_FAILED_COPY,
+    });
+    const blank = stubFetch(() => jsonResponse(500, { error: "   " }));
+    await expect(
+      fetchArtifactRevisions("schema.md", { fetchImpl: blank.fetchImpl }),
+    ).resolves.toEqual({ status: "error", message: PREVIEW_HISTORY_FAILED_COPY });
+  });
+
+  it("treats a 200 that is not a listing as an ERROR, never as an empty history", async () => {
+    // An interstitial or a proxy answering 200 must not read to the owner as
+    // "you have nothing saved" — the one sentence that would stop them looking
+    // for bytes that are still there.
+    for (const body of [{}, { revisions: null }, "not json at all", undefined]) {
+      const { fetchImpl } = stubFetch(() => jsonResponse(200, body));
+      await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
+        status: "error",
+        message: PREVIEW_HISTORY_FAILED_COPY,
+      });
+    }
+  });
+
+  it("drops rows it could not act on from an otherwise-valid envelope", async () => {
+    const { fetchImpl } = stubFetch(() =>
+      jsonResponse(200, {
+        revisions: [REVISION, null, { timestamp: "12" }, { sizeBytes: 3 }],
+      }),
+    );
+    await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
+      status: "ok",
+      revisions: [REVISION],
+    });
+  });
+
+  it("refuses a row missing a REQUIRED field the declaration promises", async () => {
+    // The type says `date` and `file` are there; a laxer guard would let a row
+    // through and then TYPE it as if they were, which is how
+    // `<time dateTime={undefined}>` reaches the DOM through a declaration that
+    // says it cannot.
+    for (const bad of [
+      { ...REVISION, date: undefined },
+      { ...REVISION, file: undefined },
+      { ...REVISION, date: 17 },
+      { ...REVISION, file: null },
+    ]) {
+      const { fetchImpl } = stubFetch(() => jsonResponse(200, { revisions: [REVISION, bad] }));
+      await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
+        status: "ok",
+        revisions: [REVISION],
+      });
+    }
+  });
+
+  it("refuses a timestamp the ROUTE itself would refuse, and a NaN size", async () => {
+    // The route's rule is a positive safe integer (`parseTimestamp`,
+    // `canonicalStem`). A row outside it is one the owner could see and could
+    // not open: its `?timestamp=` read 400s and its revert 400s. A non-finite
+    // `sizeBytes` is the smaller version — `NaN bytes` in a column of dates.
+    for (const bad of [
+      { ...REVISION, timestamp: 12.5 },
+      { ...REVISION, timestamp: 0 },
+      { ...REVISION, timestamp: -1 },
+      { ...REVISION, timestamp: Number.MAX_SAFE_INTEGER + 2 },
+      { ...REVISION, timestamp: Number.NaN },
+      { ...REVISION, sizeBytes: Number.NaN },
+      { ...REVISION, sizeBytes: Number.POSITIVE_INFINITY },
+      { ...REVISION, sizeBytes: -3 },
+    ]) {
+      const { fetchImpl } = stubFetch(() => jsonResponse(200, { revisions: [REVISION, bad] }));
+      await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
+        status: "ok",
+        revisions: [REVISION],
+      });
+    }
+  });
+
+  it("reports a FAILURE when rows existed and none survived the filter", async () => {
+    // The one sentence the panel must never show for this: "No earlier versions
+    // … recorded yet" over a history that is sitting in storage and merely came
+    // back unreadable. Same rule as the non-envelope branch, same reason.
+    const { fetchImpl } = stubFetch(() =>
+      jsonResponse(200, { revisions: [{ timestamp: "12" }, null] }),
+    );
+    await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
+      status: "error",
+      message: PREVIEW_HISTORY_FAILED_COPY,
+    });
+    // …while a genuinely empty envelope is still `ok` with no rows.
+    const empty = stubFetch(() => jsonResponse(200, { revisions: [] }));
+    await expect(
+      fetchArtifactRevisions("schema.md", { fetchImpl: empty.fetchImpl }),
+    ).resolves.toEqual({ status: "ok", revisions: [] });
+  });
+
+  it("passes a caller's signal through to fetch, so a hung read has a deadline", async () => {
+    const controller = new AbortController();
+    const { fetchImpl, calls } = stubFetch(() => jsonResponse(200, { revisions: [] }));
+    await fetchArtifactRevisions("schema.md", { fetchImpl, signal: controller.signal });
+    expect(calls[0].init?.signal).toBe(controller.signal);
+  });
+});
+
+describe("the three helpers all carry a caller's deadline", () => {
+  it("forwards the signal on the view and the revert too", async () => {
+    const controller = new AbortController();
+    const view = stubFetch(() => jsonResponse(200, { content: "x" }));
+    await fetchArtifactRevision("schema.md", REVISION.timestamp, {
+      fetchImpl: view.fetchImpl,
+      signal: controller.signal,
+    });
+    expect(view.calls[0].init?.signal).toBe(controller.signal);
+
+    const revert = stubFetch(() => jsonResponse(200, { ok: true }));
+    await revertArtifactRevision("schema.md", REVISION.timestamp, {
+      fetchImpl: revert.fetchImpl,
+      signal: controller.signal,
+    });
+    expect(revert.calls[0].init?.signal).toBe(controller.signal);
+  });
+
+  it("resolves rather than throwing, and never relays the transport's message", async () => {
+    for (const cause of [
+      new TypeError("Failed to fetch"),
+      abortError("TimeoutError"),
+      abortError("AbortError"),
+    ]) {
+      const { fetchImpl } = stubFetch(() => cause);
+      const result = await fetchArtifactRevisions("schema.md", { fetchImpl });
+      expect(result).toEqual({ status: "error", message: PREVIEW_HISTORY_FAILED_COPY });
+      expect(result).not.toMatchObject({ message: cause.message });
+    }
+  });
+});
+
+describe("fetchArtifactRevision", () => {
+  it("GETs the timestamped URL and returns the content verbatim", async () => {
+    const { fetchImpl, calls } = stubFetch(() =>
+      jsonResponse(200, { content: "# Schema\n", revision: REVISION }),
+    );
+    await expect(
+      fetchArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl }),
+    ).resolves.toEqual({ status: "ok", content: "# Schema\n" });
+    expect(calls[0].url).toBe(
+      "/api/workbench/artifact/revisions?path=schema.md&timestamp=1700000000000",
+    );
+  });
+
+  it("relays the route's own 404 sentence for a revision that is gone", async () => {
+    const { fetchImpl } = stubFetch(() =>
+      jsonResponse(404, { error: "revision not found: 1700000000000" }),
+    );
+    await expect(
+      fetchArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl }),
+    ).resolves.toEqual({ status: "error", message: "revision not found: 1700000000000" });
+  });
+
+  it("falls back for a 500, an unparseable body, and a 200 carrying no content", async () => {
+    for (const response of [
+      () => jsonResponse(500, undefined),
+      () => jsonResponse(200, {}),
+      () => jsonResponse(200, { content: 42 }),
+      () => jsonResponse(200, undefined),
+    ]) {
+      const { fetchImpl } = stubFetch(response);
+      await expect(
+        fetchArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl }),
+      ).resolves.toEqual({ status: "error", message: PREVIEW_HISTORY_VIEW_FAILED_COPY });
+    }
+  });
+
+  it("resolves on a transport throw, with copy somebody wrote", async () => {
+    const { fetchImpl } = stubFetch(() => new TypeError("network down"));
+    await expect(
+      fetchArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl }),
+    ).resolves.toEqual({ status: "error", message: PREVIEW_HISTORY_VIEW_FAILED_COPY });
+  });
+});
+
+describe("revertArtifactRevision", () => {
+  it("POSTs the route's one action and body to the LISTING url", async () => {
+    const { fetchImpl, calls } = stubFetch(() => jsonResponse(200, { ok: true, version: "w1s:x" }));
+    await expect(
+      revertArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl }),
+    ).resolves.toEqual({ status: "ok" });
+    // No `?timestamp=` — the id rides the BODY on this verb, exactly as the
+    // route parses it.
+    expect(calls[0].url).toBe("/api/workbench/artifact/revisions?path=schema.md");
+    expect(calls[0].init?.method).toBe("POST");
+    expect(JSON.parse(calls[0].init?.body ?? "{}")).toEqual({
+      action: "revert",
+      timestamp: REVISION.timestamp,
+    });
+  });
+
+  it("sends NO If-Match — a revert is ungated by the route's own decision", async () => {
+    const { fetchImpl, calls } = stubFetch(() => jsonResponse(200, { ok: true }));
+    await revertArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl });
+    expect(calls[0].init?.headers).toEqual({ "Content-Type": "application/json" });
+  });
+
+  it("relays the server's sentence, including the read-only 403 backstop", async () => {
+    for (const [status, error] of [
+      [403, "The Schema cannot be edited while this deployment is read-only."],
+      [400, "The Schema must keep a Page conventions section."],
+      [404, "revision not found: 1700000000000"],
+    ] as const) {
+      const { fetchImpl } = stubFetch(() => jsonResponse(status, { error }));
+      await expect(
+        revertArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl }),
+      ).resolves.toEqual({ status: "error", message: error });
+    }
+  });
+
+  it("falls back for an unparseable body and for a transport throw", async () => {
+    const { fetchImpl } = stubFetch(() => jsonResponse(500, undefined));
+    await expect(
+      revertArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl }),
+    ).resolves.toEqual({ status: "error", message: PREVIEW_HISTORY_REVERT_FAILED_COPY });
+    const thrown = stubFetch(() => new TypeError("Failed to fetch"));
+    await expect(
+      revertArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl: thrown.fetchImpl }),
+    ).resolves.toEqual({ status: "error", message: PREVIEW_HISTORY_REVERT_FAILED_COPY });
+  });
+});
+
+describe("the History panel's copy", () => {
+  it("keeps the empty history and the failed listing apart", () => {
+    // An artifact nobody has overwritten is not a failed read, and one sentence
+    // for both is how an outage comes to read as "nothing was ever saved".
+    expect(PREVIEW_HISTORY_EMPTY_COPY).not.toBe(PREVIEW_HISTORY_FAILED_COPY);
+    for (const sentence of [
+      PREVIEW_HISTORY_EMPTY_COPY,
+      PREVIEW_HISTORY_FAILED_COPY,
+      PREVIEW_HISTORY_VIEW_FAILED_COPY,
+      PREVIEW_HISTORY_REVERT_FAILED_COPY,
+      PREVIEW_HISTORY_READ_ONLY_COPY,
+    ]) {
+      expect(sentence).toMatch(/^[A-Z].*\.$/);
+    }
+  });
+
+  it("says the SCHEMA, never the page, for the failures that are about it", () => {
+    expect(PREVIEW_HISTORY_REVERT_FAILED_COPY).toContain("Schema");
+    expect(PREVIEW_HISTORY_REVERT_FAILED_COPY).not.toBe(PREVIEW_SAVE_FAILED_COPY);
+  });
+
+  it("has a sentence for the one SUCCESS this panel can produce", () => {
+    // Every failure here is a `role="alert"`; a landed revert used to be the
+    // one outcome with nothing at all. It is an announcement, not a strip, so
+    // no full stop — the shape `PREVIEW_UPDATED_COPY` already keeps.
+    expect(PREVIEW_HISTORY_REVERTED_COPY).toContain("Schema");
+    expect(PREVIEW_HISTORY_REVERTED_COPY).not.toMatch(/\.$/);
+    expect(PREVIEW_HISTORY_REVERTED_COPY).not.toBe(PREVIEW_UPDATED_COPY);
   });
 });

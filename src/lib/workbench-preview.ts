@@ -210,6 +210,45 @@ export function canEditPreview(input: PreviewEditInput): boolean {
 }
 
 /**
+ * WHICH artifact the History panel is about, or `null` for "no panel at all"
+ * (DW-214).
+ *
+ * The panel's whole existence rule, executed rather than typed into JSX. Four
+ * refusals, each its own fact:
+ *
+ * - a 404 (`gone`) has already replaced the body, and a history list beside
+ *   `This file couldn’t be loaded.` would offer to revert a row the route says
+ *   is not there. Same `gone` term, and for the same reason, as
+ *   {@link previewEditTarget} (DW-181);
+ * - a payload that is not an ARTIFACT has no history this route can address:
+ *   `GET/POST /api/workbench/artifact/revisions` takes `?path=` out of
+ *   `EDITABLE_ARTIFACT_FILES` and nothing else. A page has its own history
+ *   surface, and it is not this one;
+ * - the EDITOR being open is the load-bearing one: a revert under an open draft
+ *   would replace the bytes that draft is measured against — `previewDraftDirty`
+ *   compares against a seed captured when the editor opened, and the write
+ *   precondition it holds would then refuse the owner's own save with a conflict
+ *   they caused by pressing Revert;
+ * - no payload at all means nothing is on screen to have a history of.
+ *
+ * Deliberately NOT gated on `truncated` or on `editable`, unlike
+ * {@link previewWriteTarget}. A truncated body is a PREFIX the editor must not
+ * save, and neither of those facts says anything about the stored revisions of
+ * the file — and `editable` is the server's judgement about writing, while the
+ * listing is a read the route answers even on a read-only deployment. What the
+ * panel withholds on such a deployment is the REVERT, before the confirm
+ * (DW-149), which is the column's job rather than this derivation's.
+ */
+export function previewHistoryTarget(input: {
+  gone: boolean;
+  payload: PreviewPayload | null;
+  editing: boolean;
+}): EditableArtifactFile | null {
+  if (input.gone || input.editing || input.payload === null) return null;
+  return isEditableArtifactFile(input.payload.artifact) ? input.payload.artifact : null;
+}
+
+/**
  * Is the open editor holding text that would be LOST (DW-36)?
  *
  * The one bit the column reports up to the shell, which needs it to decide
@@ -334,6 +373,38 @@ export const ARTIFACT_WRITE_ROUTE = "/api/workbench/artifact";
  */
 export function artifactWriteUrl(file: EditableArtifactFile): string {
   return `${ARTIFACT_WRITE_ROUTE}?path=${encodeURIComponent(file)}`;
+}
+
+/**
+ * The artifact's HISTORY, and the only other address the Preview knows:
+ * `GET/POST /api/workbench/artifact/revisions` (DW-59, given a client by
+ * DW-214).
+ *
+ * A CHILD of {@link ARTIFACT_WRITE_ROUTE}, exactly as the route file describes
+ * itself — list, `?timestamp=` for one, `POST {action:"revert",timestamp}`. It
+ * is named here, beside the write route, so the column cannot grow a second
+ * idea of where history lives by typing a URL into an effect.
+ */
+export const ARTIFACT_REVISIONS_ROUTE = "/api/workbench/artifact/revisions";
+
+/**
+ * The browser names the FILE and, for a read of one entry, the timestamp it was
+ * handed back — never a tenant, a Wiki id or a storage key. The route re-derives
+ * all three from the session, which is what keeps this URL to parameters a
+ * caller cannot widen.
+ *
+ * Built here rather than in the component for the reason
+ * {@link artifactWriteUrl} is: a URL assembled inside a React effect is a rule
+ * this suite can only grep for.
+ */
+export function artifactRevisionsUrl(
+  file: EditableArtifactFile,
+  timestamp?: number,
+): string {
+  const base = `${ARTIFACT_REVISIONS_ROUTE}?path=${encodeURIComponent(file)}`;
+  return timestamp === undefined
+    ? base
+    : `${base}&timestamp=${encodeURIComponent(String(timestamp))}`;
 }
 
 /**
@@ -573,6 +644,189 @@ export const PREVIEW_SAVE_FAILED_COPY = "This page couldn’t be saved.";
 
 /** The same fallback for the Schema, which is not a page. */
 export const PREVIEW_SCHEMA_SAVE_FAILED_COPY = "This Schema couldn’t be saved.";
+
+// ---------------------------------------------------------------------------
+// The History panel's vocabulary (DW-214)
+// ---------------------------------------------------------------------------
+//
+// Every sentence the recovery half of Story 1.8 can show, owned here for the
+// same reason the reading half's are: the column maps state to elements, and a
+// sentence typed into JSX is one this suite can only match as source text.
+
+/** The disclosure itself. Mirrors `RevisionHistory`'s own label. */
+export const PREVIEW_HISTORY_COPY = "History";
+
+/** The list is on its way. Same register as {@link PREVIEW_LOADING_COPY}. */
+export const PREVIEW_HISTORY_LOADING_COPY = "Loading earlier versions…";
+
+/**
+ * The artifact has never been overwritten. NOT an error and not "couldn't
+ * load": an empty history is the ordinary state of a Schema nobody has edited
+ * and no template has replaced.
+ */
+export const PREVIEW_HISTORY_EMPTY_COPY =
+  "No earlier versions of this file have been recorded yet.";
+
+/**
+ * The listing itself failed. Used ONLY as the fallback — a sentence the server
+ * supplied is always preferred, per the {@link savePreviewBody} contract, and
+ * a transport string is never relayed.
+ */
+export const PREVIEW_HISTORY_FAILED_COPY = "Earlier versions couldn’t be loaded.";
+
+/** …and the same fallback for reading ONE entry's bytes. */
+export const PREVIEW_HISTORY_VIEW_FAILED_COPY = "That version couldn’t be loaded.";
+
+/** …and for the revert. Distinct, because nothing was written. */
+export const PREVIEW_HISTORY_REVERT_FAILED_COPY = "This Schema couldn’t be reverted.";
+
+/** The per-entry controls. `View` toggles; pressing it again collapses. */
+export const PREVIEW_HISTORY_VIEW_COPY = "View";
+export const PREVIEW_HISTORY_HIDE_COPY = "Hide";
+export const PREVIEW_HISTORY_REVERT_COPY = "Revert";
+export const PREVIEW_HISTORY_REVERTING_COPY = "Reverting…";
+
+/**
+ * The confirm gate in front of the revert (UX-DR17's one overlay level).
+ *
+ * The body says what the owner is about to LOSE and what happens to it, because
+ * a revert overwrites the executable Schema exactly the way an edit does — and
+ * unlike the edit gate, the bytes being replaced are ones nobody is looking at.
+ * That they are snapshotted first is the sentence that makes this recoverable
+ * rather than a second destruction.
+ */
+export const PREVIEW_HISTORY_REVERT_CONFIRM_TITLE = "Restore this earlier Schema?";
+
+/**
+ * The consequence half of the gate — true of every revert, whichever entry it
+ * is about. Exported for the parity a test can assert; the sentence an owner
+ * actually reads comes from {@link previewHistoryRevertConfirmBody}, which puts
+ * the target in front of it.
+ */
+export const PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE =
+  "The Schema is executable: its Page conventions section is read by every ingest, chat and lint that runs after this. What the Schema holds now is saved as an earlier version first, so this can be undone.";
+
+/**
+ * …and the WHOLE body, which NAMES the version it is about.
+ *
+ * A static sentence would be a destructive confirm that never says which of a
+ * column of near-identical `Revert` buttons opened it — the owner reads a
+ * consequence, presses Restore, and finds out afterwards which version they
+ * asked for. `RevisionHistory`'s own confirm names the date for the same
+ * reason, and this is that rule with the entry's whole label rather than only
+ * its timestamp, so an entry distinguished by its REASON (a re-template versus
+ * the owner's own edit, DW-213) is distinguishable here too.
+ *
+ * A `null` revision answers the consequence alone: the dialog is unreachable
+ * without an entry, so this only has to be total, not meaningful — the same
+ * contract {@link previewEditCopy} keeps for a `null` target.
+ */
+export function previewHistoryRevertConfirmBody(
+  revision: ArtifactRevisionSummary | null,
+): string {
+  if (revision === null) return PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE;
+  return `Restoring the version from ${artifactRevisionLabel(revision)}. ${PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE}`;
+}
+
+export const PREVIEW_HISTORY_REVERT_CONFIRM_LABEL = "Restore this version";
+
+/**
+ * What the COLUMN's polite region says after a revert LANDS (DW-214).
+ *
+ * Every failure in this panel is a `role="alert"`, and a success used to be the
+ * one outcome with nothing at all: the dialog vanished, the body re-fetched
+ * through `requestDataVersionCheck()`, and a reader who cannot see the panel was
+ * told that the most destructive thing this surface does had happened by...
+ * nothing. It lands in the column's OWN polite region beside
+ * {@link PREVIEW_UPDATED_COPY} — the same region, for the same reason: what
+ * changed is what the owner is reading, not which surface they are on.
+ *
+ * No date in it. The sentence arrives with no surroundings, and a timestamp read
+ * aloud out of context is noise; the panel's list, which re-renders immediately
+ * behind it, is where WHICH version lives.
+ */
+export const PREVIEW_HISTORY_REVERTED_COPY = "Schema restored to an earlier version";
+
+/**
+ * Why Revert refuses on a read-only deployment (DW-149).
+ *
+ * DELIBERATELY NARROWER THAN THE SERVER'S SENTENCE, the same divergence
+ * `REVERT_READ_ONLY_COPY` records for pages. `POST
+ * /api/workbench/artifact/revisions` refuses with
+ * `READ_ONLY_REFUSAL.artifactEdit` — "The Schema cannot be edited…" — which is
+ * the honest sentence for a door that also carries the editor's save, and a
+ * confusing one beside a control labelled Revert over a version the owner did
+ * not type. So the surface says what they were about to do; the server keeps the
+ * sentence that is true of every caller, and
+ * `read-only-copy-parity.test.ts` records the difference rather than leaving it
+ * to be found as a bug.
+ *
+ * Duplicated rather than imported for the reason every client refusal constant
+ * is: `read-only.ts` pulls `./config` and `process.env` into the bundle with it.
+ */
+export const PREVIEW_HISTORY_READ_ONLY_COPY =
+  "The Schema cannot be reverted to an earlier version while this deployment is read-only.";
+
+/**
+ * One entry's line: when it was recorded, how big it is, who by and why.
+ *
+ * A function rather than a template in the list's `map`, so the ORDER and the
+ * absences are executed: `author` and `reason` are both optional on the wire (a
+ * revision saved with neither writes no sidecar at all), and a template that
+ * interpolated them unguarded would print `undefined` into the panel.
+ *
+ * The date is formatted from `timestamp` rather than from `date`: the two are
+ * the same instant, and deriving the display from the number the controls send
+ * back means a listed row and the row a revert names cannot describe different
+ * things. `toLocaleString` is the same call `RevisionHistory`'s confirm makes.
+ */
+export function artifactRevisionLabel(revision: ArtifactRevisionSummary): string {
+  return [artifactRevisionDate(revision), ...artifactRevisionMeta(revision)].join(" · ");
+}
+
+/**
+ * Everything in the label AFTER the date, in order, with the absences already
+ * taken out.
+ *
+ * The panel renders the date inside a `<time dateTime>` so the instant is
+ * machine-readable, which means it cannot use the one-string label — and the
+ * ORDER and the two optional fields are exactly the part that must not be
+ * re-typed into JSX, where `undefined` would print and nothing would execute
+ * the rule. So the split is here: the component joins what this returns and
+ * decides nothing.
+ */
+export function artifactRevisionMeta(revision: ArtifactRevisionSummary): string[] {
+  const parts = [artifactRevisionSize(revision)];
+  if (revision.author) parts.push(revision.author);
+  if (revision.reason) parts.push(revision.reason);
+  return parts;
+}
+
+/**
+ * The displayed instant, derived from `timestamp` rather than from `date`.
+ *
+ * The two are the same moment, and this is the one the CONTROLS send back: a
+ * listed row and the row a revert names then cannot describe different things.
+ * `date` is not wasted — it is what the rendered `<time dateTime>` carries, so
+ * the machine-readable form is the server's ISO string and the human-readable
+ * one is this.
+ */
+export function artifactRevisionDate(revision: ArtifactRevisionSummary): string {
+  return new Date(revision.timestamp).toLocaleString();
+}
+
+/**
+ * …and its size, in the units a person reads.
+ *
+ * The same thresholds `RevisionItem.formatBytes` uses, because the two histories
+ * are read the same way from two surfaces and `184320 bytes` is a number nobody
+ * can size at a glance. Not imported from there: that module is a page-history
+ * component with its own props graph, and this is a two-line rule.
+ */
+export function artifactRevisionSize(revision: ArtifactRevisionSummary): string {
+  if (revision.sizeBytes < 1024) return `${revision.sizeBytes} B`;
+  return `${(revision.sizeBytes / 1024).toFixed(1)} KB`;
+}
 
 /** Every sentence the editor needs, chosen by what it is about to write. */
 export interface PreviewEditCopy {
@@ -1034,5 +1288,253 @@ export async function savePreviewBody(
   } catch {
     // Deliberately discards the cause's message — see the docblock.
     return { status: "error", message: fallback };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The History client (DW-214)
+// ---------------------------------------------------------------------------
+//
+// `GET/POST /api/workbench/artifact/revisions` shipped with DW-59 and had no
+// caller at all: nothing in the running app could list, view or revert an
+// artifact revision, so the recovery path existed only as a route. These three
+// are that client, and they follow `savePreviewBody`'s contract exactly —
+// RESOLVE a result union rather than throw, relay ONLY a server-supplied
+// `{ error }` sentence, and fall back to the Copy table for everything else
+// (an unparseable body, a blank message, a transport throw). The column's only
+// correct response to any failure is to keep the panel open and say what
+// happened, and a rejection would skip that branch at every call site that
+// forgot a `catch`.
+//
+// `fetch` is a parameter for the same reason it is one above: the node suite
+// drives every branch with a stub and never opens a socket.
+
+/**
+ * One revision as the ROUTE serves it — the client's own declaration of the
+ * wire shape.
+ *
+ * RE-DECLARED, not imported. `ArtifactRevision` lives in
+ * `wiki-artifact-revisions.ts`, which pulls `./storage` — and with it the
+ * filesystem/R2 provider graph — behind it; importing the type would drag the
+ * module into the browser bundle for a shape that is six fields of JSON. The
+ * same rule every client constant in this module already follows.
+ *
+ * `file` is a plain `string` rather than the artifact union: it is a field the
+ * panel prints, never one it branches on, and narrowing a value the server
+ * chose would make an unexpected one a type error at the seam instead of an
+ * unreadable row.
+ */
+export interface ArtifactRevisionSummary {
+  /** Unix milliseconds — the id every control sends back. */
+  timestamp: number;
+  /** ISO 8601, for a surface that would rather not re-derive it. */
+  date: string;
+  /** Which artifact this snapshot is of. */
+  file: string;
+  /** Byte length of the revision's content. */
+  sizeBytes: number;
+  /** Who made the change these bytes were replaced by. */
+  author?: string;
+  /** Why — an edit summary, a revert, or a re-template (DW-213). */
+  reason?: string;
+}
+
+/** What a listing produced. `revisions` is newest-first, as the route lists it. */
+export type ArtifactRevisionsResult =
+  | { status: "ok"; revisions: ArtifactRevisionSummary[] }
+  | { status: "error"; message: string };
+
+/** What reading ONE revision produced. */
+export type ArtifactRevisionResult =
+  | { status: "ok"; content: string }
+  | { status: "error"; message: string };
+
+/** What a revert produced. Nothing is carried back: the panel re-lists. */
+export type ArtifactRevertResult =
+  | { status: "ok" }
+  | { status: "error"; message: string };
+
+/** Options every helper here takes, in one shape so none grows its own. */
+interface ArtifactRevisionsOptions {
+  signal?: AbortSignal;
+  fetchImpl?: PreviewFetch;
+}
+
+/**
+ * The server's sentence, or the caller's fallback — the one rule all three
+ * helpers share.
+ *
+ * A body that will not parse, one carrying no `error` key, and one whose
+ * `error` is blank are all the same answer: the server told us nothing usable,
+ * so the owner reads copy somebody wrote. A genuine 403, 404 or 400 sentence
+ * reaches them verbatim, because only the server knows which it was.
+ */
+async function refusalSentence(
+  response: PreviewResponseLike,
+  fallback: string,
+): Promise<string> {
+  const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
+  const served = typeof body?.error === "string" ? body.error.trim() : "";
+  return served || fallback;
+}
+
+/**
+ * Is this parsed row actually an {@link ArtifactRevisionSummary}? A 200 is not a
+ * promise about shape.
+ *
+ * ALL FOUR REQUIRED FIELDS, not the two the panel happens to branch on. A row
+ * missing `date` or `file` passes a laxer guard and is then TYPED as if they
+ * were there — which is how `<time dateTime={undefined}>` and an undefined file
+ * reach the DOM through a declaration that says they cannot.
+ *
+ * `timestamp` is checked against the ROUTE'S OWN rule — a positive safe integer,
+ * the same set `canonicalStem` admits and `parseTimestamp` accepts — so a row
+ * this client lists is a row whose `?timestamp=` read and whose revert can both
+ * succeed. A finite-but-fractional or out-of-range number would render as an
+ * `Invalid Date` the owner can see and cannot open, which is precisely the
+ * listed-but-unreadable state the server-side rule exists to prevent.
+ *
+ * `sizeBytes` is checked for finiteness and sign for the smaller version of the
+ * same failure: `NaN bytes` in a row of dates.
+ */
+function isRevisionSummary(value: unknown): value is ArtifactRevisionSummary {
+  if (!value || typeof value !== "object") return false;
+  const revision = value as Record<string, unknown>;
+  return (
+    typeof revision.timestamp === "number" &&
+    Number.isSafeInteger(revision.timestamp) &&
+    revision.timestamp > 0 &&
+    typeof revision.date === "string" &&
+    typeof revision.file === "string" &&
+    typeof revision.sizeBytes === "number" &&
+    Number.isFinite(revision.sizeBytes) &&
+    revision.sizeBytes >= 0
+  );
+}
+
+/**
+ * List every recorded revision of `file`, newest first.
+ *
+ * An empty list is `ok`, never an error: an artifact nobody has overwritten has
+ * no history, and the panel says so in its own words rather than showing a
+ * failure over an ordinary state.
+ *
+ * A 200 whose body is not a `{ revisions: [...] }` envelope is an ERROR rather
+ * than an empty list — an interstitial or a proxy answering 200 must not read
+ * to the owner as "you have nothing saved", which is the one sentence that
+ * would stop them looking for bytes that are still there. Rows that are not
+ * revisions are dropped from an otherwise-valid envelope for the same reason
+ * the listing on the server drops stems it cannot open: a row the panel can
+ * show and cannot act on is worse than one it never showed.
+ */
+export async function fetchArtifactRevisions(
+  file: EditableArtifactFile,
+  options: ArtifactRevisionsOptions = {},
+): Promise<ArtifactRevisionsResult> {
+  const send = options.fetchImpl ?? fetch;
+  try {
+    const response = await send(artifactRevisionsUrl(file), {
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (!response.ok) {
+      return {
+        status: "error",
+        message: await refusalSentence(response, PREVIEW_HISTORY_FAILED_COPY),
+      };
+    }
+    const body = (await response.json().catch(() => null)) as {
+      revisions?: unknown;
+    } | null;
+    if (!Array.isArray(body?.revisions)) {
+      return { status: "error", message: PREVIEW_HISTORY_FAILED_COPY };
+    }
+    const usable = body.revisions.filter(isRevisionSummary);
+    // A NON-EMPTY envelope with nothing left in it is a failure, not an empty
+    // history — the same rule the non-envelope branch above follows, and for the
+    // same reason: "No earlier versions … recorded yet" is the one sentence that
+    // stops an owner looking for bytes that are still sitting in storage. Rows
+    // dropped out of a list that still has some are a different case: those
+    // entries are unreachable individually, and the ones that survived are
+    // genuinely there to be reverted to.
+    if (body.revisions.length > 0 && usable.length === 0) {
+      return { status: "error", message: PREVIEW_HISTORY_FAILED_COPY };
+    }
+    return { status: "ok", revisions: usable };
+  } catch {
+    // Transport vocabulary is never relayed — see `savePreviewBody`.
+    return { status: "error", message: PREVIEW_HISTORY_FAILED_COPY };
+  }
+}
+
+/**
+ * Read one revision's bytes.
+ *
+ * `content` is the WHOLE file, exactly as the artifact preview's body is: an
+ * artifact has no frontmatter for anything to have stripped, so what this
+ * returns is what a revert would restore.
+ */
+export async function fetchArtifactRevision(
+  file: EditableArtifactFile,
+  timestamp: number,
+  options: ArtifactRevisionsOptions = {},
+): Promise<ArtifactRevisionResult> {
+  const send = options.fetchImpl ?? fetch;
+  try {
+    const response = await send(artifactRevisionsUrl(file, timestamp), {
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (!response.ok) {
+      return {
+        status: "error",
+        message: await refusalSentence(response, PREVIEW_HISTORY_VIEW_FAILED_COPY),
+      };
+    }
+    const body = (await response.json().catch(() => null)) as {
+      content?: unknown;
+    } | null;
+    if (typeof body?.content !== "string") {
+      return { status: "error", message: PREVIEW_HISTORY_VIEW_FAILED_COPY };
+    }
+    return { status: "ok", content: body.content };
+  } catch {
+    return { status: "error", message: PREVIEW_HISTORY_VIEW_FAILED_COPY };
+  }
+}
+
+/**
+ * Restore `timestamp`'s bytes to the artifact.
+ *
+ * `POST {action:"revert", timestamp}` — the route's only verb and only body,
+ * spelled here rather than in the column so the panel cannot invent a second
+ * one. NO `If-Match`: the route documents the revert as ungated, because its
+ * payload is a stored revision rather than something the caller typed, and
+ * there is no version for a list to have been seeded with.
+ *
+ * A 403 on a read-only deployment is the BACKSTOP, not the refusal the owner
+ * should meet — {@link PREVIEW_HISTORY_READ_ONLY_COPY} is shown instead of ever
+ * reaching this, before the confirm (DW-149).
+ */
+export async function revertArtifactRevision(
+  file: EditableArtifactFile,
+  timestamp: number,
+  options: ArtifactRevisionsOptions = {},
+): Promise<ArtifactRevertResult> {
+  const send = options.fetchImpl ?? fetch;
+  try {
+    const response = await send(artifactRevisionsUrl(file), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "revert", timestamp }),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (!response.ok) {
+      return {
+        status: "error",
+        message: await refusalSentence(response, PREVIEW_HISTORY_REVERT_FAILED_COPY),
+      };
+    }
+    return { status: "ok" };
+  } catch {
+    return { status: "error", message: PREVIEW_HISTORY_REVERT_FAILED_COPY };
   }
 }

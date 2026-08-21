@@ -1688,16 +1688,69 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
     }
 
     const firstWrite = calls.findIndex((call) => call.op === "write");
+    // The HISTORY namespace is deliberately outside this comparison (DW-213).
+    // `revisions/<file>/<ts>.md` and its sidecar are writes with no pre-seed
+    // read of their own BY CONSTRUCTION: they replay bytes the snapshot already
+    // holds, land only after the seed and the registry write have COMMITTED,
+    // and are never restored by the compensation this test is about. Counted
+    // in, they would make the seeded set look permanently out of balance and
+    // hide the drift the assertion exists to catch. `wikiArtifactRevisionsDir`'s
+    // own parity is `wiki-artifact-revisions.test.ts`'s.
+    const history = `${dir}revisions/`;
     const inDir = (subset: typeof calls, op: "read" | "write") =>
       [
         ...new Set(
           subset
-            .filter((call) => call.op === op && call.target.startsWith(dir))
+            .filter(
+              (call) =>
+                call.op === op &&
+                call.target.startsWith(dir) &&
+                !call.target.startsWith(history),
+            )
             .map((call) => call.target),
         ),
       ].sort();
 
     expect(inDir(calls.slice(0, firstWrite), "read")).toEqual(inDir(calls, "write"));
+    // …and the exclusion is PAIRED with what it excludes, or it would be a
+    // blind spot rather than a scope. This re-template is the path that DOES
+    // record history, so the namespace must have been written to — the
+    // assertion above passing because nothing landed there would be the same
+    // green for a snapshot that stopped happening entirely.
+    expect(calls.some((call) => call.op === "write" && call.target.startsWith(history))).toBe(
+      true,
+    );
+  });
+
+  it("writes NOTHING under the revisions namespace on the CREATE path", async () => {
+    // The other half of the exclusion above. DW-213 records history for a
+    // COMMITTED RE-TEMPLATE only: a create overwrote nothing — the id came from
+    // `crypto.randomUUID()` moments earlier — so a revision there would be a
+    // snapshot of bytes that never existed, and its undo is
+    // `discardCreatedWikiDirectory`, not a restore. With the parity comparison
+    // above no longer looking at that subtree, this is what would notice a
+    // snapshot that leaked onto the seeder.
+    const storage = getStorage();
+    const writeFile = storage.writeFile.bind(storage);
+    const targets: string[] = [];
+    const writes = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        targets.push(target);
+        return writeFile(target, content);
+      });
+
+    let wiki: WikiRecord;
+    try {
+      wiki = await createWiki(OWNER, { name: "Fresh", scenario: "reading" });
+    } finally {
+      writes.mockRestore();
+    }
+
+    expect(targets.some((target) => target.includes("/revisions/"))).toBe(false);
+    await expect(
+      fs.stat(abs(`${wikiDirPath(OWNER, wiki.id)}/revisions`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("restores the other two files when one file's restore also fails", async () => {

@@ -20,6 +20,17 @@ import {
   PREVIEW_EDIT_COPY,
   PREVIEW_EMPTY_COPY,
   PREVIEW_FAILED_COPY,
+  PREVIEW_HISTORY_COPY,
+  PREVIEW_HISTORY_EMPTY_COPY,
+  PREVIEW_HISTORY_HIDE_COPY,
+  PREVIEW_HISTORY_LOADING_COPY,
+  PREVIEW_HISTORY_READ_ONLY_COPY,
+  PREVIEW_HISTORY_REVERTED_COPY,
+  PREVIEW_HISTORY_REVERTING_COPY,
+  PREVIEW_HISTORY_REVERT_CONFIRM_LABEL,
+  PREVIEW_HISTORY_REVERT_CONFIRM_TITLE,
+  PREVIEW_HISTORY_REVERT_COPY,
+  PREVIEW_HISTORY_VIEW_COPY,
   PREVIEW_LOADING_COPY,
   PREVIEW_SAVE_COPY,
   PREVIEW_SAVING_COPY,
@@ -29,21 +40,30 @@ import {
   PREVIEW_TIMEOUT_REASON,
   PREVIEW_UNREACHABLE_COPY,
   PREVIEW_UNSUPPORTED_COPY,
+  artifactRevisionDate,
+  artifactRevisionMeta,
   canEditPreview,
+  fetchArtifactRevision,
+  fetchArtifactRevisions,
   fetchPreview,
   previewBodyState,
   previewDraftDirty,
   previewEditCopy,
   previewEditTarget,
+  previewHistoryRevertConfirmBody,
+  previewHistoryTarget,
   previewRefreshAnnouncement,
   previewRequestUrl,
   previewStaleNotice,
   previewUnreachableAnnouncement,
+  revertArtifactRevision,
   savePreviewBody,
+  type ArtifactRevisionSummary,
   type PreviewPayload,
   type PreviewWriteTarget,
 } from "@/lib/workbench-preview";
 import { nextAnnouncement } from "@/lib/live-region";
+import type { EditableArtifactFile } from "@/lib/wiki-scenarios";
 import {
   findKnowledgePage,
   readableSlugsFromKnowledge,
@@ -115,6 +135,22 @@ export interface PreviewColumnProps {
    */
   onDirtyChange: (dirty: boolean) => void;
   /**
+   * `YOPEDIA_READONLY=1`, read on the server and already in the shell's scope
+   * from `useWorkbenchData()` — no route and no client fetch for a fact the
+   * process already holds, the same way `WikiSwitcher` receives it.
+   *
+   * It gates the History panel's Revert BEFORE the confirm (DW-149).
+   * `POST /api/workbench/artifact/revisions` answers 403 on such a deployment
+   * and `writeWikiArtifact` refuses behind it, so leaving this out would put a
+   * destructive dialog in front of an owner to tell them, after they answered
+   * it, that the deployment was never going to run it.
+   *
+   * Optional and defaulting to writable: every existing mount of this column
+   * predates the prop, and a column that refused by default would withdraw a
+   * control on a deployment that can write.
+   */
+  readOnly?: boolean;
+  /**
    * The DOM id the `<aside>` carries (DW-45).
    *
    * The Preview divider is a `role="separator"`, and the ARIA window-splitter
@@ -149,6 +185,7 @@ export function PreviewColumn({
   onOpenPage,
   dataVersion,
   onDirtyChange,
+  readOnly = false,
   id,
   ref,
 }: PreviewColumnProps) {
@@ -164,6 +201,7 @@ export function PreviewColumn({
       onOpenPage={onOpenPage}
       dataVersion={dataVersion}
       onDirtyChange={onDirtyChange}
+      readOnly={readOnly}
       id={id}
       ref={ref}
     />
@@ -177,6 +215,7 @@ function PreviewPane({
   onOpenPage,
   dataVersion,
   onDirtyChange,
+  readOnly = false,
   id,
   ref,
 }: PreviewColumnProps & { selection: TreeSelection }) {
@@ -265,6 +304,77 @@ function PreviewPane({
   const shownSelectionRef = useRef<TreeSelection | null>(null);
   const editorId = useId();
 
+  // ---- The History panel (DW-214) -----------------------------------------
+  //
+  // Every RULE about when it shows and what it says is in
+  // `workbench-preview.ts`; what lives here is state and the three requests.
+  //
+  // Is the disclosure expanded? Collapsed is the default for the same reason
+  // `RevisionHistory`'s is: history is a recovery path, not something an owner
+  // reading a Schema asked to see, and fetching it unasked would put a request
+  // behind every artifact row.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  // `null` is "never fetched for this row", which is what makes the expand
+  // fetch ONCE: a list that came back empty is `[]` and is not re-requested.
+  const [revisions, setRevisions] = useState<ArtifactRevisionSummary[] | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  // ONE sentence slot for the panel — a listing that failed, a view that
+  // failed, a revert that failed. They cannot overlap: each is the outcome of
+  // the owner's last action in here, and a second slot would leave a stale
+  // sentence from one action standing beside another's.
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [viewingTimestamp, setViewingTimestamp] = useState<number | null>(null);
+  const [viewContent, setViewContent] = useState<string | null>(null);
+  const [viewLoading, setViewLoading] = useState(false);
+  // Which entry the confirm gate is about, or `null` for "no dialog". The
+  // timestamp itself rather than a boolean beside it: the dialog and the write
+  // must name the same revision, and two values are how they come to disagree.
+  const [pendingRevert, setPendingRevert] = useState<number | null>(null);
+  // WHICH entry is being written, not merely THAT one is. A boolean here put
+  // `aria-busy` and the `Reverting…` label on every row's control at once, so a
+  // reader was told all four revisions were busy and the label named none of
+  // them. `null` is "no revert in flight".
+  const [revertingTimestamp, setRevertingTimestamp] = useState<number | null>(null);
+  // …and the same fact readable from a callback that closed over an older
+  // render, so `startEditing` can refuse mid-revert without taking `reverting`
+  // into its dependency array.
+  const revertingRef = useRef(false);
+  revertingRef.current = revertingTimestamp !== null;
+  const historyId = useId();
+  // One sentence for the whole list, pointed at by every Revert control — the
+  // `readOnlyNoteId` idiom `RevisionHistory` already uses.
+  const readOnlyNoteId = useId();
+  const historyToggleRef = useRef<HTMLButtonElement>(null);
+  // Is the panel expanded, readable from an async callback — `save`'s landed
+  // branch decides between re-listing and merely invalidating with it.
+  const historyOpenRef = useRef(false);
+  historyOpenRef.current = historyOpen;
+  // The current render's `refreshHistory`, so `save` — declared above the panel
+  // state it would otherwise have to close over — can call it without taking
+  // any of that state into its dependency array. Assigned during render, the
+  // `payloadRef` idiom.
+  const refreshHistoryRef = useRef<() => void>(() => {});
+
+  /**
+   * A monotonic token per KIND of history request, bumped by every new request
+   * of that kind AND by a selection reset.
+   *
+   * The race this closes: a listing still in flight when the owner picks
+   * another row resolves AFTER the reset block has set `revisions` back to
+   * `null`, and latches the PREVIOUS row's history under the new row's header —
+   * and because the expand-once rule keys off `revisions !== null`, the new row
+   * would then never fetch its own. Same shape as `fetchPreview`'s `stale`
+   * outcome, which is why the fix is the same one: compare after the await and
+   * drop a result that is no longer for the current request.
+   *
+   * Three tokens rather than one, because the three requests genuinely overlap:
+   * a shared counter would make opening an entry cancel the listing that is
+   * still arriving.
+   */
+  const listRequestRef = useRef(0);
+  const viewRequestRef = useRef(0);
+  const revertRequestRef = useRef(0);
+
   // Wikilinks resolve against the same set the Knowledge tab renders, so a link
   // is actionable exactly when the row it would select is visible.
   const readableSlugs = useMemo(() => readableSlugsFromKnowledge(knowledge), [knowledge]);
@@ -326,6 +436,28 @@ function PreviewPane({
       setDraftSeed(null);
       setConfirmOpen(false);
       setSaveError(null);
+      // …and the History panel with it (DW-214). A revision list belongs to the
+      // file it was fetched for: left standing across a pick it would offer to
+      // revert the PREVIOUS row's Schema from under the new row's header, and
+      // `revisions !== null` would stop the expand from ever re-fetching. The
+      // panel is closed rather than merely emptied, because "expanded" is the
+      // owner's request about one file, not a preference.
+      setHistoryOpen(false);
+      setRevisions(null);
+      setHistoryLoading(false);
+      setHistoryError(null);
+      setViewingTimestamp(null);
+      setViewContent(null);
+      setViewLoading(false);
+      setPendingRevert(null);
+      setRevertingTimestamp(null);
+      // …and every request already in flight stops being this row's. Without
+      // this a listing that resolves after the reset writes the PREVIOUS row's
+      // revisions into a panel that has already been re-pointed, and the
+      // expand-once rule then keeps the new row from ever fetching its own.
+      listRequestRef.current += 1;
+      viewRequestRef.current += 1;
+      revertRequestRef.current += 1;
     }
 
     // One branch per outcome, and no decision of its own: whether a response is
@@ -378,6 +510,14 @@ function PreviewPane({
         // `null`, so a Schema dialog would silently re-title itself to the page
         // copy mid-read and offer to open an editor with nowhere to save to.
         setConfirmOpen(false);
+        // …and the REVERT gate with it, for the identical reason (DW-214). A
+        // 404 takes `previewHistoryTarget` to `null`, so the panel and its
+        // controls unmount — but a confirm the owner opened a moment ago would
+        // otherwise go on standing over `This file couldn’t be loaded.`, with
+        // a `Restore this version` that `confirmRevert` refuses (its `file` is
+        // now `null`) and a focus restore pointing at a button that no longer
+        // exists.
+        setPendingRevert(null);
         // A 404 is an ANSWER: the route was reached and said the row is not
         // there. It ends the run for the same reason `ok` does.
         failuresRef.current = 0;
@@ -437,6 +577,21 @@ function PreviewPane({
     }
   }, [editing]);
 
+  // Where focus goes when the revert confirm closes into a running write
+  // (DW-214). `useDialogA11y` restores to the OPENER when it is still
+  // connected — and it is: `confirmRevert` batches the dialog's close with
+  // `setRevertingTimestamp`, so the Revert button is still in the DOM and is
+  // now `disabled`. `.focus()` on a disabled button is a no-op, the
+  // `fallbackFocusRef` branch is never reached, and focus sits on `<body>` for
+  // the whole write. The disclosure is the obvious real target: it owns the
+  // panel the outcome lands in, and it is never disabled.
+  //
+  // Only on the LEADING edge — a revert starting — so the effect cannot pull
+  // focus back when the write settles and the owner has moved on.
+  useEffect(() => {
+    if (revertingTimestamp !== null) historyToggleRef.current?.focus();
+  }, [revertingTimestamp]);
+
   // WHETHER there is unsaved text is one executed function (`previewDraftDirty`),
   // never a comparison typed here: this is the whole of what stands between a
   // stray click on a tree row and the owner's markdown, and inline it could only
@@ -470,6 +625,16 @@ function PreviewPane({
     // of the three. So the dialog closes and the column stays view-first instead.
     const target = previewEditTarget({ gone, payload });
     if (!target) {
+      setConfirmOpen(false);
+      return;
+    }
+    // A revert is in flight, and it is ABOUT to replace these bytes (DW-214).
+    // Seeding the editor from them now would capture the pre-revert draft AND
+    // the pre-revert `version`, so the owner's own Save would come back as a
+    // 412 conflict they caused by pressing a button in this column's own panel.
+    // Refused here as well as at the opener, so the affordance and the action
+    // cannot refuse at different strengths — DW-181's lesson.
+    if (revertingRef.current) {
       setConfirmOpen(false);
       return;
     }
@@ -565,12 +730,185 @@ function PreviewPane({
       // just asks the watcher to look NOW instead of on the next tick, and the
       // answer still comes from the server's integer.
       requestDataVersionCheck();
+      // A landed save CREATED a revision: `writeWikiArtifact` snapshots the
+      // bytes it replaces before it writes (DW-59). The panel's cached list is
+      // therefore missing the entry the owner is most likely to want back — and
+      // because the expand-once rule keys off `revisions !== null`, collapsing
+      // and re-expanding would not fetch it either. Assigned during render, so
+      // this callback — which cannot depend on state declared below it — runs
+      // the CURRENT render's closure rather than a stale one.
+      refreshHistoryRef.current();
     } else {
       // The editor stays open holding the owner's text — a failed save must
       // never be the thing that loses it.
       setSaveError(result.message);
     }
   }, [draft, saving]);
+
+  // WHICH artifact the History panel is about, or `null` for no panel at all —
+  // one executed derivation (`previewHistoryTarget`) read by the disclosure, the
+  // list, the view and the revert alike. A `gone` or `editing` term typed beside
+  // the button would withdraw the panel and leave the three requests reachable.
+  const historyTarget = previewHistoryTarget({ gone, payload, editing });
+
+  /**
+   * (Re-)read the list. Called on the first expand, after a landed revert, and
+   * after a landed save — both of which ADDED an entry, because both writers
+   * snapshot the bytes they replace (DW-59).
+   *
+   * A failed listing leaves `revisions` at `null` rather than at `[]`, so the
+   * next expand tries again instead of showing "no earlier versions" for a read
+   * that never landed.
+   *
+   * TWO GUARDS AROUND THE AWAIT, and neither is optional. The DEADLINE is the
+   * same one every other request in this column carries: `finally` cannot
+   * rescue a promise that never settles, so without it a hung listing leaves
+   * `historyLoading` true — `Loading earlier versions…` — for the rest of the
+   * session. The TOKEN is the staleness check: a listing still in flight when
+   * the owner picks another row would otherwise land the previous row's history
+   * in a panel that has already been re-pointed, and the expand-once rule would
+   * then keep the new row from ever fetching its own.
+   */
+  async function loadRevisions(file: EditableArtifactFile) {
+    const token = ++listRequestRef.current;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    const result = await fetchArtifactRevisions(file, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    // Superseded: another listing started, or the owner left this row. Not an
+    // error and not an empty history — simply not this panel's answer any more.
+    if (listRequestRef.current !== token) return;
+    setHistoryLoading(false);
+    if (result.status === "ok") setRevisions(result.revisions);
+    else setHistoryError(result.message);
+  }
+
+  /**
+   * What a landed WRITE through this column owes the panel.
+   *
+   * Both writers behind this surface snapshot what they replace, so after
+   * either one the cached list is one entry short — and the missing entry is
+   * the pre-write bytes, i.e. exactly the version an owner who changes their
+   * mind wants back. Re-read when the panel is open; when it is closed, drop
+   * the cache so the next expand fetches rather than serving a stale list.
+   *
+   * `payloadRef` rather than `historyTarget`: this runs on the save path, where
+   * `previewHistoryTarget` answers `null` because the editor was open when the
+   * write started.
+   */
+  function refreshHistory() {
+    const file = payloadRef.current?.artifact;
+    if (!file) return;
+    if (historyOpenRef.current) void loadRevisions(file);
+    else setRevisions(null);
+  }
+  refreshHistoryRef.current = refreshHistory;
+
+  function toggleHistory() {
+    const willOpen = !historyOpen;
+    setHistoryOpen(willOpen);
+    // ONCE per row: `revisions !== null` after any landed listing, and only a
+    // selection reset or a landed write puts it back to `null`.
+    if (willOpen && historyTarget && revisions === null && !historyLoading) {
+      void loadRevisions(historyTarget);
+    }
+  }
+
+  async function viewRevision(timestamp: number) {
+    if (!historyTarget) return;
+    // Pressing the open entry again collapses it — a toggle, not a second read.
+    if (viewingTimestamp === timestamp) {
+      setViewingTimestamp(null);
+      setViewContent(null);
+      return;
+    }
+    const token = ++viewRequestRef.current;
+    setViewLoading(true);
+    setViewingTimestamp(timestamp);
+    setViewContent(null);
+    setHistoryError(null);
+    const result = await fetchArtifactRevision(historyTarget, timestamp, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    // Superseded by a newer view, or by a pick. Dropping it here is what keeps
+    // one entry's bytes from appearing under another entry's control.
+    if (viewRequestRef.current !== token) return;
+    setViewLoading(false);
+    if (result.status === "ok") {
+      setViewContent(result.content);
+      return;
+    }
+    // The view CLOSES on failure rather than standing empty: an expanded entry
+    // showing nothing is indistinguishable from a revision that is empty.
+    setViewingTimestamp(null);
+    setHistoryError(result.message);
+  }
+
+  function requestRevert(timestamp: number) {
+    // BEFORE the confirm (DW-149), never after: a dialog the owner has to
+    // answer is the harm, and their answer changes nothing on a deployment
+    // whose route will refuse the write. The sentence saying why is already in
+    // the panel beside the control.
+    if (readOnly || revertingTimestamp !== null) return;
+    // One overlay level (UX-DR17), enforced at the opener rather than left to
+    // the fact that the other dialog traps focus.
+    setConfirmOpen(false);
+    setPendingRevert(timestamp);
+  }
+
+  async function confirmRevert() {
+    const timestamp = pendingRevert;
+    const file = historyTarget;
+    if (timestamp === null || file === null || revertingTimestamp !== null) return;
+    // The same refusal again, at the write rather than at the affordance: a
+    // rule the action asks in a weaker form than the control is how a withdrawn
+    // control comes to leave a live write behind it (DW-181's lesson).
+    if (readOnly) {
+      setPendingRevert(null);
+      return;
+    }
+    const token = ++revertRequestRef.current;
+    setPendingRevert(null);
+    setRevertingTimestamp(timestamp);
+    setHistoryError(null);
+    const result = await revertArtifactRevision(file, timestamp, {
+      // The deadline matters most on THIS request: without it a POST that never
+      // settles leaves every Revert control disabled and the panel reporting a
+      // write that is not happening, with no way back but a reload.
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    // The owner left this row while the write was in flight. The write itself is
+    // done either way and the shell will notice it through `dataVersion`; what
+    // must not happen is this result reaching a panel that is now about another
+    // file — the same rule `save()` keeps for its own superseded case.
+    if (revertRequestRef.current !== token) return;
+    setRevertingTimestamp(null);
+    if (result.status === "error") {
+      // Nothing was written. The panel stays open holding the sentence — the
+      // same contract a failed save follows with the editor.
+      setHistoryError(result.message);
+      return;
+    }
+    setViewingTimestamp(null);
+    setViewContent(null);
+    // A landed revert was SILENT for a reader (DW-214): the dialog vanished, the
+    // body re-fetched, and every failure in this panel announces itself while
+    // the one destructive success announced nothing. Polite, in the column's own
+    // region beside `Preview updated`, and through `nextAnnouncement` so a
+    // second revert is heard as a second revert (DW-182).
+    setRefreshAnnouncement((current) =>
+      nextAnnouncement(current, PREVIEW_HISTORY_REVERTED_COPY),
+    );
+    // The SAME signal a landed save fires. The revert bumped `dataVersion` at
+    // the kernel's one tail, so this asks the watcher to look NOW and the new
+    // bytes arrive through the column's single fetch effect — never through a
+    // second read path belonging to this panel.
+    requestDataVersionCheck();
+    // …and the list has one more entry than it did: the bytes this revert
+    // replaced were snapshotted by `writeWikiArtifact` behind the route.
+    await loadRevisions(file);
+  }
 
   const page = selection.kind === "page" ? findKnowledgePage(knowledge, selection.slug) : null;
   // WHAT to call this pick is `selectionName`, in `workbench-tree` where the
@@ -650,7 +988,17 @@ function PreviewPane({
             type="button"
             ref={editRef}
             className="wb-preview-edit"
-            onClick={() => setConfirmOpen(true)}
+            // The other half of the one-overlay-level rule the revert opener
+            // states: whichever gate is asked for last is the only one open.
+            onClick={() => {
+              setPendingRevert(null);
+              setConfirmOpen(true);
+            }}
+            // A revert is about to replace these bytes (DW-214), so the editor
+            // must not be seeded from them — see `startEditing`, which refuses
+            // the same thing at the action. The control says so rather than
+            // opening a gate whose confirm silently does nothing.
+            disabled={revertingTimestamp !== null}
           >
             {PREVIEW_EDIT_COPY}
           </button>
@@ -801,8 +1149,173 @@ function PreviewPane({
         body()
       )}
 
+      {/* The recovery half of Story 1.8 (DW-214), and the FIRST client
+          `GET/POST /api/workbench/artifact/revisions` has ever had.
+
+          WHETHER it shows at all is `previewHistoryTarget` and nothing typed
+          here: never for a page or a 404, and never while the editor is open —
+          a revert under an open draft would replace the bytes that draft is
+          measured against and turn the owner's own save into a conflict they
+          caused by pressing a button in this panel.
+
+          BELOW the body, like `RevisionHistory`'s section on an article: it is
+          chrome about the file, not part of reading it. */}
+      {historyTarget && (
+        <section className="wb-preview-history">
+          <button
+            type="button"
+            ref={historyToggleRef}
+            className="wb-preview-history-toggle"
+            aria-expanded={historyOpen}
+            aria-controls={historyId}
+            onClick={toggleHistory}
+          >
+            {PREVIEW_HISTORY_COPY}
+          </button>
+
+          {historyOpen && (
+            // FOCUSABLE and NAMED, because it scrolls (`max-height` +
+            // `overflow-y`). A scrollable container that no element inside can
+            // take focus into is unreachable by keyboard alone — WCAG 2.1.1 —
+            // and a long history is exactly the case where that bites. `group`
+            // rather than `region` so a labelled container does not add a
+            // landmark inside the Preview's own `complementary`.
+            <div
+              id={historyId}
+              className="wb-preview-history-panel"
+              role="group"
+              aria-label={PREVIEW_HISTORY_COPY}
+              tabIndex={0}
+            >
+              {historyLoading && (
+                <p className="wb-preview-history-note">{PREVIEW_HISTORY_LOADING_COPY}</p>
+              )}
+
+              {/* ONE slot for whichever of the three requests failed. Token-only
+                  and muted like `.wb-preview-error`, because UX-DR15 reserves
+                  colour for destructive labels; `role="alert"` is what announces
+                  it. A server-supplied sentence reaches the owner verbatim —
+                  the helpers in `workbench-preview.ts` decide which. */}
+              {historyError && (
+                <p role="alert" className="wb-preview-history-error">
+                  {historyError}
+                </p>
+              )}
+
+              {/* The list is a READ, and the route answers it on a read-only
+                  deployment too — hiding it would tell the owner nothing except
+                  that they cannot look. What is withheld is the revert, and this
+                  is the one sentence every Revert control points at. */}
+              {readOnly && revisions !== null && revisions.length > 0 && (
+                <p id={readOnlyNoteId} className="wb-preview-history-note">
+                  {PREVIEW_HISTORY_READ_ONLY_COPY}
+                </p>
+              )}
+
+              {!historyLoading && revisions !== null && revisions.length === 0 && (
+                <p className="wb-preview-history-note">{PREVIEW_HISTORY_EMPTY_COPY}</p>
+              )}
+
+              {!historyLoading && revisions !== null && revisions.length > 0 && (
+                <ul className="wb-preview-history-list">
+                  {revisions.map((revision) => {
+                    const viewing = viewingTimestamp === revision.timestamp;
+                    // THIS row's writes, not any row's. A busy flag shared
+                    // across the list told a reader that every revision was
+                    // being written and put `Reverting…` on controls that were
+                    // doing nothing.
+                    const revertingThis = revertingTimestamp === revision.timestamp;
+                    const viewingThis = viewLoading && viewing;
+                    const contentId = `${historyId}-${revision.timestamp}`;
+                    return (
+                      <li key={revision.timestamp} className="wb-preview-history-item">
+                        {/* Date, size, author and reason. The visible instant is
+                            derived from `timestamp` — the id the controls send
+                            back — while `date` is the server's ISO string, which
+                            belongs in `dateTime` where a machine can read it.
+                            Everything after the date, INCLUDING which optional
+                            fields survive and in what order, is
+                            `artifactRevisionMeta`'s answer; this only joins it. */}
+                        <p className="wb-preview-history-meta">
+                          <time dateTime={revision.date}>
+                            {artifactRevisionDate(revision)}
+                          </time>
+                          {artifactRevisionMeta(revision).map((part) => ` · ${part}`).join("")}
+                        </p>
+                        <div className="wb-preview-history-actions">
+                          <button
+                            type="button"
+                            className="wb-preview-history-action"
+                            onClick={() => void viewRevision(revision.timestamp)}
+                            // Scoped to the entry actually being read: a shared
+                            // `disabled` froze every View button while one was
+                            // in flight. A newer view supersedes an older one
+                            // through `viewRequestRef`, so the others stay live.
+                            disabled={viewingThis}
+                            aria-busy={viewingThis || undefined}
+                            aria-expanded={viewing}
+                            // The `<pre>` this control opens, so the expanded
+                            // state points at something rather than at nothing.
+                            aria-controls={viewing ? contentId : undefined}
+                          >
+                            {viewing ? PREVIEW_HISTORY_HIDE_COPY : PREVIEW_HISTORY_VIEW_COPY}
+                          </button>
+                          <button
+                            type="button"
+                            className="wb-preview-history-action"
+                            onClick={() => requestRevert(revision.timestamp)}
+                            // `disabled` is list-wide because a SECOND
+                            // concurrent write is the thing being prevented;
+                            // `aria-busy` and the label are per row, because
+                            // only one of them is the write that is running.
+                            // Read-only is `aria-disabled` instead, so the
+                            // control stays in the tab order and a reader can
+                            // reach the sentence explaining it (the
+                            // `RevisionItem` idiom, DW-187/DW-149).
+                            disabled={revertingTimestamp !== null}
+                            aria-busy={revertingThis || undefined}
+                            aria-disabled={readOnly || undefined}
+                            aria-describedby={readOnly ? readOnlyNoteId : undefined}
+                            data-readonly={readOnly || undefined}
+                          >
+                            {revertingThis
+                              ? PREVIEW_HISTORY_REVERTING_COPY
+                              : PREVIEW_HISTORY_REVERT_COPY}
+                          </button>
+                        </div>
+                        {viewing && viewContent !== null && (
+                          // Verbatim, in a `<pre>`: this is the SOURCE of an
+                          // executable Schema, not the reading surface, and
+                          // rendering it as markdown would show a version that
+                          // looks like the one on screen above it.
+                          //
+                          // Focusable and named for the same WCAG 2.1.1 reason
+                          // the panel is: it scrolls, and a Schema is long.
+                          <pre
+                            id={contentId}
+                            className="wb-preview-history-content"
+                            role="group"
+                            aria-label={artifactRevisionDate(revision)}
+                            tabIndex={0}
+                          >
+                            {viewContent}
+                          </pre>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* The one overlay level (UX-DR17). Esc and Cancel both leave view-first
-          with nothing written; only Confirm opens the editor. */}
+          with nothing written; only Confirm opens the editor.
+
+          Two ELEMENTS, never two overlays: each opener closes the other's state
+          before setting its own, so at most one of these is ever `open`. */}
       <ConfirmDialog
         open={confirmOpen}
         title={editCopy.confirmTitle}
@@ -812,6 +1325,26 @@ function PreviewPane({
         onConfirm={startEditing}
         onCancel={() => setConfirmOpen(false)}
         fallbackFocusRef={editRef}
+      />
+
+      {/* …and the revert's own gate. The Revert control that opened it stays
+          mounted through the whole flow, so `useDialogA11y`'s own restore has
+          somewhere to return focus to; the disclosure is the fallback for the
+          case where a landed revert re-lists into a shorter list. */}
+      <ConfirmDialog
+        open={pendingRevert !== null}
+        title={PREVIEW_HISTORY_REVERT_CONFIRM_TITLE}
+        // NAMES the entry it is about. Every row's control opens the same
+        // dialog, so a static sentence would be a destructive confirm that
+        // never says which of them the owner pressed.
+        body={previewHistoryRevertConfirmBody(
+          revisions?.find((revision) => revision.timestamp === pendingRevert) ?? null,
+        )}
+        confirmLabel={PREVIEW_HISTORY_REVERT_CONFIRM_LABEL}
+        cancelLabel={PREVIEW_CANCEL_COPY}
+        onConfirm={() => void confirmRevert()}
+        onCancel={() => setPendingRevert(null)}
+        fallbackFocusRef={historyToggleRef}
       />
     </aside>
   );

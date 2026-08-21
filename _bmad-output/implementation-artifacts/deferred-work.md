@@ -1901,7 +1901,8 @@ source_spec: `spec-dw-59-per-wiki-artifact-revisions.md`
 location: src/lib/wikis.ts (applyScenarioTemplate / seedWikiArtifacts)
 severity: medium
 reason: `applyScenarioTemplate` -> `seedWikiArtifacts` -> `putWikiArtifact` writes both artifacts with no prior read. `snapshotSeededFiles` holds the pre-seed bytes in memory and `restoreSeededFiles` is called only from the `catch`, so it is a rollback for a FAILED seed, not history: a re-template that COMMITS discards the snapshot and the owner's edited Schema is gone exactly as DW-59 describes. The recorded decision scopes read-before-write to `writeWikiArtifact`, so this is out of scope on the intent's own authority rather than a miss.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-artifact-revision-recovery
 
 ### DW-214: The artifact history API has no client — no Workbench surface lists or reverts artifact revisions, so the recovery path is unreachable from the running app.
 origin: spec-deferred d5925f928e90
@@ -1909,7 +1910,8 @@ source_spec: `spec-dw-59-per-wiki-artifact-revisions.md`
 location: src/components/workbench/PreviewColumn.tsx, src/lib/workbench-preview.ts
 severity: medium
 reason: `grep -rn "artifact/revisions" src` returns only the route and its test. The page equivalent has both halves: `GET/POST /api/wiki/[slug]/revisions` plus `src/components/RevisionHistory.tsx` (expand -> list -> view -> revert), and `workbench-preview.ts` owns `ARTIFACT_WRITE_ROUTE`/`artifactWriteUrl` but gained no history helper. The intent named the route as the exposure surface and the spec's Never list excludes UI, so the API-only shape is correct for this story — the follow-up is wiring the Schema editor to it.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-artifact-revision-recovery
 
 ### DW-215: Artifact revisions accumulate with no cap or pruning and are walked by the backup scan, which throws rather than degrades at its safety limits.
 origin: spec-deferred 5d7e90742d9d
@@ -3313,4 +3315,12 @@ source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.m
 location: src/lib/wiki.ts:389
 severity: medium
 reason: `src/lib/wiki.ts:389-401` warns on a non-ENOENT silo failure and falls through to `wikiRelPath(...)`, which is the legacy flat file. `fresh` bypasses `pageCache` but not that fallback, so a transient silo failure on a precondition-bearing read hands the editor the version of the flat copy while `writeWikiPageWithSideEffects` resolves the tenant path — a precondition computed over one file and compared against another. Pre-existing: the fallback predates the version entirely and exists so a not-yet-migrated page still reads. Closing it means letting a precondition-bearing read refuse rather than widen, which needs the same null-contract change the entry above names.
+status: open
+
+### DW-381: The re-template confirm still presents the Schema overwrite as unrecoverable, which DW-213 has just made false.
+origin: spec-deferred 612a8939a001
+source_spec: `spec-dw-213-214-artifact-revision-recovery.md`
+location: src/components/WikiWorkbench.tsx:415-419
+severity: low
+reason: `src/components/WikiWorkbench.tsx:415-419` tells the owner "This overwrites purpose.md, Schema, and the Workspace Purpose for this wiki", and the comments at `:222` and `:348` call it "an irreversible rewrite" / "an irreversible overwrite". Since this story a committed re-template records the replaced `schema.md` as a revision the Preview's History panel can list and revert, so the confirm understates what the owner can get back. `purpose.md` and the Workspace Purpose are still unrecoverable, so the sentence is not simply wrong — it needs to separate the two halves. Copy only; no behaviour.
 status: open

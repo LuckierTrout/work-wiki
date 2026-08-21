@@ -3322,8 +3322,16 @@ body:has(.wb-shell) {
   color: var(--wb-foreground);
   cursor: pointer;
 }
-.wb-preview-edit:hover {
+.wb-preview-edit:not([disabled]):hover {
   background: var(--wb-rail-hover);
+}
+/* The shell's one disabled treatment, the same pair `.wb-preview-action[disabled]`
+   uses. Reached while a revert is in flight (DW-214), when seeding the editor
+   from bytes that are about to be replaced would turn the owner's own Save into
+   a conflict this column caused. */
+.wb-preview-edit[disabled] {
+  opacity: 0.6;
+  cursor: default;
 }
 .wb-preview-editor {
   flex: 1 1 auto;
@@ -3439,6 +3447,153 @@ body:has(.wb-shell) {
 .wb-preview-retry[disabled] {
   opacity: 0.6;
   cursor: default;
+}
+
+/* ---- The History panel (DW-214) ---------------------------------------- */
+/* The recovery half of Story 1.8, and CHROME rather than reading surface: it is
+   a list of dates and sizes about the file, not the file. So it takes the same
+   treatment every other strip in this column has — sans, 12px, `--wb-muted`,
+   token-only, no danger colour (UX-DR15 reserves red for destructive LABELS,
+   and `Revert` is a label, not a colour). Nothing here introduces a token.
+
+   BELOW the body in DOM order, which is also the tab order: a reader reaches
+   the bytes before the machinery for replacing them. */
+.wb-preview-history {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--wb-border);
+  padding: var(--wb-space-2) var(--wb-space-4);
+  font-size: 12px;
+}
+/* The same control geometry as `.wb-preview-retry`, for the same reason: a small
+   secondary action in a strip of chrome, and the WCAG 2.2 SC 2.5.8 24px floor
+   applies to it exactly as it does there — below 900px this column is a stacked
+   row and the pointer is a thumb. */
+.wb-preview-history-toggle {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font-size: 12px;
+  cursor: pointer;
+}
+.wb-preview-history-toggle:hover {
+  background: var(--wb-rail-hover);
+}
+.wb-preview-history-panel {
+  margin-top: var(--wb-space-2);
+  /* A long history must scroll INSIDE the panel rather than pushing the body
+     out of the column — the reading surface is what the column is for. It is
+     `tabindex="0"` and named in the markup for that reason: a scrollable box
+     with no focusable descendant is unreachable by keyboard (WCAG 2.1.1). */
+  max-height: 40vh;
+  overflow-y: auto;
+}
+/* Loading, empty and the read-only refusal are chrome sentences in the same
+   muted tone as `.wb-preview-note`, but they carry their own bottom margin
+   instead of that class's page padding: these sit INSIDE the panel, which
+   already supplies the inset, and the space below is what keeps them off the
+   list. */
+.wb-preview-history-note {
+  margin: 0 0 var(--wb-space-2);
+  color: var(--wb-muted);
+}
+/* The panel's failure sentence. Token-only and muted like `.wb-preview-error`
+   for the same reason — UX-DR15 reserves colour for destructive labels, and
+   `role="alert"` is what announces it — but spaced like its sibling notes
+   rather than like the editor's, which lives in a flex column that supplies its
+   own gap. Without the margin the alert collides with the list beneath it. */
+.wb-preview-history-error {
+  margin: 0 0 var(--wb-space-2);
+  color: var(--wb-muted);
+}
+.wb-preview-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+}
+.wb-preview-history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: var(--wb-space-2);
+  border-bottom: 1px solid var(--wb-border);
+}
+.wb-preview-history-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.wb-preview-history-meta {
+  margin: 0;
+  color: var(--wb-muted);
+  /* The date, size, author and reason are one line that may not fit; wrapping
+     is what keeps the two controls below reachable at every width. */
+  overflow-wrap: anywhere;
+}
+.wb-preview-history-actions {
+  display: flex;
+  gap: var(--wb-space-2);
+}
+.wb-preview-history-action {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font-size: 12px;
+  cursor: pointer;
+}
+.wb-preview-history-action:not([disabled]):not([data-readonly]):hover {
+  background: var(--wb-rail-hover);
+}
+/* The shell's one disabled treatment, the same pair `.wb-preview-retry` uses.
+   The read-only case is `aria-disabled` rather than `disabled` — the control
+   stays in the tab order so a reader can reach the sentence explaining it — so
+   it needs the same muting from its own attribute. */
+.wb-preview-history-action[disabled],
+.wb-preview-history-action[data-readonly] {
+  opacity: 0.6;
+  cursor: default;
+}
+/* One revision's bytes, verbatim. The SOURCE of an executable Schema, so the
+   mono face `.wb-preview-textarea` uses — never the reading surface's serif,
+   which would make an old version look like the one above it. */
+/* …and it is `tabindex="0"` and named in the markup for the same reason the
+   panel is: a Schema is long, so this scrolls, and a scrollable box no keyboard
+   can enter is a WCAG 2.1.1 failure. */
+.wb-preview-history-content {
+  margin: 0;
+  padding: var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface-subtle);
+  color: var(--wb-foreground);
+  font-family: var(--wb-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 30vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The two focusable CONTAINERS above are not controls, so they get the outline
+   and nothing else — no hover wash, which would suggest they do something when
+   pressed. Stated explicitly rather than left to the user agent, because the
+   default outline on a `--wb-surface-subtle` panel is what a keyboard user has
+   to see to know the scroll landed somewhere. */
+.wb-preview-history-panel:focus-visible,
+.wb-preview-history-content:focus-visible {
+  outline: 2px solid var(--wb-foreground);
+  outline-offset: -2px;
 }
 
 /* ===========================================================================

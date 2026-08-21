@@ -64,6 +64,7 @@ import { getStorage } from "./storage";
 import { appendToLog } from "./wiki-log";
 import {
   CREATABLE_SCENARIOS,
+  EDITABLE_ARTIFACT_FILES,
   MAX_WIKI_NAME_CHARS,
   SCENARIO_LABELS,
   WIKI_ARTIFACT_FILES,
@@ -548,6 +549,109 @@ async function restoreSeededFiles(snapshot: SeededFileSnapshot[]): Promise<void>
         error,
       );
     }
+  }
+}
+
+/**
+ * What the sidecar says a re-template's revision was (DW-213).
+ *
+ * Exported so the surface that lists the entry and the test that pins it read
+ * the same sentence rather than two copies of it. It names BOTH halves of the
+ * event — that a Scenario Template was applied, and WHICH one replaced the
+ * bytes — because in the list beside an owner's own edit summaries "re-applied
+ * a template" alone would not say what the file now holds.
+ *
+ * `SCENARIO_LABELS` rather than the raw id, for the reason
+ * {@link describeWiki} uses it: `personal-growth` is a key, not a name.
+ */
+export function retemplateRevisionReason(scenario: CreatableScenario): string {
+  return `replaced by the ${SCENARIO_LABELS[scenario]} Scenario Template`;
+}
+
+/**
+ * Record what a COMMITTED re-template overwrote, as artifact history (DW-213).
+ *
+ * DW-59 gave `writeWikiArtifact` a read-before-write snapshot, and left this
+ * hole open on purpose: `applyScenarioTemplate` writes through
+ * {@link seedWikiArtifacts} → `putWikiArtifact`, which owns no tail, so a
+ * SUCCESSFUL re-template overwrote an owner-edited `schema.md` with template
+ * bytes and kept no copy of what it replaced. `snapshotSeededFiles` /
+ * {@link restoreSeededFiles} is not that copy — it is rollback for a FAILED
+ * seed, reachable only from the `catch` — so the one path that always destroys
+ * bytes was the one path with no history.
+ *
+ * WHY IT REUSES THE SNAPSHOT RATHER THAN READING AGAIN. Those bytes were read
+ * inside this same `wikis:<tenant>` lock, BEFORE the first overwrite, and are
+ * exactly what the new template replaced; a second read after the seed would
+ * return the TEMPLATE's bytes and file them as the owner's. The entry is matched
+ * by {@link wikiArtifactPath} rather than by array index, so a reordering of
+ * `seededFilePaths` cannot silently file the profile as a Schema.
+ *
+ * WHY AFTER THE COMMIT. Written before the seed, a seed that then failed would
+ * leave a revision identical to the bytes `restoreSeededFiles` put back —
+ * history recording an event that did not happen. The failure path already has
+ * its compensation; this is history for the path that succeeded.
+ *
+ * WHY ONLY {@link EDITABLE_ARTIFACT_FILES}. That is the set
+ * `GET/POST /api/workbench/artifact/revisions` can list and revert. A
+ * `purpose.md` revision would be bytes no surface can reach, and `purpose.md`
+ * has no editor for an owner to have personalised it through — so the allowlist
+ * is the compiler's rather than a literal here, and widening the editable type
+ * widens this with it.
+ *
+ * FAIL-SOFT, in the same shape as `writeWikiArtifact`'s own snapshot: a throw is
+ * warned about and swallowed. The seed and the registry write have both already
+ * landed by the time this runs, and a re-template that reached storage must not
+ * be reported as failed because history could not be recorded.
+ *
+ * THE WHOLE BODY IS INSIDE THAT ENVELOPE, not only the revision write. A `try`
+ * drawn tightly around `saveWikiArtifactRevision` leaves `wikiArtifactPath`'s
+ * `validateTenant` and the reason's normalization outside it, so a throw from
+ * either would reject a COMMITTED re-template — reporting a stored one as
+ * failed, which is exactly what the paragraph above promises cannot happen.
+ * Nothing this function can do is worth that, so nothing it does escapes.
+ *
+ * `content === null` is the pre-seed read finding nothing — the FIRST-WRITE
+ * case, where there is nothing to snapshot and nothing to warn about.
+ *
+ * Takes no lock of its own: `saveWikiArtifactRevision` takes none by design and
+ * the caller is already inside `withWikiLock`, which is not reentrant.
+ */
+async function recordRetemplatedArtifacts(
+  owner: string,
+  wikiId: string,
+  snapshot: SeededFileSnapshot[],
+  scenario: CreatableScenario,
+): Promise<void> {
+  try {
+    const reason = normalizeArtifactEditReason(retemplateRevisionReason(scenario));
+    for (const file of EDITABLE_ARTIFACT_FILES) {
+      const path = wikiArtifactPath(owner, wikiId, file);
+      const entry = snapshot.find((item) => item.path === path);
+      // Absent from the snapshot at all would be a `seededFilePaths` that no
+      // longer covers the editable set — nothing to record, and the seed above
+      // did not overwrite anything either.
+      if (!entry || entry.content === null) continue;
+      try {
+        await saveWikiArtifactRevision(owner, wikiId, file, entry.content, owner, reason);
+      } catch (error) {
+        // PER FILE, so one unwritable history does not skip the next — the same
+        // independence `restoreSeededFiles` keeps between its three entries.
+        logger.warn(
+          "wikis",
+          `snapshotting "${file}" before re-templating wiki "${wikiId}" failed — the new template is stored, but the replaced bytes are not in this wiki's history`,
+          error,
+        );
+      }
+    }
+  } catch (error) {
+    // …and once around everything else, so no line in here can turn a committed
+    // re-template into a rejected promise.
+    logger.warn(
+      "wikis",
+      `recording the replaced artifacts of wiki "${wikiId}" after re-templating failed — the new template is stored, but this wiki's history did not move`,
+      error,
+    );
   }
 }
 
@@ -1067,6 +1171,13 @@ export async function applyScenarioTemplate(
       await restoreSeededFiles(snapshot);
       throw error;
     }
+    // COMMITTED — the seed and the registry write both landed, so the bytes the
+    // snapshot above holds are gone from the artifact path for good unless they
+    // are recorded now (DW-213). Inside the lock this callback already holds,
+    // after the `try/catch` so it runs on the committed path ONLY, and fail-soft
+    // so a history miss cannot turn a stored re-template into a reported
+    // failure. The `catch` keeps `restoreSeededFiles` as its only compensation.
+    await recordRetemplatedArtifacts(owner, wiki.id, snapshot, scenario);
     return wiki;
   });
 

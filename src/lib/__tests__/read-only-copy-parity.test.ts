@@ -29,6 +29,7 @@ import { DELETE_PAGE_READ_ONLY_COPY } from "@/components/DeletePageButton";
 import { REINGEST_READ_ONLY_COPY } from "@/components/ReingestButton";
 import { REVERT_READ_ONLY_COPY } from "@/components/RevisionHistory";
 import { WORKSPACE_PURPOSE_READ_ONLY_COPY } from "@/components/WorkspacePurposeSettings";
+import { PREVIEW_HISTORY_READ_ONLY_COPY } from "../workbench-preview";
 
 /**
  * A route's own 403 sentence, read out of its source.
@@ -81,6 +82,31 @@ describe("client refusal copy mirrors the server's", () => {
     // either sentence actionable.
     expect(READ_ONLY_REFUSAL.pageWrite).toContain("read-only");
     expect(REVERT_READ_ONLY_COPY).toContain("read-only");
+  });
+
+  it("the Preview's Revert is narrower than the artifact sentence behind it, on purpose", () => {
+    // DW-214 gave `GET/POST /api/workbench/artifact/revisions` its first client.
+    // The POST refuses with `READ_ONLY_REFUSAL.artifactEdit` — "The Schema
+    // cannot be edited…" — which is the honest sentence for a door that also
+    // carries the editor's save, and a confusing one beside a control labelled
+    // Revert over a version the owner did not type. So the panel narrows it, and
+    // the difference is recorded here rather than left to look like the
+    // re-ingest bug above.
+    expect(PREVIEW_HISTORY_READ_ONLY_COPY).not.toBe(READ_ONLY_REFUSAL.artifactEdit);
+    expect(PREVIEW_HISTORY_READ_ONLY_COPY).toContain("reverted");
+    // Both name the SCHEMA — the narrowing is about the verb, not the subject:
+    // a sentence that stopped saying which file it was about would leave the
+    // owner guessing which of the column's two surfaces refused.
+    expect(READ_ONLY_REFUSAL.artifactEdit).toContain("Schema");
+    expect(PREVIEW_HISTORY_READ_ONLY_COPY).toContain("Schema");
+    // …and both still name the deployment state, which is the property that
+    // makes either sentence actionable.
+    expect(READ_ONLY_REFUSAL.artifactEdit).toContain("read-only");
+    expect(PREVIEW_HISTORY_READ_ONLY_COPY).toContain("read-only");
+    // Narrower than the PAGE revert's sentence too, and distinct from it: the
+    // two live on different surfaces refusing different writers, and one string
+    // reused for both is how a re-point goes unnoticed.
+    expect(PREVIEW_HISTORY_READ_ONLY_COPY).not.toBe(REVERT_READ_ONLY_COPY);
   });
 
   it("Change template says exactly what POST /api/wikis/[id]/template answers", async () => {

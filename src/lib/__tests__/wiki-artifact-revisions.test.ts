@@ -48,9 +48,11 @@ import {
   wikiDirPath,
 } from "../wiki-paths";
 import {
+  applyScenarioTemplate,
   createWiki,
   deleteWiki,
   readWikiArtifact,
+  retemplateRevisionReason,
   setCurrentWiki,
   writeWikiArtifact,
   type WikiRecord,
@@ -353,13 +355,14 @@ describe("per-Wiki artifact revisions", () => {
     // recorded decision deliberately leaves un-snapshotted: DW-59 scopes
     // read-before-write to `writeWikiArtifact`.
     //
-    // BE PRECISE ABOUT WHAT THAT LEAVES OPEN. `applyScenarioTemplate` snapshots
-    // the seeded files, but `restoreSeededFiles` runs only from its `catch` —
-    // it is rollback for a FAILED re-template, not history. A re-template that
-    // SUCCEEDS overwrites an owner-edited `schema.md` with template bytes and
-    // keeps no copy of what it replaced, so that edit is still lost for good.
-    // The exclusion is the recorded decision's, and the hole is real; whichever
-    // story widens the snapshot to the seeder closes it.
+    // BE PRECISE ABOUT WHAT THAT LEAVES OPEN, AND WHAT NO LONGER DOES.
+    // `restoreSeededFiles` still runs only from `applyScenarioTemplate`'s
+    // `catch` — it is rollback for a FAILED re-template, not history. What DW-213
+    // added is the other half: a COMMITTED re-template now records the
+    // `schema.md` bytes it overwrote as a revision, from the snapshot it already
+    // took (see "a committed re-template …" below). CREATE is still deliberately
+    // silent, and that is what this row pins — a Wiki seeded moments ago
+    // overwrote nothing, so there is nothing for its history to hold.
     await expect(
       fs.stat(path.join(tmpDir, wikiArtifactRevisionsDir(OWNER, wiki.id, "schema.md"))),
     ).rejects.toMatchObject({ code: "ENOENT" });
@@ -488,6 +491,151 @@ describe("per-Wiki artifact revisions", () => {
     expect(
       await readWikiArtifactRevision(OWNER, first.id, "schema.md", onlySecond.timestamp),
     ).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // The re-template snapshot (DW-213)
+  // -------------------------------------------------------------------------
+  //
+  // DW-59 scoped read-before-write to `writeWikiArtifact` and left the most
+  // destructive operation in the module uncovered: `applyScenarioTemplate` seeds
+  // through `putWikiArtifact`, which owns no tail, so a re-template that
+  // SUCCEEDED replaced an owner-edited Schema with template bytes and kept no
+  // copy. `snapshotSeededFiles`/`restoreSeededFiles` is not that copy — it is
+  // rollback for a FAILED seed, reachable only from the `catch`. These four rows
+  // are the matrix for the path that commits.
+
+  it("a committed re-template records the Schema bytes it overwrote", async () => {
+    const wiki = await seed();
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT);
+    // The owner's OWN bytes, and the ones the template is about to destroy.
+    expect(await readSchema(wiki)).toBe(FIRST_EDIT);
+
+    expect(await applyScenarioTemplate(OWNER, wiki.id, "reading")).not.toBeNull();
+
+    // The seed landed: the Schema is the new template's.
+    expect(await readSchema(wiki)).toContain("### Scenario conventions — Reading");
+    const revisions = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md");
+    // Two: the seeded bytes the owner's edit replaced, and now the owner's
+    // edit itself — newest first.
+    expect(revisions).toHaveLength(2);
+    expect(revisions[0].file).toBe("schema.md");
+    expect(revisions[0].author).toBe(OWNER);
+    // The reason NAMES the event and the template that caused it, so the entry
+    // reads differently from an owner's own edit sitting beside it.
+    expect(revisions[0].reason).toBe(retemplateRevisionReason("reading"));
+    expect(revisions[0].reason).toContain("Reading");
+    expect(
+      await readWikiArtifactRevision(OWNER, wiki.id, "schema.md", revisions[0].timestamp),
+    ).toBe(FIRST_EDIT);
+  });
+
+  it("records the bytes the snapshot held, never the template's own", async () => {
+    // The one way to get this wrong: reading `schema.md` again AFTER the seed,
+    // which answers the TEMPLATE's bytes and files them as the owner's. The
+    // snapshot is taken before the first overwrite, inside the same lock, and
+    // that is what this pins.
+    const wiki = await seed();
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT);
+    await applyScenarioTemplate(OWNER, wiki.id, "reading");
+
+    const [newest] = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md");
+    const recorded = await readWikiArtifactRevision(
+      OWNER,
+      wiki.id,
+      "schema.md",
+      newest.timestamp,
+    );
+    expect(recorded).toBe(FIRST_EDIT);
+    expect(recorded).not.toContain("### Scenario conventions — Reading");
+
+    // …and reverting to it puts the owner's Schema back, which is the whole
+    // point of recording it (the acceptance criterion this feature exists for).
+    const response = await post(`path=schema.md`, {
+      action: "revert",
+      timestamp: newest.timestamp,
+    });
+    expect(response.status).toBe(200);
+    expect(await readSchema(wiki)).toBe(FIRST_EDIT);
+  });
+
+  it("records only schema.md — purpose.md has no surface to reach a revision through", async () => {
+    const wiki = await seed();
+    await applyScenarioTemplate(OWNER, wiki.id, "reading");
+
+    // `EDITABLE_ARTIFACT_FILES` is the set the revisions route can list and
+    // revert; a `purpose.md` revision would be bytes nothing can open.
+    await expect(
+      fs.stat(path.join(tmpDir, wikiArtifactRevisionsDir(OWNER, wiki.id, "purpose.md"))),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md")).toHaveLength(1);
+  });
+
+  it("writes NO revision when the pre-seed read found nothing", async () => {
+    const wiki = await seed();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    // `content: null` in the snapshot — the FIRST-WRITE case, where the seed
+    // overwrote nothing and there is nothing to have lost.
+    await fs.rm(path.join(tmpDir, wikiArtifactPath(OWNER, wiki.id, "schema.md")));
+
+    expect(await applyScenarioTemplate(OWNER, wiki.id, "reading")).not.toBeNull();
+
+    expect(await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md")).toEqual([]);
+    // Absent is not a fault: nothing about history is warned here.
+    expect(
+      warn.mock.calls.some((call) => String(call[1]).includes("re-templating")),
+    ).toBe(false);
+  });
+
+  it("writes NO revision when the re-template FAILS mid-seed", async () => {
+    const wiki = await seed();
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT);
+    const before = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md");
+    const storage = getStorage();
+    const realWrite = storage.writeFile.bind(storage);
+    vi.spyOn(storage, "writeFile").mockImplementation(async (p, content) => {
+      if (p.endsWith("wikis.json")) throw new Error("the registry store is down");
+      return realWrite(p, content);
+    });
+
+    await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+      "the registry store is down",
+    );
+    vi.restoreAllMocks();
+
+    // The compensation is unchanged and history recorded nothing: a revision
+    // written before the seed would have been an entry for an event that did
+    // not happen, sitting beside bytes `restoreSeededFiles` put straight back.
+    expect(await readSchema(wiki)).toBe(FIRST_EDIT);
+    expect(await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md")).toEqual(before);
+  });
+
+  it("is FAIL-SOFT on the commit: a rejected snapshot warns and the re-template still lands", async () => {
+    const wiki = await seed();
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const storage = getStorage();
+    const realWrite = storage.writeFile.bind(storage);
+    // Only the revision write of the re-template rejects — the seed and the
+    // registry write have both already landed by the time it runs.
+    vi.spyOn(storage, "writeFile").mockImplementation(async (p, content) => {
+      if (p.includes("/revisions/")) throw new Error("revision store is down");
+      return realWrite(p, content);
+    });
+
+    const applied = await applyScenarioTemplate(OWNER, wiki.id, "reading");
+
+    // A re-template that reached storage is NEVER reported as failed for a
+    // history miss — the record is returned and the bytes are the template's.
+    expect(applied).not.toBeNull();
+    expect(applied?.scenario).toBe("reading");
+    expect(await readSchema(wiki)).toContain("### Scenario conventions — Reading");
+    expect(
+      warn.mock.calls.some(
+        (call) =>
+          call[0] === "wikis" && String(call[1]).includes("before re-templating wiki"),
+      ),
+    ).toBe(true);
   });
 
   // -------------------------------------------------------------------------

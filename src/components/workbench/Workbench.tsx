@@ -1129,6 +1129,12 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
           // pick may be applied, which needs one bit, and a shell that could
           // read the text would be a second owner of the editor's state.
           onDirtyChange={reportPreviewDirty}
+          // The deployment flag the shell already holds, threaded down the same
+          // way `WikiSwitcher` receives it — no route and no client fetch for a
+          // fact the server render carried in. The Preview's History panel must
+          // withhold Revert BEFORE its confirm (DW-149), not after the route's
+          // 403.
+          readOnly={readOnly}
           // …and the shell keeps the geometry. Below 900px the column is a
           // stacked row the shell has to scroll to; the column itself never
           // reads the viewport.
