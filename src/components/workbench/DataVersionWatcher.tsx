@@ -15,19 +15,19 @@ import { useWorkbenchData } from "./WorkbenchData";
  * The Workbench's refresh mechanism for KERNEL PAGE WRITES. Renders nothing.
  *
  * It is not the only `router.refresh()` in this directory, and deliberately so:
- * `WikiSwitcher.tsx` keeps its own, because the registry changes it drives —
- * switching the current Wiki, renaming one, deleting one — are not kernel page
- * writes and move no `dataVersion` at all. Renaming is the one of those three
- * that also rewrites bytes (`purpose.md`'s heading) and still does not bump,
- * which is a known gap rather than a decision — DW-209.
+ * `WikiSwitcher.tsx` keeps its own, because some of the registry changes it
+ * drives — switching the current Wiki, deleting one — are not kernel page
+ * writes and move no `dataVersion` at all.
  *
- * CREATE AND RE-TEMPLATE ARE THE EXCEPTION (DW-49). Both SEED bytes as well as
- * touching the registry — `purpose.md` and `schema.md` — so both now bump the
+ * CREATE, RE-TEMPLATE AND RENAME ARE THE EXCEPTION (DW-49, DW-209). All three
+ * write bytes a Preview renders as well as touching the registry — create and
+ * re-template seed `purpose.md` and `schema.md`, rename retitles `purpose.md`'s
+ * heading and moves the name the Workbench heading shows — so all three bump the
  * counter and reach this watcher too, which is what un-stales a Preview left
- * open on an artifact across a re-apply. The switcher's own refresh stays
- * because the other three cases still move nothing; the two paths overlapping
- * on create costs one redundant refresh, which is cheaper than the switcher
- * guessing which of its four operations bumped.
+ * open on an artifact across a re-apply or a rename. The switcher's own refresh
+ * stays because switch and delete still move nothing; the two paths overlapping
+ * on create and rename costs one redundant refresh, which is cheaper than the
+ * switcher guessing which of its four operations bumped.
  *
  * Every write that goes through `runPageLifecycleOp` — the Preview editor's
  * save included — arrives here as well.

@@ -721,21 +721,33 @@ describe("the bump lives at exactly one site", () => {
     ]);
   });
 
-  it("has exactly three sites inside wikis.ts, each outside the tenant lock", async () => {
+  it("has exactly four sites inside wikis.ts, each outside the tenant lock", async () => {
     // The list above is FILE-granular, so allowlisting `lib/wikis.ts` would
     // otherwise buy a blanket exemption for a module with seven exported
     // writers in it. This pins WHICH of them bump, the way the `lifecycle.ts`
     // test above pins its own count.
     //
-    // Three, since DW-49: `writeWikiArtifact` (a Schema edit) plus `createWiki`
-    // and `applyScenarioTemplate`, because seeding writes `purpose.md` and
-    // `schema.md` through the tail-less `putWikiArtifact` and a re-template
+    // Four, since DW-209: `writeWikiArtifact` (a Schema edit) plus `createWiki`
+    // and `applyScenarioTemplate` (DW-49), because seeding writes `purpose.md`
+    // and `schema.md` through the tail-less `putWikiArtifact` and a re-template
     // moves nothing else a Preview is keyed on — without the bump a Preview
-    // READING either artifact keeps the old template's bytes. `putWikiArtifact`,
-    // `seedWikiArtifacts`, `retitlePurpose`, `setCurrentWiki`, `renameWiki`,
-    // `sweepOrphanWikiDirectories` and `deleteWiki` are still deliberately
-    // absent — `renameWiki`'s omission is a known staleness gap (DW-209), the
-    // rest write nothing a Preview renders.
+    // READING either artifact keeps the old template's bytes — plus `renameWiki`,
+    // which retitles `purpose.md`'s heading and moves the name the Workbench
+    // renders while changing no `currentWikiId`, so the counter is the only
+    // thing that can un-stale an open Preview.
+    //
+    // The rest are deliberately absent for three DIFFERENT reasons, and lumping
+    // them together would hide the one that matters. `putWikiArtifact`,
+    // `seedWikiArtifacts` and `retitlePurpose` write exactly the bytes a Preview
+    // renders — they are absent because they run INSIDE `wikis:<tenant>`, where
+    // taking `DATA_VERSION_LOCK` would nest two keys, so their CALLERS carry the
+    // tail instead; that is the whole reason the four above are callers.
+    // `sweepOrphanWikiDirectories` and `deleteWiki` REMOVE such bytes, but only
+    // for a Wiki that is by then unreachable — the sweep's directories are
+    // unreferenced and the current Wiki is undeletable — so no Preview can be
+    // open on what they take. `setCurrentWiki` is the only one that genuinely
+    // writes nothing a Preview renders: it moves `currentId` in `wikis.json` and
+    // nothing else, and the selection change is its own refresh trigger.
 
     /**
      * Comments removed, so a call QUOTED in a docblock is never counted as a
@@ -753,8 +765,8 @@ describe("the bump lives at exactly one site", () => {
     // bump that was moved inside the lock and fired unawaited — `void
     // bumpDataVersion()`, or a `.then()` chain — which the await form cannot
     // match at all and which would leave the count looking untouched.
-    expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(3);
-    expect(source.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(3);
+    expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(4);
+    expect(source.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(4);
 
     /**
      * One function's body, from its `export` line to the `}` that closes it.
@@ -773,7 +785,12 @@ describe("the bump lives at exactly one site", () => {
       return source.slice(at, close);
     };
 
-    for (const name of ["writeWikiArtifact", "createWiki", "applyScenarioTemplate"]) {
+    for (const name of [
+      "writeWikiArtifact",
+      "createWiki",
+      "applyScenarioTemplate",
+      "renameWiki",
+    ]) {
       const body = bodyOf(name);
       const bump = body.indexOf("await bumpDataVersion();");
       expect(bump).toBeGreaterThan(-1);
@@ -806,7 +823,7 @@ describe("the bump lives at exactly one site", () => {
       expect(bump).toBeGreaterThan(closes[0]);
     }
 
-    // The three counted above are now accounted for one apiece by three
+    // The four counted above are now accounted for one apiece by four
     // DISJOINT bodies, so no other function in the module has one — including
     // `seedWikiArtifacts`, which is the whole reason the tails live at the
     // callers: it always runs while `wikis:<tenant>` is held. Asserted directly

@@ -1233,12 +1233,14 @@ export async function setCurrentWiki(
  * key again (deadlock) and fire an activity-log line naming a Schema edit this
  * is not.
  *
- * NO `dataVersion` BUMP EITHER, and since DW-49 that is no longer the whole
- * family's rule: {@link createWiki} and {@link applyScenarioTemplate} grew tails
- * because they SEED bytes, while {@link renameWiki} did not. So a Preview left
- * open on `purpose.md` keeps the old heading across a rename until the owner
- * reselects or reloads — logged as DW-209, out of scope for the bundle that
- * added the other two tails.
+ * NO `dataVersion` BUMP HERE, but the rename does carry one: {@link renameWiki}
+ * bumps once at its own tail, outside the lock, after this returns (DW-209) —
+ * the same shape {@link createWiki} and {@link applyScenarioTemplate} grew in
+ * DW-49. Putting it here instead would be wrong twice over: this runs INSIDE
+ * `wikis:<tenant>`, where taking `DATA_VERSION_LOCK` would nest two keys; and a
+ * fail-soft retitle would then skip the bump on exactly the path where the
+ * registry name moved and the heading did not, which is when an open Preview
+ * most needs telling.
  *
  * FAIL-SOFT, and that is the whole design of it. The registry is what the
  * switcher, the workbench heading and every id lookup read; `purpose.md`'s
@@ -1292,6 +1294,24 @@ async function retitlePurpose(
  * anything. Nothing else moves: the Scenario Template, the Schema, the
  * workspace profile, Pages and Sources are all untouched — a rename is a label
  * change, not a re-seed.
+ *
+ * IT DOES BUMP `dataVersion` (DW-209), the same tail {@link createWiki} and
+ * {@link applyScenarioTemplate} carry. A rename changes no `currentWikiId`, so
+ * the Workbench's selection-reset effect does not fire, and the Preview's fetch
+ * is keyed on `[selection, dataVersion, editing]` — which leaves the counter as
+ * the ONLY thing that can tell a Preview left open on `purpose.md` its heading
+ * moved. Without it the stale heading stands until the owner reselects or
+ * reloads.
+ *
+ * The tail is OUTSIDE the lock (`bumpDataVersion` takes `DATA_VERSION_LOCK` and
+ * `withFileLock` is not reentrant), fail-soft (a rename whose registry write
+ * landed must not be reported as failed because the counter did not move), and
+ * fires only when the locked body returned a record — an unknown id writes
+ * nothing, and a rejected name throws before the lock.
+ *
+ * It bumps even when {@link retitlePurpose} failed: the registry name has moved,
+ * and that name is what the switcher and the Workbench heading render, so there
+ * is genuinely something new to refetch.
  */
 export async function renameWiki(
   owner: string,
@@ -1306,7 +1326,7 @@ export async function renameWiki(
   // `PATCH /api/wikis/[id]` already refuses first.
   assertWritable(READ_ONLY_REFUSAL.wikiRename);
   const parsed = parseWikiName(name);
-  return withWikiLock(owner, async () => {
+  const renamed = await withWikiLock(owner, async () => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
     if (!wiki) return null;
@@ -1316,6 +1336,19 @@ export async function renameWiki(
     await retitlePurpose(owner, wiki.id, parsed);
     return wiki;
   });
+
+  // Unknown id: nothing was written, so there is nothing to refresh to.
+  if (!renamed) return null;
+  try {
+    await bumpDataVersion();
+  } catch (error) {
+    logger.warn(
+      "wikis",
+      `the refresh signal did not move after renaming wiki "${renamed.id}"`,
+      error,
+    );
+  }
+  return renamed;
 }
 
 /**
@@ -1340,6 +1373,37 @@ export async function renameWiki(
  * bytes cost storage, the race costs a Wiki.
  */
 export const ORPHAN_SWEEP_GRACE_MS = 15 * 60 * 1000;
+
+/**
+ * How many candidate directories one {@link sweepOrphans} pass will consider.
+ *
+ * A COST AND BLAST-RADIUS BOUND, NOT A CORRECTNESS GUARD, in the same spirit as
+ * every other block in `POST /api/tasks/scan`, each of which bounds its own work
+ * — `DEFAULT_MAINTENANCE_CAP` (10), `.slice(0, 25)` on the due-agent and
+ * monitor lists, `listDueOutboxEvents(…, 50)`. The sweep walks, stats and
+ * deletes each candidate while HOLDING `wikis:<tenant>`, so every create, rename
+ * and delete for that tenant queues behind it; without a cap the length of that
+ * queue is set by however many orphan directories happen to exist. There is no
+ * single right number — those three siblings disagree by 5×. 25 is the middle
+ * one and the one the neighbouring per-request `.slice(0, 25)` blocks already
+ * use, which against a population bounded in practice by {@link MAX_WIKIS} (100)
+ * and by orphans being rare costs nothing in the healthy case and caps the
+ * pathological one.
+ *
+ * WHY NO CURSOR: removal IS the progress. A reclaimed directory is gone from the
+ * next pass's `listFiles`, so the next scheduled tick starts on the remainder
+ * with no resume state to persist, corrupt or reconcile.
+ *
+ * THE RESIDUAL: a candidate that is SKIPPED rather than removed is still listed
+ * next pass and still occupies a slot. That is now only the two AGE skips — too
+ * young, or an age that could not be read — because the tombstone probe is
+ * resolved BEFORE the cap, so an untombstoned directory against a lost registry
+ * never reaches it. The young case is self-clearing by construction, and the
+ * unreadable-age case is the already-documented one; a large enough set of
+ * permanently unreadable directories could still starve the tail of the list,
+ * which is accepted against the alternative of an unbounded walk.
+ */
+export const ORPHAN_SWEEP_CANDIDATE_CAP = 25;
 
 /**
  * The most recent write anywhere under `dir`, in epoch millis — or NULL when
@@ -1424,6 +1488,18 @@ async function newestWriteTime(dir: string): Promise<number | null> {
  * whose seed AND whose discard both failed — without letting a lost `wikis.json`
  * cost the tenant a single artifact.
  *
+ * AT MOST {@link ORPHAN_SWEEP_CANDIDATE_CAP} CANDIDATES PER PASS (DW-289). The
+ * cap is applied to the candidate LIST, after the O(1) tombstone probe and
+ * before the first age read, so the PER-CANDIDATE work under `wikis:<tenant>` —
+ * `newestWriteTime`'s recursive stat walk and `deleteDirectory` — is bounded by
+ * the cap rather than by however many orphan directories exist. It does NOT
+ * bound the `listFiles` enumeration above it, which still lists every entry
+ * under `wikis/` (and paginates on R2) inside the lock; that is one round trip
+ * per page rather than per candidate, and bounding it would need the cursor this
+ * deliberately does not keep. Truncation is warned about naming how many were
+ * deferred, and the next scheduled pass picks them up. The return value is
+ * unchanged — how many directories THIS pass removed.
+ *
  * Residual, and documented rather than fixed: an isolate killed BETWEEN the seed
  * and the registry write on a first-ever create leaves an UNTOMBSTONED directory
  * (the catch never ran), which stays unreclaimable until the tenant owns a Wiki.
@@ -1433,25 +1509,39 @@ async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<numb
   const tombstonedOnly = registry.wikis.length === 0;
   const known = new Set(registry.wikis.map((wiki) => wiki.id));
   const entries = await getStorage().listFiles(wikisRootPath(owner));
-  const candidates = entries
+  const found = entries
     .filter((entry) => entry.isDirectory)
     .map((entry) => entry.name)
     .filter((name) => WIKI_ID_RE.test(name) && !known.has(name));
-  if (tombstonedOnly && candidates.length > 0) {
-    // Only when there is actually something being held back. A scheduled sweep
-    // runs on every cron tick, and a brand-new tenant with no wikis and no
-    // directories is a healthy state — warning about it every few minutes would
-    // train the operator to ignore the line that matters.
+  if (tombstonedOnly && found.length > 0) {
+    // Only when there is actually something being held back — and keyed on the
+    // PRE-CAP list, so the line fires for the same states it always did rather
+    // than for whatever survived the truncation below. A scheduled sweep runs on
+    // every cron tick, and a brand-new tenant with no wikis and no directories
+    // is a healthy state — warning about it every few minutes would train the
+    // operator to ignore the line that matters.
     logger.warn(
       "wikis",
       "the registry names no wikis, which is a lost or unreadable wikis.json as often as it is an empty tenant — sweeping only directories marked discarded by a failed half-create",
     );
   }
-  const cutoff = Date.now() - ORPHAN_SWEEP_GRACE_MS;
-  let removed = 0;
-  for (const name of candidates) {
-    const dir = wikiDirPath(owner, name);
-    if (tombstonedOnly) {
+  // THE TOMBSTONE PROBE RESOLVES OVER THE FULL LIST, BEFORE THE CAP. In
+  // `tombstonedOnly` mode an untombstoned directory is skipped on EVERY pass
+  // forever, so letting one occupy a slot would permanently starve a genuinely
+  // tombstoned DW-162 directory that sorts after it — R2 lists lexicographically,
+  // so "after" is a stable position, not a coin flip, and capping first would be
+  // a regression against the uncapped behaviour rather than a deferral. It also
+  // keeps the truncation warn below honest: it counts directories this pass
+  // would really have reclaimed, not every directory a LOST registry makes look
+  // like an orphan.
+  //
+  // Affordable because the probe is a single `fileExists` per candidate — O(1),
+  // unlike `newestWriteTime`'s recursive walk or `deleteDirectory`. What the cap
+  // is there to bound is the per-candidate WALK, and that stays bounded.
+  let eligible = found;
+  if (tombstonedOnly) {
+    const marked: string[] = [];
+    for (const name of found) {
       let tombstoned = false;
       try {
         tombstoned = await getStorage().fileExists(
@@ -1465,8 +1555,27 @@ async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<numb
           error,
         );
       }
-      if (!tombstoned) continue;
+      if (tombstoned) marked.push(name);
     }
+    eligible = marked;
+  }
+  // Capped HERE, on the candidate list, before a single `newestWriteTime` or
+  // `deleteDirectory` below — capping the REMOVALS instead would leave the
+  // per-candidate walk that holds `wikis:<tenant>` unbounded, which is the cost
+  // this bounds (DW-289).
+  const candidates = eligible.slice(0, ORPHAN_SWEEP_CANDIDATE_CAP);
+  if (eligible.length > candidates.length) {
+    logger.warn(
+      "wikis",
+      `${eligible.length} orphaned wiki directory candidates found, which is more than the ${ORPHAN_SWEEP_CANDIDATE_CAP} one pass considers — deferring ${
+        eligible.length - candidates.length
+      } to the next sweep`,
+    );
+  }
+  const cutoff = Date.now() - ORPHAN_SWEEP_GRACE_MS;
+  let removed = 0;
+  for (const name of candidates) {
+    const dir = wikiDirPath(owner, name);
     const newest = await newestWriteTime(dir);
     if (newest === null || newest > cutoff) {
       // The in-flight-create guard. `newestWriteTime` already warned when the
@@ -1547,7 +1656,11 @@ export async function sweepOrphanWikiDirectories(owner: string): Promise<number>
  * write lands the Wiki is gone from every read in the app, so a throw from
  * either `deleteDirectory` or the sweep would 500 a delete that has effectively
  * happened — and the owner's retry would then 404. The leftovers are exactly
- * what the sweep reclaims on the next delete.
+ * what the sweep reclaims on the next delete — up to
+ * {@link ORPHAN_SWEEP_CANDIDATE_CAP} of them, since the inline sweep below is a
+ * user-facing request path and carries the same per-pass bound the scheduled
+ * caller does; anything past the cap waits for the next delete or the next cron
+ * tick rather than lengthening this one under the tenant lock.
  *
  * Pages, Sources, the page index and `tenants/<t>/wiki/**` are untouched: they
  * are tenant-wide, not per-Wiki, so a delete never removes content.

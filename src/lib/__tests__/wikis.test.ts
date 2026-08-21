@@ -23,6 +23,7 @@ import { getWorkspaceProfile, saveWorkspaceProfile } from "../workspace-profile"
 import { WORKSPACE_SCENARIO_TEMPLATES } from "../workspace-profile-schema";
 import {
   MAX_WIKIS,
+  ORPHAN_SWEEP_CANDIDATE_CAP,
   ORPHAN_SWEEP_GRACE_MS,
   applyScenarioTemplate,
   createWiki,
@@ -341,7 +342,7 @@ describe("input validation", () => {
  * would let "bumps once" pass against an implementation that just STORES `1`,
  * and let the "does not bump" rows pass against a counter that is failing open.
  */
-describe("create and re-template move the refresh signal (DW-49, DW-57)", () => {
+describe("create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209)", () => {
   it("bumps exactly once per create, not once per seeded file", async () => {
     // The FIRST create is what lifts the counter off zero, so the second one's
     // `before + 1` is arithmetic on the stored value rather than a literal an
@@ -422,6 +423,81 @@ describe("create and re-template move the refresh signal (DW-49, DW-57)", () => 
     ).rejects.toThrow(ClientInputError);
 
     expect(await readDataVersion()).toBe(before);
+  });
+
+  it("bumps exactly once per rename, which is the only signal a rename sends", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0); // the create's own bump
+
+    expect((await renameWiki(OWNER, wiki.id, "Q4 plan"))?.name).toBe("Q4 plan");
+
+    // Once, not once per write: the registry and `purpose.md` both moved, and
+    // the signal is monotonic — a consumer only needs "it moved forward".
+    expect(await readDataVersion()).toBe(before + 1);
+    // …and the bytes the bump is telling an open Preview to refetch really did
+    // change. A rename moves no `currentWikiId`, so the Workbench's
+    // selection-reset effect never fires and this counter is the ONLY thing
+    // that can un-stale a Preview left open on `purpose.md` (DW-209).
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain("# Q4 plan");
+  });
+
+  it("does not bump for a rename of an unknown wiki id", async () => {
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0); // so "unchanged" is not "still zero"
+
+    expect(
+      await renameWiki(OWNER, "00000000-0000-4000-8000-000000000000", "New name"),
+    ).toBeNull();
+
+    // The locked body returns before its first write, so there is nothing new
+    // to see and a refresh would be pure churn.
+    expect(await readDataVersion()).toBe(before);
+  });
+
+  it("does not bump when a rename is rejected outright", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0);
+
+    // `parseWikiName` throws BEFORE the lock, so not a byte was written.
+    for (const name of ["   ", 42 as never, "x".repeat(81)]) {
+      await expect(renameWiki(OWNER, wiki.id, name)).rejects.toThrow(ClientInputError);
+    }
+
+    expect(await readDataVersion()).toBe(before);
+  });
+
+  it("bumps a rename whose purpose.md retitle failed", async () => {
+    // The registry name has moved — and that name is what the switcher and the
+    // Workbench heading render — so there IS something new to refetch even
+    // though the heading is stale. `retitlePurpose` is fail-soft, so skipping
+    // the bump here would drop the signal on exactly the path where the two
+    // representations have diverged.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0);
+
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    const spy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) =>
+        target.endsWith("purpose.md")
+          ? Promise.reject(new Error("the artifact store is unavailable"))
+          : write(target, content),
+      );
+    try {
+      expect((await renameWiki(OWNER, wiki.id, "Q4 plan"))?.name).toBe("Q4 plan");
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(await readDataVersion()).toBe(before + 1);
+    // The heading really is stale — so the bump above is not being earned by a
+    // retitle that quietly succeeded.
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain("# Ops");
   });
 
   // -------------------------------------------------------------------------
@@ -512,6 +588,40 @@ describe("create and re-template move the refresh signal (DW-49, DW-57)", () => 
     expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toContain(
       "### Scenario conventions — Reading",
     );
+    expect(await readDataVersion()).toBe(before);
+    expect(
+      warned.some(
+        ([scope, message]) =>
+          scope === "data-version" && String(message).includes(BUMP_FAILED_WARN),
+      ),
+    ).toBe(true);
+  });
+
+  it("still resolves a rename when the counter store rejects putIndex", async () => {
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0);
+
+    const putIndex = vi
+      .spyOn(getStorage(), "putIndex")
+      .mockRejectedValue(new Error("kv is gone"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let renamed: WikiRecord | null;
+    let warned: unknown[][] = [];
+    try {
+      renamed = await renameWiki(OWNER, wiki.id, "Q4 plan");
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+      putIndex.mockRestore();
+    }
+
+    // The rename resolved and both halves of it landed…
+    expect(renamed?.name).toBe("Q4 plan");
+    expect((await getWikiRegistry(OWNER)).wikis[0].name).toBe("Q4 plan");
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain("# Q4 plan");
+    // …while the signal genuinely did NOT move.
     expect(await readDataVersion()).toBe(before);
     expect(
       warned.some(
@@ -1319,6 +1429,208 @@ describe("the orphan-directory sweep", () => {
 
     expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([keep.id]);
     expect(await exists(wikiDir(drop.id))).toBe(false);
+  });
+
+  it("considers at most the per-pass cap and defers the rest to the next sweep (DW-289)", async () => {
+    // The whole walk — `newestWriteTime` per candidate, the tombstone probe,
+    // `deleteDirectory` — runs while `wikis:<tenant>` is HELD, so every create,
+    // rename and delete for this tenant queues behind it. Uncapped, the length
+    // of that queue is set by however many orphan directories happen to exist.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const OVERFLOW = 3;
+    const planted: string[] = [];
+    for (let index = 0; index < ORPHAN_SWEEP_CANDIDATE_CAP + OVERFLOW; index += 1) {
+      const dir = await plantOrphan(
+        `aaaaaaaa-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      );
+      await ageDirectory(dir);
+      planted.push(dir);
+    }
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let removed: number;
+    let warned: unknown[][] = [];
+    try {
+      removed = await sweepOrphanWikiDirectories(OWNER);
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+    }
+
+    // Exactly the cap — the return value is still "directories removed by THIS
+    // pass", not a total.
+    expect(removed).toBe(ORPHAN_SWEEP_CANDIDATE_CAP);
+    const survivors: string[] = [];
+    for (const dir of planted) if (await exists(dir)) survivors.push(dir);
+    expect(survivors).toHaveLength(OVERFLOW);
+    // The truncation is reported, naming how many were held back — a silent cap
+    // would look exactly like a sweep that had finished its work.
+    expect(
+      warned.some(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes(`deferring ${OVERFLOW} to the next sweep`),
+      ),
+    ).toBe(true);
+
+    // Continuation needs no cursor: removal IS the progress, so the next pass
+    // starts on a listing the reclaimed directories are already gone from.
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(OVERFLOW);
+    for (const dir of planted) expect(await exists(dir)).toBe(false);
+    // …and the real wiki was never a candidate at any point.
+    expect(await exists(wikiDir(wiki.id))).toBe(true);
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+  });
+
+  it("logs no truncation warning when the candidate list is exactly at the cap", async () => {
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const planted: string[] = [];
+    for (let index = 0; index < ORPHAN_SWEEP_CANDIDATE_CAP; index += 1) {
+      const dir = await plantOrphan(
+        `bbbbbbbb-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      );
+      await ageDirectory(dir);
+      planted.push(dir);
+    }
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let removed: number;
+    let warned: unknown[][] = [];
+    try {
+      removed = await sweepOrphanWikiDirectories(OWNER);
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+    }
+
+    // Exactly at the cap is the boundary the `>` comparison has to get right:
+    // every candidate is still considered and nothing is reported as deferred.
+    expect(removed).toBe(ORPHAN_SWEEP_CANDIDATE_CAP);
+    for (const dir of planted) expect(await exists(dir)).toBe(false);
+    expect(
+      warned.some(([, message]) => String(message).includes("to the next sweep")),
+    ).toBe(false);
+  });
+
+  it("probes at most the cap candidates even when it removes none of them (DW-289)", async () => {
+    // THE ROW THAT SEPARATES A CANDIDATE CAP FROM A REMOVAL CAP. Every other
+    // cap row plants AGED orphans, where "walked" and "removed" coincide — so
+    // all of them still pass against an implementation that walks the whole list
+    // and merely stops DELETING at the cap, which is exactly the unbounded
+    // in-lock walk DW-289 was filed against. Here nothing is aged, so nothing is
+    // removable and the only observable is how many candidates were PROBED: the
+    // grace-window skip logs one INFO line per candidate it actually reached.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const OVERFLOW = 3;
+    const planted: string[] = [];
+    for (let index = 0; index < ORPHAN_SWEEP_CANDIDATE_CAP + OVERFLOW; index += 1) {
+      // Deliberately NOT `ageDirectory`d — these were written milliseconds ago.
+      planted.push(
+        await plantOrphan(`cccccccc-0000-4000-8000-${String(index).padStart(12, "0")}`),
+      );
+    }
+
+    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let removed: number;
+    let logged: unknown[][] = [];
+    let warned: unknown[][] = [];
+    try {
+      removed = await sweepOrphanWikiDirectories(OWNER);
+      logged = info.mock.calls.map((call) => [...call]);
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+
+    // Nothing was reclaimed — every candidate is inside the grace window.
+    expect(removed).toBe(0);
+    for (const dir of planted) expect(await exists(dir)).toBe(true);
+    // …and the cap still applied, because only `cap` of them were ever reached.
+    // A removal cap would have probed all 28 and logged 28.
+    const skipped = logged.filter(
+      ([scope, message]) =>
+        scope === "wikis" &&
+        String(message).includes("skipped orphaned wiki directory"),
+    );
+    expect(skipped).toHaveLength(ORPHAN_SWEEP_CANDIDATE_CAP);
+    expect(
+      warned.some(([, message]) =>
+        String(message).includes(`deferring ${OVERFLOW} to the next sweep`),
+      ),
+    ).toBe(true);
+    expect(await exists(wikiDir(wiki.id))).toBe(true);
+  });
+
+  it("still reclaims a tombstoned directory that sorts past the cap against an empty registry", async () => {
+    // The cap must not sit ABOVE the tombstone filter. In `tombstonedOnly` mode
+    // an untombstoned directory is skipped on every pass FOREVER, so if one
+    // could occupy a slot then a genuinely tombstoned DW-162 directory sorting
+    // after `cap` of them would never be reclaimed at all — a permanent leak,
+    // not a deferral, and worse than the uncapped behaviour it replaced.
+    //
+    // No wiki is created, so `wikis.json` is missing and `readRegistry` degrades
+    // it to the empty registry that turns `tombstonedOnly` on.
+    const untombstoned: string[] = [];
+    for (let index = 0; index < ORPHAN_SWEEP_CANDIDATE_CAP; index += 1) {
+      untombstoned.push(
+        // Deliberately young as well: these must never reach the age walk.
+        await plantOrphan(`aaaaaaaa-0000-4000-8000-${String(index).padStart(12, "0")}`),
+      );
+    }
+    const marked = await plantOrphan("ffffffff-9999-4999-8999-999999999999");
+    await fs.writeFile(path.join(marked, ".discarded"), "");
+    await ageDirectory(marked);
+
+    // `fs.readdir` order is not specified, and the position of the tombstoned
+    // entry is the whole point — so the listing is sorted here to put it LAST,
+    // which is also how R2 enumerates.
+    const storage = getStorage();
+    const list = storage.listFiles.bind(storage);
+    const listing = vi
+      .spyOn(storage, "listFiles")
+      .mockImplementation(async (prefix: string) =>
+        (await list(prefix)).sort((a, b) => a.name.localeCompare(b.name)),
+      );
+    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let removed: number;
+    let logged: unknown[][] = [];
+    let warned: unknown[][] = [];
+    try {
+      removed = await sweepOrphanWikiDirectories(OWNER);
+      logged = info.mock.calls.map((call) => [...call]);
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+      listing.mockRestore();
+    }
+
+    // Reclaimed in ONE pass, from position 26 of 26.
+    expect(removed).toBe(1);
+    expect(await exists(marked)).toBe(false);
+    // The untombstoned ones are left exactly where they were — and were never
+    // walked at all, so they cost no `newestWriteTime` under the tenant lock.
+    for (const dir of untombstoned) expect(await exists(dir)).toBe(true);
+    expect(
+      logged.some(([, message]) =>
+        String(message).includes("skipped orphaned wiki directory"),
+      ),
+    ).toBe(false);
+    // The empty-registry warn is keyed on the PRE-cap list, so it still fires…
+    expect(
+      warned.some(([, message]) =>
+        String(message).includes("the registry names no wikis"),
+      ),
+    ).toBe(true);
+    // …while the truncation warn does NOT, because one directory is genuinely
+    // reclaimable here. Counting all 26 would announce a lost registry's every
+    // artifact as a deferred orphan.
+    expect(
+      warned.some(([, message]) => String(message).includes("to the next sweep")),
+    ).toBe(false);
   });
 });
 

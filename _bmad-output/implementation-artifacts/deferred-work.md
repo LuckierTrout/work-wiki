@@ -1867,7 +1867,8 @@ source_spec: `spec-dw-49-artifact-seed-data-version-bump.md`
 location: src/lib/wikis.ts (renameWiki / retitlePurpose)
 severity: medium
 reason: `retitlePurpose` (src/lib/wikis.ts) writes the retitled `purpose.md` through the same tail-less `putWikiArtifact` the seeder uses, and `renameWiki` adds no bump. Renaming a NON-current Wiki changes no `currentWikiId`, so `Workbench`'s selection-reset effect does not fire either — the same DW-57 shape, one artifact over. Milder than DW-57 because `purpose.md` is not in `EditableArtifactFile`, so the stale column is read-only and there is no silent-revert half. Out of scope here: the bundle intent names the seeding and re-apply paths only.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-wikis-sweep-cap-and-rename-refresh
 
 ### DW-210: A re-apply whose `restoreSeededFiles` compensation itself fails leaves changed bytes on disk with no `dataVersion` bump at all.
 origin: spec-deferred 6526deb5b008
@@ -2565,7 +2566,8 @@ source_spec: `spec-dw-147-150-162-orphan-wiki-sweep-hardening.md`
 location: src/lib/wikis.ts (sweepOrphans)
 severity: medium
 reason: Every other block in `src/app/api/tasks/scan/route.ts` bounds its work (`.slice(0, 25)`, `listDueOutboxEvents(..., 50)`) and `scanForMaintenance` documents its cap as a "cost + blast-radius bound". `sweepOrphans` runs inside `withFileLock(wikiLockKey(owner))`, so a long pass queues every create, rename and delete for that tenant behind it. Bounded in practice by `MAX_WIKIS` (100) and by orphans being rare, which is why it is recorded rather than fixed.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-wikis-sweep-cap-and-rename-refresh
 
 ### DW-290: A future-dated mtime (clock skew, or a restored archive) makes an orphan permanently unsweepable, with no signal that it is leaking.
 origin: spec-deferred a38f8ad0290b
@@ -3323,4 +3325,20 @@ source_spec: `spec-dw-213-214-artifact-revision-recovery.md`
 location: src/components/WikiWorkbench.tsx:415-419
 severity: low
 reason: `src/components/WikiWorkbench.tsx:415-419` tells the owner "This overwrites purpose.md, Schema, and the Workspace Purpose for this wiki", and the comments at `:222` and `:348` call it "an irreversible rewrite" / "an irreversible overwrite". Since this story a committed re-template records the replaced `schema.md` as a revision the Preview's History panel can list and revert, so the confirm understates what the owner can get back. `purpose.md` and the Workspace Purpose are still unrecoverable, so the sentence is not simply wrong — it needs to separate the two halves. Copy only; no behaviour.
+status: open
+
+### DW-382: `deleteWiki` removes a Wiki's `purpose.md` and `schema.md` outright and moves no `dataVersion`, so a Preview open on those artifacts in a second client keeps rendering bytes whose Wiki is gone.
+origin: spec-deferred e419c472892c
+source_spec: `spec-dw-209-289-wiki-rename-refresh-and-sweep-cap.md`
+location: src/lib/wikis.ts (deleteWiki)
+severity: medium
+reason: DW-209 established the rule this change generalises: a registry operation that also moves bytes a Preview renders must bump, because a non-current Wiki's operations change no `currentWikiId` and the Workbench's selection-reset effect never fires. `deleteWiki` (src/lib/wikis.ts) meets that description exactly — it deletes the artifact directory — and still carries no tail. `WikiSwitcher.tsx` calls `router.refresh()` itself, which covers the client that performed the delete but not any other open client. Pre-existing; surfaced by generalising the rule, not caused by it.
+status: open
+
+### DW-383: A sweep candidate whose age cannot be read is skipped but still consumes one of the per-pass cap slots on every pass, so enough of them could starve the tail of the list.
+origin: spec-deferred 5c402c238ab7
+source_spec: `spec-dw-209-289-wiki-rename-refresh-and-sweep-cap.md`
+location: src/lib/wikis.ts (sweepOrphans / ORPHAN_SWEEP_CANDIDATE_CAP)
+severity: low
+reason: `ORPHAN_SWEEP_CANDIDATE_CAP` truncates the candidate list before `newestWriteTime`, and an unreadable age is treated as too young — a deliberate skip that never clears on its own if the underlying storage error is permanent. The tombstone half of this shape was closed during review (the probe now resolves before the cap); the age half cannot be, because reading the age IS the expensive walk the cap exists to bound. Related to DW-290, which records the future-mtime variant of the same permanently-unsweepable candidate.
 status: open
