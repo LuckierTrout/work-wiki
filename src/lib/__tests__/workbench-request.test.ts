@@ -18,8 +18,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   REQUEST_TIMEOUT_MS,
-  failureMessage,
   send,
+  writeFailure,
 } from "../workbench-request";
 
 /** The subset of `Response` `send` reads — `status` included. */
@@ -130,7 +130,7 @@ describe("send", () => {
   });
 });
 
-describe("failureMessage", () => {
+describe("writeFailure", () => {
   /**
    * BOTH abort flavours reach a caller's catch as an error whose `name` is the
    * whole signal: the message names the MECHANISM ("signal timed out", "This
@@ -147,29 +147,58 @@ describe("failureMessage", () => {
   ];
 
   for (const [name, mechanism] of ABORTS) {
-    it(`falls back to the caller's sentence on a ${name}`, () => {
-      const cause = Object.assign(new Error(mechanism), { name });
-      expect(failureMessage(cause, "Couldn’t create the wiki.")).toBe(
-        "Couldn’t create the wiki.",
+    it(`reports a ${name} as an outcome nobody knows (DW-283)`, () => {
+      const verdict = writeFailure(
+        Object.assign(new Error(mechanism), { name }),
+        "create the wiki",
       );
+
+      // The whole defect: this used to answer `Couldn’t create the wiki.` — a
+      // claim about the SERVER that the client is in no position to make. The
+      // request left; the deadline fired on this side; nothing came back.
+      expect(verdict.unconfirmed).toBe(true);
+      expect(verdict.message).not.toBe("Couldn’t create the wiki.");
+      // It says the outcome is unknown, and it names the action rather than the
+      // mechanism the abort was spelled with.
+      expect(verdict.message).toContain("unknown");
+      expect(verdict.message).toContain("create the wiki");
+      expect(verdict.message).not.toContain(mechanism);
     });
   }
 
-  it("prefers a server-supplied message over the fallback", () => {
-    expect(
-      failureMessage(new Error("Wiki name is required."), "Couldn’t rename the wiki."),
-    ).toBe("Wiki name is required.");
+  it("composes both sentences from ONE phrase per call site", () => {
+    // The reason `action` is a phrase rather than a finished sentence: the
+    // failure copy and the unknown-outcome copy are two renderings of one fact,
+    // and a caller passing both would be where they start to disagree.
+    for (const action of [
+      "create the wiki",
+      "apply the template",
+      "switch wiki",
+      "rename the wiki",
+      "delete the wiki",
+    ]) {
+      const abort = Object.assign(new Error("signal timed out"), {
+        name: "TimeoutError",
+      });
+      expect(writeFailure(abort, action).message).toContain(action);
+      // Today's sentence, character for character — curly apostrophe included.
+      expect(writeFailure(new Error(""), action).message).toBe(`Couldn’t ${action}.`);
+    }
+  });
+
+  it("prefers a server-supplied message, and calls that outcome KNOWN", () => {
+    const verdict = writeFailure(new Error("Wiki name is required."), "rename the wiki");
+    expect(verdict.message).toBe("Wiki name is required.");
+    // A route that answered with a reason answered: there is nothing to
+    // reconcile, and refreshing on it would be a round trip for nothing.
+    expect(verdict.unconfirmed).toBe(false);
   });
 
   it("falls back on an Error with no message, and on anything that is not one", () => {
-    expect(failureMessage(new Error(""), "Couldn’t delete the wiki.")).toBe(
-      "Couldn’t delete the wiki.",
-    );
-    expect(failureMessage("boom", "Couldn’t delete the wiki.")).toBe(
-      "Couldn’t delete the wiki.",
-    );
-    expect(failureMessage(undefined, "Couldn’t delete the wiki.")).toBe(
-      "Couldn’t delete the wiki.",
-    );
+    for (const cause of [new Error(""), "boom", undefined]) {
+      const verdict = writeFailure(cause, "delete the wiki");
+      expect(verdict.message).toBe("Couldn’t delete the wiki.");
+      expect(verdict.unconfirmed).toBe(false);
+    }
   });
 });

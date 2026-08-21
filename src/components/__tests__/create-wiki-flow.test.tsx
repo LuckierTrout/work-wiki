@@ -403,7 +403,7 @@ describe("Create Wiki", () => {
   });
 });
 
-describe("a request that never settles (DW-175)", () => {
+describe("a request that never settles (DW-175, DW-283)", () => {
   /**
    * The card's `send` had no deadline at all: a hung create or re-template left
    * `busy` true for the rest of the session, both dialogs locked, and nothing
@@ -412,11 +412,19 @@ describe("a request that never settles (DW-175)", () => {
    * signal — the message names the MECHANISM ("signal timed out", "This
    * operation was aborted") rather than the thing the owner was trying to do.
    *
+   * WHAT THE MESSAGE MAY CLAIM is the second half (DW-283). The deadline fires
+   * on THIS side: the request left, and nothing came back. `Couldn’t create the
+   * wiki.` is therefore a statement about the server that the client is in no
+   * position to make — and the owner who believes it presses Create again and
+   * seeds a second wiki, or presses Overwrite again over a template that was
+   * already rewritten. So the sentence names the unknown outcome, and the card
+   * refreshes so the screen can answer what the message cannot.
+   *
    * The abort is delivered rather than waited for: a real 15s deadline is not
    * something a suite can sit through, and what is under test is what the card
    * does with it. Built with `Object.assign(new Error(...), { name })` and NOT
    * with a real `DOMException`, because jsdom's DOMException does not inherit
-   * from Error — `failureMessage`'s `cause instanceof Error` would be false and
+   * from Error — `writeFailure`'s `cause instanceof Error` would be false and
    * the sentence below would arrive from its last line whatever the abort
    * branch did.
    */
@@ -426,7 +434,7 @@ describe("a request that never settles (DW-175)", () => {
   ];
 
   for (const [name, mechanism] of ABORTS) {
-    it(`names what failed on a re-template, not the mechanism, on a ${name}`, async () => {
+    it(`reports a re-template's outcome as unknown, and reconciles, on a ${name}`, async () => {
       fetchMock.mockRejectedValueOnce(Object.assign(new Error(mechanism), { name }));
       openTemplateDialog();
       fireEvent.change(screen.getByLabelText("Scenario Template"), {
@@ -436,12 +444,17 @@ describe("a request that never settles (DW-175)", () => {
       fireEvent.click(button("Overwrite"));
 
       const alert = await screen.findByRole("alert");
-      expect(alert.textContent).toBe("Couldn’t apply the template.");
+      // Not the flat failure, and not the mechanism either.
+      expect(alert.textContent).not.toBe("Couldn’t apply the template.");
       expect(alert.textContent).not.toContain(mechanism);
+      expect(alert.textContent).toContain("apply the template");
+      expect(alert.textContent).toContain("unknown");
       expect(
         screen.getByRole("dialog", { name: "Change Scenario Template" }).contains(alert),
       ).toBe(true);
-      expect(refresh).not.toHaveBeenCalled();
+      // The overwrite may have landed, so the card cannot go on rendering the
+      // template it was showing before as though nothing had happened.
+      await waitFor(() => expect(refresh).toHaveBeenCalled());
       // The confirm comes back rather than staying on "Working…" forever — the
       // whole point of the deadline, since `finally` cannot rescue a promise
       // that never resolves.
@@ -449,7 +462,7 @@ describe("a request that never settles (DW-175)", () => {
       expect(button("Cancel").disabled).toBe(false);
     });
 
-    it(`names what failed on a create, not the mechanism, on a ${name}`, async () => {
+    it(`reports a create's outcome as unknown, and shuts the door, on a ${name}`, async () => {
       fetchMock.mockRejectedValueOnce(Object.assign(new Error(mechanism), { name }));
       mount([], null);
       fireEvent.click(button("Create Wiki"));
@@ -457,15 +470,24 @@ describe("a request that never settles (DW-175)", () => {
       fireEvent.click(button("Create"));
 
       const alert = await screen.findByRole("alert");
-      expect(alert.textContent).toBe("Couldn’t create the wiki.");
+      expect(alert.textContent).not.toBe("Couldn’t create the wiki.");
       expect(alert.textContent).not.toContain(mechanism);
+      expect(alert.textContent).toContain("create the wiki");
+      expect(alert.textContent).toContain("unknown");
       expect(screen.getByRole("dialog", { name: "Create Wiki" }).contains(alert)).toBe(
         true,
       );
-      expect(refresh).not.toHaveBeenCalled();
+      await waitFor(() => expect(refresh).toHaveBeenCalled());
+      // The dialog is pressable again, so the owner can retry deliberately…
       await waitFor(() => expect(button("Create").disabled).toBe(false));
-      // Nothing was seeded, so the empty state is still the truth behind it.
+      // …but the empty state behind it does NOT offer a second way in. The POST
+      // may have seeded a wiki; `router.refresh()` is a spy here, so the server
+      // render never lands and the door stays shut exactly as it does for the
+      // length of a real round trip. Nothing enforces unique wiki names, so an
+      // enabled button here is a duplicate wiki and every prompt moved onto its
+      // template.
       expect(screen.getByText("No wiki yet.")).toBeTruthy();
+      expect(button("Create Wiki").disabled).toBe(true);
     });
   }
 });

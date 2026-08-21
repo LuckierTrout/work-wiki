@@ -232,7 +232,8 @@ location: src/components/workbench/ModeCanvas.tsx
 source_spec: `spec-1-3-nashsu-icon-rail-and-workbench-chrome.md`
 severity: medium
 reason: `ModeCanvas` returns a different subtree per mode, so the Wiki branch is removed rather than hidden. The shell-level guarantee the story states — one mounted shell, no route change, so state above the mode panel survives — does hold, and Story 3.2's composer draft can live there. What does not survive is state held *inside* a mode panel. Story 1.3's ACs ask only that a mode switch not destroy typed Chat input, and Epic 1 ships no composer, so nothing here is unmet; but the first mode panel that holds real unsaved input will need the canvas to hide rather than unmount.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-workbench-client-state-and-nav
 
 ### DW-27: The active mode has no URL representation, so a mode cannot be linked or bookmarked and Back leaves the app entirely.
 origin: spec-deferred 8ebf6433668a
@@ -566,7 +567,8 @@ location: src/hooks/useKeyboardShortcuts.ts:46,161
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `src/hooks/useKeyboardShortcuts.ts:46` maps `g s` to `/settings` and dispatches it with `router.push`, and `KeyboardShortcutsProvider` wraps the Workbench. So from inside the shell the keyboard path unmounts everything above the canvas and lands on a page with none of this story's categories, while the rail button opens the in-shell surface. `keyboard-shortcuts.test.ts:102,203` pin the old route, and this story is forbidden from editing pre-existing test files beyond the one rail pin — closing it means deciding whether the shortcut opens the surface or the legacy page stays a legitimate target.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-workbench-client-state-and-nav
 decision: 2026-08-18 Retarget to the in-shell surface — Change `g s` to select the Workbench's Settings mode instead of pushing `/settings`, so the keyboard path matches the rail control and never unmounts the shell, and retarget the `keyboard-shortcuts.test.ts` pins at :102-105 and :203. Unchanged from the 2026-08-16/17 decisions EXCEPT that it no longer rides on retiring the legacy page: DW-61 now keeps `/settings` (see its 2026-08-18 decision), and this entry stands on its own — the rail/keyboard inconsistency is real either way, and the legacy page stays reachable through the `NavHeader.tsx` links, so nothing is orphaned. Land it independently of DW-61; do not delete or redirect the `/settings` route as part of this change.
 
 ### DW-63: Two live Settings surfaces now write one config file with no lost-update protection between them.
@@ -2507,7 +2509,8 @@ source_spec: `spec-dw-148-174-175-177-255-256-workbench-client-hardening.md`
 location: src/lib/workbench-request.ts (failureMessage) with WikiWorkbench.tsx:91,118
 severity: medium
 reason: `failureMessage` maps `TimeoutError`/`AbortError` onto the caller's sentence — "Couldn't apply the template." / "Couldn't create the wiki." — and the catch path deliberately skips `router.refresh()`. A re-template that took longer than the client deadline has still rewritten purpose.md, schema.md and the Workspace Purpose, so the owner is told it failed over a write that landed and may retry it. `WikiSwitcher` has shipped this behaviour since the deadline was introduced; this change extended it to the card's two writes, so a fix belongs to both.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-workbench-client-state-and-nav
 
 ### DW-284: The Rename and Change-template confirms never name the wiki they act on, which is the same premise DW-148 fixed for the pickers.
 origin: spec-deferred 18943a232416
@@ -2816,7 +2819,8 @@ source_spec: `spec-dw-136-142-301-workspace-purpose-settings-freshness.md`
 location: src/components/WorkspacePurposeSettings.tsx (save)
 severity: medium
 reason: The component's cancelled guard has only ever covered the load path (it was `let cancelled` in the mount effect before this change and is `cancelledRef`/`answerSeqRef` after it). `save()`'s `.then` path calls `placeProfile`, `setVersion`, `setWiki`, `setFeedback` and `setSaving` with no such check. Pre-existing; this change did not introduce or widen it, and it was surfaced incidentally by review.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-workbench-client-state-and-nav
 
 ### DW-321: After a 412 write conflict this form still offers no in-page way to re-seed its version; the only recovery is a full reload.
 origin: spec-deferred 8ca1e9659b2e
@@ -3240,4 +3244,36 @@ source_spec: `spec-dw-71-326-272-settings-config-resolution-hardening.md`
 location: src/lib/config.ts (CONFIG_VERSION_KEY)
 severity: low
 reason: The retired scheme's `readStoredConfig` returned the parsed object verbatim and `saveConfig` wrote whatever it was handed, so an older build round-trips the reserved key untouched while stamping its sibling file. The new build then keeps reading the same frozen token out of the object. The guard degrades to always-matching rather than losing data, and this fork deploys manually via wrangler with no rolling releases, so the window is a deliberate rollback. Namespacing the key per scheme, or refusing a token whose config predates the scheme, would close it.
+status: open
+
+### DW-373: Opening the in-shell Settings surface still unmounts the whole mode canvas, so the Wiki subtree DW-26 keeps mounted across mode switches is destroyed — dialog, typed name and error — whenever Settings
+origin: spec-deferred 125b109b6d09
+source_spec: `spec-dw-26-62-283-320-workbench-client-state-and-nav.md`
+location: src/components/workbench/Workbench.tsx (settingsOpen canvas swap)
+severity: medium
+reason: `Workbench.tsx` renders `settingsOpen ? <SettingsCanvas …/> : <ModeCanvas …>{children}</ModeCanvas>`, so `children` (`WikiWorkbench`) leaves the tree when the rail's Settings control — or, since this change, `g s` — opens the surface. Pre-existing: the rail control has behaved this way since Story 1.9, and DW-26 names `ModeCanvas` and mode switching only. Closing it means deciding how `SettingsCanvas` keeps owning discard-on-leave for its own draft while no longer being the thing that unmounts the canvas beside it.
+status: open
+
+### DW-374: Only `TimeoutError`/`AbortError` are treated as unconfirmed, so a dropped connection or a 502/504 is reported as a known failure — with transport vocabulary — and no refresh runs.
+origin: spec-deferred e6705ae0513e
+source_spec: `spec-dw-26-62-283-320-workbench-client-state-and-nav.md`
+location: src/lib/workbench-request.ts (writeFailure)
+severity: medium
+reason: `writeFailure` returns `unconfirmed: true` for the two abort names and otherwise prefers `cause.message`. A mid-write network drop arrives as `TypeError: Failed to fetch` (Safari: `Load failed`) and a gateway timeout as `send`'s `Request failed (504)`; in both the server may have applied the write, so the owner is told it failed over something unknown, and the screen is not reconciled. `Failed to fetch` also reaches the owner verbatim, which `workbench-settings.ts` already calls transport vocabulary no copy table contains. Pre-existing shape: `failureMessage` classified these the same way before this change.
+status: open
+
+### DW-375: `WikiSwitcher`'s create, rename and delete confirms stay live after an unconfirmed write, so a retry can seed a duplicate wiki or paint a 404 over a delete that landed.
+origin: spec-deferred be4b261f912b
+source_spec: `spec-dw-26-62-283-320-workbench-client-state-and-nav.md`
+location: src/components/workbench/WikiSwitcher.tsx (create, rename, remove)
+severity: medium
+reason: The card holds its create door shut with `awaitingCreate` on the unconfirmed path; the switcher has no equivalent. `busy` is cleared in `finally`, the dialog stays open, and the confirm is pressable — over a POST that may have created the wiki (nothing enforces unique names) or a DELETE whose second attempt answers 404, which the switcher's own comment calls "a failure over an operation that in fact succeeded". Pre-existing: the retry window is the same one an aborted write has always left open; this change only renamed the message.
+status: open
+
+### DW-376: `SettingsCanvas.save` and `PreviewColumn` carry their own deadlines and still report a blown one as a flat failure, which is the claim DW-283 says the client cannot make.
+origin: spec-deferred 5d49180cca3b
+source_spec: `spec-dw-26-62-283-320-workbench-client-state-and-nav.md`
+location: src/components/workbench/SettingsCanvas.tsx (save), src/components/workbench/PreviewColumn.tsx
+severity: medium
+reason: Both arm their own `AbortSignal` rather than using `send` (each needs the controller), so neither reaches `writeFailure`. `SettingsCanvas.save` resolves an abort to `SETTINGS_SAVE_FAILED_COPY` ("Settings couldn’t be saved.") over a PUT the server may have applied — on the surface this change just made keyboard-reachable through `g s`. Out of DW-283's stated scope, which names `workbench-request.ts` and the wiki writes.
 status: open

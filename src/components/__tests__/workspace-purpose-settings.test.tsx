@@ -367,6 +367,193 @@ describe("the form carries the version it was seeded with (DW-145)", () => {
   });
 });
 
+describe("a save that settles too late speaks for nobody (DW-320)", () => {
+  /**
+   * `save()` was the one path in this file with NO post-await guard.
+   *
+   * `load` has carried both halves for a while — `cancelledRef` for "this
+   * component is gone" and `answerSeqRef` for "something newer already owns the
+   * form" — and every one of its state writes sits behind them. The write path
+   * had neither, so a PUT settling after the form unmounted wrote into a dead
+   * tree, and the OLDER of two overlapping saves could land last and put its
+   * stale profile, its stale version and its own confirmation on screen over
+   * the newer one. The version is the half that outlives the render: the next
+   * save is conditioned on it, so adopting the wrong one turns the following
+   * save into a 412 for a change the owner made themselves.
+   */
+  it("adopts only the NEWEST save when an older one settles last", async () => {
+    const older: WorkspaceProfile = { ...PROFILE, purpose: "First attempt." };
+    const newer: WorkspaceProfile = { ...PROFILE, purpose: "Second attempt." };
+    const newerVersion = objectVersion(newer);
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    // Two PUTs in flight at once. `fireEvent.submit` drives the handler
+    // directly, which is what a second Enter in a field does — the disabled
+    // fieldset is a rendering decision, not the gate.
+    //
+    // The form node is held rather than re-queried, because `saveButton()`
+    // matches on the accessible name and the submit control is relabelled
+    // "Saving…" for the length of the first request.
+    const form = saveButton().closest("form")!;
+    const first = deferred<Response>();
+    fetchMock.mockImplementationOnce(() => first.promise);
+    fireEvent.submit(form);
+    await settle();
+
+    const second = deferred<Response>();
+    fetchMock.mockImplementationOnce(() => second.promise);
+    fireEvent.submit(form);
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    // The newer one answers first…
+    second.resolve(
+      answer({ profile: newer, wiki: OTHER_WIKI, version: newerVersion }),
+    );
+    await waitFor(() => expect(purposeField().value).toBe("Second attempt."));
+
+    // …and the older one lands afterwards, carrying a different profile, a
+    // different wiki and a different version. Every one of them must be dropped.
+    first.resolve(
+      answer({ profile: older, wiki: WIKI, version: objectVersion(older) }),
+    );
+    await settle();
+
+    expect(purposeField().value).toBe("Second attempt.");
+    expect(screen.getByText(/This purpose belongs to “Beta Lab”\./)).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain(
+      "Workspace Purpose saved for “Beta Lab”",
+    );
+    // The version is the half a rendered assertion cannot see, so it is read
+    // off the NEXT save's precondition: the older answer's version must not be
+    // what the following PUT is conditioned on.
+    fetchMock.mockResolvedValueOnce(
+      answer({ profile: newer, wiki: OTHER_WIKI, version: newerVersion }),
+    );
+    fireEvent.submit(form);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(sentIfMatch(fetchMock.mock.calls[3])).toBe(formatIfMatch(newerVersion));
+  });
+
+  it("does not clear `saving` from a superseded run", async () => {
+    // `finally` runs on the superseded path too — `return` inside `try` does not
+    // skip it — so the guard has to be inside the block rather than relying on
+    // an early exit above it. Without it the older save lifts the gate over a
+    // PUT that is still in flight, and the owner can submit a third one into it.
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    const form = saveButton().closest("form")!;
+    fetchMock.mockImplementationOnce(() => first.promise);
+    fireEvent.submit(form);
+    await settle();
+    fetchMock.mockImplementationOnce(() => second.promise);
+    fireEvent.submit(form);
+    await settle();
+
+    // The OLDER one settles while the newer is still open.
+    first.resolve(answer({ profile: PROFILE, wiki: WIKI, version: VERSION }));
+    await settle();
+
+    // Read off `form` rather than through `formFieldset()`/`saveButton()`: both
+    // find the fieldset by the submit control's ACCESSIBLE NAME, and the button
+    // is relabelled "Saving…" for exactly the state under test here.
+    const fieldset = form.querySelector("fieldset") as HTMLFieldSetElement;
+    const submit = form.querySelector('button[type="submit"]') as HTMLButtonElement;
+    expect(fieldset.disabled).toBe(true);
+    expect(submit.textContent).toBe("Saving…");
+
+    second.resolve(answer({ profile: PROFILE, wiki: WIKI, version: VERSION }));
+    await waitFor(() => expect(fieldset.disabled).toBe(false));
+  });
+
+  it("clears `saving` even when a recheck moves the ANSWER token underneath it", async () => {
+    // THE STRANDING CASE. `saving` is cleared in `save()`'s `finally`, and
+    // nothing else clears it — so whatever gates that line owns whether this
+    // form is ever editable again.
+    //
+    // Gated on the ANSWER token it would not survive a recheck, because `load`
+    // bumps that token in every mode. The recheck is supposed to stand down
+    // while a save is in flight, but the flag it reads lives in `screenRef`,
+    // which an EFFECT writes — so there is a real window after `setSaving(true)`
+    // in which one can still start. That window is entered here deterministically
+    // by firing `visibilitychange` from inside the PUT's own `fetch`, which runs
+    // in the submit handler's call stack before React has committed anything.
+    //
+    // The answer being dropped is expected and is NOT what this case is about:
+    // the form must simply not be left disabled with the button on "Saving…"
+    // for the rest of the session.
+    const gate = deferred<Response>();
+    let interrupted = false;
+    render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    fetchMock.mockImplementation((url: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT" && !interrupted) {
+        interrupted = true;
+        // Still inside the submit handler: `setSaving(true)` has been called,
+        // React has committed nothing, and `screenRef.current.standDown` is
+        // therefore the stale `false` a recheck is allowed to start on.
+        fireVisibilityChange("hidden");
+        fireVisibilityChange("visible");
+        return gate.promise;
+      }
+      return Promise.resolve(
+        answer({ profile: PROFILE, readOnly: false, wiki: WIKI, version: VERSION }),
+      );
+    });
+
+    fireEvent.submit(saveButton().closest("form")!);
+    await settle();
+    // The recheck really did start — otherwise this case proves nothing at all.
+    expect(interrupted).toBe(true);
+    expect(fetchMock.mock.calls.filter(([, init]) => !init || !("method" in init)).length)
+      .toBeGreaterThanOrEqual(2);
+
+    gate.resolve(answer({ profile: PROFILE, wiki: WIKI, version: VERSION }));
+    await settle();
+
+    // The form comes back. Before the save token existed this stayed disabled
+    // forever, with no message and no way for the owner to try again.
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+    expect(saveButton().textContent).not.toBe("Saving…");
+  });
+
+  it("writes nothing when the PUT resolves after the form unmounts", async () => {
+    // COVERAGE LIMIT, and the reason `workspace-purpose-save-guard.test.ts`
+    // exists: React silently discards a state update aimed at an unmounted
+    // tree, so "the write did not happen" is not something a mounted assertion
+    // can distinguish from "the write happened and went nowhere". What this
+    // case CAN hold is that the late answer is handled at all — no rejection
+    // escapes into the run, and nothing from the torn-down form comes back —
+    // and the scan holds that the guard is spelled.
+    const gate = deferred<Response>();
+    const { unmount } = render(<WorkspacePurposeSettings />);
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+
+    fetchMock.mockImplementationOnce(() => gate.promise);
+    fireEvent.submit(saveButton().closest("form")!);
+    await settle();
+
+    unmount();
+    gate.resolve(
+      answer({
+        profile: { ...PROFILE, purpose: "Landed after the unmount." },
+        wiki: OTHER_WIKI,
+        version: objectVersion(PROFILE),
+      }),
+    );
+    await settle();
+
+    expect(screen.queryByText("Landed after the unmount.")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(document.querySelector("fieldset")).toBeNull();
+  });
+});
+
 describe("with no wiki, and with a failed load", () => {
   /**
    * The wiki-less body is READABLE (DW-301). `disabled` on the `<fieldset>`

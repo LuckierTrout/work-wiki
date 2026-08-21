@@ -521,8 +521,13 @@ describe("the shell owns the viewport at /", () => {
     expect(source).toContain("href={skipTarget}");
     const canvas = await read("ModeCanvas.tsx");
     expect(canvas).toContain('export const CANVAS_ID = "wb-canvas"');
-    expect(canvas.match(/id=\{CANVAS_ID\}/g) ?? []).toHaveLength(2);
-    expect(canvas.match(/tabIndex=\{-1\}/g) ?? []).toHaveLength(2);
+    // EXACTLY ONE of each. The canvas used to return one `<section>` per branch
+    // — two spellings of the same id, only ever one of them mounted. Keeping
+    // the Wiki subtree mounted in every mode (DW-26) puts both branches inside
+    // one section, and one is what an id has to be: a second `#wb-canvas` would
+    // give the skip link two targets and leave the browser to pick.
+    expect(canvas.match(/id=\{CANVAS_ID\}/g) ?? []).toHaveLength(1);
+    expect(canvas.match(/tabIndex=\{-1\}/g) ?? []).toHaveLength(1);
   });
 
   it("the landing page mounts the Workbench and no metrics dashboard", async () => {

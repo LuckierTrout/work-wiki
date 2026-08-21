@@ -12,6 +12,7 @@ import {
 import { APP_NAME } from "@/lib/brand";
 import { nextAnnouncement } from "@/lib/live-region";
 import { useSidecarStatus } from "@/hooks/useSidecarStatus";
+import { useShortcutAction } from "@/hooks/useKeyboardShortcuts";
 import {
   DEFAULT_WORKBENCH_MODE,
   workbenchMode,
@@ -602,6 +603,49 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     }
     closeSheet();
   }, [announce, closeSheet, mode, settingsCategoryId, settingsOpen]);
+
+  /**
+   * The keyboard's way in, and it OPENS rather than toggles (DW-62).
+   *
+   * `g s` reads "go to Settings" — that is its own description in `SHORTCUTS`
+   * and in the help overlay — so a second press must leave the owner where the
+   * first one took them. The rail control is the one that toggles, because it
+   * renders `aria-current="page"` and an active wash while Settings is showing
+   * and therefore reads as a control that can be turned back off; a key that
+   * names a destination carries no such state.
+   *
+   * Everything else is the rail path verbatim — the same announcement, through
+   * the same `announce`, and the same sheet dismissal — because two spellings
+   * of "open Settings" is how the two would start describing themselves
+   * differently.
+   *
+   * WHAT THIS SAVES is the route change, and only that. The shortcut used to
+   * push the router at `/settings`, which unmounts the whole shell — rail, left
+   * column, Knowledge and Files trees, Preview, canvas — and leaves the owner
+   * on a flat page holding none of them, to reach a surface that was already
+   * available in place. `useState` on the ONE mounted shell keeps every one of
+   * those. (Spelled without the call token on purpose: `workbench-chrome.test.ts`
+   * bans that literal from this file, and a ban worth having must not be
+   * defeated by a paragraph explaining it.)
+   *
+   * WHAT IT DOES NOT SAVE is the mode canvas. `settingsOpen` swaps `ModeCanvas`
+   * out for `SettingsCanvas` below, so opening Settings unmounts the Wiki
+   * subtree — an open Create Wiki dialog and its typed name included —
+   * whichever control opened it. That is unchanged by this callback and
+   * identical to what the rail control has always done; the Wiki-subtree
+   * survival DW-26 buys applies to MODE SWITCHES, not to Settings.
+   */
+  const openSettings = useCallback(() => {
+    setSettingsOpen(true);
+    announce(settingsAnnouncement(settingsCategory(settingsCategoryId).label));
+    closeSheet();
+  }, [announce, closeSheet, settingsCategoryId]);
+
+  // Claimed for as long as this shell is mounted, and released when it is not —
+  // so `g s` on a page with no Workbench still navigates to `/settings`, which
+  // stays a real route (DW-61). A no-op when no `KeyboardShortcutsProvider` is
+  // above this shell.
+  useShortcutAction("open-settings", openSettings);
 
   const selectSettingsCategory = useCallback((next: SettingsCategoryId) => {
     setSettingsCategoryId(next);

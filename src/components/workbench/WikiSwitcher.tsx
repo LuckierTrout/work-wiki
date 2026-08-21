@@ -14,7 +14,7 @@ import {
   wikiOptionLabel,
   type CreatableScenario,
 } from "@/lib/wiki-scenarios";
-import { failureMessage, send } from "@/lib/workbench-request";
+import { send, writeFailure } from "@/lib/workbench-request";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -154,8 +154,17 @@ export function WikiSwitcher({
       await send("/api/wikis/current", { method: "PUT", body: JSON.stringify({ id }) });
       router.refresh();
     } catch (cause) {
+      // The optimistic pick is rolled back to what the server last confirmed on
+      // EITHER failure — including the unknown one, where a `<select>` left on
+      // a wiki that may not be live would be a stronger claim than the message
+      // beside it. The refresh below is what settles which it is.
       setPendingId(null);
-      setError(failureMessage(cause, "Couldn’t switch wiki."));
+      const { message, unconfirmed } = writeFailure(cause, "switch wiki");
+      setError(message);
+      // The deadline fired, so the active wiki may ALREADY have moved (DW-283):
+      // every prompt on this shell would then be executing a different
+      // `schema.md` than the tree, the header and this control are describing.
+      if (unconfirmed) router.refresh();
     } finally {
       setSwitching(false);
     }
@@ -184,7 +193,13 @@ export function WikiSwitcher({
       setError(null);
       router.refresh();
     } catch (cause) {
-      setCreateError(failureMessage(cause, "Couldn’t create the wiki."));
+      const { message, unconfirmed } = writeFailure(cause, "create the wiki");
+      setCreateError(message);
+      // The deadline fired, so a wiki may exist that this list does not name —
+      // and a second press of a `New Wiki` button that never went dead would
+      // seed another one. The dialog stays open holding the owner's name, and
+      // the refresh is what tells them whether the first attempt landed.
+      if (unconfirmed) router.refresh();
     } finally {
       setBusy(false);
     }
@@ -209,7 +224,11 @@ export function WikiSwitcher({
       setError(null);
       router.refresh();
     } catch (cause) {
-      setRenameError(failureMessage(cause, "Couldn’t rename the wiki."));
+      const { message, unconfirmed } = writeFailure(cause, "rename the wiki");
+      setRenameError(message);
+      // The deadline fired, so the registry may already hold the new name while
+      // this <select> and the canvas card go on showing the old one.
+      if (unconfirmed) router.refresh();
     } finally {
       setBusy(false);
     }
@@ -242,7 +261,13 @@ export function WikiSwitcher({
       setError(null);
       router.refresh();
     } catch (cause) {
-      setDeleteError(failureMessage(cause, "Couldn’t delete the wiki."));
+      const { message, unconfirmed } = writeFailure(cause, "delete the wiki");
+      setDeleteError(message);
+      // The irreversible one, and therefore the one where a flat "couldn't
+      // delete" is worst: the wiki may be gone. The dialog stays open with the
+      // message, and the refresh replaces the list underneath it — the same
+      // `wikis.length` gate that hides the Delete control does the rest.
+      if (unconfirmed) router.refresh();
     } finally {
       setBusy(false);
     }

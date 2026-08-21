@@ -309,7 +309,15 @@ describe("WikiWorkbench empty state and preview copy", () => {
     // does not change, the bytes behind it do). The third was `switchWiki`,
     // which went with the retired switcher (DW-33); the header's own switch
     // refreshes in `WikiSwitcher.tsx`.
-    expect(source.match(/router\.refresh\(\)/g) ?? []).toHaveLength(2);
+    //
+    // FOUR calls for those two writes: each has a success path AND a
+    // deadline path (DW-283). An aborted request was abandoned on this side,
+    // so the server may have applied it — a catch that only printed a sentence
+    // would leave the owner reading "we don't know" over a screen that could
+    // never find out. Both halves are exercised in `create-wiki-flow.test.tsx`;
+    // what a scan adds is that neither refresh can be deleted without this
+    // count moving.
+    expect(source.match(/router\.refresh\(\)/g) ?? []).toHaveLength(4);
   });
 });
 

@@ -99,9 +99,20 @@ describe("matchShortcut", () => {
     expect(match!.route).toBe("/wiki/graph");
   });
 
-  it("matches g then s → /settings", () => {
+  it("matches g then s → the in-shell Settings action, with /settings behind it", () => {
     const { match } = matchShortcut(["g"], "s");
     expect(match).not.toBeNull();
+    // Settings is a SURFACE on the mounted Workbench, not a page (DW-62): the
+    // dispatcher runs a registered `open-settings` handler in preference to
+    // navigating, because `router.push("/settings")` unmounts the SHELL — rail,
+    // left column, both trees, Preview, canvas — to show something the rail
+    // control opens in place. (The mode canvas is swapped out either way; that
+    // is the rail control's behaviour too, and DW-26's subtree survival is
+    // about mode switches.)
+    expect(match!.action).toBe("open-settings");
+    // …and the route SURVIVES, because it is what the shortcut still does on
+    // every page with no shell to open the surface on. `/settings` stays a real
+    // route (DW-61); this change does not retire it.
     expect(match!.route).toBe("/settings");
   });
 
@@ -200,6 +211,10 @@ describe("route mapping", () => {
     "g q": "/query",
     "g l": "/lint",
     "g g": "/wiki/graph",
+    // Still here, and deliberately so. `g s` prefers the in-shell action
+    // (DW-62), but a page with no Workbench mounted registers no handler and
+    // falls through to this route — so the shortcut works everywhere, and
+    // `/settings` is not retired (DW-61).
     "g s": "/settings",
   };
 
@@ -217,4 +232,14 @@ describe("route mapping", () => {
       expect(match!.route).toBe(route);
     });
   }
+
+  it("gives an in-page action to exactly the one shortcut that has a surface", () => {
+    // A second `action` added without a registrar would be a shortcut that
+    // silently stopped navigating; an action id that no `SHORTCUTS` entry names
+    // would be a registration nothing can ever dispatch. Pinned as a set so
+    // either drift is visible here rather than at a keystroke.
+    const withActions = SHORTCUTS.filter((shortcut) => shortcut.action);
+    expect(withActions.map((shortcut) => shortcut.keys.join(" "))).toEqual(["g s"]);
+    expect(withActions.map((shortcut) => shortcut.action)).toEqual(["open-settings"]);
+  });
 });

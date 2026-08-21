@@ -534,12 +534,19 @@ describe("an in-flight switch", () => {
    * `send` arms `AbortSignal.timeout`, and BOTH abort flavours reach the catch
    * as an error whose `name` is the whole signal: the message names the
    * mechanism ("signal timed out", "This operation was aborted") rather than
-   * the thing the owner was trying to do. One line in `failureMessage` maps the
+   * the thing the owner was trying to do. One line in `writeFailure` maps the
    * pair, so both are driven here.
+   *
+   * And the deadline fires on THIS side (DW-283): the PUT left, nothing came
+   * back, and the active wiki may already have moved. `Couldn’t switch wiki.`
+   * would be a claim about the server the client cannot make — and this is the
+   * write where believing it costs most, because the active wiki decides which
+   * `schema.md` every prompt on the shell executes. So the sentence names the
+   * unknown outcome and the switcher refreshes to find out.
    *
    * Built with `Object.assign(new Error(...), { name })` and NOT with a real
    * `DOMException`: jsdom's DOMException does not inherit from Error, so
-   * `failureMessage`'s `cause instanceof Error` would be false and the sentence
+   * `writeFailure`'s `cause instanceof Error` would be false and the sentence
    * below would arrive from the function's last line whatever the abort branch
    * did — a test that passes for the wrong reason.
    */
@@ -549,7 +556,7 @@ describe("an in-flight switch", () => {
   ];
 
   for (const [name, mechanismMessage] of ABORTS) {
-    it(`names what failed, not the mechanism, on a ${name}`, async () => {
+    it(`reports the switch's outcome as unknown, and reconciles, on a ${name}`, async () => {
       fetchMock.mockRejectedValueOnce(
         Object.assign(new Error(mechanismMessage), { name }),
       );
@@ -560,16 +567,137 @@ describe("an in-flight switch", () => {
       });
 
       const alert = await screen.findByRole("alert");
-      expect(alert.textContent).toBe("Couldn’t switch wiki.");
-      expect(refresh).not.toHaveBeenCalled();
-      // The optimistic pick is rolled back, so the control names the wiki that
-      // is actually live rather than the one the owner failed to reach.
+      expect(alert.textContent).not.toBe("Couldn’t switch wiki.");
+      expect(alert.textContent).not.toContain(mechanismMessage);
+      expect(alert.textContent).toContain("switch wiki");
+      expect(alert.textContent).toContain("unknown");
+      // The screen is reconciled rather than left describing a wiki that may no
+      // longer be the live one.
+      await waitFor(() => expect(refresh).toHaveBeenCalled());
+      // The optimistic pick is rolled back, so the control names the wiki the
+      // server last CONFIRMED rather than the one the owner may or may not have
+      // reached — the refresh above is what settles which.
       await waitFor(() =>
         expect((screen.getByLabelText("Active wiki") as HTMLSelectElement).value).toBe(
           CURRENT.id,
         ),
       );
     });
+  }
+
+  it("tells a stated refusal apart from an unknown one, and refreshes on neither but the second", async () => {
+    // The other half of the verdict, on the same control: a route that answered
+    // with a reason ANSWERED. Nothing is unknown, nothing is stale, and a
+    // refresh would be a round trip for nothing.
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "That wiki no longer exists." }, { ok: false, status: 404 }),
+    );
+    mount();
+
+    fireEvent.change(screen.getByLabelText("Active wiki"), {
+      target: { value: OTHER.id },
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("That wiki no longer exists.");
+    await waitFor(() =>
+      expect((screen.getByLabelText("Active wiki") as HTMLSelectElement).value).toBe(
+        CURRENT.id,
+      ),
+    );
+    expect(refresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("every write here reports an unknown outcome, not a failure (DW-283)", () => {
+  /**
+   * The switch case above drives one of FOUR writes. `create`, `rename` and
+   * `remove` carry the same catch, and the same `if (unconfirmed)
+   * router.refresh()` — and none of them was observable from this file: their
+   * existing failure cases feed a server-stated refusal or a malformed 2xx,
+   * both of which are KNOWN outcomes that correctly refresh nothing. Deleting
+   * the refresh from all three left this suite green.
+   *
+   * The abort is delivered rather than waited for, and built with
+   * `Object.assign(new Error(...), { name })` rather than a real
+   * `DOMException`, for the reasons the switch case states in full.
+   */
+  const ABORTS: ReadonlyArray<readonly [string, string]> = [
+    ["TimeoutError", "signal timed out"],
+    ["AbortError", "This operation was aborted"],
+  ];
+
+  /**
+   * Each write, with the phrase `writeFailure` composes its sentences from and
+   * the clicks that reach it. The phrase is asserted rather than the whole
+   * sentence: the wording has one owner in `workbench-request.ts`, and
+   * `workbench-request.test.ts` executes it — what this file is for is that the
+   * right ACTION reached it and that the refresh fired.
+   */
+  const WRITES: ReadonlyArray<{
+    readonly label: string;
+    readonly action: string;
+    readonly open: () => void;
+    readonly confirm: string;
+    readonly dialog: string;
+  }> = [
+    {
+      label: "New Wiki",
+      action: "create the wiki",
+      open: () => fireEvent.click(button("New Wiki")),
+      confirm: "Create",
+      dialog: "Create Wiki",
+    },
+    {
+      label: "Rename",
+      action: "rename the wiki",
+      open: () => {
+        fireEvent.click(button("Rename Wiki"));
+        fireEvent.change(screen.getByLabelText("Wiki name"), {
+          target: { value: "Q4 plan" },
+        });
+      },
+      confirm: "Rename",
+      dialog: "Rename Wiki",
+    },
+    {
+      label: "Delete",
+      action: "delete the wiki",
+      open: () => fireEvent.click(button("Delete Wiki")),
+      confirm: "Delete",
+      dialog: "Delete Wiki",
+    },
+  ];
+
+  for (const [name, mechanismMessage] of ABORTS) {
+    for (const write of WRITES) {
+      it(`${write.label} reports an unknown outcome and reconciles on a ${name}`, async () => {
+        fetchMock.mockRejectedValueOnce(
+          Object.assign(new Error(mechanismMessage), { name }),
+        );
+        mount();
+        write.open();
+
+        fireEvent.click(button(write.confirm));
+
+        const alert = await screen.findByRole("alert");
+        expect(alert.textContent).not.toBe(`Couldn’t ${write.action}.`);
+        expect(alert.textContent).not.toContain(mechanismMessage);
+        expect(alert.textContent).toContain(write.action);
+        expect(alert.textContent).toContain("unknown");
+        // Into the dialog, which stays OPEN: its backdrop covers the column
+        // behind it, so a message painted on the section would be invisible.
+        expect(
+          screen.getByRole("dialog", { name: write.dialog }).contains(alert),
+        ).toBe(true);
+        // THE assertion this suite was missing. The request was abandoned on
+        // this side, so the registry may already hold the new wiki, the new
+        // name, or one wiki fewer — and every one of those is on screen here.
+        await waitFor(() => expect(refresh).toHaveBeenCalled());
+        // …and the confirm comes back rather than stranding on "Working…".
+        await waitFor(() => expect(button(write.confirm).disabled).toBe(false));
+      });
+    }
   }
 });
 

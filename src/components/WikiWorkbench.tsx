@@ -12,7 +12,7 @@ import {
   type CreatableScenario,
 } from "@/lib/wiki-scenarios";
 import { PREVIEW_UNSELECTED_COPY } from "@/lib/workbench-preview";
-import { failureMessage, send } from "@/lib/workbench-request";
+import { send, writeFailure } from "@/lib/workbench-request";
 import {
   WIKI_CREATE_READ_ONLY_COPY,
   WIKI_TEMPLATE_READ_ONLY_COPY,
@@ -195,7 +195,21 @@ export function WikiWorkbench() {
       // wiki-derived server output is stale until the tree is refetched.
       router.refresh();
     } catch (cause) {
-      setCreateError(failureMessage(cause, "Couldn’t create the wiki."));
+      const { message, unconfirmed } = writeFailure(cause, "create the wiki");
+      setCreateError(message);
+      if (unconfirmed) {
+        // The deadline fired, so this POST may have SEEDED A WIKI (DW-283).
+        // Two things follow, and neither is optional. The empty state behind
+        // this dialog still says `No wiki yet.` and still offers a Create Wiki
+        // button — pressing it now would seed a second wiki and move every
+        // prompt onto its template — so the door is held shut exactly as a
+        // succeeding create holds it, until a server render says what is
+        // actually there. And the refresh is what fetches that render: without
+        // it the owner is told the outcome is unknown in front of a screen that
+        // will never resolve it.
+        setAwaitingCreate(true);
+        router.refresh();
+      }
     } finally {
       setBusy(false);
     }
@@ -229,7 +243,13 @@ export function WikiWorkbench() {
     } catch (cause) {
       // Into the dialog, not the section: the overlay stays open on failure
       // and its backdrop covers everything this component renders behind it.
-      setTemplateError(failureMessage(cause, "Couldn’t apply the template."));
+      const { message, unconfirmed } = writeFailure(cause, "apply the template");
+      setTemplateError(message);
+      // The deadline fired, so the overwrite may have landed — this card would
+      // otherwise go on naming the OLD template beside a message that does not
+      // claim it survived. No `awaitingCreate` equivalent here: the confirm is
+      // idempotent per scenario and re-running it rewrites the same bytes.
+      if (unconfirmed) router.refresh();
     } finally {
       setBusy(false);
     }

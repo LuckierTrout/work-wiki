@@ -2672,6 +2672,24 @@ body:has(.wb-shell) {
 .wb-canvas-pad {
   padding: var(--wb-space-4);
 }
+/* The Wiki subtree stays MOUNTED in every mode (DW-26) and goes off screen
+   behind `hidden` instead, so that an open Create Wiki dialog keeps the name
+   the owner typed into it — `CreateWikiDialog` resets its fields on close, so
+   closing it to hide it would discard exactly what this preserves.
+
+   `hidden` is only a presentation hint: the UA sheet's `display: none` loses to
+   ANY author rule that sets `display` on the same element, and a wrapper this
+   deep inside a grid is precisely where a future `display: flex` or
+   `display: block` would be added without a thought for the attribute. Stated
+   here, with the attribute in the selector, the withdrawal cannot be undone by
+   accident — and the accessibility tree and tab-order removals that the whole
+   fix rests on go with the pixels.
+
+   Deliberately outside every media query: the subtree is hidden at all three
+   widths whenever another mode is showing. */
+.wb-canvas-mode[hidden] {
+  display: none;
+}
 .wb-surface-title {
   margin: 0 0 var(--wb-space-3);
   font-size: var(--wb-title-size);

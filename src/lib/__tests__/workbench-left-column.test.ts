@@ -252,7 +252,11 @@ describe("WikiSwitcher", () => {
       expect(consumer).toContain('from "@/lib/workbench-request"');
       expect(consumer).not.toContain("const REQUEST_TIMEOUT_MS");
       expect(consumer).not.toContain("async function send<T>");
-      expect(consumer).not.toContain("function failureMessage(");
+      // The verdict on a failed write has one owner too (DW-283): whether an
+      // aborted request is a failure or an outcome nobody knows is not a
+      // judgement a call site may make for itself.
+      expect(consumer).not.toContain("function writeFailure(");
+      expect(consumer).toContain("writeFailure(");
     }
   });
 

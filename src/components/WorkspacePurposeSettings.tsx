@@ -322,6 +322,23 @@ export function WorkspacePurposeSettings() {
    *     the outcome safe if one ever does.)
    */
   const answerSeqRef = useRef(0);
+  /**
+   * How many SAVES this form has started, and the only owner of `saving`.
+   *
+   * Deliberately not {@link answerSeqRef}, which every `load` bumps too —
+   * including a background recheck. `saving` is cleared in a `finally`, and a
+   * `finally` gated on the answer token stops running the moment a recheck
+   * moves it: the recheck's stand-down flag lives in `screenRef`, which an
+   * EFFECT writes, so there is a window after `setSaving(true)` in which one
+   * can still start. Nothing else clears `saving`, so the form would sit
+   * disabled with the button reading "Saving…" for the rest of the session.
+   *
+   * The two tokens answer two different questions and neither implies the
+   * other: "may this run's ANSWER be adopted" is about everything that seeds
+   * the form, while "does this run still own the in-flight FLAG" is about
+   * saves alone.
+   */
+  const saveSeqRef = useRef(0);
   /** One background recheck at a time — see `answerSeqRef`. */
   const recheckInFlightRef = useRef(false);
 
@@ -530,7 +547,27 @@ export function WorkspacePurposeSettings() {
     // This write supersedes any background recheck already in flight: its
     // answer describes a moment before this PUT, and adopting it afterwards
     // would overwrite what was just saved. See `answerSeqRef`.
-    answerSeqRef.current += 1;
+    //
+    // …and the bumped token is CAPTURED, exactly as `load` captures its own
+    // (DW-320). Everything below the await is a state write on a component that
+    // may be gone, or that something newer already owns: this used to be the
+    // one path in the file with no guard at all, so a PUT settling after the
+    // form unmounted wrote into a dead tree, and the older of two overlapping
+    // saves could land last and put its stale profile, version and confirmation
+    // on screen over the newer one.
+    const seq = (answerSeqRef.current += 1);
+    const writeSeq = (saveSeqRef.current += 1);
+    /** Whether this run's ANSWER may still be adopted. See `answerSeqRef`. */
+    const adopted = () => !cancelledRef.current && seq === answerSeqRef.current;
+    /**
+     * Whether this run still owns the `saving` flag. See {@link saveSeqRef}.
+     *
+     * A NEWER SAVE is the only thing that takes it: a load or a recheck moving
+     * the answer token means this run's bytes are stale, not that the request
+     * it is waiting on has stopped being in flight — and clearing on the answer
+     * token would leave the form disabled forever whenever one slipped through.
+     */
+    const ownsSaving = () => !cancelledRef.current && writeSeq === saveSeqRef.current;
     setSaving(true);
     setFeedback(null);
     const input: WorkspaceProfileInput = {
@@ -562,6 +599,9 @@ export function WorkspacePurposeSettings() {
         // screen over a different wiki's stored purpose.
         body: JSON.stringify({ ...input, wikiId: wiki?.id }),
       });
+      // EVERY guard is re-checked after the await, because both can become true
+      // during the round trip.
+      if (!adopted()) return;
       placeProfile(data.profile, data.profile.updatedAt);
       // Adopt the version of what the save actually WROTE. Without this the
       // second save of a session is still conditioned on the profile this form
@@ -589,12 +629,22 @@ export function WorkspacePurposeSettings() {
           : "Workspace Purpose saved. New ingest, chat, monitoring, extraction, and agent runs will use it.",
       });
     } catch (error) {
+      // A refusal belongs to the attempt that produced it. Reported from a run
+      // something newer has superseded, it would replace the newer answer —
+      // a confirmation, or its own refusal — with this one.
+      if (!adopted()) return;
       setFeedback({
         ok: false,
         message: error instanceof Error ? error.message : "Couldn’t save Workspace Purpose.",
       });
     } finally {
-      setSaving(false);
+      // Not from a superseded SAVE: that newer one owns the flag now, and
+      // clearing it here would lift the gate over a PUT still in flight — the
+      // same rule `load`'s own `finally` follows. Gated on the save token and
+      // NOT on the answer token, because a recheck moving the latter says
+      // nothing about whether this request is still open, and stranding
+      // `saving` disables the whole form with no way back.
+      if (ownsSaving()) setSaving(false);
     }
   }
 
