@@ -3294,7 +3294,8 @@ source_spec: `spec-dw-26-62-283-320-workbench-client-state-and-nav.md`
 location: src/lib/workbench-request.ts (writeFailure)
 severity: medium
 reason: `writeFailure` returns `unconfirmed: true` for the two abort names and otherwise prefers `cause.message`. A mid-write network drop arrives as `TypeError: Failed to fetch` (Safari: `Load failed`) and a gateway timeout as `send`'s `Request failed (504)`; in both the server may have applied the write, so the owner is told it failed over something unknown, and the screen is not reconciled. `Failed to fetch` also reaches the owner verbatim, which `workbench-settings.ts` already calls transport vocabulary no copy table contains. Pre-existing shape: `failureMessage` classified these the same way before this change.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-unconfirmed-write-reporting
 
 ### DW-375: `WikiSwitcher`'s create, rename and delete confirms stay live after an unconfirmed write, so a retry can seed a duplicate wiki or paint a 404 over a delete that landed.
 origin: spec-deferred be4b261f912b
@@ -3302,7 +3303,8 @@ source_spec: `spec-dw-26-62-283-320-workbench-client-state-and-nav.md`
 location: src/components/workbench/WikiSwitcher.tsx (create, rename, remove)
 severity: medium
 reason: The card holds its create door shut with `awaitingCreate` on the unconfirmed path; the switcher has no equivalent. `busy` is cleared in `finally`, the dialog stays open, and the confirm is pressable — over a POST that may have created the wiki (nothing enforces unique names) or a DELETE whose second attempt answers 404, which the switcher's own comment calls "a failure over an operation that in fact succeeded". Pre-existing: the retry window is the same one an aborted write has always left open; this change only renamed the message.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-unconfirmed-write-reporting
 
 ### DW-376: `SettingsCanvas.save` and `PreviewColumn` carry their own deadlines and still report a blown one as a flat failure, which is the claim DW-283 says the client cannot make.
 origin: spec-deferred 5d49180cca3b
@@ -3310,7 +3312,8 @@ source_spec: `spec-dw-26-62-283-320-workbench-client-state-and-nav.md`
 location: src/components/workbench/SettingsCanvas.tsx (save), src/components/workbench/PreviewColumn.tsx
 severity: medium
 reason: Both arm their own `AbortSignal` rather than using `send` (each needs the controller), so neither reaches `writeFailure`. `SettingsCanvas.save` resolves an abort to `SETTINGS_SAVE_FAILED_COPY` ("Settings couldn’t be saved.") over a PUT the server may have applied — on the surface this change just made keyboard-reachable through `g s`. Out of DW-283's stated scope, which names `workbench-request.ts` and the wiki writes.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-unconfirmed-write-reporting
 
 ### DW-377: Retry attempts are counted per qualifying poll rather than per settled re-render, so a nudge or visibility burst — or a merely slow refresh — can spend the whole budget before any new baseline has had
 origin: spec-deferred eb490a039820
@@ -3553,4 +3556,28 @@ source_spec: `spec-dw-332-embedding-drift-warning-rearm.md`
 location: src/lib/embeddings.ts (relatedByVector)
 severity: low
 reason: src/lib/embeddings.ts relatedByVector applies `modelMatches` and silently returns [] on a drifted corpus. That muteness predates this change (DW-310 scoped the breadcrumb to searchByVector), but with drift now modelled as CLEARABLE state the asymmetry is newly consequential: a rebuild proven out only through relatedByVector never re-arms the key. Worth either one sentence of recorded rationale or a decision to widen the door.
+status: open
+
+### DW-407: WikiWorkbench's CreateWikiDialog confirm stays live on its own unconfirmed path, so a second press seeds a duplicate wiki.
+origin: spec-deferred bd7e96f62f0e
+source_spec: `spec-dw-374-375-376-unconfirmed-write-reporting.md`
+location: src/components/WikiWorkbench.tsx (create, and its CreateWikiDialog mount)
+severity: medium
+reason: `awaitingCreate` gates only the empty-state `Create Wiki` opener, which sits BEHIND the open overlay; `WikiWorkbench.create` guards on `readOnly` and `busy` only, and the dialog is passed no `confirmDisabled`. On the unconfirmed path the dialog deliberately stays open with `busy` cleared in `finally`, so both the pointer path and CreateWikiDialog.submit's Enter path are live over a POST that may already have created the wiki — nothing enforces unique names. This is the exact defect DW-375 closed in the header, still open in the card; DW-375's own text asserts the card is already covered, which is why it was scoped to the switcher. The `confirmDisabled` prop this story added to CreateWikiDialog makes it a one-line fix. `create-wiki-flow.test.tsx` currently asserts the opposite (the confirm is enabled after an unconfirmed create), so that assertion has to move too.
+status: open
+
+### DW-408: saveWorkbenchSettings parses a 2xx body with a bare `await response.json()`, so an unparseable 200 is reported as a failed save over a patch the route accepted.
+origin: spec-deferred 9a20e32ce553
+source_spec: `spec-dw-374-375-376-unconfirmed-write-reporting.md`
+location: src/lib/workbench-settings.ts:2074
+severity: medium
+reason: The success path at src/lib/workbench-settings.ts:2074 has no `.catch()`, unlike every refusal-body parse in the same file. A truncated or HTML 200 throws SyntaxError into the outer catch, where the verdict is the fixed fallback with `unconfirmed: false` — the surface tells the owner the save failed while the route answered 2xx, and keeps a version the write superseded, so the next save is refused as a 412 conflict with an actor that does not exist. Pre-existing shape, unchanged by this story: the same throw reached the same fallback before the classifier was widened. The parsed-but- shapeless case beside it is already handled as a KNOWN error deliberately; only the throwing case is inconsistent.
+status: open
+
+### DW-409: WikiSwitcher.switchWiki starts no latch on an unconfirmed switch, so a second PUT can be issued over a first whose outcome is unknown.
+origin: spec-deferred 53cfbf951e42
+source_spec: `spec-dw-374-375-376-unconfirmed-write-reporting.md`
+location: src/components/workbench/WikiSwitcher.tsx (switchWiki)
+severity: low
+reason: `switchWiki` guards only on `switching`, which `finally` clears, and the `<select>` is live again the moment the unconfirmed sentence appears. Two PUTs to /api/wikis/current can then settle out of order, leaving the active wiki — which decides which schema.md every prompt executes — set by whichever answer landed last. DW-375 names only create, rename and delete, and a `<select>` has no confirm to latch, so this needs its own decision about what the right affordance is (roll the picker back and hold it, or leave it live because a switch is idempotent per target).
 status: open

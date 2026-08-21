@@ -11,6 +11,7 @@ import {
   SETTINGS_READ_ONLY_COPY,
   SETTINGS_SAVED_COPY,
   SETTINGS_SAVE_COPY,
+  SETTINGS_SAVE_FAILED_COPY,
   SETTINGS_TIMEOUT_HINT_COPY,
   settingsEnvKeyCopy,
   settingsEnvOverrideCopy,
@@ -554,6 +555,114 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(ifMatchOf(1)).toBeUndefined();
+  });
+
+  /**
+   * DW-376: the save whose OUTCOME NOBODY KNOWS, on this surface.
+   *
+   * `workbench-settings.test.ts` executes the client and asserts the returned
+   * shape. What it cannot see is the seam this describe exists for: that the
+   * canvas ACTS on `unconfirmed` by clearing the version it is holding, and
+   * that the next save therefore carries no `If-Match`. That reconciliation is
+   * the whole of this surface's response — there is no re-read here that does
+   * not throw away every unsaved edit — so it has to be executed.
+   */
+  const UNCONFIRMED: ReadonlyArray<readonly [string, () => unknown]> = [
+    [
+      "a gateway that gave up",
+      () => ({
+        ok: false,
+        status: 504,
+        // A proxy's page, which is NOT the route's verdict and is not relayed.
+        json: async () => ({ error: "<html>Gateway Timeout</html>" }),
+      }),
+    ],
+    [
+      "a dropped connection",
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ],
+  ];
+
+  for (const [label, unconfirmed] of UNCONFIRMED) {
+    it(`keeps every edit and drops the stale If-Match after ${label} (DW-376)`, async () => {
+      await mountWritable([
+        read(SEEDED),
+        unconfirmed,
+        () => ({
+          ok: false,
+          status: 428,
+          json: async () => ({ error: WRITE_PRECONDITION_REQUIRED_COPY }),
+        }),
+      ]);
+
+      typeChatModel("gpt-4.1");
+      fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+
+      // The sentence: the outcome is UNKNOWN, not "settings couldn't be saved".
+      // The patch may be stored, and this surface is in no position to say it is
+      // not — nor to relay a proxy's HTML or a transport's `Failed to fetch`.
+      const alert = await screen.findByText(/outcome is unknown/);
+      expect(alert.textContent).toContain("save these settings");
+      expect(screen.queryByText(SETTINGS_SAVE_FAILED_COPY)).toBeNull();
+      expect(screen.queryByText(/Gateway Timeout/)).toBeNull();
+      expect(screen.queryByText(/Failed to fetch/)).toBeNull();
+      expect(screen.queryByText(SETTINGS_SAVED_COPY)).toBeNull();
+
+      // Every edit survives — a save that may have landed must never be the
+      // thing that loses it, and there is no re-seed from a server that never
+      // answered.
+      expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe(
+        "gpt-4.1",
+      );
+      expect(ifMatchOf(1)).toBe(`"${SEEDED}"`);
+
+      // THE reconciliation. If the save landed, the stored config has moved past
+      // the version this canvas is holding, so that version is the one thing on
+      // screen that can now be a lie. The next save carries NONE — refused as
+      // 428 "this could not be checked", which is true — rather than the
+      // superseded one, which could only ever be refused as 412 "somebody else
+      // changed this while you were editing", about an actor that does not exist.
+      typeChatModel("gpt-4.1-mini");
+      fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+      expect(ifMatchOf(2)).toBeUndefined();
+      await waitFor(() =>
+        expect(screen.getByText(WRITE_PRECONDITION_REQUIRED_COPY)).toBeTruthy(),
+      );
+      expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe(
+        "gpt-4.1-mini",
+      );
+    });
+  }
+
+  it("KEEPS the version when this route's own 503 refuses the save", async () => {
+    // The edge the status set turns on. `PUT /api/settings` answers 503 when the
+    // store cannot be read, and refuses BEFORE merging — so nothing was written,
+    // the version the canvas holds is still current, and throwing it away would
+    // send the next save into a needless 428 on the strength of a refusal that
+    // arrived intact.
+    await mountWritable([
+      read(SEEDED),
+      () => ({
+        ok: false,
+        status: 503,
+        json: async () => ({ error: "The settings store could not be read." }),
+      }),
+      saved(LANDED),
+    ]);
+
+    typeChatModel("gpt-4.1");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() =>
+      expect(screen.getByText("The settings store could not be read.")).toBeTruthy(),
+    );
+    expect(screen.queryByText(/outcome is unknown/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(ifMatchOf(2)).toBe(`"${SEEDED}"`);
   });
 
   it("keeps every edit on screen and shows the SERVER's conflict sentence", async () => {

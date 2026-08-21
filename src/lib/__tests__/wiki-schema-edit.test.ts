@@ -75,7 +75,9 @@ import {
   PREVIEW_EDIT_SCHEMA_CONFIRM_BODY,
   PREVIEW_EDIT_SCHEMA_CONFIRM_TITLE,
   PREVIEW_MAX_CHARS,
+  PREVIEW_SAVE_ACTION,
   PREVIEW_SAVE_FAILED_COPY,
+  PREVIEW_SCHEMA_SAVE_ACTION,
   PREVIEW_SCHEMA_SAVE_FAILED_COPY,
   canEditPreview,
   previewEditCopy,
@@ -253,6 +255,11 @@ describe("previewEditCopy", () => {
     expect(copy.confirmTitle).toBe(PREVIEW_EDIT_SCHEMA_CONFIRM_TITLE);
     expect(copy.confirmBody).toBe(PREVIEW_EDIT_SCHEMA_CONFIRM_BODY);
     expect(copy.saveFallback).toBe(PREVIEW_SCHEMA_SAVE_FAILED_COPY);
+    // The UNKNOWN-outcome phrase travels in the SAME copy set (DW-376), or the
+    // surface says "the Schema" in one of its two failure sentences and "this
+    // page" in the other.
+    expect(copy.saveAction).toBe(PREVIEW_SCHEMA_SAVE_ACTION);
+    expect(copy.saveAction.toLowerCase()).not.toContain("page");
     // The consequence is the reason this copy exists at all: a page edit changes
     // one page, a Schema edit changes every prompt that runs afterwards.
     expect(copy.confirmBody).toContain("ingest, chat and lint");
@@ -264,6 +271,7 @@ describe("previewEditCopy", () => {
     expect(copy.confirmTitle).toBe(PREVIEW_EDIT_CONFIRM_TITLE);
     expect(copy.confirmBody).toBe(PREVIEW_EDIT_CONFIRM_BODY);
     expect(copy.saveFallback).toBe(PREVIEW_SAVE_FAILED_COPY);
+    expect(copy.saveAction).toBe(PREVIEW_SAVE_ACTION);
   });
 
   it("is total, so a payload with no target still renders a dialog", () => {

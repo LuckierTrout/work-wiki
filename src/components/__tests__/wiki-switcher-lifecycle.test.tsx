@@ -694,11 +694,253 @@ describe("every write here reports an unknown outcome, not a failure (DW-283)", 
         // this side, so the registry may already hold the new wiki, the new
         // name, or one wiki fewer — and every one of those is on screen here.
         await waitFor(() => expect(refresh).toHaveBeenCalled());
-        // …and the confirm comes back rather than stranding on "Working…".
-        await waitFor(() => expect(button(write.confirm).disabled).toBe(false));
+        // …and the busy state clears rather than stranding on "Working…" — the
+        // LATCH, not `busy`, is what holds the confirm down from here (DW-375),
+        // which the suite below is about.
+        await waitFor(() => expect(button("Cancel").disabled).toBe(false));
       });
     }
   }
+});
+
+/**
+ * DW-375: what the owner can PRESS once a write's outcome is unknown.
+ *
+ * None of the three dialogs closes on that path — the message is inside the
+ * overlay, so it has to stay open — and until this change all three stayed open
+ * with a LIVE confirm over a write that may already have landed. A second press
+ * seeds a duplicate wiki, renames twice, or paints a repeat DELETE's 404 over a
+ * delete that succeeded.
+ *
+ * Every assertion is on the button, not on a flag: `confirmDisabled` is the
+ * whole deliverable, and it has to be the confirm ALONE — `busy` would take
+ * Cancel and Esc with it and leave the owner behind a modal they were just told
+ * to look past.
+ */
+describe("an unconfirmed write latches the confirm until a server render (DW-375)", () => {
+  const abort = () =>
+    Object.assign(new Error("signal timed out"), { name: "TimeoutError" });
+
+  /** The same three writes, plus the request each one must not issue twice. */
+  const WRITES: ReadonlyArray<{
+    readonly label: string;
+    readonly open: () => void;
+    readonly confirm: string;
+    readonly dialog: string;
+    readonly url: string;
+  }> = [
+    {
+      label: "create",
+      open: () => fireEvent.click(button("New Wiki")),
+      confirm: "Create",
+      dialog: "Create Wiki",
+      url: "/api/wikis",
+    },
+    {
+      label: "rename",
+      open: () => {
+        fireEvent.click(button("Rename Wiki"));
+        fireEvent.change(screen.getByLabelText("Wiki name"), {
+          target: { value: "Q4 plan" },
+        });
+      },
+      confirm: "Rename",
+      dialog: "Rename Wiki",
+      url: `/api/wikis/${CURRENT_ENCODED}`,
+    },
+    {
+      label: "delete",
+      open: () => fireEvent.click(button("Delete Wiki")),
+      confirm: "Delete",
+      dialog: "Delete Wiki",
+      url: `/api/wikis/${OTHER_ENCODED}`,
+    },
+  ];
+
+  for (const write of WRITES) {
+    it(`shuts ${write.label}'s confirm while leaving Cancel and Esc live`, async () => {
+      fetchMock.mockRejectedValueOnce(abort());
+      mount();
+      write.open();
+      fireEvent.click(button(write.confirm));
+      await screen.findByRole("alert");
+
+      // The dialog is still there — the sentence lives inside it.
+      expect(screen.getByRole("dialog", { name: write.dialog })).toBeTruthy();
+      // …and the one control that could repeat the write is dead.
+      await waitFor(() => expect(button(write.confirm).disabled).toBe(true));
+      // Every way OUT is still open. The message tells the owner to go and look
+      // at the screen, and a modal they cannot dismiss is not a screen.
+      expect(button("Cancel").disabled).toBe(false);
+
+      // Pressing the dead button writes nothing — asserted on the SPY, not on
+      // the attribute, because `disabled` is the affordance and the handler's
+      // early return is the refusal.
+      const before = fetchMock.mock.calls.length;
+      fireEvent.click(button(write.confirm));
+      expect(fetchMock.mock.calls.length).toBe(before);
+      expect(
+        fetchMock.mock.calls.filter(([url]) => url === write.url),
+      ).toHaveLength(1);
+
+      // Esc still dismisses, which is the half `busy` would have taken away.
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    });
+
+    it(`gives ${write.label}'s confirm back once a server render arrives`, async () => {
+      fetchMock.mockRejectedValueOnce(abort());
+      const view = mount();
+      write.open();
+      fireEvent.click(button(write.confirm));
+      await screen.findByRole("alert");
+      await waitFor(() => expect(button(write.confirm).disabled).toBe(true));
+
+      // A fresh array is what a server render IS — `page.tsx` reads the registry
+      // every time. Deliberately answering the SAME two wikis: a refresh that
+      // says nothing changed must still give the owner their button back, or the
+      // control is dead with no explanation and no way to revive it.
+      view.rerender(
+        <WikiSwitcher wikis={[CURRENT, OTHER]} currentWikiId={CURRENT.id} />,
+      );
+
+      await waitFor(() => expect(button(write.confirm).disabled).toBe(false));
+    });
+  }
+
+  it("leaves the rename field LIVE and editable, with only its Enter path shut", async () => {
+    // The latch is the confirm's and nothing else's. A disabled input would drop
+    // out of the tab order, so a keyboard owner could not reach — let alone
+    // correct — the name they were about to submit, and the sentence they have
+    // just read tells them to go and look at what is on screen.
+    //
+    // That makes this the delicate half: the field accepts keystrokes, so a
+    // GUARD is the only thing between Enter and a second PATCH. Two carry it —
+    // the keydown handler and `rename`'s own early return — and each is
+    // unreachable behind the other, so this case can only observe that the pair
+    // refuses. `workbench-left-column.test.ts` pins each line individually, for
+    // exactly the reason it states about unreachable guards.
+    fetchMock.mockRejectedValueOnce(abort());
+    mount();
+    fireEvent.click(button("Rename Wiki"));
+    const input = screen.getByLabelText("Wiki name") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Q4 plan" } });
+    fireEvent.click(button("Rename"));
+    await screen.findByRole("alert");
+    await waitFor(() => expect(button("Rename").disabled).toBe(true));
+
+    // The owner's text is still on screen — a failed write must never be the
+    // thing that loses it — and the field is still a field.
+    expect(input.value).toBe("Q4 plan");
+    expect(input.disabled).toBe(false);
+
+    // It still TAKES the keystroke: the owner can correct the name while the
+    // confirm is down. Asserted rather than assumed, because a test that only
+    // pressed Enter at a disabled input would prove nothing about the guard.
+    fireEvent.change(input, { target: { value: "Q4 roadmap" } });
+    expect(input.value).toBe("Q4 roadmap");
+
+    // …and Enter into that live field writes NOTHING. The spy is the assertion,
+    // not the attribute: the handler's early return IS the refusal here.
+    const before = fetchMock.mock.calls.length;
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(fetchMock.mock.calls.length).toBe(before);
+    expect(
+      fetchMock.mock.calls.filter(([url]) => url === `/api/wikis/${CURRENT_ENCODED}`),
+    ).toHaveLength(1);
+  });
+
+  for (const write of WRITES) {
+    it(`keeps ${write.label}'s sentence when the owner dismisses and reopens`, async () => {
+      // The exact move the message invites: "check what the screen shows before
+      // trying again" means dismiss this dialog and look. The openers all clear
+      // their error unconditionally, so before this fix that round trip
+      // presented a DEAD confirm with nothing on screen explaining why — the
+      // worst of both, since the owner can neither act nor find out why not.
+      fetchMock.mockRejectedValueOnce(abort());
+      mount();
+      write.open();
+      fireEvent.click(button(write.confirm));
+      const alert = await screen.findByRole("alert");
+      const sentence = alert.textContent ?? "";
+      expect(sentence).toContain("unknown");
+      await waitFor(() => expect(button(write.confirm).disabled).toBe(true));
+
+      // Out…
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+      // …and back in. Nothing has arrived from the server in between, so both
+      // facts must still hold: the door is shut, and the reason is on screen.
+      write.open();
+      expect(screen.getByRole("dialog", { name: write.dialog })).toBeTruthy();
+      expect(button(write.confirm).disabled).toBe(true);
+      const reopened = await screen.findByRole("alert");
+      expect(reopened.textContent).toBe(sentence);
+      expect(
+        screen.getByRole("dialog", { name: write.dialog }).contains(reopened),
+      ).toBe(true);
+    });
+  }
+
+  it("clears a stale sentence on the NEXT open once the latch has been released", async () => {
+    // The other side of it: the message is kept only while it is still the
+    // reason the confirm is down. Once a server render has arrived the owner has
+    // been told what is actually there, and reopening starts clean rather than
+    // showing them an answer to a question that has been settled.
+    fetchMock.mockRejectedValueOnce(abort());
+    const view = mount();
+    fireEvent.click(button("New Wiki"));
+    fireEvent.click(button("Create"));
+    await screen.findByRole("alert");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    view.rerender(<WikiSwitcher wikis={[CURRENT, OTHER]} currentWikiId={CURRENT.id} />);
+
+    fireEvent.click(button("New Wiki"));
+    expect(button("Create").disabled).toBe(false);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("leaves a STATED refusal's confirm alone — that outcome is known", async () => {
+    // The other edge of the rule. A route that answered with a reason answered:
+    // nothing landed, so the owner may fix the name and press Rename again
+    // immediately. Latching here would strand them behind a dead button waiting
+    // for a refresh that is never issued.
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "Wiki name is required." }, { ok: false, status: 400 }),
+    );
+    mount();
+    fireEvent.click(button("Rename Wiki"));
+    fireEvent.change(screen.getByLabelText("Wiki name"), { target: { value: "Q4" } });
+    fireEvent.click(button("Rename"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Wiki name is required.");
+    await waitFor(() => expect(button("Rename").disabled).toBe(false));
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("latches on a 502 too — the widened classifier reaches every write here", async () => {
+    // DW-374 and DW-375 meeting: the switcher composes no verdict of its own, so
+    // widening `writeFailure` is what puts a gateway on this path at all.
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "Bad Gateway" }, { ok: false, status: 502 }),
+    );
+    mount();
+    fireEvent.click(button("New Wiki"));
+    fireEvent.click(button("Create"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("unknown");
+    expect(alert.textContent).toContain("create the wiki");
+    expect(alert.textContent).not.toContain("502");
+    expect(alert.textContent).not.toContain("Bad Gateway");
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    await waitFor(() => expect(button("Create").disabled).toBe(true));
+    expect(button("Cancel").disabled).toBe(false);
+  });
 });
 
 describe("the controls' gates", () => {

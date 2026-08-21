@@ -31,6 +31,18 @@ import {
 export interface CreateWikiDialogProps {
   open: boolean;
   busy?: boolean;
+  /**
+   * Blocks Create ALONE, mirroring `ConfirmDialog`'s prop of the same name.
+   *
+   * Distinct from `busy`, which also kills Cancel, Esc and the outside-click
+   * dismiss — right while a request is in flight, and wrong afterwards. A host
+   * whose create answered with an UNKNOWN outcome (DW-374) must be able to shut
+   * the one door that could seed a second wiki while leaving every way OUT of
+   * the dialog open: the sentence it just showed tells the owner to go look at
+   * the screen, and a modal they cannot dismiss is not a screen they can look
+   * at.
+   */
+  confirmDisabled?: boolean;
   error?: string | null;
   onCancel: () => void;
   onCreate: (input: { name: string; scenario: CreatableScenario }) => void;
@@ -43,6 +55,7 @@ const DEFAULT_SCENARIO: CreatableScenario = "business";
 export function CreateWikiDialog({
   open,
   busy = false,
+  confirmDisabled = false,
   error = null,
   onCancel,
   onCreate,
@@ -84,7 +97,10 @@ export function CreateWikiDialog({
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (busy) return;
+    // BOTH gates, because this is also the Enter path: the field sits in a
+    // <form>, so a keystroke reaches here without touching the submit button at
+    // all. A guard the pointer path alone carries is a guard with a hole.
+    if (busy || confirmDisabled) return;
     onCreate({ name: name.trim(), scenario });
   }
 
@@ -175,7 +191,11 @@ export function CreateWikiDialog({
             <button type="button" className="btn ghost" onClick={cancel} disabled={busy}>
               Cancel
             </button>
-            <button type="submit" className="btn primary" disabled={busy || !name.trim()}>
+            <button
+              type="submit"
+              className="btn primary"
+              disabled={busy || confirmDisabled || !name.trim()}
+            >
               {busy ? "Creating…" : "Create"}
             </button>
           </div>

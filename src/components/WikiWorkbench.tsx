@@ -198,7 +198,11 @@ export function WikiWorkbench() {
       const { message, unconfirmed } = writeFailure(cause, "create the wiki");
       setCreateError(message);
       if (unconfirmed) {
-        // The deadline fired, so this POST may have SEEDED A WIKI (DW-283).
+        // NOTHING CAME BACK, so this POST may have SEEDED A WIKI (DW-283) —
+        // a fired deadline, a dropped connection or a gateway that gave up
+        // alike, which since DW-374 all arrive here and all mean the same one
+        // thing: the request left and no verdict came back.
+        //
         // Two things follow, and neither is optional. The empty state behind
         // this dialog still says `No wiki yet.` and still offers a Create Wiki
         // button — pressing it now would seed a second wiki and move every
@@ -245,10 +249,12 @@ export function WikiWorkbench() {
       // and its backdrop covers everything this component renders behind it.
       const { message, unconfirmed } = writeFailure(cause, "apply the template");
       setTemplateError(message);
-      // The deadline fired, so the overwrite may have landed — this card would
-      // otherwise go on naming the OLD template beside a message that does not
-      // claim it survived. No `awaitingCreate` equivalent here: the confirm is
-      // idempotent per scenario and re-running it rewrites the same bytes.
+      // NOTHING CAME BACK — a fired deadline, a dropped connection or a gateway
+      // that gave up, all of which reach here since DW-374 — so the overwrite
+      // may have landed. This card would otherwise go on naming the OLD
+      // template beside a message that does not claim it survived. No
+      // `awaitingCreate` equivalent here: the confirm is idempotent per
+      // scenario and re-running it rewrites the same bytes.
       if (unconfirmed) router.refresh();
     } finally {
       setBusy(false);

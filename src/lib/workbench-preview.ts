@@ -10,6 +10,11 @@
 
 import { isEditableArtifactFile, type EditableArtifactFile } from "./wiki-scenarios";
 import type { TreeSelection } from "./workbench-tree";
+import {
+  refusedWriteFailure,
+  thrownWriteFailure,
+  unconfirmedStatus,
+} from "./workbench-request";
 import { IF_MATCH_HEADER, formatIfMatch } from "./write-precondition";
 
 // ---------------------------------------------------------------------------
@@ -645,6 +650,21 @@ export const PREVIEW_SAVE_FAILED_COPY = "This page couldn’t be saved.";
 /** The same fallback for the Schema, which is not a page. */
 export const PREVIEW_SCHEMA_SAVE_FAILED_COPY = "This Schema couldn’t be saved.";
 
+/**
+ * The ACTION phrase, for the one sentence `workbench-request` composes when the
+ * save's outcome is unknown (DW-376).
+ *
+ * A phrase and not a sentence, for the reason `writeFailure` states: the
+ * fallback above and the unknown-outcome sentence are two renderings of one
+ * fact, and a surface passing both is where they start to disagree. Paired with
+ * the fallback in {@link previewEditCopy}, so the two can only be chosen
+ * together.
+ */
+export const PREVIEW_SAVE_ACTION = "save this page";
+
+/** …and the same phrase for the Schema. */
+export const PREVIEW_SCHEMA_SAVE_ACTION = "save the Schema";
+
 // ---------------------------------------------------------------------------
 // The History panel's vocabulary (DW-214)
 // ---------------------------------------------------------------------------
@@ -679,6 +699,12 @@ export const PREVIEW_HISTORY_VIEW_FAILED_COPY = "That version couldn’t be load
 
 /** …and for the revert. Distinct, because nothing was written. */
 export const PREVIEW_HISTORY_REVERT_FAILED_COPY = "This Schema couldn’t be reverted.";
+
+/**
+ * The revert's ACTION phrase — the one above says nothing was written, which is
+ * exactly the claim an unknown outcome cannot make.
+ */
+export const PREVIEW_HISTORY_REVERT_ACTION = "revert the Schema";
 
 /** The per-entry controls. `View` toggles; pressing it again collapses. */
 export const PREVIEW_HISTORY_VIEW_COPY = "View";
@@ -834,6 +860,13 @@ export interface PreviewEditCopy {
   confirmBody: string;
   /** Shown only when the server supplied no sentence of its own. */
   saveFallback: string;
+  /**
+   * The phrase the UNKNOWN-outcome sentence is composed from — "save this page"
+   * or "save the Schema". Carried beside the fallback rather than derived at the
+   * call site, so a surface cannot end up saying `page` about the Schema in one
+   * of the two sentences and `Schema` in the other.
+   */
+  saveAction: string;
 }
 
 /**
@@ -855,12 +888,14 @@ export function previewEditCopy(target: PreviewWriteTarget | null): PreviewEditC
       confirmTitle: PREVIEW_EDIT_SCHEMA_CONFIRM_TITLE,
       confirmBody: PREVIEW_EDIT_SCHEMA_CONFIRM_BODY,
       saveFallback: PREVIEW_SCHEMA_SAVE_FAILED_COPY,
+      saveAction: PREVIEW_SCHEMA_SAVE_ACTION,
     };
   }
   return {
     confirmTitle: PREVIEW_EDIT_CONFIRM_TITLE,
     confirmBody: PREVIEW_EDIT_CONFIRM_BODY,
     saveFallback: PREVIEW_SAVE_FAILED_COPY,
+    saveAction: PREVIEW_SAVE_ACTION,
   };
 }
 
@@ -1207,7 +1242,18 @@ export async function fetchPreview(
  */
 export type PreviewSaveResult =
   | { status: "ok"; version?: string }
-  | { status: "error"; message: string };
+  | {
+      status: "error";
+      message: string;
+      /**
+       * NOTHING IS KNOWN about this save — see `WriteFailure.unconfirmed`. The
+       * caller must keep every edit on screen, drop the `If-Match` it can no
+       * longer trust, and ask the shell to re-check `dataVersion`; it must never
+       * tell the owner the save failed. REQUIRED rather than optional, so a
+       * future construction site cannot forget the verdict into a silent false.
+       */
+      unconfirmed: boolean;
+    };
 
 /**
  * Save an edited body to a write target's URL.
@@ -1235,6 +1281,15 @@ export type PreviewSaveResult =
  * and that tells the owner nothing they can act on. Those, an unparseable body
  * and a blank message all show `fallback`. A genuine 403 or 404 sentence still
  * reaches the owner verbatim, because only the server knows which it was.
+ *
+ * …EXCEPT when nothing answered at all (DW-376). A fired deadline, a dropped
+ * connection and a gateway status ({@link UNCONFIRMED_STATUSES} — 502 and 504,
+ * and NOT 503, which this app's own routes emit as a verdict) are not refusals:
+ * the write may have landed, so they answer `unconfirmed: true` and the ONE
+ * sentence
+ * `workbench-request` owns, composed from `action`. `fallback` is not shown
+ * there: "This page couldn’t be saved." is a claim about the server that this
+ * client is in no position to make.
  */
 export async function savePreviewBody(
   url: string,
@@ -1243,6 +1298,11 @@ export async function savePreviewBody(
     signal?: AbortSignal;
     fetchImpl?: PreviewFetch;
     fallback?: string;
+    /**
+     * The phrase the UNKNOWN-outcome sentence is composed from — always the
+     * {@link PreviewEditCopy.saveAction} paired with the `fallback` above.
+     */
+    action?: string;
     /**
      * The {@link PreviewPayload.version} the editor was SEEDED with — never one
      * re-derived at Save. Sent as `If-Match`; both write routes REQUIRE it and
@@ -1259,6 +1319,7 @@ export async function savePreviewBody(
 ): Promise<PreviewSaveResult> {
   const send = options.fetchImpl ?? fetch;
   const fallback = options.fallback ?? PREVIEW_SAVE_FAILED_COPY;
+  const action = options.action ?? PREVIEW_SAVE_ACTION;
   try {
     const response = await send(url, {
       method: "PUT",
@@ -1284,10 +1345,14 @@ export async function savePreviewBody(
     }
     const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
     const served = typeof body?.error === "string" ? body.error.trim() : "";
-    return { status: "error", message: served || fallback };
-  } catch {
-    // Deliberately discards the cause's message — see the docblock.
-    return { status: "error", message: fallback };
+    // The verdict has ONE owner, in `workbench-request`: a gateway's status wins
+    // over whatever it put in the body, and everything else relays the server's
+    // sentence exactly as before.
+    return { status: "error", ...refusedWriteFailure(response.status, served, action, fallback) };
+  } catch (cause) {
+    // Deliberately discards the cause's message — see the docblock — but not the
+    // FACT it carries: an abort and a `TypeError` mean the save may have landed.
+    return { status: "error", ...thrownWriteFailure(cause, action, fallback) };
   }
 }
 
@@ -1352,7 +1417,16 @@ export type ArtifactRevisionResult =
 /** What a revert produced. Nothing is carried back: the panel re-lists. */
 export type ArtifactRevertResult =
   | { status: "ok" }
-  | { status: "error"; message: string };
+  | {
+      status: "error";
+      message: string;
+      /**
+       * NOTHING IS KNOWN about this revert — see `WriteFailure.unconfirmed`. A
+       * landed revert ADDED a revision, so the caller must re-list and re-check
+       * `dataVersion` rather than tell the owner nothing was written.
+       */
+      unconfirmed: boolean;
+    };
 
 /** Options every helper here takes, in one shape so none grows its own. */
 interface ArtifactRevisionsOptions {
@@ -1517,9 +1591,15 @@ export async function fetchArtifactRevision(
 export async function revertArtifactRevision(
   file: EditableArtifactFile,
   timestamp: number,
-  options: ArtifactRevisionsOptions = {},
+  /**
+   * `action` is the phrase the UNKNOWN-outcome sentence is composed from, and
+   * lives HERE rather than on {@link ArtifactRevisionsOptions}: the three read
+   * helpers share that shape, and a read has no outcome to be unknown about.
+   */
+  options: ArtifactRevisionsOptions & { action?: string } = {},
 ): Promise<ArtifactRevertResult> {
   const send = options.fetchImpl ?? fetch;
+  const action = options.action ?? PREVIEW_HISTORY_REVERT_ACTION;
   try {
     const response = await send(artifactRevisionsUrl(file), {
       method: "POST",
@@ -1528,13 +1608,26 @@ export async function revertArtifactRevision(
       ...(options.signal ? { signal: options.signal } : {}),
     });
     if (!response.ok) {
+      // A gateway's status wins over its body, so the sentence is only read for
+      // a status the ROUTE itself answered with — see `refusedWriteFailure`.
+      const served = unconfirmedStatus(response.status)
+        ? ""
+        : await refusalSentence(response, "");
       return {
         status: "error",
-        message: await refusalSentence(response, PREVIEW_HISTORY_REVERT_FAILED_COPY),
+        ...refusedWriteFailure(
+          response.status,
+          served,
+          action,
+          PREVIEW_HISTORY_REVERT_FAILED_COPY,
+        ),
       };
     }
     return { status: "ok" };
-  } catch {
-    return { status: "error", message: PREVIEW_HISTORY_REVERT_FAILED_COPY };
+  } catch (cause) {
+    return {
+      status: "error",
+      ...thrownWriteFailure(cause, action, PREVIEW_HISTORY_REVERT_FAILED_COPY),
+    };
   }
 }

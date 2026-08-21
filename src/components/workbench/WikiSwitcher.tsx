@@ -122,6 +122,26 @@ export function WikiSwitcher({
    * owner never navigated to.
    */
   const refocusNewRef = useRef(false);
+  /**
+   * A create, rename or delete whose OUTCOME IS UNKNOWN, and whose server render
+   * has not arrived yet (DW-375).
+   *
+   * None of the three dialogs closes on that path — the owner's name is still in
+   * the field, and the sentence explaining what happened is inside the overlay —
+   * so all three are left standing with a live confirm over a write that may
+   * already have landed. Pressing it again seeds a SECOND wiki, renames a wiki
+   * twice, or paints the 404 of a repeat DELETE over a delete that succeeded.
+   *
+   * The latch rides `confirmDisabled` and NEVER `busy`: `busy` also kills
+   * Cancel, Esc and the outside-click dismiss, and the sentence the owner has
+   * just read tells them to go and look at the screen. A modal they cannot
+   * dismiss is not a screen they can look at.
+   *
+   * ONE flag for all three, because only one of them can be in flight at a time
+   * — `busy` already guarantees that — and because a server render answers all
+   * three questions at once.
+   */
+  const [awaitingWrite, setAwaitingWrite] = useState(false);
 
   // The optimism ends the moment the server's answer arrives. Without this the
   // stale `pendingId` outranks `currentWikiId` forever, so any later change to
@@ -145,6 +165,24 @@ export function WikiSwitcher({
     newRef.current?.focus();
   }, [deleteOpen]);
 
+  /**
+   * The confirms come back when a server render lands — whatever it says.
+   *
+   * `wikis` is a fresh array on every server render (`page.tsx` reads the
+   * registry each time), so its identity is the arrival signal; `currentWikiId`
+   * is here because a delete of the active wiki moves that and need not change
+   * the array's length. This is `WikiWorkbench`'s `awaitingCreate` idiom exactly.
+   *
+   * Deliberately NOT "when the wiki appears / disappears / is renamed": a
+   * refresh that answers WITHOUT the change must still give the owner their
+   * button back, rather than leaving a control dead with no explanation. What
+   * the render says is then on screen for them to read, which is what the
+   * unconfirmed sentence sent them to do.
+   */
+  useEffect(() => {
+    setAwaitingWrite(false);
+  }, [wikis, currentWikiId]);
+
   async function switchWiki(id: string) {
     if (switching) return;
     setSwitching(true);
@@ -161,9 +199,14 @@ export function WikiSwitcher({
       setPendingId(null);
       const { message, unconfirmed } = writeFailure(cause, "switch wiki");
       setError(message);
-      // The deadline fired, so the active wiki may ALREADY have moved (DW-283):
+      // NOTHING CAME BACK, so the active wiki may ALREADY have moved (DW-283):
       // every prompt on this shell would then be executing a different
       // `schema.md` than the tree, the header and this control are describing.
+      //
+      // Cause-neutral deliberately. Since DW-374 this branch is also reached by
+      // a dropped connection and by a gateway that gave up, and the reason to
+      // refresh is the same in all three: the request left and no verdict came
+      // back. Naming the deadline here would be wrong for two of them.
       if (unconfirmed) router.refresh();
     } finally {
       setSwitching(false);
@@ -175,7 +218,7 @@ export function WikiSwitcher({
     // button being dead is what the owner sees; this is what makes a second
     // entry impossible — `CreateWikiDialog.submit` also carries Enter, and a
     // handler that only the pointer path guards is a handler with a hole.
-    if (busy) return;
+    if (busy || awaitingWrite) return;
     setBusy(true);
     setCreateError(null);
     try {
@@ -195,11 +238,14 @@ export function WikiSwitcher({
     } catch (cause) {
       const { message, unconfirmed } = writeFailure(cause, "create the wiki");
       setCreateError(message);
-      // The deadline fired, so a wiki may exist that this list does not name —
-      // and a second press of a `New Wiki` button that never went dead would
-      // seed another one. The dialog stays open holding the owner's name, and
-      // the refresh is what tells them whether the first attempt landed.
-      if (unconfirmed) router.refresh();
+      if (unconfirmed) {
+        // Nothing came back, so a wiki may exist that this list does not name —
+        // and a second Create, on a dialog that stays open holding the owner's
+        // name, would seed another one. The confirm goes dead until a server
+        // render says what is actually there; the refresh is what fetches it.
+        setAwaitingWrite(true);
+        router.refresh();
+      }
     } finally {
       setBusy(false);
     }
@@ -210,7 +256,7 @@ export function WikiSwitcher({
     // sits on the handler rather than on either of them. A second PATCH could
     // settle out of order and leave the registry naming whichever answer
     // happened to land last.
-    if (busy) return;
+    if (busy || awaitingWrite) return;
     setBusy(true);
     setRenameError(null);
     try {
@@ -226,9 +272,13 @@ export function WikiSwitcher({
     } catch (cause) {
       const { message, unconfirmed } = writeFailure(cause, "rename the wiki");
       setRenameError(message);
-      // The deadline fired, so the registry may already hold the new name while
-      // this <select> and the canvas card go on showing the old one.
-      if (unconfirmed) router.refresh();
+      if (unconfirmed) {
+        // The registry may already hold the new name while this <select> and the
+        // canvas card go on showing the old one — and a second PATCH issued from
+        // the still-open dialog could settle out of order behind the first.
+        setAwaitingWrite(true);
+        router.refresh();
+      }
     } finally {
       setBusy(false);
     }
@@ -238,7 +288,7 @@ export function WikiSwitcher({
     // The irreversible one. A second DELETE issued behind the first answers 404
     // and paints a failure over an operation that in fact succeeded — and the
     // `refocusNewRef` bookkeeping below would run twice against one list.
-    if (busy) return;
+    if (busy || awaitingWrite) return;
     setBusy(true);
     setDeleteError(null);
     try {
@@ -263,11 +313,16 @@ export function WikiSwitcher({
     } catch (cause) {
       const { message, unconfirmed } = writeFailure(cause, "delete the wiki");
       setDeleteError(message);
-      // The irreversible one, and therefore the one where a flat "couldn't
-      // delete" is worst: the wiki may be gone. The dialog stays open with the
-      // message, and the refresh replaces the list underneath it — the same
-      // `wikis.length` gate that hides the Delete control does the rest.
-      if (unconfirmed) router.refresh();
+      if (unconfirmed) {
+        // The irreversible one, and therefore the one where a flat "couldn't
+        // delete" is worst: the wiki may be gone. A second DELETE from the
+        // still-open dialog would answer 404 and paint a failure over an
+        // operation that in fact succeeded, so Delete goes dead; the refresh
+        // replaces the list underneath — the same `wikis.length` gate that hides
+        // the Delete control does the rest.
+        setAwaitingWrite(true);
+        router.refresh();
+      }
     } finally {
       setBusy(false);
     }
@@ -364,7 +419,13 @@ export function WikiSwitcher({
                 // form the owner fills in before being refused is worse than a
                 // control that says up front it will not run.
                 if (readOnly) return;
-                setCreateError(null);
+                // The standing message SURVIVES a reopen while the latch is up.
+                // The unconfirmed sentence invites exactly this move — dismiss
+                // the dialog, look at the screen — and clearing it here would
+                // hand the owner back a dead Create with nothing on screen
+                // saying why. The release effect drops both together, because a
+                // server render is what makes both stale at once.
+                if (!awaitingWrite) setCreateError(null);
                 setCreateOpen(true);
               }}
             >
@@ -412,7 +473,8 @@ export function WikiSwitcher({
             onClick={() => {
               if (readOnly) return;
               setRenameName(current.name);
-              setRenameError(null);
+              // Kept while the latch is up — see the New Wiki opener above.
+              if (!awaitingWrite) setRenameError(null);
               setRenameOpen(true);
             }}
           >
@@ -432,7 +494,11 @@ export function WikiSwitcher({
                 // deployment was never going to run it.
                 if (readOnly) return;
                 setDeleteTargetId(deletable[0]?.id ?? "");
-                setDeleteError(null);
+                // Kept while the latch is up — see the New Wiki opener above.
+                // It matters most here: the wiki may already be gone, and a
+                // reopened Delete with no sentence beside it reads as a fresh
+                // start on an operation that may have finished.
+                if (!awaitingWrite) setDeleteError(null);
                 setDeleteOpen(true);
               }}
             >
@@ -451,6 +517,8 @@ export function WikiSwitcher({
       <CreateWikiDialog
         open={createOpen}
         busy={busy}
+        // Cancel and Esc stay live behind it — see `awaitingWrite`.
+        confirmDisabled={awaitingWrite}
         error={createError}
         fallbackFocusRef={newRef}
         onCancel={() => setCreateOpen(false)}
@@ -465,7 +533,7 @@ export function WikiSwitcher({
         busy={busy}
         error={renameError}
         fallbackFocusRef={newRef}
-        confirmDisabled={!renameReady}
+        confirmDisabled={!renameReady || awaitingWrite}
         onCancel={() => setRenameOpen(false)}
         onConfirm={() => {
           if (current) void rename(current, renameName);
@@ -481,6 +549,12 @@ export function WikiSwitcher({
               className="mt-1 w-full rounded-md border border-foreground/15 bg-background px-2 py-1"
               value={renameName}
               maxLength={MAX_WIKI_NAME_CHARS}
+              // `busy` ALONE. The latch is the confirm's and nothing else's —
+              // see `awaitingWrite`, which says so in as many words. A disabled
+              // input leaves the tab order, so a keyboard owner could not reach
+              // the name they were about to submit, let alone correct it; and
+              // the sentence they have just read tells them to go and look at
+              // what is on screen, which includes this field.
               disabled={busy}
               onChange={(event) => setRenameName(event.target.value)}
               // Enter is the whole keyboard path through a one-field dialog.
@@ -495,7 +569,12 @@ export function WikiSwitcher({
               // half-composed name — the reason the platform exposes the flag.
               onKeyDown={(event) => {
                 if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
-                if (busy || !renameReady) return;
+                // Gated on exactly what Rename is gated on — `awaitingWrite`
+                // included. The field stays LIVE (see `disabled` above), so this
+                // is the only thing standing between a keystroke in an editable
+                // input and a second PATCH; a rule the button carries and the key
+                // does not is a guard with a hole.
+                if (busy || awaitingWrite || !renameReady) return;
                 event.preventDefault();
                 if (current) void rename(current, renameName);
               }}
@@ -516,7 +595,7 @@ export function WikiSwitcher({
         busy={busy}
         error={deleteError}
         fallbackFocusRef={newRef}
-        confirmDisabled={deleteTarget === null}
+        confirmDisabled={deleteTarget === null || awaitingWrite}
         onCancel={() => setDeleteOpen(false)}
         onConfirm={() => {
           if (deleteTarget) void remove(deleteTarget);

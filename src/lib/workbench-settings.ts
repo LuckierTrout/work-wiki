@@ -30,6 +30,10 @@ import {
   VALID_PROVIDERS,
 } from "./providers";
 import type { EmbeddingProvider, ProviderValue } from "./providers";
+import {
+  refusedWriteFailure,
+  thrownWriteFailure,
+} from "./workbench-request";
 import { IF_MATCH_HEADER, formatIfMatch } from "./write-precondition";
 
 // ---------------------------------------------------------------------------
@@ -190,6 +194,17 @@ export const SETTINGS_LOAD_FAILED_COPY = "Settings couldn’t be loaded.";
  * no Copy table contains and that names the mechanism rather than the failure.
  */
 export const SETTINGS_SAVE_FAILED_COPY = "Settings couldn’t be saved.";
+
+/**
+ * The ACTION phrase, for the one sentence `workbench-request` composes when the
+ * save's outcome is unknown (DW-376).
+ *
+ * A phrase and not a sentence: the fallback above and the unknown-outcome
+ * sentence are two renderings of one fact, and passing both from the surface is
+ * where they would start to disagree. The fallback claims the save did NOT
+ * land, which is exactly the claim an unknown outcome cannot make.
+ */
+export const SETTINGS_SAVE_ACTION = "save these settings";
 
 /** The polite status line after a landed save. */
 export const SETTINGS_SAVED_COPY = "Settings saved.";
@@ -1973,7 +1988,19 @@ export async function fetchWorkbenchSettings(
 
 export type SettingsSaveResult =
   | { status: "ok"; payload: WorkbenchSettingsPayload }
-  | { status: "error"; message: string };
+  | {
+      status: "error";
+      message: string;
+      /**
+       * NOTHING IS KNOWN about this save — see `WriteFailure.unconfirmed`. The
+       * caller must keep every edit on screen AND clear the version it was
+       * holding, because the stored config may already have moved past it; it
+       * must never tell the owner the settings were not saved. REQUIRED rather
+       * than optional, so a future construction site cannot forget the verdict
+       * into a silent false.
+       */
+      unconfirmed: boolean;
+    };
 
 /**
  * Write one `workbench` patch.
@@ -1982,6 +2009,18 @@ export type SettingsSaveResult =
  * response is to keep every edit on screen and show the message. ONLY a
  * server-supplied `{ error }` sentence is relayed; a thrown error shows the one
  * fixed fallback (see {@link SETTINGS_SAVE_FAILED_COPY}).
+ *
+ * …EXCEPT when nothing answered at all (DW-376). A fired deadline, a dropped
+ * connection and a gateway status ({@link UNCONFIRMED_STATUSES}) are not
+ * refusals: the patch may have landed, so they answer `unconfirmed: true` and
+ * the ONE sentence `workbench-request` owns, composed from `action`. The
+ * fallback is not shown there: it says the settings were NOT saved, which
+ * nobody knows.
+ *
+ * THIS ROUTE'S OWN 503 IS NOT ONE OF THEM. `PUT /api/settings` answers 503 with
+ * `CONFIG_UNREADABLE_COPY` when the store cannot be read, and refuses before
+ * merging anything — an arrived verdict about a write that did not land, so its
+ * sentence is relayed and the caller keeps the version it is holding.
  *
  * A 200 whose body carries no usable `workbench` object is an ERROR, not a
  * success: the caller re-seeds its draft from that object, and treating a
@@ -1994,6 +2033,8 @@ export async function saveWorkbenchSettings(
     signal?: AbortSignal;
     fetchImpl?: SettingsFetch;
     fallback?: string;
+    /** The phrase the UNKNOWN-outcome sentence is composed from. */
+    action?: string;
     /**
      * The {@link WorkbenchSettingsPayload.version} the draft was SEEDED from,
      * sent as `If-Match` (DW-63). `PUT /api/settings` requires it and answers
@@ -2006,6 +2047,7 @@ export async function saveWorkbenchSettings(
 ): Promise<SettingsSaveResult> {
   const send = options.fetchImpl ?? fetch;
   const fallback = options.fallback ?? SETTINGS_SAVE_FAILED_COPY;
+  const action = options.action ?? SETTINGS_SAVE_ACTION;
   try {
     const response = await send(SETTINGS_ROUTE, {
       method: "PUT",
@@ -2021,13 +2063,24 @@ export async function saveWorkbenchSettings(
         error?: unknown;
       } | null;
       const served = typeof body?.error === "string" ? body.error.trim() : "";
-      return { status: "error", message: served || fallback };
+      // The verdict has ONE owner, in `workbench-request`: a gateway's status
+      // wins over whatever it put in the body, and every other status relays the
+      // server's sentence exactly as before.
+      return {
+        status: "error",
+        ...refusedWriteFailure(response.status, served, action, fallback),
+      };
     }
     const body: unknown = await response.json();
     const payload = workbenchSettingsFrom(body);
-    return payload ? { status: "ok", payload } : { status: "error", message: fallback };
-  } catch {
-    // Deliberately discards the cause's message — see the docblock.
-    return { status: "error", message: fallback };
+    // A shapeless 200 is the ROUTE's own answer, arrived: it ran and it replied,
+    // so nothing here is unknown — the draft simply cannot be re-seeded from it.
+    return payload
+      ? { status: "ok", payload }
+      : { status: "error", message: fallback, unconfirmed: false };
+  } catch (cause) {
+    // Deliberately discards the cause's message — see the docblock — but not the
+    // FACT it carries: an abort and a `TypeError` mean the patch may have landed.
+    return { status: "error", ...thrownWriteFailure(cause, action, fallback) };
   }
 }

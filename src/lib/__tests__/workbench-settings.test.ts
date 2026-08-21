@@ -102,6 +102,7 @@ import {
   SETTINGS_ROUTE,
   SETTINGS_TIMEOUT_REASON,
   SETTINGS_SAVE_BAR_COPY,
+  SETTINGS_SAVE_ACTION,
   SETTINGS_SAVE_FAILED_COPY,
   SETTINGS_CATEGORIES,
   SETTINGS_CUSTOM_ENDPOINT_COPY,
@@ -135,6 +136,7 @@ import {
   type VectorSearchLegField,
   type WorkbenchSettingsPayload,
 } from "../workbench-settings";
+import { UNCONFIRMED_STATUSES, unconfirmedWriteMessage } from "../workbench-request";
 
 const SRC = path.resolve(__dirname, "../..");
 const WORKBENCH = path.join(SRC, "components/workbench");
@@ -2851,21 +2853,73 @@ describe("the settings client", () => {
     await expect(saveWorkbenchSettings({}, { fetchImpl: served })).resolves.toEqual({
       status: "error",
       message: "Vector search needs an API key before it can be turned on.",
+      // The route ANSWERED, so nothing about this save is unknown.
+      unconfirmed: false,
     });
 
+    // A plain `Error` is not something `fetch` produces for a dead connection —
+    // that is a `TypeError`, covered below. This one keeps the fallback.
     const thrown: SettingsFetch = async () => {
       throw new Error("NetworkError when attempting to fetch resource");
     };
     await expect(saveWorkbenchSettings({}, { fetchImpl: thrown })).resolves.toEqual({
       status: "error",
       message: SETTINGS_SAVE_FAILED_COPY,
+      unconfirmed: false,
     });
 
     const blank = stubFetch(() => ({ ok: false, status: 500, body: { error: "  " } })).impl;
     await expect(saveWorkbenchSettings({}, { fetchImpl: blank })).resolves.toEqual({
       status: "error",
+      // A PLAIN 500 is the route's own verdict: it ran and it fell over. Not
+      // widened to unknown — see the gateway case below.
       message: SETTINGS_SAVE_FAILED_COPY,
+      unconfirmed: false,
     });
+  });
+
+  it("calls a gateway and a dropped connection an unknown outcome (DW-376)", async () => {
+    // `Settings couldn’t be saved.` says the patch did NOT land, which is the
+    // one claim nobody is in a position to make here: the request left and no
+    // verdict came back, so the stored config may already have moved.
+    // Iterated off the constant, so a status added to or removed from the rule
+    // cannot leave this case asserting the old set.
+    for (const status of UNCONFIRMED_STATUSES) {
+      const gateway = stubFetch(() => ({
+        ok: false,
+        status,
+        // A proxy's error page is not the route's sentence, and is not relayed.
+        body: { error: "<html>Bad Gateway</html>" },
+      })).impl;
+      await expect(saveWorkbenchSettings({}, { fetchImpl: gateway })).resolves.toEqual({
+        status: "error",
+        message: unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
+        unconfirmed: true,
+      });
+    }
+
+    // The two abort flavours and the `TypeError` a dead connection rejects with.
+    const thrown: unknown[] = [
+      Object.assign(new Error("signal timed out"), { name: "TimeoutError" }),
+      Object.assign(new Error("This operation was aborted"), { name: "AbortError" }),
+      new TypeError("Failed to fetch"),
+    ];
+    for (const cause of thrown) {
+      const impl: SettingsFetch = async () => {
+        throw cause;
+      };
+      const result = await saveWorkbenchSettings({}, { fetchImpl: impl });
+      expect(result).toEqual({
+        status: "error",
+        message: unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
+        unconfirmed: true,
+      });
+      // Still no transport vocabulary: the FACT the cause carries is used, the
+      // string it carries never is.
+      expect(result.status === "error" && result.message).not.toContain(
+        (cause as Error).message,
+      );
+    }
   });
 
   it("treats a shapeless 200 as an error, because the draft is re-seeded from it", async () => {
@@ -2888,6 +2942,28 @@ describe("the settings client", () => {
     });
   });
 
+  it("relays THIS ROUTE'S OWN 503, which is a verdict and not a gateway's silence", async () => {
+    // `PUT /api/settings` answers 503 with `CONFIG_UNREADABLE_COPY` when the
+    // store cannot be read, and it refuses BEFORE merging anything — so nothing
+    // was written. Reading that as "nobody answered" would discard the one
+    // actionable sentence the owner could act on, tell them the outcome is
+    // unknown, and send `SettingsCanvas` to clear the version it was holding,
+    // all for a write that provably did not land.
+    expect(UNCONFIRMED_STATUSES).not.toContain(503);
+    const unreadable = stubFetch(() => ({
+      ok: false,
+      status: 503,
+      body: { error: CONFIG_UNREADABLE_COPY },
+    })).impl;
+    await expect(
+      saveWorkbenchSettings({ chatModel: "gpt-4o" }, { fetchImpl: unreadable, version: "w1:2-abc" }),
+    ).resolves.toEqual({
+      status: "error",
+      message: CONFIG_UNREADABLE_COPY,
+      unconfirmed: false,
+    });
+  });
+
   it("relays the SERVER's conflict sentence, and keeps the draft's own state out of it", async () => {
     // A refused save is a message, never a thrown error and never a cleared
     // draft: the caller's only correct response is to keep every edit on screen
@@ -2899,7 +2975,11 @@ describe("the settings client", () => {
     })).impl;
     await expect(
       saveWorkbenchSettings({ chatModel: "gpt-4o" }, { fetchImpl: conflict, version: "w1:2-old" }),
-    ).resolves.toEqual({ status: "error", message: WRITE_CONFLICT_COPY });
+    ).resolves.toEqual({
+      status: "error",
+      message: WRITE_CONFLICT_COPY,
+      unconfirmed: false,
+    });
 
     // …and the 428 the route answers a missing precondition with, the same way.
     const missing = stubFetch(() => ({
@@ -2910,6 +2990,7 @@ describe("the settings client", () => {
     await expect(saveWorkbenchSettings({}, { fetchImpl: missing })).resolves.toEqual({
       status: "error",
       message: WRITE_PRECONDITION_REQUIRED_COPY,
+      unconfirmed: false,
     });
   });
 

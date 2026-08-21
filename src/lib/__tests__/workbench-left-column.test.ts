@@ -278,7 +278,26 @@ describe("WikiSwitcher", () => {
     const switcher = await read("WikiSwitcher.tsx");
     // `create`, `rename`, `remove` — every write behind a dialog. `switchWiki`
     // is guarded on `switching`, its own flag, asserted separately above.
-    expect(switcher.match(/if \(busy\) return;/g) ?? []).toHaveLength(3);
+    //
+    // `awaitingWrite` rides ALONGSIDE `busy` in the same line (DW-375): the two
+    // shut the same door for different lengths of time — `busy` for the length
+    // of the request, the latch until a server render lands after one whose
+    // outcome nobody knows. The dialogs stay open on that path, so the handler
+    // is reachable with `busy` already back to false.
+    expect(switcher.match(/if \(busy \|\| awaitingWrite\) return;/g) ?? []).toHaveLength(3);
+    expect(switcher.match(/if \(busy\) return;/g) ?? []).toHaveLength(0);
+
+    // The SECOND keyboard path into `rename`, guarded on exactly what the
+    // confirm is guarded on. It is unreachable behind the handler's own early
+    // return — deleting either one alone leaves every mounted case green — which
+    // is precisely why it is pinned by a scan rather than trusted to a test.
+    // `CreateWikiDialog.submit` carries the same pair for the same reason.
+    expect(switcher).toContain("if (busy || awaitingWrite || !renameReady) return;");
+    const createDialog = await readFile(
+      path.join(SRC, "components/CreateWikiDialog.tsx"),
+      "utf8",
+    );
+    expect(createDialog).toContain("if (busy || confirmDisabled) return;");
 
     const card = await readFile(path.join(SRC, "components/WikiWorkbench.tsx"), "utf8");
     // `create` and `applyTemplate` — the card's two writes.

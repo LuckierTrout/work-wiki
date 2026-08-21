@@ -7,6 +7,8 @@ import {
 } from "@/components/workbench/WorkbenchData";
 import {
   PREVIEW_EDIT_CONFIRM_LABEL,
+  PREVIEW_CANCEL_COPY,
+  PREVIEW_DISCARD_CONFIRM_LABEL,
   PREVIEW_EDIT_COPY,
   PREVIEW_HISTORY_COPY,
   PREVIEW_HISTORY_EMPTY_COPY,
@@ -19,6 +21,7 @@ import {
   PREVIEW_HISTORY_REVERT_CONFIRM_LABEL,
   PREVIEW_HISTORY_REVERT_CONFIRM_TITLE,
   PREVIEW_HISTORY_REVERT_COPY,
+  PREVIEW_HISTORY_REVERT_FAILED_COPY,
   PREVIEW_HISTORY_VIEW_COPY,
   PREVIEW_SAVE_COPY,
   artifactRevisionDate,
@@ -68,6 +71,23 @@ const KNOWLEDGE = [
 
 const FILES = buildFileTree(["wiki/alpha.md", "raw/", "raw/x.md"]);
 
+/**
+ * A SECOND knowledge row, for the one case that needs the owner to move from
+ * one row to another rather than to undock. The preview fixture answers the
+ * Schema for every row, so both carry a History panel.
+ */
+const KNOWLEDGE_TWO = [
+  {
+    id: "note",
+    label: "Note",
+    count: 2,
+    pages: [
+      { slug: "alpha", title: "Alpha", type: "note" },
+      { slug: "beta", title: "Beta", type: "note" },
+    ],
+  },
+];
+
 const DATA: WorkbenchData = {
   wikis: [],
   currentWikiId: WIKI_ID,
@@ -80,6 +100,8 @@ const DATA: WorkbenchData = {
   dataVersion: 0,
   readOnly: false,
 };
+
+const TWO_ROWS: WorkbenchData = { ...DATA, knowledge: KNOWLEDGE_TWO };
 
 /**
  * The Schema payload, which is what makes the panel exist at all: an
@@ -160,6 +182,13 @@ let previewAnswer: () => unknown = () => ok(schemaPayload());
 let listAnswer: () => unknown = () => ok({ revisions: [NEWER, OLDER] });
 let viewAnswer: () => unknown = () => ok({ content: "## Page conventions\n\nold bytes" });
 let revertAnswer: () => unknown = () => ok({ ok: true, version: "w1s:2-cccccccc" });
+/**
+ * The Schema WRITE — `PUT /api/workbench/artifact` — which used to fall through
+ * to the catch-all 200 and so could only ever land. DW-376 needs the other
+ * answers: a save whose outcome nobody knows still owes this panel a cache
+ * invalidation, because a save that DID land added an entry.
+ */
+let writeAnswer: () => unknown = () => ok({ ok: true, version: "w1s:2-dddddddd" });
 
 /** Every revisions request the stub was asked for, in order. */
 let revisionCalls: { url: string; method: string; signal?: AbortSignal }[] = [];
@@ -172,6 +201,7 @@ beforeEach(() => {
   listAnswer = () => ok({ revisions: [NEWER, OLDER] });
   viewAnswer = () => ok({ content: "## Page conventions\n\nold bytes" });
   revertAnswer = () => ok({ ok: true, version: "w1s:2-cccccccc" });
+  writeAnswer = () => ok({ ok: true, version: "w1s:2-dddddddd" });
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: unknown, init?: { method?: string; signal?: AbortSignal }) => {
@@ -192,6 +222,13 @@ beforeEach(() => {
       }
       if (href.includes("/api/workbench/preview")) {
         const result = previewAnswer();
+        if (result instanceof Error) throw result;
+        return result as unknown as Response;
+      }
+      // AFTER the `/revisions` branch above, which is a longer prefix of the
+      // same path: the Schema write is `/api/workbench/artifact` with no suffix.
+      if (href.includes("/api/workbench/artifact")) {
+        const result = writeAnswer();
         if (result instanceof Error) throw result;
         return result as unknown as Response;
       }
@@ -259,6 +296,24 @@ function columnAnnounced(): string {
   return announcementSentence(
     document.querySelector('.wb-preview .wb-sr-only[aria-live="polite"]')?.textContent ?? "",
   );
+}
+
+/**
+ * Leave the editor, discarding whatever is in it.
+ *
+ * The History panel is withdrawn while `editing` — `previewHistoryTarget` says
+ * so, because a revert under an open draft would replace the bytes it is
+ * holding — so a test that wants to LOOK at the list after a save has to close
+ * the editor first. A dirty draft is gated by the discard confirm (DW-36).
+ */
+async function closeEditor() {
+  fireEvent.click(screen.getByRole("button", { name: PREVIEW_CANCEL_COPY }));
+  await act(async () => {});
+  const discard = screen.queryByRole("button", { name: PREVIEW_DISCARD_CONFIRM_LABEL });
+  if (discard) {
+    fireEvent.click(discard);
+    await act(async () => {});
+  }
 }
 
 function revertButtons(): HTMLElement[] {
@@ -734,6 +789,193 @@ describe("a landed save adds a revision, so the panel re-lists (DW-214)", () => 
     await expandHistory();
     expect(listings()).toBe(2);
     expect(rowLabels()).toHaveLength(3);
+  });
+});
+
+/**
+ * DW-376 on this panel: the write whose OUTCOME NOBODY KNOWS.
+ *
+ * `workbench-preview.test.ts` executes both clients and asserts they answer
+ * `{ unconfirmed: true }`. What only a mounted shell can show is what the PANEL
+ * does with it — and here that is the whole deliverable, because a landed write
+ * snapshots the bytes it replaces (DW-59), so the cached list is one entry short
+ * and the expand-once rule (`revisions !== null`) never refetches it on its own.
+ * The owner, sent by the sentence to "check what the screen shows", would be
+ * looking at a list missing exactly the entry they want back.
+ */
+describe("a write nothing came back from still reconciles the panel (DW-376)", () => {
+  const UNCONFIRMED: ReadonlyArray<readonly [string, () => unknown]> = [
+    // A proxy's page, which is NOT the route's verdict and is never relayed.
+    ["a gateway that gave up", () => refusal(502, "<html>Bad Gateway</html>")],
+    ["a dropped connection", () => new TypeError("Failed to fetch")],
+  ];
+
+  for (const [label, answer] of UNCONFIRMED) {
+    it(`re-lists, nudges dataVersion and KEEPS the sentence after ${label}`, async () => {
+      const checks = vi.fn();
+      const unsubscribe = subscribeDataVersionCheck(checks);
+      try {
+        revertAnswer = answer;
+        await renderShell();
+        await dock();
+        await expandHistory();
+        expect(listings()).toBe(1);
+        const before = checks.mock.calls.length;
+
+        fireEvent.click(screen.getAllByRole("button", { name: PREVIEW_HISTORY_REVERT_COPY })[0]);
+        await act(async () => {});
+        // What the route would list if the revert DID land — which is the case
+        // this branch exists for, and the one the panel cannot rule out.
+        listAnswer = () =>
+          ok({ revisions: [{ ...SAVED_BY_EDIT, reason: "reverted" }, NEWER, OLDER] });
+        fireEvent.click(
+          screen.getByRole("button", { name: PREVIEW_HISTORY_REVERT_CONFIRM_LABEL }),
+        );
+        await act(async () => {});
+
+        // The list is re-read: the revert may have added an entry, and the list
+        // is the only place this panel can find out whether it did.
+        expect(listings()).toBe(2);
+        expect(rowLabels()).toHaveLength(3);
+        // …and the shell is asked to re-check `dataVersion`, which is how the
+        // body, the tree and the header learn about bytes nobody confirmed.
+        expect(checks.mock.calls.length).toBeGreaterThan(before);
+
+        // THE ordering trap. `loadRevisions` clears `historyError` on entry, so
+        // a sentence set before the re-list would be silently wiped by the very
+        // reconciliation that was supposed to help. The sentence that SURVIVES
+        // must be the unknown-outcome one.
+        const alert = screen.getByRole("alert");
+        expect(alert.textContent).toContain("outcome is unknown");
+        expect(alert.textContent).toContain("revert the Schema");
+        // Never `This Schema couldn’t be reverted.` — it says nothing was
+        // written, which is the one claim nobody is in a position to make.
+        expect(alert.textContent).not.toBe(PREVIEW_HISTORY_REVERT_FAILED_COPY);
+        expect(alert.textContent).not.toContain("Bad Gateway");
+        expect(alert.textContent).not.toContain("Failed to fetch");
+        // And NOT the success announcement: `Reverted.` says it happened.
+        expect(columnAnnounced()).not.toBe(PREVIEW_HISTORY_REVERTED_COPY);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it(`invalidates the cached list after a SAVE answered by ${label}`, async () => {
+      // The save half of the same fact, and the one the panel is quietest
+      // about: an unconfirmed Schema save that in fact landed leaves this list
+      // one entry short, and collapse/re-expand would not fetch it either.
+      writeAnswer = answer;
+      await renderShell();
+      await dock();
+      await expandHistory();
+      expect(listings()).toBe(1);
+
+      fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_COPY }));
+      fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_CONFIRM_LABEL }));
+      await act(async () => {});
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "## Page conventions\n\nrewritten" },
+      });
+      listAnswer = () => ok({ revisions: [SAVED_BY_EDIT, NEWER, OLDER] });
+      fireEvent.click(screen.getByRole("button", { name: PREVIEW_SAVE_COPY }));
+      await act(async () => {});
+
+      // The re-list fires even though the panel is hidden behind the open
+      // editor: `refreshHistory` keys off whether the owner has EXPANDED it, not
+      // off whether it happens to be rendered right now.
+      expect(listings()).toBe(2);
+      // The editor stays open holding the text, with the unknown-outcome
+      // sentence beside it — the panel reconciling is not the save succeeding.
+      expect(screen.getByRole("textbox")).toBeTruthy();
+      expect(screen.getByText(/outcome is unknown/)).toBeTruthy();
+
+      // …and when the owner does go and look, the entry a landed save would
+      // have created is there, with no further request needed.
+      await closeEditor();
+      expect(listings()).toBe(2);
+      expect(rowLabels()).toHaveLength(3);
+      expect(rowLabels()[0]).toContain("the bytes the owner's own save replaced");
+    });
+  }
+
+  it("drops the cache rather than fetching when the panel is CLOSED", async () => {
+    // `refreshHistory`, not `loadRevisions`: an unconfirmed save must cost no
+    // request the owner did not ask for, and must still not serve a stale list
+    // on the next expand.
+    writeAnswer = () => refusal(504, "");
+    await renderShell();
+    await dock();
+    await expandHistory();
+    fireEvent.click(historyToggle()!);
+    await act(async () => {});
+    expect(listings()).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_COPY }));
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_CONFIRM_LABEL }));
+    await act(async () => {});
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "## Page conventions\n\nrewritten" },
+    });
+    listAnswer = () => ok({ revisions: [SAVED_BY_EDIT, NEWER, OLDER] });
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_SAVE_COPY }));
+    await act(async () => {});
+
+    // No request for a panel nobody is looking at…
+    expect(listings()).toBe(1);
+    // …but the cache is dropped, so the next expand fetches rather than serving
+    // a list that is missing the entry a landed save would have created.
+    await closeEditor();
+    await expandHistory();
+    expect(listings()).toBe(2);
+    expect(rowLabels()).toHaveLength(3);
+  });
+
+  it("leaves NO revert sentence behind when the owner re-points the panel mid-re-list", async () => {
+    // The token has to be read again on the FAR side of the re-list's await.
+    // The owner can pick another row while it is in flight, and the reset that
+    // follows a pick bumps `revertRequestRef` precisely so a straggler cannot
+    // write into a panel that has been re-pointed. Without the second check the
+    // PREVIOUS row's revert message sits waiting inside the NEW row's History,
+    // which is why the pick here moves to a different row rather than undocking:
+    // an undock-and-redock resets the column twice and would clear the message
+    // whether the guard exists or not.
+    const slowList = deferred<unknown>();
+    revertAnswer = () => refusal(502, "");
+    await renderShell(TWO_ROWS);
+    await dock();
+    await expandHistory();
+
+    fireEvent.click(screen.getAllByRole("button", { name: PREVIEW_HISTORY_REVERT_COPY })[0]);
+    await act(async () => {});
+    // The re-list this revert fires never settles until the row has moved.
+    listAnswer = () => slowList.promise;
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_HISTORY_REVERT_CONFIRM_LABEL }));
+    await act(async () => {});
+    // It is genuinely in flight: nothing has come back for it yet.
+    expect(listings()).toBe(2);
+
+    // …and the owner moves to ANOTHER row, which re-points the whole column.
+    fireEvent.click(screen.getByRole("button", { name: "Beta" }));
+    await act(async () => {});
+
+    // Beta's own History is expanded and settled FIRST. This is what makes the
+    // leak observable at all: `historyError` renders only inside an OPEN panel,
+    // and `loadRevisions` clears it on entry — so a straggler landing before
+    // this expand would be wiped by the expand's own listing, and the test would
+    // pass with or without the guard.
+    listAnswer = () => ok({ revisions: [NEWER, OLDER] });
+    await expandHistory();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // ONLY NOW does the straggling re-list answer, into a panel that is open and
+    // is about another file. Without the second token read, Alpha's revert
+    // sentence appears here — inside Beta's History, about a write Beta's file
+    // was never part of.
+    slowList.resolve(ok({ revisions: [NEWER, OLDER] }));
+    await act(async () => {});
+
+    expect(screen.queryByText(/outcome is unknown/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
 

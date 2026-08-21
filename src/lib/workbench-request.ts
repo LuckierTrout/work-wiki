@@ -17,6 +17,11 @@
  * `SettingsCanvas.tsx` and `PreviewColumn.tsx` still carry their own deadlines:
  * both need the AbortController itself (one composes a caller signal, the other
  * cancels a superseded read), which this helper deliberately does not expose.
+ * They do NOT carry their own verdict: the resolve-style write clients they call
+ * (`savePreviewBody`, `revertArtifactRevision`, `saveWorkbenchSettings`) route
+ * their non-ok and thrown branches through {@link refusedWriteFailure} and
+ * {@link thrownWriteFailure} here, so every workbench write — whoever armed the
+ * signal — reports an unknown outcome in the SAME sentence (DW-374/375/376).
  */
 
 /**
@@ -26,6 +31,28 @@
  * the rescue.
  */
 export const REQUEST_TIMEOUT_MS = 15_000;
+
+/**
+ * A non-2xx, carrying the STATUS as a fact rather than as a rendering of one.
+ *
+ * `send` used to throw a bare `Error`, so the only trace of the status left in
+ * the system was the text `Request failed (504)` — and the classifier below
+ * cannot tell a gateway giving up from the route's own refusal by reading a
+ * sentence. Re-deriving the fact from its rendering is how the two come apart
+ * the first time somebody rewords the copy, so the status rides the error.
+ *
+ * The MESSAGE is unchanged: the server's own sentence when it supplied one, and
+ * the same `Request failed (n)` when it did not.
+ */
+export class RequestFailedError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "RequestFailedError";
+    this.status = status;
+  }
+}
 
 export async function send<T>(url: string, init: RequestInit): Promise<T> {
   // `init` FIRST: both of the fields below are invariants of this helper, and
@@ -37,8 +64,89 @@ export async function send<T>(url: string, init: RequestInit): Promise<T> {
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
+}
+
+/**
+ * The statuses that mean NOBODY ANSWERED — not "the route said no".
+ *
+ * The rule is not "5xx" and not "anything a proxy can emit": it is whether an
+ * ORIGIN GAVE THIS ANSWER. A 502 is a proxy reporting that it could not get a
+ * usable reply out of the origin, and a 504 that it gave up waiting for one — no
+ * route composed either, and the origin may have applied the write in full
+ * before the proxy stopped listening.
+ *
+ * 503 IS DELIBERATELY NOT HERE, and it is the interesting one. A generic proxy
+ * emits 503 too, but THIS APP'S OWN ROUTES emit it as a definite refusal:
+ * `PUT /api/settings` answers 503 with `CONFIG_UNREADABLE_COPY` when the
+ * store cannot be read, and refuses BEFORE merging anything, so nothing was
+ * written (`src/app/api/settings/route.ts`'s `configUnreadable`); the batch
+ * ingest route answers 503 the same way. Reading those as silence would discard
+ * an arrived, actionable sentence, tell the owner the outcome is unknown, and
+ * send `SettingsCanvas` to clear the version it was holding — all for a write
+ * that provably did not land. A status this codebase itself uses as a verdict
+ * cannot also be read as the absence of one.
+ *
+ * Deliberately NOT 4xx and NOT a plain 500 either: those are the route's OWN
+ * answer — it ran, it decided, and it said so. Calling them unknown would send
+ * the owner to reconcile a screen that is already correct.
+ */
+export const UNCONFIRMED_STATUSES: readonly number[] = [502, 504];
+
+/** Is this response status one nobody's verdict reached us through? */
+export function unconfirmedStatus(status: number): boolean {
+  return UNCONFIRMED_STATUSES.includes(status);
+}
+
+/**
+ * Is this THROWN cause one that leaves the write's outcome unknown?
+ *
+ * Three shapes, one rule — the request left and no verdict came back:
+ *
+ *   - both abort flavours (`TimeoutError` from `AbortSignal.timeout`,
+ *     `AbortError` from an explicit abort). The request was abandoned on THIS
+ *     side; the server may have applied it in full, in part, or not at all.
+ *   - a `TypeError`, which is the only thing `fetch` rejects with when the
+ *     connection itself fails: `Failed to fetch`, `NetworkError when attempting
+ *     to fetch resource`, `Load failed` — one per engine, all the same fact.
+ *     The bytes may well have arrived before the socket went away.
+ *   - a {@link RequestFailedError} carrying one of {@link UNCONFIRMED_STATUSES}
+ *     — 502 or 504, and NOT 503, for the reason that constant states in full.
+ */
+export function unconfirmedCause(cause: unknown): boolean {
+  if (!(cause instanceof Error)) return false;
+  if (cause.name === "TimeoutError" || cause.name === "AbortError") return true;
+  if (cause instanceof RequestFailedError) return unconfirmedStatus(cause.status);
+  return cause instanceof TypeError;
+}
+
+/**
+ * THE unconfirmed sentence. One phrasing for every surface and every cause.
+ *
+ * Makes NO claim about a refresh. The reconciliation is the caller's
+ * `if (unconfirmed) …`, and this helper causes no side effect at all — a
+ * sentence announcing one would be false wherever a caller forgot it, and
+ * past-tense at a moment when the refetch has not landed even where they did
+ * not. What it can honestly do is send the owner to the screen rather than to
+ * the button they just pressed.
+ *
+ * Widened past "ran out of time" deliberately: it now has to be true of a fired
+ * deadline, a dropped connection and a gateway that gave up alike, so it speaks
+ * about the MISSING CONFIRMATION rather than about any one mechanism. No
+ * transport vocabulary — no Copy table contains any.
+ */
+export function unconfirmedWriteMessage(action: string): string {
+  return (
+    `Nothing came back to confirm whether the attempt to ${action} went ` +
+    `through, so the outcome is unknown. Check what the screen shows before ` +
+    `trying again.`
+  );
 }
 
 /** What a failed write is, and what to say about it. */
@@ -46,19 +154,27 @@ export interface WriteFailure {
   /** The sentence to put in front of the owner. */
   message: string;
   /**
-   * The deadline fired, so NOTHING IS KNOWN about the write.
+   * NOTHING IS KNOWN about the write: it may have landed in full.
    *
-   * The request was abandoned on this side; the server may have applied it in
-   * full, in part, or not at all. A caller that sees this must reconcile the
-   * screen — `router.refresh()` — rather than leave a stale render behind a
-   * message the owner would reasonably read as "nothing happened".
+   * Three ways in, one meaning — the deadline fired, the connection dropped, or
+   * a gateway answered instead of the route (see {@link unconfirmedCause}). In
+   * every one of them the request left and no verdict came back, so the server
+   * may have applied it in full, in part, or not at all.
+   *
+   * A caller that sees this MUST reconcile — `router.refresh()`, a re-list, or
+   * dropping a precondition it can no longer trust — and must never tell the
+   * owner the write failed. Leaving a stale render behind a message the owner
+   * would reasonably read as "nothing happened" is the whole defect.
    */
   unconfirmed: boolean;
 }
 
 /**
  * What to show the owner, and whether the write's outcome is even known
- * (DW-283).
+ * (DW-283, DW-374).
+ *
+ * For callers of {@link send}, which throws the SERVER's own sentence — so
+ * relaying a thrown message is right here and wrong in {@link thrownWriteFailure}.
  *
  * `action` is ONE phrase per call site — "create the wiki", "apply the
  * template", "switch wiki", "rename the wiki", "delete the wiki" — and both
@@ -66,37 +182,65 @@ export interface WriteFailure {
  * per-caller guess, and one phrase rather than a pair of sentences typed out
  * beside each other, which is how the two would drift.
  *
- * Three outcomes, and only the first is new:
+ * Three outcomes:
  *
- *   - the client deadline fired. `send` arms `AbortSignal.timeout`, and both
- *     abort flavours arrive as an error whose `name` is the whole signal — the
- *     message names the MECHANISM ("signal timed out", "This operation was
- *     aborted"), never the thing the owner was trying to do. This used to be
- *     reported as a flat `Couldn’t …`, which is a claim about the server that
- *     the client is in no position to make: the request left, and nothing came
- *     back to say what became of it.
+ *   - nothing answered. A fired deadline, a dropped connection, or a gateway
+ *     that gave up ({@link unconfirmedCause}) — the request left and no verdict
+ *     came back. This used to be reported as a flat `Couldn’t …`, or worse as
+ *     `Failed to fetch` and `Request failed (504)`, all of which are claims
+ *     about the SERVER that the client is in no position to make.
  *   - the route answered with a reason. That message wins, exactly as before.
  *   - anything else. The caller's own sentence, exactly as before.
  */
 export function writeFailure(cause: unknown, action: string): WriteFailure {
-  const failed = `Couldn’t ${action}.`;
-  if (cause instanceof Error) {
-    if (cause.name === "TimeoutError" || cause.name === "AbortError") {
-      return {
-        // Makes NO claim about a refresh. The reconciliation is the caller's
-        // `if (unconfirmed) router.refresh()`, and this helper causes no side
-        // effect at all — a sentence announcing one would be false wherever a
-        // caller forgot it, and past-tense at a moment when the refetch has not
-        // landed even where they did not. What it can honestly do is send the
-        // owner to the screen rather than to the button they just pressed.
-        message:
-          `The request to ${action} ran out of time before answering, so whether ` +
-          `it went through is unknown. Check what the screen shows before trying ` +
-          `again.`,
-        unconfirmed: true,
-      };
-    }
-    if (cause.message) return { message: cause.message, unconfirmed: false };
+  if (unconfirmedCause(cause)) {
+    return { message: unconfirmedWriteMessage(action), unconfirmed: true };
   }
-  return { message: failed, unconfirmed: false };
+  if (cause instanceof Error && cause.message) {
+    return { message: cause.message, unconfirmed: false };
+  }
+  return { message: `Couldn’t ${action}.`, unconfirmed: false };
+}
+
+/**
+ * The same verdict for a client that CAUGHT its own `fetch` — and that must
+ * never relay the caught message.
+ *
+ * {@link send} throws the server's sentence, so {@link writeFailure} relays it.
+ * `savePreviewBody`, `revertArtifactRevision` and `saveWorkbenchSettings` do
+ * not: they RETURN the server's sentence from the response body and only ever
+ * THROW on transport, so a thrown message there is `Failed to fetch` or
+ * `signal timed out` — exactly the vocabulary those docblocks already refuse.
+ * `fallback` is the Copy table's sentence for that surface.
+ */
+export function thrownWriteFailure(
+  cause: unknown,
+  action: string,
+  fallback: string,
+): WriteFailure {
+  if (unconfirmedCause(cause)) {
+    return { message: unconfirmedWriteMessage(action), unconfirmed: true };
+  }
+  return { message: fallback, unconfirmed: false };
+}
+
+/**
+ * The verdict on a non-2xx a resolve-style client read the STATUS of directly.
+ *
+ * `served` is the trimmed `{ error }` sentence the body carried, or `""` for a
+ * body that would not parse, carried no key, or carried a blank one. On a
+ * gateway status the body is IGNORED: whatever a proxy put in it, it is not the
+ * route's verdict, and the owner needs to be told the outcome is unknown rather
+ * than handed a proxy's error page.
+ */
+export function refusedWriteFailure(
+  status: number,
+  served: string,
+  action: string,
+  fallback: string,
+): WriteFailure {
+  if (unconfirmedStatus(status)) {
+    return { message: unconfirmedWriteMessage(action), unconfirmed: true };
+  }
+  return { message: served || fallback, unconfirmed: false };
 }

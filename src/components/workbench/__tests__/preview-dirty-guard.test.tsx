@@ -13,7 +13,9 @@ import {
   PREVIEW_EDIT_COPY,
   PREVIEW_KEEP_EDITING_COPY,
   PREVIEW_SAVE_COPY,
+  PREVIEW_SAVE_FAILED_COPY,
 } from "@/lib/workbench-preview";
+import { subscribeDataVersionCheck } from "@/lib/workbench-data-version";
 import { announcementSentence } from "@/lib/live-region";
 import { WRITE_CONFLICT_COPY } from "@/lib/write-precondition";
 import { buildFileTree } from "@/lib/workbench-tree";
@@ -585,6 +587,152 @@ describe("a save the write precondition refuses (DW-38, DW-51)", () => {
     // No conflict sentence anywhere: the second save was not refused.
     expect(screen.queryByText(WRITE_CONFLICT_COPY)).toBeNull();
     expect(editor()).toBeNull();
+  });
+
+  /**
+   * DW-376: the save whose OUTCOME NOBODY KNOWS, on this surface.
+   *
+   * `workbench-preview.test.ts` executes `savePreviewBody` and asserts the
+   * returned `{ unconfirmed: true }`. What only a mounted shell can show is what
+   * the COLUMN does with it: keeps the editor and the draft, drops the `If-Match`
+   * it can no longer trust, and nudges the shell to re-check `dataVersion`. All
+   * three are reconciliations of a write that may in fact have landed, and none
+   * of them exists outside a rendered tree.
+   */
+  describe("a save nothing came back from (DW-376)", () => {
+    /**
+     * The read carries a version; the write answers `unconfirmed`. Every write's
+     * URL and headers are recorded, so "the second save carried no `If-Match`"
+     * is read off the wire rather than off a state flag.
+     */
+    function stubUnconfirmed(
+      writes: Array<{ url: string; headers: Record<string, string> }>,
+      write: () => unknown,
+    ) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: unknown, init?: { headers?: Record<string, string> }) => {
+          const href = String(url);
+          if (href.includes("/api/workbench/preview")) {
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({ ...payload("Alpha", "# Alpha"), version: SEEDED_VERSION }),
+            } as unknown as Response;
+          }
+          if (href.includes("/api/wiki/")) {
+            writes.push({ url: href, headers: init?.headers ?? {} });
+            const result = write();
+            if (result instanceof Error) throw result;
+            return result as unknown as Response;
+          }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({}),
+            text: async () => "",
+          } as unknown as Response;
+        }),
+      );
+    }
+
+    const UNCONFIRMED: ReadonlyArray<readonly [string, () => unknown]> = [
+      [
+        "a gateway that gave up",
+        () => ({
+          ok: false,
+          status: 504,
+          // A proxy's page — not the route's verdict, and never relayed.
+          json: async () => ({ error: "<html>Gateway Timeout</html>" }),
+        }),
+      ],
+      ["a dropped connection", () => new TypeError("Failed to fetch")],
+    ];
+
+    for (const [label, write] of UNCONFIRMED) {
+      it(`keeps the editor, drops the If-Match and nudges dataVersion after ${label}`, async () => {
+        const writes: Array<{ url: string; headers: Record<string, string> }> = [];
+        stubUnconfirmed(writes, write);
+        // The real nudge channel, subscribed to rather than mocked: what is
+        // under test is that the column ASKS, and a module mock would prove only
+        // that a name was called.
+        const nudged = vi.fn();
+        const unsubscribe = subscribeDataVersionCheck(nudged);
+        try {
+          await renderShell();
+          fireEvent.click(row("Alpha"));
+          await act(async () => {});
+          await typeIntoEditor("# Alpha, rewritten by hand");
+
+          fireEvent.click(screen.getByRole("button", { name: PREVIEW_SAVE_COPY }));
+          await act(async () => {});
+
+          // The editor stays open holding every character — a save that MAY HAVE
+          // LANDED must never be the thing that loses the owner's text, and there
+          // is no re-seed from a server that never answered.
+          expect(editor()?.value).toBe("# Alpha, rewritten by hand");
+          // The sentence says the outcome is unknown. `This page couldn’t be
+          // saved.` is the one claim that cannot be made here, and neither the
+          // proxy's HTML nor `Failed to fetch` is copy anybody wrote.
+          expect(screen.getByText(/outcome is unknown/)).toBeTruthy();
+          expect(screen.queryByText(PREVIEW_SAVE_FAILED_COPY)).toBeNull();
+          expect(screen.queryByText(/Gateway Timeout/)).toBeNull();
+          expect(screen.queryByText(/Failed to fetch/)).toBeNull();
+          // The shell is asked to re-check `dataVersion`: the bytes may be on
+          // disk, and the server's integer is how the tree and the header find
+          // out — never this column's guess about what happened.
+          expect(nudged).toHaveBeenCalled();
+
+          expect(writes).toHaveLength(1);
+          expect(writes[0].headers["If-Match"]).toBe(`"${SEEDED_VERSION}"`);
+
+          // THE reconciliation. If the save landed, the file has moved past the
+          // version the editor is holding, so the next save carries NONE —
+          // refused as 428 "this could not be checked", which is true, rather
+          // than as 412 "somebody else changed this", about an actor that does
+          // not exist. Neither can clobber; the tie goes to the honest refusal.
+          fireEvent.click(screen.getByRole("button", { name: PREVIEW_SAVE_COPY }));
+          await act(async () => {});
+          expect(writes).toHaveLength(2);
+          expect(writes[1].headers["If-Match"]).toBeUndefined();
+        } finally {
+          unsubscribe();
+        }
+      });
+    }
+
+    it("leaves the seeded If-Match alone when the route REFUSES (412)", async () => {
+      // The edge the branch turns on: a refusal that arrived changes nothing
+      // about what this column knows, so dropping the precondition there would
+      // turn every conflict into a needless 428 on the next press.
+      const writes: Array<{ url: string; headers: Record<string, string> }> = [];
+      stubUnconfirmed(writes, () => ({
+        ok: false,
+        status: 412,
+        json: async () => ({ error: WRITE_CONFLICT_COPY }),
+      }));
+      const nudged = vi.fn();
+      const unsubscribe = subscribeDataVersionCheck(nudged);
+      try {
+        await renderShell();
+        fireEvent.click(row("Alpha"));
+        await act(async () => {});
+        await typeIntoEditor("# Alpha, rewritten by hand");
+
+        fireEvent.click(screen.getByRole("button", { name: PREVIEW_SAVE_COPY }));
+        await act(async () => {});
+        expect(screen.getByText(WRITE_CONFLICT_COPY)).toBeTruthy();
+        expect(screen.queryByText(/outcome is unknown/)).toBeNull();
+        expect(nudged).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByRole("button", { name: PREVIEW_SAVE_COPY }));
+        await act(async () => {});
+        expect(writes).toHaveLength(2);
+        expect(writes[1].headers["If-Match"]).toBe(`"${SEEDED_VERSION}"`);
+      } finally {
+        unsubscribe();
+      }
+    });
   });
 
   it("sent the version the editor was SEEDED with", async () => {

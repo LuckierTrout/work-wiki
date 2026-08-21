@@ -204,6 +204,29 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
       // Every edit stays on screen — a refused save must never be the thing
       // that loses it — and the SERVER's sentence is shown, never a transport's.
       setSaveError(result.message);
+      if (result.unconfirmed) {
+        // NOTHING came back, so the patch may already be stored (DW-376). The
+        // sentence above says so; this is the part the owner cannot do for
+        // themselves.
+        //
+        // The held version is the only thing on this surface that can now be a
+        // LIE: if the save landed, the stored config has moved past it. Clearing
+        // it is the same argument the landed-save branch makes above, arriving
+        // from the other side — what this surface knows is "the current version
+        // is unknown", and the next save saying so (428, "this could not be
+        // checked") is truthful, where the kept one would be refused as 412's
+        // "somebody else changed this while you were editing", a sentence about
+        // an actor that does not exist. Neither can clobber; the tie is broken
+        // on which refusal tells the owner the truth.
+        //
+        // The draft and the payload's VALUES are left exactly as they are: this
+        // surface has no re-read that does not throw away every unsaved edit,
+        // and re-seeding from a server that never answered is not a thing it
+        // could do anyway.
+        setPayload((current) =>
+          current ? { ...current, version: undefined } : current,
+        );
+      }
     }
   }, [saving]);
 

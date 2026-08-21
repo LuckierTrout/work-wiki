@@ -172,11 +172,18 @@ describe("Change template confirm gate", () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
-  it("shows the status code when the failure body is not JSON at all", async () => {
+  it("reports a gateway that gave up as an unknown outcome, never as a status code", async () => {
     // The ordinary shape of a route that dies before it can answer: an HTML
     // error page. `send` reads the body with `.json().catch(() => ({}))`, and
     // without that catch this rejects with a SyntaxError that reaches nobody —
     // the dialog would sit on "Working…" with no message.
+    //
+    // It used to read `Request failed (502)`: a string in no Copy table, naming
+    // the transport rather than the thing that failed, and — worse — reported as
+    // a FAILURE. A 502 comes from a proxy that either never reached this route
+    // or never got its verdict, so the template may in fact have been applied
+    // (DW-374). This card composes no verdict of its own; widening the shared
+    // classifier is what put the honest sentence here.
     fetchMock.mockResolvedValueOnce({
       ok: false,
       status: 502,
@@ -192,10 +199,16 @@ describe("Change template confirm gate", () => {
     fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe("Request failed (502)");
+    expect(alert.textContent).toContain("apply the template");
+    expect(alert.textContent).toContain("unknown");
+    expect(alert.textContent).not.toContain("502");
+    expect(alert.textContent).not.toContain("Request failed");
     expect(
       screen.getByRole("dialog", { name: "Change Scenario Template" }).contains(alert),
     ).toBe(true);
+    // …and the screen is reconciled rather than left describing a template that
+    // may already have been overwritten.
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
   });
 
   it("keeps the dialog open and shows the failure inside it", async () => {

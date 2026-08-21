@@ -687,6 +687,10 @@ function PreviewPane({
     const result = await savePreviewBody(target.url, draft, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       fallback: previewEditCopy(target).saveFallback,
+      // The phrase the UNKNOWN-outcome sentence is composed from, taken from the
+      // SAME copy set as the fallback so the two cannot disagree about whether
+      // this is a page or the Schema.
+      action: previewEditCopy(target).saveAction,
       version: editingVersionRef.current,
     });
     // Busy flag first, on every exit path including the superseded one below.
@@ -742,6 +746,45 @@ function PreviewPane({
       // The editor stays open holding the owner's text — a failed save must
       // never be the thing that loses it.
       setSaveError(result.message);
+      if (result.unconfirmed) {
+        // NOTHING came back, so the bytes may already be on disk (DW-376). The
+        // editor stays open with the draft exactly as it is — re-seeding it from
+        // a server that never answered is not something this column could do —
+        // and the two things it CAN do both happen here.
+        //
+        // The held version is the only thing left that can be a lie: if the save
+        // landed, the file has moved past it. Cleared for the reason the landed
+        // branch above states in full — the next save is then refused as "this
+        // could not be checked" (428) rather than as a conflict with an actor
+        // that does not exist (412), and neither can clobber.
+        editingVersionRef.current = undefined;
+        // …and the write may have bumped `dataVersion` at the kernel's one tail,
+        // which is how the tree, the header and every other reader of this file
+        // find out. The same signal a landed save fires, for the same reason:
+        // the answer still comes from the server's integer, not from this
+        // column's guess about what happened.
+        requestDataVersionCheck();
+        // THE CACHED REVISION LIST IS NOW WRONG IN THE SAME WAY IT IS AFTER A
+        // LANDED SAVE, and this is the one statement of why — the unconfirmed
+        // revert below points here rather than restating it.
+        //
+        // `writeWikiArtifact` snapshots the bytes it replaces before it writes
+        // (DW-59), so a save that DID land added an entry — and the missing
+        // entry is the pre-write bytes, i.e. exactly the version an owner who
+        // wants out of this wants back. The expand-once rule keys off
+        // `revisions !== null`, so a stale list is not refetched by collapsing
+        // and re-expanding either: the cache has to be invalidated here or it
+        // never is. Leaving it would send the owner — whom the sentence above
+        // just told to check what the screen shows — to a list that is one entry
+        // short, with the missing entry the only one that matters.
+        //
+        // `refreshHistory` is the right shape for BOTH answers: it re-lists when
+        // the panel is open and drops the cache when it is closed, so an
+        // unconfirmed save costs no request the owner did not ask for. It is
+        // also correct if the save did NOT land — a re-read that finds the same
+        // list is the panel learning that, which is the whole point.
+        refreshHistoryRef.current();
+      }
     }
   }, [draft, saving]);
 
@@ -885,8 +928,44 @@ function PreviewPane({
     if (revertRequestRef.current !== token) return;
     setRevertingTimestamp(null);
     if (result.status === "error") {
-      // Nothing was written. The panel stays open holding the sentence — the
-      // same contract a failed save follows with the editor.
+      if (result.unconfirmed) {
+        // Nothing came back, so the revert may have LANDED (DW-376), and the
+        // panel is now the least trustworthy thing on screen. Both of this
+        // surface's already-wired reconciliations run, and neither loses
+        // anything:
+        //
+        // the shell re-checks `dataVersion`, which is how the body, the tree and
+        // the header find out about bytes this column did not confirm; and the
+        // list is re-read for the reason the unconfirmed SAVE branch states in
+        // full — a landed write snapshots what it replaces, so the cached list
+        // is one entry short. `loadRevisions` directly rather than
+        // `refreshHistory`: the revert came FROM this panel, so it is open by
+        // construction, and the await is what lets the sentence be set after it.
+        //
+        // The sentence is set AFTER the re-list, not before: `loadRevisions`
+        // clears `historyError` on entry, so setting it first would have the
+        // reconciliation silently wipe the one thing the owner needs to read.
+        // A listing that fails on the way past has its own message overwritten
+        // here, which is the right way round — "the outcome of your write is
+        // unknown" outranks "the list could not be loaded".
+        //
+        // No announcement: `PREVIEW_HISTORY_REVERTED_COPY` says a revert
+        // HAPPENED, which is exactly what nobody knows.
+        requestDataVersionCheck();
+        await loadRevisions(file);
+        // The re-list is an AWAIT, so the token has to be read again on the far
+        // side of it: the owner can pick another row while it is in flight, and
+        // the reset that follows a pick bumps this very ref precisely so a
+        // straggler cannot write into a panel that has been re-pointed. Without
+        // this, the previous row's revert message would be waiting inside the
+        // new row's History the next time it was expanded.
+        if (revertRequestRef.current !== token) return;
+        setHistoryError(result.message);
+        return;
+      }
+      // A refusal that ARRIVED means nothing was written. The panel stays open
+      // holding the sentence — the same contract a failed save follows with the
+      // editor.
       setHistoryError(result.message);
       return;
     }

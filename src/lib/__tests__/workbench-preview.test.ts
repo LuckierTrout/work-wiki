@@ -48,6 +48,7 @@ import {
   PREVIEW_HISTORY_READ_ONLY_COPY,
   PREVIEW_HISTORY_REVERTED_COPY,
   PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE,
+  PREVIEW_HISTORY_REVERT_ACTION,
   PREVIEW_HISTORY_REVERT_FAILED_COPY,
   PREVIEW_HISTORY_VIEW_FAILED_COPY,
   PREVIEW_KEEP_EDITING_COPY,
@@ -56,7 +57,10 @@ import {
   PREVIEW_RETRY_COPY,
   PREVIEW_RETRYING_COPY,
   PREVIEW_ROUTE,
+  PREVIEW_SAVE_ACTION,
   PREVIEW_SAVE_FAILED_COPY,
+  PREVIEW_SCHEMA_SAVE_ACTION,
+  PREVIEW_SCHEMA_SAVE_FAILED_COPY,
   PREVIEW_TIMEOUT_REASON,
   PREVIEW_TRUNCATED_COPY,
   PREVIEW_STALE_ANNOUNCEMENT_COPY,
@@ -104,6 +108,7 @@ import {
   wikilinkHref,
   wikilinkTargetFromHref,
 } from "../workbench-wikilinks";
+import { UNCONFIRMED_STATUSES, unconfirmedWriteMessage } from "../workbench-request";
 import { buildFileTree, wikilinkSelection } from "../workbench-tree";
 import {
   WRITE_CONFLICT_COPY,
@@ -2241,6 +2246,8 @@ describe("savePreviewBody", () => {
     await expect(savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl })).resolves.toEqual({
       status: "error",
       message: "You don't have permission to edit this page.",
+      // The route ANSWERED. Nothing about this save is unknown.
+      unconfirmed: false,
     });
   });
 
@@ -2257,6 +2264,7 @@ describe("savePreviewBody", () => {
       await expect(savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl })).resolves.toEqual({
         status: "error",
         message: error,
+        unconfirmed: false,
       });
     }
   });
@@ -2268,12 +2276,70 @@ describe("savePreviewBody", () => {
     await expect(savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl })).resolves.toEqual({
       status: "error",
       message: PREVIEW_SAVE_FAILED_COPY,
+      // A PLAIN 500 is the route's own verdict: it ran, it fell over, and it
+      // said so. Deliberately not widened to unknown — see the gateway case.
+      unconfirmed: false,
     });
     // Same for a 500 with a well-formed body that simply carries no message.
     const empty = stubFetch(() => jsonResponse(500, { error: "   " }));
     await expect(
       savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl: empty.fetchImpl }),
-    ).resolves.toEqual({ status: "error", message: PREVIEW_SAVE_FAILED_COPY });
+    ).resolves.toEqual({
+      status: "error",
+      message: PREVIEW_SAVE_FAILED_COPY,
+      unconfirmed: false,
+    });
+  });
+
+  it("calls a GATEWAY status an unknown outcome, and ignores its body (DW-376)", async () => {
+    // 502 and 504 are answers no ORIGIN gave — the proxy could not get a usable
+    // reply, or gave up waiting for one — so the bytes may be on disk. `This
+    // page couldn't be saved.` is the one thing that must NOT be said here.
+    //
+    // Iterated off the constant rather than a literal list, so a status added to
+    // or removed from the rule cannot leave this case asserting the old set.
+    for (const status of UNCONFIRMED_STATUSES) {
+      const { fetchImpl } = stubFetch(() =>
+        jsonResponse(status, { error: "<html>Bad Gateway</html>" }),
+      );
+      await expect(
+        savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl }),
+      ).resolves.toEqual({
+        status: "error",
+        message: unconfirmedWriteMessage(PREVIEW_SAVE_ACTION),
+        unconfirmed: true,
+      });
+    }
+    // …and the Schema's phrase travels with it, so the one sentence names the
+    // Schema rather than "this page" when the Schema is what was open.
+    const { fetchImpl } = stubFetch(() => jsonResponse(504, undefined));
+    await expect(
+      savePreviewBody(artifactWriteUrl("schema.md"), "x", {
+        fetchImpl,
+        fallback: PREVIEW_SCHEMA_SAVE_FAILED_COPY,
+        action: PREVIEW_SCHEMA_SAVE_ACTION,
+      }),
+    ).resolves.toEqual({
+      status: "error",
+      message: unconfirmedWriteMessage(PREVIEW_SCHEMA_SAVE_ACTION),
+      unconfirmed: true,
+    });
+  });
+
+  it("relays a 503 — this app's own routes emit it as a definite refusal", async () => {
+    // The status that looks like a gateway's silence and is not: `PUT
+    // /api/settings` and the batch ingest route both answer 503 as a verdict,
+    // having written nothing. Widening to it would throw that sentence away and
+    // send the owner to reconcile a screen that is already correct.
+    expect(UNCONFIRMED_STATUSES).not.toContain(503);
+    const { fetchImpl } = stubFetch(() =>
+      jsonResponse(503, { error: "The settings store could not be read." }),
+    );
+    await expect(savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl })).resolves.toEqual({
+      status: "error",
+      message: "The settings store could not be read.",
+      unconfirmed: false,
+    });
   });
 
   it("never relays a THROWN error's message", async () => {
@@ -2289,8 +2355,22 @@ describe("savePreviewBody", () => {
     for (const cause of thrown) {
       const { fetchImpl } = stubFetch(() => cause);
       const result = await savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl });
-      expect(result).toEqual({ status: "error", message: PREVIEW_SAVE_FAILED_COPY });
       expect(result).not.toMatchObject({ message: cause.message });
+      // The two abort flavours and the `TypeError` a dropped connection rejects
+      // with all mean the same thing: the request left and nothing came back, so
+      // the save MAY HAVE LANDED (DW-376). The one plain `Error` here answered
+      // nothing of the kind — it is not something `fetch` produces — so it keeps
+      // the fallback and a known verdict.
+      const unknown = cause instanceof TypeError || cause.name !== "Error";
+      expect(result).toEqual(
+        unknown
+          ? {
+              status: "error",
+              message: unconfirmedWriteMessage(PREVIEW_SAVE_ACTION),
+              unconfirmed: true,
+            }
+          : { status: "error", message: PREVIEW_SAVE_FAILED_COPY, unconfirmed: false },
+      );
     }
   });
 
@@ -2300,7 +2380,10 @@ describe("savePreviewBody", () => {
     // branch entirely unless every call site remembered to catch.
     await expect(savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl })).resolves.toEqual({
       status: "error",
-      message: PREVIEW_SAVE_FAILED_COPY,
+      // A dropped connection, which is exactly the case DW-374 widened: the
+      // editor stays open AND the owner is told the outcome is unknown.
+      message: unconfirmedWriteMessage(PREVIEW_SAVE_ACTION),
+      unconfirmed: true,
     });
   });
 
@@ -2308,7 +2391,7 @@ describe("savePreviewBody", () => {
     const { fetchImpl } = stubFetch(() => jsonResponse(500, undefined));
     await expect(
       savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl, fallback: "Nope." }),
-    ).resolves.toEqual({ status: "error", message: "Nope." });
+    ).resolves.toEqual({ status: "error", message: "Nope.", unconfirmed: false });
   });
 
   // -------------------------------------------------------------------------
@@ -2360,7 +2443,7 @@ describe("savePreviewBody", () => {
       const { fetchImpl } = stubFetch(() => jsonResponse(status, { error }));
       await expect(
         savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl, version: "w1:2-old" }),
-      ).resolves.toEqual({ status: "error", message: error });
+      ).resolves.toEqual({ status: "error", message: error, unconfirmed: false });
     }
   });
 
@@ -2992,19 +3075,44 @@ describe("revertArtifactRevision", () => {
       const { fetchImpl } = stubFetch(() => jsonResponse(status, { error }));
       await expect(
         revertArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl }),
-      ).resolves.toEqual({ status: "error", message: error });
+      ).resolves.toEqual({ status: "error", message: error, unconfirmed: false });
     }
   });
 
-  it("falls back for an unparseable body and for a transport throw", async () => {
+  it("falls back for an unparseable body, which is still an ARRIVED refusal", async () => {
     const { fetchImpl } = stubFetch(() => jsonResponse(500, undefined));
     await expect(
       revertArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl }),
-    ).resolves.toEqual({ status: "error", message: PREVIEW_HISTORY_REVERT_FAILED_COPY });
+    ).resolves.toEqual({
+      status: "error",
+      message: PREVIEW_HISTORY_REVERT_FAILED_COPY,
+      unconfirmed: false,
+    });
+  });
+
+  it("calls a transport throw and a gateway an unknown outcome (DW-376)", async () => {
+    // `This Schema couldn’t be reverted.` says nothing was written — the one
+    // claim that cannot be made when nothing came back. A landed revert added a
+    // revision, so the panel's list is now wrong in the other direction too,
+    // which is why the caller re-lists on this verdict.
     const thrown = stubFetch(() => new TypeError("Failed to fetch"));
     await expect(
       revertArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl: thrown.fetchImpl }),
-    ).resolves.toEqual({ status: "error", message: PREVIEW_HISTORY_REVERT_FAILED_COPY });
+    ).resolves.toEqual({
+      status: "error",
+      message: unconfirmedWriteMessage(PREVIEW_HISTORY_REVERT_ACTION),
+      unconfirmed: true,
+    });
+    for (const status of UNCONFIRMED_STATUSES) {
+      const { fetchImpl } = stubFetch(() => jsonResponse(status, { error: "Bad Gateway" }));
+      await expect(
+        revertArtifactRevision("schema.md", REVISION.timestamp, { fetchImpl }),
+      ).resolves.toEqual({
+        status: "error",
+        message: unconfirmedWriteMessage(PREVIEW_HISTORY_REVERT_ACTION),
+        unconfirmed: true,
+      });
+    }
   });
 });
 
