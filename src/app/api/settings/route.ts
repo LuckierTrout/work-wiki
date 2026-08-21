@@ -434,13 +434,22 @@ export async function PUT(request: Request) {
     // body came from `/settings`, which renders no embedding provider, endpoint
     // or key at all, so being refused over those legs leaves the owner nothing
     // to do; `flatMovableVectorLegs` narrows WHETHER the gate refuses at all —
-    // not WHICH sentence it carries, which the THIRD argument's stored flag
-    // decides: a request turning the switch on reads "…before it can be turned
-    // on", one against a switch already stored ON reads the switched-on frame
-    // (DW-308) — to requests naming a leg this body could have moved, while a
-    // configuration this request BROKE still refuses over any leg at all. Three
-    // readings of one fact, all written from the same expression so they cannot
-    // drift into scoping a patch that was never applied.
+    // to requests naming a leg this body could have moved, while a
+    // configuration this request BROKE still refuses over any leg at all.
+    //
+    // …and its PRESENCE, separately, picks the switched-on FRAME (DW-329). The
+    // same fact, read a fourth time: a scoped argument means the flat page
+    // asked, and that page renders no vector switch, so the sentence ends by
+    // naming where the switch lives rather than telling the owner to turn off
+    // something they cannot see. WHICH sentence, never whether — and only for a
+    // switch already stored ON, since the THIRD argument's stored flag still
+    // decides that: a request turning the switch on reads "…before it can be
+    // turned on" on both surfaces, one against a switch already stored ON reads
+    // the switched-on frame (DW-308) in this surface's wording.
+    //
+    // Four readings of one fact, all written from the same expression so they
+    // cannot drift into scoping a patch that was never applied, or into
+    // pointing a sentence at the surface that did not send the request.
     const hasWorkbenchKey = body.workbench !== undefined;
     const validation = validateWorkbenchSettingsPatch(
       hasWorkbenchKey ? body.workbench : {},

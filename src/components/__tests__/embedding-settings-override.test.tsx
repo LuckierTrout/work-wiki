@@ -35,6 +35,11 @@ function props(
   };
 }
 
+/** The vector notice, or null when the component rendered none (DW-327). */
+function vectorNotice(): HTMLElement | null {
+  return document.getElementById("embeddingVectorNotice");
+}
+
 /** The override note, or null when the component rendered none. */
 function overrideNote(): HTMLElement | null {
   return document.getElementById("embeddingModelOverride");
@@ -146,6 +151,86 @@ describe("EmbeddingSettings — the model that actually embeds", () => {
 
       expect(overrideNote()).toBeNull();
       expect(document.body.textContent).not.toContain("Not in effect");
+      expect(document.querySelector("[aria-describedby]")).toBeNull();
+      cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two notes are INDEPENDENT and can be on screen together (DW-327)
+// ---------------------------------------------------------------------------
+
+describe("EmbeddingSettings — the override note and the vector notice together", () => {
+  /** Both conditions true at once: a substitution AND an inactive switch. */
+  const BOTH = {
+    modelSource: "config",
+    embeddingModel: "@cf/baai/bge-m3",
+    effectiveModel: "@cf/baai/bge-m3",
+    modelInEffect: "nomic-embed-text",
+    overridden: true,
+    vectorNotice:
+      "Vector search is switched on, but it needs an endpoint and an API key before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings.",
+  } as const;
+
+  it("announces BOTH ids on the input, and both resolve to real elements", () => {
+    // THE MUTATION THIS CATCHES. `aria-describedby` is built by joining the ids
+    // whose notes are actually rendered, and nothing else in the suite renders
+    // both at once — so dropping either id from the join left every other case
+    // green while the input silently stopped announcing one of two sentences
+    // that are on the screen.
+    render(<EmbeddingSettings {...props(BOTH)} />);
+
+    const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
+    const ids = (input.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
+
+    expect(ids).toEqual(["embeddingModelOverride", "embeddingVectorNotice"]);
+    // Every announced id RESOLVES — an `aria-describedby` naming an element
+    // that is not in the document announces nothing at all.
+    for (const id of ids) {
+      expect(document.getElementById(id)).not.toBeNull();
+    }
+    // …and each note carries its own sentence, not the other's.
+    expect(overrideNote()?.textContent).toContain("nomic-embed-text");
+    expect(vectorNotice()?.textContent).toBe(BOTH.vectorNotice);
+    // Described, not marked — neither note is a rejection.
+    expect(input.getAttribute("aria-invalid")).toBeNull();
+  });
+
+  it("announces only the id whose note is rendered, when just one condition holds", () => {
+    // The independence, said as the two halves. Each condition alone must
+    // produce exactly its own id — which is what makes the pair above a join
+    // rather than a coincidence.
+    render(<EmbeddingSettings {...props({ ...BOTH, vectorNotice: null })} />);
+    expect(
+      (screen.getByLabelText(/Embedding Model/) as HTMLInputElement).getAttribute(
+        "aria-describedby",
+      ),
+    ).toBe("embeddingModelOverride");
+    expect(vectorNotice()).toBeNull();
+    cleanup();
+
+    render(<EmbeddingSettings {...props({ ...BOTH, overridden: false })} />);
+    expect(
+      (screen.getByLabelText(/Embedding Model/) as HTMLInputElement).getAttribute(
+        "aria-describedby",
+      ),
+    ).toBe("embeddingVectorNotice");
+    expect(overrideNote()).toBeNull();
+  });
+
+  it("renders no vector notice, and no dangling id, for an EMPTY sentence", () => {
+    // `vectorSearchInactiveCopy` answers `""` for a satisfied configuration, so
+    // the empty string is a real value this prop receives — and it must be the
+    // same "nothing" that `null` and `undefined` are, rather than an empty
+    // paragraph with an id pointing at it.
+    for (const vectorNoticeValue of ["", null, undefined]) {
+      render(
+        <EmbeddingSettings
+          {...props({ ...BOTH, overridden: false, vectorNotice: vectorNoticeValue })}
+        />,
+      );
+      expect(vectorNotice()).toBeNull();
       expect(document.querySelector("[aria-describedby]")).toBeNull();
       cleanup();
     }

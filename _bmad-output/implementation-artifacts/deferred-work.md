@@ -556,7 +556,8 @@ location: src/components/ProviderForm.tsx:47, src/lib/providers.ts (PROVIDER_INF
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `custom` was added to the shared `PROVIDER_INFO`, which `src/components/ProviderForm.tsx:47` spreads into the legacy page's dropdown; that form renders conditional fields only for `ollama` and `ollama-cloud`. Saving `provider: "custom"` there leaves `getModel()` throwing "The Custom provider needs a base URL. Set it in Settings → LLM Models." — actionable, and recoverable from the Workbench surface, which is why it was not patched here: this story's spec forbids modifying `ProviderForm` or the legacy route, and the honest fix is either to give that form the two fields or to retire the page.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw-legacy-settings-surface-parity
 decision: 2026-08-18 Fix the `custom` gap in place, keep the page — Supersedes the 2026-08-16/17 "Retire the legacy page" decisions, whose premise was false: the Workbench Settings surface does NOT cover the primary provider/model pair. `SettingsCanvas.tsx` `llm-models` offers only chat/ingest providers and models, the custom endpoint and the timeout, and neither `SettingsDraft` nor `WorkbenchSettingsPatch` in `workbench-settings.ts` carries a top-level `provider`/`model` key, so it cannot write the pair even in principle — while `config.ts` `getResolvedCredentials()` reads `cfg.provider` first and every non-workload `callLLM` resolves through `getModel()` built from it, and an unset chat/ingest provider deliberately falls back to it (`llm.ts` `usesPrimary`). `ProviderForm` is the only editor for the pair anywhere, so deleting the route removes the only way to configure it. Retirement also stays blocked on five sections with no Workbench equivalent (StructuredKnowledge, the rebuild-embeddings control, NamesTerms, EmailIngest, VaultExport) whose replacements `epics.md:170` schedules for later epics, and on live inbound links from `NavHeader.tsx`, `ActionInbox.tsx`, `KnowledgeStudio.tsx`, `error-hints.ts` and `cli.ts`. SCOPE NOW: keep the `/settings` route, `ProviderForm` and the tests that pin them exactly as they are, and close only the reported defect — when the selected provider is `custom`, `ProviderForm` renders an inline note directing the owner to Workbench Settings → LLM Models → Custom endpoint for the base URL and API key, so the form no longer silently saves a provider no LLM call can construct. Do NOT add `customBaseUrl`/`customApiKey` inputs to `ProviderForm`: the Workbench surface already writes those two fields, and a second editor for them would extend DW-63's lost-update gap to cover them. Do NOT delete or redirect the route, and do NOT add the primary pair to the Workbench surface — that changes the settings contract `spec-1-9` froze and is a separate, story-sized change.
 
 ### DW-62: The `g s` keyboard shortcut still routes out of the shell to the legacy Settings page, doing exactly the route change the rail control stopped doing.
@@ -2870,7 +2871,8 @@ source_spec: `spec-dw-303-306-settings-flat-branch-uniformity.md`
 location: src/hooks/useSettings.ts
 severity: medium
 reason: Before this change the owner got a refusal they could not act on; now the save answers 200 and `vectorSearchEnabled` stays stored-on while `getVectorSearchSettings()` still intersects it to off. `vectorSearchInactiveCopy` exists for exactly this "switched on but cannot run" state, but it is rendered only by the Workbench's `SettingsCanvas`; `/settings` shows nothing about vector state at all. Closing it means either an advisory in the 200 response or wiring the existing copy into the flat surface — both were out of scope here (this bundle's intent forbids widening the response shape and adding embedding controls to /settings).
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw-legacy-settings-surface-parity
 
 ### DW-328: All four flat text fields resolve a non-string to `""` before deciding the delete, so the belt-and-braces fallback points AT deletion rather than away from it.
 origin: spec-deferred f1908ff9cbf1
@@ -2886,7 +2888,8 @@ source_spec: `spec-dw-307-308-vector-gate-copy-and-secret-row.md`
 location: src/lib/workbench-settings.ts:validateWorkbenchSettingsPatch (the frame selection) with src/app/settings/page.tsx
 severity: medium
 reason: For a flat-only body the gate runs only when the STORED flag is already on (`route.ts` spells out that "the flat branch cannot move that flag, so `turningOn` is always `false`"), so after DW-308 the flat path can receive ONLY the switched-on frame. `src/app/settings/page.tsx` renders the embedding model and nothing else — no vector checkbox anywhere outside `SettingsCanvas` — so "supply what is missing" is actionable there and "Turn it off" is not. That collides with the DW-303 principle already written into the same function ("a refusal has to be one the requesting surface can DO something about"), which DW-308 narrowed to WHETHER-only without extending the same surface-awareness to WHICH sentence is chosen. The intent framed the frame decision as binary on the stored flag and said nothing about surface-awareness, and the repinned expectations in `settings-route.test.ts` lock the current wording in — so whether the frame should additionally read `actionableLegs` is a distinct decision
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw-legacy-settings-surface-parity
 
 ### DW-330: The client picks the refusal's frame from the DRAFT checkbox and the route from the STORED flag, so one composition still shows both sentences on the same screen at the same moment.
 origin: spec-deferred 5ca1c85bc38b
@@ -3194,4 +3197,20 @@ source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
 location: src/app/api/email/ingest/route.ts:146
 severity: low
 reason: `src/lib/__tests__/email-ingest-route.test.ts`'s "rejects attachment-only email when its file type is unsupported" checks `status === 400` and that nothing was enqueued, leaving "The email has no text body or supported document attachment to ingest" (`route.ts:146-151`) unmatched by anything in the repo -- the same gap DW-250 named for the neighbouring branch.
+status: open
+
+### DW-368: The Extraction provider picker on the same flat /settings page also offers Custom and renders no base-URL or API-key field, so it stores a provider the runtime refuses to construct with no on-page poi
+origin: spec-deferred ab8661d17322
+source_spec: `spec-dw-61-327-329-legacy-settings-surface-parity.md`
+location: src/components/StructuredKnowledgeSettings.tsx:84-99
+severity: medium
+reason: StructuredKnowledgeSettings.tsx populates its select from the same PROVIDER_INFO list that carries `custom`; the route accepts structuredKnowledgeProvider: "custom" and config.ts resolves it through getConfiguredModel, which throws "The Custom provider needs a base URL. Set it in Settings -> LLM Models." (src/lib/llm.ts:395-408) - the twin of the primary path's throw at :285-301 that DW-61 closed. Pre-existing: the DW-61 ledger entry and this bundle's intent both scope the fix to ProviderForm's picker, so the extraction picker was never in scope. There is no test file for StructuredKnowledgeSettings at all.
+status: open
+
+### DW-369: The five "Settings -> LLM Models" literals in llm.ts are hand-typed rather than derived from settingsCategory, so renaming that category leaves five runtime errors naming something the nav no longer s
+origin: spec-deferred b8ca25f1e6cd
+source_spec: `spec-dw-61-327-329-legacy-settings-surface-parity.md`
+location: src/lib/llm.ts:287
+severity: low
+reason: src/lib/llm.ts:287, :292, :301, :402, :407 spell the destination as string literals. workbench-settings.ts now derives its own pointers from SETTINGS_CATEGORIES precisely to prevent that drift, and documents why llm.ts deliberately keeps the shorter form - but nothing enforces the category half of either string. Pre-existing; surfaced by the new settingsPointer helper rather than caused by it.
 status: open

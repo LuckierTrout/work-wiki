@@ -5,6 +5,7 @@
 // ---------------------------------------------------------------------------
 
 import { PROVIDER_INFO, DEFAULT_MODELS } from "@/lib/providers";
+import { SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY } from "@/lib/workbench-settings";
 import { SourceBadge } from "@/components/SourceBadge";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,22 @@ export function ProviderForm({
   const effectiveProvider = provider || settings?.provider || null;
   const showOllamaUrl = effectiveProvider === "ollama";
   const showOllamaCloud = effectiveProvider === "ollama-cloud";
+  /**
+   * `Custom` is selectable here but not CONFIGURABLE here (DW-61).
+   *
+   * This form renders no base-URL and no API-key input, and it deliberately
+   * gains none: a second editor for `customBaseUrl`/`customApiKey` would give
+   * two surfaces a lost-update race over the same two stored fields (DW-63's
+   * gap), which the 2026-08-18 decision on DW-61 rules out in as many words. So
+   * the option stays and the page says where the other two halves live —
+   * otherwise a save here stores a provider `src/lib/llm.ts` cannot construct,
+   * and the first anyone hears of it is a failed LLM call.
+   *
+   * Read off `effectiveProvider` rather than off `provider`, exactly like the
+   * two Ollama blocks: a deployment already STORING `custom` needs the pointer
+   * on first paint, before the owner has touched the select.
+   */
+  const showCustom = effectiveProvider === "custom";
   const selectedProviderHasKey =
     settings?.provider === effectiveProvider && settings.hasApiKey;
 
@@ -164,6 +181,19 @@ export function ProviderForm({
               className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20 font-mono"
             />
           )}
+        </div>
+      )}
+
+      {/*
+        DESCRIBES, does not mark: no `aria-invalid` anywhere and the save is not
+        blocked — the same convention `EmbeddingSettings.tsx`'s override note
+        follows. Selecting `custom` is not an error, it is simply half a
+        configuration, and the other half is finished somewhere else.
+      */}
+      {showCustom && (
+        <div className="rounded-md border border-foreground/10 bg-foreground/[0.03] px-3 py-3 text-sm text-foreground/60">
+          <p className="font-medium text-foreground/80">Custom provider</p>
+          <p className="mt-1">{SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY}</p>
         </div>
       )}
 

@@ -2,6 +2,12 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { providerLabel } from "@/lib/providers";
+import {
+  storedVectorInputs,
+  vectorSearchInactiveCopy,
+  workbenchSettingsFrom,
+  type WorkbenchSettingsPayload,
+} from "@/lib/workbench-settings";
 import { IF_MATCH_HEADER, formatIfMatch } from "@/lib/write-precondition";
 
 // ---------------------------------------------------------------------------
@@ -46,6 +52,21 @@ export interface EffectiveSettings {
    * refused rather than applied blindly.
    */
   version?: string;
+  /**
+   * Story 1.9's nested object, which `GET /api/settings` already serves beside
+   * these flat fields (DW-327).
+   *
+   * `unknown` on purpose, and it is the ONE field here that is. The rest of
+   * this interface is a claimed shape — `await res.json()` is asserted into it
+   * and every field is read as though the claim held — which is tolerable for
+   * values that are only ever RENDERED. This object is different: it feeds a
+   * RULE (`canEnableVectorSearch`, through {@link storedVectorInputs}), whose
+   * inputs have no safe defaults, so it is narrowed by
+   * {@link workbenchSettingsFrom} rather than asserted. A payload that is not
+   * one produces `null` and the flat page renders exactly as it did before this
+   * field existed.
+   */
+  workbench?: unknown;
 }
 
 export interface ProviderStatus {
@@ -97,6 +118,21 @@ export interface UseSettingsReturn {
   setTestResult: (v: ActionResult | null) => void;
   rebuilding: boolean;
   rebuildResult: ActionResult | null;
+  /**
+   * What the STORED vector switch has to say on this page, or `null` for
+   * nothing at all (DW-327).
+   *
+   * Non-null only when the store holds the switch ON over legs that are unmet.
+   * A switch that is off, a configuration that is satisfied, and a body whose
+   * `workbench` object is absent or unusable all produce `null` — and `null`
+   * renders nothing, which is byte-identically what this page did before.
+   *
+   * It is the SAME sentence, from the same function, that a flat save's refusal
+   * carries: DW-303 now lets a flat save land on a store whose switch is on but
+   * inactive, so without this the owner had no signal anywhere on the page that
+   * the switch they cannot see is not doing anything.
+   */
+  vectorNotice: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +154,16 @@ export function useSettings(): UseSettingsReturn {
    * new one forward, so a second save without a reload still lands.
    */
   const [version, setVersion] = useState<string | null>(null);
+  /**
+   * The `workbench` object of the last read that LANDED, already narrowed
+   * (DW-327).
+   *
+   * Kept apart from `settings` rather than read back off it, for the reason
+   * {@link EffectiveSettings.workbench} gives: `settings` is an asserted shape
+   * and this is a checked one, and storing the checked value is what keeps the
+   * check from having to be repeated (or skipped) at every read site.
+   */
+  const [workbench, setWorkbench] = useState<WorkbenchSettingsPayload | null>(null);
 
   // Form state
   const [provider, setProvider] = useState("");
@@ -153,6 +199,13 @@ export function useSettings(): UseSettingsReturn {
       const data: EffectiveSettings = await res.json();
       setSettings(data);
       setVersion(typeof data.version === "string" ? data.version : null);
+      // NARROWED, not asserted — see `EffectiveSettings.workbench`. The whole
+      // BODY is handed over rather than `data.workbench`, because
+      // `workbenchSettingsFrom` is the route's own guard for exactly this seam
+      // and reaches for the key itself. `null` is the ordinary answer for an
+      // older route, a proxy that dropped the object, or a shape that does not
+      // check out, and it renders nothing.
+      setWorkbench(workbenchSettingsFrom(data));
 
       // Pre-fill form only with config-sourced values (not env)
       if (data.providerSource === "config" && data.provider) {
@@ -200,6 +253,10 @@ export function useSettings(): UseSettingsReturn {
       // truthful 428 instead, which is the same reasoning `PreviewColumn`
       // applies when a landed save answers none.
       setVersion(null);
+      // …and the narrowed `workbench` object goes with it, for the same reason
+      // and with the stronger claim: a checked value must not outlive the read
+      // that confirmed it, and this one feeds a RULE rather than a render.
+      setWorkbench(null);
       setLoadError(err instanceof Error ? err.message : "Unknown error");
       return false;
     }
@@ -370,6 +427,30 @@ export function useSettings(): UseSettingsReturn {
     }
   }
 
+  // ------------------------------------------
+  // Derived
+  // ------------------------------------------
+
+  /**
+   * The stored vector state, as ONE sentence or as nothing (DW-327).
+   *
+   * Derived rather than stored, because it is a pure function of the payload
+   * this page has already got — a second piece of state would be a second thing
+   * that can be stale. `vectorSearchInactiveCopy` returns `""` for a satisfied
+   * configuration, which is the "nothing to say" answer and is normalised to
+   * `null` here so the prop has one absence rather than two.
+   *
+   * Guarded on the STORED flag as well: the sentence opens "Vector search is
+   * switched on", so it must not be shown for a switch that is off — and a
+   * switch that is off has nothing to report, whatever its legs look like.
+   */
+  const vectorNotice =
+    workbench && workbench.vectorSearchEnabled
+      ? // The FLAT frame, which is the same one this page's saves are refused
+        // with: one state, one wording, whichever way the owner meets it.
+        vectorSearchInactiveCopy(storedVectorInputs(workbench), "flat") || null
+      : null;
+
   return {
     // Fetched data
     settings,
@@ -403,5 +484,7 @@ export function useSettings(): UseSettingsReturn {
     setTestResult,
     rebuilding,
     rebuildResult,
+    // Derived
+    vectorNotice,
   };
 }

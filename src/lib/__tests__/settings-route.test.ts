@@ -393,8 +393,13 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
    * `vectorSearchEnabled: true` already, so no request here is asking to turn
    * the switch on and "…before it can be turned on" would land in the save bar
    * beside a box the payload still shows ticked.
+   *
+   * …in its FLAT wording (DW-329). Every request in this describe is a
+   * flat-only body, so the route scopes it, and a scoped refusal is by
+   * definition one the `/settings` page will read — a page that renders no
+   * vector switch, so "Turn it off" would name a control the owner cannot find.
    */
-  const MISMATCH_COPY = vectorSearchInactiveCopy({
+  const MISMATCH_INPUTS = {
     provider: "workers-ai",
     baseUrl: null,
     model: "text-embedding-3-small",
@@ -402,7 +407,14 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
     modelOrigin: "stored",
     providerOrigin: "stored",
     hasWorkersAiBinding: true,
-  });
+  } as const;
+  const MISMATCH_COPY = vectorSearchInactiveCopy(MISMATCH_INPUTS, "flat");
+  /**
+   * The same state as {@link MISMATCH_COPY}, in the Workbench's wording — what
+   * the very same move answers when it arrives under a `workbench` key, which
+   * is unchanged by DW-329.
+   */
+  const WORKBENCH_MISMATCH_COPY = vectorSearchInactiveCopy(MISMATCH_INPUTS);
 
   function storeSatisfied(): void {
     mockedRead.mockResolvedValue({
@@ -445,9 +457,13 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
     expect(mockedSave).not.toHaveBeenCalled();
   });
 
-  it("answers the SAME sentence whether the move arrives flat or as a workbench patch", async () => {
-    // One rule, one wording. A second copy of the refusal at the route is
-    // exactly what this pins against.
+  it("names the SAME legs whether the move arrives flat or as a workbench patch, in each surface's own frame", async () => {
+    // One rule, two frames (DW-329). The two refusals used to be the identical
+    // string, which is what put "Turn it off, or supply what is missing." on the
+    // one surface that renders no switch to turn off. What must stay identical
+    // is the DIAGNOSIS — the legs, their order and their notes; what must
+    // differ is the trailing action clause, because the two surfaces offer
+    // different actions.
     const { PUT } = await import("@/app/api/settings/route");
 
     const flat = await PUT(request({ embeddingModel: "text-embedding-3-small" }));
@@ -459,8 +475,30 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
     expect(nested.status).toBe(400);
     const flatBody = (await flat.json()) as { error: string };
     const nestedBody = (await nested.json()) as { error: string };
-    expect(flatBody.error).toBe(nestedBody.error);
+
     expect(flatBody.error).toBe(MISMATCH_COPY);
+    expect(nestedBody.error).toBe(WORKBENCH_MISMATCH_COPY);
+    // NOT the same string any more — that equality is the behaviour this
+    // change deliberately removes.
+    expect(flatBody.error).not.toBe(nestedBody.error);
+
+    // The shared half is byte-identical: everything up to the action clause,
+    // which is the sentence that says what is wrong.
+    const DIAGNOSIS =
+      "Vector search is switched on, but it needs a supported Cloudflare Workers AI model id";
+    expect(flatBody.error.startsWith(DIAGNOSIS)).toBe(true);
+    expect(nestedBody.error.startsWith(DIAGNOSIS)).toBe(true);
+    // Same legs, in the same order, named the same way — the ids the owner can
+    // actually pick.
+    expect(flatBody.error).toContain("@cf/baai/bge-m3");
+    expect(nestedBody.error).toContain("@cf/baai/bge-m3");
+
+    // …and the ONE thing that differs is where the owner is sent.
+    expect(nestedBody.error).toContain("Turn it off, or supply what is missing.");
+    expect(flatBody.error).not.toContain("Turn it off");
+    expect(flatBody.error).toContain(
+      "turn the switch off in Workbench Settings → Embeddings",
+    );
   });
 
   it("ALLOWS a flat embeddingModel move that still satisfies the gate", async () => {
@@ -527,17 +565,21 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
     // key, which is a different value from the stored id and so is a move the
     // rule reads. All three answered 200 before DW-217 and quietly left the
     // switch on over a config that can no longer embed.
-    const removalCopy = vectorSearchInactiveCopy({
-      provider: "workers-ai",
-      baseUrl: null,
-      model: null,
-      hasKey: false,
-      modelOrigin: "stored",
-      providerOrigin: "stored",
-      hasWorkersAiBinding: true,
-    });
+    const removalCopy = vectorSearchInactiveCopy(
+      {
+        provider: "workers-ai",
+        baseUrl: null,
+        model: null,
+        hasKey: false,
+        modelOrigin: "stored",
+        providerOrigin: "stored",
+        hasWorkersAiBinding: true,
+      },
+      // Flat body, flat frame (DW-329).
+      "flat",
+    );
     expect(removalCopy).toBe(
-      "Vector search is switched on, but it needs a model before it can run. Turn it off, or supply what is missing.",
+      "Vector search is switched on, but it needs a model before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings.",
     );
     const { PUT } = await import("@/app/api/settings/route");
 
@@ -553,17 +595,21 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
   it("REFUSES a flat embeddingProvider DELETION that leaves the gate unsatisfied", async () => {
     // Same half, the other field: with no provider the rule cannot even ask the
     // remaining questions, so it reports the one leg that matters.
-    const removalCopy = vectorSearchInactiveCopy({
-      provider: null,
-      baseUrl: null,
-      model: "@cf/baai/bge-m3",
-      hasKey: false,
-      modelOrigin: "stored",
-      providerOrigin: "stored",
-      hasWorkersAiBinding: true,
-    });
+    const removalCopy = vectorSearchInactiveCopy(
+      {
+        provider: null,
+        baseUrl: null,
+        model: "@cf/baai/bge-m3",
+        hasKey: false,
+        modelOrigin: "stored",
+        providerOrigin: "stored",
+        hasWorkersAiBinding: true,
+      },
+      // Flat body, flat frame (DW-329).
+      "flat",
+    );
     expect(removalCopy).toBe(
-      "Vector search is switched on, but it needs an embedding provider before it can run. Turn it off, or supply what is missing.",
+      "Vector search is switched on, but it needs an embedding provider before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings.",
     );
     const { PUT } = await import("@/app/api/settings/route");
 
@@ -878,7 +924,7 @@ describe("PUT /api/settings — the flat vector refusal names only actionable le
 
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search is switched on, but it needs an endpoint, a model and an API key before it can run. Turn it off, or supply what is missing.",
+      "Vector search is switched on, but it needs an endpoint, a model and an API key before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings.",
     );
     expect(mockedSave).not.toHaveBeenCalled();
   });
@@ -899,7 +945,7 @@ describe("PUT /api/settings — the flat vector refusal names only actionable le
 
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search is switched on, but it needs an endpoint and an API key before it can run. Turn it off, or supply what is missing.",
+      "Vector search is switched on, but it needs an endpoint and an API key before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings.",
     );
     expect(mockedSave).not.toHaveBeenCalled();
   });

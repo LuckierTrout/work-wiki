@@ -21,6 +21,20 @@ export interface EmbeddingSettingsProps {
    * flag existed.
    */
   overridden: boolean;
+  /**
+   * What the STORED vector switch has to say, or nothing (DW-327).
+   *
+   * One READY sentence, produced by `vectorSearchInactiveCopy` in
+   * `workbench-settings.ts` and passed through — never composed here. This
+   * component knows nothing about legs, providers or endpoints, and the state
+   * it describes is one the flat page cannot edit at all; re-deriving any part
+   * of it here would be a second answer to a question the module already
+   * answers for the Workbench and for the route's refusals.
+   *
+   * Optional and absent by default, so every caller that does not pass it — and
+   * every existing test — renders byte-identically to before.
+   */
+  vectorNotice?: string | null;
   rebuilding: boolean;
   onRebuild: () => void;
   rebuildResult: { ok: boolean; message: string } | null;
@@ -37,6 +51,23 @@ export interface EmbeddingSettingsProps {
  */
 const OVERRIDE_NOTE_ID = "embeddingModelOverride";
 
+/**
+ * The id the vector notice is announced under (DW-327).
+ *
+ * Its own id rather than a second sentence inside the override note: the two
+ * are independent — a deployment can be substituting a model, reporting an
+ * inactive switch, both, or neither — and an `aria-describedby` naming one id
+ * for two conditions would describe the wrong one half the time.
+ *
+ * DESCRIBES, does not mark, for the same reason the override note does: the
+ * vector switch and every leg it names live on the Workbench surface, so
+ * marking the model box `aria-invalid` here would blame the one control the
+ * owner CAN reach for a state that is mostly not its doing — and the save is
+ * not blocked, because the flat page is allowed to land edits over an
+ * already-inactive switch (DW-303).
+ */
+const VECTOR_NOTICE_ID = "embeddingVectorNotice";
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -48,6 +79,7 @@ export function EmbeddingSettings({
   modelSource,
   modelInEffect,
   overridden,
+  vectorNotice,
   rebuilding,
   onRebuild,
   rebuildResult,
@@ -57,6 +89,19 @@ export function EmbeddingSettings({
   // they would disagree is a description pointing at an element that is not in
   // the document.
   const showOverrideNote = overridden && modelInEffect !== null;
+  // The same discipline for the second note, and then ONE list built from the
+  // two conditions — so the attribute can never name an id that is not in the
+  // document, and never omit one that is. `undefined` rather than `""` when
+  // both are absent, which is what keeps the "no dangling describedby" property
+  // literally true rather than merely empty.
+  const showVectorNotice = typeof vectorNotice === "string" && vectorNotice.length > 0;
+  const describedBy =
+    [
+      showOverrideNote ? OVERRIDE_NOTE_ID : null,
+      showVectorNotice ? VECTOR_NOTICE_ID : null,
+    ]
+      .filter((id): id is string => id !== null)
+      .join(" ") || undefined;
   return (
     <div>
       <label
@@ -86,7 +131,7 @@ export function EmbeddingSettings({
           onChange={(e) => setEmbeddingModel(e.target.value)}
           placeholder="e.g. text-embedding-3-small (OpenAI) or embedding-001 (Google)"
           className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20 font-mono"
-          aria-describedby={showOverrideNote ? OVERRIDE_NOTE_ID : undefined}
+          aria-describedby={describedBy}
         />
       )}
       {/*
@@ -114,6 +159,22 @@ export function EmbeddingSettings({
           provider cannot serve the model above, so it uses its own default
           instead. Vectors are tagged with the model that produced them, so an
           index built with a different model needs rebuilding.
+        </p>
+      )}
+      {/*
+        The STORED vector switch, said on the page that cannot see it (DW-327).
+
+        It sits in the embedding block because every leg the sentence can name
+        is an embedding setting, and the model box above is the one of them this
+        page renders. The sentence itself arrives finished from
+        `workbench-settings.ts` — this is a render, not a decision.
+      */}
+      {showVectorNotice && (
+        <p
+          id={VECTOR_NOTICE_ID}
+          className="mt-1.5 text-xs text-amber-700 dark:text-amber-500"
+        >
+          {vectorNotice}
         </p>
       )}
       <p className="mt-1 text-xs text-foreground/40">

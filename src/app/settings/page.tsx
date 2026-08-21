@@ -44,6 +44,7 @@ export default function SettingsPage() {
     setTestResult,
     rebuilding,
     rebuildResult,
+    vectorNotice,
   } = useSettings();
 
   // ------------------------------------------
@@ -143,7 +144,12 @@ export default function SettingsPage() {
           }}
         />
 
-        {/* Embedding Model */}
+        {/*
+          Embedding Model — and, beside it, the route's answer about the STORED
+          vector switch (DW-327). `vectorNotice` is passed straight through: the
+          hook derives the sentence from the served `workbench` object and this
+          page decides nothing about it.
+        */}
         <EmbeddingSettings
           embeddingModel={embeddingModel}
           setEmbeddingModel={setEmbeddingModel}
@@ -151,6 +157,7 @@ export default function SettingsPage() {
           modelSource={settings?.embeddingModelSource ?? "none"}
           modelInEffect={settings?.embeddingModelInEffect ?? null}
           overridden={settings?.embeddingModelOverridden ?? false}
+          vectorNotice={vectorNotice}
           rebuilding={rebuilding}
           onRebuild={handleRebuildEmbeddings}
           rebuildResult={rebuildResult}

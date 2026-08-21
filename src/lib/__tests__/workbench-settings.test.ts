@@ -103,6 +103,8 @@ import {
   SETTINGS_SAVE_BAR_COPY,
   SETTINGS_SAVE_FAILED_COPY,
   SETTINGS_CATEGORIES,
+  SETTINGS_CUSTOM_ENDPOINT_COPY,
+  SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY,
   SETTINGS_VECTOR_BINDING_ENV_NOTE,
   SETTINGS_VECTOR_BINDING_NOTE,
   SETTINGS_VECTOR_ENV_MODEL_NOTE,
@@ -117,7 +119,9 @@ import {
   settingsDirty,
   settingsDraftFromPayload,
   settingsEnvOverrideCopy,
+  settingsCategory,
   settingsSaveBody,
+  storedVectorInputs,
   validateWorkbenchSettingsPatch,
   vectorSearchFieldIssue,
   vectorSearchInactiveCopy,
@@ -395,6 +399,17 @@ const UNSUPPORTED_WORKERS_MODEL = `Vector search needs ${UNSUPPORTED_WORKERS_MOD
  * only the frame differs.
  */
 const UNSUPPORTED_WORKERS_MODEL_INACTIVE = `Vector search is switched on, but it needs ${UNSUPPORTED_WORKERS_MODEL_LIST} before it can run. Turn it off, or supply what is missing.`;
+
+/**
+ * …and the same sentence again for the FLAT surface (DW-329).
+ *
+ * A refusal the route SCOPED is one the flat `/settings` page will read, and
+ * that page renders no vector switch — so the action clause names where the
+ * switch lives instead of instructing the owner to flip one that is not there.
+ * Everything before that clause is shared with the two constants above, which
+ * is the property the frames exist to preserve.
+ */
+const UNSUPPORTED_WORKERS_MODEL_INACTIVE_FLAT = `Vector search is switched on, but it needs ${UNSUPPORTED_WORKERS_MODEL_LIST} before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings.`;
 
 describe("canEnableVectorSearch", () => {
   it("requires an EXPLICIT embedding provider before anything else", () => {
@@ -885,6 +900,247 @@ describe("vectorSearchInactiveCopy — what a SWITCHED-ON switch says (DW-279)",
         hasKey: false,
       }),
     ).toBe("");
+  });
+
+  // -------------------------------------------------------------------------
+  // The FLAT frame — the same state, said where there is no switch (DW-329)
+  // -------------------------------------------------------------------------
+
+  describe("the flat frame", () => {
+    /** The four-leg case, in both frames, from one set of inputs. */
+    const LEGS = {
+      provider: "workers-ai",
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: false,
+      modelOrigin: "env",
+      hasWorkersAiBinding: false,
+    } as const;
+
+    it("differs from the default frame ONLY in the trailing action clause", () => {
+      // The legs, their order and their notes are the DIAGNOSIS, and the
+      // diagnosis is a property of the configuration rather than of who is
+      // looking at it. Two surfaces disagreeing about what is wrong is exactly
+      // what parameterizing the sentence must not be allowed to produce.
+      const workbench = vectorSearchInactiveCopy(vectorInputs(LEGS));
+      const flat = vectorSearchInactiveCopy(vectorInputs(LEGS), "flat");
+
+      const shared = `Vector search is switched on, but it needs a supported Cloudflare Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) and the Cloudflare AI binding before it can run.`;
+      const notes = `${SETTINGS_VECTOR_ENV_MODEL_NOTE} ${SETTINGS_VECTOR_BINDING_NOTE}`;
+
+      expect(workbench).toBe(
+        `${shared} Turn it off, or supply what is missing. ${notes}`,
+      );
+      expect(flat).toBe(
+        `${shared} Supply what is missing, or turn the switch off in Workbench Settings → Embeddings. ${notes}`,
+      );
+      // Said as a property rather than as two literals: strip each frame's own
+      // action clause and what is left is the identical string.
+      expect(workbench.replace("Turn it off, or supply what is missing. ", "")).toBe(
+        flat.replace(
+          "Supply what is missing, or turn the switch off in Workbench Settings → Embeddings. ",
+          "",
+        ),
+      );
+    });
+
+    it("names the Embeddings category by its NAV label rather than by a literal", () => {
+      // The pointer and the nav row are the same one string, so renaming the
+      // category cannot leave the sentence pointing at a name that is no longer
+      // on screen.
+      expect(vectorSearchInactiveCopy(vectorInputs(LEGS), "flat")).toContain(
+        `Settings → ${settingsCategory("embeddings").label}`,
+      );
+      // …and it does NOT tell an owner who cannot see the switch to turn it off.
+      expect(vectorSearchInactiveCopy(vectorInputs(LEGS), "flat")).not.toContain(
+        "Turn it off",
+      );
+    });
+
+    it("still says nothing at all when every leg is met", () => {
+      // The frame decides the wording of a sentence, never whether there is
+      // one: `canEnableVectorSearch` is the sole rule, and a satisfied config
+      // is silent on both surfaces.
+      const satisfied = vectorInputs({
+        provider: "ollama",
+        baseUrl: null,
+        model: "nomic-embed-text",
+        hasKey: false,
+      });
+      expect(vectorSearchInactiveCopy(satisfied, "flat")).toBe("");
+      expect(vectorSearchInactiveCopy(satisfied)).toBe("");
+      expect(canEnableVectorSearch(satisfied)).toBe(true);
+    });
+
+    it("agrees with the default frame about WHETHER there is a sentence, leg for leg", () => {
+      // Swept across the shapes the two frames could have diverged on — an
+      // early-returning provider leg, a single leg, several legs, and a
+      // satisfied config.
+      const cases: VectorLegs[] = [
+        { provider: null, baseUrl: null, model: null, hasKey: false },
+        { provider: "openai", baseUrl: null, model: null, hasKey: false },
+        {
+          provider: "openai",
+          baseUrl: "https://embed.example",
+          model: "text-embedding-3-small",
+          hasKey: true,
+        },
+        {
+          provider: "workers-ai",
+          baseUrl: null,
+          model: "@cf/baai/bge-m3",
+          hasWorkersAiBinding: true,
+          hasKey: false,
+        },
+      ];
+      for (const legs of cases) {
+        const inputs = vectorInputs(legs);
+        expect(vectorSearchInactiveCopy(inputs, "flat") === "").toBe(
+          vectorSearchInactiveCopy(inputs) === "",
+        );
+        expect(vectorSearchInactiveCopy(inputs, "flat") === "").toBe(
+          canEnableVectorSearch(inputs),
+        );
+      }
+    });
+
+    it("defaults to the Workbench frame, so `SettingsCanvas` is untouched", () => {
+      // The one-argument call is what every existing caller makes, and it must
+      // go on producing the sentence it produced before the parameter existed.
+      expect(vectorSearchInactiveCopy(vectorInputs(LEGS))).toBe(
+        vectorSearchInactiveCopy(vectorInputs(LEGS), "workbench"),
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The vector inputs as the STORE holds them (DW-327)
+// ---------------------------------------------------------------------------
+
+describe("storedVectorInputs — the flat page's view of the vector rule", () => {
+  it("answers exactly what a FRESHLY SEEDED Workbench draft answers", () => {
+    // The claim the flat advisory rests on: a just-loaded Workbench and
+    // `/settings` cannot disagree about which legs are unmet, because the two
+    // read the same function over the same payload.
+    const payload: WorkbenchSettingsPayload = {
+      ...emptyPayload(),
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingBaseUrl: "https://embed.example",
+      hasEmbeddingApiKey: true,
+    };
+
+    expect(storedVectorInputs(payload)).toEqual(
+      draftVectorInputs(settingsDraftFromPayload(payload), payload),
+    );
+    expect(canEnableVectorSearch(storedVectorInputs(payload))).toBe(true);
+  });
+
+  it("reads a STORED key even though the draft's key field shows nothing", () => {
+    // The seeded secret is `SECRET_UNTOUCHED`, which means "leave the stored one
+    // alone" rather than "there is none" — a helper that read the blank string
+    // as an absent key would report a KEY leg for a deployment that has one.
+    const payload: WorkbenchSettingsPayload = {
+      ...emptyPayload(),
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingBaseUrl: "https://embed.example",
+      hasEmbeddingApiKey: true,
+    };
+    expect(settingsDraftFromPayload(payload).embeddingApiKey).toBe(SECRET_UNTOUCHED);
+    expect(storedVectorInputs(payload).hasKey).toBe(true);
+    expect(vectorSearchInactiveCopy(storedVectorInputs(payload), "flat")).toBe("");
+  });
+
+  it("lets the ENVIRONMENT win, and reports the origin it won with", () => {
+    // The same precedence both halves of the rule apply. Without it the flat
+    // page would name the model box for a value `EMBEDDING_MODEL` owns.
+    const payload: WorkbenchSettingsPayload = {
+      ...emptyPayload(),
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      envEmbeddingProvider: "workers-ai",
+      envEmbeddingModel: "@cf/baai/bge-m3",
+      hasWorkersAiBinding: true,
+    };
+    const inputs = storedVectorInputs(payload);
+    expect(inputs.provider).toBe("workers-ai");
+    expect(inputs.model).toBe("@cf/baai/bge-m3");
+    expect(inputs.modelOrigin).toBe("env");
+    expect(inputs.providerOrigin).toBe("env");
+  });
+
+  it("names the unmet legs of a switch that is stored ON but inactive", () => {
+    // The DW-327 state itself: the switch is on, the legs are not met, and the
+    // flat page has to be able to say so.
+    const payload: WorkbenchSettingsPayload = {
+      ...emptyPayload(),
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+    };
+    expect(vectorSearchInactiveCopy(storedVectorInputs(payload), "flat")).toBe(
+      "Vector search is switched on, but it needs an endpoint and an API key before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings.",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Custom advisory, on the surface with no fields for it (DW-61)
+// ---------------------------------------------------------------------------
+
+describe("SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY", () => {
+  it("points at the LLM Models category by its nav label, on the surface named in full", () => {
+    expect(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY).toBe(
+      `Custom uses an OpenAI-compatible endpoint. Set the base URL and the API key in Workbench Settings → ${settingsCategory("llm-models").label}.`,
+    );
+  });
+
+  it("says the same thing the Workbench twin says, minus its 'below'", () => {
+    // Two surfaces, one fact. The Workbench renders the two fields beneath the
+    // sentence, so it can say "below"; the flat page does not, so it says
+    // where. Everything before the pointer is identical.
+    const lead = "Custom uses an OpenAI-compatible endpoint. ";
+    expect(SETTINGS_CUSTOM_ENDPOINT_COPY.startsWith(lead)).toBe(true);
+    expect(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY.startsWith(lead)).toBe(true);
+    // The flat one cannot say "below" — there is nothing below it.
+    expect(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY).not.toContain("below");
+  });
+
+  it("names the OTHER surface in full, because 'Settings' alone is the page it renders on", () => {
+    // `SETTINGS_CATEGORIES` is the nav of the Workbench's `SettingsCanvas` and
+    // exists nowhere else. The app's own "Settings" nav row
+    // (`NavHeader.tsx:197`, `:322`) routes to `/settings` — the flat page this
+    // advisory renders on, whose `<h1>` also reads "Settings". So a bare
+    // "Settings → LLM Models" here would read as a path inside the page the
+    // owner is already standing on, and send them nowhere.
+    expect(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY).toContain(
+      "Workbench Settings → LLM Models",
+    );
+    // The SURFACE word is the only thing typed; the category half stays derived.
+    expect(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY).toContain(
+      settingsCategory("llm-models").label,
+    );
+  });
+
+  it("is deliberately NOT the string `llm.ts`'s runtime refusals use", () => {
+    // `getResolvedCredentials` throws "Set it in Settings → LLM Models." for a
+    // `custom` provider with no base URL, no key, or no model. Those are
+    // RUNTIME errors raised from the LLM call rather than sentences rendered on
+    // a Settings page, so the ambiguity this pointer resolves does not arise
+    // there — and the two strings are not required to match. Pinned so that a
+    // later attempt to "unify" them has to read this reasoning first.
+    const runtimeDestination = "Settings → LLM Models";
+    expect(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY).not.toContain(
+      ` in ${runtimeDestination}`,
+    );
+    expect(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY).toContain(
+      ` in Workbench ${runtimeDestination}`,
+    );
   });
 });
 
@@ -1577,6 +1833,18 @@ describe("validateWorkbenchSettingsPatch — actionableLegs (DW-303)", () => {
   const INACTIVE_TRANSPORT =
     "Vector search is switched on, but it needs an endpoint and an API key before it can run. Turn it off, or supply what is missing.";
 
+  /**
+   * The same two legs again, in the FLAT frame (DW-329).
+   *
+   * A SCOPED call is by definition one from the flat `/settings` page, and that
+   * page renders no vector switch — so "Turn it off" would name a control the
+   * owner cannot find. Which sentence, never whether: the legs, their order and
+   * their notes are identical to {@link INACTIVE_TRANSPORT} above, and only the
+   * trailing action clause moves.
+   */
+  const INACTIVE_TRANSPORT_FLAT =
+    "Vector search is switched on, but it needs an endpoint and an API key before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings.";
+
   it("an OMITTED fourth argument refuses exactly as before, and an EMPTY set is its opposite", () => {
     // The default is what keeps every caller but the flat-only route path
     // unchanged, so the two have to be pinned against each other: omitted means
@@ -1629,8 +1897,9 @@ describe("validateWorkbenchSettingsPatch — actionableLegs (DW-303)", () => {
       ),
     ).toEqual({
       ok: false,
+      // Scoped, so the FLAT frame (DW-329).
       error:
-        "Vector search is switched on, but it needs an endpoint, a model id outside the Cloudflare Workers AI @cf/ namespace and an API key before it can run. Turn it off, or supply what is missing.",
+        "Vector search is switched on, but it needs an endpoint, a model id outside the Cloudflare Workers AI @cf/ namespace and an API key before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings.",
     });
   });
 
@@ -1699,7 +1968,9 @@ describe("validateWorkbenchSettingsPatch — actionableLegs (DW-303)", () => {
 
     expect(validateWorkbenchSettingsPatch({}, merged, baseline, claimed)).toEqual({
       ok: false,
-      error: `Vector search is switched on, but it needs the Cloudflare AI binding before it can run. Turn it off, or supply what is missing. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+      // Scoped, so the FLAT frame (DW-329) — and the leg's NOTE is unmoved,
+      // which is the half of the sentence that must not vary by surface.
+      error: `Vector search is switched on, but it needs the Cloudflare AI binding before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings. ${SETTINGS_VECTOR_BINDING_NOTE}`,
     });
 
     // …and the same call with `binding` removed from the claimed set ALLOWS it.
@@ -1743,7 +2014,7 @@ describe("validateWorkbenchSettingsPatch — actionableLegs (DW-303)", () => {
         baseline,
         flatMovableVectorLegs({ embeddingProvider: "openai" }),
       ),
-    ).toEqual({ ok: false, error: INACTIVE_TRANSPORT });
+    ).toEqual({ ok: false, error: INACTIVE_TRANSPORT_FLAT });
   });
 
   it("never scopes a patch that is TURNING IT ON", () => {
@@ -3698,8 +3969,10 @@ describe("PUT /api/settings", () => {
     // Before DW-217 this answered 200, wrote the mismatch, and left the stored
     // switch reading ON while `getVectorSearchSettings()` had gone to `false`.
     expect(response.status).toBe(400);
+    // A FLAT-only body, so the route scopes it — and a scoped refusal carries
+    // the flat frame (DW-329).
     expect(((await response.json()) as { error: string }).error).toBe(
-      UNSUPPORTED_WORKERS_MODEL_INACTIVE,
+      UNSUPPORTED_WORKERS_MODEL_INACTIVE_FLAT,
     );
     // Nothing landed, so the store still holds the id it held…
     expect(await stored()).toMatchObject({ embeddingModel: "@cf/baai/bge-m3" });
@@ -3735,8 +4008,11 @@ describe("PUT /api/settings", () => {
     const response = await PUT(await put({ embeddingModel: "@cf/baai/bge-m3" }));
 
     expect(response.status).toBe(400);
+    // …byte-identical to the nested case above EXCEPT for the action clause:
+    // no `workbench` key means the route scoped it, and a scoped refusal is
+    // read on the page with no vector switch (DW-329).
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search is switched on, but it needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can run. Turn it off, or supply what is missing.",
+      "Vector search is switched on, but it needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings.",
     );
     // Refused BEFORE `saveConfig`: the store still holds what it held.
     expect(await stored()).toMatchObject({
@@ -3808,7 +4084,7 @@ describe("PUT /api/settings", () => {
     // Two legs and a note, in leg order — the reframe changes the sentence they
     // are wrapped in and nothing about the legs themselves.
     expect(((await alreadyOn.json()) as { error: string }).error).toBe(
-      `Vector search is switched on, but it needs ${UNSUPPORTED_WORKERS_MODEL_LIST} and the Cloudflare AI binding before it can run. Turn it off, or supply what is missing. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+      `Vector search is switched on, but it needs ${UNSUPPORTED_WORKERS_MODEL_LIST} and the Cloudflare AI binding before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings. ${SETTINGS_VECTOR_BINDING_NOTE}`,
     );
     // Nothing written either way — the frame is the only thing that changed.
     expect(await stored()).toMatchObject({ embeddingProvider: "ollama" });

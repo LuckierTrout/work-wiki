@@ -113,6 +113,61 @@ export function settingsAnnouncement(label: string): string {
 /** The rail control and the surface's own name. */
 export const SETTINGS_LABEL = "Settings";
 
+/**
+ * WHICH Settings surface a sentence is being written for (DW-327, DW-329).
+ *
+ * There are two, and they are not the same shape. `"workbench"` is the
+ * {@link SETTINGS_CATEGORIES} surface, which renders a control for every field
+ * this module knows about — the DEFAULT everywhere, so nothing that does not
+ * ask for the other one changes. `"flat"` is the legacy `/settings` page, which
+ * renders the primary provider/model pair and the embedding MODEL box and
+ * nothing else: no embedding provider, no embedding endpoint, no embedding key,
+ * and no vector switch.
+ *
+ * It selects only WHICH SENTENCE a state produces, never WHETHER that state is
+ * a refusal — {@link canEnableVectorSearch} stays the one rule both surfaces
+ * answer identically. A sentence that told the owner of the flat page to flip a
+ * switch that page does not render would name an action they cannot take from
+ * where they are standing, which is the same dead end DW-303 closed for the
+ * legs.
+ */
+export type SettingsSurface = "workbench" | "flat";
+
+/**
+ * "Workbench Settings → LLM Models" — where a sentence rendered on the FLAT
+ * page sends an owner, which is a different surface from the one they are on.
+ *
+ * NAMED IN FULL, and that is the whole point. `SETTINGS_CATEGORIES` is the nav
+ * of the Workbench's `SettingsCanvas` and exists nowhere else: the app's own
+ * "Settings" nav row (`src/components/NavHeader.tsx:197`, `:322`) routes to
+ * `/settings`, the legacy flat page, whose `<h1>` also reads "Settings". So a
+ * bare "Settings → LLM Models" rendered on `/settings` reads as a path INSIDE
+ * the page the owner is already standing on — a dead end of exactly the kind
+ * DW-329 exists to close, rather than a way out of one. The surface word is
+ * what disambiguates the two.
+ *
+ * Only that word is typed. The CATEGORY half stays derived from
+ * {@link settingsCategory}, so the nav row, the detail heading and every
+ * pointer at that category remain the same one string and renaming a category
+ * cannot leave a sentence naming something the nav no longer shows.
+ *
+ * `src/lib/llm.ts:287-301` keeps its shorter "Settings → LLM Models": those are
+ * RUNTIME errors, raised from the LLM call rather than rendered on a Settings
+ * page, so the ambiguity this pointer resolves does not arise there. The two
+ * are deliberately not the same string.
+ */
+function settingsPointer(id: SettingsCategoryId): string {
+  return `${WORKBENCH_SETTINGS_LABEL} → ${settingsCategory(id).label}`;
+}
+
+/**
+ * The OTHER Settings surface, by the name the flat page has to call it.
+ *
+ * Composed from {@link SETTINGS_LABEL} rather than spelled out, so the two
+ * surfaces cannot end up with different words for "Settings".
+ */
+const WORKBENCH_SETTINGS_LABEL = `Workbench ${SETTINGS_LABEL}`;
+
 /** The sticky save bar's standing sentence (UX-DR14 / `epic-1-context.md:53`). */
 export const SETTINGS_SAVE_BAR_COPY = "Changes apply after saving";
 
@@ -166,6 +221,25 @@ export const SETTINGS_MODEL_INHERIT_COPY =
 /** The Custom provider needs an endpoint before it can be constructed. */
 export const SETTINGS_CUSTOM_ENDPOINT_COPY =
   "Custom uses an OpenAI-compatible endpoint. Set the base URL and the API key below.";
+
+/**
+ * The same fact, said on the surface that has no such fields (DW-61).
+ *
+ * The flat `/settings` page offers `Custom` in its provider picker and renders
+ * neither a base URL nor an API key anywhere, so a save made there stored a
+ * provider `src/lib/llm.ts` then refused to construct — three runtime errors
+ * pointing at fields the owner had just failed to find. The picker keeps the
+ * option (the flat page is where the primary provider is chosen, and removing
+ * it would make an already-stored `custom` unrepresentable in its own picker);
+ * what changes is that the page now says WHERE the other two halves live,
+ * instead of only saying so once the next LLM call has already failed.
+ *
+ * "below" becomes the pointer, and the pointer is the SAME destination
+ * `src/lib/llm.ts:287-301` names — one place to go, whichever half of the
+ * product told you to go there. It DESCRIBES: no `aria-invalid`, and the save
+ * is not blocked (the DW-274 override note's convention).
+ */
+export const SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY = `Custom uses an OpenAI-compatible endpoint. Set the base URL and the API key in ${settingsPointer("llm-models")}.`;
 
 /**
  * The ONE name this module gives `workers-ai` (DW-222).
@@ -770,6 +844,25 @@ export function vectorSearchMissingCopy(v: VectorSearchInputs): string {
 }
 
 /**
+ * The trailing ACTION clause of {@link vectorSearchInactiveCopy}, per surface.
+ *
+ * The only thing the two frames differ by, kept as a table rather than as a
+ * ternary inside the template so that the shared half of the sentence exists
+ * exactly once and cannot drift between them. A surface added to
+ * {@link SettingsSurface} without a clause here is a type error.
+ */
+const VECTOR_INACTIVE_ACTION = {
+  // The Workbench renders the switch beside this sentence, so the action is
+  // simply the switch.
+  workbench: "Turn it off, or supply what is missing.",
+  // `/settings` renders no switch, so naming one would be advice this surface
+  // cannot carry out. The pointer names the OTHER surface in full — see
+  // {@link settingsPointer} — because "Settings" alone is the page the owner is
+  // already on.
+  flat: `Supply what is missing, or turn the switch off in ${settingsPointer("embeddings")}.`,
+} satisfies Record<SettingsSurface, string>;
+
+/**
  * What a switch that is already SWITCHED ON, over legs that are unmet, has to
  * say (DW-279).
  *
@@ -804,12 +897,24 @@ export function vectorSearchMissingCopy(v: VectorSearchInputs): string {
  *
  * Same legs, same notes, same order as the refusal — only the frame changes,
  * and the action the owner actually has here (turning it off) is the one named.
+ *
+ * …which is why `surface` exists (DW-329). "Turn it off" is an instruction only
+ * an owner who can SEE the switch can follow, and the flat `/settings` page
+ * renders no vector control at all — so the sentence it shows, and the sentence
+ * the route hands back when a flat body is refused, say where the switch lives
+ * instead of telling the owner to flip one that is not there. Everything else
+ * is byte-identical between the two: the legs, their order, their notes and
+ * whether there is a sentence at all. The parameter DEFAULTS to the Workbench
+ * surface, so `SettingsCanvas` and every nested-body refusal are untouched.
  */
-export function vectorSearchInactiveCopy(v: VectorSearchInputs): string {
+export function vectorSearchInactiveCopy(
+  v: VectorSearchInputs,
+  surface: SettingsSurface = "workbench",
+): string {
   const missing = vectorSearchMissingLegs(v);
   if (missing.length === 0) return "";
   return withLegNotes(
-    `Vector search is switched on, but it needs ${vectorSearchLegList(missing)} before it can run. Turn it off, or supply what is missing.`,
+    `Vector search is switched on, but it needs ${vectorSearchLegList(missing)} before it can run. ${VECTOR_INACTIVE_ACTION[surface]}`,
     missing,
   );
 }
@@ -1281,9 +1386,26 @@ export function validateWorkbenchSettingsPatch(
           // Which SENTENCE, never WHETHER: `canEnableVectorSearch` stays the one
           // rule both callers answer identically about whether a situation is
           // refused at all.
+          //
+          // …and the switched-on frame asks a SECOND question, off the same one
+          // fact the fourth argument already carries (DW-329). "Turn it off" is
+          // an action only a surface that renders the switch can offer, and a
+          // scoped request is by definition one from the flat `/settings` page,
+          // which renders none — so it gets the frame that says where the
+          // switch lives. `actionableLegs === undefined` is the whole test:
+          // absent means a surface reaching every control, present means the
+          // flat page. No second parameter, because there is no second fact.
+          //
+          // `turningOn` is exempt from this too, and for the same reason it is
+          // exempt from the scoping above: `vectorSearchMissingCopy` says
+          // "…before it can be turned on", which is what a request ASKING to
+          // turn the switch on is about, and which names no action at all.
           error: turningOn
             ? vectorSearchMissingCopy(merged)
-            : vectorSearchInactiveCopy(merged),
+            : vectorSearchInactiveCopy(
+                merged,
+                actionableLegs === undefined ? "workbench" : "flat",
+              ),
         };
       }
     }
@@ -1570,6 +1692,27 @@ export function draftVectorInputs(
     // Served on the payload precisely because the browser cannot ask.
     hasWorkersAiBinding: payload.hasWorkersAiBinding,
   };
+}
+
+/**
+ * The vector inputs as the STORE holds them — no draft in play (DW-327).
+ *
+ * The flat `/settings` page edits none of the vector fields but must still be
+ * able to SAY what state they are in, and the only honest answer there is the
+ * stored one: there is no draft on that page for any of them.
+ *
+ * COMPOSED from the two functions the Workbench already uses rather than
+ * derived afresh, because a freshly seeded draft IS the stored state — every
+ * field of {@link settingsDraftFromPayload} is the payload's own value, and the
+ * three secrets seed to {@link SECRET_UNTOUCHED}, which
+ * {@link draftVectorInputs} reads as "whatever the store has". So the flat page
+ * cannot disagree with a just-loaded Workbench about which legs are unmet, and
+ * a change to the env-override precedence lands in both at once.
+ */
+export function storedVectorInputs(
+  payload: WorkbenchSettingsValues,
+): VectorSearchInputs {
+  return draftVectorInputs(settingsDraftFromPayload(payload), payload);
 }
 
 // ---------------------------------------------------------------------------
