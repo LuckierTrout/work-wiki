@@ -169,5 +169,14 @@
     "key": "2",
     "label": "Keep deadline, fix the copy",
     "resolution": ""
+  },
+  "DW-69": {
+    "answered_at": "2026-08-21",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Drop the stored embedding key and its has* flag whenever the embedding provider changes, so a switch never reuses another vendor's secret; no stored shape change, and the owner re-enters the key for the new vendor.",
+    "key": "2",
+    "label": "Clear the key on switch",
+    "resolution": ""
   }
 }
