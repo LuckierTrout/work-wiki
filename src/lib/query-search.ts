@@ -371,7 +371,8 @@ export async function buildContext(slugs?: string[]): Promise<{
     }
 
     // The system-generated header + markers above are trusted; the page BODY is
-    // collectively-editable, third-party-sourced content, so it's wrapped in an
+    // multi-author, third-party-sourced content — what makes it untrusted is its
+    // provenance, not the write ACL — so it's wrapped in an
     // untrusted-data boundary (see ./untrusted + UNTRUSTED_CONTENT_RULE in the
     // query system prompt) to contain indirect prompt injection. The `source`
     // label summarizes the page's provenance types for the model.

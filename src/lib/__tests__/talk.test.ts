@@ -8,9 +8,7 @@ import {
   listThreads,
   getThread,
   createThread,
-  ensureReconciliationThread,
   hasOpenThread,
-  RECONCILE_THREAD_TITLE,
   addComment,
   resolveThread,
   deleteDiscussions,
@@ -425,52 +423,20 @@ describe("talk page data layer", () => {
   });
 });
 
-describe("ensureReconciliationThread", () => {
-  it("opens a reconciliation thread authored by the human/system actor", async () => {
-    await ensureReconciliationThread("p", "alice", "merged in q");
-    const threads = await listThreads("p");
-    expect(threads).toHaveLength(1);
-    expect(threads[0].title).toBe(RECONCILE_THREAD_TITLE);
-    expect(threads[0].status).toBe("open");
-    // Authored by the actor (NOT the agent) so the maintenance scan acts on it.
-    expect(threads[0].comments[0].author).toBe("alice");
-    expect(threads[0].comments[0].body).toContain("merged in q");
-  });
-
-  it("is idempotent — no second thread while one is already open", async () => {
-    await ensureReconciliationThread("p", "alice");
-    await ensureReconciliationThread("p", "alice");
-    expect(
-      (await listThreads("p")).filter((t) => t.title === RECONCILE_THREAD_TITLE),
-    ).toHaveLength(1);
-  });
-
-  it("opens a fresh one once the prior reconciliation thread is resolved", async () => {
-    await ensureReconciliationThread("p", "alice");
-    await resolveThread("p", 0, "resolved");
-    await ensureReconciliationThread("p", "alice");
-    const open = (await listThreads("p")).filter(
-      (t) => t.title === RECONCILE_THREAD_TITLE && t.status === "open",
-    );
-    expect(open).toHaveLength(1);
-  });
-
-  it("defaults a blank author to 'system' (still non-agent → scan-actionable)", async () => {
-    await ensureReconciliationThread("p", "");
-    expect((await listThreads("p"))[0].comments[0].author).toBe("system");
-  });
-
-  it("coerces an agent-handle actor to 'system' so the scan can act on it", async () => {
-    // An agent self-ingest (author === the agent's own handle) or an autonomous
-    // `yoyo` staleness re-ingest must NOT leave the thread's latest comment
-    // agent-side — the maintenance scan only acts on human-side latest comments.
-    await ensureReconciliationThread("p", "alice--yoyo");
-    expect((await listThreads("p"))[0].comments[0].author).toBe("system");
-
-    await ensureReconciliationThread("q", "yoyo");
-    expect((await listThreads("q"))[0].comments[0].author).toBe("system");
-  });
-});
+/**
+ * The auto-opened reconciliation-thread writer and its title constant are GONE
+ * (DW-230).
+ *
+ * They opened a talk thread whenever a page flipped `disputed` on the ingest,
+ * merge or metadata-patch path. The talk HTTP surfaces are retired, so
+ * nothing could read what they wrote — a maintenance loop with no reader. The
+ * cases that pinned the writer's idempotency and its non-agent author coercion
+ * were deleted with it; the "no thread is written" half of the invariant now
+ * lives beside each of the three former call sites (`ingest.test.ts`,
+ * `merge.test.ts`, `patch-metadata.test.ts`), where a reintroduced writer would
+ * actually be observed. Every other export in `talk.ts` still has live readers
+ * and keeps its coverage below.
+ */
 
 describe("hasOpenThread", () => {
   it("returns true only while an open thread exists", async () => {

@@ -2,6 +2,8 @@
 
 import { useState, useCallback, useId } from "react";
 import { useRouter } from "next/navigation";
+import { isOwnerHandle } from "@/lib/owner";
+import { useViewerHandle } from "@/lib/viewer-handle";
 import { RevisionItem } from "./RevisionItem";
 import type { Revision } from "./RevisionItem";
 
@@ -27,6 +29,28 @@ export const REVERT_READ_ONLY_COPY =
 interface RevisionHistoryProps {
   slug: string;
   /**
+   * The REALM half of the Revert gate: whether `canWritePage`'s commons-realm
+   * branch refuses a BODY write of this page.
+   * `POST /api/wiki/[slug]/revisions {action:"revert"}` re-authorizes with
+   * `writeKind: "body"`, so on a public, non-agent-scoped, non-artifact page it
+   * always answers 403 — and every viewer was still shown a Revert button per
+   * row, with an irreversible-sounding confirm in front of it (DW-269, the
+   * DW-120 shape one door over).
+   *
+   * Computed on the SERVER by {@link import("./ArticleView").ArticleView} from
+   * `isRealmRestrictedWrite`, because that predicate reaches `@/lib/commons`,
+   * whose import graph pulls storage, locks and `wiki.ts` — none of which may
+   * enter this `"use client"` file. Required, not optional: a defaulted `false`
+   * would silently restore the button the moment the seam is dropped.
+   *
+   * REVERT TAKES NO OWNERSHIP TERM, deliberately. The route gates on the realm
+   * and on the private-page ACL, not on page ownership, so adding an `isOwner`
+   * term here would hide the control from viewers the server would have
+   * allowed. Only the realm term is threaded, and the site owner (an admin
+   * server-side) keeps the door on realm pages.
+   */
+  realmDeniesRevert: boolean;
+  /**
    * `YOPEDIA_READONLY=1`, read on the server by the page that renders the
    * article and threaded down through {@link import("./ArticleView").ArticleView}
    * — no route and no client fetch is added for a fact the process already
@@ -48,8 +72,31 @@ interface RevisionHistoryProps {
  * server component thin and avoids unnecessary API calls for pages the user
  * is just reading.
  */
-export function RevisionHistory({ slug, readOnly = false }: RevisionHistoryProps) {
+export function RevisionHistory({
+  slug,
+  realmDeniesRevert,
+  readOnly = false,
+}: RevisionHistoryProps) {
   const router = useRouter();
+  // The identity half of the Revert gate, mirroring `ArticleActions`: only the
+  // browser holds the Clerk session, so `isSiteOwner` can only be decided here,
+  // while the realm arrives as a prop from the server. `ADMIN_HANDLES` is
+  // server-only, so an admin who is not the site owner is under-offered Revert —
+  // narrower than the server's answer, which is the one safe direction. The
+  // handle comes from the shared `@/lib/viewer-handle` hook (already lowercased,
+  // which is why `isOwnerHandle` is called on it directly) so this gate and the
+  // Delete/Re-ingest gates read one copy of the resolution rule.
+  const { isLoaded, handle } = useViewerHandle();
+  // `isLoaded` guards ONLY this term. Before the session resolves `handle` is
+  // null for a viewer who will turn out to be the site owner, so an unguarded
+  // `isOwnerHandle` would answer `false` by accident of a missing handle rather
+  // than by a decision — and on a realm page that is the difference between
+  // "we do not know yet" and "no". Guarded, the fail-closed hydration answer is
+  // deliberate and matches how `ArticleActions` treats its own session-derived
+  // affordances. A non-realm page is unaffected either way: `!realmDeniesRevert`
+  // already makes `canRevert` true there.
+  const isSiteOwner = isLoaded && isOwnerHandle(handle);
+  const canRevert = isSiteOwner || !realmDeniesRevert;
   // One sentence for the whole list; every Revert button points at it.
   const readOnlyNoteId = useId();
   const [open, setOpen] = useState(false);
@@ -198,11 +245,20 @@ export function RevisionHistory({ slug, readOnly = false }: RevisionHistoryProps
             </p>
           )}
 
-          {readOnly && !loading && revisions !== null && revisions.length > 0 && (
-            <p id={readOnlyNoteId} className="mb-3 text-sm text-foreground/60">
-              {REVERT_READ_ONLY_COPY}
-            </p>
-          )}
+          {/* Gated on `canRevert` as well as `readOnly`: the sentence explains a
+              control, and `aria-describedby` on that control is the only thing
+              that points at it. With Revert hidden by the realm it would be an
+              orphaned paragraph — a refusal shown to a reader who was never
+              offered the action, with zero referrers for its id. */}
+          {readOnly &&
+            canRevert &&
+            !loading &&
+            revisions !== null &&
+            revisions.length > 0 && (
+              <p id={readOnlyNoteId} className="mb-3 text-sm text-foreground/60">
+                {REVERT_READ_ONLY_COPY}
+              </p>
+            )}
 
           {!loading && revisions !== null && revisions.length > 0 && (
             <ul className="space-y-3">
@@ -214,6 +270,7 @@ export function RevisionHistory({ slug, readOnly = false }: RevisionHistoryProps
                   viewContent={viewingTimestamp === rev.timestamp ? viewContent : null}
                   viewLoading={viewLoading && viewingTimestamp === rev.timestamp}
                   reverting={reverting}
+                  canRevert={canRevert}
                   readOnly={readOnly}
                   readOnlyNoteId={readOnlyNoteId}
                   onView={handleView}

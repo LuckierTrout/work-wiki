@@ -208,6 +208,18 @@ export async function ArticleView({
   // identity half, which only the browser's Clerk session knows. This is the
   // SAME expression `canWritePage`'s realm branch decides on, not a copy of it.
   const realmDeniesDelete = isRealmRestrictedWrite(realmMeta, "delete");
+  // The same fact for the BODY-write doors: Re-ingest (`POST /api/ingest/
+  // reingest`) and Revert (`POST /api/wiki/[slug]/revisions {action:"revert"}`)
+  // both pass `"body"` to the very branch above, and both were still offered
+  // where it refuses — the shape DW-120 already fixed for Delete (DW-269).
+  //
+  // TWO BOOLEANS THAT ARE PROVABLY EQUAL, ON PURPOSE. DW-121 made the realm
+  // kind-independent, so `realmDeniesDelete === realmDeniesBodyWrite` for every
+  // page today. They stay separate because each names the write kind the route
+  // behind its door actually passes, so if a future rule splits the realm by
+  // kind again the seams already carry the right question. The equality is a
+  // property of today's predicate, not an oversight in this file.
+  const realmDeniesBodyWrite = isRealmRestrictedWrite(realmMeta, "body");
 
   // Dedup by URL for display so a page whose sources predate the write-time
   // URL dedup (or were recorded under two types) never shows the same link twice.
@@ -495,7 +507,11 @@ export async function ArticleView({
             </section>
           )}
 
-          <RevisionHistory slug={slug} readOnly={readOnly} />
+          <RevisionHistory
+            slug={slug}
+            realmDeniesRevert={realmDeniesBodyWrite}
+            readOnly={readOnly}
+          />
 
           <ArticleActions
             slug={slug}
@@ -504,6 +520,7 @@ export async function ArticleView({
             contributors={pageContributors}
             isCuratable={isCuratable}
             realmDeniesDelete={realmDeniesDelete}
+            realmDeniesBodyWrite={realmDeniesBodyWrite}
             hasRawSource={hasRawSource}
             hasSourceUrl={hasSourceUrl}
             readOnly={readOnly}

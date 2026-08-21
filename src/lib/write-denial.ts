@@ -2,13 +2,14 @@
  * The write refusal — one owner per SERVER-SIDE sentence, mirroring
  * `src/lib/read-only.ts`.
  *
- * `canWritePage`'s realm branch (`src/lib/authz.ts`) denies body rewrites and
- * deletes on a public knowledge page — the class `belongsInCommons` names. That
- * one deny reaches nine surfaces (two REST wiki routes, the revert route, the
- * re-ingest route, the bulk-delete route, two `src/mcp.ts` handlers, the HTTP
- * MCP `reingest` tool, and `patchMetadata`), and before DW-120/122/123 every
- * one of them answered the same generic "You don't have permission to …" while
- * the edit page explained the realm. Same refusal, nine different stories.
+ * `canWritePage`'s realm branch (`src/lib/authz.ts`) denies EVERY write kind —
+ * body rewrites, metadata patches and deletes — on a public knowledge page, the
+ * class `belongsInCommons` names. That one deny reaches nine surfaces (two REST
+ * wiki routes, the revert route, the re-ingest route, the bulk-delete route, two
+ * `src/mcp.ts` handlers, the HTTP MCP `reingest` tool, and `patchMetadata`), and
+ * before DW-120/122/123 every one of them answered the same generic "You don't
+ * have permission to …" while the edit page explained the realm. Same refusal,
+ * nine different stories.
  *
  * WHAT THIS MODULE OWNS. Every sentence a SERVER answers for a *write* denial
  * that is not the read-only refusal: the generic table {@link WRITE_DENIAL} and
@@ -22,44 +23,62 @@
  * true where the realm predicate actually holds, so it may never be a route's
  * fixed string:
  *
- *   - EIGHT of the nine sites read-cloak the page before the ACL runs, which
- *     makes the claim provable there — readable AND write-denied implies the
- *     realm branch, since a READABLE private page is writable by exactly the
- *     principals that could read it. Even there the resolver is used rather
- *     than a literal, so the claim is re-derived per page instead of inherited
- *     from an argument written in a comment.
- *   - `DELETE /api/ingest/history` is the ninth, and it is cloaked on only ONE
- *     of its two selection paths. `ingestIds` are preflighted against
- *     `listReadableWikiPages` and answer 404 when the caller cannot read the
- *     entry's page. `jobIds` are checked with `job.owner !== principal.handle`
- *     — a check on the JOB, not on the page — and the job's `slug` page is
- *     never read-gated before the delete ACL sees it. So an unreadable page can
- *     reach that ACL, and the resolver's realm check is the only thing standing
- *     between the route and a sentence describing a page the caller was never
- *     allowed to learn about.
+ *   - EIGHT of the nine cloak by READ: they check `canReadFrontmatter` (or a
+ *     readable-slug set) before the ACL's sentence, which makes the claim
+ *     provable there — readable AND write-denied implies the realm branch,
+ *     since a READABLE private page is writable by exactly the principals that
+ *     could read it. Even so the resolver is used rather than a literal, so the
+ *     claim is re-derived per page instead of inherited from an argument
+ *     written in a comment.
+ *   - The HTTP MCP `reingest` tool (`src/lib/mcp-http.ts`) cloaks DIFFERENTLY,
+ *     and the distinction matters. It has no read check in front of its ACL;
+ *     it merges "missing" and "denied" into one error AFTER the ACL, and then
+ *     asks the realm predicate directly to decide whether it may say anything
+ *     more specific. Only a page it actually read AND that is realm-restricted
+ *     — public, non-agent-scoped, non-artifact — gets the resolver's sentence;
+ *     everything else, private pages included, keeps the merged error. So it
+ *     reaches the same guarantee by a different route, and the guarantee is
+ *     what the eight above have: no site can emit a realm sentence for a page
+ *     its caller could not read.
+ *   - `DELETE /api/ingest/history` was the exception until DW-270, cloaked on
+ *     only ONE of its two selection paths: `ingestIds` were preflighted against
+ *     `listReadableWikiPages`, while `jobIds` passed only
+ *     `job.owner !== principal.handle` — a check on the JOB, not on the page —
+ *     so a caller who owned a job whose page they could not read reached the
+ *     delete ACL holding it. The route now checks `readable.has(slug)` inside
+ *     the ACL loop (after the "already gone" cleanup branch, so both selection
+ *     paths are gated at once), and answers the same 404 selection sentence.
  *
- * WHAT `patchMetadata` ACTUALLY CONTRIBUTES. It cloaks like the other eight
- * (its `else` throws `NOT_FOUND`); what sets it apart is not a missing cloak
- * but its `writeKind: "metadata"`, which the realm branch never gates at all.
- * It keeps the generic sentence BY CONSTRUCTION — the resolver returns it
- * because the predicate is false for that writeKind — rather than by a call
- * site remembering to omit the realm copy.
+ * WHAT `patchMetadata` CONTRIBUTES. It is one of the eight read-cloaking sites
+ * (its `else` throws `NOT_FOUND`). It used to be set apart by its `writeKind: "metadata"`,
+ * which the realm branch did not gate — so it kept the generic sentence by
+ * construction. DW-121 made the realm kind-independent, so it is now an
+ * ordinary member of the set: readable + denied there implies the realm too,
+ * and its `NOT_OWNER` carries the realm sentence.
  *
- * WHERE THE GENERIC SENTENCE IS REACHABLE, AND WHERE IT IS NOT. At every
- * cloaked site the two branches are mutually exclusive: readable + denied
- * implies the realm, so those sites can only ever emit the REALM sentence, and
- * `WRITE_DENIAL` is unreachable through them. That is why the route suites pin
- * only the realm wording (plus the cloak's silence) and the generic half is
- * pinned at the resolver instead, in `src/lib/__tests__/write-denial.test.ts`.
- * The two places a generic sentence can genuinely be emitted are the
- * `jobIds` path above and `patchMetadata`'s `NOT_OWNER` branch — and the
- * latter is itself unreachable today for the same readable-implies-writable
- * reason. This is recorded so the absence of route-level generic-sentence tests
- * reads as a proof, not as an oversight.
+ * WHERE THE GENERIC SENTENCE IS REACHABLE, AND WHERE IT IS NOT. At all nine
+ * sites the two branches are now mutually exclusive: a page that reaches the
+ * resolver at all is one the caller could read, and readable + denied implies
+ * the realm — so those sites can only ever emit the REALM sentence, and
+ * `WRITE_DENIAL` is unreachable through every one of them. That is why the
+ * route suites pin only the realm wording (plus the cloak's silence) and the
+ * generic half is pinned at the resolver instead, in
+ * `src/lib/__tests__/write-denial.test.ts`.
  *
- * THE CLOAK STAYS FIRST. Every call site that has a not-found cloak evaluates
- * it before asking this module for a sentence. An unreadable private page must
- * never learn that it exists, or what its realm is, from this copy.
+ * The generic sentence therefore survives as a property of the RESOLVER, not of
+ * any current caller. Two inputs produce it: a page OUTSIDE the realm (private,
+ * agent-scoped, or an artifact), and `fm === null`/`undefined` for "no page was
+ * read, so no realm may be claimed". No site in the app passes `null` today —
+ * the tool that merges missing into denied throws its own merged string instead
+ * of asking for a sentence — so that branch is contract, kept because a future
+ * door that denies without a page in hand must have a correct answer waiting
+ * rather than inventing one. This is recorded so the absence of route-level
+ * generic-sentence tests reads as a proof, not as an oversight.
+ *
+ * THE CLOAK COMES FIRST WHERE IT IS A READ CHECK. All eight read-cloaking sites
+ * evaluate it before asking this module for a sentence; the ninth decides
+ * whether it may speak at all before it asks. Either way an unreadable private
+ * page must never learn that it exists, or what its realm is, from this copy.
  *
  * The sentences are plain data — no `process.env`, no storage — but the
  * resolver imports `./authz` (→ `./commons` → storage/lock/wiki), so this
@@ -157,8 +176,11 @@ export const WRITE_DENIAL_REALM: Record<WriteDenialAction, string> = {
  *
  * @param action    what the caller was refused
  * @param fm        the denied page's frontmatter, or `null` if none was read
- * @param writeKind the write kind the gate was asked about — `"metadata"`
- *                  never trips the realm branch
+ * @param writeKind the write kind the gate was asked about. Since DW-121 the
+ *                  realm is kind-independent, so this no longer changes the
+ *                  answer; it stays because the parameter is what keeps a
+ *                  future kind-specific rule expressible, and because the call
+ *                  sites document which write each door was actually attempting
  */
 export function resolveWriteDenial(
   action: WriteDenialAction,

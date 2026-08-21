@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { ArticleActions } from "@/components/ArticleActions";
 import { ArticleView } from "@/components/ArticleView";
 import type { Frontmatter } from "@/lib/frontmatter";
@@ -91,6 +97,11 @@ interface Row {
   viewer: string | null;
   /** What the matrix expects on screen. */
   expectDelete: boolean;
+  /** Whether the page has a `source_url` — the other half of the Re-ingest
+   *  gate. Defaults to `false`; the Re-ingest rows below set it. */
+  hasSourceUrl?: boolean;
+  /** What the matrix expects for Re-ingest, when the row exercises it. */
+  expectReingest?: boolean;
 }
 
 const ROWS: Row[] = [
@@ -175,8 +186,9 @@ function mount(row: Row) {
       // The prop `ArticleView` computes server-side, computed here the same
       // way — from the predicate, not from a hand-written expectation.
       realmDeniesDelete={isRealmRestrictedWrite(row.meta, "delete")}
+      realmDeniesBodyWrite={isRealmRestrictedWrite(row.meta, "body")}
       hasRawSource={false}
-      hasSourceUrl={false}
+      hasSourceUrl={row.hasSourceUrl ?? false}
     />,
   );
 }
@@ -275,11 +287,174 @@ describe("ArticleActions — the Delete affordance against canWritePage (DW-120)
         contributors={[]}
         isCuratable={false}
         realmDeniesDelete={false}
+        realmDeniesBodyWrite={false}
         hasRawSource={false}
         hasSourceUrl={false}
       />,
     );
     expect(deleteButton()).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-ingest (DW-269) — the same shape, one door over
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST /api/ingest/reingest` re-authorizes with `writeKind: "body"`, so the
+ * realm refuses it on exactly the pages it refuses a rewrite on — yet the button
+ * was gated only on `hasSourceUrl && ownsOrContributes`. A page owner or a
+ * contributor on a public knowledge page was offered a control whose route
+ * always answered 403: the DW-120 bug, unfixed at a second door.
+ *
+ * Same method as the Delete matrix: mount the real island, compare the rendered
+ * affordance against `canWritePage(meta, principal, "body")` — the very check
+ * the route makes — and assert the inequality per row and once as a sweep.
+ */
+const REINGEST_ROWS: Row[] = [
+  {
+    name: "page owner on a realm page — the route refuses the body write",
+    meta: { owner: OWNER, visibility: "public" },
+    viewer: OWNER,
+    expectDelete: false,
+    hasSourceUrl: true,
+    expectReingest: false,
+  },
+  {
+    name: "contributor on a realm page — refused for the same reason",
+    meta: { owner: OWNER, visibility: "public" },
+    viewer: "carol",
+    expectDelete: false,
+    hasSourceUrl: true,
+    expectReingest: false,
+  },
+  {
+    name: "site owner on a realm page — an admin, so the server allows it",
+    meta: { owner: OWNER, visibility: "public" },
+    viewer: SITE_OWNER,
+    expectDelete: true,
+    hasSourceUrl: true,
+    expectReingest: true,
+  },
+  {
+    name: "page owner of a public artifact — outside the realm, unchanged",
+    meta: { owner: OWNER, visibility: "public", type: "html" },
+    viewer: OWNER,
+    expectDelete: true,
+    hasSourceUrl: true,
+    expectReingest: true,
+  },
+  {
+    name: "page owner of an agent-scoped page — outside the realm, unchanged",
+    meta: { owner: OWNER, visibility: "public", type: "agent-knowledge" },
+    viewer: OWNER,
+    expectDelete: true,
+    hasSourceUrl: true,
+    expectReingest: true,
+  },
+  {
+    name: "page owner of a private page — private is the owner's own",
+    meta: { owner: OWNER, visibility: "private" },
+    viewer: OWNER,
+    expectDelete: true,
+    hasSourceUrl: true,
+    expectReingest: true,
+  },
+  {
+    name: "signed-in stranger on a private page — not owner, not contributor",
+    meta: { owner: OWNER, visibility: "private" },
+    viewer: "mallory",
+    expectDelete: false,
+    hasSourceUrl: true,
+    expectReingest: false,
+  },
+  {
+    name: "no source URL — nothing to re-ingest from, on any page",
+    meta: { owner: OWNER, visibility: "private" },
+    viewer: OWNER,
+    expectDelete: true,
+    hasSourceUrl: false,
+    expectReingest: false,
+  },
+];
+
+function reingestButton(): HTMLElement | null {
+  return screen.queryByRole("button", { name: "Re-ingest source content" });
+}
+
+/** `carol` is a contributor on every row, so the contributor half of
+ *  `ownsOrContributes` is exercised rather than assumed. */
+function mountReingest(row: Row) {
+  clerk.current = row.viewer
+    ? { isLoaded: true, isSignedIn: true, user: { username: row.viewer } }
+    : { isLoaded: true, isSignedIn: false, user: null };
+  render(
+    <ArticleActions
+      slug="transformers"
+      tenant={OWNER}
+      owner={OWNER}
+      contributors={["carol"]}
+      isCuratable={false}
+      realmDeniesDelete={isRealmRestrictedWrite(row.meta, "delete")}
+      realmDeniesBodyWrite={isRealmRestrictedWrite(row.meta, "body")}
+      hasRawSource={false}
+      hasSourceUrl={row.hasSourceUrl ?? false}
+    />,
+  );
+}
+
+describe("ArticleActions — the Re-ingest affordance against canWritePage (DW-269)", () => {
+  it.each(REINGEST_ROWS)("$name", (row) => {
+    mountReingest(row);
+    const rendered = reingestButton() !== null;
+    expect(rendered).toBe(row.expectReingest);
+
+    // The invariant, per row: never wider than the server. `hasSourceUrl` is a
+    // page fact rather than a permission, so the comparison only bites where
+    // the button could have been offered at all.
+    if (rendered) {
+      expect(canWritePage(row.meta, principalFor(row.viewer), "body")).toBe(true);
+    }
+  });
+
+  it("offers Re-ingest to nobody the reingest route would refuse", () => {
+    const offeredButRefused: string[] = [];
+    for (const row of REINGEST_ROWS) {
+      mountReingest(row);
+      if (
+        reingestButton() !== null &&
+        !canWritePage(row.meta, principalFor(row.viewer), "body")
+      ) {
+        offeredButRefused.push(row.name);
+      }
+      cleanup();
+    }
+    expect(offeredButRefused).toEqual([]);
+  });
+
+  it("leaves the ungated affordances alone on a realm page", () => {
+    // The mirror of the bug: hiding a control the server never refuses. View
+    // raw and Save to vault reach no gated writer, so a realm page's owner
+    // keeps both while losing Re-ingest and Delete.
+    clerk.current = { isLoaded: true, isSignedIn: true, user: { username: OWNER } };
+    render(
+      <ArticleActions
+        slug="transformers"
+        tenant={OWNER}
+        owner={OWNER}
+        contributors={[]}
+        isCuratable
+        realmDeniesDelete
+        realmDeniesBodyWrite
+        hasRawSource
+        hasSourceUrl
+      />,
+    );
+    expect(reingestButton()).toBeNull();
+    expect(deleteButton()).toBeNull();
+    expect(screen.getByRole("link", { name: "View raw" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /vault/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Graphify/ })).toBeTruthy();
   });
 });
 
@@ -338,13 +513,25 @@ describe("ArticleView — the realm fact it computes, seen on the article (DW-12
       isSignedIn: true,
       user: { username: OWNER },
     };
-    // `RevisionHistory` fetches on mount; nothing here asserts on it.
+    // `RevisionHistory` fetches its rows when the panel is expanded. One
+    // revision, so the Revert cases below have a row that could carry the
+    // button — an empty list would make "no Revert button" vacuously true.
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => ({
         ok: true,
         status: 200,
-        json: async () => ({ revisions: [] }),
+        json: async () => ({
+          revisions: [
+            {
+              timestamp: 1_700_000_000_000,
+              date: new Date(1_700_000_000_000).toISOString(),
+              slug: "transformers",
+              sizeBytes: 2048,
+              author: OWNER,
+            },
+          ],
+        }),
       })),
     );
   });
@@ -367,6 +554,56 @@ describe("ArticleView — the realm fact it computes, seen on the article (DW-12
         "delete",
       ),
     ).toBe(false);
+  });
+
+  it("hides Re-ingest and every Revert from the page owner on a realm page (DW-269)", async () => {
+    // AC, observed on the article: the two body-write doors the realm refuses.
+    // `RevisionHistory` is a sibling island with its own seam, so this is the
+    // only place both props are checked against ONE server-computed page.
+    const frontmatter = {
+      title: "Transformers",
+      owner: OWNER,
+      visibility: "public",
+      source_url: "https://example.com/transformers",
+    };
+    await renderArticle(frontmatter as Frontmatter);
+
+    expect(reingestButton()).toBeNull();
+
+    // Revert lives inside the collapsed history panel, so it has to be opened
+    // before "not present" means anything.
+    fireEvent.click(screen.getByRole("button", { name: /History/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^View revision from/ })).toBeTruthy(),
+    );
+    expect(screen.queryByRole("button", { name: /^Restore revision from/ })).toBeNull();
+    // View is NOT a write and must survive: reading an old revision is never
+    // refused, so hiding it would be the mirror of the bug being fixed.
+    expect(screen.getByRole("button", { name: /^View revision from/ })).toBeTruthy();
+  });
+
+  it("offers Re-ingest and Revert to the SITE OWNER on the same page", async () => {
+    // The site owner is an admin server-side, so both routes admit them — the
+    // row that fails a constant-`true` gate on either door.
+    clerk.current = {
+      isLoaded: true,
+      isSignedIn: true,
+      user: { username: SITE_OWNER },
+    };
+    const frontmatter = {
+      title: "Transformers",
+      owner: OWNER,
+      visibility: "public",
+      source_url: "https://example.com/transformers",
+    };
+    await renderArticle(frontmatter as Frontmatter);
+
+    expect(reingestButton()).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /History/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Restore revision from/ })).toBeTruthy(),
+    );
   });
 
   it("still offers Delete to the owner of a public ARTIFACT on the same surface", async () => {

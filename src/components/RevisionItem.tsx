@@ -19,6 +19,19 @@ export interface RevisionItemProps {
   viewLoading: boolean;
   reverting: boolean;
   /**
+   * Whether this viewer is offered the Revert control at all, resolved once for
+   * the whole list by {@link import("./RevisionHistory").RevisionHistory} from
+   * the server-computed realm fact plus the browser's Clerk session (DW-269).
+   *
+   * Required, not defaulted: `POST /api/wiki/[slug]/revisions {action:"revert"}`
+   * always refuses a body write on a commons page, so a `true` default would
+   * put the button — and its irreversible-sounding confirm — back in front of
+   * every viewer the moment the seam is dropped. `false` hides only the Revert
+   * button; View stays available to everyone, because reading an old revision is
+   * not a write and is never refused.
+   */
+  canRevert: boolean;
+  /**
    * `YOPEDIA_READONLY=1`, threaded down from the article page. Revert is the
    * control that opens the irreversible-sounding confirm and then rewrites the
    * whole body through `POST /api/wiki/[slug]/revisions`, which now answers 403
@@ -49,6 +62,7 @@ export function RevisionItem({
   viewContent,
   viewLoading,
   reverting,
+  canRevert,
   readOnly = false,
   readOnlyNoteId,
   onView,
@@ -86,21 +100,23 @@ export function RevisionItem({
                 ? "Loading…"
                 : "View"}
           </button>
-          <button
-            type="button"
-            onClick={() => onRevert(rev.timestamp)}
-            disabled={reverting}
-            aria-disabled={readOnly || undefined}
-            aria-describedby={readOnly ? readOnlyNoteId : undefined}
-            aria-label={`Restore revision from ${new Date(rev.timestamp).toLocaleString()}`}
-            className={`rounded border border-amber-500/30 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 disabled:opacity-50 dark:border-amber-500/20 dark:bg-amber-900/20 dark:text-amber-300 transition-colors ${
-              readOnly
-                ? "opacity-50 cursor-default"
-                : "hover:bg-amber-100 dark:hover:bg-amber-900/30"
-            }`}
-          >
-            {reverting ? "Reverting…" : "Revert"}
-          </button>
+          {canRevert && (
+            <button
+              type="button"
+              onClick={() => onRevert(rev.timestamp)}
+              disabled={reverting}
+              aria-disabled={readOnly || undefined}
+              aria-describedby={readOnly ? readOnlyNoteId : undefined}
+              aria-label={`Restore revision from ${new Date(rev.timestamp).toLocaleString()}`}
+              className={`rounded border border-amber-500/30 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 disabled:opacity-50 dark:border-amber-500/20 dark:bg-amber-900/20 dark:text-amber-300 transition-colors ${
+                readOnly
+                  ? "opacity-50 cursor-default"
+                  : "hover:bg-amber-100 dark:hover:bg-amber-900/30"
+              }`}
+            >
+              {reverting ? "Reverting…" : "Revert"}
+            </button>
+          )}
         </div>
       </div>
 

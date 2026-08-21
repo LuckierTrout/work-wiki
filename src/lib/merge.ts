@@ -24,7 +24,6 @@ import { logger } from "./logger";
 import { hasLLMKey } from "./llm";
 import { listWikiPages, readWikiPageWithFrontmatter } from "./wiki";
 import { isArtifactType } from "./page-types";
-import { ensureReconciliationThread } from "./talk";
 import {
   reconcilePage,
   sameHumanOwner,
@@ -277,11 +276,11 @@ export async function mergePages({
     author: actor,
   });
 
-  // If the fold left the survivor disputed, open a reconciliation thread so the
-  // dispute is actionable (same loop as ingest). Idempotent + fail-soft.
-  if (disputed) {
-    await ensureReconciliationThread(intoSlug, actor ?? "system", `merged in "${fromSlug}"`);
-  }
+  // A fold that leaves the survivor disputed used to auto-open a talk
+  // reconciliation thread here. Removed with the other two call sites (DW-230):
+  // the talk HTTP surfaces are retired, so nothing could read it. The survivor's
+  // `disputed` frontmatter still records the contradiction, and `mergePages`
+  // still returns `disputed` to its caller.
 
   // 5. Delete the absorbed page (hard delete — its revisions + discussions go
   // with it; see the module note).

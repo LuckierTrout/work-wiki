@@ -40,9 +40,10 @@ export async function DELETE(
     }
 
     // Realm-aware write ACL: a private page may be deleted only by its owner
-    // (or their agents / the service principal); public commons pages stay
-    // collectively manageable. (The middleware already blocks unauthenticated
-    // mutations; this is the per-page check on top.)
+    // (or their agents / the service principal), and a public knowledge page
+    // only by a service principal or an admin — the realm reserves that class
+    // for agents. (The middleware already blocks unauthenticated mutations;
+    // this is the per-page check on top.)
     const principal = (await getPrincipal()) ?? getServicePrincipal(req);
     const existing = await readWikiPageWithFrontmatter(slug);
     if (!existing) {

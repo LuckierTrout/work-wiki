@@ -23,7 +23,7 @@ import { extractSummary } from "../ingest";
 import { resetSourceIndex } from "../source-index";
 import { resetAliasIndex, resolveAlias } from "../alias-index";
 import { rebuildBacklinkIndex } from "../backlink-index";
-import { listThreads, RECONCILE_THREAD_TITLE } from "../talk";
+import { listThreads } from "../talk";
 import { _resetStorage } from "../storage";
 import { hasLLMKey, callLLM } from "../llm";
 import type { SourceEntry } from "../types";
@@ -221,16 +221,12 @@ describe("mergePages", () => {
     expect(into!.frontmatter.disputed).toBe(true);
     expect(into!.frontmatter.confidence as number).toBeLessThanOrEqual(0.5);
 
-    // A disputed fold must open a reconciliation thread on the survivor so the
-    // contradiction is actionable (same loop as a disputed ingest).
-    const threads = await listThreads("agent-harness");
-    const recon = threads.find((t) => t.title === RECONCILE_THREAD_TITLE);
-    expect(recon).toBeDefined();
-    expect(recon!.status).toBe("open");
-    // Authored by the human actor (not the agent) → scan-actionable; references
-    // the absorbed slug.
-    expect(recon!.comments[0].author).toBe("alice");
-    expect(recon!.comments[0].body).toContain('merged in "harness-ai-agents"');
+    // A disputed fold used to open a reconciliation thread on the survivor.
+    // Removed with the other two call sites (DW-230): the talk HTTP surfaces are
+    // retired, so no surface could read it. `disputed` on the survivor — and in
+    // the returned result above — is the whole record, and the write must stay
+    // gone.
+    expect(await listThreads("agent-harness")).toEqual([]);
   });
 
   it("appends both bodies (no reconcile) when there's no LLM key", async () => {

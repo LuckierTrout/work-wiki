@@ -1,11 +1,16 @@
 /**
- * DW-120 — the SEAM that carries the realm fact into the Delete gate.
+ * DW-120/DW-269 — the SEAMS that carry the realm fact into the write gates.
  *
  * What the gate DECIDES is pinned by mounting it:
  * `src/components/__tests__/article-actions-delete-gate.test.tsx` renders
  * `ArticleActions` across the page/viewer matrix and compares the rendered
  * affordance against `canWritePage(meta, principal, "delete")` itself. This
  * file pins what a mounted test cannot see — the hop that gets the fact there.
+ *
+ * DW-269 adds two more of the same shape: `realmDeniesBodyWrite` into
+ * `ArticleActions` for Re-ingest, and `realmDeniesRevert` into
+ * `RevisionHistory` (and on to each `RevisionItem`) for Revert. Every one is
+ * the same one-attribute hop with the same failure mode.
  *
  * `realmDeniesDelete` is computed on the SERVER (`ArticleView`) because
  * `belongsInCommons` reaches storage, locks and `wiki.ts`, and `ArticleActions`
@@ -29,9 +34,15 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 const COMPONENTS = path.resolve(__dirname, "../../components");
+const LIB = path.resolve(__dirname, "..");
 
 function read(component: string): Promise<string> {
   return readFile(path.join(COMPONENTS, component), "utf8");
+}
+
+/** A module under `src/lib` — for the client-safe helpers the islands import. */
+function readLib(module: string): Promise<string> {
+  return readFile(path.join(LIB, module), "utf8");
 }
 
 /**
@@ -74,6 +85,24 @@ const ISLAND_SUBTREE = [
   "SaveToVaultButton.tsx",
 ];
 
+/**
+ * The OTHER client island `ArticleView` threads a realm fact into. Listed
+ * separately because it is a sibling of `ArticleActions`, not a child of it —
+ * `ISLAND_SUBTREE`'s "parent renders each child" check does not apply — but it
+ * carries exactly the same server-only-module prohibition.
+ */
+const HISTORY_SUBTREE = ["RevisionHistory.tsx", "RevisionItem.tsx"];
+
+/**
+ * The client-safe helper both islands pull identity from.
+ *
+ * It is not a component, so it is scanned separately — but it is squarely
+ * INSIDE the browser bundle, so the same server-only-module prohibition binds
+ * it. A `@/lib/commons` import added here would reach the browser through two
+ * islands at once, and neither component scan would see it.
+ */
+const CLIENT_LIB = "viewer-handle.ts";
+
 describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
   it("is computed on the server from the predicate canWritePage decides on", async () => {
     const view = await read("ArticleView.tsx");
@@ -100,6 +129,81 @@ describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
     );
     // Save-to-vault gating shares the coerced frontmatter and is untouched.
     expect(view).toContain("isCuratable={isCuratable}");
+  });
+
+  it("computes the BODY-write realm fact the same way, for Re-ingest and Revert", async () => {
+    // DW-269. The same predicate, asked the kind the routes behind those two
+    // doors actually pass (`"body"` for `POST /api/ingest/reingest` and for
+    // `POST /api/wiki/[slug]/revisions {action:"revert"}`) — not a reuse of the
+    // delete answer, so a future rule that splits the realm by kind again finds
+    // each seam already asking its own question.
+    const view = await read("ArticleView.tsx");
+    expect(view).toMatch(
+      /const realmDeniesBodyWrite = isRealmRestrictedWrite\(realmMeta, "body"\)/,
+    );
+    // Anchored to each ELEMENT, for the same reason as the Delete hop above.
+    expect(elementText(view, "ArticleActions")).toContain(
+      "realmDeniesBodyWrite={realmDeniesBodyWrite}",
+    );
+    expect(elementText(view, "RevisionHistory")).toContain(
+      "realmDeniesRevert={realmDeniesBodyWrite}",
+    );
+  });
+
+  it("gates Re-ingest and Revert on the props, never on a re-derived realm", async () => {
+    const actions = await read("ArticleActions.tsx");
+    // Received, not defaulted — a `= false` would widen the gate the instant
+    // the seam above is dropped.
+    expect(actions).toContain("realmDeniesBodyWrite: boolean;");
+    expect(actions).not.toMatch(/realmDeniesBodyWrite\s*=\s*false/);
+    // `isSiteOwner` stays an OR at both doors: the site owner is an admin and
+    // passes the server's check on a realm page.
+    expect(actions).toContain(
+      "hasSourceUrl && (isSiteOwner || (ownsOrContributes && !realmDeniesBodyWrite))",
+    );
+
+    const history = await read("RevisionHistory.tsx");
+    expect(history).toContain("realmDeniesRevert: boolean;");
+    expect(history).not.toMatch(/realmDeniesRevert\s*=\s*false/);
+    expect(history).toContain(
+      "const canRevert = isSiteOwner || !realmDeniesRevert;",
+    );
+    // …and the panel hands its answer to every row, which is what actually
+    // removes the button.
+    expect(elementText(history, "RevisionItem")).toContain("canRevert={canRevert}");
+
+    const item = await read("RevisionItem.tsx");
+    expect(item).toContain("canRevert: boolean;");
+    expect(item).not.toMatch(/canRevert\s*=\s*true/);
+    // View is NOT gated: reading an old revision is not a write, so hiding it
+    // would be a refusal the server never answers.
+    expect(item).toMatch(/\{canRevert && \(/);
+    expect(item).toContain("View revision from");
+  });
+
+  it("keeps the revision-history island free of the server-only realm modules", async () => {
+    // Same bundling fact as the action bar: `RevisionHistory` now reads the
+    // Clerk session and `@/lib/owner`, and must learn the realm ONLY as a prop.
+    for (const component of HISTORY_SUBTREE) {
+      const specifiers = importSpecifiers(await read(component));
+      expect(specifiers.length).toBeGreaterThan(0);
+      for (const serverOnly of ["@/lib/commons", "@/lib/authz", "@/lib/wiki"]) {
+        expect(specifiers).not.toContain(serverOnly);
+      }
+    }
+    // …and the shared identity helper, which rides in the same bundle through
+    // both islands and is scanned with them for that reason.
+    const libSpecifiers = importSpecifiers(await readLib(CLIENT_LIB));
+    expect(libSpecifiers.length).toBeGreaterThan(0);
+    for (const serverOnly of ["@/lib/commons", "@/lib/authz", "@/lib/wiki"]) {
+      expect(libSpecifiers).not.toContain(serverOnly);
+    }
+
+    const history = await read("RevisionHistory.tsx");
+    expect(history).toContain('"use client"');
+    const historySpecifiers = importSpecifiers(history);
+    expect(historySpecifiers).toContain("@/lib/owner");
+    expect(historySpecifiers).toContain("@/lib/viewer-handle");
   });
 
   it("is consumed by the island as a prop, and gates Delete with it", async () => {
@@ -144,11 +248,41 @@ describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
         expect(specifiers).not.toContain(serverOnly);
       }
     }
-    // The parent's own identity imports, named explicitly: these are what make
-    // the client half of the Delete gate decidable in the browser at all.
+    // The island's identity imports, named explicitly: these are what make the
+    // client half of the Delete gate decidable in the browser at all. The Clerk
+    // session is no longer read here directly — `@/lib/viewer-handle` owns the
+    // one copy of the handle-resolution rule, so the assertion follows it there
+    // rather than being dropped. `@/lib/owner` stays local: it is a plain env
+    // read, not a session read.
     const actionSpecifiers = importSpecifiers(actions);
     expect(actionSpecifiers).toContain("@/lib/owner");
-    expect(actionSpecifiers).toContain("@clerk/nextjs");
+    expect(actionSpecifiers).toContain("@/lib/viewer-handle");
+    // …and the session read really does happen, one hop away.
+    expect(importSpecifiers(await readLib(CLIENT_LIB))).toContain("@clerk/nextjs");
+    // Not in the island itself — a second `useUser` here would be the drift the
+    // extraction exists to prevent.
+    expect(actionSpecifiers).not.toContain("@clerk/nextjs");
+  });
+
+  it("resolves the viewer's handle ONCE, for both gates", async () => {
+    // The rule mirrors the server's `resolveHandle`: prefer the Clerk username,
+    // fall back to the X/Twitter external account. Only the first branch is
+    // exercised by the mounted suites, so two copies could drift for exactly
+    // the Twitter-SSO viewers the fallback exists for — moving the Delete and
+    // Revert gates apart with every test still green. Pinned as "one
+    // definition, two importers".
+    const lib = await readLib(CLIENT_LIB);
+    expect(lib).toContain('"use client"');
+    expect(lib).toMatch(/\(\^\|_\)\(x\|twitter\)\$/);
+    expect(lib).toContain("export function useViewerHandle()");
+
+    // Neither island restates it.
+    for (const component of ["ArticleActions.tsx", "RevisionHistory.tsx"]) {
+      const source = await read(component);
+      expect(source).toContain("useViewerHandle()");
+      expect(source).not.toMatch(/externalAccounts/);
+      expect(source).not.toContain("useUser");
+    }
   });
 });
 

@@ -20,6 +20,20 @@ import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 
 const MAX_BULK_DELETE = 50;
 
+/**
+ * The one sentence this route answers for "that is not a selection you can
+ * make" — a missing ledger entry, a job that is not yours, and (since DW-270) a
+ * job whose page you may not read.
+ *
+ * ONE CONSTANT BECAUSE THE THREE MUST BE INDISTINGUISHABLE. The read gate's
+ * whole job is to make an unreadable page look like an unselectable one; three
+ * hand-typed literals could drift a word apart and turn the 404 back into the
+ * existence oracle it exists to prevent. Deliberately vague about WHICH
+ * selection failed and why — naming the entry would answer the question the
+ * cloak is refusing.
+ */
+const SELECTION_NOT_FOUND = "One or more selected ingests were not found.";
+
 function parseIdList(
   value: unknown,
   field: "ingestIds" | "jobIds",
@@ -183,7 +197,7 @@ export async function DELETE(request: NextRequest) {
       )
     ) {
       return NextResponse.json(
-        { error: "One or more selected ingests were not found." },
+        { error: SELECTION_NOT_FOUND },
         { status: 404 },
       );
     }
@@ -193,7 +207,7 @@ export async function DELETE(request: NextRequest) {
       const job = await getIngestJob(jobId);
       if (!job || job.owner !== principal.handle) {
         return NextResponse.json(
-          { error: "One or more selected ingests were not found." },
+          { error: SELECTION_NOT_FOUND },
           { status: 404 },
         );
       }
@@ -216,23 +230,50 @@ export async function DELETE(request: NextRequest) {
     for (const slug of slugs) {
       const page = await readWikiPageWithFrontmatter(slug);
       if (!page) continue; // Already gone: clear its terminal UI record below.
+      // THE READ CLOAK, and it lands HERE for two reasons (DW-270).
+      //
+      // WHY IT WAS NEEDED. `ingestIds` were already safe: the preflight above
+      // 404s any entry whose page is outside `listReadableWikiPages`. `jobIds`
+      // were not — the only gate they pass is `job.owner !== principal.handle`,
+      // a check on the JOB record, so a caller who owned a job whose page they
+      // may not read reached the ACL below holding that page. This route was
+      // the one deny site in the app that could describe a page the caller was
+      // never allowed to learn existed.
+      //
+      // WHY IN THIS LOOP RATHER THAN IN THE `jobIds` PREFLIGHT. The loop
+      // already reads each page, so the check costs nothing and covers BOTH
+      // selection paths in one place — "everything that reaches the delete ACL
+      // is readable" is now true for either way a slug got here. And it sits
+      // AFTER `if (!page) continue`, which preserves the already-gone cleanup
+      // that only the `jobIds` path exercises: a done job whose page has since
+      // been deleted is not readable, and a flat gate up in the preflight would
+      // 404 exactly those records instead of clearing them.
+      //
+      // The sentence is `SELECTION_NOT_FOUND`, the same constant both preflights
+      // answer — an unreadable page must look like an unselectable one, not like
+      // a permission the caller lacks.
+      //
+      // WHAT THIS ORDERING KNOWINGLY LEAVES BEHIND. Because the gate sits after
+      // `if (!page) continue`, a `jobIds` selection whose page EXISTS but is
+      // unreadable answers 404, while one whose page is already GONE answers
+      // 200 — so a caller who owns the job can still tell those two apart. That
+      // is a deliberate trade, not an oversight: the only way to close it is to
+      // gate before the cleanup branch, which would 404 every already-gone
+      // record instead of clearing it and break the one repair this route
+      // exists to perform. The residue is narrow — it leaks "a page still
+      // exists at this slug" to someone who already holds a job record naming
+      // that slug, and nothing about the page's owner, realm or contents.
+      if (!readable.has(slug)) {
+        return NextResponse.json(
+          { error: SELECTION_NOT_FOUND },
+          { status: 404 },
+        );
+      }
       if (!canWriteFrontmatter(page.frontmatter, principal, "delete")) {
-        // The one deny site that is only HALF read-cloaked, which is why the
-        // sentence has to be resolved rather than fixed.
-        //
-        // `ingestIds` are safe: the preflight above 404s any entry whose page is
-        // outside `listReadableWikiPages`, so those slugs are readable by the
-        // time they reach here. `jobIds` are NOT: the only gate they pass is
-        // `job.owner !== principal.handle`, a check on the JOB record, and the
-        // job's `slug` page is never read-gated. A caller who owns a job whose
-        // page they may not read therefore lands on this ACL with an unreadable
-        // page in hand.
-        //
-        // So the resolver's realm check is what keeps this sentence from
-        // describing that page to someone who was never allowed to learn it
-        // exists: a public knowledge page gets the realm explanation, anything
-        // else — including that private page — keeps the generic selection
-        // sentence.
+        // Read-cloaked above, so the resolver may name this page's realm: a
+        // readable page that the delete ACL still refuses is a realm page, and
+        // the resolver re-derives that from the frontmatter rather than
+        // inheriting it from this comment.
         return NextResponse.json(
           {
             error: resolveWriteDenial("bulkDelete", page.frontmatter, "delete"),

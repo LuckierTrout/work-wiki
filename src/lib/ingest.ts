@@ -10,7 +10,6 @@ import {
   type Frontmatter,
 } from "./wiki";
 import { buildCorpusStats, bm25Score, tokenize } from "./bm25";
-import { ensureReconciliationThread } from "./talk";
 import { callLLM, hasLLMKey } from "./llm";
 import { fetchUrlContent, fetchImageBytes, storeImageBytes } from "./fetch";
 import { describeImage } from "./vision";
@@ -2006,14 +2005,10 @@ export async function ingest(
     hash,
   );
 
-  // When this ingest left the page disputed (a source contradicts it), open a
-  // reconciliation discussion thread so the dispute is actionable — by a human,
-  // by "ask yoyo", or by the maintenance scan. Idempotent (skips if one's open)
-  // + fail-soft; `ensureReconciliationThread` keeps the thread's author non-agent
-  // (coercing an agent actor to "system") so the scan can pick it up.
-  if (frontmatter.disputed === true) {
-    await ensureReconciliationThread(slug, actor);
-  }
+  // An ingest that leaves the page disputed used to auto-open a talk
+  // reconciliation thread here. Removed with the other two call sites (DW-230):
+  // the talk HTTP surfaces are retired, so nothing could read the thread this
+  // wrote. `frontmatter.disputed` is still set, and it is what the page shows.
 
   const result: IngestResult = {
     rawPath,

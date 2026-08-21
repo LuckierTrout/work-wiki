@@ -20,8 +20,15 @@ import type { WriteKind } from "@/lib/authz";
  *
  * So the assertions here come in two families: the realm sentence appears
  * wherever `isRealmRestrictedWrite` holds, and NOWHERE else — including the
- * cases that are easy to get wrong (a metadata patch, a private page, an
- * artifact, a page that was never read).
+ * cases that are easy to get wrong (a private page, an artifact, an
+ * agent-scoped page, a page that was never read).
+ *
+ * WHICH SIDE `"metadata"` IS ON MOVED (DW-121). It used to be the headline
+ * example of "nowhere else": the realm gated `body` and `delete` only, so
+ * `patchMetadata` kept the generic sentence by construction. The realm is
+ * kind-independent now, so a metadata patch on a public knowledge page earns
+ * the realm explanation like every other write, and the cases below say so in
+ * the family they now belong to.
  */
 
 // The `canWritePage` cross-check below is only meaningful for a NON-admin
@@ -49,8 +56,16 @@ const ACTIONS: WriteDenialAction[] = [
   "bulkDelete",
 ];
 
-/** The realm-gated write kinds and the one that is never realm-gated. */
-const REALM_KINDS: WriteKind[] = ["body", "delete"];
+/**
+ * EVERY write kind, and the realm gates all of them (DW-121).
+ *
+ * This list used to be `["body", "delete"]`, with `"metadata"` held out as the
+ * kind the realm never touched. That asymmetry was the defect: the only UI that
+ * reaches a metadata patch is the edit page, which refuses the whole screen on
+ * `"body"`. Widening the list here is what makes the metadata cases below read
+ * as the rule rather than as an exception.
+ */
+const REALM_KINDS: WriteKind[] = ["body", "metadata", "delete"];
 
 describe("resolveWriteDenial — when the realm sentence is earned", () => {
   it.each(ACTIONS)(
@@ -63,6 +78,17 @@ describe("resolveWriteDenial — when the realm sentence is earned", () => {
       }
     },
   );
+
+  it.each(ACTIONS)("explains the realm for a metadata patch too (%s)", (action) => {
+    // The inverse of the case this file used to hold. `patchMetadata` passes
+    // `"metadata"`, and since DW-121 the realm gates that kind exactly as it
+    // gates `body` and `delete` — so the sentence it answers on a public
+    // knowledge page is the realm one, and the "generic by construction"
+    // guarantee this door used to carry is retired with the asymmetry.
+    expect(resolveWriteDenial(action, { visibility: "public" }, "metadata")).toBe(
+      WRITE_DENIAL_REALM[action],
+    );
+  });
 
   it("treats a missing visibility as public — the read model's default", () => {
     // A page with no `visibility` key is public everywhere else in the app, so
@@ -116,20 +142,12 @@ describe("resolveWriteDenial — when the realm sentence is earned", () => {
 });
 
 describe("resolveWriteDenial — when it must NOT claim a realm", () => {
-  it.each(ACTIONS)("keeps the generic sentence for a metadata patch (%s)", (action) => {
-    // The realm branch of `canWritePage` gates only `body` and `delete`, so a
-    // metadata denial can never BE a realm denial. This is `patchMetadata`'s
-    // whole guarantee, held by construction rather than by that call site
-    // remembering to omit the realm copy.
-    expect(resolveWriteDenial(action, { visibility: "public" }, "metadata")).toBe(
-      WRITE_DENIAL[action],
-    );
-  });
-
   it.each(ACTIONS)("keeps the generic sentence for a private page (%s)", (action) => {
-    // `DELETE /api/ingest/history` has NO read cloak: it answers 403 for a
-    // private page the caller cannot read. The realm sentence there would tell
-    // that caller what kind of page it is — and that it exists at all.
+    // A private page is outside `belongsInCommons`, so a deny there is never
+    // the realm's. Every deny site read-cloaks before it speaks (DW-270 closed
+    // the last half-cloaked one), so this input is unreachable through them —
+    // but the resolver must still answer it correctly, because a realm sentence
+    // here would tell a caller what kind of page it is, and that it exists.
     for (const kind of REALM_KINDS) {
       expect(
         resolveWriteDenial(action, { visibility: "private" }, kind),
@@ -191,7 +209,7 @@ describe("the resolver and the gate agree on which pages are realm-denied", () =
   ];
 
   it.each(PAGES)("matches isRealmRestrictedWrite for %o", (meta) => {
-    for (const kind of [...REALM_KINDS, "metadata" as WriteKind]) {
+    for (const kind of REALM_KINDS) {
       const realm = isRealmRestrictedWrite(meta, kind);
       const sentence = resolveWriteDenial("delete", meta, kind);
       expect(sentence === WRITE_DENIAL_REALM.delete).toBe(realm);
@@ -216,20 +234,33 @@ describe("the resolver and the gate agree on which pages are realm-denied", () =
   });
 });
 
-describe("the realm predicate has no permissive default", () => {
-  it("requires writeKind explicitly at the type level", () => {
-    // A `writeKind = "metadata"` default would make the OMITTED call return
-    // `false` — "the realm does not restrict this" — which is the permissive
-    // answer at every consumer: a wider client Delete gate, and a generic
-    // sentence where the realm explanation was owed. TypeScript is what
-    // enforces this (the calls below would not compile without the argument);
-    // the runtime assertions record which answer each kind gives, so a
-    // reintroduced default shows up as a behaviour change here too.
+describe("the realm predicate is exhaustive over WriteKind", () => {
+  it("answers the same for every kind on a realm page, and never omits one", () => {
+    // The predicate is a `switch` with no `default`, so a FOURTH `WriteKind`
+    // would be a compile error rather than inheriting the permissive `false` —
+    // which is the answer that widens a client gate and drops a realm
+    // explanation a caller was owed. TypeScript enforces the exhaustiveness;
+    // this records the answer each declared kind gives, so a `default: return
+    // false` sneaking back in shows up as a behaviour change here too.
     const realmPage = { visibility: "public" };
-    expect(isRealmRestrictedWrite(realmPage, "body")).toBe(true);
-    expect(isRealmRestrictedWrite(realmPage, "delete")).toBe(true);
-    // The value a default would have silently produced.
-    expect(isRealmRestrictedWrite(realmPage, "metadata")).toBe(false);
+    const KINDS: WriteKind[] = ["body", "metadata", "delete"];
+    for (const kind of KINDS) {
+      expect(isRealmRestrictedWrite(realmPage, kind)).toBe(true);
+    }
+    // `REALM_KINDS` is what the rest of this file sweeps over; if a kind were
+    // added to the type and left off that list, the sweeps would silently stop
+    // covering it. Pinned against the same literal list.
+    expect([...REALM_KINDS].sort()).toEqual([...KINDS].sort());
+  });
+
+  it("still requires writeKind explicitly, and still says false off the realm", () => {
+    // The parameter takes no default even though it no longer changes the
+    // answer: it is what keeps a future kind-specific rule expressible, and
+    // what lets each call site name the write its door was attempting.
+    const artifact = { visibility: "public", type: "html" };
+    for (const kind of REALM_KINDS) {
+      expect(isRealmRestrictedWrite(artifact, kind)).toBe(false);
+    }
   });
 });
 

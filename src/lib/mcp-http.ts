@@ -396,10 +396,12 @@ export const MCP_TOOLS: ToolDef[] = [
     inputSchema: schema({ slug: str("Page slug to re-ingest") }, ["slug"]),
     write: true,
     // Enforce the same write ACL as the REST reingest route: you can only
-    // re-synthesize a page you may write (public commons = collectively
-    // editable; another user's PRIVATE page = denied). Without this, any
-    // token-holder could overwrite/fork others' pages. A missing/unauthorized
-    // page throws a single cloaked error (no private-page existence oracle).
+    // re-synthesize a page you may write. Since DW-121 that excludes every
+    // public knowledge page for a non-service, non-admin principal — the realm
+    // reserves those for agents and admins — as well as another user's PRIVATE
+    // page. Without this, any token-holder could overwrite/fork others' pages.
+    // A missing/unauthorized page throws a single cloaked error (no
+    // private-page existence oracle).
     run: async (a, p) => {
       const slug = typeof a.slug === "string" ? a.slug : "";
       const page = slug ? await readWikiPageWithFrontmatter(slug) : null;

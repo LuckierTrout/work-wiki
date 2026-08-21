@@ -1095,7 +1095,8 @@ source_spec: `spec-authz-commons-realm-cleanup.md`
 location: src/app/u/[handle]/[slug]/edit/page.tsx:34
 severity: medium
 reason: `src/app/u/[handle]/[slug]/edit/page.tsx:34` denies on `"body"` and returns before building `initialMetadata` (:69-79), yet `canWritePage(..., "metadata")` returns true for the same principal and `src/lib/patch-metadata.ts:91-106` admits the PATCH. The rewritten authz docblock now states that "metadata patches are still collectively editable", while the only UI reaching them is the screen that just refused. The bundle intent explicitly scoped a metadata-only editing surface out of this pass.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-authz-realm-parity-and-read-gates
 decision: 2026-08-19 Narrow the authz rule — Make canWritePage refuse "metadata" wherever it refuses "body" for the commons realm, so the docblock's "collectively editable" claim is retired and the edit page's single gate becomes the accurate one; update patch-metadata.ts and the authz tests to match.
 
 ### DW-122: Seven other call sites of the same realm deny still emit a generic permission message with no realm explanation.
@@ -2055,7 +2056,8 @@ source_spec: `spec-dw-75-76-lint-check-parity-and-disputed-surface.md`
 location: src/lib/patch-metadata.ts:173
 severity: medium
 reason: `ensureReconciliationThread` (`src/lib/talk.ts:203-229`) is still called on every disputed false->true transition from `src/lib/ingest.ts`, `src/lib/merge.ts` and `src/lib/patch-metadata.ts:173-181`, while the talk HTTP surfaces 404 via `src/lib/retired.ts`. Threads accumulate on disk unreadable. Pre-existing and outside DW-75/DW-76, but it is the other half of the loop the DW-76 decision describes.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-authz-realm-parity-and-read-gates
 decision: 2026-08-19 Stop writing the threads — Remove the ensureReconciliationThread calls from ingest.ts, merge.ts and patch-metadata.ts so a disputed transition no longer writes a thread nothing can read, leaving the DW-76 disputed-pages view and clear action as the whole loop; keep the talk module for the surfaces that still read existing threads.
 
 ### DW-231: The edit route answers a dead slug with a rendered "Page not found — nothing to edit" body at HTTP 200, the same defect DW-85 fixed on the page view, and this story's tests now pin that 200 in place.
@@ -2396,7 +2398,8 @@ source_spec: `spec-dw-120-122-123-authz-realm-parity-and-copy.md`
 location: src/components/ArticleActions.tsx:161
 severity: medium
 reason: `src/components/ArticleActions.tsx` renders `<ReingestButton>` on `hasSourceUrl && ownsOrContributes` with no realm term, while `POST /api/ingest/reingest` denies through `canWriteFrontmatter(fm, principal, "body")` — the same realm branch and the same write kind. `RevisionHistory` renders Revert for every viewer with no ownership or realm gate, and the revert route now answers `WRITE_DENIAL_REALM.revert`. Both predate this pass (unchanged at `ffbebf4`), and the bundle intent named only the Delete gate, so both were left alone — but this pass makes the divergence louder by giving those doors the realm sentence to shout. Consequence: on an ordinary URL-ingested public knowledge page, the owner presses a live-looking Re-ingest button and meets the refusal as a red error string.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-authz-realm-parity-and-read-gates
 
 ### DW-270: The `jobIds` path of `DELETE /api/ingest/history` reaches the delete ACL holding a page the caller was never read-gated on.
 origin: spec-deferred b1232cb9f27f
@@ -2404,7 +2407,8 @@ source_spec: `spec-dw-120-122-123-authz-realm-parity-and-copy.md`
 location: src/app/api/ingest/history/route.ts
 severity: medium
 reason: The route preflights `ingestIds` against `listReadableWikiPages(principal)` and 404s unreadable ones, but the `jobIds` path checks only `job.owner !== principal.handle`; the job's `slug` page is never read-checked. This pass made the *sentence* safe there (the resolver only speaks of a realm it evaluated, pinned by the rewritten leak test), but the missing read-gate itself is a separate authz question this pass did not touch.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-authz-realm-parity-and-read-gates
 
 ### DW-271: `src/lib/commons.ts` imports two client-safe predicates through `./wiki`, so every route test that mocks `@/lib/wiki` must stub them or get a 500 where it means 403.
 origin: spec-deferred 431f1d62b7a4
@@ -3387,4 +3391,44 @@ source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md
 location: DEPLOY.md; src/app/api/tasks/scan/route.ts:62
 severity: low
 reason: The scan is the only trigger for the DW-137 workspace-profile backfill and the only scheduled trigger for the orphan-directory sweep, and a monitor that treats non-2xx as failure will now alert once per tick while `YOPEDIA_READONLY` is set. DEPLOY.md's read-only section documents the Workbench settings affordances and says nothing about the scan.
+status: open
+
+### DW-389: The `disputed-page` lint guidance still tells the reader to clear the Disputed toggle with a PATCH that DW-121 now refuses for every non-admin.
+origin: spec-deferred 63617f440c96
+source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
+location: src/lib/lint-fix.ts:729-730 and src/lib/lint-checks.ts:727
+severity: medium
+reason: `src/lib/lint-fix.ts:729-730` and the check's own `suggestion` at `src/lib/lint-checks.ts:727` both say: clear the Disputed toggle in the page editor (PATCH /api/wiki/<slug> with metadata { disputed: false }). After DW-121 that PATCH is refused for every non-admin principal on a public knowledge page, so the instruction names a loop only an agent token's owner-as-admin, a service principal or a site admin can complete. In this deployment the human IS the site owner and therefore an admin, so the action still works for them; the copy is inaccurate for anyone else. The spec scoped lint copy out of this pass (Design Notes, "Non-admin metadata loop"). Both sites must move together — closing only lint-fix.ts leaves half the copy wrong.
+status: open
+
+### DW-390: Deleting the reconciliation-thread writer took the last programmatic caller of the whole talk thread API with it.
+origin: spec-deferred 83dd95b177cf
+source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
+location: src/lib/talk.ts, src/lib/browse.ts:184
+severity: medium
+reason: `listThreads`, `createThread`, `getThread`, `addComment`, `resolveThread` and `hasOpenThread` now have no non-test callers; only `deleteDiscussions` (lifecycle.ts), `getDiscussRelPrefix` (discuss-stats-index.ts, contributors.ts) and `getDiscussionStatsForSlugs` (browse.ts) are still read, and the talk HTTP surfaces that drove the rest are retired. A knock-on: `browse.ts:184` still renders a per-page discussion count that nothing can increase any more, and pre-existing reconciliation threads stay on disk feeding it. Retiring that surface — and the discuss-stats/contributor indexes hanging off it — is wider than DW-230 asked, and the spec's Never list forbids touching talk.ts's remaining readers, so it is recorded rather than resolved. The retirement banner in talk.ts says the same thing so the dead surface is not mistaken for live API.
+status: open
+
+### DW-391: A non-admin page owner can no longer take their own public knowledge page private — the realm became a one-way door for them.
+origin: spec-deferred d981f87caa54
+source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
+location: src/lib/patch-metadata.ts:106-140
+severity: medium
+reason: `patchMetadata`'s realm ACL (`src/lib/patch-metadata.ts:106`) runs above the owner-only visibility guard, so `{ visibility: "private" }` on a public, non-agent-scoped, non-artifact page is now refused for its own owner over both REST and MCP, and that guard is unreachable for them. This follows directly from the recorded DW-121 decision (metadata is refused wherever body is), and the visibility-guard suite had to reseed onto an `html` artifact to keep exercising the guard at all — which is the signal that the plain-public path changed underneath it. In this deployment the human is the site owner and therefore an admin, so it does not bite here; a multi-user deployment would feel it, and there is no non-admin exit from the realm.
+status: open
+
+### DW-392: Revert is still offered to signed-out viewers on every page the realm does not restrict.
+origin: spec-deferred 5acd94afc307
+source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
+location: src/components/RevisionHistory.tsx
+severity: medium
+reason: `canRevert` in `src/components/RevisionHistory.tsx` carries a realm term and a site-owner term but no `isSignedIn` term, so an anonymous viewer of a public artifact or an agent-scoped page is still shown Revert and its irreversible-sounding confirm in front of a write the middleware 401s. This predates DW-269 (the control was ungated for everyone), and the recorded intent asked only for "the same realm term the Delete gate got", with the spec's Never list forbidding an ownership term — so the signed-in half was deliberately left alone. `ArticleActions` reads `isSignedIn` for exactly this purpose one component over.
+status: open
+
+### DW-393: An orphan page — on disk but absent from the page index — now makes its ingest-history row undeletable and fails the whole batch.
+origin: spec-deferred a01843f3f763
+source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
+location: src/app/api/ingest/history/route.ts
+severity: medium
+reason: The DW-270 gate keys on `listReadableWikiPages`, which filters the page INDEX, not a per-page read. `src/lib/lint.ts:94`'s `checkOrphanPages` exists because index/disk drift is a real state here. A done job whose page is in that state used to delete the page and clear the job record; it now answers 404 for the entire request, clearing nothing else selected alongside it. This is exact parity with the pre-existing `ingestIds` preflight, which has always behaved this way, so DW-270 inherited the behaviour rather than inventing it.
 status: open

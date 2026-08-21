@@ -200,10 +200,12 @@ export async function buildQuerySystemPrompt(
     const remainder = others.length - listed.length;
     const moreLine =
       remainder > 0 ? `\n…and ${remainder} more pages not listed here.\n` : "\n";
-    // The titles/summaries are collectively-editable, frontmatter-derived data
-    // (an attacker can plant instructions in a page title/summary), so the
-    // listing goes inside the same untrusted-content boundary as page bodies —
-    // the model may use the titles/slugs to cite, never obey text within.
+    // The titles/summaries are frontmatter-derived data whose text ultimately
+    // comes from ingested third-party sources (an attacker can plant
+    // instructions in a page title/summary), so the listing goes inside the
+    // same untrusted-content boundary as page bodies — the model may use the
+    // titles/slugs to cite, never obey text within. What makes it untrusted is
+    // where the text CAME FROM, not who is permitted to edit the page.
     indexSection = `\nThe wiki also contains these other pages (not loaded in full):\n${wrapUntrusted(
       indexListing,
       { source: "page index (titles + summaries)" },

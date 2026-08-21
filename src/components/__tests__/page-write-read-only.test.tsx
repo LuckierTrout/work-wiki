@@ -39,6 +39,12 @@ const { router } = vi.hoisted(() => ({
   router: { refresh: vi.fn(), push: vi.fn() },
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => router }));
+// `RevisionHistory` reads the Clerk session for the identity half of its Revert
+// gate (the site owner keeps the door on a realm page). Signed out here: these
+// cases are about the deployment's read-only state, not about who is looking.
+vi.mock("@clerk/nextjs", () => ({
+  useUser: () => ({ isLoaded: true, isSignedIn: false, user: null }),
+}));
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let confirmMock: ReturnType<typeof vi.fn>;
@@ -519,7 +525,13 @@ describe("Revert, on a read-only deployment", () => {
           }),
         }) as unknown as Response,
     );
-    render(<RevisionHistory slug="alpha" readOnly={readOnly} />);
+    // `realmDeniesRevert={false}` — this suite is about the READ-ONLY refusal,
+    // so the realm must not be what hides the button (that gate has its own
+    // suite in `article-actions-delete-gate.test.tsx`). A page outside the
+    // commons realm is what the server-computed prop would carry here.
+    render(
+      <RevisionHistory slug="alpha" realmDeniesRevert={false} readOnly={readOnly} />,
+    );
     fireEvent.click(screen.getByRole("button", { name: /History/ }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: REVERT_LABEL })).toBeTruthy(),

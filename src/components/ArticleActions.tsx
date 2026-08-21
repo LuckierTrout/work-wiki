@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useUser } from "@clerk/nextjs";
 import { useState } from "react";
 import { rawPath } from "@/lib/links";
 import { isOwnerHandle } from "@/lib/owner";
+import { useViewerHandle } from "@/lib/viewer-handle";
 import { ReingestButton } from "@/components/ReingestButton";
 import { DeletePageButton } from "@/components/DeletePageButton";
 import { SaveToVaultButton } from "@/components/SaveToVaultButton";
@@ -33,6 +33,23 @@ interface ArticleActionsProps {
    * would silently widen the gate the moment the seam is dropped.
    */
   realmDeniesDelete: boolean;
+  /**
+   * The REALM half of the Re-ingest gate: whether `canWritePage`'s commons-realm
+   * branch refuses a BODY write of this page. `POST /api/ingest/reingest` gates
+   * on exactly that branch with `writeKind: "body"`, and re-ingest replaces the
+   * page's prose — so an owner/contributor was being offered a button whose
+   * route always answered 403 (DW-269, the DW-120 shape one door over).
+   *
+   * Computed on the server by {@link import("./ArticleView").ArticleView} from
+   * `isRealmRestrictedWrite`, for the same bundling reason as
+   * {@link ArticleActionsProps.realmDeniesDelete}, and required for the same
+   * fail-closed reason.
+   *
+   * Equal to `realmDeniesDelete` for every page today — DW-121 made the realm
+   * kind-independent — but kept separate because each prop names the write kind
+   * its route passes. See the comment beside both in `ArticleView`.
+   */
+  realmDeniesBodyWrite: boolean;
   /** Whether a raw source exists (gates the View-source link). */
   hasRawSource: boolean;
   /** Whether a source URL exists (gates the Reingest button). */
@@ -58,7 +75,9 @@ interface ArticleActionsProps {
  * Clerk session and shows only the actions the signed-in viewer is allowed:
  *
  *   - View raw        — when a raw source exists.
- *   - Reingest        — owner/contributor, when a source URL exists.
+ *   - Reingest        — when a source URL exists, and the viewer is the site
+ *                       owner or an owner/contributor on a page the commons
+ *                       realm does not reserve for agents.
  *   - Graphify page   — page owner only; refreshes derived private knowledge.
  *   - Delete          — the site owner, or the page owner on a page the
  *                       commons realm does not reserve for agents.
@@ -78,27 +97,22 @@ export function ArticleActions({
   contributors,
   isCuratable,
   realmDeniesDelete,
+  realmDeniesBodyWrite,
   hasRawSource,
   hasSourceUrl,
   readOnly = false,
 }: ArticleActionsProps) {
-  const { isLoaded, isSignedIn, user } = useUser();
+  // The viewer's identity, resolved the SAME way the server does (auth.ts
+  // `resolveHandle`) and lowercased for the case-insensitive comparisons below
+  // (owner/contributors are stored lowercased server-side). Shared with
+  // `RevisionHistory` through `@/lib/viewer-handle` rather than restated here,
+  // so the Delete/Re-ingest gates and the Revert gate can never drift apart on
+  // who the viewer is.
+  const { isLoaded, isSignedIn, handle: handleLc } = useViewerHandle();
   const [graphifyState, setGraphifyState] = useState<
     "idle" | "working" | "done" | "failed"
   >("idle");
   const [graphifyError, setGraphifyError] = useState<string | null>(null);
-  // Resolve the viewer's handle the SAME way the server does (auth.ts
-  // resolveHandle): prefer the Clerk username, else the username on the X/Twitter
-  // external account (Twitter-SSO users often have no Clerk username set).
-  const handle =
-    user?.username ??
-    user?.externalAccounts?.find(
-      (a) => typeof a.provider === "string" && /(^|_)(x|twitter)$/i.test(a.provider),
-    )?.username ??
-    null;
-  // Owner/contributor gating is case-insensitive (owner/contributors are stored
-  // lowercased server-side).
-  const handleLc = handle?.toLowerCase() ?? null;
 
   const isOwner = !!handleLc && handleLc === owner.toLowerCase();
   const isSiteOwner = isOwnerHandle(handleLc);
@@ -125,6 +139,14 @@ export function ArticleActions({
   // every request regardless; `article-actions-delete-gate.test.tsx` pins the
   // inequality against `canWritePage` itself.
   const canDelete = isSiteOwner || (isOwner && !realmDeniesDelete);
+  // The Re-ingest gate, split the same way and for the same reasons (DW-269).
+  // `POST /api/ingest/reingest` re-authorizes with `writeKind: "body"`, so an
+  // owner or contributor on a realm page is refused there — and the site owner
+  // is an admin, who passes the server's check, which is why they keep the door
+  // exactly as they keep Delete. Narrower than the server, never wider: an
+  // `ADMIN_HANDLES` admin who is not the site owner is under-offered this too.
+  const canReingest =
+    hasSourceUrl && (isSiteOwner || (ownsOrContributes && !realmDeniesBodyWrite));
   // Any signed-in user can curate a curatable page (public + non-agent, incl.
   // artifacts) into their vault — including owners and contributors (owned/
   // contributed pages are NOT automatically in vaults, so excluding them created
@@ -158,9 +180,7 @@ export function ArticleActions({
           View raw
         </Link>
       )}
-      {hasSourceUrl && ownsOrContributes && (
-        <ReingestButton slug={slug} readOnly={readOnly} />
-      )}
+      {canReingest && <ReingestButton slug={slug} readOnly={readOnly} />}
       {isOwner && (
         <button
           type="button"

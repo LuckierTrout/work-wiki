@@ -401,13 +401,24 @@ describe("PATCH /api/wiki/[slug] — metadata updates", () => {
     return mod.PATCH(req, { params: Promise.resolve({ slug }) });
   }
 
-  /** Create a page with full work-wiki metadata so PATCH has something to edit. */
+  /**
+   * Create a page with full work-wiki metadata so PATCH has something to edit.
+   *
+   * PRIVATE and owned by "test-user" — the same convention the PUT suite above
+   * uses, and for the same reason. Since DW-121 the commons realm refuses a
+   * human's metadata patch on a public knowledge page exactly as it refuses a
+   * body write, so a public seed would make every case here a 403 about
+   * authorization rather than a test of the patch mechanics. The realm's answer
+   * for PATCH is pinned on its own in the realm-ACL suite below.
+   */
   async function seedPage(slug: string, fm: Frontmatter = {}) {
     const today = new Date().toISOString().slice(0, 10);
     const defaults: Frontmatter = {
       created: today,
       confidence: 0.5,
       authors: ["original-author"],
+      owner: "test-user",
+      visibility: "private",
       contributors: [],
       expiry: "2099-01-01",
       sources: [],
@@ -711,10 +722,31 @@ describe("realm-aware write ACL — /api/wiki/[slug]", () => {
     expect(await readWikiPageWithFrontmatter("shared-public-del")).not.toBeNull();
   });
 
-  it("keeps PUBLIC commons pages collectively patchable by any signed-in user (PATCH 200)", async () => {
-    // Metadata patches remain allowed on commons pages — only body/delete are gated.
+  it("blocks metadata patches by a human on a PUBLIC commons page (PATCH 403)", async () => {
+    // DW-121. This door used to answer 200: the realm gated `body` and `delete`
+    // but admitted `metadata`, while the edit page — the only screen that
+    // reaches the toggles — refused the whole page on `body`. The API agrees
+    // with the screen now, and answers the SAME realm sentence the PUT above
+    // does, because both refusals come from the one resolver.
     await seed("shared-public-patch", { owner: "alice", visibility: "public" });
     const res = await patch("shared-public-patch");
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe(WRITE_DENIAL_REALM.edit);
+    // Nothing was written.
+    const page = await readWikiPageWithFrontmatter("shared-public-patch");
+    expect(page!.frontmatter.confidence).toBe(0.5);
+  });
+
+  it("still patches a page OUTSIDE the realm (PATCH 200)", async () => {
+    // The bound: an artifact fails `belongsInCommons`, so the realm never
+    // touches it and an ordinary signed-in caller patches as before. Without
+    // this, a gate that refused every PATCH would satisfy the case above.
+    await seed("shared-artifact-patch", {
+      owner: "alice",
+      visibility: "public",
+      type: "html",
+    });
+    const res = await patch("shared-artifact-patch");
     expect(res.status).toBe(200);
   });
 });
@@ -978,6 +1010,12 @@ describe("PATCH /api/wiki/[slug] — service-token auth", () => {
       created: today,
       confidence: 0.5,
       authors: ["original-author"],
+      // A public ARTIFACT: outside `belongsInCommons`, so the DW-121 realm gate
+      // does not refuse the ordinary Clerk-session PATCH below. The service
+      // principal passes above the realm branch either way, so this seed keeps
+      // both cases about the AUTH SOURCE — session vs. service token — rather
+      // than about the page's realm.
+      type: "html",
       owner: "svc-user",
       contributors: [],
       expiry: "2099-01-01",

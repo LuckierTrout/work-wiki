@@ -667,15 +667,13 @@ describe("ingest — Phase 1 frontmatter fields", () => {
     // the preserved disputed=true flag caps it at 0.5.
     expect(page!.frontmatter.confidence).toBe(0.5);
 
-    // (A) The disputed page got an OPEN reconciliation thread so the dispute is
-    // actionable (human / ask-yoyo / maintenance scan).
-    const { listThreads, RECONCILE_THREAD_TITLE } = await import("../talk");
-    const threads = await listThreads("phase1-reingest");
-    expect(
-      threads.some(
-        (t) => t.status === "open" && t.title === RECONCILE_THREAD_TITLE,
-      ),
-    ).toBe(true);
+    // (A) The disputed flag is the WHOLE record now (DW-230). A disputed ingest
+    // used to auto-open a talk reconciliation thread here; the talk HTTP
+    // surfaces are retired, so nothing could ever read it. The write must not
+    // come back — a discuss file no surface serves is storage churn that reads
+    // like a working feature.
+    const { listThreads } = await import("../talk");
+    expect(await listThreads("phase1-reingest")).toEqual([]);
 
     // expiry reset to ~90 days from now (not the old 2024-09-01)
     const expiry = page!.frontmatter.expiry as string;

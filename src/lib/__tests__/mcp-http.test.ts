@@ -357,9 +357,18 @@ describe("dispatchMcp — update_metadata", () => {
   });
 
   it("forwards the principal to patchMetadata (updates metadata on an owned page)", async () => {
-    // Create a page owned by alice first.
+    // Create a page owned by alice first. PRIVATE, so `alice` is inside the set
+    // the per-page ACL admits: since DW-121 the commons realm refuses a human's
+    // metadata patch on a PUBLIC knowledge page exactly as it refuses a body
+    // write, and this case is about the PRINCIPAL reaching `patchMetadata` at
+    // all — not about the realm, which has its own coverage.
     const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
-    const fm = { title: "Meta Test", owner: "alice", created: "2025-01-01" };
+    const fm = {
+      title: "Meta Test",
+      owner: "alice",
+      visibility: "private",
+      created: "2025-01-01",
+    };
     await writeWikiPage("meta-test", serializeFrontmatter(fm, "# Meta Test\n\nBody."));
 
     const res = await dispatchMcp(
@@ -383,6 +392,107 @@ describe("dispatchMcp — update_metadata", () => {
     const page = await readFm("meta-test");
     expect(page!.frontmatter.disputed).toBe(true);
     expect(page!.frontmatter.confidence).toBe(0.5);
+  });
+
+  /**
+   * THE TWO DENY CASES, and why the happy path above cannot stand in for them.
+   *
+   * `handleUpdateMetadata` substitutes a write-anything `service:mcp` principal
+   * when `principal` is `undefined`, so a success case passes whether or not
+   * the tool's `run: (a, p) => handleUpdateMetadata({ …, principal: p })`
+   * actually forwards `p` — deleting `principal: p` from `mcp-http.ts` leaves
+   * every other case in this file green. That forwarding is not a detail: this
+   * is the one door where a non-service, non-admin principal (`agent:<id>`,
+   * which is what ALICE is) really arrives, and since DW-121 it is the whole
+   * metadata ACL for it. Both cases below fail if the forwarding is dropped,
+   * because the substituted service principal would be admitted.
+   */
+  it("refuses an agent principal patching a public knowledge page (DW-121)", async () => {
+    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
+    // Public and untyped → `belongsInCommons` → the realm reserves it for
+    // service principals and admins. ALICE owns it and is still refused, which
+    // is the DW-121 rule: the realm is not an ownership term.
+    const fm = { title: "Shared Knowledge", owner: "alice", created: "2025-01-01" };
+    await writeWikiPage(
+      "shared-knowledge",
+      serializeFrontmatter(fm as Frontmatter, "# Shared Knowledge\n\nBody."),
+    );
+
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "update_metadata",
+          arguments: { slug: "shared-knowledge", metadata: { disputed: true } },
+        },
+      },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    // The realm sentence, from the shared table — readable + denied implies the
+    // realm at this door like every other.
+    expect(r.content[0].text).toContain(WRITE_DENIAL_REALM.edit);
+
+    // …and nothing was written.
+    const { readWikiPageWithFrontmatter: readFm } = await import("../wiki");
+    expect((await readFm("shared-knowledge"))!.frontmatter.disputed).toBeUndefined();
+  });
+
+  it("cloaks another user's PRIVATE page rather than naming it", async () => {
+    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
+    const fm = {
+      title: "Alice Secret",
+      owner: "alice",
+      visibility: "private",
+      created: "2025-01-01",
+    };
+    await writeWikiPage(
+      "alice-secret",
+      serializeFrontmatter(fm as Frontmatter, "# Alice Secret\n\nPrivate."),
+    );
+
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "update_metadata",
+          arguments: { slug: "alice-secret", metadata: { disputed: true } },
+        },
+      },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    // No realm wording, and nothing that says what kind of page it is.
+    expect(r.content[0].text).not.toMatch(/public knowledge/i);
+    expect(r.content[0].text).not.toMatch(/agent-maintained/i);
+    expect(r.content[0].text).not.toBe(WRITE_DENIAL_REALM.edit);
+
+    // THE ACTUAL CLOAK TEST is indistinguishability, not slug-absence. This
+    // sentence does echo the slug — but it is the slug BOB just sent, so
+    // repeating it tells him nothing he did not already know, and every
+    // not-found cloak in the app has the same shape. What would be an oracle is
+    // a REAL page answering differently from a missing one, so the assertion is
+    // that the two are byte-identical apart from the name he supplied.
+    const missing = await dispatchMcp(
+      {
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "update_metadata",
+          arguments: { slug: "no-such-page", metadata: { disputed: true } },
+        },
+      },
+      BOB,
+    );
+    const m = missing!.result as { isError?: boolean; content: { text: string }[] };
+    expect(m.isError).toBe(true);
+    expect(r.content[0].text.replace("alice-secret", "SLUG")).toBe(
+      m.content[0].text.replace("no-such-page", "SLUG"),
+    );
   });
 });
 
