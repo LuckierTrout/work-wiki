@@ -111,13 +111,16 @@ import {
   SETTINGS_VECTOR_ENV_MODEL_NOTE,
   canEnableVectorSearch,
   draftCanEnableVectorSearch,
+  draftEmbeddingKeyStored,
   draftVectorInputs,
+  embeddingProviderChanged,
   fetchWorkbenchSettings,
   flatMovableVectorLegs,
   isWorkbenchSettingsPayload,
   saveWorkbenchSettings,
   settingsAnnouncement,
   settingsDirty,
+  settingsDraftAfterEmbeddingProvider,
   settingsDraftFromPayload,
   settingsEnvOverrideCopy,
   settingsCategory,
@@ -1641,9 +1644,20 @@ describe("validateWorkbenchSettingsPatch", () => {
     });
 
     // The same environment satisfies an OpenAI selection.
+    //
+    // The ENDPOINT rides in the same request, and it has to (DW-69/DW-72): this
+    // patch SWITCHES the stored provider, so the stored `embeddingBaseUrl` was
+    // typed for Google and the store is about to delete it. The gate judges the
+    // config that will exist AFTER the write, so a patch that switched vendor
+    // and named no endpoint would be refused over the endpoint leg rather than
+    // passing on the strength of the previous vendor's URL.
     expect(
       validateWorkbenchSettingsPatch(
-        { vectorSearchEnabled: true, embeddingProvider: "openai" },
+        {
+          vectorSearchEnabled: true,
+          embeddingProvider: "openai",
+          embeddingBaseUrl: "https://embed.example",
+        },
         googleWithOpenAiKey,
       ).ok,
     ).toBe(true);
@@ -4686,5 +4700,438 @@ describe("the Settings components stay inside the shell", () => {
     const modes = await readFile(path.join(SRC, "lib/workbench-modes.ts"), "utf8");
     // Settings is a surface, not a mode: `workbench-modes.test.ts` pins the ten.
     expect(modes).not.toContain('id: "settings"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Clear on switch — the embedding provider's secret isolation (DW-69/DW-72)
+// ---------------------------------------------------------------------------
+
+describe("embeddingProviderChanged", () => {
+  it("answers on the VALUE, so the every-save re-send is not a move", () => {
+    // `settingsSaveBody` sends `embeddingProvider` on EVERY save, so a presence
+    // test would read a timeout edit as a vendor switch and delete the owner's
+    // key. This is the one definition of "switched", and it compares values.
+    expect(embeddingProviderChanged("openai", "openai")).toBe(false);
+    expect(embeddingProviderChanged("openai", "google")).toBe(true);
+  });
+
+  it("reads the auto-detect rung as a real move in both directions", () => {
+    // Clearing the select is a change of effective vendor — the resolver may
+    // now land somewhere else entirely — so the old vendor's pair goes with it.
+    expect(embeddingProviderChanged("openai", null)).toBe(true);
+    expect(embeddingProviderChanged(null, "openai")).toBe(true);
+    expect(embeddingProviderChanged(null, null)).toBe(false);
+  });
+
+  it("normalises whitespace on both sides before comparing", () => {
+    // A padded value and a clean one are the same vendor; a whitespace-only box
+    // and an empty one are both "nothing selected". Without this a stray space
+    // in a stored value would clear a key on the next unrelated save.
+    expect(embeddingProviderChanged(" openai ", "openai")).toBe(false);
+    expect(embeddingProviderChanged("   ", null)).toBe(false);
+    expect(embeddingProviderChanged("", "openai")).toBe(true);
+  });
+});
+
+describe("settingsDraftAfterEmbeddingProvider", () => {
+  /** A deployment storing OpenAI's endpoint and OpenAI's key. */
+  const OPENAI_PAYLOAD: WorkbenchSettingsPayload = {
+    ...emptyPayload(),
+    embeddingProvider: "openai",
+    embeddingModel: "text-embedding-3-small",
+    embeddingBaseUrl: "https://o/v1",
+    hasEmbeddingApiKey: true,
+  };
+
+  /** A draft seeded from that deployment. */
+  function openaiDraft() {
+    return settingsDraftFromPayload(OPENAI_PAYLOAD);
+  }
+
+  it("blanks the endpoint and un-touches the key when the vendor moves", () => {
+    const next = settingsDraftAfterEmbeddingProvider(openaiDraft(), "google", OPENAI_PAYLOAD);
+    expect(next.embeddingProvider).toBe("google");
+    // The endpoint box empties, so `settingsSaveBody` sends `null` rather than
+    // writing OpenAI's URL back into the store the clear just emptied.
+    expect(next.embeddingBaseUrl).toBe("");
+    // UNTOUCHED, not `null`: `null` is "Remove", and the owner pressed nothing.
+    // The stored key is dropped by the STORE, not by a pretend Remove.
+    expect(next.embeddingApiKey).toBe(SECRET_UNTOUCHED);
+    // Nothing else moves — the model is not a credential and not vendor-bound
+    // in the way the endpoint and the key are.
+    expect(next.embeddingModel).toBe("text-embedding-3-small");
+  });
+
+  it("leaves both boxes alone when the same provider is re-selected", () => {
+    const next = settingsDraftAfterEmbeddingProvider(openaiDraft(), "openai", OPENAI_PAYLOAD);
+    expect(next.embeddingBaseUrl).toBe("https://o/v1");
+    expect(next.embeddingApiKey).toBe(SECRET_UNTOUCHED);
+  });
+
+  it("clears on the way to auto-detect too", () => {
+    const next = settingsDraftAfterEmbeddingProvider(openaiDraft(), "", OPENAI_PAYLOAD);
+    expect(next.embeddingProvider).toBe("");
+    expect(next.embeddingBaseUrl).toBe("");
+  });
+
+  it("discards a key TYPED for the vendor being left behind", () => {
+    // The reset is not decoration. A credential typed into the box belongs to
+    // the vendor that was selected while it was typed — carrying it across the
+    // switch would send the new vendor a secret meant for the old one, which is
+    // the very leak the store-side clear exists to prevent.
+    const typed = { ...openaiDraft(), embeddingApiKey: "sk-typed-for-openai" };
+    const next = settingsDraftAfterEmbeddingProvider(typed, "google", OPENAI_PAYLOAD);
+    expect(next.embeddingApiKey).toBe(SECRET_UNTOUCHED);
+    // …and so nothing rides in the save body for the new vendor.
+    expect(settingsSaveBody(next).embeddingApiKey).toBeUndefined();
+  });
+
+  it("cancels a PENDING REMOVE, which was about the previous vendor's key", () => {
+    // `null` is "Remove". Left in place across a switch it would ride as
+    // `embeddingApiKey: null` and delete whatever the new vendor's clear had
+    // just left behind — and it would strand the row in its removal-pending
+    // state with no `Remove`/`Undo` button to leave it, since that button is
+    // gated on the key still counting for the selected vendor.
+    const removing = { ...openaiDraft(), embeddingApiKey: null };
+    const next = settingsDraftAfterEmbeddingProvider(removing, "google", OPENAI_PAYLOAD);
+    expect(next.embeddingApiKey).toBe(SECRET_UNTOUCHED);
+    expect(settingsSaveBody(next).embeddingApiKey).toBeUndefined();
+  });
+
+  it("RESTORES the stored endpoint on a switch away and BACK within one draft", () => {
+    // The draft nets back to the STORED vendor, whose endpoint and key the
+    // store never moved away from. Leaving the box blank would send
+    // `embeddingBaseUrl: null` on the next save and DELETE a stored endpoint
+    // for a provider that never net-moved — breaking the promise that a save
+    // which does not move the stored value preserves both fields.
+    const there = settingsDraftAfterEmbeddingProvider(openaiDraft(), "google", OPENAI_PAYLOAD);
+    expect(there.embeddingBaseUrl).toBe("");
+    const back = settingsDraftAfterEmbeddingProvider(there, "openai", OPENAI_PAYLOAD);
+    expect(back.embeddingProvider).toBe("openai");
+    expect(back.embeddingBaseUrl).toBe("https://o/v1");
+    expect(back.embeddingApiKey).toBe(SECRET_UNTOUCHED);
+    // What the save actually carries: the stored endpoint back verbatim, and no
+    // key at all — so `applyWorkbenchSettings` sees no move and preserves both.
+    expect(settingsSaveBody(back).embeddingBaseUrl).toBe("https://o/v1");
+    expect(settingsSaveBody(back).embeddingApiKey).toBeUndefined();
+    // The whole draft is back where a reload would put it — the endpoint half is
+    // now symmetric with the key half, which already reported the stored key
+    // again through `draftEmbeddingKeyStored`.
+    expect(settingsDirty(back, OPENAI_PAYLOAD)).toBe(false);
+    expect(draftEmbeddingKeyStored(back, OPENAI_PAYLOAD)).toBe(true);
+  });
+
+  it("drops an endpoint typed for the vendor being left, even on the way back", () => {
+    // Restoring means restoring the STORE's value, not keeping whatever the
+    // owner typed while another vendor was selected.
+    const there = settingsDraftAfterEmbeddingProvider(openaiDraft(), "google", OPENAI_PAYLOAD);
+    const typed = { ...there, embeddingBaseUrl: "https://g/v1" };
+    const back = settingsDraftAfterEmbeddingProvider(typed, "openai", OPENAI_PAYLOAD);
+    expect(back.embeddingBaseUrl).toBe("https://o/v1");
+  });
+
+  it("restores an EMPTY endpoint when the store holds none", () => {
+    const noEndpoint: WorkbenchSettingsPayload = {
+      ...OPENAI_PAYLOAD,
+      embeddingBaseUrl: null,
+    };
+    const draft = settingsDraftFromPayload(noEndpoint);
+    const there = settingsDraftAfterEmbeddingProvider(draft, "google", noEndpoint);
+    const back = settingsDraftAfterEmbeddingProvider(there, "openai", noEndpoint);
+    expect(back.embeddingBaseUrl).toBe("");
+  });
+
+  it("does not restore for a vendor the STORE is not on", () => {
+    // Three answers, not two: only a return to the payload's own provider
+    // restores. Hopping between two other vendors keeps blanking.
+    const google = settingsDraftAfterEmbeddingProvider(openaiDraft(), "google", OPENAI_PAYLOAD);
+    const withUrl = { ...google, embeddingBaseUrl: "https://g/v1" };
+    const ollama = settingsDraftAfterEmbeddingProvider(withUrl, "ollama", OPENAI_PAYLOAD);
+    expect(ollama.embeddingBaseUrl).toBe("");
+  });
+
+  it("does not mutate the draft it was handed", () => {
+    const draft = openaiDraft();
+    settingsDraftAfterEmbeddingProvider(draft, "google", OPENAI_PAYLOAD);
+    expect(draft.embeddingProvider).toBe("openai");
+    expect(draft.embeddingBaseUrl).toBe("https://o/v1");
+  });
+});
+
+describe("draftEmbeddingKeyStored", () => {
+  const stored: WorkbenchSettingsPayload = {
+    ...emptyPayload(),
+    embeddingProvider: "openai",
+    embeddingBaseUrl: "https://o/v1",
+    hasEmbeddingApiKey: true,
+  };
+
+  it("reports the stored key for the vendor the draft still selects", () => {
+    expect(draftEmbeddingKeyStored(settingsDraftFromPayload(stored), stored)).toBe(true);
+  });
+
+  it("stops reporting it the moment the draft selects another vendor", () => {
+    // The misreport DW-69 names: "A key is stored." beside a `Remove` button,
+    // for a credential the very next save deletes.
+    const moved = settingsDraftAfterEmbeddingProvider(
+      settingsDraftFromPayload(stored),
+      "google",
+      stored,
+    );
+    expect(draftEmbeddingKeyStored(moved, stored)).toBe(false);
+    // Auto-detect is a move too.
+    const cleared = settingsDraftAfterEmbeddingProvider(
+      settingsDraftFromPayload(stored),
+      "",
+      stored,
+    );
+    expect(draftEmbeddingKeyStored(cleared, stored)).toBe(false);
+  });
+
+  it("never invents a key the store does not hold", () => {
+    const none: WorkbenchSettingsPayload = { ...stored, hasEmbeddingApiKey: false };
+    expect(draftEmbeddingKeyStored(settingsDraftFromPayload(none), none)).toBe(false);
+  });
+});
+
+describe("the payload after a provider switch, over the REAL store (DW-69/DW-72)", () => {
+  it("answers a payload that reports the cleared state", async () => {
+    // END TO END, against the real config file: the store holds OpenAI's
+    // endpoint and OpenAI's key, and one `PUT` moves the vendor.
+    await store({
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingBaseUrl: "https://o/v1",
+      embeddingApiKey: "sk-o",
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      await put({ workbench: { embeddingProvider: "google" } }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { workbench: WorkbenchSettingsPayload };
+    // THE HALF THE OWNER SEES. The canvas re-seeds its draft from this object,
+    // so a payload still reporting `hasEmbeddingApiKey: true` would put "A key
+    // is stored." and a `Remove` button back on screen for a credential this
+    // very request deleted — the misreport DW-69 names, arriving by a different
+    // door than the one the draft rule closes.
+    expect(body.workbench.embeddingProvider).toBe("google");
+    expect(body.workbench.hasEmbeddingApiKey).toBe(false);
+    expect(body.workbench.embeddingBaseUrl).toBeNull();
+    // Presence stays a boolean: no stored secret is ever ON a payload.
+    expect(JSON.stringify(body)).not.toContain("sk-o");
+    // …and the STORE agrees, read back through the resolver rather than from
+    // the response the same request produced.
+    expect(getWorkbenchSettings(false).hasEmbeddingApiKey).toBe(false);
+    expect(getWorkbenchSettings(false).embeddingBaseUrl).toBeNull();
+    // The model is untouched — not a credential, not vendor-bound here.
+    expect(body.workbench.embeddingModel).toBe("text-embedding-3-small");
+  });
+
+  it("keeps both fields on the payload when the provider does NOT move", async () => {
+    // The every-save re-send, end to end. A payload that dropped the key here
+    // would take `Remove` off screen for a credential that is still stored.
+    await store({
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingBaseUrl: "https://o/v1",
+      embeddingApiKey: "sk-o",
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      await put({
+        workbench: {
+          embeddingProvider: "openai",
+          embeddingModel: "text-embedding-3-small",
+          embeddingBaseUrl: "https://o/v1",
+          llmTimeoutSeconds: 90,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { workbench: WorkbenchSettingsPayload };
+    expect(body.workbench.hasEmbeddingApiKey).toBe(true);
+    expect(body.workbench.embeddingBaseUrl).toBe("https://o/v1");
+  });
+
+  it("clears through the FLAT legacy body too, and says so on the payload", async () => {
+    await store({
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingBaseUrl: "https://o/v1",
+      embeddingApiKey: "sk-o",
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(await put({ embeddingProvider: "google" }));
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { workbench: WorkbenchSettingsPayload };
+    expect(body.workbench.hasEmbeddingApiKey).toBe(false);
+    expect(body.workbench.embeddingBaseUrl).toBeNull();
+  });
+});
+
+describe("the switch-aware vector rule — both halves agree (DW-69/DW-72)", () => {
+  /** The route's view and the browser's view of ONE deployment. */
+  function deployment() {
+    const payload: WorkbenchSettingsPayload = {
+      ...emptyPayload(),
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingBaseUrl: "https://o/v1",
+      hasEmbeddingApiKey: true,
+    };
+    return {
+      payload,
+      stored: storedState({
+        vectorSearchEnabled: true,
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingBaseUrl: "https://o/v1",
+        hasEmbeddingApiKey: true,
+      }),
+    };
+  }
+
+  it("refuses a bare switch on BOTH sides, with the same sentence", () => {
+    const { payload, stored } = deployment();
+    const draft = settingsDraftAfterEmbeddingProvider(
+      settingsDraftFromPayload(payload),
+      "google",
+      payload,
+    );
+
+    // The browser's half: the stored key no longer counts, and the endpoint box
+    // is blank, so the switch cannot be left on.
+    const inputs = draftVectorInputs(draft, payload);
+    expect(inputs.hasKey).toBe(false);
+    expect(inputs.baseUrl).toBeNull();
+    expect(draftCanEnableVectorSearch(draft, payload)).toBe(false);
+
+    // The route's half, fed the very body that draft would send. Same answer,
+    // and — since the switch was already stored ON — the same sentence the
+    // browser puts beside the checkbox.
+    expect(validateWorkbenchSettingsPatch(settingsSaveBody(draft), stored)).toEqual({
+      ok: false,
+      error: vectorSearchInactiveCopy(inputs),
+    });
+  });
+
+  it("refuses a switch that supplies the new KEY but no endpoint", () => {
+    // The case that pins the endpoint half of the clear on its own. Every other
+    // case here names an `embeddingBaseUrl` in the patch, so the merge would
+    // answer identically whether or not it dropped the STORED endpoint across a
+    // switch — this one names none, so the only endpoint on offer is OpenAI's
+    // stored one, and counting it would pass a config the store will not hold.
+    const { stored } = deployment();
+    const refusal = validateWorkbenchSettingsPatch(
+      {
+        vectorSearchEnabled: true,
+        embeddingProvider: "google",
+        embeddingModel: "gemini-embedding-001",
+        // The new vendor's credential rides, so the KEY leg is met and cannot be
+        // what this refusal is about.
+        embeddingApiKey: "g-key",
+      },
+      stored,
+    );
+    expect(refusal.ok).toBe(false);
+    expect(refusal.ok === false && refusal.error).toContain("endpoint");
+  });
+
+  it("refuses the route even when the browser never blanked the endpoint", () => {
+    // The API path has no draft to blank anything. A raw patch that switches
+    // vendor while re-sending the OLD vendor's endpoint must still be judged on
+    // the post-clear config: the store is about to delete that endpoint.
+    const { stored } = deployment();
+    expect(
+      validateWorkbenchSettingsPatch(
+        {
+          vectorSearchEnabled: true,
+          embeddingProvider: "google",
+          embeddingBaseUrl: "https://o/v1",
+          embeddingModel: "text-embedding-3-small",
+        },
+        stored,
+      ).ok,
+    ).toBe(false);
+  });
+
+  it("passes on BOTH sides when the new vendor's credentials ride along", () => {
+    const { payload, stored } = deployment();
+    let draft = settingsDraftAfterEmbeddingProvider(
+      settingsDraftFromPayload(payload),
+      "google",
+      payload,
+    );
+    draft = { ...draft, embeddingBaseUrl: "https://g/v1", embeddingApiKey: "g-key" };
+    draft = { ...draft, embeddingModel: "gemini-embedding-001" };
+
+    expect(draftCanEnableVectorSearch(draft, payload)).toBe(true);
+    expect(validateWorkbenchSettingsPatch(settingsSaveBody(draft), stored).ok).toBe(true);
+  });
+
+  it("leaves the every-save re-send of the same provider passing", () => {
+    const { payload, stored } = deployment();
+    const draft = settingsDraftFromPayload(payload);
+    const body = settingsSaveBody(draft);
+    // The body DOES carry the provider — that is exactly why the rule is a value
+    // comparison rather than a presence test.
+    expect(body.embeddingProvider).toBe("openai");
+    expect(draftCanEnableVectorSearch(draft, payload)).toBe(true);
+    expect(validateWorkbenchSettingsPatch(body, stored).ok).toBe(true);
+  });
+
+  it("still counts an ENV key belonging to the NEW vendor", () => {
+    // The clear is about the STORED credential. A deployment carrying
+    // `GOOGLE_GENERATIVE_AI_API_KEY` satisfies the key leg for Google the moment
+    // Google is selected, and no save can move that.
+    const payload: WorkbenchSettingsPayload = {
+      ...emptyPayload(),
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingBaseUrl: "https://o/v1",
+      hasEmbeddingApiKey: true,
+      envEmbeddingApiKeyProviders: ["google"],
+    };
+    const draft = {
+      ...settingsDraftAfterEmbeddingProvider(
+        settingsDraftFromPayload(payload),
+        "google",
+        payload,
+      ),
+      embeddingBaseUrl: "https://g/v1",
+      embeddingModel: "gemini-embedding-001",
+    };
+    expect(draftVectorInputs(draft, payload).hasKey).toBe(true);
+    expect(
+      validateWorkbenchSettingsPatch(
+        settingsSaveBody(draft),
+        storedState({
+          vectorSearchEnabled: true,
+          embeddingProvider: "openai",
+          embeddingModel: "text-embedding-3-small",
+          embeddingBaseUrl: "https://o/v1",
+          hasEmbeddingApiKey: true,
+          envEmbeddingApiKeyProviders: ["google"],
+        }),
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("leaves `storedVectorInputs` — no draft in play — untouched", () => {
+    // A freshly seeded draft selects the stored provider, so nothing switched
+    // and the flat page's advisory reads exactly what it read before.
+    const { payload } = deployment();
+    expect(storedVectorInputs(payload).hasKey).toBe(true);
+    expect(storedVectorInputs(payload).baseUrl).toBe("https://o/v1");
   });
 });

@@ -249,6 +249,19 @@ function embeddingApiKeyFor(
   provider: EmbeddingProvider,
   cfg: ReturnType<typeof loadConfigSync>,
 ): string | null {
+  // The stored credential is ONE flat field read by both vendor branches below,
+  // and it is bounded the same way the endpoint is (DW-69/DW-72): both save
+  // paths delete it whenever the STORED `embeddingProvider` moves, so for a
+  // vendor chosen through Settings what is read here was entered for that
+  // vendor. Without that clear this line would hand `sk-…` to Google on the
+  // strength of the owner having once configured OpenAI.
+  //
+  // The SAME two exceptions the endpoint's note above spells out apply here:
+  // `EMBEDDING_PROVIDER` overrides the stored selection, and an absent stored
+  // selection falls back to the detected generation provider — neither of which
+  // any save moves, so on those paths a stored key can still be offered to a
+  // vendor it was not entered for. Deferred follow-up, not a claim this
+  // function makes.
   const stored = nonEmpty(cfg.embeddingApiKey);
   switch (provider) {
     case "openai":
@@ -408,6 +421,30 @@ function _createEmbeddingModel(
   modelName: string,
   cfg: ReturnType<typeof loadConfigSync>,
 ): EmbeddingModel | null {
+  // ONE flat `embeddingBaseUrl` serving whichever vendor is selected, which is
+  // narrower than it looks (DW-69/DW-72): both SAVE PATHS clear
+  // `embeddingBaseUrl` and `embeddingApiKey` whenever the STORED
+  // `embeddingProvider` moves — `applyWorkbenchSettings` and the flat branch of
+  // `PUT /api/settings`, both through `embeddingProviderChanged`. So for a
+  // provider that was CHOSEN through Settings, the endpoint read here was typed
+  // after that vendor was selected. The fix is deliberately not here:
+  // per-provider keying would change the stored shape and need a migration,
+  // which the recorded decisions rule out.
+  //
+  // TWO PATHS SIT OUTSIDE THAT GUARANTEE, and this comment must not be read as
+  // covering them:
+  //
+  //   - `EMBEDDING_PROVIDER` wins over the stored field in
+  //     `resolveEmbeddingProvider`, and no save can move an environment
+  //     variable — so setting it can point a stored endpoint at a vendor it was
+  //     never entered for.
+  //   - with no provider stored and no override set, the same resolver falls
+  //     back to the detected LLM provider (and to `cfg.provider` for `ollama`),
+  //     which the embedding-provider select never touched.
+  //
+  // A config written before this change, or hand-edited, can also already hold
+  // a mismatched pair — nothing migrates it. Both are recorded as deferred
+  // follow-up rather than fixed here.
   const stored = cfg.embeddingBaseUrl;
   const baseUrlOption =
     typeof stored === "string" && stored.trim().length > 0

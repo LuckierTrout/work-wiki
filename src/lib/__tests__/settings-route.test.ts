@@ -1124,3 +1124,216 @@ describe("PUT /api/settings — the flat vector refusal names only actionable le
     }, STORED_ETAG);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Clear on switch, over the wire — BOTH writers (DW-69/DW-72)
+// ---------------------------------------------------------------------------
+
+describe("PUT /api/settings — embedding provider secret isolation (DW-69/DW-72)", () => {
+  /** A store holding OpenAI's endpoint and OpenAI's key. */
+  const OPENAI_STORE = {
+    embeddingProvider: "openai",
+    embeddingModel: "text-embedding-3-small",
+    embeddingBaseUrl: "https://o/v1",
+    embeddingApiKey: "sk-o",
+  } as const;
+
+  function store(config: Record<string, unknown>): void {
+    mockedRead.mockResolvedValue({
+      status: "ok",
+      config: config as never,
+      version: STORED_VERSION,
+      etag: STORED_ETAG,
+    });
+  }
+
+  it("clears both fields for a WORKBENCH patch that switches vendor", async () => {
+    store({ ...OPENAI_STORE });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ workbench: { embeddingProvider: "google" } }));
+
+    expect(response.status).toBe(200);
+    // Neither OpenAI's secret nor OpenAI's endpoint survives into a config the
+    // embed path will read for Google.
+    expect(mockedSave).toHaveBeenCalledWith({
+      embeddingProvider: "google",
+      embeddingModel: "text-embedding-3-small",
+    }, STORED_ETAG);
+
+    // The RESPONSE payload is asserted in `workbench-settings.test.ts` instead —
+    // "answers a payload that reports the cleared state" there. It cannot be
+    // asserted HERE: `saveConfig` is mocked in this file, so the sync cache
+    // `getWorkbenchSettings()` reads is never primed and answers `{}`, which
+    // reports `hasEmbeddingApiKey: false` whatever the route did. That file
+    // drives the real store end to end, so the same assertion means something.
+  });
+
+  it("clears both fields for the FLAT legacy body too", async () => {
+    // The second writer of this field. Leaving it out would mean the API path
+    // went on handing the new vendor the previous vendor's credential.
+    store({ ...OPENAI_STORE });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ embeddingProvider: "google" }));
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({
+      embeddingProvider: "google",
+      embeddingModel: "text-embedding-3-small",
+    }, STORED_ETAG);
+  });
+
+  it("lets a body carrying BOTH halves clear once, not twice", async () => {
+    // The flat branch clears and writes the provider; `applyWorkbenchSettings`
+    // then receives that already-merged object, sees no further move, and
+    // applies the new vendor's pair on top.
+    store({ ...OPENAI_STORE });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({
+        embeddingProvider: "google",
+        workbench: { embeddingApiKey: "g-key", embeddingBaseUrl: "https://g/v1" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({
+      embeddingProvider: "google",
+      embeddingModel: "text-embedding-3-small",
+      embeddingApiKey: "g-key",
+      embeddingBaseUrl: "https://g/v1",
+    }, STORED_ETAG);
+  });
+
+  it("preserves both fields for the every-save re-send of the same provider", async () => {
+    // `settingsSaveBody` sends `embeddingProvider` on EVERY save, so this shape
+    // is the ordinary one. A presence test would delete a stored key here.
+    store({ ...OPENAI_STORE, vectorSearchEnabled: true });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({
+        workbench: {
+          vectorSearchEnabled: true,
+          embeddingProvider: "openai",
+          embeddingModel: "text-embedding-3-small",
+          embeddingBaseUrl: "https://o/v1",
+          llmTimeoutSeconds: 30,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({
+      ...OPENAI_STORE,
+      vectorSearchEnabled: true,
+      llmTimeoutSeconds: 30,
+    }, STORED_ETAG);
+  });
+
+  it("preserves both fields when the FLAT body re-sends the same provider", async () => {
+    // The flat branch's own value-vs-presence guard, which the workbench mirror
+    // above cannot pin: without it, `if (body.embeddingProvider !== undefined)`
+    // would clear on every flat body that merely NAMES the provider — deleting
+    // an endpoint and a credential for a request that moved nothing.
+    store({ ...OPENAI_STORE });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({ embeddingProvider: "openai", embeddingModel: "text-embedding-3-small" }),
+    );
+
+    expect(response.status).toBe(200);
+    // Byte-identical: the endpoint and the credential reach the store untouched.
+    expect(mockedSave).toHaveBeenCalledWith({ ...OPENAI_STORE }, STORED_ETAG);
+  });
+
+  it("REFUSES a flat switch while the vector switch is stored ON", async () => {
+    // The gate judges the config that will exist AFTER the clear. Passing it
+    // would answer 200 and silently switch effective vector search off, since
+    // `getVectorSearchSettings()` intersects the stored flag with this same
+    // predicate.
+    store({ ...OPENAI_STORE, vectorSearchEnabled: true });
+    const expected = vectorSearchInactiveCopy(
+      {
+        provider: "google",
+        baseUrl: null,
+        model: "text-embedding-3-small",
+        hasKey: false,
+        modelOrigin: "stored",
+        providerOrigin: "stored",
+        hasWorkersAiBinding: false,
+      },
+      // Flat body, flat frame (DW-329).
+      "flat",
+    );
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ embeddingProvider: "google" }));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: expected });
+    // Nothing is written: the refusal happens before `saveConfig`, so the store
+    // still holds OpenAI's provider, endpoint and key.
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES a workbench switch while the vector switch is stored ON", async () => {
+    store({ ...OPENAI_STORE, vectorSearchEnabled: true });
+    const expected = vectorSearchInactiveCopy({
+      provider: "google",
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: false,
+      modelOrigin: "stored",
+      providerOrigin: "stored",
+      hasWorkersAiBinding: false,
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({
+        workbench: {
+          vectorSearchEnabled: true,
+          embeddingProvider: "google",
+          embeddingModel: "text-embedding-3-small",
+          embeddingBaseUrl: null,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: expected });
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("ACCEPTS the same switch when the new vendor's credentials ride along", async () => {
+    // Proof the refusal above is about the CLEARED legs and not about switching
+    // vendor at all.
+    store({ ...OPENAI_STORE, vectorSearchEnabled: true });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({
+        workbench: {
+          vectorSearchEnabled: true,
+          embeddingProvider: "google",
+          embeddingModel: "gemini-embedding-001",
+          embeddingBaseUrl: "https://g/v1",
+          embeddingApiKey: "g-key",
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({
+      vectorSearchEnabled: true,
+      embeddingProvider: "google",
+      embeddingModel: "gemini-embedding-001",
+      embeddingBaseUrl: "https://g/v1",
+      embeddingApiKey: "g-key",
+    }, STORED_ETAG);
+  });
+});

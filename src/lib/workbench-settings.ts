@@ -1482,6 +1482,34 @@ function vectorInputsEqual(a: VectorSearchInputs, b: VectorSearchInputs): boolea
 }
 
 /**
+ * Did the stored embedding provider MOVE? (DW-69/DW-72)
+ *
+ * The ONE definition of "switched", imported by every writer of the field:
+ * `applyWorkbenchSettings` (the `workbench` merge), the flat legacy branch of
+ * `PUT /api/settings`, {@link mergedVectorInputs} and the Workbench draft. A
+ * second copy is how the browser and the route drift apart, and a drift here
+ * means one of them keeps handing OpenAI's secret to Google.
+ *
+ * A VALUE comparison, never presence: `settingsSaveBody` sends
+ * `embeddingProvider` on EVERY save, so "the field is in the body" says nothing
+ * at all about whether the vendor changed. Both sides are trim-normalised
+ * first, so `"openai"`, `" openai "` and `"openai"` are one value, and `""`,
+ * `"   "` and `null` are all "nothing selected" — the auto-detect rung, which
+ * is a real move away from a named vendor and must clear like any other.
+ */
+export function embeddingProviderChanged(
+  previous: string | null,
+  next: string | null,
+): boolean {
+  const normalise = (value: string | null): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+  return normalise(previous) !== normalise(next);
+}
+
+/**
  * What the vector legs look like once `patch` lands on `stored`.
  *
  * Module-private: the ONE public expression of this rule is
@@ -1503,19 +1531,37 @@ function mergedVectorInputs(
     const trimmed = next.trim();
     return trimmed.length > 0 ? trimmed : null;
   };
-  const provider =
-    stored.envEmbeddingProvider ??
-    resolve(patch.embeddingProvider, stored.embeddingProvider);
+  // What the STORE will hold for the provider once this patch lands — the env
+  // override is deliberately NOT read here, because a variable no save can move
+  // cannot be what a save switched. The gate's `provider` below still takes the
+  // override; this local answers a different question.
+  const storedProviderAfter = resolve(patch.embeddingProvider, stored.embeddingProvider);
+  // …and whether that is a MOVE (DW-69/DW-72). `applyWorkbenchSettings` drops
+  // the stored key and the stored endpoint on exactly this condition, so the
+  // gate has to judge the config that will EXIST after the write. Counting them
+  // here would wave through a vector switch the route then refuses to honour —
+  // and the two legs it waved through belong to the previous vendor.
+  const switched = embeddingProviderChanged(stored.embeddingProvider, storedProviderAfter);
+  const provider = stored.envEmbeddingProvider ?? storedProviderAfter;
   const key = patch.embeddingApiKey;
   const hasKey =
-    // An env credential counts only for the vendor it belongs to.
+    // An env credential counts only for the vendor it belongs to — and it is
+    // the NEW vendor's env key that counts, which this line already reads
+    // because `provider` above is the post-patch value.
     (provider !== null && stored.envEmbeddingApiKeyProviders.includes(provider)) ||
     (key === undefined
-      ? stored.hasEmbeddingApiKey
+      ? // The stored key stops counting across a switch: it is about to be
+        // deleted. A key supplied in THIS request still counts (the branch
+        // below), which is what lets one save both switch vendor and land the
+        // new credential.
+        !switched && stored.hasEmbeddingApiKey
       : typeof key === "string" && key.trim().length > 0);
   return {
     provider,
-    baseUrl: resolve(patch.embeddingBaseUrl, stored.embeddingBaseUrl),
+    // Same reading for the endpoint: across a switch the patch is the only
+    // source, so a request that switches vendor without naming an endpoint sees
+    // `null` rather than the old vendor's URL.
+    baseUrl: resolve(patch.embeddingBaseUrl, switched ? null : stored.embeddingBaseUrl),
     model: stored.envEmbeddingModel ?? resolve(patch.embeddingModel, stored.embeddingModel),
     hasKey,
     // The same `??` the line above spells, read as a question about ORIGIN: the
@@ -1592,6 +1638,87 @@ export function settingsDraftFromPayload(
     firecrawlBaseUrl: payload.firecrawlBaseUrl ?? "",
     firecrawlApiKey: SECRET_UNTOUCHED,
   };
+}
+
+/**
+ * The draft after the owner moves the embedding provider select (DW-69/DW-72).
+ *
+ * A pure rule rather than a `set("embeddingProvider", …)` in the component,
+ * because it is the SAME rule the store applies: when the value moves, the
+ * endpoint and the key belong to the previous vendor and are dropped. Here they
+ * are dropped from the DRAFT, which is what makes the surface honest —
+ * {@link settingsSaveBody} sends `embeddingBaseUrl` on every save, so a draft
+ * still holding the old vendor's endpoint would write it straight back into the
+ * store the moment `applyWorkbenchSettings` had cleared it, and the fix would
+ * hold on the API path while failing on the surface the owner actually uses.
+ *
+ * The key returns to {@link SECRET_UNTOUCHED} rather than to `null`: `null` is
+ * "Remove", and the owner did not press Remove — the STORE's own clear is what
+ * drops the stored key, and the field is simply back to untouched so a
+ * credential typed for the new vendor before saving still rides. A value the
+ * owner had typed for the vendor being left behind goes the same way, and so
+ * does a pending Remove: neither was about the vendor now selected.
+ *
+ * `payload` is what the STORE holds, and it is why this takes three arguments
+ * rather than two. The draft is not the only reference point: switching away
+ * and BACK within one draft ends on the stored vendor, whose endpoint and key
+ * were never touched — so the boxes are RESTORED to the payload's values rather
+ * than left blank. Leaving them blank would send `embeddingBaseUrl: null` on
+ * the next save and DELETE a stored endpoint the stored provider never moved
+ * away from, which is exactly the byte-identical-preservation promise the
+ * fourth acceptance criterion makes. The key half already behaved this way for
+ * free — {@link draftEmbeddingKeyStored} reports the stored key again the moment
+ * the draft returns to the payload's provider — and this makes the endpoint half
+ * symmetric with it.
+ *
+ * So there are three answers, not two: same value as the draft already holds
+ * (nothing moves), back to the STORED vendor (restore), any other vendor
+ * (blank).
+ */
+export function settingsDraftAfterEmbeddingProvider(
+  draft: SettingsDraft,
+  next: string,
+  payload: WorkbenchSettingsValues,
+): SettingsDraft {
+  if (!embeddingProviderChanged(draft.embeddingProvider, next)) {
+    return { ...draft, embeddingProvider: next };
+  }
+  // Back where the STORE is: the stored pair is the new vendor's own, because
+  // the new vendor IS the stored one. Restoring is what a freshly seeded draft
+  // would hold, so the surface shows the same thing a reload would.
+  const returning = !embeddingProviderChanged(payload.embeddingProvider, next);
+  return {
+    ...draft,
+    embeddingProvider: next,
+    embeddingBaseUrl: returning ? payload.embeddingBaseUrl ?? "" : "",
+    // Always untouched, in BOTH directions: the stored key is reported through
+    // `draftEmbeddingKeyStored` rather than held here, and anything the owner
+    // typed belonged to the vendor being left.
+    embeddingApiKey: SECRET_UNTOUCHED,
+  };
+}
+
+/**
+ * Does the STORED embedding key still count for the vendor this draft selects?
+ * (DW-69/DW-72)
+ *
+ * `payload.hasEmbeddingApiKey` alone answers "the store holds a key", which was
+ * the misreport: it kept the row saying "A key is stored." and kept `Remove` on
+ * screen for a credential the very next save deletes. The predicate the surface
+ * needs is "a key is stored FOR WHAT THIS DRAFT SELECTS", and that is the
+ * stored boolean intersected with the one switch test.
+ *
+ * The same fact the route's `mergedVectorInputs` reads, so the browser's half of
+ * the vector rule and the route's half answer identically for one draft.
+ */
+export function draftEmbeddingKeyStored(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): boolean {
+  return (
+    payload.hasEmbeddingApiKey &&
+    !embeddingProviderChanged(payload.embeddingProvider, draftText(draft.embeddingProvider))
+  );
 }
 
 /**
@@ -1707,10 +1834,16 @@ export function draftVectorInputs(
     // reading the route's `mergedVectorInputs` applies.
     (provider !== null && payload.envEmbeddingApiKeyProviders.includes(provider)) ||
     (typed === undefined
-      ? payload.hasEmbeddingApiKey
+      ? // The stored key counts only for the vendor the draft still selects —
+        // the same reading the route's `mergedVectorInputs` applies to
+        // `stored.hasEmbeddingApiKey` across a switch (DW-69/DW-72).
+        draftEmbeddingKeyStored(draft, payload)
       : typeof typed === "string" && typed.length > 0);
   return {
     provider,
+    // No switch test needed on THIS half: the box itself is blanked the moment
+    // the select moves ({@link settingsDraftAfterEmbeddingProvider}), so the
+    // draft never holds the previous vendor's endpoint to begin with.
     baseUrl: draftText(draft.embeddingBaseUrl),
     model: payload.envEmbeddingModel ?? draftText(draft.embeddingModel),
     hasKey,

@@ -20,6 +20,7 @@ import {
   getRawDir,
   getEmbeddingModelOverride,
   getOllamaBaseUrl,
+  applyWorkbenchSettings,
   _resetConfigCache,
   _resetConfigWarnings,
   type AppConfig,
@@ -1343,5 +1344,105 @@ describe("getEffectiveSettings readOnly", () => {
     process.env.YOPEDIA_READONLY = "1";
     const s = getEffectiveSettings();
     expect(s.readOnly).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyWorkbenchSettings — clear the embedding pair on a vendor switch
+// (DW-69/DW-72)
+// ---------------------------------------------------------------------------
+
+describe("applyWorkbenchSettings — embedding provider secret isolation", () => {
+  /** A store holding OpenAI's endpoint and OpenAI's key. */
+  const openaiStore: AppConfig = {
+    chatModel: "gpt-4o",
+    vectorSearchEnabled: true,
+    embeddingProvider: "openai",
+    embeddingModel: "text-embedding-3-small",
+    embeddingBaseUrl: "https://o/v1",
+    embeddingApiKey: "sk-o",
+  };
+
+  it("drops the key AND the endpoint when the vendor moves", () => {
+    // The bug: one stored pair served whichever vendor was selected, so this
+    // save used to hand Google OpenAI's secret and point it at OpenAI's URL.
+    const saved = applyWorkbenchSettings(openaiStore, { embeddingProvider: "google" });
+    expect(saved.embeddingProvider).toBe("google");
+    expect("embeddingApiKey" in saved).toBe(false);
+    expect("embeddingBaseUrl" in saved).toBe(false);
+    // The model is NOT a credential and is not cleared — nor is the switch, nor
+    // any non-embedding secret.
+    expect(saved.embeddingModel).toBe("text-embedding-3-small");
+    expect(saved.vectorSearchEnabled).toBe(true);
+    expect(saved.chatModel).toBe("gpt-4o");
+  });
+
+  it("lets a credential supplied in the SAME request win over the clear", () => {
+    // Clear, then apply. The delete drops what the STORE held; the patch then
+    // writes what this request carried — which is what lets one save both
+    // switch vendor and land the new vendor's pair.
+    const saved = applyWorkbenchSettings(openaiStore, {
+      embeddingProvider: "google",
+      embeddingApiKey: "g-key",
+      embeddingBaseUrl: "https://g/v1",
+    });
+    expect(saved.embeddingApiKey).toBe("g-key");
+    expect(saved.embeddingBaseUrl).toBe("https://g/v1");
+  });
+
+  it("leaves both fields byte-identical when the same provider is re-sent", () => {
+    // `settingsSaveBody` sends `embeddingProvider` on EVERY save, so this is the
+    // ordinary case, not an edge one. A presence test here would delete the
+    // owner's key on a timeout edit.
+    const saved = applyWorkbenchSettings(openaiStore, {
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingBaseUrl: "https://o/v1",
+    });
+    expect(saved.embeddingApiKey).toBe("sk-o");
+    expect(saved.embeddingBaseUrl).toBe("https://o/v1");
+  });
+
+  it("leaves them alone for a patch that does not mention the provider", () => {
+    // ABSENT means "leave it alone", which is not a move.
+    const saved = applyWorkbenchSettings(openaiStore, { llmTimeoutSeconds: 30 });
+    expect(saved.embeddingApiKey).toBe("sk-o");
+    expect(saved.embeddingBaseUrl).toBe("https://o/v1");
+  });
+
+  it("clears on the way to auto-detect", () => {
+    // The effective vendor may now resolve elsewhere entirely, so the stored
+    // pair is no more trustworthy than it was for a named switch.
+    const saved = applyWorkbenchSettings(openaiStore, { embeddingProvider: null });
+    expect("embeddingProvider" in saved).toBe(false);
+    expect("embeddingApiKey" in saved).toBe(false);
+    expect("embeddingBaseUrl" in saved).toBe(false);
+  });
+
+  it("clears when a provider is chosen where the store had none", () => {
+    const saved = applyWorkbenchSettings(
+      { embeddingBaseUrl: "https://somewhere/v1", embeddingApiKey: "sk-?" },
+      { embeddingProvider: "openai" },
+    );
+    expect("embeddingApiKey" in saved).toBe(false);
+    expect("embeddingBaseUrl" in saved).toBe(false);
+  });
+
+  it("reads a padded stored provider as the same vendor", () => {
+    // Trim-normalised on both sides: a stray space in the store must not read as
+    // a vendor switch and delete a key nobody touched.
+    const saved = applyWorkbenchSettings(
+      { ...openaiStore, embeddingProvider: " openai " as AppConfig["embeddingProvider"] },
+      { embeddingProvider: "openai" },
+    );
+    expect(saved.embeddingApiKey).toBe("sk-o");
+    expect(saved.embeddingBaseUrl).toBe("https://o/v1");
+  });
+
+  it("does not mutate the config it was handed", () => {
+    const existing: AppConfig = { ...openaiStore };
+    applyWorkbenchSettings(existing, { embeddingProvider: "google" });
+    expect(existing.embeddingApiKey).toBe("sk-o");
+    expect(existing.embeddingBaseUrl).toBe("https://o/v1");
   });
 });

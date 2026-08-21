@@ -13,6 +13,7 @@ import {
 import { getEffectiveProvider } from "@/lib/config";
 import {
   SETTINGS_INVALID_URL_COPY,
+  embeddingProviderChanged,
   flatMovableVectorLegs,
   isAbsoluteHttpUrl,
   validateWorkbenchSettingsPatch,
@@ -396,6 +397,43 @@ export async function PUT(request: Request) {
     }
 
     if (body.embeddingProvider !== undefined) {
+      // CLEAR ON SWITCH, through the SHARED predicate (DW-69/DW-72). This flat
+      // branch is the SECOND writer of `embeddingProvider` — `applyWorkbenchSettings`
+      // is the first — and leaving it out would mean the API path went on
+      // handing the new vendor the old vendor's secret and endpoint.
+      //
+      // Measured against `existing`, the store as it was BEFORE this request,
+      // and applied to `updated` BEFORE `workbenchSettingsStored(updated, …)` is
+      // computed below, so the vector gate judges the CLEARED state: with the
+      // switch stored ON and no new key, this refuses 400 rather than silently
+      // switching effective vector search off.
+      //
+      // A body carrying BOTH halves clears once and then no-ops, PROVIDED the
+      // two halves name the same provider — which is the only shape any shipped
+      // surface produces, since no surface sends the flat field and the
+      // `workbench` field with different values. `applyWorkbenchSettings`
+      // receives this already-flat-merged `updated`, so by the time it runs
+      // `existing.embeddingProvider` — which it reads from its own first
+      // argument — is the value this branch just wrote, and its own switch test
+      // is correctly `false`.
+      //
+      // A hand-written body whose two halves DISAGREE
+      // (`{embeddingProvider: "google", workbench: {embeddingProvider: "openai"}}`
+      // against a store on `openai`) clears here and clears AGAIN in the merge,
+      // because each half really is a move. Such a body nets back to `openai`
+      // and still ends with the pair gone, which is over-eager rather than
+      // wrong: it errs toward deleting a credential rather than toward handing
+      // one to a vendor it was not entered for, and that is the safe direction
+      // for the only bodies that can reach it.
+      if (
+        embeddingProviderChanged(
+          existing.embeddingProvider ?? null,
+          body.embeddingProvider ?? null,
+        )
+      ) {
+        delete updated.embeddingApiKey;
+        delete updated.embeddingBaseUrl;
+      }
       if (body.embeddingProvider === null) {
         delete updated.embeddingProvider;
       } else {

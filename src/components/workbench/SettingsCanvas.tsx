@@ -36,11 +36,13 @@ import {
   SETTINGS_TIMEOUT_REASON,
   SECRET_UNTOUCHED,
   draftCanEnableVectorSearch,
+  draftEmbeddingKeyStored,
   draftVectorInputs,
   fetchWorkbenchSettings,
   saveWorkbenchSettings,
   settingsCategory,
   settingsDirty,
+  settingsDraftAfterEmbeddingProvider,
   settingsDraftFromPayload,
   settingsEnvKeyCopy,
   settingsEnvOverrideCopy,
@@ -232,13 +234,26 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
   const stored: WorkbenchSettingsPayload = payload;
 
   const set = <K extends keyof SettingsDraft>(key: K, value: SettingsDraft[K]) => {
-    setDraft((current) => (current ? { ...current, [key]: value } : current));
+    apply((current) => ({ ...current, [key]: value }));
+  };
+
+  /**
+   * The same edit gesture as {@link set}, for a rule that moves MORE THAN ONE
+   * field at once (DW-69/DW-72).
+   *
+   * `set` is the one-key case of this; both clear the status and the refusal for
+   * the same reason. Written as one function so a multi-field rule cannot
+   * quietly skip the resets `set` performs — a stale "needs an API key" sitting
+   * beside a Save after the control that caused it has moved.
+   */
+  function apply(rule: (current: SettingsDraft) => SettingsDraft) {
+    setDraft((current) => (current ? rule(current) : current));
     setStatus("");
     // The refusal described the values that were SENT, so it stops being true
     // the moment the owner starts fixing the field it named — leaving it beside
     // Save would have them reading "needs an API key" while typing one.
     setSaveError(null);
-  };
+  }
 
   const dirty = settingsDirty(draft, payload);
   const vectorInputs = draftVectorInputs(draft, payload);
@@ -540,7 +555,23 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
                 aria-disabled={stored.readOnly || undefined}
                 onChange={(event) => {
                   if (stored.readOnly) return;
-                  set("embeddingProvider", event.target.value);
+                  // NOT a plain `set` (DW-69/DW-72). Moving this select moves
+                  // THREE fields: the endpoint and the key belong to the vendor
+                  // being left behind, and the store deletes both on the save
+                  // this select is about to produce. The rule that decides that
+                  // is the pure one the suite executes — the component applies
+                  // it, it does not restate it.
+                  apply((current) =>
+                    settingsDraftAfterEmbeddingProvider(
+                      current,
+                      event.target.value,
+                      // What the STORE holds — the rule needs it to tell "moved
+                      // to another vendor" (blank the boxes) from "moved back to
+                      // the stored one" (restore them, because the stored pair
+                      // is that vendor's own and the save must not delete it).
+                      stored,
+                    ),
+                  );
                 }}
                 aria-describedby={describedBy(field("embeddingProvider-hint"))}
                 // Only when THIS select holds the wrong value — a provider the
@@ -621,7 +652,13 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
             {secretRow(
               "embeddingApiKey",
               "Embedding API key",
-              stored.hasEmbeddingApiKey,
+              // "A key is stored FOR THE VENDOR THIS DRAFT SELECTS", not
+              // "the store holds a key" (DW-69/DW-72). The bare stored boolean
+              // kept the hint reading "A key is stored." and kept `Remove` on
+              // screen for a credential the next save deletes — the misreport
+              // DW-69 names. Same predicate the browser's vector half reads, so
+              // the row and the switch cannot describe one draft differently.
+              draftEmbeddingKeyStored(values, stored),
               envKeyProvider ? settingsEnvKeyCopy(envKeyProvider) : undefined,
             )}
             <p className="wb-set-row">

@@ -630,7 +630,8 @@ location: src/lib/embeddings.ts:139, src/lib/config.ts (getWorkbenchSettings)
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `embeddingApiKeyFor` reads the same stored value for `openai` and `google`, and `settingsSaveBody` omits an untouched secret — so an owner who stored an OpenAI key and then picks Google sends that key to Google while the hint still reads "A key is stored." Keying the field per provider (or labelling which vendor the stored key belongs to) is a store-shape decision this story's acceptance does not settle; the vector gate's env leg was made provider-aware in this pass, but the STORED key deliberately stayed vendor-agnostic so a provider changed in the draft can still answer the gate before it is saved.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-embedding-provider-secret-isolation
 decision: 2026-08-21 Clear the key on switch — Drop the stored embedding key and its has* flag whenever the embedding provider changes, so a switch never reuses another vendor's secret; no stored shape change, and the owner re-enters the key for the new vendor.
 decision: 2026-08-20 Clear the key on switch — Drop the stored embedding key and its has* flag whenever the embedding provider changes, so a switch never reuses another vendor's secret; no stored shape change, and the owner re-enters the key for the new vendor.
 
@@ -657,7 +658,8 @@ location: src/lib/embeddings.ts:228-238 (_createEmbeddingModel)
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `_createEmbeddingModel` reads `loadConfigSync().embeddingBaseUrl` and applies it to the `openai` and `google` branches alike, with nothing tying the value to the provider it was typed for. This is the endpoint twin of the already-recorded vendor-agnostic `embeddingApiKey`, and it has the same resolution: keying the field per provider is a store-shape decision this story's acceptance does not settle. Nothing breaks today — the pair is usually changed together — but the silent reuse is real.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-embedding-provider-secret-isolation
 decision: 2026-08-21 Clear the base URL on switch — Clear the stored embeddingBaseUrl whenever the embedding provider changes, so an endpoint typed for one vendor is never sent to another; no stored shape change.
 decision: 2026-08-20 Clear the base URL on switch — Clear the stored embeddingBaseUrl whenever the embedding provider changes, so an endpoint typed for one vendor is never sent to another; no stored shape change.
 
@@ -3476,4 +3478,20 @@ source_spec: `spec-dw-322-324-dictionary-guidance-and-request-cache.md`
 location: src/lib/names-terms.ts:236
 severity: low
 reason: `listNamesTerms` returns `[...(await memo)]`, so a caller that sorts or splices its result cannot corrupt the next one (pinned by a test). The entries inside are the same objects, where before the memo each read produced fresh objects from `JSON.parse`. No caller in the repo mutates an entry (`canonicalizeNamesTerm`, `renderNamesTermsGuidance` and `applyNamesTermsToGeneratedText` all read), and the docblock says so, but nothing enforces it — one future `entry.aliases.push(...)` would leak into every later caller of that request. `Object.freeze` on resolve, or a test pinning the object-level invariant, would close it.
+status: open
+
+### DW-398: The EFFECTIVE embedding vendor can move without the stored `embeddingProvider` moving, so the clear never fires and a stored key or endpoint can still reach a vendor it was not entered for.
+origin: spec-deferred e1c07dfbeb93
+source_spec: `spec-dw-69-72-embedding-provider-secret-isolation.md`
+location: src/lib/embeddings.ts:170 (resolveEmbeddingProvider); src/components/workbench/SettingsCanvas.tsx (embedding provider select)
+severity: medium
+reason: `resolveEmbeddingProvider` takes `process.env.EMBEDDING_PROVIDER` ahead of the stored field and falls back to the detected generation provider (`cfg.provider`) when nothing is stored. No save moves either, so `embeddingProviderChanged` never sees a switch: with `EMBEDDING_PROVIDER=google` and a stored OpenAI key, `embeddingApiKeyFor("google", cfg)` still returns it and `_createEmbeddingModel` still passes the stored `embeddingBaseUrl`. Pre-existing, and out of scope for the recorded decisions, whose trigger is literally "whenever `embeddingProvider` changes" — closing it means deciding what a chat-provider change may do to an embedding credential. This pass also makes one NEW consequence reachable on an env-pinned deployment: the stored provider select stays editable there, and moving it now clears the credential the env-selected vendor is using. The surface stays honest (the key hint flips to "No key is stored." and the row's env sentence already says the variable owns the selection),
+status: open
+
+### DW-399: `spec-dw-66-72-settings-credential-fidelity.md` still reads `status: 'in-progress'` for DW-69/DW-72 under the superseded per-provider keying approach.
+origin: spec-deferred ce665a977ec1
+source_spec: `spec-dw-69-72-embedding-provider-secret-isolation.md`
+location: _bmad-output/implementation-artifacts/spec-dw-66-72-settings-credential-fidelity.md
+severity: low
+reason: That spec planned to key `embeddingApiKey`/`embeddingBaseUrl` per provider with a load-time migration. The recorded decisions rule that out, and nothing from it landed — the store is still flat. Its frontmatter is where anyone scanning for open work will look, and it currently claims work is under way on entries this spec resolves.
 status: open

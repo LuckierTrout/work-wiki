@@ -9,6 +9,7 @@ import { getStorage } from "./storage";
 import {
   SETTINGS_LANGUAGE_VALUE,
   canEnableVectorSearch,
+  embeddingProviderChanged,
   isAbsoluteHttpUrl,
   type VectorSearchInputs,
   type WorkbenchSettingsPatch,
@@ -1386,6 +1387,37 @@ export function applyWorkbenchSettings(
       (updated as Record<string, unknown>)[key as string] = trimmed;
     }
   };
+
+  // CLEAR ON SWITCH, decided from `existing` BEFORE any mutation (DW-69/DW-72).
+  //
+  // One `embeddingApiKey` and one `embeddingBaseUrl` serve whichever vendor is
+  // selected, so a save that moves `embeddingProvider` from `openai` to `google`
+  // would otherwise hand Google OpenAI's secret and point it at OpenAI's
+  // endpoint — while the surface still read "A key is stored." and the vector
+  // gate still passed on the strength of the old vendor's credential. The store
+  // is what makes the shared read correct: the fields stay FLAT (no per-provider
+  // keying, no migration), and they are simply dropped when the vendor moves.
+  //
+  // A VALUE comparison, never presence: `settingsSaveBody` sends
+  // `embeddingProvider` on every save, so presence would clear the key on an
+  // unrelated timeout edit. Absent from the patch means "leave it alone", which
+  // is not a move — hence the `undefined` arm below reads `existing`.
+  //
+  // CLEAR, THEN APPLY. The delete drops what the STORE held; the `setText` calls
+  // below then write whatever THIS request explicitly carried. That order is
+  // what lets one save both switch vendor and supply the new credential.
+  const embeddingProviderSwitched = embeddingProviderChanged(
+    existing.embeddingProvider ?? null,
+    patch.embeddingProvider === undefined
+      ? existing.embeddingProvider ?? null
+      : patch.embeddingProvider,
+  );
+  if (embeddingProviderSwitched) {
+    // …and the derived `hasEmbeddingApiKey` flag follows for free: every payload
+    // builder reads it off the store.
+    delete updated.embeddingApiKey;
+    delete updated.embeddingBaseUrl;
+  }
 
   setText("chatProvider", patch.chatProvider);
   setText("chatModel", patch.chatModel);
