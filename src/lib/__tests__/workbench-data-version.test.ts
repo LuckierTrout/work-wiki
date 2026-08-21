@@ -46,7 +46,8 @@ import {
 } from "../data-version";
 import {
   DATA_VERSION_POLL_MS,
-  DATA_VERSION_REFRESH_ATTEMPTS,
+  DATA_VERSION_REFRESH_SETTLE_MS,
+  DATA_VERSION_REFRESH_WINDOW_MS,
   DATA_VERSION_ROUTE,
   NO_DATA_VERSION_REFRESH,
   _resetDataVersionListeners,
@@ -424,6 +425,28 @@ describe("fetchDataVersion", () => {
 
 describe("dataVersionRefreshPlan", () => {
   /**
+   * The clock origin every case below is written against, deliberately AWAY
+   * from zero: a rule that forgot to stamp `firstRefreshAt` would leave it at
+   * `0`, and with `T0 = 0` a span computed from that zero is indistinguishable
+   * from the right answer.
+   */
+  const T0 = 1_000;
+  const WINDOW = DATA_VERSION_REFRESH_WINDOW_MS;
+  const SETTLE = DATA_VERSION_REFRESH_SETTLE_MS;
+  /**
+   * The most refreshes one observed version can ever cost. Refreshes for a
+   * version are at least SETTLE apart, and one is issued only while those
+   * already out span LESS than `WINDOW - SETTLE` — the span read AT THE MOMENT
+   * OF THE DECISION, not the span the version ends up with, which a gap can
+   * push far past that bound (the idle-gap case below is exactly that). So
+   * before the n-th refresh the span is at least `(n - 2) * SETTLE`, which is
+   * under the bound only for `n <= ceil(WINDOW / SETTLE)`. Derived here rather
+   * than hard-coded, so the drives below assert the BOUND and not a number that
+   * happens to match.
+   */
+  const CEILING = Math.ceil(WINDOW / SETTLE);
+
+  /**
    * A no-op branch must hand back the SAME object it was given, not a copy.
    * `toEqual({ refresh: false, state })` is satisfied by a branch returning
    * `{ ...state }`, which reads identically — so the identity is what turns
@@ -433,6 +456,7 @@ describe("dataVersionRefreshPlan", () => {
   function expectUnchanged(input: {
     served: number;
     polled: number;
+    now: number;
     state: DataVersionRefreshState;
   }): void {
     const plan = dataVersionRefreshPlan(input);
@@ -440,142 +464,424 @@ describe("dataVersionRefreshPlan", () => {
     expect(plan.state).toBe(input.state);
   }
 
-  /** Drive the rule the way the watcher does: feed each answer back in. */
+  /** The same answer, poll after poll — a route that never catches up. */
+  function repeated(version: number, count: number): number[] {
+    return Array.from({ length: count }, () => version);
+  }
+
+  /**
+   * Drive the rule the way the watcher does: feed each answer back in, one poll
+   * every `cadenceMs`. The cadence is an ARGUMENT because the whole of DW-377
+   * is that the budget must not move with it — the old rule counted qualifying
+   * polls, so driving the same degraded route twice as fast bought twice the
+   * renders.
+   */
   function drive(
     served: number,
     polls: readonly number[],
-  ): { refreshes: number; state: DataVersionRefreshState } {
+    cadenceMs: number,
+  ): { refreshes: number; refreshedAt: number[]; state: DataVersionRefreshState } {
     let state: DataVersionRefreshState = NO_DATA_VERSION_REFRESH;
-    let refreshes = 0;
-    for (const polled of polls) {
-      const plan = dataVersionRefreshPlan({ served, polled, state });
+    const refreshedAt: number[] = [];
+    polls.forEach((polled, tick) => {
+      const now = T0 + tick * cadenceMs;
+      const plan = dataVersionRefreshPlan({ served, polled, now, state });
       state = plan.state;
-      if (plan.refresh) refreshes += 1;
-    }
-    return { refreshes, state };
+      if (plan.refresh) refreshedAt.push(now);
+    });
+    return { refreshes: refreshedAt.length, refreshedAt, state };
   }
 
-  it("starts from nothing refreshed for, and is bounded by one constant", () => {
-    expect(NO_DATA_VERSION_REFRESH).toEqual({ version: 0, attempts: 0 });
-    // A FIXED number of wasted renders in the degraded case — asserted rather
-    // than merely imported, because "bounded" is the whole safety argument and
-    // a cap quietly raised to 30 would keep every other case below green.
-    expect(DATA_VERSION_REFRESH_ATTEMPTS).toBe(3);
+  it("starts from nothing refreshed for, bounded by two wall-clock constants", () => {
+    expect(NO_DATA_VERSION_REFRESH).toEqual({
+      version: 0,
+      firstRefreshAt: 0,
+      lastRefreshAt: 0,
+    });
     // Frozen: this one object is the seed in every mounted watcher's ref AND
-    // what three branches hand straight back, so a mutation anywhere would
+    // what several branches hand straight back, so a mutation anywhere would
     // reach every watcher in the tab. `readonly` is erased at build time.
     expect(Object.isFrozen(NO_DATA_VERSION_REFRESH)).toBe(true);
+
+    // Asserted rather than merely imported, because "bounded" is the whole
+    // safety argument and a window quietly raised to 30 minutes would keep
+    // every other case below green.
+    expect(WINDOW).toBe(30_000);
+    expect(SETTLE).toBe(10_000);
+    // …and the RELATIONSHIP, which neither value pins on its own: `SETTLE = 0`
+    // makes the ceiling `Infinity` (every poll in the window refreshes),
+    // `SETTLE >= WINDOW` deletes the retry entirely (the DW-48 regression), and
+    // both files would happily assert against either.
+    expect(SETTLE).toBeGreaterThan(0);
+    expect(SETTLE).toBeLessThan(WINDOW);
+    expect(CEILING).toBe(3);
+  });
+
+  it("spells both bounds as plain millisecond literals, not as multiples of the cadence", async () => {
+    // The point of DW-377: changing the poll cadence must change NEITHER bound.
+    // A `WINDOW = DATA_VERSION_POLL_MS * 3` would satisfy every behavioural
+    // case in this file today and silently re-couple the budget to the cadence.
+    const source = await readSource("lib/workbench-data-version.ts");
+    expect(source).toContain("export const DATA_VERSION_REFRESH_WINDOW_MS = 30_000;");
+    expect(source).toContain("export const DATA_VERSION_REFRESH_SETTLE_MS = 10_000;");
+    const code = source
+      .split("\n")
+      .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+      .map((line) => line.replace(/(^|\s)\/\/.*$/, ""))
+      .join("\n");
+    // The cadence is DECLARED here and referenced nowhere in this module's
+    // code — the `{@link}`s in the prose above are comments and are stripped.
+    expect(code).toContain("export const DATA_VERSION_POLL_MS = 10_000;");
+    expect(code.match(/DATA_VERSION_POLL_MS/g) ?? []).toHaveLength(1);
+    // The old count is gone, name and concept alike.
+    expect(source).not.toContain("DATA_VERSION_REFRESH_ATTEMPTS");
+    expect(code).not.toMatch(/attempts/i);
   });
 
   it("refreshes when the served number moved forward", () => {
     expect(
-      dataVersionRefreshPlan({ served: 3, polled: 4, state: NO_DATA_VERSION_REFRESH }),
-    ).toEqual({ refresh: true, state: { version: 4, attempts: 1 } });
+      dataVersionRefreshPlan({
+        served: 3,
+        polled: 4,
+        now: T0,
+        state: NO_DATA_VERSION_REFRESH,
+      }),
+    ).toEqual({
+      refresh: true,
+      state: { version: 4, firstRefreshAt: T0, lastRefreshAt: T0 },
+    });
     expect(
-      dataVersionRefreshPlan({ served: 0, polled: 1, state: NO_DATA_VERSION_REFRESH }),
-    ).toEqual({ refresh: true, state: { version: 1, attempts: 1 } });
+      dataVersionRefreshPlan({
+        served: 0,
+        polled: 1,
+        now: T0,
+        state: NO_DATA_VERSION_REFRESH,
+      }),
+    ).toEqual({
+      refresh: true,
+      state: { version: 1, firstRefreshAt: T0, lastRefreshAt: T0 },
+    });
   });
 
   it("stops as soon as the re-render caught up", () => {
     // The refresh landed and the new baseline IS the polled number, so there is
     // nothing outstanding — and the state does not move, whatever it holds.
-    const state: DataVersionRefreshState = { version: 4, attempts: 1 };
-    expectUnchanged({ served: 4, polled: 4, state });
+    const state: DataVersionRefreshState = {
+      version: 4,
+      firstRefreshAt: T0,
+      lastRefreshAt: T0,
+    };
+    expectUnchanged({ served: 4, polled: 4, now: T0 + WINDOW, state });
     // A baseline that overshot (other writes landed with it) is caught up too.
-    expectUnchanged({ served: 6, polled: 4, state });
+    expectUnchanged({ served: 6, polled: 4, now: T0 + WINDOW, state });
   });
 
-  it("retries when the re-render did NOT catch up (DW-48)", () => {
-    // The whole point of this rule. `router.refresh()` re-ran the server render,
+  it("declines a repeat while the previous refresh is still in flight (DW-377)", () => {
+    // `router.refresh()` returns `void` and its render lands asynchronously, so
+    // an answer arriving 500ms later is not "the re-render did not catch up" —
+    // it is "the re-render has not happened yet". Refreshing on it burns a
+    // render for nothing, which is what a burst of saves or alt-tabs used to do.
+    const state: DataVersionRefreshState = {
+      version: 4,
+      firstRefreshAt: T0,
+      lastRefreshAt: T0,
+    };
+    expectUnchanged({ served: 3, polled: 4, now: T0 + 500, state });
+    expectUnchanged({ served: 3, polled: 4, now: T0 + SETTLE - 1, state });
+
+    // …and a whole BURST of triggers inside the settle interval spends nothing:
+    // 50 polls 100ms apart issue exactly one refresh, and the budget for 4 is
+    // untouched — a poll past the interval still gets the retry it is owed.
+    const burst = drive(3, repeated(4, 50), 100);
+    expect(burst.refreshes).toBe(1);
+    expect(burst.refreshedAt).toEqual([T0]);
+    expect(burst.state).toEqual({ version: 4, firstRefreshAt: T0, lastRefreshAt: T0 });
+    expect(
+      dataVersionRefreshPlan({ served: 3, polled: 4, now: T0 + SETTLE, state: burst.state }),
+    ).toEqual({
+      refresh: true,
+      state: { version: 4, firstRefreshAt: T0, lastRefreshAt: T0 + SETTLE },
+    });
+  });
+
+  it("retries once the refresh has settled and the baseline is still behind (DW-48)", () => {
+    // The whole point of the retry. `router.refresh()` re-ran the server render,
     // but THAT render's own read answered the pre-bump integer, so the baseline
     // is still behind the version refreshed for. The old rule recorded 4 as
     // done and left the trees stale until the next write; this one tries again.
     expect(
-      dataVersionRefreshPlan({ served: 3, polled: 4, state: { version: 4, attempts: 1 } }),
-    ).toEqual({ refresh: true, state: { version: 4, attempts: 2 } });
-    expect(
-      dataVersionRefreshPlan({ served: 3, polled: 4, state: { version: 4, attempts: 2 } }),
-    ).toEqual({ refresh: true, state: { version: 4, attempts: 3 } });
+      dataVersionRefreshPlan({
+        served: 3,
+        polled: 4,
+        now: T0 + SETTLE,
+        state: { version: 4, firstRefreshAt: T0, lastRefreshAt: T0 },
+      }),
+    ).toEqual({
+      refresh: true,
+      state: { version: 4, firstRefreshAt: T0, lastRefreshAt: T0 + SETTLE },
+    });
   });
 
   it("retries, then stops the moment a later render catches up", () => {
     // The DW-48 SUCCESS story end to end, which neither the single-step cases
-    // above nor the give-up loop below tells: the first re-render lagged, the
+    // above nor the give-up drive below tells: the first re-render lagged, the
     // retry went out, THAT render landed with the bump — and the retries stop
-    // because the baseline arrived, not because the cap ran out. Asserted as a
-    // sequence because each step's input is the previous step's output, and a
+    // because the baseline arrived, not because the budget ran out. Asserted as
+    // a sequence because each step's input is the previous step's output, and a
     // rule that recorded the wrong version would still pass every case in
     // isolation.
     let state: DataVersionRefreshState = NO_DATA_VERSION_REFRESH;
-    const first = dataVersionRefreshPlan({ served: 3, polled: 4, state });
+    const first = dataVersionRefreshPlan({ served: 3, polled: 4, now: T0, state });
     expect(first.refresh).toBe(true);
     state = first.state;
 
     // The re-render's own read answered the pre-bump integer: still serving 3.
-    const retry = dataVersionRefreshPlan({ served: 3, polled: 4, state });
+    const retry = dataVersionRefreshPlan({ served: 3, polled: 4, now: T0 + SETTLE, state });
     expect(retry.refresh).toBe(true);
-    expect(retry.state).toEqual({ version: 4, attempts: 2 });
+    expect(retry.state).toEqual({
+      version: 4,
+      firstRefreshAt: T0,
+      lastRefreshAt: T0 + SETTLE,
+    });
     state = retry.state;
 
-    // …and THIS one landed. Every poll from here on is a no-op, and the count
-    // stopped at 2 — below the cap, so it was the catch-up that ended it.
-    expectUnchanged({ served: 4, polled: 4, state });
-    expectUnchanged({ served: 4, polled: 4, state });
-    expect(state.attempts).toBeLessThan(DATA_VERSION_REFRESH_ATTEMPTS);
+    // …and THIS one landed. Every poll from here on is a no-op, and the
+    // refreshes issued span only SETTLE — well inside the budget, so it was the
+    // catch-up that ended it and not the bound.
+    expectUnchanged({ served: 4, polled: 4, now: T0 + 2 * SETTLE, state });
+    expectUnchanged({ served: 4, polled: 4, now: T0 + WINDOW * 4, state });
+    expect(state.lastRefreshAt - state.firstRefreshAt).toBeLessThan(WINDOW - SETTLE);
   });
 
-  it("gives up at the cap — a degraded read costs a fixed number of renders", () => {
+  it("pins BOTH edges of the budget — the last legal refresh and the first refused one", () => {
     // `page.tsx` stuck at 0 while the route answers 7 is a baseline that NEVER
-    // catches up. Without the cap this is `router.refresh()` every tick forever.
-    expectUnchanged({ served: 0, polled: 7, state: { version: 7, attempts: 3 } });
+    // catches up. Without the bound this is `router.refresh()` every poll
+    // forever. The bound is the SPAN of the refreshes already issued, so both
+    // sides of it are exact numbers rather than a range: assert only the refusal
+    // and the whole bound could be tightened by a third with the suite green.
+    const spent = WINDOW - SETTLE;
+    // One millisecond inside the span: still owed a retry.
+    const almost: DataVersionRefreshState = {
+      version: 7,
+      firstRefreshAt: T0,
+      lastRefreshAt: T0 + spent - 1,
+    };
+    expect(
+      dataVersionRefreshPlan({ served: 0, polled: 7, now: T0 + spent - 1 + SETTLE, state: almost }),
+    ).toEqual({
+      refresh: true,
+      state: { version: 7, firstRefreshAt: T0, lastRefreshAt: T0 + spent - 1 + SETTLE },
+    });
+    // Exactly ON the bound: spent, and the state does not move again.
+    expectUnchanged({
+      served: 0,
+      polled: 7,
+      now: T0 + spent + SETTLE,
+      state: { version: 7, firstRefreshAt: T0, lastRefreshAt: T0 + spent },
+    });
+    // …and no later poll ever revives it, however long it waits.
+    expectUnchanged({
+      served: 0,
+      polled: 7,
+      now: T0 + WINDOW * 100,
+      state: { version: 7, firstRefreshAt: T0, lastRefreshAt: T0 + spent },
+    });
+  });
 
-    // Driven as the watcher drives it: from the seed, the same pair of numbers
-    // repeated forever yields exactly DATA_VERSION_REFRESH_ATTEMPTS refreshes.
-    const run = drive(0, Array.from({ length: 25 }, () => 7));
-    expect(run.refreshes).toBe(DATA_VERSION_REFRESH_ATTEMPTS);
-    expect(run.state).toEqual({ version: 7, attempts: DATA_VERSION_REFRESH_ATTEMPTS });
+  it("measures the budget from the FIRST refresh, so retries cannot slide it", () => {
+    // Driven as the watcher drives it, at the real cadence: the same pair of
+    // numbers repeated forever yields exactly CEILING refreshes, each SETTLE
+    // after the last, and then nothing. Measure the span from the LAST refresh
+    // instead — the obvious "reset the window on every retry" mistake — and
+    // this drive never stops.
+    const run = drive(0, repeated(7, 25), DATA_VERSION_POLL_MS);
+    expect(run.refreshes).toBe(CEILING);
+    expect(run.refreshedAt).toEqual([T0, T0 + SETTLE, T0 + 2 * SETTLE]);
+    expect(run.state).toEqual({
+      version: 7,
+      firstRefreshAt: T0,
+      lastRefreshAt: T0 + 2 * SETTLE,
+    });
+  });
+
+  it("does not spend the budget on time in which it issued nothing", () => {
+    // The watcher stops polling entirely while the tab is hidden, and a sleeping
+    // machine issues nothing either. A give-up measured as raw elapsed wall
+    // clock (`now - firstRefreshAt >= WINDOW`) would be BURNED by that silence
+    // and decline the retry forever — reinstating the DW-48 symptom in the
+    // single most likely way for 30s to pass without a poll: alt-tabbing away.
+    const state: DataVersionRefreshState = {
+      version: 4,
+      firstRefreshAt: T0,
+      lastRefreshAt: T0,
+    };
+    const back = dataVersionRefreshPlan({
+      served: 3,
+      polled: 4,
+      now: T0 + WINDOW * 2,
+      state,
+    });
+    expect(back).toEqual({
+      refresh: true,
+      state: { version: 4, firstRefreshAt: T0, lastRefreshAt: T0 + WINDOW * 2 },
+    });
+    // …and the gap spent the budget in one step, because the SPAN jumped with
+    // it: the degenerate direction of every clock oddity is FEWER refreshes.
+    expectUnchanged({ served: 3, polled: 4, now: T0 + WINDOW * 4, state: back.state });
+  });
+
+  it("keeps the same ceiling however fast or slow the polls arrive", () => {
+    // The old rule counted qualifying POLLS, so a burst of saves or a faster
+    // cadence bought more renders for the same degraded read. These three drives
+    // are the same route and the same baseline at three cadences: 40× faster
+    // than the interval, the interval itself, and 6× slower.
+    const fast = drive(0, repeated(7, 400), 250);
+    const cadence = drive(0, repeated(7, 25), DATA_VERSION_POLL_MS);
+    const slow = drive(0, repeated(7, 10), 60_000);
+
+    for (const run of [fast, cadence, slow]) {
+      expect(run.refreshes).toBeLessThanOrEqual(CEILING);
+      expect(run.state.version).toBe(7);
+    }
+    // The ceiling is REACHED at both cadences that can reach it, and the
+    // timeline is deterministic, so it is asserted exactly.
+    expect(fast.refreshes).toBe(cadence.refreshes);
+    expect(fast.refreshedAt).toEqual([T0, T0 + SETTLE, T0 + 2 * SETTLE]);
+    expect(cadence.refreshedAt).toEqual([T0, T0 + SETTLE, T0 + 2 * SETTLE]);
+    // A cadence slower than the budget simply cannot spend it all — fewer
+    // renders, never more, and never a loop.
+    expect(slow.refreshedAt).toEqual([T0, T0 + 60_000]);
   });
 
   it("stays bounded when the route FLAPS between two versions", () => {
-    // The cap is only a cap if the attempt version cannot be rewritten
+    // The bound is only a bound if the refreshed-for version cannot be rewritten
     // downward. Relax the retry branch's equality to `polled <= state.version`
     // and every single-step case in this file still passes — while a route
-    // alternating 7 and 5 against a degraded baseline re-arms the count on each
-    // backwards read and refreshes forever, which is precisely the loop the cap
-    // exists to prevent. Driven, because the failure only appears in sequence.
+    // alternating 7 and 5 against a degraded baseline re-arms the budget on each
+    // backwards read and refreshes forever, which is precisely the loop the
+    // bound exists to prevent. Driven, because it only appears in sequence.
     const flapping = Array.from({ length: 25 }, (_, tick) => (tick % 2 === 0 ? 7 : 5));
-    const run = drive(0, flapping);
-    expect(run.refreshes).toBe(DATA_VERSION_REFRESH_ATTEMPTS);
-    // The high-water mark never moved down: 5 was never recorded as attempted.
-    expect(run.state).toEqual({ version: 7, attempts: DATA_VERSION_REFRESH_ATTEMPTS });
+    const run = drive(0, flapping, DATA_VERSION_POLL_MS);
+    // Exact, not a range: the timeline is deterministic. The 5s land between
+    // the 7s, so the retries fall on every OTHER tick.
+    expect(run.refreshedAt).toEqual([T0, T0 + 2 * DATA_VERSION_POLL_MS]);
+    // The high-water mark never moved down: 5 was never recorded as refreshed
+    // for, and its stamps never touched the budget for 7.
+    expect(run.state).toEqual({
+      version: 7,
+      firstRefreshAt: T0,
+      lastRefreshAt: T0 + 2 * DATA_VERSION_POLL_MS,
+    });
   });
 
   it("starts over for a new bump, even after giving up", () => {
     // Giving up is per VERSION, never a latch on the watcher: a real write
-    // arriving after a degraded stretch still refreshes.
+    // arriving after a degraded stretch still refreshes, and its budget starts
+    // clean at the moment of that refresh.
     expect(
-      dataVersionRefreshPlan({ served: 0, polled: 8, state: { version: 7, attempts: 3 } }),
-    ).toEqual({ refresh: true, state: { version: 8, attempts: 1 } });
+      dataVersionRefreshPlan({
+        served: 0,
+        polled: 8,
+        now: T0 + WINDOW,
+        state: { version: 7, firstRefreshAt: T0, lastRefreshAt: T0 + WINDOW - SETTLE },
+      }),
+    ).toEqual({
+      refresh: true,
+      state: { version: 8, firstRefreshAt: T0 + WINDOW, lastRefreshAt: T0 + WINDOW },
+    });
   });
 
   it("ignores a backwards read — eventual consistency is not a change", () => {
-    expectUnchanged({ served: 5, polled: 4, state: NO_DATA_VERSION_REFRESH });
+    expectUnchanged({ served: 5, polled: 4, now: T0, state: NO_DATA_VERSION_REFRESH });
   });
 
-  it("ignores a poll that lands behind an outstanding attempt", () => {
+  it("ignores a poll that lands behind an outstanding refresh", () => {
     // A refresh is already out for 4 and this poll answers the number already
     // on screen: nothing to do, and nothing to record — recording it would
     // otherwise re-arm the retry for a version the render is already handling.
-    expectUnchanged({ served: 3, polled: 3, state: { version: 4, attempts: 1 } });
-    // …and a read BELOW the attempted version while the baseline lags is the
-    // same backwards read, not a reason to restart the count at one — whether
-    // the attempts for that version are spent…
-    expectUnchanged({ served: 0, polled: 5, state: { version: 7, attempts: 3 } });
-    // …or still REMAINING, which is the case that separates `polled ===
+    const outstanding: DataVersionRefreshState = {
+      version: 4,
+      firstRefreshAt: T0,
+      lastRefreshAt: T0,
+    };
+    expectUnchanged({ served: 3, polled: 3, now: T0 + WINDOW, state: outstanding });
+    // …and a read BELOW the refreshed-for version while the baseline lags is the
+    // same backwards read, not a reason to restart the budget — whether that
+    // version's budget is spent…
+    expectUnchanged({
+      served: 0,
+      polled: 5,
+      now: T0 + WINDOW,
+      state: { version: 7, firstRefreshAt: T0, lastRefreshAt: T0 + WINDOW - SETTLE },
+    });
+    // …or still OPEN, which is the case that separates `polled ===
     // state.version` from `polled <= state.version`: the loose form refreshes
-    // here and rewrites the attempt version down to 5, losing the high-water
-    // mark that bounds the whole thing.
-    expectUnchanged({ served: 0, polled: 5, state: { version: 7, attempts: 1 } });
+    // here and rewrites the version down to 5, losing the high-water mark that
+    // bounds the whole thing.
+    expectUnchanged({
+      served: 0,
+      polled: 5,
+      now: T0 + SETTLE,
+      state: { version: 7, firstRefreshAt: T0, lastRefreshAt: T0 },
+    });
+  });
+
+  it("declines when the clock jumps BACKWARDS", () => {
+    // `now - lastRefreshAt` goes negative, which the settle guard reads as "has
+    // not landed yet". Fewer refreshes, never more — and the next forward
+    // reading gets the retry, so nothing is stranded.
+    expectUnchanged({
+      served: 3,
+      polled: 4,
+      now: T0 - 500,
+      state: { version: 4, firstRefreshAt: T0, lastRefreshAt: T0 },
+    });
+  });
+
+  it("declines on a clock reading that is not a finite number", () => {
+    // Every elapsed comparison against `NaN` is `false`, so WITHOUT the finite
+    // guard the settle branch falls through, the spent branch is unreachable for
+    // a state whose own stamps are `NaN`, and the rule refreshes on every poll
+    // forever — the exact loop the bound exists to prevent, with the whole suite
+    // otherwise green. A new bump still refreshes: that branch reads no clock
+    // it must compare, and stranding real data on a broken clock would be worse.
+    const state: DataVersionRefreshState = {
+      version: 4,
+      firstRefreshAt: T0,
+      lastRefreshAt: T0,
+    };
+    const readings = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
+    for (const now of readings) {
+      expectUnchanged({ served: 3, polled: 4, now, state });
+    }
+    // …but a NEW BUMP still refreshes on the same unreadable clock, and THIS is
+    // the assertion that holds the guard where it is. Hoisting the finiteness
+    // check above the new-bump branch — the natural "never act on a clock we
+    // cannot read" tidy-up — leaves every other case in both suites green while
+    // silently deciding that a broken clock should strand real data. It should
+    // not: that branch compares no clock, it only STAMPS one, so the worst a
+    // bad reading does there is spend that version's whole budget at once,
+    // which is the direction every other clock case degrades in too.
+    for (const now of readings) {
+      expect(
+        dataVersionRefreshPlan({ served: 3, polled: 5, now, state }).refresh,
+      ).toBe(true);
+      expect(
+        dataVersionRefreshPlan({
+          served: 3,
+          polled: 5,
+          now,
+          state: NO_DATA_VERSION_REFRESH,
+        }).refresh,
+      ).toBe(true);
+    }
+    // …and a state already poisoned by such a reading cannot loop either.
+    expectUnchanged({
+      served: 3,
+      polled: 4,
+      now: T0 + WINDOW,
+      state: { version: 4, firstRefreshAt: Number.NaN, lastRefreshAt: Number.NaN },
+    });
   });
 });
 
@@ -1049,8 +1355,8 @@ describe("DataVersionWatcher", () => {
     // render so a poll compares against the payload now on screen.
     expect(source).toContain("useWorkbenchData()");
     expect(source).toContain("servedRef.current = dataVersion;");
-    // The attempt state is the rule's answer, assigned verbatim. The watcher
-    // decides nothing about how many refreshes a version has cost.
+    // The refresh state is the rule's answer, assigned verbatim. The watcher
+    // decides nothing about how much of a version's budget has been spent.
     expect(source).toContain("refreshStateRef.current = plan.state;");
     // Ref state, seeded from the module's own initial value: it resets on
     // remount and there is nowhere for it to be persisted.
@@ -1063,10 +1369,14 @@ describe("DataVersionWatcher", () => {
     expect(source).toContain("served: servedRef.current,");
     expect(source).toContain("polled: result.version,");
     expect(source).toContain("state: refreshStateRef.current,");
+    // The clock READING is the watcher's to take — it is the one thing the pure
+    // rule cannot get for itself — and it is handed over raw. Nothing is
+    // computed from it here.
+    expect(source).toContain("now: Date.now(),");
     // Strip the comments first: the docblock explains forward-only comparison
-    // and the retry bound in prose, and prose is neither a comparison nor a
-    // count. TRAILING comments are stripped too — a whole-line filter alone
-    // leaves `refreshStateRef.current = plan.state; // attempts + 1` behind,
+    // and the retry budget in prose, and prose is neither a comparison nor
+    // arithmetic. TRAILING comments are stripped too — a whole-line filter
+    // alone leaves `refreshStateRef.current = plan.state; // + 1` behind,
     // which trips both guards below on what is still only prose.
     const code = source
       .split("\n")
@@ -1074,12 +1384,16 @@ describe("DataVersionWatcher", () => {
       .map((line) => line.replace(/(^|\s)\/\/.*$/, ""))
       .join("\n");
     expect(code).not.toMatch(/(version|Version|polled|served)\s*[<>]=?\s*/);
-    // …and the retry is counted in the rule, not here: no attempt arithmetic
-    // and no cap of the watcher's own. An `attempts + 1` inlined here would
-    // pass every other assertion in this file while owning half the policy.
-    // Case-insensitive, so a `ATTEMPTS`/`Attempts` spelling cannot slip past.
+    // …and the budget is kept in the rule, not here: no bound of the watcher's
+    // own, in either the old count's spelling or the new one's. An inlined
+    // `Date.now() - last < 10_000` here would pass every other assertion in
+    // this file while owning half the policy. Case-insensitive, so a
+    // `Settle`/`SETTLE` spelling cannot slip past.
     expect(code).not.toMatch(/attempts/i);
+    expect(code).not.toMatch(/settle/i);
     expect(code).not.toContain("DATA_VERSION_REFRESH_ATTEMPTS");
+    expect(code).not.toContain("DATA_VERSION_REFRESH_WINDOW_MS");
+    expect(code).not.toContain("DATA_VERSION_REFRESH_SETTLE_MS");
     // The arithmetic ban is ANCHORED to the state handling rather than applied
     // to the whole file: some unrelated `+ 1` elsewhere in this component is
     // not this story's business, but one between the plan call and the refresh
@@ -1090,6 +1404,17 @@ describe("DataVersionWatcher", () => {
     );
     expect(stateHandling).toContain("refreshStateRef.current = plan.state;");
     expect(stateHandling).not.toMatch(/[+\-]\s*\d/);
+    // Nothing is COMPUTED from the reading, and no bound is spelled next to it:
+    // no arithmetic hanging off `Date.now()`, no comparison at all, and no
+    // millisecond literal for a `30_000`/`10_000` to hide in.
+    expect(stateHandling).not.toMatch(/Date\.now\(\)\s*[+\-*/%]/);
+    expect(stateHandling).not.toMatch(/[<>]=?/);
+    expect(stateHandling).not.toMatch(/\d[\d_]{2,}/);
+    // …and the reading is taken ONCE, here. The occurrence guard is anchored to
+    // this slice for the same reason the arithmetic ban is: an unrelated clock
+    // read elsewhere in this component is not this story's business.
+    expect(stateHandling).toContain("now: Date.now(),");
+    expect(stateHandling.match(/Date\.now\(\)/g) ?? []).toHaveLength(1);
   });
 
   it("uses the decision's answer the right way round", async () => {

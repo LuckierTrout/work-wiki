@@ -3321,7 +3321,8 @@ source_spec: `spec-dw-48-data-version-refresh-retry.md`
 location: src/components/workbench/DataVersionWatcher.tsx (run), src/lib/workbench-data-version.ts (DATA_VERSION_REFRESH_ATTEMPTS)
 severity: medium
 reason: `run()` has three triggers: the `DATA_VERSION_POLL_MS` interval, `visibilitychange` -> visible, and the `requestDataVersionCheck()` save nudge (`PreviewColumn.tsx`). Every qualifying poll from any of them spends an attempt, so three alt-tabs or three saves that all still answer the same version drive `attempts` from 0 to `DATA_VERSION_REFRESH_ATTEMPTS` in milliseconds and re-strand that version — the DW-48 symptom, now probabilistic rather than certain. The same shape covers an in-flight `router.refresh()` still rendering when the next tick fires: a merely slow re-render reads as "did not catch up" and burns an attempt. A wall-clock window (which DW-48's own wording offered as an alternative to a count) or an in-flight guard would close it; both are refresh-policy decisions beyond the bounded-count reading this story implemented, and the count reading is strictly better than the single-shot stamp it replaced in every case.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-data-version-refresh-budget
 
 ### DW-378: `readWikiPage` answers `null` for a page that is UNREADABLE as well as one that is absent, so a storage blip on the page write's merge-base read is reported as `404 page not found`.
 origin: spec-deferred e2c2f3bbd280
@@ -3580,4 +3581,20 @@ source_spec: `spec-dw-374-375-376-unconfirmed-write-reporting.md`
 location: src/components/workbench/WikiSwitcher.tsx (switchWiki)
 severity: low
 reason: `switchWiki` guards only on `switching`, which `finally` clears, and the `<select>` is live again the moment the unconfirmed sentence appears. Two PUTs to /api/wikis/current can then settle out of order, leaving the active wiki — which decides which schema.md every prompt executes — set by whichever answer landed last. DW-375 names only create, rename and delete, and a `<select>` has no confirm to latch, so this needs its own decision about what the right affordance is (roll the picker back and hold it, or leave it live because a switch is idempotent per target).
+status: open
+
+### DW-410: The dataVersion refresh budget is per MOUNTED WATCHER, not per tab, so any remount silently re-arms it.
+origin: spec-deferred 9aba3688e217
+source_spec: `spec-dw-377-data-version-refresh-budget.md`
+location: src/components/workbench/DataVersionWatcher.tsx (refreshStateRef)
+severity: low
+reason: `refreshStateRef` seeds from `NO_DATA_VERSION_REFRESH` on every mount (`DataVersionWatcher.tsx`), so React StrictMode's development double-mount, a route change, or any remount of the Workbench shell hands the watcher a fresh budget for a version it has already spent one on. Both the rule's docblock and `data-version.ts`'s prose read as a per-tab guarantee ("a degraded read costs a fixed number of wasted renders per observed version") and are really a per-mount one. Pre-existing: DW-48 shipped the same ref-seeded shape and its docblock names the reset as a feature (nothing persisted) without noting it is also the escape hatch from the bound. Not caused by this story, which only changes what the state holds.
+status: open
+
+### DW-411: `pnpm vitest` and `pnpm lint` abort before running, so the repo's own documented commands cannot be used and every verification runs through `npx`.
+origin: spec-deferred a82805fc5057
+source_spec: `spec-dw-377-data-version-refresh-budget.md`
+location: package.json / pnpm-workspace.yaml
+severity: low
+reason: Both abort with `ERROR packages field missing or empty` from the pnpm workspace config; `npx vitest run` and `npx eslint .` on the same tree run clean. `spec-dw-48-data-version-refresh-retry.md`'s Auto Run Result records the identical failure, so it long predates this story. It matters because `vitest.config.ts`'s own comment states that `.github/workflows/ci.yml` runs `pnpm test` and nothing else — whatever the exact script resolution, the documented developer entry points are broken.
 status: open

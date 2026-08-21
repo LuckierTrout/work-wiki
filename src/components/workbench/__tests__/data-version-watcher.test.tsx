@@ -7,7 +7,8 @@ import {
 } from "@/components/workbench/WorkbenchData";
 import {
   DATA_VERSION_POLL_MS,
-  DATA_VERSION_REFRESH_ATTEMPTS,
+  DATA_VERSION_REFRESH_SETTLE_MS,
+  DATA_VERSION_REFRESH_WINDOW_MS,
   DATA_VERSION_ROUTE,
   _resetDataVersionListeners,
   requestDataVersionCheck,
@@ -34,6 +35,23 @@ import { fireVisibilityChange, setVisibilityState } from "../../../../vitest.set
 const { router } = vi.hoisted(() => ({ router: { refresh: vi.fn() } }));
 vi.mock("next/navigation", () => ({ useRouter: () => router }));
 const refresh = router.refresh;
+
+/**
+ * The most `router.refresh()` calls one observed version can ever cost.
+ *
+ * Derived from the two wall-clock bounds rather than written down, because that
+ * derivation IS the claim (DW-377): refreshes for a version are at least SETTLE
+ * apart, and one is issued only while those already out span LESS than
+ * `WINDOW - SETTLE` at the moment of that decision — so the price of a degraded
+ * read is fixed no matter how many triggers fire or how fast they do. (The span
+ * a version ACHIEVES can exceed that bound, because a gap since the last
+ * refresh is charged to it in full; the hidden-stretch case below relies on it.
+ * A larger span only ends the budget sooner.) The old bound was a count of
+ * qualifying polls, and a burst spent it at once.
+ */
+const REFRESH_CEILING = Math.ceil(
+  DATA_VERSION_REFRESH_WINDOW_MS / DATA_VERSION_REFRESH_SETTLE_MS,
+);
 
 function data(dataVersion: number): WorkbenchData {
   return {
@@ -183,8 +201,8 @@ describe("DataVersionWatcher lifecycle", () => {
     // arrives on the first attempt. Here the first re-render lags — `serve` is
     // not called on the first tick — the retry goes out, and only THEN does the
     // new baseline land. What is asserted is that the catch-up ends the retries
-    // mid-budget: the count stops at 2, below the cap, so it stopped because
-    // the render arrived and not because the attempts ran out.
+    // mid-budget: the count stops at 2, below the ceiling, so it stopped
+    // because the render arrived and not because the budget ran out.
     fetchMock = answering(4);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -204,7 +222,7 @@ describe("DataVersionWatcher lifecycle", () => {
     await settle(DATA_VERSION_POLL_MS * 5);
     const stoppedAt = refresh.mock.calls.length;
     expect(stoppedAt).toBe(2);
-    expect(stoppedAt).toBeLessThan(DATA_VERSION_REFRESH_ATTEMPTS);
+    expect(stoppedAt).toBeLessThan(REFRESH_CEILING);
   });
 
   it("retries a refresh whose re-render never catches up, then gives up (DW-48)", async () => {
@@ -223,12 +241,12 @@ describe("DataVersionWatcher lifecycle", () => {
     expect(refresh).toHaveBeenCalledTimes(2);
 
     await settle(DATA_VERSION_POLL_MS);
-    expect(refresh).toHaveBeenCalledTimes(DATA_VERSION_REFRESH_ATTEMPTS);
+    expect(refresh).toHaveBeenCalledTimes(REFRESH_CEILING);
 
     // Bounded, not a loop: the polls keep going, the renders do not.
     await settle(DATA_VERSION_POLL_MS * 6);
-    expect(fetchMock.mock.calls.length).toBeGreaterThan(DATA_VERSION_REFRESH_ATTEMPTS);
-    expect(refresh).toHaveBeenCalledTimes(DATA_VERSION_REFRESH_ATTEMPTS);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(REFRESH_CEILING);
+    expect(refresh).toHaveBeenCalledTimes(REFRESH_CEILING);
 
     // …and giving up is per VERSION, not a latch: a real write still lands.
     fetchMock.mockImplementation(async () => ({
@@ -236,7 +254,108 @@ describe("DataVersionWatcher lifecycle", () => {
       json: async () => ({ dataVersion: 5 }),
     }));
     await settle(DATA_VERSION_POLL_MS);
-    expect(refresh).toHaveBeenCalledTimes(DATA_VERSION_REFRESH_ATTEMPTS + 1);
+    expect(refresh).toHaveBeenCalledTimes(REFRESH_CEILING + 1);
+  });
+
+  it("spends nothing on a burst of overlapping triggers, and still retries after (DW-377)", async () => {
+    // DW-377, mounted. `run()` has three triggers — the interval, the return to
+    // a visible tab, and the save nudge — and under the OLD count every one of
+    // them that answered the same un-caught-up version spent an attempt. Ten
+    // saves in a second therefore burned the whole budget in a second, and the
+    // version was stranded exactly as it was before DW-48.
+    //
+    // Here they arrive 100ms apart, inside the settle interval: every one issues
+    // a real poll, and not one of them issues a render, because a refresh
+    // 100ms old has not had TIME to land — a repeat answer is not evidence that
+    // the re-render failed.
+    fetchMock = answering(4);
+    vi.stubGlobal("fetch", fetchMock);
+
+    mountWatcher(3);
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    for (let nudge = 0; nudge < 10; nudge += 1) {
+      await act(async () => {
+        requestDataVersionCheck();
+      });
+      await settle(100);
+    }
+    // Exact, not a range: the mount's own poll plus one per nudge, and the
+    // interval cannot have ticked inside 1s.
+    expect(fetchMock).toHaveBeenCalledTimes(11);
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    // …and the budget for 4 was NOT spent by that burst: the first poll past
+    // the settle interval still gets the retry DW-48 owes it.
+    await settle(DATA_VERSION_REFRESH_SETTLE_MS);
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("still issues the retry it is owed after a hidden stretch longer than the budget", async () => {
+    // The bound is the span of the refreshes ISSUED, not elapsed wall clock, and
+    // this is why. A hidden tab does not poll at all, so a give-up measured as
+    // `now - firstRefreshAt >= WINDOW` would be burned by the alt-tab itself:
+    // come back after a minute away and the watcher declines the retry forever,
+    // stranding the lagged bump — the DW-48 symptom, reinstated by the bound
+    // meant to replace the count. A sleeping machine does the same.
+    fetchMock = answering(4);
+    vi.stubGlobal("fetch", fetchMock);
+
+    mountWatcher(3);
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      fireVisibilityChange("hidden");
+    });
+    // Twice the whole budget, away. `serve` is never called, so the baseline is
+    // still 3 and 4 is still owed a retry.
+    await settle(DATA_VERSION_REFRESH_WINDOW_MS * 2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      fireVisibilityChange("visible");
+    });
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops at the ceiling under a trigger stream that runs PAST the budget", async () => {
+    // The claim the node suite's list of numbers cannot make: a real mounted
+    // watcher, a degraded route that never catches up, and a nudge every 500ms
+    // for two full windows on top of the interval's own ticks. The price is the
+    // ceiling and nothing more — that is the "fixed number of wasted renders per
+    // observed version, at ANY trigger rate" invariant, mounted.
+    fetchMock = answering(4);
+    vi.stubGlobal("fetch", fetchMock);
+
+    mountWatcher(3);
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    for (let nudge = 0; nudge < 2 * (DATA_VERSION_REFRESH_WINDOW_MS / 500); nudge += 1) {
+      await act(async () => {
+        requestDataVersionCheck();
+      });
+      await settle(500);
+    }
+
+    expect(refresh).toHaveBeenCalledTimes(REFRESH_CEILING);
+    // Bounded, not silent: the polls never stopped, only the renders did.
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(REFRESH_CEILING);
+    // …and it is still not a latch. A real write after all that still lands.
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ dataVersion: 5 }),
+    }));
+    await act(async () => {
+      requestDataVersionCheck();
+    });
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(REFRESH_CEILING + 1);
   });
 
   it("compares against the version now on screen, not the one it mounted with", async () => {
@@ -388,12 +507,12 @@ describe("DataVersionWatcher lifecycle", () => {
 
     // The attempt state survived the wedge: `serve` was never called, so the
     // baseline is still 3 and the following tick is the bounded RETRY, not an
-    // unbounded reaction to the same answer. It stops at the cap.
+    // unbounded reaction to the same answer. It stops at the ceiling.
     await settle(DATA_VERSION_POLL_MS);
     expect(refresh).toHaveBeenCalledTimes(2);
 
     await settle(DATA_VERSION_POLL_MS * 5);
-    expect(refresh).toHaveBeenCalledTimes(DATA_VERSION_REFRESH_ATTEMPTS);
+    expect(refresh).toHaveBeenCalledTimes(REFRESH_CEILING);
   });
 
   it("checks now when something asks for an immediate check", async () => {

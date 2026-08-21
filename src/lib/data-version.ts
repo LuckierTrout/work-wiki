@@ -52,7 +52,7 @@ export const DATA_VERSION_KEY = "data-version";
  * read is stale by more than one generation stores a value LOWER than what is
  * already there. Consumers never see that as a change — the comparison in
  * `dataVersionRefreshPlan` is forward-only against the version the client's own
- * render was built from, and its attempt state holds a second high-water mark:
+ * render was built from, and its refresh state holds a second high-water mark:
  * the highest version already refreshed FOR, which a regressed counter must
  * also climb back past before anything below it is treated as a bump. So a
  * regression costs more than a collapse does: every write until the counter
@@ -92,8 +92,13 @@ function narrowStoredVersion(value: unknown): number {
  * `0` is deliberately indistinguishable from "absent": a consumer that cannot
  * learn the version must not refresh, and the forward-only comparison in
  * `dataVersionRefreshPlan` (`workbench-data-version.ts`) bounds a degraded `0`
- * on the SERVER side to `DATA_VERSION_REFRESH_ATTEMPTS` refreshes PER OBSERVED
- * VERSION rather than an unbounded loop. Per version, not in total: with a live
+ * on the SERVER side to a WALL-CLOCK budget PER OBSERVED VERSION rather than an
+ * unbounded loop: refreshes for one version are at least
+ * `DATA_VERSION_REFRESH_SETTLE_MS` apart, and one is issued only while those
+ * already out span LESS than
+ * `DATA_VERSION_REFRESH_WINDOW_MS - DATA_VERSION_REFRESH_SETTLE_MS` at the
+ * moment of that decision, so at most three ever go out for it — however fast
+ * the polls arrive, and from whichever of the watcher's triggers (DW-377). Per version, not in total: with a live
  * writer bumping the counter, a server read stuck at `0` costs up to three
  * wasted renders for every write, indefinitely — a 3× amplification over the
  * one-per-version behaviour this replaced (DW-48). That is the accepted price

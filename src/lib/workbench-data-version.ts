@@ -114,47 +114,87 @@ export async function fetchDataVersion(
 // ---------------------------------------------------------------------------
 
 /**
- * How many `router.refresh()` calls one observed version may ever cost, IN
- * TOTAL — the initial refresh plus two retries, not three retries on top of it.
+ * The BUDGET for one observed version, in wall-clock ms.
  *
- * The bound is a count of QUALIFYING POLLS, from whichever trigger issued them,
- * and deliberately not a timer: no second cadence, no backoff, nothing to cancel
- * on unmount. It is emphatically not a wall-clock window. `run()` has three
- * triggers — the {@link DATA_VERSION_POLL_MS} interval, `visibilitychange` back
- * to visible, and the save nudge ({@link requestDataVersionCheck}) — and every
- * poll from any of them that answers the same un-caught-up version spends an
- * attempt, so a burst of saves can exhaust the whole budget in milliseconds.
+ * A retry goes out only while the refreshes ALREADY issued for that version
+ * span LESS than `WINDOW - SETTLE`. That span is read at the MOMENT OF THE
+ * DECISION, so it bounds when a refresh may be issued, not the span a version
+ * ends up with: a refresh at `t`, an hour hidden, and the retry it is still
+ * owed leaves an achieved span of an hour. The COUNT is bounded either way —
+ * see {@link dataVersionRefreshPlan}.
  *
- * Three covers the narrow window where the route's read and `page.tsx`'s read
- * disagree because they hit different replicas — both go through the same
- * Worker, so that window is short — without making a genuinely degraded read
- * expensive.
+ * Wall clock rather than a count of qualifying polls, and this is DW-377. The
+ * old bound counted POLLS, so its meaning moved with the cadence and with how
+ * many triggers fired: `run()` has three of them — the
+ * {@link DATA_VERSION_POLL_MS} interval, `visibilitychange` back to visible and
+ * the save nudge ({@link requestDataVersionCheck}) — and three alt-tabs or
+ * three saves in a second spent the whole budget in milliseconds, re-stranding
+ * exactly the lagged bump the retry exists to catch.
+ *
+ * Deliberately NOT derived from {@link DATA_VERSION_POLL_MS}: changing the
+ * cadence must change neither bound. 30s covers the narrow window where the
+ * route's read and `page.tsx`'s read disagree because they hit different
+ * replicas — both go through the same Worker, so that window is short —
+ * without making a genuinely degraded read expensive.
+ *
+ * The budget is spent by the REFRESHES ISSUED for a version, never by elapsed
+ * wall clock: see {@link dataVersionRefreshPlan}.
  */
-export const DATA_VERSION_REFRESH_ATTEMPTS = 3;
+export const DATA_VERSION_REFRESH_WINDOW_MS = 30_000;
+
+/**
+ * How long a refresh is given to LAND before a repeat answer is read as "the
+ * re-render did not catch up", in wall-clock ms.
+ *
+ * `router.refresh()` returns `void` and its render arrives asynchronously, so
+ * "still rendering" is not observable from here; elapsed time is the honest
+ * proxy. Within this interval of the last refresh for the SAME version, another
+ * poll answering that version is declined — the in-flight guard DW-377 asks
+ * for, spelled in the rule rather than in the watcher, so the node suite can
+ * execute it and so `DataVersionWatcher.tsx` keeps owning no policy.
+ *
+ * Not derived from {@link DATA_VERSION_POLL_MS} either, though both are 10_000
+ * today: that is tuning, not derivation. The watcher stamps the clock when a
+ * poll ANSWERS, so consecutive ticks are a cadence apart plus latency jitter
+ * and a retry can slip one tick when the later poll answers faster. That slip
+ * COSTS a retry rather than merely delaying it, and the equality is tolerable
+ * for that reason and not in spite of it: with latency alternating 200ms and
+ * 150ms two answers land 9_950ms apart, the tick is declined as still in
+ * flight, and the whole 20_000ms to the next eligible answer is then charged to
+ * the span — so that version is refreshed for twice, not three times. Fewer
+ * refreshes is the SAFE direction; the failure this bounds is the loop.
+ */
+export const DATA_VERSION_REFRESH_SETTLE_MS = 10_000;
 
 /**
  * The refreshes already issued for one polled version.
  *
  * `version` is the number refreshes were issued FOR (not the number served),
- * and `attempts` is how many have gone out for it. Ref state in the watcher, so
- * it resets on remount and is never persisted anywhere.
+ * and it is a HIGH-WATER MARK — a backwards read can never rewrite it down.
+ * `firstRefreshAt` and `lastRefreshAt` are the wall-clock stamps of the first
+ * and most recent refresh issued for that version; their SPAN is what the
+ * budget is measured against. Ref state in the watcher, so it resets on remount
+ * and is never persisted anywhere.
  */
 export interface DataVersionRefreshState {
   readonly version: number;
-  readonly attempts: number;
+  readonly firstRefreshAt: number;
+  readonly lastRefreshAt: number;
 }
 
 /**
  * Nothing has been refreshed for yet. The watcher's ref seed.
  *
  * FROZEN, because this exact object is handed into every mounted watcher's ref
- * and is also what three branches of the rule below hand straight back. The
- * `readonly` markers are erased at build time; one stray `state.attempts += 1`
- * anywhere would otherwise mutate the seed shared by every watcher in the tab.
+ * and is also what several branches of the rule below hand straight back. The
+ * `readonly` markers are erased at build time; one stray
+ * `state.lastRefreshAt = now` anywhere would otherwise mutate the seed shared
+ * by every watcher in the tab.
  */
 export const NO_DATA_VERSION_REFRESH: DataVersionRefreshState = Object.freeze({
   version: 0,
-  attempts: 0,
+  firstRefreshAt: 0,
+  lastRefreshAt: 0,
 });
 
 /** What the watcher should do with this poll, and what it should remember. */
@@ -162,7 +202,7 @@ export interface DataVersionRefreshPlan {
   /** Call `router.refresh()`. */
   readonly refresh: boolean;
   /**
-   * The attempt state the watcher should now hold — returned rather than
+   * The refresh state the watcher should now hold — returned rather than
    * computed by the caller, for the reason {@link PreviewFetchPlan.shown}
    * spells out: "compare, THEN record" is an ordering, and an ordering held by
    * two adjacent statements in an effect is one tidy-up away from being
@@ -186,41 +226,92 @@ export interface DataVersionRefreshPlan {
  * sees the bump the poll just saw: a replica lagging by one read answers the
  * pre-bump integer, the new baseline lands behind the version refreshed for,
  * and a watcher that recorded "done with 4" would then sit stale until the next
- * write. So the state records what was ATTEMPTED, and while the served baseline
- * has not caught up the next poll tries again — until the TOTAL for that
- * version reaches {@link DATA_VERSION_REFRESH_ATTEMPTS}, initial refresh
- * included, and then it gives up.
+ * write. So the state records what was REFRESHED FOR, and while the served
+ * baseline has not caught up a later poll tries again.
+ *
+ * THE IN-FLIGHT GUARD, third, and this is DW-377. A repeat answer within
+ * {@link DATA_VERSION_REFRESH_SETTLE_MS} of the last refresh for that same
+ * version is not evidence that the re-render failed to catch up — it is
+ * evidence that the re-render has not landed YET. Declining it costs nothing
+ * (a later poll past the interval still retries) and it is what makes the
+ * budget independent of the trigger rate: a burst of saves, alt-tabs and
+ * interval ticks all arrive inside one settle interval and spend nothing.
+ *
+ * THE BUDGET IS SPENT BY REFRESHES ISSUED, not by elapsed time. Giving up is
+ * `state.lastRefreshAt - state.firstRefreshAt >= WINDOW - SETTLE` — the SPAN of
+ * the refreshes actually issued — and never `now - state.firstRefreshAt >=
+ * WINDOW`. A hidden tab issues nothing (the watcher stops polling entirely), a
+ * sleeping machine issues nothing, and a forward clock correction is evidence
+ * of nothing; time the watcher could not poll through must not close the
+ * budget, or coming back to a backgrounded tab strands exactly the lagged bump
+ * DW-48 exists to catch.
  *
  * The cap is what the old "at most once per version" rule was really for. With
  * `page.tsx`'s own read degraded to `0` while the route answers `7`, the
  * baseline NEVER catches up, and an unbounded retry is `router.refresh()` on
- * every poll forever. Three wasted renders is the fixed price of that failure;
- * in exchange, a real bump whose re-render merely lagged is no longer stranded.
+ * every poll forever. What bounds it is the span read AT THE MOMENT OF EACH
+ * DECISION: a refresh goes out only while the ones already issued for that
+ * version span LESS than `WINDOW - SETTLE`, and consecutive refreshes are at
+ * least SETTLE apart, so before the n-th one the span is already at least
+ * `(n - 2) * SETTLE`. That is under the bound only for
+ * `n <= ceil(WINDOW / SETTLE)` = 3 — the same fixed price DW-48 chose, now
+ * independent of both the cadence and the trigger rate. The span a version
+ * ACHIEVES may be far larger, because the whole gap since the last refresh is
+ * charged to it (a hidden tab does exactly that), and a larger span only ends
+ * the budget sooner. Every degenerate clock (a gap, a jump either way, a
+ * non-finite reading) costs FEWER refreshes, never more, and never a loop.
  *
- * A poll ABOVE the attempted version is a new bump and starts the count over,
- * even after the cap was spent. A poll BELOW it is a backwards read of the same
- * kind as the first rule's — the higher version was already refreshed for, so
- * there is nothing to do and nothing to record.
+ * A poll ABOVE the recorded version is a new bump and starts the budget over,
+ * even after the previous one was spent. A poll BELOW it is a backwards read of
+ * the same kind as the first rule's — the higher version was already refreshed
+ * for, so there is nothing to do and nothing to record.
  */
 export function dataVersionRefreshPlan(input: {
   served: number;
   polled: number;
+  now: number;
   state: DataVersionRefreshState;
 }): DataVersionRefreshPlan {
-  const { served, polled, state } = input;
+  const { served, polled, now, state } = input;
   // Caught up, unchanged, or a stale read: no refresh, and no state to move.
   if (polled <= served) return { refresh: false, state };
-  // A version beyond anything attempted — a new bump. Count restarts at one.
+  // A version beyond anything refreshed for — a new bump. The budget restarts.
   if (polled > state.version) {
-    return { refresh: true, state: { version: polled, attempts: 1 } };
+    return { refresh: true, state: { version: polled, firstRefreshAt: now, lastRefreshAt: now } };
   }
-  // The same version we already refreshed for, and the baseline is still
-  // behind it: the re-render did not catch up. Try again while attempts remain.
-  if (polled === state.version && state.attempts < DATA_VERSION_REFRESH_ATTEMPTS) {
-    return { refresh: true, state: { version: polled, attempts: state.attempts + 1 } };
+  // Behind the high-water mark: a backwards read while a refresh for a higher
+  // version is outstanding. Recording it would rewrite the mark downward.
+  if (polled !== state.version) return { refresh: false, state };
+  // From here on this IS the version already refreshed for, and the baseline is
+  // still behind it. A clock that cannot be compared decides nothing: every
+  // elapsed comparison against a non-finite value is `false`, so both guards
+  // below would fall through and this would refresh on EVERY poll forever — the
+  // one loop the whole bound exists to prevent. The stamps are checked as well
+  // as the reading, because a `now` that slipped into the new-bump branch above
+  // (which records the clock without needing to compare it) would otherwise
+  // poison this version's state permanently.
+  if (
+    !Number.isFinite(now) ||
+    !Number.isFinite(state.firstRefreshAt) ||
+    !Number.isFinite(state.lastRefreshAt)
+  ) {
+    return { refresh: false, state };
   }
-  // Attempts exhausted, or a read behind an outstanding attempt.
-  return { refresh: false, state };
+  // Still in flight: the previous refresh has not had time to land (DW-377). A
+  // backwards clock reading lands here too, which is the safe direction.
+  if (now - state.lastRefreshAt < DATA_VERSION_REFRESH_SETTLE_MS) {
+    return { refresh: false, state };
+  }
+  // Spent: the refreshes issued for this version already span the budget.
+  if (
+    state.lastRefreshAt - state.firstRefreshAt >=
+    DATA_VERSION_REFRESH_WINDOW_MS - DATA_VERSION_REFRESH_SETTLE_MS
+  ) {
+    return { refresh: false, state };
+  }
+  // Settled, still behind, still inside the budget: retry (DW-48). The window
+  // is measured from the FIRST refresh, so retries cannot slide it forward.
+  return { refresh: true, state: { ...state, lastRefreshAt: now } };
 }
 
 /** What the Preview's effect should do on this run. */

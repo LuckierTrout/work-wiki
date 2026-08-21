@@ -51,9 +51,11 @@ import { useWorkbenchData } from "./WorkbenchData";
  * router for THIS purpose, and it is mounted inside the provider so it can read
  * the baseline the server rendered with.
  *
- * It spells NO comparison and no attempt arithmetic of its own: whether a polled
+ * It spells NO comparison and no budget arithmetic of its own: whether a polled
  * version warrants a refresh — and what this watcher should then remember — is
- * `dataVersionRefreshPlan`, which the node suite executes.
+ * `dataVersionRefreshPlan`, which the node suite executes. Reading the clock is
+ * the watcher's to do; deciding what the reading MEANS is not, so neither the
+ * refresh window nor the settle interval is named here.
  */
 export function DataVersionWatcher() {
   const router = useRouter();
@@ -64,12 +66,13 @@ export function DataVersionWatcher() {
   const { dataVersion } = useWorkbenchData();
   const servedRef = useRef(dataVersion);
   servedRef.current = dataVersion;
-  // The version this watcher last issued refreshes for, and how many have gone
-  // out for it. A re-render whose own read lagged leaves the baseline behind
-  // that version, so the next poll tries again — bounded, because a degraded
-  // server read (`dataVersion` stuck at 0 while the route answers 7) would
-  // otherwise refresh on every single poll, forever. Ref state, so it resets on
-  // remount and is stored nowhere.
+  // The version this watcher last issued refreshes for, and when the first and
+  // most recent of them went out. A re-render whose own read lagged leaves the
+  // baseline behind that version, so a later poll tries again — bounded by the
+  // span those refreshes may cover, because a degraded server read
+  // (`dataVersion` stuck at 0 while the route answers 7) would otherwise
+  // refresh on every single poll, forever. Ref state, so it resets on remount
+  // and is stored nowhere.
   const refreshStateRef = useRef(NO_DATA_VERSION_REFRESH);
   // Keeps a late answer from a poll started before unmount out of a refresh.
   const abortRef = useRef<AbortController | null>(null);
@@ -91,6 +94,7 @@ export function DataVersionWatcher() {
       const plan = dataVersionRefreshPlan({
         served: servedRef.current,
         polled: result.version,
+        now: Date.now(),
         state: refreshStateRef.current,
       });
       refreshStateRef.current = plan.state;
