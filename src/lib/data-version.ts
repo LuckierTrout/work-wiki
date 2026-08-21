@@ -50,11 +50,14 @@ export const DATA_VERSION_KEY = "data-version";
  * The read half of the read-modify-write is eventually consistent too, so the
  * counter can also move BACKWARDS, not merely fail to advance: an isolate whose
  * read is stale by more than one generation stores a value LOWER than what is
- * already there. Consumers never see that as a change — the comparison is
- * forward-only, and `refreshedFor` holds the highest number already acted on —
- * so a regression costs more than a collapse does: every write until the
- * counter climbs back past that high-water mark is ignored rather than just
- * the one. It still self-heals, since each bump moves it up again, and a reload
+ * already there. Consumers never see that as a change — the comparison in
+ * `dataVersionRefreshPlan` is forward-only against the version the client's own
+ * render was built from, and its attempt state holds a second high-water mark:
+ * the highest version already refreshed FOR, which a regressed counter must
+ * also climb back past before anything below it is treated as a bump. So a
+ * regression costs more than a collapse does: every write until the counter
+ * passes the higher of those two marks is ignored rather than just the one. It
+ * still self-heals, since each bump moves it up again, and a reload
  * re-baselines the client immediately. Making this exact would mean a
  * provider-atomic increment, which the storage contract does not offer and
  * which no consumer of this signal is worth adding one for.
@@ -88,8 +91,14 @@ function narrowStoredVersion(value: unknown): number {
  *
  * `0` is deliberately indistinguishable from "absent": a consumer that cannot
  * learn the version must not refresh, and the forward-only comparison in
- * `shouldRefreshForDataVersion` makes a degraded `0` on the SERVER side at worst
- * one refresh rather than a loop.
+ * `dataVersionRefreshPlan` (`workbench-data-version.ts`) bounds a degraded `0`
+ * on the SERVER side to `DATA_VERSION_REFRESH_ATTEMPTS` refreshes PER OBSERVED
+ * VERSION rather than an unbounded loop. Per version, not in total: with a live
+ * writer bumping the counter, a server read stuck at `0` costs up to three
+ * wasted renders for every write, indefinitely — a 3× amplification over the
+ * one-per-version behaviour this replaced (DW-48). That is the accepted price
+ * of never stranding a real bump whose re-render merely lagged; the failure it
+ * bounds is the loop, not the amplification.
  */
 export async function readDataVersion(): Promise<number> {
   try {

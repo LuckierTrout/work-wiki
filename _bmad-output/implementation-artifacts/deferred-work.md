@@ -436,7 +436,8 @@ location: src/components/workbench/DataVersionWatcher.tsx (run), src/lib/workben
 source_spec: `spec-1-7-dataversion-workbench-refresh.md`
 severity: medium
 reason: `DataVersionWatcher` sets `refreshedForRef.current = result.version` before `router.refresh()` and never checks that the new render's `dataVersion` caught up. Both reads go through the same Worker, so the window is narrow — but if the RSC read answers the pre-bump integer, `served` stays behind while `refreshedFor` is ahead, and `shouldRefreshForDataVersion` returns `false` for that version forever; the trees then wait for the NEXT write. The obvious fix is not obviously right: dropping the guard restores the unbounded re-render loop it exists to prevent (a degraded `page.tsx` read stuck at 0 against a route answering 7 would refresh every tick, forever), so closing this needs a bounded retry policy — how many attempts, how long to wait for the baseline to move — which is a refresh-policy decision for whichever story next revisits the signal (Epic 2's Ingest is its first real consumer).
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-data-version-refresh-retry
 
 ### DW-49: Writes that bypass `runPageLifecycleOp` — template seeding of `purpose.md` and `schema.md`, raw source files — never move the signal.
 origin: spec-deferred 53e5882c5f58
@@ -3276,4 +3277,12 @@ source_spec: `spec-dw-26-62-283-320-workbench-client-state-and-nav.md`
 location: src/components/workbench/SettingsCanvas.tsx (save), src/components/workbench/PreviewColumn.tsx
 severity: medium
 reason: Both arm their own `AbortSignal` rather than using `send` (each needs the controller), so neither reaches `writeFailure`. `SettingsCanvas.save` resolves an abort to `SETTINGS_SAVE_FAILED_COPY` ("Settings couldn’t be saved.") over a PUT the server may have applied — on the surface this change just made keyboard-reachable through `g s`. Out of DW-283's stated scope, which names `workbench-request.ts` and the wiki writes.
+status: open
+
+### DW-377: Retry attempts are counted per qualifying poll rather than per settled re-render, so a nudge or visibility burst — or a merely slow refresh — can spend the whole budget before any new baseline has had
+origin: spec-deferred eb490a039820
+source_spec: `spec-dw-48-data-version-refresh-retry.md`
+location: src/components/workbench/DataVersionWatcher.tsx (run), src/lib/workbench-data-version.ts (DATA_VERSION_REFRESH_ATTEMPTS)
+severity: medium
+reason: `run()` has three triggers: the `DATA_VERSION_POLL_MS` interval, `visibilitychange` -> visible, and the `requestDataVersionCheck()` save nudge (`PreviewColumn.tsx`). Every qualifying poll from any of them spends an attempt, so three alt-tabs or three saves that all still answer the same version drive `attempts` from 0 to `DATA_VERSION_REFRESH_ATTEMPTS` in milliseconds and re-strand that version — the DW-48 symptom, now probabilistic rather than certain. The same shape covers an in-flight `router.refresh()` still rendering when the next tick fires: a merely slow re-render reads as "did not catch up" and burns an attempt. A wall-clock window (which DW-48's own wording offered as an alternative to a count) or an in-flight guard would close it; both are refresh-policy decisions beyond the bounded-count reading this story implemented, and the count reading is strictly better than the single-shot stamp it replaced in every case.
 status: open

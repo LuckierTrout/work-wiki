@@ -4,8 +4,9 @@ import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   DATA_VERSION_POLL_MS,
+  NO_DATA_VERSION_REFRESH,
+  dataVersionRefreshPlan,
   fetchDataVersion,
-  shouldRefreshForDataVersion,
   subscribeDataVersionCheck,
 } from "@/lib/workbench-data-version";
 import { useWorkbenchData } from "./WorkbenchData";
@@ -50,8 +51,9 @@ import { useWorkbenchData } from "./WorkbenchData";
  * router for THIS purpose, and it is mounted inside the provider so it can read
  * the baseline the server rendered with.
  *
- * It spells NO comparison of its own: whether a polled version warrants a
- * refresh is `shouldRefreshForDataVersion`, which the node suite executes.
+ * It spells NO comparison and no attempt arithmetic of its own: whether a polled
+ * version warrants a refresh — and what this watcher should then remember — is
+ * `dataVersionRefreshPlan`, which the node suite executes.
  */
 export function DataVersionWatcher() {
   const router = useRouter();
@@ -62,10 +64,13 @@ export function DataVersionWatcher() {
   const { dataVersion } = useWorkbenchData();
   const servedRef = useRef(dataVersion);
   servedRef.current = dataVersion;
-  // The highest version this watcher has already refreshed for. Without it, a
-  // degraded server read (`dataVersion` stuck at 0 while the route answers 7)
-  // would refresh on every single poll, forever.
-  const refreshedForRef = useRef(0);
+  // The version this watcher last issued refreshes for, and how many have gone
+  // out for it. A re-render whose own read lagged leaves the baseline behind
+  // that version, so the next poll tries again — bounded, because a degraded
+  // server read (`dataVersion` stuck at 0 while the route answers 7) would
+  // otherwise refresh on every single poll, forever. Ref state, so it resets on
+  // remount and is stored nowhere.
+  const refreshStateRef = useRef(NO_DATA_VERSION_REFRESH);
   // Keeps a late answer from a poll started before unmount out of a refresh.
   const abortRef = useRef<AbortController | null>(null);
 
@@ -80,16 +85,16 @@ export function DataVersionWatcher() {
       const result = await fetchDataVersion(controller.signal);
       if (cancelled || controller.signal.aborted) return;
       if (result.status !== "ok") return;
-      if (
-        !shouldRefreshForDataVersion({
-          served: servedRef.current,
-          polled: result.version,
-          refreshedFor: refreshedForRef.current,
-        })
-      ) {
-        return;
-      }
-      refreshedForRef.current = result.version;
+      // Recorded BEFORE the guard on purpose: every branch of the rule returns
+      // the state that branch should leave behind, so there is no "compare,
+      // then record" ordering here for a later tidy-up to reverse.
+      const plan = dataVersionRefreshPlan({
+        served: servedRef.current,
+        polled: result.version,
+        state: refreshStateRef.current,
+      });
+      refreshStateRef.current = plan.state;
+      if (!plan.refresh) return;
       router.refresh();
     }
 

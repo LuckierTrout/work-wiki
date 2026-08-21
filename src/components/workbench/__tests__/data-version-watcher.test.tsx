@@ -7,6 +7,7 @@ import {
 } from "@/components/workbench/WorkbenchData";
 import {
   DATA_VERSION_POLL_MS,
+  DATA_VERSION_REFRESH_ATTEMPTS,
   DATA_VERSION_ROUTE,
   _resetDataVersionListeners,
   requestDataVersionCheck,
@@ -17,7 +18,7 @@ import { fireVisibilityChange, setVisibilityState } from "../../../../vitest.set
  * The watcher's EFFECT, mounted (DW-52).
  *
  * `workbench-data-version.test.ts` executes the pure decisions
- * (`shouldRefreshForDataVersion`, `fetchDataVersion`) and
+ * (`dataVersionRefreshPlan`, `fetchDataVersion`) and
  * `workbench-data-version.test.ts`'s source scan can see that `startPolling` is
  * spelled inside the visible branch. Neither can see the LIFECYCLE: that a
  * hidden tab issues nothing, that becoming visible re-checks at once, that the
@@ -153,7 +154,64 @@ describe("DataVersionWatcher lifecycle", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it("refreshes once when the served version moves forward, and not again", async () => {
+  it("refreshes when the served version moves forward, and stops once the re-render lands", async () => {
+    fetchMock = answering(4);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { serve } = mountWatcher(3);
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    // `router.refresh()` is a `vi.fn()` here, so the new server render is
+    // simulated: it arrives with the version the poll asked for.
+    act(() => {
+      serve(4);
+    });
+
+    // The same answer on the next tick is not a new write, and the baseline has
+    // caught up — so there is nothing left outstanding to retry either.
+    await settle(DATA_VERSION_POLL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    await settle(DATA_VERSION_POLL_MS * 3);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops retrying once a LATER re-render catches up (DW-48)", async () => {
+    // The success story the case above cannot tell, because there the baseline
+    // arrives on the first attempt. Here the first re-render lags — `serve` is
+    // not called on the first tick — the retry goes out, and only THEN does the
+    // new baseline land. What is asserted is that the catch-up ends the retries
+    // mid-budget: the count stops at 2, below the cap, so it stopped because
+    // the render arrived and not because the attempts ran out.
+    fetchMock = answering(4);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { serve } = mountWatcher(3);
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    // The re-render answered the pre-bump integer: still serving 3.
+    await settle(DATA_VERSION_POLL_MS);
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    // …and THIS one landed.
+    act(() => {
+      serve(4);
+    });
+
+    await settle(DATA_VERSION_POLL_MS * 5);
+    const stoppedAt = refresh.mock.calls.length;
+    expect(stoppedAt).toBe(2);
+    expect(stoppedAt).toBeLessThan(DATA_VERSION_REFRESH_ATTEMPTS);
+  });
+
+  it("retries a refresh whose re-render never catches up, then gives up (DW-48)", async () => {
+    // The DW-48 failure, mounted: the re-render's own read keeps answering the
+    // pre-bump integer, so the baseline never reaches 4. `serve` is never
+    // called, which is exactly that. The old single-shot stamp refreshed once
+    // and then sat stale until the next write; this retries — and stops.
     fetchMock = answering(4);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -161,10 +219,24 @@ describe("DataVersionWatcher lifecycle", () => {
     await settle();
     expect(refresh).toHaveBeenCalledTimes(1);
 
-    // The same answer on the next tick is not a new write.
     await settle(DATA_VERSION_POLL_MS);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    await settle(DATA_VERSION_POLL_MS);
+    expect(refresh).toHaveBeenCalledTimes(DATA_VERSION_REFRESH_ATTEMPTS);
+
+    // Bounded, not a loop: the polls keep going, the renders do not.
+    await settle(DATA_VERSION_POLL_MS * 6);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(DATA_VERSION_REFRESH_ATTEMPTS);
+    expect(refresh).toHaveBeenCalledTimes(DATA_VERSION_REFRESH_ATTEMPTS);
+
+    // …and giving up is per VERSION, not a latch: a real write still lands.
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ dataVersion: 5 }),
+    }));
+    await settle(DATA_VERSION_POLL_MS);
+    expect(refresh).toHaveBeenCalledTimes(DATA_VERSION_REFRESH_ATTEMPTS + 1);
   });
 
   it("compares against the version now on screen, not the one it mounted with", async () => {
@@ -187,10 +259,11 @@ describe("DataVersionWatcher lifecycle", () => {
 
     await settle(DATA_VERSION_POLL_MS);
 
-    // 5 is BEHIND the payload the owner is looking at, so nothing is stale.
-    // Read from the effect's mount-time closure instead, 5 would be ahead of
-    // both the served 3 and the 4 already refreshed for — and the shell would
-    // re-render for a version it is already past.
+    // 5 is BEHIND the payload the owner is looking at, so nothing is stale —
+    // and the baseline is past 4, so the attempt outstanding for it is settled
+    // rather than retried. Read from the effect's mount-time closure instead,
+    // the served number would still be 3, 5 would be a version beyond anything
+    // attempted, and the shell would re-render for a version it is already past.
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(refresh).toHaveBeenCalledTimes(1);
   });
@@ -313,10 +386,14 @@ describe("DataVersionWatcher lifecycle", () => {
     await settle(DATA_VERSION_POLL_MS);
     expect(refresh).toHaveBeenCalledTimes(1);
 
-    // Exactly once: `refreshedFor` still holds across the wedge, so the same
-    // answer on the following tick is not a second render.
+    // The attempt state survived the wedge: `serve` was never called, so the
+    // baseline is still 3 and the following tick is the bounded RETRY, not an
+    // unbounded reaction to the same answer. It stops at the cap.
     await settle(DATA_VERSION_POLL_MS);
-    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    await settle(DATA_VERSION_POLL_MS * 5);
+    expect(refresh).toHaveBeenCalledTimes(DATA_VERSION_REFRESH_ATTEMPTS);
   });
 
   it("checks now when something asks for an immediate check", async () => {

@@ -46,14 +46,17 @@ import {
 } from "../data-version";
 import {
   DATA_VERSION_POLL_MS,
+  DATA_VERSION_REFRESH_ATTEMPTS,
   DATA_VERSION_ROUTE,
+  NO_DATA_VERSION_REFRESH,
   _resetDataVersionListeners,
+  dataVersionRefreshPlan,
   fetchDataVersion,
   previewFetchPlan,
   requestDataVersionCheck,
-  shouldRefreshForDataVersion,
   subscribeDataVersionCheck,
   type DataVersionFetch,
+  type DataVersionRefreshState,
   type DataVersionResponseLike,
 } from "../workbench-data-version";
 import type { TreeSelection } from "../workbench-tree";
@@ -419,40 +422,160 @@ describe("fetchDataVersion", () => {
 // The two decisions
 // ---------------------------------------------------------------------------
 
-describe("shouldRefreshForDataVersion", () => {
+describe("dataVersionRefreshPlan", () => {
+  /**
+   * A no-op branch must hand back the SAME object it was given, not a copy.
+   * `toEqual({ refresh: false, state })` is satisfied by a branch returning
+   * `{ ...state }`, which reads identically — so the identity is what turns
+   * "the state does not move" from a comment into a fact. `previewFetchPlan`'s
+   * own tests pin `shown` with `toBe(ALPHA)` for exactly this reason.
+   */
+  function expectUnchanged(input: {
+    served: number;
+    polled: number;
+    state: DataVersionRefreshState;
+  }): void {
+    const plan = dataVersionRefreshPlan(input);
+    expect(plan.refresh).toBe(false);
+    expect(plan.state).toBe(input.state);
+  }
+
+  /** Drive the rule the way the watcher does: feed each answer back in. */
+  function drive(
+    served: number,
+    polls: readonly number[],
+  ): { refreshes: number; state: DataVersionRefreshState } {
+    let state: DataVersionRefreshState = NO_DATA_VERSION_REFRESH;
+    let refreshes = 0;
+    for (const polled of polls) {
+      const plan = dataVersionRefreshPlan({ served, polled, state });
+      state = plan.state;
+      if (plan.refresh) refreshes += 1;
+    }
+    return { refreshes, state };
+  }
+
+  it("starts from nothing refreshed for, and is bounded by one constant", () => {
+    expect(NO_DATA_VERSION_REFRESH).toEqual({ version: 0, attempts: 0 });
+    // A FIXED number of wasted renders in the degraded case — asserted rather
+    // than merely imported, because "bounded" is the whole safety argument and
+    // a cap quietly raised to 30 would keep every other case below green.
+    expect(DATA_VERSION_REFRESH_ATTEMPTS).toBe(3);
+    // Frozen: this one object is the seed in every mounted watcher's ref AND
+    // what three branches hand straight back, so a mutation anywhere would
+    // reach every watcher in the tab. `readonly` is erased at build time.
+    expect(Object.isFrozen(NO_DATA_VERSION_REFRESH)).toBe(true);
+  });
+
   it("refreshes when the served number moved forward", () => {
     expect(
-      shouldRefreshForDataVersion({ served: 3, polled: 4, refreshedFor: 3 }),
-    ).toBe(true);
+      dataVersionRefreshPlan({ served: 3, polled: 4, state: NO_DATA_VERSION_REFRESH }),
+    ).toEqual({ refresh: true, state: { version: 4, attempts: 1 } });
     expect(
-      shouldRefreshForDataVersion({ served: 0, polled: 1, refreshedFor: 0 }),
-    ).toBe(true);
+      dataVersionRefreshPlan({ served: 0, polled: 1, state: NO_DATA_VERSION_REFRESH }),
+    ).toEqual({ refresh: true, state: { version: 1, attempts: 1 } });
   });
 
-  it("does nothing when it did not move", () => {
-    expect(
-      shouldRefreshForDataVersion({ served: 3, polled: 3, refreshedFor: 3 }),
-    ).toBe(false);
+  it("stops as soon as the re-render caught up", () => {
+    // The refresh landed and the new baseline IS the polled number, so there is
+    // nothing outstanding — and the state does not move, whatever it holds.
+    const state: DataVersionRefreshState = { version: 4, attempts: 1 };
+    expectUnchanged({ served: 4, polled: 4, state });
+    // A baseline that overshot (other writes landed with it) is caught up too.
+    expectUnchanged({ served: 6, polled: 4, state });
   });
 
-  it("refreshes at most once per observed version", () => {
-    // The guard against a degraded server read: if `page.tsx` answers 0 forever
-    // while the route answers 7, an unguarded watcher refreshes every tick.
+  it("retries when the re-render did NOT catch up (DW-48)", () => {
+    // The whole point of this rule. `router.refresh()` re-ran the server render,
+    // but THAT render's own read answered the pre-bump integer, so the baseline
+    // is still behind the version refreshed for. The old rule recorded 4 as
+    // done and left the trees stale until the next write; this one tries again.
     expect(
-      shouldRefreshForDataVersion({ served: 3, polled: 4, refreshedFor: 4 }),
-    ).toBe(false);
+      dataVersionRefreshPlan({ served: 3, polled: 4, state: { version: 4, attempts: 1 } }),
+    ).toEqual({ refresh: true, state: { version: 4, attempts: 2 } });
     expect(
-      shouldRefreshForDataVersion({ served: 0, polled: 7, refreshedFor: 7 }),
-    ).toBe(false);
+      dataVersionRefreshPlan({ served: 3, polled: 4, state: { version: 4, attempts: 2 } }),
+    ).toEqual({ refresh: true, state: { version: 4, attempts: 3 } });
+  });
+
+  it("retries, then stops the moment a later render catches up", () => {
+    // The DW-48 SUCCESS story end to end, which neither the single-step cases
+    // above nor the give-up loop below tells: the first re-render lagged, the
+    // retry went out, THAT render landed with the bump — and the retries stop
+    // because the baseline arrived, not because the cap ran out. Asserted as a
+    // sequence because each step's input is the previous step's output, and a
+    // rule that recorded the wrong version would still pass every case in
+    // isolation.
+    let state: DataVersionRefreshState = NO_DATA_VERSION_REFRESH;
+    const first = dataVersionRefreshPlan({ served: 3, polled: 4, state });
+    expect(first.refresh).toBe(true);
+    state = first.state;
+
+    // The re-render's own read answered the pre-bump integer: still serving 3.
+    const retry = dataVersionRefreshPlan({ served: 3, polled: 4, state });
+    expect(retry.refresh).toBe(true);
+    expect(retry.state).toEqual({ version: 4, attempts: 2 });
+    state = retry.state;
+
+    // …and THIS one landed. Every poll from here on is a no-op, and the count
+    // stopped at 2 — below the cap, so it was the catch-up that ended it.
+    expectUnchanged({ served: 4, polled: 4, state });
+    expectUnchanged({ served: 4, polled: 4, state });
+    expect(state.attempts).toBeLessThan(DATA_VERSION_REFRESH_ATTEMPTS);
+  });
+
+  it("gives up at the cap — a degraded read costs a fixed number of renders", () => {
+    // `page.tsx` stuck at 0 while the route answers 7 is a baseline that NEVER
+    // catches up. Without the cap this is `router.refresh()` every tick forever.
+    expectUnchanged({ served: 0, polled: 7, state: { version: 7, attempts: 3 } });
+
+    // Driven as the watcher drives it: from the seed, the same pair of numbers
+    // repeated forever yields exactly DATA_VERSION_REFRESH_ATTEMPTS refreshes.
+    const run = drive(0, Array.from({ length: 25 }, () => 7));
+    expect(run.refreshes).toBe(DATA_VERSION_REFRESH_ATTEMPTS);
+    expect(run.state).toEqual({ version: 7, attempts: DATA_VERSION_REFRESH_ATTEMPTS });
+  });
+
+  it("stays bounded when the route FLAPS between two versions", () => {
+    // The cap is only a cap if the attempt version cannot be rewritten
+    // downward. Relax the retry branch's equality to `polled <= state.version`
+    // and every single-step case in this file still passes — while a route
+    // alternating 7 and 5 against a degraded baseline re-arms the count on each
+    // backwards read and refreshes forever, which is precisely the loop the cap
+    // exists to prevent. Driven, because the failure only appears in sequence.
+    const flapping = Array.from({ length: 25 }, (_, tick) => (tick % 2 === 0 ? 7 : 5));
+    const run = drive(0, flapping);
+    expect(run.refreshes).toBe(DATA_VERSION_REFRESH_ATTEMPTS);
+    // The high-water mark never moved down: 5 was never recorded as attempted.
+    expect(run.state).toEqual({ version: 7, attempts: DATA_VERSION_REFRESH_ATTEMPTS });
+  });
+
+  it("starts over for a new bump, even after giving up", () => {
+    // Giving up is per VERSION, never a latch on the watcher: a real write
+    // arriving after a degraded stretch still refreshes.
     expect(
-      shouldRefreshForDataVersion({ served: 0, polled: 8, refreshedFor: 7 }),
-    ).toBe(true);
+      dataVersionRefreshPlan({ served: 0, polled: 8, state: { version: 7, attempts: 3 } }),
+    ).toEqual({ refresh: true, state: { version: 8, attempts: 1 } });
   });
 
   it("ignores a backwards read — eventual consistency is not a change", () => {
-    expect(
-      shouldRefreshForDataVersion({ served: 5, polled: 4, refreshedFor: 0 }),
-    ).toBe(false);
+    expectUnchanged({ served: 5, polled: 4, state: NO_DATA_VERSION_REFRESH });
+  });
+
+  it("ignores a poll that lands behind an outstanding attempt", () => {
+    // A refresh is already out for 4 and this poll answers the number already
+    // on screen: nothing to do, and nothing to record — recording it would
+    // otherwise re-arm the retry for a version the render is already handling.
+    expectUnchanged({ served: 3, polled: 3, state: { version: 4, attempts: 1 } });
+    // …and a read BELOW the attempted version while the baseline lags is the
+    // same backwards read, not a reason to restart the count at one — whether
+    // the attempts for that version are spent…
+    expectUnchanged({ served: 0, polled: 5, state: { version: 7, attempts: 3 } });
+    // …or still REMAINING, which is the case that separates `polled ===
+    // state.version` from `polled <= state.version`: the loose form refreshes
+    // here and rewrites the attempt version down to 5, losing the high-water
+    // mark that bounds the whole thing.
+    expectUnchanged({ served: 0, polled: 5, state: { version: 7, attempts: 1 } });
   });
 });
 
@@ -909,43 +1032,79 @@ describe("DataVersionWatcher", () => {
     // render so a poll compares against the payload now on screen.
     expect(source).toContain("useWorkbenchData()");
     expect(source).toContain("servedRef.current = dataVersion;");
-    expect(source).toContain("refreshedForRef.current = result.version;");
+    // The attempt state is the rule's answer, assigned verbatim. The watcher
+    // decides nothing about how many refreshes a version has cost.
+    expect(source).toContain("refreshStateRef.current = plan.state;");
+    // Ref state, seeded from the module's own initial value: it resets on
+    // remount and there is nowhere for it to be persisted.
+    expect(source).toContain("useRef(NO_DATA_VERSION_REFRESH)");
   });
 
-  it("spells no comparison of its own — the decision is the executed function", async () => {
+  it("spells no comparison or arithmetic of its own — the decision is the executed function", async () => {
     const source = await fs.readFile(path.join(WORKBENCH, "DataVersionWatcher.tsx"), "utf8");
-    expect(source).toContain("shouldRefreshForDataVersion({");
+    expect(source).toContain("dataVersionRefreshPlan({");
     expect(source).toContain("served: servedRef.current,");
     expect(source).toContain("polled: result.version,");
-    expect(source).toContain("refreshedFor: refreshedForRef.current,");
-    // Strip the comments first: the docblock explains forward-only comparison in
-    // prose, and prose is not a comparison.
+    expect(source).toContain("state: refreshStateRef.current,");
+    // Strip the comments first: the docblock explains forward-only comparison
+    // and the retry bound in prose, and prose is neither a comparison nor a
+    // count. TRAILING comments are stripped too — a whole-line filter alone
+    // leaves `refreshStateRef.current = plan.state; // attempts + 1` behind,
+    // which trips both guards below on what is still only prose.
     const code = source
       .split("\n")
       .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+      .map((line) => line.replace(/(^|\s)\/\/.*$/, ""))
       .join("\n");
     expect(code).not.toMatch(/(version|Version|polled|served)\s*[<>]=?\s*/);
+    // …and the retry is counted in the rule, not here: no attempt arithmetic
+    // and no cap of the watcher's own. An `attempts + 1` inlined here would
+    // pass every other assertion in this file while owning half the policy.
+    // Case-insensitive, so a `ATTEMPTS`/`Attempts` spelling cannot slip past.
+    expect(code).not.toMatch(/attempts/i);
+    expect(code).not.toContain("DATA_VERSION_REFRESH_ATTEMPTS");
+    // The arithmetic ban is ANCHORED to the state handling rather than applied
+    // to the whole file: some unrelated `+ 1` elsewhere in this component is
+    // not this story's business, but one between the plan call and the refresh
+    // is the watcher recomputing what the rule already answered.
+    const stateHandling = code.slice(
+      code.indexOf("const plan = dataVersionRefreshPlan("),
+      code.indexOf("router.refresh();"),
+    );
+    expect(stateHandling).toContain("refreshStateRef.current = plan.state;");
+    expect(stateHandling).not.toMatch(/[+\-]\s*\d/);
   });
 
   it("uses the decision's answer the right way round", async () => {
     const source = await fs.readFile(path.join(WORKBENCH, "DataVersionWatcher.tsx"), "utf8");
     // Executing the decision is not the same as OBEYING it. `toContain(
-    // "shouldRefreshForDataVersion({")` above is satisfied by a watcher that
-    // dropped the `!` — which refreshes on every poll where nothing changed and
-    // never when a write lands, i.e. the exact inverse of the story, with the
-    // whole suite green. The polarity is the thing, so it is pinned here.
+    // "dataVersionRefreshPlan({")` above is satisfied by a watcher that dropped
+    // the `!` — which refreshes on every poll where nothing changed and never
+    // when a write lands, i.e. the exact inverse of the story, with the whole
+    // suite green. The polarity is the thing, so it is pinned here.
     const run = source.slice(
       source.indexOf("async function run()"),
       source.indexOf("function startPolling()"),
     );
     expect(run).toMatch(
-      /if \(\s*!shouldRefreshForDataVersion\(\{[\s\S]{0,240}?\}\)\s*\) \{\s*return;\s*\}/,
+      /const plan = dataVersionRefreshPlan\(\{[\s\S]{0,240}?\}\);/,
     );
+    expect(run).toMatch(/if \(!plan\.refresh\) return;/);
+    // The state is recorded BEFORE the guard. Today's rule returns the state
+    // UNCHANGED on every non-refresh branch, so moving the assignment below the
+    // guard changes no behaviour — which is precisely why it is pinned here
+    // rather than left to a mounted test: the ordering is invisible until the
+    // day a branch declines to refresh AND still has something to record (a
+    // give-up that should stop re-arming, say), and then it silently loops.
+    // `previewFetchPlan.shown` carries the same guarantee for the same reason.
+    const assigned = run.indexOf("refreshStateRef.current = plan.state;");
+    expect(assigned).toBeGreaterThan(run.indexOf("dataVersionRefreshPlan("));
+    expect(assigned).toBeLessThan(run.indexOf("if (!plan.refresh) return;"));
     // …and the refresh is reached only AFTER that guard, exactly once, so the
     // branch cannot be bypassed by a second call site above it.
     expect(run.match(/router\.refresh\(\)/g) ?? []).toHaveLength(1);
     expect(run.indexOf("router.refresh()")).toBeGreaterThan(
-      run.indexOf("shouldRefreshForDataVersion"),
+      run.indexOf("if (!plan.refresh) return;"),
     );
     // A poll that could not answer never reaches the decision at all.
     expect(run).toMatch(/if \(result\.status !== "ok"\) return;/);

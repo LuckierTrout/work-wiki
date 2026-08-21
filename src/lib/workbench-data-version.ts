@@ -114,24 +114,113 @@ export async function fetchDataVersion(
 // ---------------------------------------------------------------------------
 
 /**
- * Does this polled version warrant re-running the server render?
+ * How many `router.refresh()` calls one observed version may ever cost, IN
+ * TOTAL — the initial refresh plus two retries, not three retries on top of it.
  *
- * FORWARD-ONLY. KV is eventually consistent, so a poll can legitimately answer
- * a value LOWER than the one the server rendered with; treating any inequality
- * as a change would refresh on the stale read and then again on the fresh one.
+ * The bound is a count of QUALIFYING POLLS, from whichever trigger issued them,
+ * and deliberately not a timer: no second cadence, no backoff, nothing to cancel
+ * on unmount. It is emphatically not a wall-clock window. `run()` has three
+ * triggers — the {@link DATA_VERSION_POLL_MS} interval, `visibilitychange` back
+ * to visible, and the save nudge ({@link requestDataVersionCheck}) — and every
+ * poll from any of them that answers the same un-caught-up version spends an
+ * attempt, so a burst of saves can exhaust the whole budget in milliseconds.
  *
- * `refreshedFor` guards the opposite failure. If `page.tsx`'s own read degrades
- * to `0` while the route answers `7`, the served baseline never catches up — and
- * an unguarded watcher would call `router.refresh()` on every single poll,
- * forever. Refreshing at most once per observed version bounds that to one
- * wasted render.
+ * Three covers the narrow window where the route's read and `page.tsx`'s read
+ * disagree because they hit different replicas — both go through the same
+ * Worker, so that window is short — without making a genuinely degraded read
+ * expensive.
  */
-export function shouldRefreshForDataVersion(input: {
+export const DATA_VERSION_REFRESH_ATTEMPTS = 3;
+
+/**
+ * The refreshes already issued for one polled version.
+ *
+ * `version` is the number refreshes were issued FOR (not the number served),
+ * and `attempts` is how many have gone out for it. Ref state in the watcher, so
+ * it resets on remount and is never persisted anywhere.
+ */
+export interface DataVersionRefreshState {
+  readonly version: number;
+  readonly attempts: number;
+}
+
+/**
+ * Nothing has been refreshed for yet. The watcher's ref seed.
+ *
+ * FROZEN, because this exact object is handed into every mounted watcher's ref
+ * and is also what three branches of the rule below hand straight back. The
+ * `readonly` markers are erased at build time; one stray `state.attempts += 1`
+ * anywhere would otherwise mutate the seed shared by every watcher in the tab.
+ */
+export const NO_DATA_VERSION_REFRESH: DataVersionRefreshState = Object.freeze({
+  version: 0,
+  attempts: 0,
+});
+
+/** What the watcher should do with this poll, and what it should remember. */
+export interface DataVersionRefreshPlan {
+  /** Call `router.refresh()`. */
+  readonly refresh: boolean;
+  /**
+   * The attempt state the watcher should now hold — returned rather than
+   * computed by the caller, for the reason {@link PreviewFetchPlan.shown}
+   * spells out: "compare, THEN record" is an ordering, and an ordering held by
+   * two adjacent statements in an effect is one tidy-up away from being
+   * reversed. Every branch below returns the state that branch should leave
+   * behind, so the assignment can sit ABOVE the guard and there is nothing left
+   * to hoist.
+   */
+  readonly state: DataVersionRefreshState;
+}
+
+/**
+ * Does this polled version warrant re-running the server render — again?
+ *
+ * FORWARD-ONLY, first. KV is eventually consistent, so a poll can legitimately
+ * answer a value LOWER than the one the server rendered with; treating any
+ * inequality as a change would refresh on the stale read and then again on the
+ * fresh one. A polled value at or below `served` is never a change.
+ *
+ * BOUNDED RETRY, second, and this is DW-48. `router.refresh()` re-runs the
+ * server render, but nothing guarantees THAT render's own `readDataVersion()`
+ * sees the bump the poll just saw: a replica lagging by one read answers the
+ * pre-bump integer, the new baseline lands behind the version refreshed for,
+ * and a watcher that recorded "done with 4" would then sit stale until the next
+ * write. So the state records what was ATTEMPTED, and while the served baseline
+ * has not caught up the next poll tries again — until the TOTAL for that
+ * version reaches {@link DATA_VERSION_REFRESH_ATTEMPTS}, initial refresh
+ * included, and then it gives up.
+ *
+ * The cap is what the old "at most once per version" rule was really for. With
+ * `page.tsx`'s own read degraded to `0` while the route answers `7`, the
+ * baseline NEVER catches up, and an unbounded retry is `router.refresh()` on
+ * every poll forever. Three wasted renders is the fixed price of that failure;
+ * in exchange, a real bump whose re-render merely lagged is no longer stranded.
+ *
+ * A poll ABOVE the attempted version is a new bump and starts the count over,
+ * even after the cap was spent. A poll BELOW it is a backwards read of the same
+ * kind as the first rule's — the higher version was already refreshed for, so
+ * there is nothing to do and nothing to record.
+ */
+export function dataVersionRefreshPlan(input: {
   served: number;
   polled: number;
-  refreshedFor: number;
-}): boolean {
-  return input.polled > input.served && input.polled > input.refreshedFor;
+  state: DataVersionRefreshState;
+}): DataVersionRefreshPlan {
+  const { served, polled, state } = input;
+  // Caught up, unchanged, or a stale read: no refresh, and no state to move.
+  if (polled <= served) return { refresh: false, state };
+  // A version beyond anything attempted — a new bump. Count restarts at one.
+  if (polled > state.version) {
+    return { refresh: true, state: { version: polled, attempts: 1 } };
+  }
+  // The same version we already refreshed for, and the baseline is still
+  // behind it: the re-render did not catch up. Try again while attempts remain.
+  if (polled === state.version && state.attempts < DATA_VERSION_REFRESH_ATTEMPTS) {
+    return { refresh: true, state: { version: polled, attempts: state.attempts + 1 } };
+  }
+  // Attempts exhausted, or a read behind an outstanding attempt.
+  return { refresh: false, state };
 }
 
 /** What the Preview's effect should do on this run. */
