@@ -3418,6 +3418,7 @@ location: src/lib/talk.ts, src/lib/browse.ts:184
 severity: medium
 reason: `listThreads`, `createThread`, `getThread`, `addComment`, `resolveThread` and `hasOpenThread` now have no non-test callers; only `deleteDiscussions` (lifecycle.ts), `getDiscussRelPrefix` (discuss-stats-index.ts, contributors.ts) and `getDiscussionStatsForSlugs` (browse.ts) are still read, and the talk HTTP surfaces that drove the rest are retired. A knock-on: `browse.ts:184` still renders a per-page discussion count that nothing can increase any more, and pre-existing reconciliation threads stay on disk feeding it. Retiring that surface — and the discuss-stats/contributor indexes hanging off it — is wider than DW-230 asked, and the spec's Never list forbids touching talk.ts's remaining readers, so it is recorded rather than resolved. The retirement banner in talk.ts says the same thing so the dead surface is not mistaken for live API.
 status: open
+decision: 2026-08-21 Retire the dead writers only — Delete listThreads, createThread, getThread, addComment, resolveThread and hasOpenThread from src/lib/talk.ts along with their now-orphaned tests, leaving deleteDiscussions, getDiscussRelPrefix and getDiscussionStatsForSlugs (and therefore browse's count and the discuss-stats/contributor indexes) exactly as they are.
 
 ### DW-391: A non-admin page owner can no longer take their own public knowledge page private — the realm became a one-way door for them.
 origin: spec-deferred d981f87caa54
