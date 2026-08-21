@@ -54,6 +54,7 @@ replaced on refresh, and this list must survive the refresh.
 - Prefer BMAD Fast path (draft with assumption tags) over Coaching when a working mode is offered.
 - Prefer Claude Opus 5 at high effort for bmad-loop adapter (dev and triage). Independent review is off during deferred-work culls; do not re-arm a finished bundle just because the ledger was dirty. When review is on, use Codex (`gpt-5.6-terra`), one cycle, and enforce the session budget (2.5M weighted tokens, 60-minute timeout). ChatGPT-auth Codex cannot use `gpt-5-codex`.
 - Prefer bmad-loop sweep commit/finalize to proceed automatically so remaining deferred-work items can be culled.
+- Sweep triage must put every open `severity: low` deferred-work entry in `skip` (project excludes low-priority residue until after Epic 8). Do not put low items in bundles, even when they share a file with a medium item. Leave low entries open; do not close them as resolved.
 - Do not use Cursor IDE chat as a bmad-loop adapter; there is no shipped cursor profile.
 
 ## Learned Workspace Facts
