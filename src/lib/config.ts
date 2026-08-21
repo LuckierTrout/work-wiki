@@ -308,6 +308,38 @@ export function _resetConfigWarnings(): void {
 }
 
 /**
+ * `OLLAMA_BASE_URL` when it is USABLE, and `undefined` when it is not.
+ *
+ * The env leg of {@link getOllamaBaseUrl}, extracted so that "is the
+ * environment's Ollama endpoint usable" is asked in ONE place (DW-370).
+ * `detectEnvProvider` and `resolveEmbeddingProvider`'s credential tail both used
+ * to answer it with `process.env.OLLAMA_BASE_URL` alone, so a typo'd
+ * `localhost:11434` SELECTED `ollama` while this function REFUSED the same
+ * string — the provider resolved and the endpoint did not, and the call went to
+ * the SDK's own localhost default instead of the address the owner typed.
+ * Restating the `isAbsoluteHttpUrl` check at a detection site would only move
+ * the disagreement one edit away; calling the same rule means the two cannot
+ * drift.
+ *
+ * Sharing it also shares the warn-once KEY, so a typo'd endpoint is described
+ * once per process no matter how many resolvers ask about it.
+ *
+ * ENV ONLY, deliberately: this answers nothing about `cfg.ollamaBaseUrl`. See
+ * the note on {@link detectEnvProvider}'s ollama branch for why detection must
+ * not widen to the store.
+ */
+export function envOllamaBaseUrl(): string | undefined {
+  const fromEnv = nonEmpty(process.env.OLLAMA_BASE_URL);
+  if (fromEnv === null) return undefined;
+  if (isAbsoluteHttpUrl(fromEnv)) return fromEnv;
+  warnOnceAbout(
+    `ollama-endpoint:env:${fromEnv}`,
+    `OLLAMA_BASE_URL is not an absolute http(s) URL (${fromEnv}); ignoring it.`,
+  );
+  return undefined;
+}
+
+/**
  * Returns the effective Ollama base URL.
  * Priority: `OLLAMA_BASE_URL` env var → config file `ollamaBaseUrl` → `undefined`.
  *
@@ -339,16 +371,15 @@ export function _resetConfigWarnings(): void {
  * `getEmbeddingModelName(cfg)` already uses, so a caller that has already read
  * the config resolves against the object it is holding rather than against
  * whatever the cache answers a moment later.
+ *
+ * The env leg lives in {@link envOllamaBaseUrl} because the two auto-detection
+ * sites need exactly that half of this ladder and nothing else (DW-370). This
+ * function's behaviour is unchanged by the move: the same fall-through, the
+ * same warn-once key, the same answer for every input.
  */
 export function getOllamaBaseUrl(cfg: AppConfig = loadConfigSync()): string | undefined {
-  const fromEnv = nonEmpty(process.env.OLLAMA_BASE_URL);
-  if (fromEnv !== null) {
-    if (isAbsoluteHttpUrl(fromEnv)) return fromEnv;
-    warnOnceAbout(
-      `ollama-endpoint:env:${fromEnv}`,
-      `OLLAMA_BASE_URL is not an absolute http(s) URL (${fromEnv}); ignoring it.`,
-    );
-  }
+  const fromEnv = envOllamaBaseUrl();
+  if (fromEnv !== undefined) return fromEnv;
   const stored = nonEmpty(cfg.ollamaBaseUrl);
   if (stored !== null) {
     if (isAbsoluteHttpUrl(stored)) return stored;
@@ -775,7 +806,22 @@ export function detectEnvProvider(): {
   if (process.env.OLLAMA_API_KEY) {
     return { provider: "ollama-cloud", apiKey: process.env.OLLAMA_API_KEY };
   }
-  if (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_MODEL) {
+  // A USABLE endpoint, not merely a present one (DW-370). `OLLAMA_BASE_URL`
+  // holding something `getOllamaBaseUrl` refuses — `localhost:11434`, say —
+  // used to select `ollama` here while resolution ignored the value, so the
+  // calls went to the SDK's own localhost default rather than the address the
+  // owner typed, and nothing on the surface said so.
+  //
+  // `OLLAMA_MODEL` stays an INDEPENDENT signal: a model name is usable on its
+  // own, so set alone (or set beside an unusable URL) it still selects
+  // `ollama`, and the SDK's default endpoint is then the honest resolution.
+  // Only the endpoint's false signal is removed.
+  //
+  // ENV ONLY: `cfg.ollamaBaseUrl` is deliberately not consulted. This function
+  // answers "what do the environment variables alone select", and widening it
+  // to the store would make a saved endpoint select a provider the owner never
+  // saved — a different question from the one DW-370 asks.
+  if (envOllamaBaseUrl() !== undefined || nonEmpty(process.env.OLLAMA_MODEL) !== null) {
     return { provider: "ollama", apiKey: null };
   }
   return { provider: null, apiKey: null };
@@ -866,9 +912,13 @@ export function getEffectiveProvider(): ProviderInfo {
     model = cfg.model;
   } else if (
     (provider === "ollama" || provider === "ollama-cloud") &&
-    process.env.OLLAMA_MODEL
+    nonEmpty(process.env.OLLAMA_MODEL) !== null
   ) {
-    model = process.env.OLLAMA_MODEL;
+    // Through `nonEmpty`, not bare truthiness: `detectEnvProvider` reads the
+    // same variable that way, so `OLLAMA_MODEL="  "` would otherwise be unset
+    // to detection and reported here as the active model — the string `"  "`
+    // going out through `/api/status` and every workload resolver (DW-370).
+    model = nonEmpty(process.env.OLLAMA_MODEL);
   } else {
     // `custom` carries no DEFAULT_MODELS entry on purpose, so the `?? provider`
     // fallback would report the literal string "custom" as the active model —

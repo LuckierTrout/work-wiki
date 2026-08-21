@@ -1,6 +1,7 @@
 "use client";
 
 import { DEFAULT_MODELS, PROVIDER_INFO, providerLabel } from "@/lib/providers";
+import { SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY } from "@/lib/workbench-settings";
 import type { EffectiveSettings } from "@/hooks/useSettings";
 
 export interface StructuredKnowledgeSettingsProps {
@@ -43,6 +44,39 @@ export function StructuredKnowledgeSettings({
     null;
   const usesPrimary =
     !provider && settings?.structuredKnowledgeProviderSource !== "config";
+  /**
+   * `Custom` is selectable here but not CONFIGURABLE here (DW-368).
+   *
+   * Exactly `ProviderForm`'s `showCustom` (DW-61): this section renders no
+   * base-URL and no API-key input, and it deliberately gains none — a second
+   * editor for `customBaseUrl`/`customApiKey` would give two surfaces a
+   * lost-update race over the same two stored fields, which the 2026-08-18
+   * decision on DW-61 rules out in as many words. The option stays (removing it
+   * would make an already-stored `custom` unrepresentable in its own picker)
+   * and the page says where the other two halves live — otherwise a save here
+   * stores a provider `getConfiguredModel` refuses to construct, and the first
+   * anyone hears of it is a failed extraction call.
+   *
+   * Read off `effectiveProvider`, not off `provider`: a deployment already
+   * STORING `custom` for extraction needs the pointer on first paint, before
+   * the owner has touched the select.
+   *
+   * But `effectiveProvider` ALONE is too wide, because
+   * `workloadModelSettings` (`src/lib/config.ts`) resolves an unset extraction
+   * provider to `provider ?? primaryProvider` with source `"default"` — so a
+   * deployment whose PRIMARY is `custom` and whose extraction is unset is
+   * served `structuredKnowledgeProvider: "custom"` and would light this up
+   * while the flow badge beside it still reads "Primary provider". That case is
+   * the primary picker's to speak for: `ProviderForm` is already rendering this
+   * exact sentence for it, and a second copy on the same page would say the
+   * same thing twice about one setting the owner cannot change from here.
+   *
+   * So the gate is INHERIT-AWARE, and it keys off `usesPrimary` rather than
+   * re-deriving the same question: the badge and the pointer must be reading
+   * the same rung of that ladder, or the section can claim to be routing
+   * through the primary provider and to own a `custom` routing choice at once.
+   */
+  const showCustom = !usesPrimary && effectiveProvider === "custom";
 
   return (
     <section className="rounded-lg border border-foreground/15 bg-foreground/[0.025] p-4 sm:p-5">
@@ -146,6 +180,23 @@ export function StructuredKnowledgeSettings({
           />
         </div>
       </div>
+
+      {/*
+        DESCRIBES, does not mark: no `aria-invalid` on the picker and the save
+        is not blocked — the same convention `ProviderForm`'s note follows.
+        Selecting `custom` is not an error, it is half a configuration, and the
+        other half is finished somewhere else. The sentence is the SHARED one,
+        so both pickers send an owner to the same place.
+      */}
+      {showCustom && (
+        <div
+          id="structuredKnowledgeCustomEndpoint"
+          className="mt-4 rounded-md border border-foreground/10 bg-foreground/[0.03] px-3 py-3 text-sm text-foreground/60"
+        >
+          <p className="font-medium text-foreground/80">Custom provider</p>
+          <p className="mt-1">{SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY}</p>
+        </div>
+      )}
 
       <p className="mt-3 text-xs text-foreground/40">
         Provider credentials remain encrypted server secrets. This setting only

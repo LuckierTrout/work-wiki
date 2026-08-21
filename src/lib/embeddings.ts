@@ -7,7 +7,12 @@ import type { EmbeddingModel } from "ai";
 import type { Ai } from "./storage/cloudflare-types";
 import { listWikiPages, readWikiPage } from "./wiki";
 import { getStorage } from "./storage";
-import { loadConfigSync, getEmbeddingModelOverride, getOllamaBaseUrl } from "./config";
+import {
+  loadConfigSync,
+  getEmbeddingModelOverride,
+  getOllamaBaseUrl,
+  envOllamaBaseUrl,
+} from "./config";
 import {
   EMBEDDING_PROVIDERS,
   WORKERS_AI_EMBEDDING_DIMENSIONS,
@@ -214,7 +219,14 @@ function resolveEmbeddingProvider(
   // first while a valid OpenAI or Google embedding key also exists.
   if (process.env.OPENAI_API_KEY) return "openai";
   if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) return "google";
-  if (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_MODEL) return "ollama";
+  // The same "usable, not merely present" rule `detectEnvProvider` applies
+  // (DW-370), through the same function — this was the second copy of the bare
+  // presence test, and a refused `OLLAMA_BASE_URL` selecting `ollama` here
+  // embedded a whole corpus against an endpoint the owner never named.
+  // `OLLAMA_MODEL` remains an independent, usable signal.
+  if (envOllamaBaseUrl() !== undefined || nonEmpty(process.env.OLLAMA_MODEL) !== null) {
+    return "ollama";
+  }
 
   return null;
 }

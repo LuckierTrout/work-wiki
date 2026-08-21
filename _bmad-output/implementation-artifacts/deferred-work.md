@@ -3243,7 +3243,8 @@ source_spec: `spec-dw-61-327-329-legacy-settings-surface-parity.md`
 location: src/components/StructuredKnowledgeSettings.tsx:84-99
 severity: medium
 reason: StructuredKnowledgeSettings.tsx populates its select from the same PROVIDER_INFO list that carries `custom`; the route accepts structuredKnowledgeProvider: "custom" and config.ts resolves it through getConfiguredModel, which throws "The Custom provider needs a base URL. Set it in Settings -> LLM Models." (src/lib/llm.ts:395-408) - the twin of the primary path's throw at :285-301 that DW-61 closed. Pre-existing: the DW-61 ledger entry and this bundle's intent both scope the fix to ProviderForm's picker, so the extraction picker was never in scope. There is no test file for StructuredKnowledgeSettings at all.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-provider-selection-truthfulness
 
 ### DW-369: The five "Settings -> LLM Models" literals in llm.ts are hand-typed rather than derived from settingsCategory, so renaming that category leaves five runtime errors naming something the nav no longer s
 origin: spec-deferred b8ca25f1e6cd
@@ -3259,7 +3260,8 @@ source_spec: `spec-dw-71-326-272-settings-config-resolution-hardening.md`
 location: src/lib/config.ts:739
 severity: medium
 reason: src/lib/config.ts:739-742 and src/lib/embeddings.ts:217 branch on the variable's presence, not on its usability. After DW-326 a typo'd `OLLAMA_BASE_URL=localhost:11434` both SELECTS the ollama provider and resolves to no endpoint, so generation and embed silently go to the SDK's own localhost default instead of failing against the address the owner typed. Pre-existing detection logic; the fall-through this bundle chose over a refusal is what makes the outcome silent. Closing it means either detecting through the validated accessor or writing down why detection deliberately answers a wider question.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-provider-selection-truthfulness
 
 ### DW-371: The filesystem provider's compare-and-set is best-effort: its etag is `mtime-size` and its read pairs `readFile` with `stat`, so a losing compare-and-set can still win there.
 origin: spec-deferred 4c28f233b6f3
@@ -3494,4 +3496,36 @@ source_spec: `spec-dw-69-72-embedding-provider-secret-isolation.md`
 location: _bmad-output/implementation-artifacts/spec-dw-66-72-settings-credential-fidelity.md
 severity: low
 reason: That spec planned to key `embeddingApiKey`/`embeddingBaseUrl` per provider with a load-time migration. The recorded decisions rule that out, and nothing from it landed — the store is still flat. Its frontmatter is where anyone scanning for open work will look, and it currently claims work is under way on entries this spec resolves.
+status: open
+
+### DW-400: The custom-endpoint pointer is visually adjacent to the provider picker on both the primary and the extraction surface, but no `aria-describedby` associates it, so a screen-reader owner selecting Cust
+origin: spec-deferred 870c311fd59f
+source_spec: `spec-dw-368-370-provider-selection-truthfulness.md`
+location: src/components/StructuredKnowledgeSettings.tsx:181 and src/components/ProviderForm.tsx:227
+severity: medium
+reason: `StructuredKnowledgeSettings.tsx` renders the note with `id="structuredKnowledgeCustomEndpoint"` and `#structuredKnowledgeProvider` sets `aria-describedby` only in the read-only case; `ProviderForm.tsx`'s DW-61 note carries no id at all. The repo already states the opposite convention at `src/components/workbench/SettingsCanvas.tsx:419-433`, whose comment says a hint sitting beside a control is invisible to a screen reader. Fixing only the new note would leave the two pickers inconsistent, so this covers both.
+status: open
+
+### DW-401: DW-370's harm class survives on the EXPLICIT ollama selections: an `EMBEDDING_PROVIDER=ollama` override and a stored `cfg.provider === "ollama"` still select ollama regardless of endpoint usability, t
+origin: spec-deferred 68e862a9281d
+source_spec: `spec-dw-368-370-provider-selection-truthfulness.md`
+location: src/lib/embeddings.ts:203-215
+severity: medium
+reason: `resolveEmbeddingProvider` returns the override at `src/lib/embeddings.ts:203` and the saved provider at `:211-215` without consulting `getOllamaBaseUrl`, and `getEmbeddingModel` constructs `createOllama()` with no baseURL when none resolves. So a corpus can still be embedded against the SDK's localhost default while the owner believes it is going to the endpoint they typed. This bundle's intent scopes the fix to auto-DETECTION, so the explicit rungs were deliberately untouched and are neither closed nor documented as exceptions.
+status: open
+
+### DW-402: A refused `OLLAMA_BASE_URL` is now described only in a server log; every owner-facing surface still advertises the variable as the remedy and reports no reason it was ignored.
+origin: spec-deferred 3f538ea33f5f
+source_spec: `spec-dw-368-370-provider-selection-truthfulness.md`
+location: src/components/StatusBadge.tsx:81
+severity: medium
+reason: `StatusBadge.tsx:81` lists `OLLAMA_BASE_URL / OLLAMA_MODEL` as the fix in the very panel shown when nothing is configured, and `getEffectiveSettings` reports `ollamaBaseUrlSource: "none"` with no accompanying reason, so an owner who set the variable to `localhost:11434` sees "no provider configured" while the variable is set. The repo already has the pattern for saying this out loud (`envCustomBaseUrl` + `settingsEnvOverrideCopy`, `SettingsCanvas.tsx:531-535`).
+status: open
+
+### DW-403: The extraction section's "Credential ready" badge can be green for `custom` while extraction still throws, because `providerIsConfigured("custom")` checks base URL and API key but not the model name C
+origin: spec-deferred a7d97b2655cd
+source_spec: `spec-dw-368-370-provider-selection-truthfulness.md`
+location: src/lib/config.ts:865
+severity: medium
+reason: `providerIsConfigured` at `src/lib/config.ts:865-867` tests only the two credential halves, and `DEFAULT_MODELS` deliberately carries no `custom` entry, so `getConfiguredModel` throws "The Custom provider needs a model name" (`src/lib/llm.ts:406-410`) for a deployment the badge calls ready. Pre-existing and independent of this change's pointer.
 status: open

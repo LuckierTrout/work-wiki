@@ -181,9 +181,16 @@ export async function retryWithBackoff<T>(
  *   - Google:    GOOGLE_GENERATIVE_AI_API_KEY
  *   - DeepSeek:  DEEPSEEK_API_KEY (OpenAI-compatible endpoint)
  *   - Ollama Cloud: OLLAMA_API_KEY
- *   - Ollama:    OLLAMA_BASE_URL or OLLAMA_MODEL (Ollama is typically keyless;
- *                presence of either env var signals intent to use a local
- *                Ollama server)
+ *   - Ollama:    OLLAMA_BASE_URL or OLLAMA_MODEL (Ollama is typically keyless,
+ *                so the env vars themselves are the signal). The two are not
+ *                read the same way (DW-370): OLLAMA_BASE_URL counts only when
+ *                it is an ABSOLUTE http(s) URL, because a value
+ *                `getOllamaBaseUrl` refuses is ignored at resolution time (with
+ *                a warning) and the call would go to the SDK's own localhost
+ *                default rather than the address the owner typed. OLLAMA_MODEL
+ *                still counts on presence alone — a model name is usable on its
+ *                own, and the SDK's default endpoint is then the honest
+ *                resolution.
  *
  * Additional env vars (used by src/lib/embeddings.ts, not this module):
  *   - EMBEDDING_MODEL: override the default embedding model name for the

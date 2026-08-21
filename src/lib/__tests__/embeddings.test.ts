@@ -255,6 +255,38 @@ describe("hasEmbeddingSupport", () => {
     process.env.OLLAMA_MODEL = "llama3.2";
     expect(hasEmbeddingSupport()).toBe(true);
   });
+
+  // The mirror of `detectEnvProvider`'s ollama branch (DW-370). This tail held
+  // a SECOND copy of the bare presence test, so a refused `OLLAMA_BASE_URL`
+  // selected `ollama` here and a whole corpus was embedded against an endpoint
+  // the owner never named. Its own evidence, not the other site's.
+  it("returns false when OLLAMA_BASE_URL is present but unusable", () => {
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+    expect(hasEmbeddingSupport()).toBe(false);
+    expect(getEmbeddingModelName()).toBeNull();
+  });
+
+  it("still returns true when OLLAMA_MODEL is set beside an unusable URL", () => {
+    // Only the endpoint's false signal is removed; the model name is usable on
+    // its own and the SDK's default endpoint is the honest resolution.
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+    process.env.OLLAMA_MODEL = "llama3.2";
+    expect(hasEmbeddingSupport()).toBe(true);
+    expect(getEmbeddingModelName()).toBe("nomic-embed-text");
+  });
+
+  it("treats a BLANK OLLAMA_BASE_URL as unset, not as a selection", () => {
+    process.env.OLLAMA_BASE_URL = "  ";
+    expect(hasEmbeddingSupport()).toBe(false);
+  });
+
+  it("does not read the STORED endpoint as an env signal", () => {
+    // `resolveEmbeddingProvider`'s credential tail asks the same env-only
+    // question `detectEnvProvider` asks; a saved endpoint is the owner's saved
+    // PROVIDER's business, one branch further up.
+    mockLoadConfigSync.mockReturnValue({ ollamaBaseUrl: "http://stored-host:11434" });
+    expect(hasEmbeddingSupport()).toBe(false);
+  });
 });
 
 describe("getEmbeddingModelName", () => {

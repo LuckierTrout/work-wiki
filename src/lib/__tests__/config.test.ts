@@ -20,6 +20,8 @@ import {
   getRawDir,
   getEmbeddingModelOverride,
   getOllamaBaseUrl,
+  detectEnvProvider,
+  DEFAULT_MODELS,
   applyWorkbenchSettings,
   _resetConfigCache,
   _resetConfigWarnings,
@@ -1293,6 +1295,121 @@ describe("getOllamaBaseUrl validation", () => {
     await saveConfig({ provider: "ollama", ollamaBaseUrl: "http://myhost:11434/api" });
     await loadConfig();
     expect(getResolvedCredentials().ollamaBaseUrl).toBe("http://myhost:11434/api");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectEnvProvider — a provider is selected only when the env can REACH it
+// (DW-370)
+// ---------------------------------------------------------------------------
+
+describe("detectEnvProvider — the ollama branch", () => {
+  /** Run `body` with `logger.warn` captured, and hand back this module's lines. */
+  function withWarnSpy<T>(body: () => T): { result: T; warnings: string[] } {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      return {
+        result: body(),
+        warnings: warn.mock.calls
+          .filter((call) => call[0] === "config")
+          .map((call) => String(call[1])),
+      };
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  it("selects ollama from a USABLE endpoint", () => {
+    process.env.OLLAMA_BASE_URL = "http://host:11434";
+
+    const { result, warnings } = withWarnSpy(() => detectEnvProvider());
+
+    expect(result).toEqual({ provider: "ollama", apiKey: null });
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("selects NOTHING from an endpoint `getOllamaBaseUrl` refuses", () => {
+    // The DW-370 bug: presence alone used to select `ollama` while resolution
+    // ignored the same string, so the calls went to the SDK's own localhost
+    // default rather than the address the owner typed.
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result, warnings } = withWarnSpy(() => detectEnvProvider());
+
+    expect(result).toEqual({ provider: null, apiKey: null });
+    // The endpoint is still DESCRIBED — the same sentence, from the same
+    // warn-once key `getOllamaBaseUrl` uses.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("OLLAMA_BASE_URL");
+    expect(warnings[0]).toContain("localhost:11434");
+  });
+
+  it("still selects ollama when OLLAMA_MODEL is set beside an unusable endpoint", () => {
+    // Only the endpoint's FALSE signal is removed. A model name is usable on
+    // its own, and the SDK's default endpoint is then the honest resolution.
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+    process.env.OLLAMA_MODEL = "llama3.2";
+
+    const { result } = withWarnSpy(() => detectEnvProvider());
+
+    expect(result).toEqual({ provider: "ollama", apiKey: null });
+    // …and the endpoint really did resolve to nothing.
+    expect(withWarnSpy(() => getOllamaBaseUrl({})).result).toBeUndefined();
+  });
+
+  it("selects ollama from OLLAMA_MODEL alone", () => {
+    process.env.OLLAMA_MODEL = "llama3.2";
+    expect(detectEnvProvider()).toEqual({ provider: "ollama", apiKey: null });
+  });
+
+  it("treats a BLANK endpoint as unset: selects nothing, warns about nothing", () => {
+    process.env.OLLAMA_BASE_URL = "   ";
+
+    const { result, warnings } = withWarnSpy(() => detectEnvProvider());
+
+    expect(result).toEqual({ provider: null, apiKey: null });
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("treats a BLANK OLLAMA_MODEL as unset too", () => {
+    process.env.OLLAMA_MODEL = "  ";
+    expect(detectEnvProvider()).toEqual({ provider: null, apiKey: null });
+  });
+
+  it("does not let a blank OLLAMA_MODEL become the reported model", () => {
+    // `getEffectiveProvider`'s model ladder reads the same variable, and it
+    // must read it the same way: with detection calling `"  "` unset, a ladder
+    // on bare truthiness would report the literal string `"  "` as the active
+    // model to `/api/status` and to every workload resolver.
+    process.env.OLLAMA_BASE_URL = "http://host:11434";
+    process.env.OLLAMA_MODEL = "  ";
+
+    const effective = getEffectiveProvider();
+
+    expect(effective.provider).toBe("ollama");
+    expect(effective.model).toBe(DEFAULT_MODELS.ollama);
+  });
+
+  it("leaves a keyed provider alone beside an unusable endpoint", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    expect(detectEnvProvider()).toEqual({
+      provider: "anthropic",
+      apiKey: "sk-ant-test",
+    });
+  });
+
+  it("does NOT consult the stored endpoint", async () => {
+    // Detection answers "what do the env vars alone select". Widening it to the
+    // store would make a saved endpoint select a provider the owner never
+    // saved — a different question from the one DW-370 asks, and the reason
+    // this branch calls `envOllamaBaseUrl()` rather than `getOllamaBaseUrl()`.
+    await saveConfig({ ollamaBaseUrl: "http://stored-host:11434" });
+    await loadConfig();
+
+    expect(getOllamaBaseUrl()).toBe("http://stored-host:11434");
+    expect(detectEnvProvider()).toEqual({ provider: null, apiKey: null });
   });
 });
 
