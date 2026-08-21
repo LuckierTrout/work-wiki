@@ -1498,7 +1498,8 @@ source_spec: `spec-dw-27-workbench-mode-url-sync.md`
 location: src/app/page.tsx:38
 severity: medium
 reason: `src/app/page.tsx:38` is `redirect("/sign-in")` with no return-to, and `src/app/sign-in/[[...sign-in]]/page.tsx` renders `<SignIn />` with no `forceRedirectUrl` / `fallbackRedirectUrl`, so Clerk returns to `/`. The whole original URL is dropped, not just the param — pre-existing, and it predates DW-27 by every commit. DW-27 is what gives it a cost: before this there was nothing in the URL to lose.
-status: open
+status: done 2026-08-20
+resolution: already resolved: src/middleware.ts:175 answers an unauthenticated navigation with redirectToSignIn({ returnBackUrl: req.url }) — the full URL, query string included — and the matcher at src/middleware.ts:197-201 covers `/`, so a signed-out deep link keeps its ?mode=. src/app/page.tsx:40's bare redirect("/sign-in") is only reachable for a session middleware already admitted whose getPrincipal() degraded (src/lib/auth.ts:66-94), so the entry's premise does not hold.
 
 ### DW-169: Follow-up review still recommended for dw-workbench-mode-url-sync after the damping cap was spent
 origin: review-budget-followup
@@ -2984,7 +2985,8 @@ source_spec: `spec-dw-132-249-prose-inventory-parity.md`
 location: src/lib/bulk-document-import.ts:48
 severity: medium
 reason: `src/lib/bulk-document-import.ts:48` returns "Use Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP." from `validationError`, and its private `SUPPORTED_EXTENSIONS` (:6-18) omits odt/ods/odp/epub/mobi/org/rtf. So bulk upload rejects files `POST /api/ingest/document` accepts. The bundle intent enumerated exactly four format sites, so this one was out of scope for this pass; it is the same drift class and the only one already out of sync. Adopting it means deriving the sentence from the set it actually describes, not from `DOCUMENT_FORMAT_LABELS`.
-status: open
+status: done 2026-08-20
+resolution: already resolved: commit ab55322 (DW-229/DW-246 sweep): src/lib/bulk-document-import.ts:22-24 now derives SUPPORTED_EXTENSIONS from SUPPORTED_DOCUMENT_EXTENSIONS and :47-54 generates SUPPORTED_FORMATS_SENTENCE from DOCUMENT_FORMAT_LABELS; the hand-written 'Use Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP.' sentence no longer exists anywhere in src/ or workers/.
 
 ### DW-343: `MAINTAIN_FIX_TYPES` has no omission pin and the task-consumer README restates the same `lintType` list in unpinned prose.
 origin: spec-deferred 7dfb6b825471
