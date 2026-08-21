@@ -13,6 +13,7 @@ import {
   SETTINGS_SAVE_COPY,
   SETTINGS_TIMEOUT_HINT_COPY,
   settingsEnvKeyCopy,
+  settingsEnvOverrideCopy,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
 import { embeddingProviderLabel } from "@/lib/providers";
@@ -58,6 +59,7 @@ function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSe
     embeddingModelOverridden: false,
     envEmbeddingProvider: null,
     envEmbeddingModel: null,
+    envCustomBaseUrl: null,
     envEmbeddingApiKeyProviders: [],
     // Not on Workers, which is irrelevant to this file's `openai` selection —
     // the binding leg fires for `workers-ai` only (DW-225).
@@ -571,5 +573,75 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     // A refused save must never be the thing that loses the edit.
     expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe("gpt-4.1");
     expect(screen.queryByText(SETTINGS_SAVED_COPY)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Custom endpoint says what the environment overrides it with (DW-71)
+// ---------------------------------------------------------------------------
+
+describe("the Custom base URL row announces LLM_CUSTOM_BASE_URL (DW-71)", () => {
+  it("names the variable and its value, while the box still shows the STORE", async () => {
+    // `getCustomBaseUrl()` takes the variable ahead of the store, and the box
+    // shows the store — so without the sentence an owner types an endpoint into
+    // a field, saves successfully, and nothing reaches the provider.
+    await mount(
+      "llm-models",
+      payload({
+        readOnly: false,
+        customBaseUrl: "https://saved.example/v1",
+        envCustomBaseUrl: "https://env.example/v1",
+      }),
+    );
+
+    const box = screen.getByLabelText("Custom base URL") as HTMLInputElement;
+    // The STORED value, still editable: it is what a save moves and what applies
+    // the moment the variable is unset.
+    expect(box.value).toBe("https://saved.example/v1");
+    expect(box.readOnly).toBe(false);
+    expect(box.hasAttribute("disabled")).toBe(false);
+    // DESCRIBED, never MARKED — an env override is not a wrong value in the box.
+    expect(box.getAttribute("aria-invalid")).toBeNull();
+
+    const announced = announcedFor(box);
+    expect(announced).toContain(
+      settingsEnvOverrideCopy("customBaseUrl", "https://env.example/v1"),
+    );
+    expect(announced).toContain("LLM_CUSTOM_BASE_URL");
+    expect(announced).toContain("https://env.example/v1");
+  });
+
+  it("says NOTHING when the variable is unset", async () => {
+    // The row's description is exactly what it was before this shipped: a
+    // sentence about a variable nobody set would send the owner to a shell with
+    // nothing to change.
+    const { container } = await mount(
+      "llm-models",
+      payload({ readOnly: false, customBaseUrl: "https://saved.example/v1" }),
+    );
+
+    const box = screen.getByLabelText("Custom base URL") as HTMLInputElement;
+    expect(box.value).toBe("https://saved.example/v1");
+    expect(box.getAttribute("aria-describedby")).toBeNull();
+    expect(container.textContent).not.toContain("LLM_CUSTOM_BASE_URL");
+  });
+
+  it("rides ALONGSIDE the read-only sentence rather than replacing it", async () => {
+    // Two different facts about the same box: one says the environment wins, the
+    // other says this deployment will not take the edit at all. `describedBy`
+    // appends, so a screen reader gets both.
+    await mount(
+      "llm-models",
+      payload({
+        customBaseUrl: "https://saved.example/v1",
+        envCustomBaseUrl: "https://env.example/v1",
+      }),
+    );
+
+    const announced = announcedFor(screen.getByLabelText("Custom base URL"));
+    expect(announced).toContain(
+      settingsEnvOverrideCopy("customBaseUrl", "https://env.example/v1"),
+    );
+    expect(announced).toContain(SETTINGS_READ_ONLY_COPY);
   });
 });

@@ -37,6 +37,8 @@ import { getPrincipal } from "@/lib/auth";
 import { isOwnerHandle } from "@/lib/owner";
 import {
   IF_MATCH_HEADER,
+  WRITE_CONFLICT_COPY,
+  WRITE_CONFLICT_STATUS,
   checkWritePrecondition,
 } from "@/lib/write-precondition";
 
@@ -80,13 +82,17 @@ export async function GET() {
   // Two derivations here would be two expressions that agree today.
   //
   // IT IS AN OPAQUE STAMP, NOT A HASH OF THE CONFIG (DW-198). `saveConfig`
-  // generates it from randomness and stores it in a sibling file; nothing in
-  // `.llm-wiki-config.json` contributes to it. That is what keeps the sentence
-  // below true: this response carries no secret material and no function of
-  // any, where a content-derived version was a value computed over
-  // `firecrawlApiKey`, `customApiKey` and `embeddingApiKey`. It also means a
-  // hand-edited config re-serialized in another key order is not a conflict
-  // with itself — nothing about the bytes is read at all.
+  // generates it from randomness and stores it under a reserved key inside
+  // `.llm-wiki-config.json`; nothing else in that file contributes to it. That
+  // is what keeps the sentence below true: this response carries no secret
+  // material and no function of any, where a content-derived version was a value
+  // computed over `firecrawlApiKey`, `customApiKey` and `embeddingApiKey`. It
+  // also means a hand-edited config re-serialized in another key order is not a
+  // conflict with itself — nothing about the bytes is read at all.
+  //
+  // `read.etag` is deliberately NOT here and never is: R2's etag IS a hash of
+  // those bytes, secrets included, so it stays an internal input to the
+  // compare-and-set on `PUT` (DW-272).
   const version = read.version;
   // Read ONCE and handed to the resolver: `workers-ai` is self-transporting
   // through this binding, so off Workers the vector switch must refuse rather
@@ -218,9 +224,15 @@ export async function PUT(request: Request) {
       }
       // THE SAME URL RULE EVERY WORKBENCH ENDPOINT PASSES (DW-304). Without it
       // this was the one endpoint stored on a bare `typeof` check, so
-      // `"not-a-url"`, `"/api"` or `file:///etc/passwd` landed in the config and
-      // `getOllamaBaseUrl()` — which reads the stored value literally — handed it
-      // to the provider SDK.
+      // `"not-a-url"`, `"/api"` or `file:///etc/passwd` landed in the config.
+      //
+      // `getOllamaBaseUrl()` now checks it on the way OUT too (DW-326), so this
+      // is no longer what stands between a junk value and the provider SDK. It
+      // is still the door that has to refuse: the read side can only DISCARD an
+      // unusable endpoint, silently falling back to the SDK's default, whereas
+      // refusing here tells the owner their value was rejected and why — and
+      // keeps the store from holding a setting nothing will ever honour. One
+      // rule, said at the only place it can be said to a person.
       //
       // The same PREDICATE as `validateWorkbenchSettingsPatch`'s URL loop
       // (`isAbsoluteHttpUrl` over the trimmed value, refused with the same
@@ -269,9 +281,13 @@ export async function PUT(request: Request) {
     // draft seeded on either before the other saved would otherwise silently put
     // back every field the other just changed.
     //
-    // The version is the STORED STAMP read alongside the config, not a hash of
-    // it (DW-198): `saveConfig` rotates it on every landed write, so a draft
+    // The version is the STORED STAMP read out of the config object, not a hash
+    // of it (DW-198): `saveConfig` rotates it on every landed write, so a draft
     // seeded before someone else's save holds a token the store no longer has.
+    //
+    // This is the FIRST of two guards, and it is the owner-facing one. The
+    // second is the compare-and-set at the write below, which covers the window
+    // this check cannot see.
     //
     // Checked HERE rather than at the top of the handler because this is the
     // merge base: every branch above it refuses without writing, and moving the
@@ -343,9 +359,10 @@ export async function PUT(request: Request) {
 
     if (body.ollamaBaseUrl !== undefined) {
       // TRIMMED, exactly as `applyWorkbenchSettings`'s `setText` trims the other
-      // endpoints (DW-275). `getOllamaBaseUrl()` reads `cfg.ollamaBaseUrl` back
-      // with no trim of its own and hands it straight to `fetch`, so a padded
-      // value stored here is a URL the reader takes LITERALLY. Whitespace-only
+      // endpoints (DW-275). The reader trims too since DW-326, so a padded value
+      // no longer reaches `fetch` verbatim — but the store should not hold one
+      // either: a stored `" http://x "` and a stored `"http://x"` are the same
+      // endpoint, and only one of them is what the owner typed. Whitespace-only
       // deletes the key, matching what `""` and `null` already do — the type
       // check above refused a non-string, so the `typeof` ternary is
       // belt-and-braces and must never be what turns a malformed body into a
@@ -470,12 +487,31 @@ export async function PUT(request: Request) {
       : updated;
 
     // The version of what the store now HOLDS, from the one place that decides
-    // it. `saveConfig` generates the token, writes it, then writes the config,
-    // and returns what it stamped — so there is nothing to predict and nothing
-    // to read back. It also re-primes the sync cache with what it wrote, so the
-    // response below and any immediate LLM request use the newly selected
-    // provider rather than falling back to env detection.
-    const version = await saveConfig(merged);
+    // it. `saveConfig` stamps the token inside the object it writes and returns
+    // what it stamped — so there is nothing to predict and nothing to read back.
+    // It also re-primes the sync cache with what it wrote, so the response below
+    // and any immediate LLM request use the newly selected provider rather than
+    // falling back to env detection.
+    //
+    // THE ETAG READ ABOVE GOES WITH IT (DW-272). The `If-Match` check upstream
+    // compares the OWNER'S draft token against the store and catches a draft
+    // seeded before someone else's save. It cannot catch a save that lands
+    // between this request's read and this write — the read-modify-write window
+    // inside one request — and that save would be silently overwritten by the
+    // merge base read a moment before it. `writeFileIfMatch` refuses instead,
+    // and a refused write leaves the other writer's value standing.
+    //
+    // The SAME sentence and the SAME status as the upstream check: to the owner
+    // it is one fact — something else changed this while you were editing — and
+    // two wordings for it would be two sentences to keep in step.
+    const save = await saveConfig(merged, read.etag);
+    if (save.status === "conflict") {
+      return Response.json(
+        { error: WRITE_CONFLICT_COPY },
+        { status: WRITE_CONFLICT_STATUS },
+      );
+    }
+    const version = save.version;
 
     // Return updated effective settings
     const effective = getEffectiveProvider();

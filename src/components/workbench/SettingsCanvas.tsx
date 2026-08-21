@@ -504,7 +504,21 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
             {textRow("ingestModel", "Ingest model")}
             <h3 className="wb-set-heading">Custom endpoint</h3>
             <p className="wb-set-note">{SETTINGS_CUSTOM_ENDPOINT_COPY}</p>
-            {textRow("customBaseUrl", "Custom base URL")}
+            {/* An env override is SAID rather than shown in the box, exactly
+                as it is on the embedding model row (DW-71). `LLM_CUSTOM_BASE_URL`
+                wins at runtime and a save cannot move it, but the box edits the
+                STORE — which is what applies the moment the variable is unset —
+                so the field stays editable, undisabled and unmarked, and the
+                sentence carries the whole explanation. Without it this reads as
+                a box an owner can type an endpoint into, save successfully, and
+                change nothing. */}
+            {textRow(
+              "customBaseUrl",
+              "Custom base URL",
+              stored.envCustomBaseUrl
+                ? settingsEnvOverrideCopy("customBaseUrl", stored.envCustomBaseUrl)
+                : undefined,
+            )}
             {secretRow("customApiKey", "Custom API key", stored.hasCustomApiKey)}
             <h3 className="wb-set-heading">Timeout</h3>
             {textRow("llmTimeoutSeconds", "LLM timeout (seconds)", SETTINGS_TIMEOUT_HINT_COPY)}

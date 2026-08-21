@@ -32,15 +32,28 @@ interface StoredObject {
   content: string | ArrayBuffer;
   size: number;
   uploaded: Date;
-  httpEtag: string;
+  /** The RAW etag, which is what R2 stores and what `onlyIf` compares. */
+  etag: string;
 }
 
+/**
+ * The two etag forms R2 exposes, kept DISTINCT here on purpose.
+ *
+ * The real `R2Object` carries a raw `etag` and an `httpEtag` that is the same
+ * value quoted for a response header, and `R2Conditional.etagMatches` compares
+ * the RAW one. This mock used to store a single quoted string and compare
+ * `onlyIf` against the same field it had handed out, so it matched for either
+ * convention and could not catch a provider that read the wrong one — which is
+ * a break that only shows up on a real Workers runtime, as a compare-and-set
+ * that can never succeed again.
+ */
 function makeR2Object(stored: StoredObject): R2Object {
   return {
     key: stored.key,
     size: stored.size,
     uploaded: stored.uploaded,
-    httpEtag: stored.httpEtag,
+    etag: stored.etag,
+    httpEtag: `"${stored.etag}"`,
   };
 }
 
@@ -76,7 +89,9 @@ function createMockR2Bucket(): R2Bucket {
       // Handle conditional put
       if (options?.onlyIf?.etagMatches) {
         const existing = store.get(key);
-        if (!existing || existing.httpEtag !== options.onlyIf.etagMatches) {
+        // Against the RAW etag, as R2 does. A provider that fed back `httpEtag`
+        // fails here, which is the whole point of keeping the two apart.
+        if (!existing || existing.etag !== options.onlyIf.etagMatches) {
           return null;
         }
       }
@@ -93,7 +108,7 @@ function createMockR2Bucket(): R2Bucket {
         content,
         size,
         uploaded: new Date(),
-        httpEtag: `"etag-${etagCounter}"`,
+        etag: `etag-${etagCounter}`,
       };
       store.set(key, obj);
       return makeR2Object(obj);
@@ -468,6 +483,24 @@ describe("R2StorageProvider", () => {
       expect(await provider.readFile("page.md")).toBe("v1");
     });
 
+    it("hands back the RAW etag, not the quoted header form", async () => {
+      // `R2Conditional.etagMatches` compares the raw one. Returning `httpEtag`
+      // makes every conditional put compare `"abc"` against `abc`, so the second
+      // compare-and-set on any object fails forever — and since DW-272 that is
+      // every settings save on Workers after the first.
+      await provider.writeFile("page.md", "v1");
+      const { etag } = await provider.readFileWithEtag("page.md");
+      expect(etag.startsWith('"')).toBe(false);
+      // …and the value it hands back is exactly what a conditional put accepts.
+      expect(await provider.writeFileIfMatch("page.md", "v2", etag)).toBe(true);
+      // The quoted form is NOT interchangeable, which is what makes the above a
+      // real assertion rather than one the mock satisfies either way.
+      const quoted = await provider.readFileWithEtag("page.md");
+      expect(
+        await provider.writeFileIfMatch("page.md", "v3", `"${quoted.etag}"`),
+      ).toBe(false);
+    });
+
     it("throws R2NotFoundError for missing file", async () => {
       await expect(
         provider.readFileWithEtag("nope.md"),
@@ -665,5 +698,103 @@ describe("initCloudflareStorage", () => {
     const s2 = initCloudflareStorage(env2);
     expect(s1).not.toBe(s2);
     expect(getStorage()).toBe(s2);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// The settings store, ON THE CLOUDFLARE BACKEND (DW-272)
+// ---------------------------------------------------------------------------
+
+/**
+ * `readConfig` / `saveConfig` driven through `R2StorageProvider`.
+ *
+ * DW-272's complaint was that the scheme had NO Cloudflare coverage at all: the
+ * two-file pairing it replaced could not be read atomically on R2, and the
+ * compare-and-set that replaced it is the one part of the design whose
+ * correctness is a property of the R2 API rather than of `config.ts`. Every
+ * other test of the scheme runs on the filesystem provider or against a mocked
+ * `saveConfig`, so this is the only place the two meet.
+ *
+ * The EXISTING mock bucket, deliberately: a bespoke harness here would be a
+ * second thing to keep true to R2, and this one already models the raw/quoted
+ * etag split the conditional put depends on.
+ */
+describe("the settings store on R2", () => {
+  let resetStorage: () => void;
+  let initCloudflareStorage: (
+    env: CloudflareEnv,
+  ) => import("../storage/types").StorageProvider;
+  let config: typeof import("../config");
+
+  beforeEach(async () => {
+    const storageMod = await import("../storage");
+    resetStorage = storageMod._resetStorage;
+    initCloudflareStorage = storageMod.initCloudflareStorage;
+    config = await import("../config");
+    resetStorage();
+    config._resetConfigCache();
+    initCloudflareStorage(createMockEnv());
+  });
+
+  afterEach(() => {
+    config._resetConfigCache();
+    resetStorage();
+  });
+
+  it("round-trips the token INSIDE the one object, stripped on the way out", async () => {
+    const first = await config.readConfig();
+    expect(first).toMatchObject({
+      status: "ok",
+      config: {},
+      version: config.UNSTAMPED_CONFIG_VERSION,
+      // Nothing to read means nothing to write against.
+      etag: null,
+    });
+
+    const saved = await config.saveConfig(
+      { provider: "openai", firecrawlApiKey: "fc-secret" },
+      first.status === "ok" ? first.etag : null,
+    );
+    expect(saved).toMatchObject({ status: "ok" });
+
+    const read = await config.readConfig();
+    expect(read).toMatchObject({
+      status: "ok",
+      // The reserved key never reaches a consumer.
+      config: { provider: "openai", firecrawlApiKey: "fc-secret" },
+      version: saved.status === "ok" ? saved.version : "",
+    });
+    // …and an object that exists always has an etag to write against.
+    expect(read.status === "ok" && read.etag).toBeTruthy();
+
+    // ONE object in the bucket, carrying both halves — no sibling to pair.
+    const raw = JSON.parse(
+      await (await import("../storage")).getStorage().readFile(".llm-wiki-config.json"),
+    );
+    expect(raw.__settingsVersion).toBe(saved.status === "ok" ? saved.version : "");
+    expect(raw.provider).toBe("openai");
+  });
+
+  it("REFUSES a save whose compare-and-set was superseded", async () => {
+    await config.saveConfig({ provider: "openai" });
+    const read = await config.readConfig();
+    expect(read.status).toBe("ok");
+    const etag = read.status === "ok" ? read.etag : null;
+
+    // Another writer lands between this reader's read and its write.
+    const other = await config.saveConfig({ provider: "google" });
+    expect(other).toMatchObject({ status: "ok" });
+
+    const lost = await config.saveConfig({ provider: "anthropic" }, etag);
+    expect(lost).toEqual({ status: "conflict" });
+
+    // The other writer's value still stands, untouched.
+    config._resetConfigCache();
+    expect(await config.readConfig()).toMatchObject({
+      status: "ok",
+      config: { provider: "google" },
+      version: other.status === "ok" ? other.version : "",
+    });
   });
 });

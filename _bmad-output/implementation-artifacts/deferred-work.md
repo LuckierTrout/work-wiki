@@ -643,7 +643,8 @@ location: src/lib/config.ts (getWorkbenchSettings, getCustomBaseUrl), src/compon
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `getCustomBaseUrl()` resolves `nonEmpty(process.env.LLM_CUSTOM_BASE_URL) ?? nonEmpty(cfg.customBaseUrl)`, while `getWorkbenchSettings()` serves `customBaseUrl: nonEmpty(cfg.customBaseUrl)` — the STORE only. A deployment that sets the env var therefore renders an empty endpoint box; the owner types a URL, the save succeeds, and the runtime keeps using the variable. This is exactly the failure the follow-up pass fixed for embeddings with `settingsEnvOverrideCopy` / `envEmbeddingModel`, and closing it the same way means another payload field plus another copy function — worth doing beside the already-recorded `hasCustomApiKey` env/store split rather than as a third separate touch of the same rows.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw-settings-config-resolution-hardening
 
 ### DW-72: One stored `embeddingBaseUrl` is handed to whichever embedding provider is active, so an endpoint entered for OpenAI is sent to Google after a switch.
 origin: spec-deferred 1ed1cc09bf7d
@@ -2407,7 +2408,8 @@ source_spec: `spec-dw-192-197-198-199-settings-write-precondition.md`
 location: src/lib/config.ts:readConfig / saveConfig
 severity: medium
 reason: `saveConfig` writes `.llm-wiki-config.version` and then `.llm-wiki-config.json` as two independent objects, and `readConfig` reads them back as two independent objects. On the filesystem backend both are immediately consistent, which is what every new test relies on; R2 offers no such guarantee across two keys, so a read that lands between the two writes — or after both, on a replica that has only seen one — can pair a fresh token with a stale config even without a concurrent save. Both "token unreadable" tests force `EISDIR` by creating a DIRECTORY at the token path, a condition R2 cannot produce, so the Cloudflare backend has no coverage of the scheme at all. Closing it means either a single-object scheme (token inside the config, or the storage layer's own `writeFileIfMatch` compare-and-set, which `src/lib/storage/r2.ts` already exposes) or an R2-backed test harness neither the suite nor this bundle has.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw-settings-config-resolution-hardening
 decision: 2026-08-20 Single object via writeFileIfMatch — Move the version token inside the config object (or replace the scheme with the storage layer's `writeFileIfMatch` compare-and-set, already exposed at `src/lib/storage/r2.ts:193`) so one object carries both the bytes and the token and no read can pair them inconsistently on any backend. Migrate an existing two-file deployment on first read, delete the now-unreachable token-file branches together with the EISDIR tests that only a filesystem can produce, and add coverage for a compare-and-set that loses.
 
 ### DW-273: Both embedding-resolution warnings fire per resolution rather than once per distinct misconfiguration, so a rebuild or a large ingest emits the same sentence hundreds of times.
@@ -2863,7 +2865,8 @@ source_spec: `spec-dw-303-306-settings-flat-branch-uniformity.md`
 location: src/lib/config.ts:239
 severity: medium
 reason: `getOllamaBaseUrl()` (src/lib/config.ts) returns the stored string literally and prefers `process.env.OLLAMA_BASE_URL` over it; neither path calls `isAbsoluteHttpUrl`. So a deployment that stored `file:///etc/passwd` or `localhost:11434` before this change keeps handing it to the SDK, and an operator can still set the env var to anything. The new refusal closes the write door only. No backfill and no read-side guard were in this bundle's scope — the intent named the workbench branch's check, which is a write-time check.
-status: open
+status: done 2026-08-20
+resolution: resolved by sweep bundle dw-settings-config-resolution-hardening
 
 ### DW-327: A flat save that the new scoping ALLOWS lands with no signal on /settings that the stored vector switch is on but inactive.
 origin: spec-deferred 66f5fc6223a9
@@ -3213,4 +3216,28 @@ source_spec: `spec-dw-61-327-329-legacy-settings-surface-parity.md`
 location: src/lib/llm.ts:287
 severity: low
 reason: src/lib/llm.ts:287, :292, :301, :402, :407 spell the destination as string literals. workbench-settings.ts now derives its own pointers from SETTINGS_CATEGORIES precisely to prevent that drift, and documents why llm.ts deliberately keeps the shorter form - but nothing enforces the category half of either string. Pre-existing; surfaced by the new settingsPointer helper rather than caused by it.
+status: open
+
+### DW-370: `detectEnvProvider()` and the embedding provider detection still select `ollama` from the mere presence of `OLLAMA_BASE_URL`, including a value `getOllamaBaseUrl` now refuses.
+origin: spec-deferred 9a66b32844ef
+source_spec: `spec-dw-71-326-272-settings-config-resolution-hardening.md`
+location: src/lib/config.ts:739
+severity: medium
+reason: src/lib/config.ts:739-742 and src/lib/embeddings.ts:217 branch on the variable's presence, not on its usability. After DW-326 a typo'd `OLLAMA_BASE_URL=localhost:11434` both SELECTS the ollama provider and resolves to no endpoint, so generation and embed silently go to the SDK's own localhost default instead of failing against the address the owner typed. Pre-existing detection logic; the fall-through this bundle chose over a refusal is what makes the outcome silent. Closing it means either detecting through the validated accessor or writing down why detection deliberately answers a wider question.
+status: open
+
+### DW-371: The filesystem provider's compare-and-set is best-effort: its etag is `mtime-size` and its read pairs `readFile` with `stat`, so a losing compare-and-set can still win there.
+origin: spec-deferred 4c28f233b6f3
+source_spec: `spec-dw-71-326-272-settings-config-resolution-hardening.md`
+location: src/lib/storage/filesystem.ts:266
+severity: medium
+reason: src/lib/storage/filesystem.ts:266-299. `readFileWithEtag` resolves `fs.readFile` and `fs.stat` through `Promise.all` — an unordered pair, so a write landing between them can yield old content with a fresh etag, and the CAS then MATCHES on a stale merge base. The etag itself is `${mtime.getTime()}-${size}`, so two saves in the same millisecond that swap equal-length values collide. Measured ~190/200 identical etags for back-to-back rewrites without fsync on a scratch file, 0/100 through the provider's fsync+rename path. Never worse than the unconditional write it replaced, and R2's server-side conditional put is exact — but the fs guard is narrower than "refuses instead" reads. Closing it means a content hash or stat-then-read ordering in the storage layer, whose contract and other consumer (graphify-jobs.ts) are outside this bundle. Documented at src/lib/config.ts's saveConfig docblock rather than hidden.
+status: open
+
+### DW-372: A pre-DW-272 build reading the new single-object config carries `__settingsVersion` through as an ordinary key and writes it back, so the stamp stops rotating on a rollback.
+origin: spec-deferred 9589cff245eb
+source_spec: `spec-dw-71-326-272-settings-config-resolution-hardening.md`
+location: src/lib/config.ts (CONFIG_VERSION_KEY)
+severity: low
+reason: The retired scheme's `readStoredConfig` returned the parsed object verbatim and `saveConfig` wrote whatever it was handed, so an older build round-trips the reserved key untouched while stamping its sibling file. The new build then keeps reading the same frozen token out of the object. The guard degrades to always-matching rather than losing data, and this fork deploys manually via wrangler with no rolling releases, so the window is a deliberate rollback. Namespacing the key per scheme, or refusing a token whose config predates the scheme, would close it.
 status: open

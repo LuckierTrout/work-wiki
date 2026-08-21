@@ -69,11 +69,19 @@ const mockedEffectiveProvider = vi.mocked(getEffectiveProvider);
 
 /**
  * The opaque token the store is mocked to hold (DW-197). Nothing about the
- * config produces it — `saveConfig` generates it and writes it to a sibling
- * file — so a test that changes a config field does NOT change the version, and
- * a stale precondition has to be spelled out.
+ * config produces it — `saveConfig` generates it from randomness and stamps it
+ * under a reserved key — so a test that changes a config field does NOT change
+ * the version, and a stale precondition has to be spelled out.
  */
 const STORED_VERSION = "s1:0123456789abcdef0123456789abcdef";
+
+/**
+ * The STORAGE layer's version of the bytes `readConfig` is mocked to have read
+ * (DW-272) — the compare-and-set input `saveConfig` is handed, and the one value
+ * on the read that must never appear in a response body: on R2 it is an MD5 of
+ * an object holding three API keys.
+ */
+const STORED_ETAG = "etag-the-store-held";
 
 /** What `saveConfig` is mocked to stamp on a landed write. */
 const SAVED_VERSION = "s1:fedcba9876543210fedcba9876543210";
@@ -117,8 +125,13 @@ beforeEach(() => {
   mockedPrincipal.mockResolvedValue({ id: "user_1", handle: "christianlee" });
   mockedIsOwner.mockReturnValue(true);
   mockedReadOnly.mockReturnValue(false);
-  mockedRead.mockResolvedValue({ status: "ok", config: {}, version: STORED_VERSION });
-  mockedSave.mockResolvedValue(SAVED_VERSION);
+  mockedRead.mockResolvedValue({
+    status: "ok",
+    config: {},
+    version: STORED_VERSION,
+    etag: STORED_ETAG,
+  });
+  mockedSave.mockResolvedValue({ status: "ok", version: SAVED_VERSION });
   mockedEffectiveSettings.mockReturnValue({
     provider: null,
     providerSource: "none",
@@ -175,7 +188,7 @@ describe("/api/settings", () => {
     expect(mockedSave).toHaveBeenCalledWith({
       provider: "ollama-cloud",
       model: "gpt-oss:120b",
-    });
+    }, STORED_ETAG);
     // ONE read: the merge base. `saveConfig` returns the token it stamped, so
     // there is no re-read to answer the new version with.
     expect(mockedRead).toHaveBeenCalledTimes(1);
@@ -187,6 +200,7 @@ describe("/api/settings", () => {
       status: "ok",
       config: existing,
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
     const { PUT } = await import("@/app/api/settings/route");
 
@@ -203,7 +217,7 @@ describe("/api/settings", () => {
       model: "gpt-oss:120b",
       structuredKnowledgeProvider: "openai",
       structuredKnowledgeModel: "gpt-4o",
-    });
+    }, STORED_ETAG);
   });
 
   it("refuses a save whose precondition describes an older config (412)", async () => {
@@ -214,6 +228,7 @@ describe("/api/settings", () => {
       status: "ok",
       config: { provider: "openai" },
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
     const { PUT } = await import("@/app/api/settings/route");
 
@@ -224,6 +239,78 @@ describe("/api/settings", () => {
     expect(response.status).toBe(412);
     expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
     expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("refuses a save whose COMPARE-AND-SET lost (412), and writes nothing", async () => {
+    // The window the `If-Match` check above cannot see (DW-272): this request's
+    // draft token matched, its merge base was read — and then another writer
+    // landed before this one wrote back. `writeFileIfMatch` refuses rather than
+    // letting the superseded merge base overwrite that save, and the route says
+    // the same sentence it says for the check it can see, because to the owner
+    // it is the same fact.
+    mockedSave.mockResolvedValue({ status: "conflict" });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ model: "gpt-4o" }));
+
+    expect(response.status).toBe(412);
+    expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    // The write was ATTEMPTED — that is the whole point — and it was attempted
+    // against the etag of the bytes this request merged onto.
+    expect(mockedSave).toHaveBeenCalledWith(expect.anything(), STORED_ETAG);
+  });
+
+  it("carries the READ's etag into the write, and serves it to nobody", async () => {
+    // The etag is the compare-and-set input, and on R2 it is an MD5 of an object
+    // holding `customApiKey`, `embeddingApiKey` and `firecrawlApiKey` — the
+    // AD-23 leak the opaque stamp exists to avoid. It stays internal.
+    const { PUT, GET } = await import("@/app/api/settings/route");
+
+    const put = await PUT(request({ model: "gpt-4o" }));
+    expect(put.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith(expect.anything(), STORED_ETAG);
+    expect(await put.clone().text()).not.toContain(STORED_ETAG);
+
+    const get = await GET();
+    expect(await get.text()).not.toContain(STORED_ETAG);
+  });
+
+  it("cannot be made to forge or unstamp the token from the BODY", async () => {
+    // THE ONE NEW ATTACK SURFACE THE SCHEME OPENED (DW-272). With the token in a
+    // sibling file this was structurally impossible — no field of a `PUT` body
+    // could name it. Now the key lives in the same object the route merges into,
+    // so a body carrying `__settingsVersion` is a body reaching for the guard's
+    // own state. Two things stop it, and this pins the ROUTE's half: the merge
+    // never carries the key through, flat or under `workbench`. The other half —
+    // `saveConfig` stripping one that somehow arrived, and stamping its own — is
+    // pinned in `config.test.ts`, where `saveConfig` is the real one.
+    const { PUT } = await import("@/app/api/settings/route");
+
+    for (const body of [
+      { model: "gpt-4o", __settingsVersion: "s1:dddddddddddddddddddddddddddddddd" },
+      { model: "gpt-4o", __settingsVersion: null },
+      {
+        workbench: {
+          chatModel: "gpt-4o",
+          __settingsVersion: "s1:dddddddddddddddddddddddddddddddd",
+        },
+      },
+    ]) {
+      mockedSave.mockClear();
+      const response = await PUT(request(body));
+      expect(response.status).toBe(200);
+
+      // The merged object handed to `saveConfig` carries no reserved key: the
+      // flat branch writes only the fields it names, and the `workbench` patch
+      // is applied field by field rather than spread.
+      const [merged] = mockedSave.mock.calls[0] as [Record<string, unknown>, unknown];
+      expect(merged).not.toHaveProperty("__settingsVersion");
+
+      // …and the version served back is the one the STORE stamped, never the
+      // one the body asked for.
+      const served = (await response.json()) as { version: string };
+      expect(served.version).toBe(SAVED_VERSION);
+    }
   });
 
   it("refuses a save with no precondition at all (428)", async () => {
@@ -294,7 +381,7 @@ describe("/api/settings", () => {
     const response = await PUT(request({ embeddingModel: " @cf/baai/bge-m3 " }));
 
     expect(response.status).toBe(200);
-    expect(mockedSave).toHaveBeenCalledWith({ embeddingModel: "@cf/baai/bge-m3" });
+    expect(mockedSave).toHaveBeenCalledWith({ embeddingModel: "@cf/baai/bge-m3" }, STORED_ETAG);
   });
 
   it("DELETES embeddingModel when the flat branch is given whitespace only", async () => {
@@ -310,13 +397,14 @@ describe("/api/settings", () => {
       status: "ok",
       config: { embeddingModel: "@cf/baai/bge-m3" },
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
     const { PUT } = await import("@/app/api/settings/route");
 
     const response = await PUT(request({ embeddingModel: "   " }));
 
     expect(response.status).toBe(200);
-    expect(mockedSave).toHaveBeenCalledWith({});
+    expect(mockedSave).toHaveBeenCalledWith({}, STORED_ETAG);
   });
 
   it("REFUSES a non-string embeddingModel rather than deleting the stored one", async () => {
@@ -328,6 +416,7 @@ describe("/api/settings", () => {
       status: "ok",
       config: { embeddingModel: "@cf/baai/bge-m3" },
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
     const { PUT } = await import("@/app/api/settings/route");
 
@@ -350,6 +439,7 @@ describe("/api/settings", () => {
       status: "ok",
       config: { embeddingModel: "@cf/baai/bge-m3" },
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
     const { PUT } = await import("@/app/api/settings/route");
 
@@ -357,7 +447,7 @@ describe("/api/settings", () => {
       mockedSave.mockClear();
       const response = await PUT(request({ embeddingModel: value }));
       expect(response.status).toBe(200);
-      expect(mockedSave).toHaveBeenCalledWith({});
+      expect(mockedSave).toHaveBeenCalledWith({}, STORED_ETAG);
     }
   });
 
@@ -421,6 +511,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
       status: "ok",
       config: { ...SATISFIED },
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
   }
 
@@ -510,7 +601,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
     expect(mockedSave).toHaveBeenCalledWith({
       ...SATISFIED,
       embeddingModel: "@cf/baai/bge-large-en-v1.5",
-    });
+    }, STORED_ETAG);
   });
 
   it("SKIPS the gate when the flat body moves no vector input (DW-219)", async () => {
@@ -525,6 +616,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
         embeddingModel: "text-embedding-3-small",
       },
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
     const { PUT } = await import("@/app/api/settings/route");
 
@@ -536,7 +628,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
       embeddingProvider: "workers-ai",
       embeddingModel: "text-embedding-3-small",
       model: "gpt-4o",
-    });
+    }, STORED_ETAG);
   });
 
   it("does not gate a flat move while vector search is off", async () => {
@@ -546,6 +638,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
         status: "ok",
         config: { ...stored },
         version: STORED_VERSION,
+        etag: STORED_ETAG,
       });
       const { PUT } = await import("@/app/api/settings/route");
 
@@ -555,7 +648,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
       expect(mockedSave).toHaveBeenCalledWith({
         ...stored,
         embeddingModel: "anything",
-      });
+      }, STORED_ETAG);
     }
   });
 
@@ -628,6 +721,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
       status: "ok",
       config: { embeddingProvider: "workers-ai", embeddingModel: "@cf/baai/bge-m3" },
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
     const { PUT } = await import("@/app/api/settings/route");
 
@@ -635,14 +729,19 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
       mockedSave.mockClear();
       const response = await PUT(request({ embeddingModel: value }));
       expect(response.status).toBe(200);
-      expect(mockedSave).toHaveBeenCalledWith({ embeddingProvider: "workers-ai" });
+      expect(mockedSave).toHaveBeenCalledWith({ embeddingProvider: "workers-ai" }, STORED_ETAG);
     }
   });
 
   it("saves the byte-identical object for a flat body that passes the gate", async () => {
     // `applyWorkbenchSettings` stays conditional on the `workbench` KEY, so
     // validating every body changed no legacy save's outcome.
-    mockedRead.mockResolvedValue({ status: "ok", config: {}, version: STORED_VERSION });
+    mockedRead.mockResolvedValue({
+      status: "ok",
+      config: {},
+      version: STORED_VERSION,
+      etag: STORED_ETAG,
+    });
     const { PUT } = await import("@/app/api/settings/route");
 
     const response = await PUT(request({ provider: "ollama-cloud", model: "gpt-oss:120b" }));
@@ -651,7 +750,7 @@ describe("PUT /api/settings — the vector rule on the flat branch (DW-217)", ()
     expect(mockedSave).toHaveBeenCalledWith({
       provider: "ollama-cloud",
       model: "gpt-oss:120b",
-    });
+    }, STORED_ETAG);
   });
 });
 
@@ -666,7 +765,7 @@ describe("PUT /api/settings — flat field normalization (DW-275)", () => {
     const response = await PUT(request({ model: "  gpt-4o  " }));
 
     expect(response.status).toBe(200);
-    expect(mockedSave).toHaveBeenCalledWith({ model: "gpt-4o" });
+    expect(mockedSave).toHaveBeenCalledWith({ model: "gpt-4o" }, STORED_ETAG);
   });
 
   it("still refuses a whitespace-only model rather than storing or deleting it", async () => {
@@ -689,7 +788,7 @@ describe("PUT /api/settings — flat field normalization (DW-275)", () => {
     const response = await PUT(request({ ollamaBaseUrl: "  http://h:11434/api " }));
 
     expect(response.status).toBe(200);
-    expect(mockedSave).toHaveBeenCalledWith({ ollamaBaseUrl: "http://h:11434/api" });
+    expect(mockedSave).toHaveBeenCalledWith({ ollamaBaseUrl: "http://h:11434/api" }, STORED_ETAG);
   });
 
   it("DELETES ollamaBaseUrl when given whitespace only", async () => {
@@ -697,6 +796,7 @@ describe("PUT /api/settings — flat field normalization (DW-275)", () => {
       status: "ok",
       config: { ollamaBaseUrl: "http://h:11434/api" },
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
     const { PUT } = await import("@/app/api/settings/route");
 
@@ -704,7 +804,7 @@ describe("PUT /api/settings — flat field normalization (DW-275)", () => {
       mockedSave.mockClear();
       const response = await PUT(request({ ollamaBaseUrl: value }));
       expect(response.status).toBe(200);
-      expect(mockedSave).toHaveBeenCalledWith({});
+      expect(mockedSave).toHaveBeenCalledWith({}, STORED_ETAG);
     }
   });
 
@@ -713,6 +813,7 @@ describe("PUT /api/settings — flat field normalization (DW-275)", () => {
       status: "ok",
       config: { ollamaBaseUrl: "http://h:11434/api" },
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
     const { PUT } = await import("@/app/api/settings/route");
 
@@ -733,6 +834,7 @@ describe("PUT /api/settings — the flat ollamaBaseUrl URL rule (DW-304)", () =>
       status: "ok",
       config: { ollamaBaseUrl: "http://h:11434/api" },
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
   });
 
@@ -788,7 +890,7 @@ describe("PUT /api/settings — the flat ollamaBaseUrl URL rule (DW-304)", () =>
     expect(response.status).toBe(200);
     expect(mockedSave).toHaveBeenCalledWith({
       ollamaBaseUrl: "https://ollama.example:11434/api",
-    });
+    }, STORED_ETAG);
   });
 
   it("still DELETES on every blank form — the URL rule does not apply to a clear", async () => {
@@ -801,7 +903,7 @@ describe("PUT /api/settings — the flat ollamaBaseUrl URL rule (DW-304)", () =>
       mockedSave.mockClear();
       const response = await PUT(request({ ollamaBaseUrl: value }));
       expect(response.status).toBe(200);
-      expect(mockedSave).toHaveBeenCalledWith({});
+      expect(mockedSave).toHaveBeenCalledWith({}, STORED_ETAG);
     }
   });
 
@@ -831,6 +933,7 @@ describe("PUT /api/settings — structuredKnowledgeModel normalization (DW-305)"
       status: "ok",
       config: { structuredKnowledgeModel: "gpt-4o" },
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
   });
 
@@ -841,7 +944,7 @@ describe("PUT /api/settings — structuredKnowledgeModel normalization (DW-305)"
     const response = await PUT(request({ structuredKnowledgeModel: null }));
 
     expect(response.status).toBe(200);
-    expect(mockedSave).toHaveBeenCalledWith({});
+    expect(mockedSave).toHaveBeenCalledWith({}, STORED_ETAG);
   });
 
   it("TRIMS a padded model rather than storing the padding", async () => {
@@ -850,7 +953,7 @@ describe("PUT /api/settings — structuredKnowledgeModel normalization (DW-305)"
     const response = await PUT(request({ structuredKnowledgeModel: "  gpt-4o-mini  " }));
 
     expect(response.status).toBe(200);
-    expect(mockedSave).toHaveBeenCalledWith({ structuredKnowledgeModel: "gpt-4o-mini" });
+    expect(mockedSave).toHaveBeenCalledWith({ structuredKnowledgeModel: "gpt-4o-mini" }, STORED_ETAG);
   });
 
   it("still refuses `\"\"` and whitespace above the merge", async () => {
@@ -892,6 +995,7 @@ describe("PUT /api/settings — the flat vector refusal names only actionable le
       status: "ok",
       config: config as never,
       version: STORED_VERSION,
+      etag: STORED_ETAG,
     });
   }
 
@@ -909,7 +1013,7 @@ describe("PUT /api/settings — the flat vector refusal names only actionable le
     expect(mockedSave).toHaveBeenCalledWith({
       ...ALREADY_BROKEN,
       embeddingModel: "text-embedding-3-large",
-    });
+    }, STORED_ETAG);
   });
 
   it("still REFUSES when an unmet leg IS one this body could move", async () => {
@@ -966,7 +1070,7 @@ describe("PUT /api/settings — the flat vector refusal names only actionable le
       vectorSearchEnabled: true,
       embeddingModel: "text-embedding-3-small",
       embeddingProvider: "openai",
-    });
+    }, STORED_ETAG);
   });
 
   it("does NOT scope a body that carries a workbench key (DW-306)", async () => {
@@ -1017,6 +1121,6 @@ describe("PUT /api/settings — the flat vector refusal names only actionable le
       embeddingModel: "text-embedding-3-large",
       embeddingBaseUrl: "https://embed.example",
       embeddingApiKey: "sk-embed",
-    });
+    }, STORED_ETAG);
   });
 });

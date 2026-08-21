@@ -9,6 +9,7 @@ import { getStorage } from "./storage";
 import {
   SETTINGS_LANGUAGE_VALUE,
   canEnableVectorSearch,
+  isAbsoluteHttpUrl,
   type VectorSearchInputs,
   type WorkbenchSettingsPatch,
   type WorkbenchSettingsStored,
@@ -216,19 +217,34 @@ function configRelPath(): string {
 }
 
 /**
- * Relative path for the settings WRITE-PRECONDITION TOKEN, a sibling of the
- * config file rather than a field inside it.
+ * The RESERVED key the settings write-precondition token is stored under, inside
+ * the config object itself (DW-272).
  *
- * A field would make the token a pseudo-setting: `AppConfig` is spread into
- * `getWorkbenchSettings`, exported in backups, diffed field-by-field by the
- * suite, and hand-edited by owners. A sibling file keeps the config's stored
- * shape byte-identical to what it was before the guard existed, which is what
- * makes "the version is derived from NOTHING in the config" a structural fact
- * rather than a promise about which fields the hash skipped.
+ * It used to be a sibling file, `.llm-wiki-config.version`, on the reasoning
+ * that a field would make the token a pseudo-setting. What a second file
+ * actually bought was a PAIRING no backend can keep consistent: two objects, two
+ * round-trips, and on R2 no way to read them in one instant — so `readConfig`
+ * had to order its two reads to choose WHICH mismatched pair it could produce.
+ * One object has no pair to get wrong.
+ *
+ * The pseudo-setting worry is answered by STRIPPING rather than by separation:
+ * {@link readStoredConfig} lifts this key out before returning, so `AppConfig`
+ * as handed to its ~50 consumers — spread into `getWorkbenchSettings`, exported
+ * in backups, diffed field-by-field by the suite — is exactly the fields it
+ * always was. And "derived from NOTHING in the config" survives unchanged,
+ * because it was never about WHERE the token lived: {@link newConfigVersion}
+ * reads no field to make one.
+ *
+ * The double underscore marks it as not-a-setting to an owner reading the file,
+ * and no `AppConfig` field can collide with it.
+ *
+ * A store written by the two-file scheme still reads: it has no such key, so it
+ * answers the sentinel and the next save writes one object carrying a real
+ * token. The orphan `.llm-wiki-config.version` is simply never read again — no
+ * sweep, because deleting files an owner did not ask about is not this module's
+ * business, and an unread file costs nothing.
  */
-function configVersionRelPath(): string {
-  return ".llm-wiki-config.version";
-}
+const CONFIG_VERSION_KEY = "__settingsVersion";
 
 export function getConfigPath(): string {
   return `${getDataDir()}/.llm-wiki-config.json`;
@@ -253,12 +269,94 @@ export function getEmbeddingModelOverride(): string | undefined {
 }
 
 /**
+ * Misconfigurations already reported, so standing state is said ONCE.
+ *
+ * The same shape as `warnOnceAbout` in `embeddings.ts` — a module-level `Set`
+ * keyed on the misconfiguration's identity — and a deliberate COPY rather than
+ * an import: `embeddings.ts` imports this module, so importing it back would
+ * close a cycle. An unusable Ollama endpoint is standing state, not an event:
+ * it holds until someone edits the store or the environment, and
+ * `getOllamaBaseUrl()` is read on every embed and every generation, so logging
+ * per read would emit the same sentence thousands of times for one typo.
+ *
+ * The KEY is the source AND the value, because the sentence names where the
+ * value came from: the same bad string in the environment and in the store are
+ * two different things to fix, and an owner who only ever hears about one of
+ * them cannot fix the other.
+ */
+const warnedEndpoints = new Set<string>();
+
+/** Emit `message` the first time `key` is seen; later repeats are silent. */
+function warnOnceAbout(key: string, message: string): void {
+  if (warnedEndpoints.has(key)) return;
+  warnedEndpoints.add(key);
+  logger.warn("config", message);
+}
+
+/**
+ * Forget every reported endpoint so the next occurrence warns again.
+ *
+ * Mirrors `_resetEmbeddingWarnings`: without it the first test to assert a
+ * warning would silence it for every test after, and the warn-once COUNT is
+ * exactly what these tests are about. Wired into the `beforeEach` of the suite
+ * that asserts them.
+ * @internal
+ */
+export function _resetConfigWarnings(): void {
+  warnedEndpoints.clear();
+}
+
+/**
  * Returns the effective Ollama base URL.
  * Priority: `OLLAMA_BASE_URL` env var → config file `ollamaBaseUrl` → `undefined`.
+ *
+ * THE ONE PLACE THAT LADDER IS SPELLED (DW-326). `getResolvedCredentials` and
+ * `getConfiguredModel` used to re-derive it, which is how a stored endpoint
+ * applied on one path and not the other, and how a value that never passed a
+ * URL check reached `createOllama`.
+ *
+ * VALIDATED HERE rather than only at the write door. DW-304 made
+ * `PUT /api/settings` refuse an endpoint that is not an absolute `http(s)` URL,
+ * which closes the door for values stored FROM NOW ON — it does nothing about a
+ * value stored before that rule existed, one hand-edited into the config, or
+ * `OLLAMA_BASE_URL` itself, which no route ever sees. A read-side check is the
+ * only one all three pass through.
+ *
+ * AN UNUSABLE VALUE FALLS THROUGH; it does not throw. Throwing here would take
+ * down every embed and every generation on a deployment whose only fault is a
+ * typo in a variable the SDK has a working default for. So an unusable env value
+ * falls to the stored one, an unusable stored value falls to `undefined`, and
+ * `createOllama()` uses its own default — the same outcome as setting nothing,
+ * which is the honest reading of "this endpoint cannot be used".
+ *
+ * BLANK IS UNSET, not invalid: `OLLAMA_BASE_URL=` and a whitespace-only stored
+ * value mean "not configured" here exactly as `EMBEDDING_MODEL=` does to
+ * {@link getEmbeddingModelOverride} (DW-227), and there is nothing to warn
+ * about. The `??` chain this replaced handed `""` straight to the SDK.
+ *
+ * `cfg` is a PARAMETER defaulting to the sync cache, the DW-313 shape
+ * `getEmbeddingModelName(cfg)` already uses, so a caller that has already read
+ * the config resolves against the object it is holding rather than against
+ * whatever the cache answers a moment later.
  */
-export function getOllamaBaseUrl(): string | undefined {
-  const cfg = loadConfigSync();
-  return process.env.OLLAMA_BASE_URL ?? cfg.ollamaBaseUrl ?? undefined;
+export function getOllamaBaseUrl(cfg: AppConfig = loadConfigSync()): string | undefined {
+  const fromEnv = nonEmpty(process.env.OLLAMA_BASE_URL);
+  if (fromEnv !== null) {
+    if (isAbsoluteHttpUrl(fromEnv)) return fromEnv;
+    warnOnceAbout(
+      `ollama-endpoint:env:${fromEnv}`,
+      `OLLAMA_BASE_URL is not an absolute http(s) URL (${fromEnv}); ignoring it.`,
+    );
+  }
+  const stored = nonEmpty(cfg.ollamaBaseUrl);
+  if (stored !== null) {
+    if (isAbsoluteHttpUrl(stored)) return stored;
+    warnOnceAbout(
+      `ollama-endpoint:config:${stored}`,
+      `the stored Ollama endpoint is not an absolute http(s) URL (${stored}); ignoring it.`,
+    );
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -294,10 +392,10 @@ export const CONFIG_UNREADABLE_COPY =
  * The version a store that has a config but has never been stamped reports.
  *
  * ONE fixed sentinel rather than `null`, so a first save through the API can
- * still land: a store written by hand, restored from a backup, or created
- * before this scheme existed has a config and no token, and refusing every save
- * against it would strand the owner with no way through except deleting a file
- * they cannot see.
+ * still land: a store written by hand, restored from a backup, or written by the
+ * two-file scheme this replaced has a config and no embedded token, and refusing
+ * every save against it would strand the owner with no way through except
+ * editing a file they cannot see from any surface.
  *
  * ITS OWN RESIDUAL. While a store is unstamped, two surfaces hold this same
  * constant, so a save from either matches and neither is refused — the guard is
@@ -353,7 +451,24 @@ export function newConfigVersion(): string {
  * and write away every stored field, including the three API keys.
  */
 export type ConfigRead =
-  | { status: "ok"; config: AppConfig; version: string }
+  | {
+      status: "ok";
+      config: AppConfig;
+      version: string;
+      /**
+       * The STORAGE layer's version of the bytes just read, for
+       * {@link saveConfig}'s compare-and-set. `null` when there was nothing to
+       * read, which is the one case a write cannot be conditional on.
+       *
+       * INTERNAL, and never served. R2's etag is an MD5 of the object's bytes,
+       * and those bytes hold `customApiKey`, `embeddingApiKey` and
+       * `firecrawlApiKey` — a content-derived value crossing the settings
+       * boundary is exactly the AD-23 leak {@link newConfigVersion} exists to
+       * avoid. It travels from `readConfig` to `saveConfig` inside one request
+       * and appears in no response body.
+       */
+      etag: string | null;
+    }
   | { status: "unreadable"; error: unknown };
 
 /** Is this parsed JSON something `AppConfig` could be? */
@@ -362,21 +477,43 @@ function isPlainConfigObject(value: unknown): value is AppConfig {
 }
 
 /**
- * The config half of {@link readConfig}: parse the file, or say it is broken.
+ * Read the config object: its settings, its embedded token, and its etag.
  *
- * ENOENT is `ok` with `{}` — an absent config is the documented default and has
- * always been. Everything else is `unreadable`: a parse error, a non-object
- * parse (`null`, `[]`, `"x"` — all valid JSON, none of them a config), and any
- * storage failure that is not "not found".
+ * ENOENT is `ok` with `{}` and the sentinel — an absent config is the documented
+ * default and has always been, and its etag is `null` because there are no bytes
+ * to compare against. Everything else is `unreadable`: a parse error, a
+ * non-object parse (`null`, `[]`, `"x"` — all valid JSON, none of them a
+ * config), and any storage failure that is not "not found". `isEnoent` covers
+ * R2 too — `R2NotFoundError` sets `code = "ENOENT"` for exactly this.
+ *
+ * `readFileWithEtag` rather than `readFile`, on every read including the ~50
+ * that only want defaults: it is the SAME single round-trip, the etag rides
+ * along on both providers, and one read door means `loadConfig` and `readConfig`
+ * cannot answer differently about the same store.
+ *
+ * THE TOKEN IS LIFTED AND STRIPPED. A missing key is the unstamped store, and so
+ * is a key holding something {@link isStoredConfigVersion} does not recognise:
+ * the token travels in `If-Match`, which carries one quoted value with no
+ * embedded quote, so honouring a corrupted stamp verbatim would answer every
+ * save 428 forever with no path out from any surface the owner can see. The
+ * sentinel is the recoverable answer — the next save stamps a real one, so a
+ * corrupted stamp SELF-HEALS — and it is logged, because a token nothing in this
+ * module could have written means something else is writing that file.
  */
 async function readStoredConfig(): Promise<
-  { status: "ok"; config: AppConfig } | { status: "unreadable"; error: unknown }
+  | { status: "ok"; config: AppConfig; version: string; etag: string | null }
+  | { status: "unreadable"; error: unknown }
 > {
   let raw: string;
+  let etag: string;
   try {
-    raw = await getStorage().readFile(configRelPath());
+    const file = await getStorage().readFileWithEtag(configRelPath());
+    raw = file.content;
+    etag = file.etag;
   } catch (err) {
-    if (isEnoent(err)) return { status: "ok", config: {} };
+    if (isEnoent(err)) {
+      return { status: "ok", config: {}, version: UNSTAMPED_CONFIG_VERSION, etag: null };
+    }
     logger.warn("config", "load config failed:", err);
     return { status: "unreadable", error: err };
   }
@@ -392,8 +529,17 @@ async function readStoredConfig(): Promise<
     logger.warn("config", "load config failed:", err);
     return { status: "unreadable", error: err };
   }
-  _configCache = { data: parsed, ts: Date.now() };
-  return { status: "ok", config: parsed };
+  const stored = (parsed as Record<string, unknown>)[CONFIG_VERSION_KEY];
+  let version = UNSTAMPED_CONFIG_VERSION;
+  if (typeof stored === "string" && isStoredConfigVersion(stored)) {
+    version = stored;
+  } else if (stored !== undefined) {
+    logger.warn("config", "config does not hold a usable version token; treating as unstamped");
+  }
+  const config = { ...(parsed as Record<string, unknown>) };
+  delete config[CONFIG_VERSION_KEY];
+  _configCache = { data: config as AppConfig, ts: Date.now() };
+  return { status: "ok", config: config as AppConfig, version, etag };
 }
 
 /**
@@ -407,84 +553,27 @@ function isStoredConfigVersion(value: string): boolean {
 }
 
 /**
- * The token half of {@link readConfig}.
- *
- * ENOENT is the UNSTAMPED store, which is `ok` with the sentinel. Any other
- * READ FAILURE is `unreadable`, and it has to be: answering the sentinel for a
- * storage error would let a save land against a store whose real token nobody
- * checked, which is the lost update the guard exists to catch.
- *
- * A file that READS but does not hold a token is a different fact, and it
- * answers the SENTINEL rather than `unreadable`. The token travels in `If-Match`
- * and `parseIfMatch` accepts one quoted value with no embedded quote, so a
- * stamp corrupted to contain a quote, a newline, or anything else the header
- * cannot carry would make every save 428 forever, with no path out that does not
- * involve deleting a file the owner cannot see from any surface. `unreadable`
- * would be the same lockout wearing a 503. The sentinel is the recoverable
- * answer: the owner's next save lands and stamps a real token, so a corrupted
- * stamp SELF-HEALS. The cost is the unstamped window's cost, once — and a
- * lockout with no way out is worse than one save that goes unchecked. It is
- * logged, because a token nothing in this module could have written means
- * something else is writing that file.
- */
-async function readStoredVersion(): Promise<
-  { status: "ok"; version: string } | { status: "unreadable"; error: unknown }
-> {
-  let raw: string;
-  try {
-    raw = await getStorage().readFile(configVersionRelPath());
-  } catch (err) {
-    if (isEnoent(err)) return { status: "ok", version: UNSTAMPED_CONFIG_VERSION };
-    logger.warn("config", "load config version failed:", err);
-    return { status: "unreadable", error: err };
-  }
-  const version = raw.trim();
-  if (!isStoredConfigVersion(version)) {
-    // A present-but-empty file is the ordinary case of this — a half-written
-    // stamp — and is not worth a distinct answer.
-    if (version.length > 0) {
-      logger.warn("config", "config version file does not hold a token; treating as unstamped");
-    }
-    return { status: "ok", version: UNSTAMPED_CONFIG_VERSION };
-  }
-  return { status: "ok", version };
-}
-
-/**
  * Read the config AND the precondition token it is guarded by, honestly.
  *
  * This is the read the settings route runs, and the only one that can tell
- * "there is no config" from "the config could not be read". Both files must
- * answer: a readable config beside an unreadable token is still `unreadable`,
- * because the version the route would serve and compare would be a guess.
+ * "there is no config" from "the config could not be read".
  *
- * THE TOKEN IS READ FIRST, and the order is the safety property — the read side
- * of the one {@link saveConfig} spells on the write side, inverted for the same
- * reason. Two files cannot be read in one instant, so a concurrent save can
- * always land between them, and the only question is WHICH mismatched pair this
- * function can produce.
+ * ONE OBJECT, ONE ROUND-TRIP (DW-272). It used to read a config file and a
+ * sibling token file, and two files cannot be read in one instant: a concurrent
+ * save could always land between them, so the only question was WHICH mismatched
+ * pair the order produced, and R2 gave no way to make the pair atomic at all.
+ * The token now rides INSIDE the object, so there is no pair — what this returns
+ * is one snapshot of one store, on every backend.
  *
- * Token first can only ever yield (STALE token, fresh config): the surface is
- * seeded from current values labelled with a version the store no longer holds,
- * so its next `PUT` is refused 412 for a change that did happen. A false
- * refusal, recovered by reloading.
- *
- * Config first yields (stale config, FRESH token): the surface is seeded from
- * SUPERSEDED values wearing the current version, its next `PUT` MATCHES, and it
- * writes those superseded values over the save that just landed. That is the
- * silent lost update the whole guard exists to catch, reintroduced by the order
- * of two reads. As on the write side: a refusal nobody expected is recoverable,
- * a silent overwrite is not.
+ * It also returns that snapshot's ETAG, which {@link saveConfig} uses to close
+ * the read-modify-write window inside a single request. The etag is INTERNAL and
+ * is never served; see {@link ConfigRead}.
  *
  * Populates the sync cache exactly as {@link loadConfig} does, so callers can
  * still reach `getWorkbenchSettings()`/`getEffectiveProvider()` right after.
  */
 export async function readConfig(): Promise<ConfigRead> {
-  const version = await readStoredVersion();
-  if (version.status === "unreadable") return version;
-  const config = await readStoredConfig();
-  if (config.status === "unreadable") return config;
-  return { status: "ok", config: config.config, version: version.version };
+  return readStoredConfig();
 }
 
 /**
@@ -496,14 +585,24 @@ export async function readConfig(): Promise<ConfigRead> {
  * effect so that subsequent `loadConfigSync()` calls return the up-to-date
  * config.
  *
- * THE LOSSY WRAPPER over {@link readConfig}'s config half, kept at exactly its
- * old signature and its old `{}`-on-failure contract because ~50 call sites
- * depend on both. Only the settings route needs to tell absent from broken, and
- * it calls `readConfig` instead. It reads the config file ONLY: a caller that
- * wants defaults has no use for the token, and making every one of those ~50
- * reads pay a second storage round-trip — or degrade to `{}` because a file
- * they never look at failed to open — would be a cost and a regression for a
- * fact they do not consume.
+ * THE LOSSY WRAPPER over {@link readConfig}, kept at exactly its old signature
+ * and its old `{}`-on-failure contract because ~50 call sites depend on both.
+ * Only the settings route needs to tell absent from broken, or needs the token
+ * and the etag at all, and it calls `readConfig` instead.
+ *
+ * It is ONE storage read, not the two the sibling-file scheme made every caller
+ * pay: since DW-272 the token lives inside the object, so a caller that wants
+ * only the settings no longer opens a second file for a fact it does not
+ * consume — nor degrades to `{}` because that file failed to open. The
+ * `AppConfig` it gets back is the stored fields alone; the reserved key is
+ * stripped before it leaves {@link readStoredConfig}.
+ *
+ * On R2 that read is also the same single round-trip `readFile` was, since the
+ * etag rides on the object. On the filesystem provider `readFileWithEtag` adds a
+ * `stat` beside the `readFile`, so these ~50 defaults-only reads pay one extra
+ * local syscall each for an etag they do not use — cheaper than the second file
+ * open it replaced, and the price of having ONE read door that cannot answer
+ * differently to `loadConfig` and `readConfig`.
  */
 export async function loadConfig(): Promise<AppConfig> {
   const read = await readStoredConfig();
@@ -511,21 +610,57 @@ export async function loadConfig(): Promise<AppConfig> {
 }
 
 /**
- * Write config JSON via storage provider, and STAMP a fresh precondition token.
+ * The outcome of a settings write.
  *
- * THE TOKEN FILE IS WRITTEN FIRST, and the order is the safety property. If the
- * config write then fails, the served token matches no open draft: every
- * surface is refused, nothing was silently overwritten, and the owner recovers
- * by reloading. The reverse order would leave a token that still matches a
- * config which had already changed — a save that should have been refused
- * lands, which is precisely the lost update this guard exists to catch. A
- * refusal nobody expected is recoverable; a silent overwrite is not.
+ * `conflict` is the compare-and-set that LOST: the stored object changed between
+ * the caller's read and this write, so nothing was written and the caller's
+ * merge base is stale. It is a distinct answer rather than a thrown error
+ * because it is an expected outcome on a store two surfaces write, and the route
+ * turns it into the 412 the owner is owed.
+ */
+export type ConfigSave = { status: "ok"; version: string } | { status: "conflict" };
+
+/**
+ * Write the config, STAMPING a fresh precondition token inside the same object.
+ *
+ * ONE WRITE (DW-272). It used to write a token file and then the config file,
+ * and to lean on that ORDER for its safety: a half-finished save left a token
+ * nobody held, which refuses every open draft, rather than a token that still
+ * matched a config which had already moved. One object needs no order — there is
+ * no interleaving to be safe about, and no way for the pair to end up
+ * disagreeing at all.
+ *
+ * `ifMatch` IS THE COMPARE-AND-SET, and it closes a different window from the
+ * route's `If-Match` check. That check compares the OWNER'S draft token against
+ * the store and refuses a draft seeded before someone else's save. It cannot see
+ * a save that lands after this request read its merge base and before this
+ * request writes it back — a read-modify-write inside one request — and that
+ * save would be silently overwritten. `writeFileIfMatch` refuses instead, and
+ * this answers `conflict` so the route can say so.
+ *
+ * HOW EXACT THAT REFUSAL IS DEPENDS ON THE BACKEND. On R2 it is exact: the
+ * conditional put is evaluated server-side against the object's own etag, so a
+ * losing writer cannot win. On the filesystem provider the etag is `mtime-size`
+ * and `readFileWithEtag` pairs a `readFile` with a `stat`, so a concurrent
+ * rewrite landing in the same millisecond at the same byte length produces a
+ * MATCHING etag and the losing save is allowed through — and the check-then-write
+ * is not one atomic step there either. That is a narrower window than the one
+ * this closes, on the deployment shape (one local process) least likely to have
+ * two concurrent writers at all; it is bounded and written down, not closed.
+ *
+ * WITHOUT an etag it writes unconditionally, and that is the FIRST write only:
+ * `readConfig` returns `etag: null` exactly when there was no object to read.
+ * Two concurrent first writes both land and the last wins. The storage interface
+ * exposes no if-none-match, so the window cannot be closed from here; it is one
+ * save on a store that has never been written, and it is written down rather
+ * than pretended away.
  *
  * Returns the token it stamped, so the route answers the version the store now
  * holds without a second read. It also PRIMES the sync cache with what it just
  * wrote (it used to null it, which left `loadConfigSync` answering `{}` for the
  * whole 5 s TTL after every save, i.e. env-detected providers immediately after
- * the owner selected one).
+ * the owner selected one) — with the CALLER'S object, not the stamped one, so
+ * the cache holds exactly what `loadConfig` would hand back.
  *
  * EVERY SAVE ROTATES, INCLUDING ONE THAT CHANGED NOTHING. The token is a fact
  * about writes, not about content, so a no-op save — the owner pressing Save on
@@ -536,18 +671,43 @@ export async function loadConfig(): Promise<AppConfig> {
  * stamp errs toward refusing, and a false refusal costs one reload, where the
  * derived version's cost was the secrets.
  *
- * See {@link UNSTAMPED_CONFIG_VERSION} for what this does not close.
+ * A REFUSED SAVE WRITES NOTHING. See {@link UNSTAMPED_CONFIG_VERSION} for what
+ * this does not close.
  */
-export async function saveConfig(config: AppConfig): Promise<string> {
+export async function saveConfig(
+  config: AppConfig,
+  ifMatch?: string | null,
+): Promise<ConfigSave> {
   const version = newConfigVersion();
+  // The reserved key is THIS function's to write, so strip whatever the caller
+  // handed in before anything reads the object. `readStoredConfig` already
+  // strips it, so no ordinary caller carries one — but a `PUT` body naming the
+  // key reaches the merge, and without this the cache below would be primed with
+  // a key a re-read removes, which is the sync/async disagreement stripping
+  // exists to prevent. Stripping here also means a body cannot forge a token or
+  // unstamp the store: whatever it says, the value written is the fresh one.
+  const stored = { ...config };
+  delete (stored as Record<string, unknown>)[CONFIG_VERSION_KEY];
+  const body =
+    JSON.stringify({ ...stored, [CONFIG_VERSION_KEY]: version }, null, 2) + "\n";
   const storage = getStorage();
-  await storage.writeFile(configVersionRelPath(), version + "\n");
-  await storage.writeFile(
-    configRelPath(),
-    JSON.stringify(config, null, 2) + "\n",
-  );
-  _configCache = { data: { ...config }, ts: Date.now() };
-  return version;
+  // EXPLICITLY a non-empty string, not truthiness. `undefined`, `null` and `""`
+  // all mean the same thing here — "no version to compare against, write
+  // unconditionally" — and the point of spelling it out is that this is now a
+  // decision rather than a coincidence of `if (ifMatch)`. The only value that
+  // legitimately reaches it is `readConfig`'s `etag: null`, i.e. the first write
+  // into a store that has never held an object. An empty STRING would mean a
+  // storage provider answered something unusable; neither shipped provider can,
+  // and if one ever did this would degrade to the first-write case rather than
+  // sending `""` to a compare-and-set that cannot interpret it.
+  if (typeof ifMatch === "string" && ifMatch.length > 0) {
+    const wrote = await storage.writeFileIfMatch(configRelPath(), body, ifMatch);
+    if (!wrote) return { status: "conflict" };
+  } else {
+    await storage.writeFile(configRelPath(), body);
+  }
+  _configCache = { data: stored, ts: Date.now() };
+  return { status: "ok", version };
 }
 
 // ---------------------------------------------------------------------------
@@ -1145,6 +1305,12 @@ export function getWorkbenchSettings(
     // the route feeds it.
     envEmbeddingProvider: envProvider,
     envEmbeddingModel: nonEmpty(process.env.EMBEDDING_MODEL),
+    // The THIRD variable that wins over a box on this surface (DW-71), served
+    // for the same reason as the two above and read through the same `nonEmpty`
+    // that `getCustomBaseUrl()` resolves it with — so a blank or whitespace-only
+    // `LLM_CUSTOM_BASE_URL` is "unset" to the sentence exactly as it is to the
+    // resolver, rather than announcing an override that is not happening.
+    envCustomBaseUrl: nonEmpty(process.env.LLM_CUSTOM_BASE_URL),
     envEmbeddingApiKeyProviders: envEmbeddingApiKeyProviders(),
     // The RUNTIME fact the browser cannot ask for, passed in by the route.
     hasWorkersAiBinding,
@@ -1311,21 +1477,35 @@ export function getEffectiveSettings(): EffectiveSettings {
     modelSource = "none";
   }
 
-  // Ollama base URL
+  // Ollama base URL — REPORTED FROM THE ONE LADDER (DW-326).
+  //
+  // This used to spell the ladder itself, on a truthiness check and with no URL
+  // check at all, which made it the last place the flat `/settings` page could
+  // disagree with the runtime: `ProviderForm` renders this value beside an
+  // env/config badge, so an unusable `OLLAMA_BASE_URL` was shown as the endpoint
+  // in effect while `getOllamaBaseUrl()` discarded it and the SDK fell to its own
+  // default. That is the same shape DW-71 closes for the Custom endpoint on the
+  // other surface, and a settings screen that names an endpoint nothing talks to
+  // is worse than one that says "none".
+  //
+  // The SOURCE is derived from WHICH leg survived, not re-walked: the resolver
+  // takes the env value only when it is usable, so comparing the answer against
+  // the env leg read the same way (`nonEmpty`, so a padded variable matches) is
+  // what keeps the badge honest when the env value was the one thrown away.
   let ollamaBaseUrl: string | null;
   let ollamaBaseUrlSource: SettingSource;
   if (provider === "ollama-cloud") {
     ollamaBaseUrl = "https://ollama.com/api";
     ollamaBaseUrlSource = "default";
-  } else if (process.env.OLLAMA_BASE_URL) {
-    ollamaBaseUrl = process.env.OLLAMA_BASE_URL;
-    ollamaBaseUrlSource = "env";
-  } else if (cfg.ollamaBaseUrl) {
-    ollamaBaseUrl = cfg.ollamaBaseUrl;
-    ollamaBaseUrlSource = "config";
   } else {
-    ollamaBaseUrl = null;
-    ollamaBaseUrlSource = "none";
+    ollamaBaseUrl = getOllamaBaseUrl(cfg) ?? null;
+    if (ollamaBaseUrl === null) {
+      ollamaBaseUrlSource = "none";
+    } else if (ollamaBaseUrl === nonEmpty(process.env.OLLAMA_BASE_URL)) {
+      ollamaBaseUrlSource = "env";
+    } else {
+      ollamaBaseUrlSource = "config";
+    }
   }
 
   // Embedding model — BOTH halves of the answer, from the one snapshot read at
@@ -1423,11 +1603,16 @@ export function getResolvedCredentials(): ResolvedCredentials {
     model = DEFAULT_MODELS[provider] ?? provider;
   }
 
-  // Ollama base URL
+  // Ollama base URL, through the ONE accessor that spells the ladder (DW-326).
+  // This copy used to re-derive it — `process.env.OLLAMA_BASE_URL ??
+  // cfg.ollamaBaseUrl` — and it is the copy that reaches `createOllama` via
+  // `llm.ts`, so an unusable value bypassed every check on its way to the SDK.
+  // Called with the `cfg` already read above rather than letting the accessor
+  // take the cache, so both halves of this function answer from one object.
   const ollamaBaseUrl =
     provider === "ollama-cloud"
       ? "https://ollama.com/api"
-      : process.env.OLLAMA_BASE_URL ?? cfg.ollamaBaseUrl ?? null;
+      : getOllamaBaseUrl(cfg) ?? null;
 
   return {
     provider,

@@ -13,6 +13,7 @@ import {
   getChatModelSettings,
   getCustomBaseUrl,
   getIngestModelSettings,
+  getOllamaBaseUrl,
   llmTimeoutOption,
   providerIsConfigured,
   DEFAULT_MODELS,
@@ -409,12 +410,17 @@ export async function getConfiguredModel(options?: {
         }
         return createOpenAI({ apiKey: apiKey!, baseURL }).chat(resolvedModel);
       }
-      case "ollama":
-        return createOllama({
-          ...(process.env.OLLAMA_BASE_URL
-            ? { baseURL: process.env.OLLAMA_BASE_URL }
-            : {}),
-        })(resolvedModel);
+      case "ollama": {
+        // THROUGH THE ACCESSOR (DW-326), which was a raw
+        // `process.env.OLLAMA_BASE_URL` read — a third copy of the ladder, and
+        // the one place an unchecked endpoint could still reach `createOllama`.
+        // It also means a STORED endpoint now applies to a workload-routed
+        // `ollama` call, matching what the primary path has always done: this
+        // leg used to ignore `cfg.ollamaBaseUrl` entirely, so an owner who set
+        // the endpoint in Settings had chat and ingest talk to localhost.
+        const baseURL = getOllamaBaseUrl();
+        return createOllama(baseURL ? { baseURL } : {})(resolvedModel);
+      }
       case "ollama-cloud":
         return createOllama({
           baseURL: "https://ollama.com/api",

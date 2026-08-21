@@ -70,6 +70,7 @@ function workbench(
     embeddingModelOverridden: false,
     envEmbeddingProvider: null,
     envEmbeddingModel: null,
+    envCustomBaseUrl: null,
     envEmbeddingApiKeyProviders: [],
     hasWorkersAiBinding: false,
     firecrawlBaseUrl: null,

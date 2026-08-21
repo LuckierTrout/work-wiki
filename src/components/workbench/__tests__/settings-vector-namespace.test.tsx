@@ -54,6 +54,7 @@ function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSe
     embeddingModelOverridden: false,
     envEmbeddingProvider: null,
     envEmbeddingModel: null,
+    envCustomBaseUrl: null,
     envEmbeddingApiKeyProviders: [],
     // ON Workers. Every case in this file selects `workers-ai`, and without the
     // binding the gate would refuse for a SECOND reason (DW-225) — which would

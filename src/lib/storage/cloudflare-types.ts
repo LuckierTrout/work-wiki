@@ -24,6 +24,16 @@ export interface R2Object {
   key: string;
   size: number;
   uploaded: Date;
+  /**
+   * The RAW etag — what `R2Conditional.etagMatches` compares against.
+   * {@link R2Bucket.put}'s `onlyIf` takes this one.
+   */
+  etag: string;
+  /**
+   * The same value in the RFC-9110 QUOTED form, for returning in a response
+   * header. NOT interchangeable with {@link R2Object.etag}: a conditional put
+   * given this one compares `"abc"` against `abc` and never matches.
+   */
   httpEtag: string;
 }
 

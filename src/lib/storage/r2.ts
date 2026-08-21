@@ -179,6 +179,21 @@ export class R2StorageProvider implements StorageProvider {
   // Optimistic concurrency
   // -------------------------------------------------------------------------
 
+  /**
+   * THE RAW `etag`, NOT `httpEtag`.
+   *
+   * `httpEtag` is the RFC-9110 QUOTED form, for putting in a response header;
+   * `R2Conditional.etagMatches` takes the raw one. Feeding the quoted value back
+   * into `writeFileIfMatch` compares `"abc"` against `abc`, which a strict
+   * runtime never matches — so every compare-and-set after the first would fail
+   * forever. Since DW-272 the settings save depends on this pair, and a
+   * permanently-losing CAS there means no save on Workers ever lands again, with
+   * no path out from any surface the owner can see.
+   *
+   * Safe because this etag is opaque to every caller and is never emitted as an
+   * HTTP header: `config.ts` and `graphify-jobs.ts` are the only readers, and
+   * both hand it straight back to {@link writeFileIfMatch}.
+   */
   async readFileWithEtag(path: string): Promise<FileWithEtag> {
     const obj = await this.bucket.get(path);
     if (!obj) {
@@ -186,7 +201,7 @@ export class R2StorageProvider implements StorageProvider {
     }
     return {
       content: await obj.text(),
-      etag: obj.httpEtag,
+      etag: obj.etag,
     };
   }
 

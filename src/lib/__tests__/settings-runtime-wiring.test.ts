@@ -81,6 +81,7 @@ vi.mock("@/lib/auth", () => ({
 
 import {
   _resetConfigCache,
+  _resetConfigWarnings,
   getChatModelSettings,
   getEffectiveProvider,
   getEffectiveSettings,
@@ -168,6 +169,13 @@ beforeEach(async () => {
   generateTextMock.mockImplementation(async () => ({ text: "ok" }));
   mockGetCfContext.mockImplementation(noCloudflareContext);
   _resetConfigCache();
+  // The warn-once Sets are module state, so without these the FIRST case to hit
+  // a misconfiguration silences it for every case after — and the next
+  // assertion added here would be quietly order-sensitive. Same reason
+  // `_resetEmbeddingWarnings` is already reset per case in the suites that
+  // assert embedding warnings.
+  _resetConfigWarnings();
+  _resetEmbeddingWarnings();
   _resetStorage();
 });
 
@@ -372,6 +380,92 @@ describe("the custom provider reaches the runtime", () => {
     createOpenAIMock.mockClear();
     await getConfiguredModel({ workload: "ingest" });
     expect(createOpenAIMock).toHaveBeenLastCalledWith({ apiKey: "sk-openai" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Ollama endpoint — one ladder, checked before it reaches the SDK (DW-326)
+// ---------------------------------------------------------------------------
+
+/**
+ * The options object the last `createOllama` call was given.
+ *
+ * `undefined` is a real answer: `getModel()`'s ollama leg calls `createOllama()`
+ * with no argument at all when there is no endpoint, where `getConfiguredModel`
+ * passes `{}`. Both mean the same thing to the SDK — use its own default — so
+ * the assertions below look at `baseURL` rather than at the object's shape.
+ */
+function lastOllamaArgs(): Record<string, unknown> | undefined {
+  const call = createOllamaMock.mock.calls.at(-1) as unknown as [
+    Record<string, unknown> | undefined,
+  ];
+  return call[0];
+}
+
+describe("the Ollama endpoint reaches every SDK construction through one ladder", () => {
+  it("hands a STORED endpoint to the primary path AND to a routed workload", async () => {
+    // `getConfiguredModel`'s `ollama` leg read `process.env.OLLAMA_BASE_URL`
+    // raw, so it ignored `cfg.ollamaBaseUrl` entirely: an owner who set the
+    // endpoint in Settings had the primary path talk to their server and chat
+    // talk to localhost.
+    await store({
+      provider: "ollama",
+      model: "llama3",
+      ollamaBaseUrl: "http://ollama.internal:11434",
+      chatProvider: "ollama",
+      chatModel: "llama3",
+    });
+
+    await callLLM("system", "message");
+    expect(lastOllamaArgs()?.baseURL).toBe("http://ollama.internal:11434");
+
+    createOllamaMock.mockClear();
+    await getConfiguredModel({ workload: "chat" });
+    expect(lastOllamaArgs()?.baseURL).toBe("http://ollama.internal:11434");
+  });
+
+  it("gives the SDK NO endpoint when the stored one is not a usable URL", async () => {
+    // DW-304 refuses this at the write door; it does nothing about a value
+    // stored before that rule, hand-edited in, or restored from a backup. The
+    // SDK falls to its own default rather than being handed `file://`.
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await store({
+        provider: "ollama",
+        model: "llama3",
+        ollamaBaseUrl: "file:///etc/passwd",
+        chatProvider: "ollama",
+        chatModel: "llama3",
+      });
+
+      await callLLM("system", "message");
+      expect(lastOllamaArgs()?.baseURL).toBeUndefined();
+
+      createOllamaMock.mockClear();
+      await getConfiguredModel({ workload: "chat" });
+      expect(lastOllamaArgs()?.baseURL).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("falls THROUGH an unusable OLLAMA_BASE_URL to the stored endpoint", async () => {
+    // The env value is the one no route ever validates, and it wins at runtime.
+    // Refusing it must not also throw away a stored endpoint that works.
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      process.env.OLLAMA_BASE_URL = "localhost:11434";
+      await store({
+        provider: "ollama",
+        model: "llama3",
+        ollamaBaseUrl: "http://ollama.internal:11434",
+      });
+
+      await callLLM("system", "message");
+      expect(lastOllamaArgs()?.baseURL).toBe("http://ollama.internal:11434");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

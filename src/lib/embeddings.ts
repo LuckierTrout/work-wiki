@@ -391,7 +391,7 @@ export function getEmbeddingModel(
 /**
  * Internal helper to construct an AI SDK embedding model instance.
  *
- * Ollama base URL is resolved via `getOllamaBaseUrl()` from the config layer.
+ * Ollama base URL is resolved via `getOllamaBaseUrl(cfg)` from the config layer.
  * OpenAI and Google honour a stored `embeddingBaseUrl` (Story 1.9's "endpoint"
  * half of the vector gate) — additive, so with nothing stored the option is
  * omitted entirely and both providers resolve to their own defaults exactly as
@@ -423,8 +423,13 @@ function _createEmbeddingModel(
       return google.embedding(modelName);
     }
     case "ollama": {
-      // Resolve Ollama base URL via centralized config layer.
-      const baseURL = getOllamaBaseUrl();
+      // Resolve Ollama base URL via centralized config layer, against the SAME
+      // `cfg` snapshot `embeddingBaseUrl` above is resolved from (DW-313). With
+      // no argument this half answered from the 5 s cache while the other half
+      // answered from the object passed in, so one function could resolve two
+      // different configs — which is exactly what the accessor's parameter
+      // exists to rule out.
+      const baseURL = getOllamaBaseUrl(cfg);
       const ollama = baseURL ? createOllama({ baseURL }) : createOllama();
       return ollama.embedding(modelName);
     }

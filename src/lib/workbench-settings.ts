@@ -318,15 +318,30 @@ export const SETTINGS_VECTOR_BINDING_ENV_NOTE = `${WORKERS_AI_LABEL} embeds thro
 /**
  * The environment's overrides, said out loud.
  *
- * `EMBEDDING_PROVIDER` and `EMBEDDING_MODEL` win at runtime and a save cannot
- * move them, so without these an owner reads an EMPTY model box beside a vector
- * switch that is somehow enabled, types a model into it, saves successfully, and
- * nothing changes. The box is not disabled — the stored value is still what
- * applies if the variable is ever unset — so the sentence has to carry the
- * whole explanation.
+ * `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL` and `LLM_CUSTOM_BASE_URL` win at
+ * runtime and a save cannot move them, so without these an owner reads an EMPTY
+ * box beside a control that is somehow already satisfied, types a value into it,
+ * saves successfully, and nothing changes. The box is not disabled — the stored
+ * value is still what applies if the variable is ever unset — so the sentence
+ * has to carry the whole explanation.
+ *
+ * ONE sentence for all three (DW-71). The endpoint's story is the embedding
+ * model's story with a different variable name: `getCustomBaseUrl()` takes
+ * `LLM_CUSTOM_BASE_URL` ahead of the store exactly as the embedding resolvers
+ * take `EMBEDDING_MODEL`, and the Custom base URL box shows the STORE. A second
+ * wording for the same fact would be two sentences to keep in step.
  */
-export function settingsEnvOverrideCopy(kind: "provider" | "model", value: string): string {
-  const variable = kind === "provider" ? "EMBEDDING_PROVIDER" : "EMBEDDING_MODEL";
+const ENV_OVERRIDE_VARIABLES = {
+  provider: "EMBEDDING_PROVIDER",
+  model: "EMBEDDING_MODEL",
+  customBaseUrl: "LLM_CUSTOM_BASE_URL",
+} as const;
+
+export function settingsEnvOverrideCopy(
+  kind: keyof typeof ENV_OVERRIDE_VARIABLES,
+  value: string,
+): string {
+  const variable = ENV_OVERRIDE_VARIABLES[kind];
   return `The environment sets ${variable}=${value}, and that wins at runtime. What you save here applies only once that variable is unset.`;
 }
 
@@ -398,7 +413,7 @@ export const SETTINGS_ROUTE = "/api/settings";
 export interface WorkbenchSettingsPayload {
   /**
    * The WRITE PRECONDITION for the stored `AppConfig` these values came out of
-   * (DW-63) — the OPAQUE TOKEN `saveConfig` stamped beside the config, never a
+   * (DW-63) — the OPAQUE TOKEN `saveConfig` stamped into the config, never a
    * hash of it, so nothing derived from the three stored API keys reaches this
    * payload (see `readConfig` in `src/lib/config.ts`).
    *
@@ -482,6 +497,22 @@ export interface WorkbenchSettingsPayload {
    */
   envEmbeddingProvider: EmbeddingProvider | null;
   envEmbeddingModel: string | null;
+  /**
+   * `LLM_CUSTOM_BASE_URL`, when the deployment sets it (DW-71).
+   *
+   * It rides APART from the editable `customBaseUrl` above for the same reason
+   * `envEmbeddingModel` rides apart from `embeddingModel`: `getCustomBaseUrl()`
+   * takes the variable ahead of the store, so the two are different facts and
+   * the box has to keep showing the STORED one — that is the value a save moves
+   * and the value that applies the moment the variable is unset. Folding the env
+   * value into the box would show an unsaveable string in an editable control
+   * and persist it on the next save; leaving it out entirely is what let an
+   * owner type an endpoint, save it successfully, and change nothing.
+   *
+   * Not a secret: an endpoint is not a credential, and `LLM_CUSTOM_API_KEY` is
+   * still reported as the `hasCustomApiKey` boolean and nothing else.
+   */
+  envCustomBaseUrl: string | null;
   /**
    * WHICH providers the environment carries an embedding credential for, not
    * whether it carries one at all: `OPENAI_API_KEY` is not a Google key, and a
@@ -592,6 +623,7 @@ export function isWorkbenchSettingsPayload(
     nullableString("firecrawlBaseUrl") &&
     nullableString("envEmbeddingProvider") &&
     nullableString("envEmbeddingModel") &&
+    nullableString("envCustomBaseUrl") &&
     // REQUIRED, on the same argument `hasWorkersAiBinding` is required on
     // (DW-312): the substitution note is guarded on BOTH of these, and neither
     // absence has a safe reading. Defaulting the flag to `false` would silence
