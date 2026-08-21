@@ -3368,7 +3368,8 @@ source_spec: `spec-dw-209-289-wiki-rename-refresh-and-sweep-cap.md`
 location: src/lib/wikis.ts (deleteWiki)
 severity: medium
 reason: DW-209 established the rule this change generalises: a registry operation that also moves bytes a Preview renders must bump, because a non-current Wiki's operations change no `currentWikiId` and the Workbench's selection-reset effect never fires. `deleteWiki` (src/lib/wikis.ts) meets that description exactly — it deletes the artifact directory — and still carries no tail. `WikiSwitcher.tsx` calls `router.refresh()` itself, which covers the client that performed the delete but not any other open client. Pre-existing; surfaced by generalising the rule, not caused by it.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-delete-wiki-data-version-bump
 
 ### DW-383: A sweep candidate whose age cannot be read is skipped but still consumes one of the per-pass cap slots on every pass, so enough of them could starve the tail of the list.
 origin: spec-deferred 5c402c238ab7
@@ -3740,4 +3741,28 @@ source_spec: `spec-dw-379-merge-base-fresh-reads.md`
 location: src/components/WikiEditor.tsx:288
 severity: medium
 reason: `src/components/WikiEditor.tsx:259-303` saves the body with `PUT` and then `PATCH`es metadata, relaying the served `{ error }` verbatim into its error banner. With the 503 branch added here, a read blip on the second leg shows `PAGE_UNREADABLE_COPY` — "so nothing was changed" — to an owner whose body write did land. The previous answer (`page not found`) was also wrong, but it did not make a claim about what was written. Not closable inside this bundle: the spec's Never clause forbids new copy, and the alternative is a client change to the save flow (e.g. reporting the legs separately), which the intent does not reach.
+status: open
+
+### DW-429: `setCurrentWiki` moves no `dataVersion`, so switching the current Wiki leaves every OTHER open client rendering the previous Wiki's artifacts with nothing to un-stale them.
+origin: spec-deferred 5e52805cf407
+source_spec: `spec-dw-382-delete-wiki-data-version-bump.md`
+location: src/lib/wikis.ts (setCurrentWiki)
+severity: medium
+reason: A Preview and the Files tree both resolve `purpose.md`/`schema.md` through `registry.currentId` read server-side at fetch time (src/app/api/workbench/preview/route.ts:214-222, src/app/page.tsx:98-101 -> src/lib/workbench-files.ts:298-321). A switch is therefore the ONLY operation that changes which bytes those surfaces resolve to — and `WikiSwitcher`'s own `router.refresh()` covers just the acting client. This is a strictly stronger form of the DW-382 argument: DW-382's ledger premise ("a Preview open on those artifacts in a second client keeps rendering bytes whose Wiki is gone") is false for delete, but TRUE for a switch. Raised independently by review layers on all three passes of this story. Pre-existing; `setCurrentWiki`'s no-bump exemption is a recorded decision (src/lib/__tests__/workbench-data-version.test.ts, the bump-site guard's rationale comment), so changing it needs its own story rather than a drive-by.
+status: open
+
+### DW-430: `renameWiki`'s JSDoc quotes the Preview fetch dep list as `[selection, dataVersion, editing]`; the real deps include `retryNonce`.
+origin: spec-deferred 4c119690dd9a
+source_spec: `spec-dw-382-delete-wiki-data-version-bump.md`
+location: src/lib/wikis.ts:1313
+severity: low
+reason: src/lib/wikis.ts:1313 versus src/components/workbench/PreviewColumn.tsx:563 (`[selection, dataVersion, editing, retryNonce]`). Pre-existing prose drift, not introduced here — this story's own new paragraph was held to quote-exactly-or-omit and omits the list.
+status: open
+
+### DW-431: Several docblocks in `wikis.ts` enumerate the writers that carry the `bumpDataVersion` tail, and none of the enumerations is complete.
+origin: spec-deferred 1dc1514e55c9
+source_spec: `spec-dw-382-delete-wiki-data-version-bump.md`
+location: src/lib/wikis.ts:374,1250,1310
+severity: low
+reason: src/lib/wikis.ts:1310 ("the same tail `createWiki` and `applyScenarioTemplate` carry") omits `writeWikiArtifact` and now `deleteWiki`; :1250-1251 and :374-375 list the same set incompletely. Each was already short before this story and is one entry shorter now that `wikis.ts` has five bump sites. The executable guard (src/lib/__tests__/workbench-data-version.test.ts) is complete and authoritative; these are prose only.
 status: open
