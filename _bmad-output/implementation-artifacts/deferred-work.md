@@ -3425,7 +3425,8 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/lib/lint-fix.ts:729-730 and src/lib/lint-checks.ts:727
 severity: medium
 reason: `src/lib/lint-fix.ts:729-730` and the check's own `suggestion` at `src/lib/lint-checks.ts:727` both say: clear the Disputed toggle in the page editor (PATCH /api/wiki/<slug> with metadata { disputed: false }). After DW-121 that PATCH is refused for every non-admin principal on a public knowledge page, so the instruction names a loop only an agent token's owner-as-admin, a service principal or a site admin can complete. In this deployment the human IS the site owner and therefore an admin, so the action still works for them; the copy is inaccurate for anyone else. The spec scoped lint copy out of this pass (Design Notes, "Non-admin metadata loop"). Both sites must move together — closing only lint-fix.ts leaves half the copy wrong.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-authz-gate-fallout-corrections
 
 ### DW-390: Deleting the reconciliation-thread writer took the last programmatic caller of the whole talk thread API with it.
 origin: spec-deferred 83dd95b177cf
@@ -3453,7 +3454,8 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/components/RevisionHistory.tsx
 severity: medium
 reason: `canRevert` in `src/components/RevisionHistory.tsx` carries a realm term and a site-owner term but no `isSignedIn` term, so an anonymous viewer of a public artifact or an agent-scoped page is still shown Revert and its irreversible-sounding confirm in front of a write the middleware 401s. This predates DW-269 (the control was ungated for everyone), and the recorded intent asked only for "the same realm term the Delete gate got", with the spec's Never list forbidding an ownership term — so the signed-in half was deliberately left alone. `ArticleActions` reads `isSignedIn` for exactly this purpose one component over.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-authz-gate-fallout-corrections
 
 ### DW-393: An orphan page — on disk but absent from the page index — now makes its ingest-history row undeletable and fails the whole batch.
 origin: spec-deferred a01843f3f763
@@ -3461,7 +3463,8 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/app/api/ingest/history/route.ts
 severity: medium
 reason: The DW-270 gate keys on `listReadableWikiPages`, which filters the page INDEX, not a per-page read. `src/lib/lint.ts:94`'s `checkOrphanPages` exists because index/disk drift is a real state here. A done job whose page is in that state used to delete the page and clear the job record; it now answers 404 for the entire request, clearing nothing else selected alongside it. This is exact parity with the pre-existing `ingestIds` preflight, which has always behaved this way, so DW-270 inherited the behaviour rather than inventing it.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-authz-gate-fallout-corrections
 
 ### DW-394: Both guidance memos are keyed by `owner`, but the files they memoize are addressed by TENANT, so two owner strings in one tenant key two entries over one file.
 origin: spec-deferred 1eea774dfd5c
@@ -3765,4 +3768,20 @@ source_spec: `spec-dw-382-delete-wiki-data-version-bump.md`
 location: src/lib/wikis.ts:374,1250,1310
 severity: low
 reason: src/lib/wikis.ts:1310 ("the same tail `createWiki` and `applyScenarioTemplate` carry") omits `writeWikiArtifact` and now `deleteWiki`; :1250-1251 and :374-375 list the same set incompletely. Each was already short before this story and is one entry shorter now that `wikis.ts` has five bump sites. The executable guard (src/lib/__tests__/workbench-data-version.test.ts) is complete and authoritative; these are prose only.
+status: open
+
+### DW-432: `GET /api/ingest/history` still filters the ledger with the page index alone, so an orphaned page's history row is never listed and the `ingestIds` half of the DW-393 fallback is unreachable from the
+origin: spec-deferred a874a83479d7
+source_spec: `spec-dw-389-392-393-authz-gate-fallout-corrections.md`
+location: src/app/api/ingest/history/route.ts:139
+severity: medium
+reason: The GET at `src/app/api/ingest/history/route.ts` builds `readable` from `listReadableWikiPages(principal)` and drops every ledger entry whose `primary_slug` the index does not carry. `RecentIngests.tsx` is the only producer of `ingestIds` and builds them exclusively from that GET's `entries`, so an orphan row can only be deleted by a caller hand-writing ids (CLI/MCP/direct HTTP). The `jobIds` half — the path DW-393's own harm statement describes ("a done job whose page is in that state") — is UI-reachable and is fixed. Left out deliberately: widening the GET would cost up to `MAX_BULK_DELETE` page reads on a hot listing path and change what the list shows, neither of which the intent asked for.
+status: open
+
+### DW-433: `maintenance_scan`'s tool description in `src/lib/mcp-http.ts` is a third copy of the disputed-clear fact and now disagrees with the shared clause.
+origin: spec-deferred a496dcb750e4
+source_spec: `spec-dw-389-392-393-authz-gate-fallout-corrections.md`
+location: src/lib/mcp-http.ts:434
+severity: low
+reason: DW-389 named two sites and they now read one owner (`disputedClearInstruction`). `src/lib/mcp-http.ts:434` tells agents "clearing the flag is a human review", while the new clause tells humans that on a public knowledge page only an agent or a site admin can clear it. Pre-existing copy at a site outside the intent's two, so it was not moved with them, but it is the next place this fact can drift.
 status: open

@@ -65,7 +65,11 @@ import {
   FixValidationError,
   FixNotFoundError,
 } from "../lint-fix";
-import { ALL_CHECK_TYPES, AUTO_FIXABLE_CHECK_TYPES } from "../lint-types";
+import {
+  ALL_CHECK_TYPES,
+  AUTO_FIXABLE_CHECK_TYPES,
+  disputedClearInstruction,
+} from "../lint-types";
 
 const mockedReadWikiPage = vi.mocked(readWikiPage);
 const mockedReadWikiPageWithFrontmatter = vi.mocked(readWikiPageWithFrontmatter);
@@ -1008,6 +1012,24 @@ describe("fixLintIssue", () => {
     // PATCH the message names can be copy-pasted as-is.
     await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
       "PATCH /api/wiki/contested-page with metadata { disputed: false }",
+    );
+  });
+
+  it("takes the clear path from the ONE shared clause, which names who can clear it", async () => {
+    // DW-389, the other half of the parity `lint-checks.test.ts` asserts. This
+    // refusal and `checkDisputedPages`'s `suggestion` were two hand-typed copies
+    // of the same instruction, and both described a `PATCH /api/wiki/<slug>`
+    // metadata write that `canWritePage`'s realm branch refuses on every public
+    // knowledge page — a loop most readers cannot close.
+    //
+    // Verbatim against `disputedClearInstruction`, because one owner for the
+    // sentence is the fix: a keyword pin would keep passing while this message
+    // drifted back into a private copy.
+    await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
+      disputedClearInstruction("contested-page"),
+    );
+    expect(disputedClearInstruction("contested-page")).toMatch(
+      /only an agent or a site admin/i,
     );
   });
 

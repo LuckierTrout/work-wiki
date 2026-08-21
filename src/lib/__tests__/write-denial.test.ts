@@ -5,8 +5,13 @@ import {
   resolveWriteDenial,
   type WriteDenialAction,
 } from "@/lib/write-denial";
-import { canWritePage, isRealmRestrictedWrite } from "@/lib/authz";
+import {
+  canWritePage,
+  isRealmRestrictedFrontmatterWrite,
+  isRealmRestrictedWrite,
+} from "@/lib/authz";
 import type { WriteKind } from "@/lib/authz";
+import { disputedClearInstruction } from "@/lib/lint-types";
 
 /**
  * The write-denial resolver (DW-122/DW-123).
@@ -292,5 +297,70 @@ describe("the generic table is the pre-existing wording, unchanged", () => {
       expect(typeof WRITE_DENIAL_REALM[action]).toBe("string");
       expect(WRITE_DENIAL[action]).not.toBe(WRITE_DENIAL_REALM[action]);
     }
+  });
+});
+
+describe("the lint clause that ECHOES this table rather than importing it", () => {
+  /**
+   * DW-389. `disputedClearInstruction` (`@/lib/lint-types`) tells a reader how
+   * to clear a page's `disputed` flag, and has to say that on a public
+   * knowledge page the `PATCH /api/wiki/<slug>` it names is refused for
+   * everyone but an agent or a site admin. That is THIS module's claim, in
+   * THIS module's words — but `lint-types.ts` is the module the lint UI imports
+   * from the browser, and `write-denial.ts` reaches `./authz` → `./commons` →
+   * storage, locks and `./wiki`. So the clause is a copy, exactly like
+   * `read-only.ts`'s client mirrors.
+   *
+   * A copy is only safe if something fails when the original moves. These are
+   * that something: the suite lives in the `node` project, where BOTH modules
+   * are importable, which is the whole reason the parity can be checked at all.
+   */
+  it("uses the canonical table's wording for who may write a realm page", () => {
+    // Not a pin on the clause's own output — that would only prove the clause
+    // equals itself, which is what the lint suites already do. This compares it
+    // against `WRITE_DENIAL_REALM`, so rewording the canonical table fails the
+    // copy instead of leaving it quietly out of step.
+    const CLAUSE = "only an agent or a site admin";
+
+    expect(disputedClearInstruction("contested-page").toLowerCase()).toContain(
+      CLAUSE,
+    );
+    // Present in the table it echoes — in every realm sentence, since each one
+    // ends by naming who may perform that action.
+    for (const action of ACTIONS) {
+      expect(WRITE_DENIAL_REALM[action].toLowerCase()).toContain(CLAUSE);
+    }
+  });
+
+  it("makes a claim about metadata writes that the realm predicate still backs", () => {
+    // The FACT, not just the wording. The clause says a `disputed: false`
+    // metadata PATCH is refused on a public knowledge page; that is true only
+    // because DW-121 made the realm kind-independent. Reverting DW-121 — or
+    // narrowing the realm back to `body`/`delete` — would make the sentence
+    // shipped to every disputed-page lint issue simply false, and nothing else
+    // in the repo reads it against the predicate.
+    expect(
+      isRealmRestrictedFrontmatterWrite({ visibility: "public" }, "metadata"),
+    ).toBe(true);
+
+    // …and the clause is scoped to exactly that class. The check fires for
+    // every disputed page, including private ones and artifacts, where the
+    // owner's own PATCH is admitted — so the referral is conditional ("on such
+    // a page") rather than advice, and these are the pages it must not claim.
+    expect(
+      isRealmRestrictedFrontmatterWrite({ visibility: "private" }, "metadata"),
+    ).toBe(false);
+    expect(
+      isRealmRestrictedFrontmatterWrite(
+        { visibility: "public", type: "html" },
+        "metadata",
+      ),
+    ).toBe(false);
+    expect(disputedClearInstruction("contested-page")).toContain(
+      "On a public knowledge page",
+    );
+    expect(disputedClearInstruction("contested-page")).toContain(
+      "so on such a page, ask one of them",
+    );
   });
 });

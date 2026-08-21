@@ -22,6 +22,7 @@ import {
   buildSummary,
   ALL_CHECK_TYPES,
 } from "../lint-checks";
+import { disputedClearInstruction } from "../lint-types";
 import type { LintIssue } from "../types";
 
 // We use writeWikiPage / ensureDirectories to set up wiki pages on disk.
@@ -938,6 +939,31 @@ describe("checkDisputedPages", () => {
     // Talk is retired — no reconciliation thread may be advertised.
     expect(issue.suggestion?.toLowerCase()).not.toContain("discussion");
     expect(issue.suggestion?.toLowerCase()).not.toContain("talk");
+  });
+
+  it("reads the clear path from the ONE shared clause, and that clause names who can clear it", async () => {
+    // DW-389. The suggestion and `lint-fix`'s auto-fix refusal used to be two
+    // hand-typed restatements of the same instruction, and both got it wrong
+    // the same way: since DW-121 the realm branch of `canWritePage` refuses the
+    // `"metadata"` PATCH they name on every public knowledge page, so on that
+    // class of page the loop they described cannot be closed by the reader.
+    //
+    // Pinned VERBATIM against `disputedClearInstruction` rather than by
+    // keyword, because the whole repair is that one function owns the sentence:
+    // a substring pin would keep passing while this surface drifted back to a
+    // private copy. `lint-fix.test.ts` makes the identical assertion, which is
+    // what ties the two surfaces together.
+    await createPageWithIndex("contested-page", "Contested Page", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+
+    const [issue] = await checkDisputedPages();
+    expect(issue.suggestion).toContain(disputedClearInstruction("contested-page"));
+    // …and the clause says who can actually do it, not just what to do.
+    expect(disputedClearInstruction("contested-page")).toMatch(
+      /only an agent or a site admin/i,
+    );
   });
 
   it("does NOT flag a page with disputed: false", async () => {

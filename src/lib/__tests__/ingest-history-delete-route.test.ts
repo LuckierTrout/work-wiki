@@ -158,10 +158,184 @@ describe("DELETE /api/ingest/history", () => {
   });
 
   it("cloaks ledger entries the caller cannot read", async () => {
+    // An empty readable INDEX is no longer enough on its own (DW-393): an index
+    // miss now falls back to the page itself, because a readable page missing
+    // from the index is the orphan state `checkOrphanPages` exists to detect,
+    // and reading that miss as a denial 404'd every record selected with it.
+    // So the page has to be genuinely unreadable — BOB's, and private — for the
+    // cloak to be what this case observes.
     mockedListReadable.mockResolvedValue([]);
+    mockedReadPage.mockResolvedValue({
+      slug: "page-a",
+      title: "Page A",
+      content: "---\nowner: bob\nvisibility: private\n---\n# Page A",
+      path: "/test/wiki/page-a.md",
+      body: "# Page A",
+      frontmatter: { owner: "bob", visibility: "private" },
+    });
 
     const response = await DELETE(request({ ingestIds: ["ing-a"] }));
     expect(response.status).toBe(404);
+    expect((await response.json()).error).toBe(
+      "One or more selected ingests were not found.",
+    );
+    expect(mockedDeletePage).not.toHaveBeenCalled();
+  });
+
+  /**
+   * DW-393 — index/disk drift is a real state, and it must not eat the batch.
+   *
+   * The DW-270 read gate keys on `listReadableWikiPages`, which filters the page
+   * INDEX. `checkOrphanPages` (`@/lib/lint-checks`) exists precisely because a page
+   * be on disk and absent from that index, and from this route such a page was
+   * indistinguishable from one the caller may not read: the whole DELETE 404'd
+   * and cleared nothing else selected alongside it. The fallback re-asks
+   * `canReadFrontmatter` — the same `canReadPage` decision `canReadEntry` makes
+   * — so a page the index would have denied is denied identically.
+   *
+   * Both cases run the REAL `canReadFrontmatter` (only `canWriteFrontmatter` is
+   * stubbed in this file), so the fallback is the actual ACL, not a fixture.
+   */
+  it("deletes an ORPHAN page selected by ingestIds, and the rest of the batch with it", async () => {
+    mockedReadLedger.mockResolvedValue([
+      ledgerEntry("ing-a", "page-a"),
+      ledgerEntry("ing-orphan", "orphan-page"),
+    ]);
+    // `page-a` is indexed; `orphan-page` is on disk only.
+    mockedListReadable.mockResolvedValue([
+      { slug: "page-a", title: "Page A", summary: "" },
+    ]);
+    mockedReadPage.mockImplementation(async (slug) => ({
+      slug,
+      title: slug,
+      content: `---\nowner: owner\nvisibility: private\n---\n# ${slug}`,
+      path: `/test/wiki/${slug}.md`,
+      body: `# ${slug}`,
+      frontmatter: { owner: "owner", visibility: "private" },
+    }));
+    mockedDeletePage.mockImplementation(async (slug) => ({
+      slug,
+      removedFromIndex: true,
+      strippedBacklinksFrom: [],
+    }));
+
+    const response = await DELETE(
+      request({ ingestIds: ["ing-a", "ing-orphan"] }),
+    );
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    // The indexed record is the one the old behaviour took down with the
+    // orphan — a 404 on the whole batch cleared neither.
+    expect(data.deletedPageSlugs).toEqual(
+      expect.arrayContaining(["page-a", "orphan-page"]),
+    );
+    expect(data.deletedIngestIds).toEqual(
+      expect.arrayContaining(["ing-a", "ing-orphan"]),
+    );
+
+    // ONE read per slug across the whole request. The orphan is the slug that
+    // takes the fallback path, so without the per-request cache it is opened
+    // twice — once by the preflight's readability check and again by the ACL
+    // loop — and nothing else in the suite would notice.
+    const orphanReads = mockedReadPage.mock.calls.filter(
+      ([slug]) => slug === "orphan-page",
+    );
+    expect(orphanReads).toHaveLength(1);
+    const indexedReads = mockedReadPage.mock.calls.filter(
+      ([slug]) => slug === "page-a",
+    );
+    // …and an INDEXED slug is never opened by the preflight at all: the index
+    // hit short-circuits, so its single read is the ACL loop's.
+    expect(indexedReads).toHaveLength(1);
+  });
+
+  it("deletes an ORPHAN page selected by jobIds", async () => {
+    // The other selection path, gated at its own site inside the ACL loop —
+    // both had to move together or the drift would just relocate. Here the
+    // fallback consumes the page the loop ALREADY read, so it costs no extra
+    // read at all.
+    mockedListReadable.mockResolvedValue([]);
+    mockedGetJob.mockResolvedValue({
+      jobId: "job-orphan",
+      owner: "owner",
+      status: "done",
+      slug: "orphan-page",
+      createdAt: "2026-08-06T10:00:00.000Z",
+      updatedAt: "2026-08-06T10:01:00.000Z",
+    });
+    mockedReadPage.mockResolvedValue({
+      slug: "orphan-page",
+      title: "Orphan Page",
+      content: "---\nowner: owner\nvisibility: private\n---\n# Orphan Page",
+      path: "/test/wiki/orphan-page.md",
+      body: "# Orphan Page",
+      frontmatter: { owner: "owner", visibility: "private" },
+    });
+    mockedDeletePage.mockResolvedValue({
+      slug: "orphan-page",
+      removedFromIndex: true,
+      strippedBacklinksFrom: [],
+    });
+
+    const response = await DELETE(request({ jobIds: ["job-orphan"] }));
+    expect(response.status).toBe(200);
+    expect(mockedDeletePage).toHaveBeenCalledWith("orphan-page", "owner");
+    expect(mockedDeleteJob).toHaveBeenCalledWith("job-orphan", "owner");
+  });
+
+  it("lets an ORPHANED PUBLIC page reach the realm 403 instead of the old 404 cloak", async () => {
+    // THE BOUNDARY DW-393 ACTUALLY MOVED, pinned deliberately.
+    //
+    // Before the fallback, an orphaned page 404'd on the index miss no matter
+    // what it was. Now readability is decided by the page, and a PUBLIC page is
+    // readable by everyone — so an orphaned public knowledge page passes the
+    // read gate and lands on the delete ACL, where the realm branch refuses it
+    // and the route answers 403 with the realm sentence. The observable answer
+    // for this page therefore changed from 404 to 403.
+    //
+    // That is correct, not a leak, and the read cloak's own rule says why: the
+    // realm sentence may be spoken only about a page the caller could read, and
+    // this caller CAN read it — it is public. The 404 cloak exists to keep an
+    // UNREADABLE page from being described; it was never meant to hide a public
+    // page's realm, and on an indexed public page the route has always answered
+    // exactly this 403.
+    //
+    // The REAL `canWriteFrontmatter` is restored the way the DW-270 cases do it,
+    // so the refusal comes from the predicate rather than from the shared stub.
+    const actualAuthz =
+      await vi.importActual<typeof import("@/lib/authz")>("@/lib/authz");
+    mockedCanWrite.mockImplementation(actualAuthz.canWriteFrontmatter);
+    mockedListReadable.mockResolvedValue([]);
+    mockedReadPage.mockResolvedValue({
+      slug: "page-a",
+      title: "Page A",
+      content: "---\nowner: alice\nvisibility: public\n---\n# Page A",
+      path: "/test/wiki/page-a.md",
+      body: "# Page A",
+      // Public, non-agent-scoped, non-artifact — `belongsInCommons` exactly.
+      frontmatter: { owner: "alice", visibility: "public" },
+    });
+
+    const response = await DELETE(request({ ingestIds: ["ing-a"] }));
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toBe(WRITE_DENIAL_REALM.bulkDelete);
+    expect(mockedDeletePage).not.toHaveBeenCalled();
+    expect(mockedDeleteJob).not.toHaveBeenCalled();
+  });
+
+  it("still 404s an ingestIds selection whose page is gone entirely", async () => {
+    // The fallback's other answer, and the control on the two cases above: an
+    // index miss is not a denial, but a page that does not exist is still not a
+    // selection the caller can make. Unchanged from before DW-393 — the point
+    // is that widening the miss did not widen this.
+    mockedListReadable.mockResolvedValue([]);
+    mockedReadPage.mockResolvedValue(null);
+
+    const response = await DELETE(request({ ingestIds: ["ing-a"] }));
+    expect(response.status).toBe(404);
+    expect((await response.json()).error).toBe(
+      "One or more selected ingests were not found.",
+    );
     expect(mockedDeletePage).not.toHaveBeenCalled();
   });
 

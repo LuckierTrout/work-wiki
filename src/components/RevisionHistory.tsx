@@ -86,17 +86,33 @@ export function RevisionHistory({
   // handle comes from the shared `@/lib/viewer-handle` hook (already lowercased,
   // which is why `isOwnerHandle` is called on it directly) so this gate and the
   // Delete/Re-ingest gates read one copy of the resolution rule.
-  const { isLoaded, handle } = useViewerHandle();
-  // `isLoaded` guards ONLY this term. Before the session resolves `handle` is
-  // null for a viewer who will turn out to be the site owner, so an unguarded
-  // `isOwnerHandle` would answer `false` by accident of a missing handle rather
-  // than by a decision — and on a realm page that is the difference between
-  // "we do not know yet" and "no". Guarded, the fail-closed hydration answer is
-  // deliberate and matches how `ArticleActions` treats its own session-derived
-  // affordances. A non-realm page is unaffected either way: `!realmDeniesRevert`
-  // already makes `canRevert` true there.
+  const { isLoaded, isSignedIn, handle } = useViewerHandle();
+  // Before the session resolves `handle` is null for a viewer who will turn out
+  // to be the site owner, so an unguarded `isOwnerHandle` would answer `false`
+  // by accident of a missing handle rather than by a decision.
   const isSiteOwner = isLoaded && isOwnerHandle(handle);
-  const canRevert = isSiteOwner || !realmDeniesRevert;
+  // THE SESSION TERM (DW-392). `isLoaded && isSignedIn` is hoisted out in front
+  // of the whole gate, mirroring `ArticleActions`' `canCurate`.
+  //
+  // WHAT IT FIXES. `POST /api/wiki/[slug]/revisions` is a write, and the
+  // write-gate middleware 401s an unauthenticated caller before the route's own
+  // authz ever runs. The realm term alone did not see that: on a page the realm
+  // does NOT restrict, `!realmDeniesRevert` made `canRevert` true for EVERY
+  // viewer, so an anonymous reader was shown a Restore button per row with an
+  // irreversible-sounding confirm in front of a request that could only 401 —
+  // the DW-269 shape, one term over.
+  //
+  // WHY `isLoaded` NOW GUARDS THE WHOLE EXPRESSION. It used to guard only
+  // `isSiteOwner`, which left the hydration answer permissive on a non-realm
+  // page. Hoisted, "we do not know yet" fails closed for the whole gate — the
+  // one safe direction for a convenience gate the server re-authorizes anyway.
+  //
+  // AND STILL NO OWNERSHIP TERM, deliberately (see `realmDeniesRevert` above).
+  // The route gates on the realm and on the private-page ACL, never on page
+  // ownership, so an `isOwner` term here would hide Restore from signed-in
+  // viewers the server would have allowed. Being signed in is what the
+  // middleware actually requires; being the owner is not.
+  const canRevert = isLoaded && isSignedIn && (isSiteOwner || !realmDeniesRevert);
   // One sentence for the whole list; every Revert button points at it.
   const readOnlyNoteId = useId();
   const [open, setOpen] = useState(false);

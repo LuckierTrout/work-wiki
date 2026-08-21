@@ -3,6 +3,7 @@ import { writeWikiPageWithSideEffects, deleteWikiPage } from "./lifecycle";
 import { callLLM, hasLLMKey } from "./llm";
 import { slugify } from "./slugify";
 import { serializeFrontmatter } from "./frontmatter";
+import { disputedClearInstruction } from "./lint-types";
 import type { AutoFixableCheckType } from "./lint-types";
 import type { LintIssue } from "./types";
 
@@ -747,8 +748,16 @@ const NOT_AUTO_FIXABLE: Record<
   // asserts that a human read the conflicting claims and decided the page is
   // now correct. An auto-fix would clear the flag without that review, which
   // is exactly the state the flag exists to prevent.
+  //
+  // The clear path itself comes from `disputedClearInstruction` (DW-389) rather
+  // than being spelled out here. It is the same sentence `checkDisputedPages`'s
+  // `suggestion` carries, and it has to say more than "use the toggle": that
+  // toggle is a `PATCH /api/wiki/<slug>` metadata write, and `canWritePage`'s
+  // realm branch refuses it on a public knowledge page for everyone but an
+  // agent or a site admin. Two hand-typed copies is how both surfaces came to
+  // describe a loop most readers cannot close.
   "disputed-page": (slug) =>
-    `Disputed pages cannot be auto-fixed. Reconcile the conflicting claims in "${slug}", then clear the Disputed toggle in the page editor (PATCH /api/wiki/${slug} with metadata { disputed: false }).`,
+    `Disputed pages cannot be auto-fixed. Reconcile the conflicting claims in "${slug}", then ${disputedClearInstruction(slug)}`,
 };
 
 /**
