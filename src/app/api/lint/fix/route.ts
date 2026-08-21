@@ -10,6 +10,11 @@ import { isOwnerHandle } from "@/lib/owner";
 import { logger } from "@/lib/logger";
 import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
+import {
+  PAGE_UNREADABLE_COPY,
+  PAGE_UNREADABLE_STATUS,
+  isPageUnreadableError,
+} from "@/lib/page-read-failure";
 
 /**
  * POST /api/lint/fix — auto-fix a lint issue.
@@ -64,6 +69,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: getErrorMessage(error) },
         { status: 403 },
+      );
+    }
+    // A fix's page read is fresh since DW-379, so a non-ENOENT storage failure
+    // now arrives here as a refusal rather than as `null` → `FixNotFoundError`.
+    // Above the two error-class branches for the same reason the read-only one
+    // is: it is neither bad input nor a missing page. 503 with the sentence the
+    // wiki doors already answer — the page is not known to be absent, and the
+    // fault is usually temporary. A genuinely absent page is still 404 below.
+    if (isPageUnreadableError(error)) {
+      return NextResponse.json(
+        { error: PAGE_UNREADABLE_COPY },
+        { status: PAGE_UNREADABLE_STATUS },
       );
     }
     if (error instanceof FixValidationError) {

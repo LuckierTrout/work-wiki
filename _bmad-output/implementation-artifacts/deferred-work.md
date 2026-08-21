@@ -3342,7 +3342,8 @@ source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.m
 location: src/lib/patch-metadata.ts, src/lib/merge.ts, src/lib/lint-fix.ts
 severity: medium
 reason: `src/lib/patch-metadata.ts` (the `PATCH` frontmatter merge), the page revert in `src/app/api/wiki/[slug]/revisions/route.ts`, `src/lib/merge.ts` and several sites in `src/lib/lint-fix.ts` all call `readWikiPage` / `readWikiPageWithFrontmatter` without `{ fresh: true }` and then write the merged result. A bulk scan (`lint.ts`, `search.ts`, `query.ts`, `dataview.ts`) holding a superseded entry open across one of those requests makes the merge base a file that is no longer stored, and the write lands it back. Pre-existing and unrelated to the precondition — none of these routes is gated, and the spec's Never clause forbids gating them — but "do not gate it" is a different decision from "let it merge into cached bytes". Closing it is a sweep over those call sites, not a change to this guard.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-merge-base-fresh-reads
 
 ### DW-380: A fresh read still falls back from a FAILED silo read to the flat copy, so a version can describe bytes at a path the write will not target.
 origin: spec-deferred 60eded0bf0fa
@@ -3699,4 +3700,44 @@ source_spec: `spec-dw-378-380-wiki-read-failure-contract.md`
 location: src/app/api/workbench/artifact/route.ts:86
 severity: medium
 reason: `writeWikiArtifact` rethrows the read failure raw when `expectedVersion` was supplied (`src/lib/wikis.ts:920`), and the route maps anything that is not read-only / write-conflict / `ClientInputError` to 500 with `getErrorMessage(error)`. `savePreviewBody` relays a served `{ error }` verbatim for any non-502/504 status, so in the same Preview editor a page save now shows `PAGE_UNREADABLE_COPY` while an artifact save shows `EIO: i/o error, read '/abs/server/path/...'`. Pre-existing; the sibling half of the divergence DW-378 named.
+status: open
+
+### DW-424: The MCP page-write tools merge into `pageCache` bytes exactly as the REST doors did before this sweep.
+origin: spec-deferred a0848fa3298f
+source_spec: `spec-dw-379-merge-base-fresh-reads.md`
+location: src/mcp.ts:279, src/mcp.ts:1366
+severity: medium
+reason: `handleUpdatePage` (`src/mcp.ts:279`) reads `readWikiPageWithFrontmatter(args.slug)` unqualified and re-serializes that frontmatter into its write; `handleRevertPage` (`src/mcp.ts:1366`) does the same and also takes its title fallback from it. These are the byte-for-byte twins of `patch-metadata.ts:96` and the revert route at `revisions/route.ts:145`, both swept here. Out of scope for this bundle: the ledger entry's `location` names `patch-metadata.ts`, `merge.ts` and `lint-fix.ts`, and the intent adds only the revisions route — `src/mcp.ts` is named nowhere. The same bulk scan makes an agent-driven update or revert revert an intervening save.
+status: open
+
+### DW-425: The create-conflict guards decide from a cached read, so a cached NEGATIVE entry lets a create write straight over a live page.
+origin: spec-deferred 766c2a76c3b3
+source_spec: `spec-dw-379-merge-base-fresh-reads.md`
+location: src/app/api/wiki/route.ts:104, src/mcp.ts:221, src/cli.ts:366
+severity: medium
+reason: `POST /api/wiki` (`src/app/api/wiki/route.ts:104`), `handleCreatePage` (`src/mcp.ts:221`) and the CLI (`src/cli.ts:366`, `:429`) each do `const existing = await readWikiPage(slug)` and refuse with 409 / an error when it answers a page. `readWikiPage` caches `null` too, so a scan that missed the slug before it was created leaves a negative entry that turns the guard off — the same failure this bundle closed for `fixStaleIndex` and `fixMissingConceptPage`, but with a full-page overwrite rather than a dropped index entry as the damage. Out of scope: none of these files is named by the intent or the ledger entry.
+status: open
+
+### DW-426: `DELETE /api/wiki/[slug]` reads its ACL frontmatter through the cache and answers a storage blip as `page not found`.
+origin: spec-deferred 9dbfe4056cd9
+source_spec: `spec-dw-379-merge-base-fresh-reads.md`
+location: src/app/api/wiki/[slug]/route.ts:53
+severity: medium
+reason: `src/app/api/wiki/[slug]/route.ts:53` reads unqualified and then decides `canWriteFrontmatter(existing.frontmatter, …)` from those bytes — an authorization verdict taken from a possibly superseded copy — and answers `null` as a 404 where `PUT` and `PATCH` beside it now answer 503 for the same fault. Out of scope: the delete is not a read-modify-write merge base and the intent names neither it nor the `DELETE` verb; closing it is the same one-line adoption plus the 503 branch its siblings already carry.
+status: open
+
+### DW-427: The ingest write path's frontmatter merge bases still read through `pageCache`.
+origin: spec-deferred 410e28be8d2b
+source_spec: `spec-dw-379-merge-base-fresh-reads.md`
+location: src/lib/ingest.ts:1381, src/lib/ingest.ts:1819, src/lib/ingest.ts:521
+severity: medium
+reason: `attachIngestTrigger` (`src/lib/ingest.ts:1381`) reads unqualified and re-serializes that page at `:1424` (`serializeFrontmatter(frontmatter, existing.body)`); the re-ingest merge base at `:1819` (which carries `created`, `source_count`, `tags`, `authors`, `owner`, `sources`) and `reingest`'s own read at `:521` have the same shape. Structurally identical to the `patchMetadata` site swept here, and the highest-traffic read-modify-write in the codebase. Out of scope: `ingest.ts` is named neither by the intent nor by the ledger entry's `location`.
+status: open
+
+### DW-428: On the editor's two-leg save, a `PATCH` refusal now tells the owner "nothing was changed" after the body leg has already landed.
+origin: spec-deferred 93828101760f
+source_spec: `spec-dw-379-merge-base-fresh-reads.md`
+location: src/components/WikiEditor.tsx:288
+severity: medium
+reason: `src/components/WikiEditor.tsx:259-303` saves the body with `PUT` and then `PATCH`es metadata, relaying the served `{ error }` verbatim into its error banner. With the 503 branch added here, a read blip on the second leg shows `PAGE_UNREADABLE_COPY` — "so nothing was changed" — to an owner whose body write did land. The previous answer (`page not found`) was also wrong, but it did not make a claim about what was written. Not closable inside this bundle: the spec's Never clause forbids new copy, and the alternative is a client change to the save flow (e.g. reporting the legs separately), which the intent does not reach.
 status: open

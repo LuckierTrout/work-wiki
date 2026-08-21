@@ -345,7 +345,7 @@ export interface ReadWikiPageOptions {
    * still make a write read the flat fallback, which is pre-existing and
    * unchanged by this option.
    *
-   * FOR PRECONDITION-BEARING READS. `pageCache` is module-global and
+   * FOR THE READS THAT DECIDE A WRITE. `pageCache` is module-global and
    * ref-counted around bulk scans (`lint.ts`, `search.ts`, `query.ts`,
    * `dataview.ts`), so one of those can be holding a superseded entry open when
    * an unrelated request arrives. A read that SEEDS a precondition (the
@@ -354,6 +354,18 @@ export interface ReadWikiPageOptions {
    * base) would compare against a file that is not the one it is about to
    * overwrite. Both produce a 412 against a write nobody made, or a match
    * against bytes that are gone.
+   *
+   * THE PRECONDITION IS THE SHARPEST CASE, NOT THE ONLY ONE (DW-379). The same
+   * staleness is what a plain read-modify-write hits with no precondition
+   * anywhere: the `PATCH` frontmatter merge, the revert, `mergePages` and every
+   * read in `lint-fix.ts` re-serialize the bytes they read, so a superseded
+   * entry lands a file that is no longer stored and silently reverts whatever
+   * was saved in between. So the rule is not "does this read back an `If-Match`"
+   * but "does this read's result decide the write that follows it" — including
+   * the re-verification GUARDS, where a cached NEGATIVE entry (`readWikiPage`
+   * caches `null` too) is the same staleness pointed the other way: it drops the
+   * index entry of a page that exists, or clears a reference that has since
+   * become valid.
    *
    * IT ALSO CHANGES WHAT A FAILED READ ANSWERS (DW-378, DW-380). A fresh read
    * REFUSES rather than lies: a non-ENOENT storage failure throws
@@ -430,11 +442,13 @@ export async function readWikiPage(
         // migration fallback working as intended.
         //
         // LOGGED HERE OR NOWHERE. This throw skips the `logger.warn` below, and
-        // BOTH doors that consume a fresh read return before their own logging
+        // EVERY door that consumes a fresh read returns before its own logging
         // (the `PUT`'s 503 branch sits above the ladder, the Preview's above
-        // `logger.error`). Without this line a storage incident on the write
-        // path would leave no server-side trace at all, while the unqualified
-        // read of the same file still warned.
+        // `logger.error`, and the DW-379 doors — `PATCH`, the revert and
+        // `POST /api/lint/fix` — each answer 503 above theirs for the same
+        // reason). Without this line a storage incident on the write path would
+        // leave no server-side trace at all, while the unqualified read of the
+        // same file still warned.
         logger.error(
           "wiki",
           `fresh silo read failed for "${slug}" at ${siloPath}; refusing rather than falling back to flat:`,
@@ -462,8 +476,8 @@ export async function readWikiPage(
         // page that may well exist. ENOENT still resolves `null`.
         //
         // Logged for the same reason as the silo branch above: this throw skips
-        // the `logger.warn` below and neither consuming route logs, so this is
-        // the only trace the incident leaves.
+        // the `logger.warn` below and no consuming route logs it either, so this
+        // is the only trace the incident leaves.
         logger.error(
           "wiki",
           `fresh read failed for "${slug}" at ${wikiRelPath(`${slug}.md`)}; refusing rather than answering "not found":`,

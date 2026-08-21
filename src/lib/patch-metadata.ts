@@ -89,8 +89,13 @@ export async function patchMetadata(
     }
   }
 
-  // Read the existing page.
-  const existing = await readWikiPageWithFrontmatter(slug);
+  // Read the existing page. FRESH (DW-379): these bytes are the MERGE BASE —
+  // the frontmatter this patch is folded into and the body re-serialized
+  // verbatim below. `pageCache` is module-global and ref-counted around bulk
+  // scans, so one can be holding a superseded entry open when this request
+  // arrives; patching that entry would write back a page that is no longer
+  // stored, silently reverting whatever was saved in between.
+  const existing = await readWikiPageWithFrontmatter(slug, { fresh: true });
   if (!existing) {
     const err = new Error(`page not found: ${slug}`);
     (err as NodeJS.ErrnoException).code = "NOT_FOUND";

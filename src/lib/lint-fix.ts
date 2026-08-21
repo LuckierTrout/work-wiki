@@ -39,6 +39,27 @@ export class FixNotFoundError extends Error {
 
 // ---------------------------------------------------------------------------
 // Individual fix functions
+//
+// EVERY PAGE READ BELOW IS `{ fresh: true }` (DW-379). Stated once here rather
+// than thirteen times: on this path a read is never just a read. It either
+// supplies the bytes/frontmatter a rewrite is folded into, or it is the guard
+// that decides whether the write happens at all — and both are wrong when the
+// answer comes from `pageCache`.
+//
+// `pageCache` is module-global and ref-counted around bulk scans, and an
+// auto-fix is triggered by a lint scan: `lint.ts`'s own `withPageCache` is
+// exactly the cache that can be holding superseded entries open when the fix
+// runs. A stale POSITIVE entry makes the fix rewrite a file that is no longer
+// stored, reverting whatever was saved in between. A cached NEGATIVE entry is
+// the same staleness pointed the other way — `readWikiPage` caches `null` too —
+// and it makes `fixStaleIndex` drop the index entry of a page that exists, or
+// `fixSupersededDangling` clear a reference that has since become valid.
+//
+// Adopting `fresh` also inherits its refusal (DW-378/DW-380): a NON-ENOENT
+// storage failure throws `PageUnreadableError` instead of answering `null`, so
+// a blip can no longer masquerade as `FixNotFoundError`. `POST /api/lint/fix`
+// classifies that throw as 503. ENOENT is untouched: a genuinely absent page is
+// still `null`, still `FixNotFoundError`, still 404.
 // ---------------------------------------------------------------------------
 
 /**
@@ -52,7 +73,7 @@ export async function fixOrphanPage(slug: string, author = "lint-fix"): Promise<
     throw new FixValidationError("Missing required field: slug");
   }
 
-  const page = await readWikiPage(slug);
+  const page = await readWikiPage(slug, { fresh: true });
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -92,7 +113,7 @@ export async function fixStaleIndex(slug: string, _author = "lint-fix"): Promise
   // Re-verify the page file is genuinely missing before dropping its index
   // entry — never remove a valid entry on a transient read miss or a retry
   // after the page was (re)created.
-  if (await readWikiPage(slug)) {
+  if (await readWikiPage(slug, { fresh: true })) {
     return {
       success: false,
       slug,
@@ -164,14 +185,14 @@ export async function fixMissingCrossRef(
   }
 
   // Read the source page
-  const sourcePage = await readWikiPage(slug);
+  const sourcePage = await readWikiPage(slug, { fresh: true });
   if (!sourcePage) {
     throw new FixNotFoundError(`Source page not found: ${slug}`);
   }
 
   // Never append a markdown "## Related" section to an HTML artifact — its body
   // is a self-contained document and the markdown would render as literal text.
-  const sourceFm = await readWikiPageWithFrontmatter(slug);
+  const sourceFm = await readWikiPageWithFrontmatter(slug, { fresh: true });
   if (
     sourceFm &&
     isArtifactType(
@@ -188,7 +209,7 @@ export async function fixMissingCrossRef(
   }
 
   // Read the target page to get its title
-  const targetPage = await readWikiPage(targetSlug);
+  const targetPage = await readWikiPage(targetSlug, { fresh: true });
   if (!targetPage) {
     throw new FixNotFoundError(`Target page not found: ${targetSlug}`);
   }
@@ -280,12 +301,12 @@ export async function fixContradiction(
     );
   }
 
-  const sourcePage = await readWikiPage(slug);
+  const sourcePage = await readWikiPage(slug, { fresh: true });
   if (!sourcePage) {
     throw new FixNotFoundError(`Source page not found: ${slug}`);
   }
 
-  const otherPage = await readWikiPage(targetSlug);
+  const otherPage = await readWikiPage(targetSlug, { fresh: true });
   if (!otherPage) {
     throw new FixNotFoundError(`Target page not found: ${targetSlug}`);
   }
@@ -352,7 +373,7 @@ export async function fixMissingConceptPage(
   }
 
   // Guard: if the page already exists, there's nothing to do
-  const existing = await readWikiPage(slug);
+  const existing = await readWikiPage(slug, { fresh: true });
   if (existing) {
     return {
       success: true,
@@ -418,7 +439,7 @@ export async function fixBrokenLink(
     throw new FixValidationError("Missing required field: targetSlug");
   }
 
-  const page = await readWikiPage(slug);
+  const page = await readWikiPage(slug, { fresh: true });
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -475,7 +496,7 @@ export async function fixStalePage(slug: string, author = "lint-fix"): Promise<F
     throw new FixValidationError("Missing required field: slug");
   }
 
-  const page = await readWikiPageWithFrontmatter(slug);
+  const page = await readWikiPageWithFrontmatter(slug, { fresh: true });
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -533,7 +554,7 @@ export async function fixUnmigratedPage(slug: string, author = "lint-fix"): Prom
     throw new FixValidationError("Missing required field: slug");
   }
 
-  const page = await readWikiPageWithFrontmatter(slug);
+  const page = await readWikiPageWithFrontmatter(slug, { fresh: true });
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -618,7 +639,7 @@ export async function fixSupersededDangling(slug: string, author = "lint-fix"): 
   if (!slug) {
     throw new FixValidationError("Missing required field: slug");
   }
-  const page = await readWikiPageWithFrontmatter(slug);
+  const page = await readWikiPageWithFrontmatter(slug, { fresh: true });
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -628,7 +649,7 @@ export async function fixSupersededDangling(slug: string, author = "lint-fix"): 
     return { success: false, slug, message: `No supersedes field to fix on "${slug}"` };
   }
   // Don't clear a reference that has since become valid.
-  if (await readWikiPageWithFrontmatter(supersedes)) {
+  if (await readWikiPageWithFrontmatter(supersedes, { fresh: true })) {
     return {
       success: false,
       slug,

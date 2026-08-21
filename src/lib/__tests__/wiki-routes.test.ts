@@ -51,6 +51,40 @@ async function currentIfMatch(slug: string): Promise<Record<string, string>> {
   return page ? { "If-Match": formatIfMatch(contentVersion(page.content)) } : {};
 }
 
+/**
+ * Make the storage reads of THIS page fail with a NON-ENOENT error — the silo
+ * path and the flat path alike, so a route meets the same refusal whichever one
+ * it would have taken. Everything else (the index, the log) still reads for
+ * real, which is what lets a caller observe that nothing was written.
+ *
+ * The two paths are matched EXACTLY, computed through the same helpers the code
+ * under test uses. A `p.endsWith(`${slug}.md`)` test would also catch any other
+ * slug ending in these characters and any revision or backup key sharing the
+ * suffix — so a passing test would not establish WHICH read failed, which is
+ * the whole claim.
+ *
+ * Module-scoped since DW-379: three doors now consume a fresh page read (`PUT`,
+ * `PATCH`, and the revert), and each needs the same storage failure.
+ */
+async function failReadsOfPage(slug: string, owner = "test-user") {
+  const { getStorage } = await import("../storage");
+  const { tenantForOwner, tenantWikiRelPath, wikiRelPath } = await import("../wiki");
+  const targets = new Set([
+    wikiRelPath(`${slug}.md`),
+    tenantWikiRelPath(tenantForOwner(owner), `${slug}.md`),
+  ]);
+  const storage = getStorage();
+  const real = storage.readFile.bind(storage);
+  return vi.spyOn(storage, "readFile").mockImplementation(async (p: string) => {
+    if (targets.has(p)) {
+      const err = new Error(`EIO: i/o error, read '${p}'`) as NodeJS.ErrnoException;
+      err.code = "EIO";
+      throw err;
+    }
+    return real(p);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Temp directory setup — mirrors lifecycle.test.ts approach
 // ---------------------------------------------------------------------------
@@ -1807,38 +1841,6 @@ describe("PUT /api/wiki/[slug] — the page could not be read", () => {
     );
   }
 
-  /**
-   * Make the storage reads of THIS page fail with a NON-ENOENT error — the silo
-   * path and the flat path alike, so the route meets the same refusal whichever
-   * one it would have taken. Everything else (the index, the log) still reads
-   * for real, which is what lets the assertions below observe that nothing was
-   * written.
-   *
-   * The two paths are matched EXACTLY, computed through the same helpers the
-   * code under test uses. A `p.endsWith(`${slug}.md`)` test would also catch any
-   * other slug ending in these characters and any revision or backup key sharing
-   * the suffix — so a passing test would not establish WHICH read failed, which
-   * is the whole claim.
-   */
-  async function failReadsOfPage(slug: string, owner = "test-user") {
-    const { getStorage } = await import("../storage");
-    const { tenantForOwner, tenantWikiRelPath, wikiRelPath } = await import("../wiki");
-    const targets = new Set([
-      wikiRelPath(`${slug}.md`),
-      tenantWikiRelPath(tenantForOwner(owner), `${slug}.md`),
-    ]);
-    const storage = getStorage();
-    const real = storage.readFile.bind(storage);
-    return vi.spyOn(storage, "readFile").mockImplementation(async (p: string) => {
-      if (targets.has(p)) {
-        const err = new Error(`EIO: i/o error, read '${p}'`) as NodeJS.ErrnoException;
-        err.code = "EIO";
-        throw err;
-      }
-      return real(p);
-    });
-  }
-
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -1903,5 +1905,175 @@ describe("PUT /api/wiki/[slug] — the page could not be read", () => {
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "page not found: no-such-page" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The other two write doors read past the cache too (DW-379)
+//
+// `PUT` adopted the fresh read at DW-195; `PATCH` and the revert kept merging
+// into `pageCache` bytes. Both are read-modify-writes: the patch re-serializes
+// the frontmatter and body it read, and the revert re-serializes the revision
+// UNDER the frontmatter it read. A bulk scan holding a superseded entry open
+// makes either one write back a file that is no longer stored.
+//
+// And because a fresh read REFUSES a non-ENOENT failure rather than answering
+// `null` (DW-378/DW-380), each door now classifies that refusal as the 503 this
+// codebase already owns — instead of a 500 (`PATCH`, whose `code`-based ladder
+// has nothing for it) or a 500 (the revert's `invalid slug`-or-500 ladder).
+// ---------------------------------------------------------------------------
+describe("PATCH and revert — the merge base is the stored file", () => {
+  const CACHED_BODY = "# Doors\n\nCached body.\n";
+
+  async function seed(slug: string): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    await writeWikiPageWithSideEffects({
+      slug,
+      title: slug,
+      content: serializeFrontmatter(
+        {
+          created: today,
+          confidence: 0.5,
+          authors: ["original-author"],
+          owner: "test-user",
+          visibility: "private",
+          contributors: [],
+          tags: ["cached-tag"],
+          expiry: "2099-01-01",
+          sources: [],
+        },
+        CACHED_BODY,
+      ),
+      summary: "a test page",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+  }
+
+  async function patch(slug: string, metadata: Record<string, unknown>) {
+    const { PATCH } = await import("@/app/api/wiki/[slug]/route");
+    return PATCH(
+      new Request(`http://localhost/api/wiki/${slug}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metadata }),
+      }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+
+  async function revert(slug: string, timestamp: number) {
+    const { POST } = await import("@/app/api/wiki/[slug]/revisions/route");
+    return POST(
+      new Request(`http://localhost/api/wiki/${slug}/revisions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "revert", timestamp }),
+      }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reverts onto the STORED frontmatter while a stale cache is open", async () => {
+    await seed("revert-stale");
+    // A revision with no YAML block of its own, so the route re-serializes it
+    // UNDER the page's frontmatter — which is the merge base this row is about.
+    const { saveRevision, listRevisions } = await import("@/lib/revisions");
+    await saveRevision("revert-stale", "# Doors\n\nAn older body.\n");
+    const timestamp = (await listRevisions("revert-stale"))[0].timestamp;
+
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the cache…
+      const cached = (await readWikiPageWithFrontmatter("revert-stale"))!;
+      expect(cached.frontmatter.tags).toEqual(["cached-tag"]);
+
+      // …and the file moves underneath it. Written DIRECTLY, past
+      // `writeWikiPage` — which invalidates — because a STALE entry is exactly
+      // what this row is about.
+      const stored = serializeFrontmatter(
+        { ...cached.frontmatter, tags: ["stored-tag"] },
+        "# Doors\n\nStored body, LATER.\n",
+      );
+      await fs.writeFile(cached.path, stored, "utf-8");
+      expect(
+        (await readWikiPageWithFrontmatter("revert-stale"))!.frontmatter.tags,
+      ).toEqual(["cached-tag"]);
+
+      const response = await revert("revert-stale", timestamp);
+      expect(response.status).toBe(200);
+
+      // The frontmatter the revision landed under is the STORED one. Without
+      // the fresh read the revert silently reinstates the other actor's
+      // superseded metadata alongside the old body.
+      const after = (await readWikiPageWithFrontmatter("revert-stale", {
+        fresh: true,
+      }))!;
+      expect(after.frontmatter.tags).toEqual(["stored-tag"]);
+      expect(after.body).toContain("An older body.");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("answers 503 on PATCH when the page cannot be read, and writes nothing", async () => {
+    await seed("patch-unreadable");
+    const before = (await readWikiPageWithFrontmatter("patch-unreadable"))!.content;
+    const logBefore = (await readLog()) ?? "";
+
+    await failReadsOfPage("patch-unreadable");
+    const response = await patch("patch-unreadable", { confidence: 0.9 });
+
+    // NOT 404 (the page is not known to be absent), NOT 500 (`patchMetadata`'s
+    // refusal carries no `code`, so the ladder would have called it one).
+    expect(response.status).toBe(PAGE_UNREADABLE_STATUS);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: PAGE_UNREADABLE_COPY });
+
+    vi.restoreAllMocks();
+    expect(
+      (await readWikiPageWithFrontmatter("patch-unreadable", { fresh: true }))!.content,
+    ).toBe(before);
+    expect((await readLog()) ?? "").toBe(logBefore);
+  });
+
+  it("answers 503 on revert when the page cannot be read, and writes nothing", async () => {
+    await seed("revert-unreadable");
+    const { saveRevision, listRevisions } = await import("@/lib/revisions");
+    await saveRevision("revert-unreadable", "# Doors\n\nAn older body.\n");
+    const timestamp = (await listRevisions("revert-unreadable"))[0].timestamp;
+    const before = (await readWikiPageWithFrontmatter("revert-unreadable"))!.content;
+    const logBefore = (await readLog()) ?? "";
+
+    // The revision itself is perfectly readable — only the PAGE read fails, and
+    // it runs first, so a 200 here would mean the route reverted onto
+    // frontmatter it never saw.
+    await failReadsOfPage("revert-unreadable");
+    const response = await revert("revert-unreadable", timestamp);
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: PAGE_UNREADABLE_COPY });
+
+    vi.restoreAllMocks();
+    expect(
+      (await readWikiPageWithFrontmatter("revert-unreadable", { fresh: true }))!.content,
+    ).toBe(before);
+    expect((await readLog()) ?? "").toBe(logBefore);
+  });
+
+  it("still answers 404 at both doors for a page that genuinely is not there", async () => {
+    // The other half of the pair: ENOENT is untouched by `fresh`, so the 404
+    // this bundle narrows is still the answer for an absent page.
+    const patched = await patch("no-such-page", { confidence: 0.9 });
+    expect(patched.status).toBe(404);
+    expect(await patched.json()).toEqual({ error: "page not found: no-such-page" });
+
+    const reverted = await revert("no-such-page", 1000000);
+    expect(reverted.status).toBe(404);
+    expect(await reverted.json()).toEqual({ error: "page not found: no-such-page" });
   });
 });

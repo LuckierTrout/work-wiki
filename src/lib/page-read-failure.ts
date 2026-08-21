@@ -26,9 +26,14 @@
  * cases — a new nullable shape would have to be destructured at every call
  * site, and silently ignored at most of them.
  *
- * ZERO DEPENDENCIES ON PURPOSE. Both doors that consume a fresh read import
- * this module; nothing here pulls the wiki, storage or config graph, so the
- * import costs a route nothing it does not already carry.
+ * ZERO DEPENDENCIES ON PURPOSE. Every consumer of a fresh read imports this
+ * module, and since the DW-379 sweep that is no longer two doors: `PUT` and
+ * `GET /api/workbench/preview` were the first pair, and `PATCH /api/wiki/[slug]`,
+ * `POST /api/wiki/[slug]/revisions` (the revert) and `POST /api/lint/fix` now
+ * classify the same refusal, with `wiki.ts` throwing it and `merge.ts` catching
+ * it to re-word its own abort. Nothing here pulls the wiki, storage or config
+ * graph, so the import costs a route nothing it does not already carry — which
+ * is what lets the set grow without any of them paying for it.
  *
  * {@link isPageUnreadableError} matches on `err.name` rather than `instanceof`,
  * exactly as {@link import("./read-only").isReadOnlyError} and
@@ -52,12 +57,28 @@
  * "Could not be read" rather than "not found": the whole point of this bundle
  * is that the page is not known to be absent.
  *
- * IT REACHES THE OWNER ON THE SAVE DOOR, AND ONLY THERE. "So nothing was
- * changed" is a WRITE-shaped sentence, and `PUT /api/wiki/[slug]` is where it is
- * read: `savePreviewBody` relays a served `{ error }` verbatim, and 503 is
+ * IT REACHES THE OWNER ON THE WRITE DOORS. "So nothing was changed" is a
+ * WRITE-shaped sentence, and `PUT /api/wiki/[slug]` is where it is read:
+ * `savePreviewBody` relays a served `{ error }` verbatim, and 503 is
  * deliberately excluded from `UNCONFIRMED_STATUSES` precisely so it is treated
  * as a verdict rather than an unknown outcome. There the sentence is exactly
  * true — the draft is on screen and nothing was written.
+ *
+ * SINCE DW-379 THREE MORE WRITE DOORS SERVE IT, and the sentence is exactly as
+ * true at each: `PATCH /api/wiki/[slug]`, the revert, and `POST /api/lint/fix`
+ * all refuse on the MERGE-BASE read, before their writer is reached, so nothing
+ * was changed at any of them either. What differs is only who is reading: those
+ * three are answered by an API client, the MCP tools or the lint UI rather than
+ * by the Preview's save path, so the recovery half ("copy anything you have
+ * unsaved") is advice about a draft only the `PUT` caller actually holds. It
+ * costs those callers nothing and it keeps one sentence for one condition,
+ * which is the whole reason this constant is imported rather than re-worded.
+ *
+ * ONE CONSUMER DELIBERATELY DOES NOT RELAY IT: `merge.ts` catches the refusal
+ * and rethrows its own `merge aborted: backlink source …` message, because a
+ * merge that fails PART WAY through re-pointing backlinks has already written
+ * some of them — "nothing was changed" would be false there, and the accurate
+ * sentence names the page and the merge.
  *
  * ON `GET /api/workbench/preview` THE STATUS IS THE PAYLOAD, NOT THE SENTENCE.
  * That door serves the same 503 and the same body, but nothing renders it:

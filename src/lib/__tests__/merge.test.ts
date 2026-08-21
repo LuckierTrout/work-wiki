@@ -13,6 +13,7 @@ import { mergePages } from "../merge";
 import { aliasRedirectForMissing } from "../page-redirect";
 import { writeWikiPageWithSideEffects } from "../lifecycle";
 import {
+  beginPageCache,
   ensureDirectories,
   readWikiPage,
   readWikiPageWithFrontmatter,
@@ -386,5 +387,208 @@ describe("aliasRedirectForMissing (alias redirect safety)", () => {
     await expect(resolveAlias("anything")).rejects.toThrow();
     // ...and the resolver still fails closed instead of rejecting.
     await expect(aliasRedirectForMissing("anything", null)).resolves.toBeNull();
+  });
+});
+
+// ===========================================================================
+// Both merge bases are the STORED files, not cached ones (DW-379)
+// ===========================================================================
+
+describe("mergePages — a stale page cache is open", () => {
+  it("folds the STORED bytes of both sides, not the cached copies", async () => {
+    // `pageCache` is module-global and ref-counted around bulk scans, so one
+    // can be holding superseded entries open when a merge runs. This is the
+    // worst of the read-modify-write paths: the fold is written to the survivor
+    // and then `from` is HARD-deleted, taking its revisions with it — so a
+    // stale side loses whatever was saved to it in between with no copy of it
+    // anywhere.
+    mockedHasLLMKey.mockReturnValue(false); // fold = `into.body` + `from.body`, verbatim
+
+    await seedPage("survivor", { title: "Survivor", body: "# Survivor\n\nCached survivor body." });
+    await seedPage("absorbed", { title: "Absorbed", body: "# Absorbed\n\nCached absorbed body." });
+
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the cache for BOTH sides.
+      const cachedInto = (await readWikiPageWithFrontmatter("survivor"))!;
+      const cachedFrom = (await readWikiPageWithFrontmatter("absorbed"))!;
+      expect(cachedInto.body).toContain("Cached survivor body.");
+      expect(cachedFrom.body).toContain("Cached absorbed body.");
+
+      // Both files move underneath it. Written DIRECTLY, past the write path —
+      // which invalidates — because STALE entries are what this row is about.
+      await fs.writeFile(
+        cachedInto.path,
+        serializeFrontmatter(
+          { ...cachedInto.frontmatter, tags: ["stored-into"] },
+          "# Survivor\n\nStored survivor body, LATER.",
+        ),
+        "utf-8",
+      );
+      await fs.writeFile(
+        cachedFrom.path,
+        serializeFrontmatter(
+          { ...cachedFrom.frontmatter },
+          "# Absorbed\n\nStored absorbed body, LATER.",
+        ),
+        "utf-8",
+      );
+      // The cache is genuinely stale: cached reads still serve the old bytes.
+      expect((await readWikiPageWithFrontmatter("survivor"))!.body).toContain(
+        "Cached survivor body.",
+      );
+      expect((await readWikiPageWithFrontmatter("absorbed"))!.body).toContain(
+        "Cached absorbed body.",
+      );
+
+      await mergePages({ from: "absorbed", into: "survivor", actor: "alice" });
+
+      const merged = (await readWikiPageWithFrontmatter("survivor", {
+        fresh: true,
+      }))!;
+      // Both sides came from storage…
+      expect(merged.body).toContain("Stored survivor body, LATER.");
+      expect(merged.body).toContain("Stored absorbed body, LATER.");
+      // …and neither cached copy was folded back in, which is what would have
+      // reverted the two intervening saves.
+      expect(merged.body).not.toContain("Cached survivor body.");
+      expect(merged.body).not.toContain("Cached absorbed body.");
+      // The survivor's frontmatter merge base is the stored one too.
+      expect(merged.frontmatter.tags).toEqual(["stored-into"]);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+// ===========================================================================
+// The backlink re-point reads past the cache too, and names its own abort
+// (DW-379, P1/P5)
+// ===========================================================================
+
+describe("mergePages — re-pointing backlinks", () => {
+  it("re-points from the STORED bytes of the linker, not a cached copy", async () => {
+    // The third fresh read in this file (`merge.ts`'s `repointBacklinks`), and
+    // the one the `into`/`from` row above cannot reach: with only two pages
+    // seeded there is no linker to iterate, so that row leaves this call site
+    // covered by nothing. Here the linker's bytes are rewritten and written
+    // straight back — a merge base like any other, and a stale one reverts
+    // whatever was saved to that page in between while re-pointing its link.
+    mockedHasLLMKey.mockReturnValue(false);
+
+    await seedPage("survivor-b", { title: "Survivor B" });
+    await seedPage("absorbed-b", { title: "Absorbed B" });
+    await seedPage("linker-b", {
+      title: "Linker B",
+      body: "# Linker B\n\nCached linker body. See [it](absorbed-b.md).",
+    });
+
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the linker's cache entry…
+      const cached = (await readWikiPageWithFrontmatter("linker-b"))!;
+      expect(cached.content).toContain("Cached linker body.");
+
+      // …then someone edits that page. Written DIRECTLY, past the write path —
+      // which invalidates — because a STALE entry is what this row is about.
+      // The link survives the edit, so there is still something to re-point.
+      await fs.writeFile(
+        cached.path,
+        cached.content.replace(
+          "Cached linker body.",
+          "Stored linker body, LATER.",
+        ),
+        "utf-8",
+      );
+      expect((await readWikiPageWithFrontmatter("linker-b"))!.content).toContain(
+        "Cached linker body.",
+      );
+
+      const result = await mergePages({
+        from: "absorbed-b",
+        into: "survivor-b",
+        actor: "alice",
+      });
+      expect(result.repointedBacklinksFrom).toContain("linker-b");
+
+      const after = (await readWikiPage("linker-b", { fresh: true }))!;
+      // The re-point landed…
+      expect(after.content).toContain("](survivor-b.md)");
+      expect(after.content).not.toContain("](absorbed-b.md)");
+      // …on top of the STORED body. Without the fresh read the cached copy is
+      // written back and the intervening edit is gone — and unlike the survivor,
+      // this page is not even a party to the merge.
+      expect(after.content).toContain("Stored linker body, LATER.");
+      expect(after.content).not.toContain("Cached linker body.");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("aborts with its OWN message when a linker cannot be read, not the save-door sentence", async () => {
+    // The fresh read refuses a non-ENOENT fault by throwing
+    // `PageUnreadableError`, whose message is `PAGE_UNREADABLE_COPY` — "so
+    // nothing was changed". Relayed raw from here that is FALSE: this loop may
+    // already have re-pointed and written earlier linkers. `repointBacklinks`
+    // catches it and rethrows the accurate abort it has always thrown, naming
+    // the page and the merge, with the refusal kept as `cause`.
+    mockedHasLLMKey.mockReturnValue(false);
+
+    await seedPage("survivor-c", { title: "Survivor C" });
+    await seedPage("absorbed-c", { title: "Absorbed C" });
+    await seedPage("linker-c", {
+      title: "Linker C",
+      body: "# Linker C\n\nSee [it](absorbed-c.md).",
+    });
+
+    // Fail ONLY the linker's reads — the two merge sides still read for real, so
+    // the failure lands where this row claims it does: inside the re-point loop.
+    const { getStorage } = await import("../storage");
+    const { tenantForOwner, tenantWikiRelPath, wikiRelPath } = await import("../wiki");
+    const targets = new Set([
+      wikiRelPath("linker-c.md"),
+      tenantWikiRelPath(tenantForOwner("alice"), "linker-c.md"),
+    ]);
+    const storage = getStorage();
+    const real = storage.readFile.bind(storage);
+    const spy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (target: string) => {
+        if (targets.has(target)) {
+          const err = new Error(`EIO: i/o error, read '${target}'`) as NodeJS.ErrnoException;
+          err.code = "EIO";
+          throw err;
+        }
+        return real(target);
+      });
+
+    try {
+      const rejection = await mergePages({
+        from: "absorbed-c",
+        into: "survivor-c",
+        actor: "alice",
+      }).then(
+        () => null,
+        (err: unknown) => err as Error,
+      );
+
+      expect(rejection).toBeInstanceOf(Error);
+      // The accurate sentence: which linker, which merge.
+      expect(rejection!.message).toBe(
+        'merge aborted: backlink source "linker-c" could not be read while re-pointing links from "absorbed-c" to "survivor-c"',
+      );
+      // NOT the save-door copy, which would claim nothing was changed.
+      const { PAGE_UNREADABLE_COPY } = await import("../page-read-failure");
+      expect(rejection!.message).not.toBe(PAGE_UNREADABLE_COPY);
+      // The refusal is still reachable underneath, so the EIO is not lost.
+      const cause = (rejection as Error & { cause?: unknown }).cause;
+      expect((cause as Error | undefined)?.name).toBe("PageUnreadableError");
+    } finally {
+      spy.mockRestore();
+    }
+
+    // And the merge really did abort: `from` is intact rather than hard-deleted
+    // with an un-re-pointed link left behind.
+    expect(await readWikiPage("absorbed-c")).not.toBeNull();
   });
 });

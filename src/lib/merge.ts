@@ -36,6 +36,7 @@ import { serializeFrontmatter, type Frontmatter } from "./frontmatter";
 import { writeWikiPageWithSideEffects, deleteWikiPage } from "./lifecycle";
 import { getBacklinkIndex } from "./backlink-index";
 import { escapeRegex } from "./links";
+import { isPageUnreadableError } from "./page-read-failure";
 
 export interface MergePagesArgs {
   /** Slug of the page to absorb — deleted after the merge. */
@@ -120,12 +121,40 @@ async function repointBacklinks(
   const re = new RegExp(`\\]\\(${escapeRegex(fromSlug)}\\.md\\)`, "g");
   const repointed: string[] = [];
   for (const src of linkers) {
-    const page = await readWikiPageWithFrontmatter(src);
+    // FRESH (DW-379): these bytes are rewritten and written straight back
+    // below, so they are a merge base. A bulk scan holding `pageCache` open
+    // with a superseded entry would have this re-point revert whatever was
+    // saved in between.
+    let page: Awaited<ReturnType<typeof readWikiPageWithFrontmatter>>;
+    try {
+      page = await readWikiPageWithFrontmatter(src, { fresh: true });
+    } catch (err) {
+      if (!isPageUnreadableError(err)) throw err;
+      // THE REFUSAL IS RE-WORDED, NOT RELAYED. `PAGE_UNREADABLE_COPY` says "so
+      // nothing was changed" — a save-door sentence that is FALSE here: this
+      // loop may already have re-pointed and written earlier linkers before
+      // reaching `src`. The message below is the accurate one this function has
+      // always thrown for an unreadable linker, and it names which page and
+      // which merge. The refusal is kept as `cause` so the EIO underneath is
+      // still reachable from a log line or a debugger.
+      throw new Error(
+        `merge aborted: backlink source "${src}" could not be read while re-pointing links from "${fromSlug}" to "${intoSlug}"`,
+        { cause: err },
+      );
+    }
     if (!page) {
-      // `src` was named as a linker by the index / page list, so a null read is
-      // NOT an expected "no such page" — `readWikiPage` also collapses transient
-      // storage faults to null. Abort rather than let the later hard-delete
-      // strip an un-re-pointed link; `from` is left intact and the merge retries.
+      // `src` was named as a linker by the index / page list, so `null` is not
+      // the ordinary "no such page" — but it is still the only answer a
+      // NON-throwing read can give for several conditions at once: a page that
+      // genuinely is not there, and a slug `validateSlug` rejects (which
+      // `readWikiPage` logs and answers `null` for). What it no longer covers,
+      // since DW-378/DW-380, is a transient storage fault — that arrives as the
+      // refusal handled just above. Note also that `fresh` bypasses `pageCache`
+      // and ONLY that: a lagging `getPageIndex()` can still route this read at
+      // the flat file while the write targets the silo one, exactly as
+      // `ReadWikiPageOptions.fresh` documents. Abort either way, rather than let
+      // the later hard-delete strip an un-re-pointed link; `from` is left intact
+      // and the merge retries.
       throw new Error(
         `merge aborted: backlink source "${src}" could not be read while re-pointing links from "${fromSlug}" to "${intoSlug}"`,
       );
@@ -162,9 +191,13 @@ export async function mergePages({
   if (fromSlug === intoSlug) {
     throw new Error("cannot merge a page into itself");
   }
-  const from = await readWikiPageWithFrontmatter(fromSlug);
+  // FRESH on both sides (DW-379). A merge folds two bodies into the survivor
+  // and then HARD-DELETES `from`, so a side served from a stale `pageCache`
+  // entry loses whatever was written to it in between — with no revision of it
+  // anywhere, because the deleted page takes its history with it.
+  const from = await readWikiPageWithFrontmatter(fromSlug, { fresh: true });
   if (!from) throw new Error(`page not found: ${fromSlug}`);
-  const into = await readWikiPageWithFrontmatter(intoSlug);
+  const into = await readWikiPageWithFrontmatter(intoSlug, { fresh: true });
   if (!into) throw new Error(`page not found: ${intoSlug}`);
 
   // Guard: the survivor must be a normal markdown page — reconciling into an

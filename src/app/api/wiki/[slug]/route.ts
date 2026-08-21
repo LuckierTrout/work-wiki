@@ -420,6 +420,28 @@ export async function PATCH(
     if (isReadOnlyError(err)) {
       return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
     }
+    // `patchMetadata`'s merge-base read is fresh since DW-379, so it can now
+    // REFUSE a non-ENOENT storage failure instead of answering `null`. That
+    // refusal carries no `code`, so the ladder below would call it a 500 — a
+    // server fault the owner cannot act on — for the condition this codebase
+    // already answers 503 for at `PUT`. Same constants, same sentence, no new
+    // vocabulary. ENOENT still arrives as `NOT_FOUND` → 404 below.
+    //
+    // It lands BELOW the ACL cloak (`patchMetadata` runs its own, throwing
+    // `NOT_FOUND`), so an existing-but-unreadable page answers 503 where a
+    // cloaked one answers 404. That is the same residual `PUT`'s branch
+    // documents and accepts, for the same reason: the cloak needs the page's
+    // frontmatter, which is precisely what the failed read did not produce, so
+    // there is nothing to cloak WITH. The difference is not unreachable —
+    // resource-exhaustion classes are request-driven — but no caller can induce
+    // the failure reliably or selectively for a slug they choose, and on a
+    // single-owner private deployment that is accepted deliberately.
+    if (isPageUnreadableError(err)) {
+      return NextResponse.json(
+        { error: PAGE_UNREADABLE_COPY },
+        { status: PAGE_UNREADABLE_STATUS },
+      );
+    }
     const message = getErrorMessage(err);
     const code = (err as NodeJS.ErrnoException).code;
     let status = 500;
