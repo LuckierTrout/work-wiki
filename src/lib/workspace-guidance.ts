@@ -95,7 +95,18 @@ async function resolveWorkspaceGuidance(owner: string): Promise<string> {
  * A fail-soft `""` is memoized too, and on purpose: the `catch` below means this
  * never rejects, so a memoized promise can never poison the request, and a
  * damaged registry that already warned once should not be re-read (and
- * re-warned) two more times inside the same document.
+ * re-warned) two more times for the same value.
+ *
+ * Be honest about what that costs now that the handle's scope is the CALLER's
+ * (DW-324): a handle can span a whole request, not just one document, so a
+ * single transient registry/profile failure strips the Workspace Purpose from
+ * every remaining document of that request and warns about it exactly once.
+ * That is accepted, not overlooked. Re-resolving per document is precisely the
+ * repetition DW-324 removes, and the degrade is bounded — guidance is an
+ * ADDITION to a prompt, and the next handle (the next request, or the next
+ * `ingest()` that mints its own) resolves fresh. Contrast `NamesTermsCache`,
+ * whose read can genuinely REJECT and is therefore evicted rather than pinned:
+ * there the memoized value would be a thrown error, not a degraded prompt.
  */
 export async function buildWorkspaceGuidance(
   owner: string,

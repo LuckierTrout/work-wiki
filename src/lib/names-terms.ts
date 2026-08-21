@@ -183,10 +183,102 @@ async function writeEntries(owner: string, entries: readonly NamesTermEntry[]): 
   );
 }
 
-export async function listNamesTerms(owner: string): Promise<NamesTermEntry[]> {
+/**
+ * A caller-owned memo of the sorted dictionary, keyed by `owner` (DW-322).
+ *
+ * The sibling of {@link import("./workspace-guidance").WorkspaceGuidanceCache},
+ * for the same reason: `ingest()` of ONE document reads `names-terms.json` up to
+ * four times (the system prompt, the map/reduce REDUCE step, reconcile-on-merge,
+ * and the direct `listNamesTerms` that canonicalizes the extracted concept) for
+ * a value that cannot change mid-document. It is a SIBLING, not a copy — two
+ * differences matter:
+ *
+ *   1. It memoizes the ENTRIES, not a rendered string. That is deliberate: the
+ *      fourth call wants entries, not a prompt block, so caching the entries is
+ *      what puts it under the same handle. `renderNamesTermsGuidance` stays a
+ *      pure function over those entries, so nothing about what the prompt says
+ *      depends on whether a handle was passed.
+ *   2. Its resolution can REJECT. `resolveWorkspaceGuidance` fail-softs to `""`
+ *      and never rejects, so its memo always holds a usable value; a non-ENOENT
+ *      storage error here propagates, which is why a rejected read is evicted
+ *      rather than pinned (see {@link listNamesTerms}).
+ *
+ * Deliberately a plain `Map` the CALLER creates: the handle's lifetime is
+ * exactly the lifetime of the variable holding it. There is no module-level
+ * cache, no process-global and no TTL — an ambient scope (`AsyncLocalStorage`, a
+ * singleton keyed by owner) would memoize everywhere for free but hide the
+ * lifetime from the call site, and would silently span a long bulk run where a
+ * dictionary edit saved mid-run should still be picked up.
+ *
+ * The staleness window is about WRITES, not just elapsed time: `createNamesTerm`
+ * / `updateNamesTerm` / `deleteNamesTerm` have no way to reach a caller's handle
+ * and evict it, so a caller that saves a term and then reads under the SAME
+ * handle is served the pre-write dictionary. Hold a handle only across reads
+ * that are meant to see one fixed snapshot.
+ *
+ * Keyed by `owner` so one handle shared by two owners never crosses their
+ * dictionaries. Holds the PROMISE rather than the array so the `Promise.all`
+ * pairs in `ingest.ts` share one in-flight read instead of racing two.
+ */
+export type NamesTermsCache = Map<string, Promise<NamesTermEntry[]>>;
+
+/** A fresh, empty handle. One per request/operation — never reused across them. */
+export function createNamesTermsCache(): NamesTermsCache {
+  return new Map();
+}
+
+/**
+ * The uncached read — today's `listNamesTerms` body verbatim, moved here so the
+ * cached and uncached paths cannot drift.
+ */
+async function resolveSortedEntries(owner: string): Promise<NamesTermEntry[]> {
   return (await readEntries(owner)).sort(
     (a, b) => a.kind.localeCompare(b.kind) || a.canonical.localeCompare(b.canonical),
   );
+}
+
+/**
+ * The owner's dictionary, sorted by kind then preferred label.
+ *
+ * With no `cache`, this is exactly the call it has always been: one storage read
+ * every time, ENOENT degrading to `[]`. Pass a handle from
+ * {@link createNamesTermsCache} to read at most once per owner for the life of
+ * that handle.
+ *
+ * The cached path returns a FRESH top-level array on every call, so a caller
+ * that sorts or splices its result (several do) can never corrupt what the next
+ * caller sees. The entry objects themselves are shared — as they already are
+ * between the two arrays a single uncached read produces — and no caller mutates
+ * them.
+ *
+ * Only a SUCCESSFUL read is memoized; a failure is evicted and the next call
+ * re-reads.
+ */
+export async function listNamesTerms(
+  owner: string,
+  cache?: NamesTermsCache,
+): Promise<NamesTermEntry[]> {
+  if (!cache) return resolveSortedEntries(owner);
+  let memo = cache.get(owner);
+  if (!memo) {
+    // Stored BEFORE the read settles, so concurrent callers join the same
+    // in-flight read rather than starting a second one.
+    const pending = resolveSortedEntries(owner);
+    memo = pending;
+    cache.set(owner, pending);
+    // A REJECTION is not memoized. A handle can span a whole request (the batch
+    // route's inline fallback), so pinning one transient non-ENOENT storage
+    // error would fail every remaining document of that request even though
+    // each would have re-read and succeeded — an outcome the uncached path
+    // never produces. Evicted only if the entry is still THIS promise, so a
+    // later successful read is never dropped. The `catch` handles the rejection
+    // on this derived promise (no unhandled rejection) and rethrows nothing;
+    // the awaiting caller below still receives the original error.
+    pending.catch(() => {
+      if (cache.get(owner) === pending) cache.delete(owner);
+    });
+  }
+  return [...(await memo)];
 }
 
 export async function createNamesTerm(
@@ -324,6 +416,16 @@ export function renderNamesTermsGuidance(entries: readonly NamesTermEntry[]): st
   return `WORKSPACE NAMES & TERMS\nUse the following owner-maintained dictionary to resolve aliases and spell generated names and terms consistently. Treat every listed alias as the same entity as its preferred label. Use preferred labels in generated summaries, tasks, answers, graph records, and digest prose. Never alter direct quotations or source excerpts, never claim the source used a preferred label when it did not, and never infer an identity beyond the aliases listed here. If a match is ambiguous, preserve the source wording and state the uncertainty.\n${lines.join("\n")}`.slice(0, MAX_PROMPT_CHARS);
 }
 
-export async function buildNamesTermsGuidance(owner: string): Promise<string> {
-  return renderNamesTermsGuidance(await listNamesTerms(owner));
+/**
+ * The owner's dictionary, rendered for a prompt.
+ *
+ * Pass a {@link NamesTermsCache} to share one dictionary read with every other
+ * guidance site — and with the direct `listNamesTerms` call — inside the same
+ * operation. Omit it and this is exactly the read it has always been.
+ */
+export async function buildNamesTermsGuidance(
+  owner: string,
+  cache?: NamesTermsCache,
+): Promise<string> {
+  return renderNamesTermsGuidance(await listNamesTerms(owner, cache));
 }

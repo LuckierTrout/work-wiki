@@ -630,6 +630,86 @@ describe("POST /api/ingest/batch — async (queue) mode", () => {
   });
 });
 
+// ===========================================================================
+// POST /api/ingest/batch — one guidance cache per REQUEST (DW-324)
+// ===========================================================================
+/**
+ * Without a request-scoped handle the queue-unavailable fallback resolves the
+ * Workspace Purpose and re-reads the Names & Terms dictionary from scratch for
+ * every URL in one HTTP request. `@/lib/ingest` is module-mocked here, so the
+ * route can only be observed through what it hands `ingestUrl` — and that is
+ * exactly the contract: every inline call gets the SAME handle object, and the
+ * queued path's task payload carries none (a queued task is a different request
+ * and must resolve fresh — a live `Map` could not be serialized onto a queue
+ * anyway).
+ */
+describe("POST /api/ingest/batch — request-scoped guidance cache", () => {
+  beforeEach(() => {
+    mockedEnqueue.mockClear();
+    mockedIngestUrl.mockClear();
+  });
+
+  it("hands every inline ingestUrl call the SAME handle", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    mockedIngestUrl.mockResolvedValue(fakeResult);
+
+    const res = await POST_BATCH(
+      makeRequest("http://localhost:3000/api/ingest/batch", {
+        urls: [
+          "https://example.com/a",
+          "https://example.com/b",
+          "https://example.com/c",
+        ],
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ mode: "inline", total: 3 });
+
+    expect(mockedIngestUrl).toHaveBeenCalledTimes(3);
+    const handles = mockedIngestUrl.mock.calls.map((call) => call[1]?.guidanceCache);
+    expect(handles[0]).toBeDefined();
+    // Identity, not shape: two fresh handles would look alike but would each
+    // pay their own reads.
+    expect(handles[1]).toBe(handles[0]);
+    expect(handles[2]).toBe(handles[0]);
+  });
+
+  it("mints a fresh handle per request, never reusing one across requests", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    mockedIngestUrl.mockResolvedValue(fakeResult);
+
+    const body = { urls: ["https://example.com/a"] };
+    await POST_BATCH(makeRequest("http://localhost:3000/api/ingest/batch", body));
+    await POST_BATCH(makeRequest("http://localhost:3000/api/ingest/batch", body));
+
+    expect(mockedIngestUrl).toHaveBeenCalledTimes(2);
+    const [first, second] = mockedIngestUrl.mock.calls.map(
+      (call) => call[1]?.guidanceCache,
+    );
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+  });
+
+  it("keeps the handle out of the queued task payload", async () => {
+    mockedEnqueue.mockResolvedValue(true);
+
+    const res = await POST_BATCH(
+      makeRequest("http://localhost:3000/api/ingest/batch", {
+        urls: ["https://example.com/a", "https://example.com/b"],
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ mode: "async", queued: 2, total: 2 });
+
+    expect(mockedIngestUrl).not.toHaveBeenCalled();
+    expect(mockedEnqueue).toHaveBeenCalledTimes(2);
+    for (const [payload] of mockedEnqueue.mock.calls) {
+      expect(payload).not.toHaveProperty("guidanceCache");
+    }
+  });
+});
+
 describe("POST /api/ingest/batch — service token auth", () => {
   it("accepts a valid service token when Clerk session is absent", async () => {
     mockedGetPrincipal.mockResolvedValue(null);

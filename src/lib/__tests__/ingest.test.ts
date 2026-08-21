@@ -37,6 +37,7 @@ import {
   writeWikiPage,
   readWikiPageWithFrontmatter,
   serializeFrontmatter,
+  tenantForOwner,
   type Frontmatter,
 } from "../wiki";
 import { resetSourceIndex } from "../source-index";
@@ -3724,7 +3725,9 @@ describe("mergeSourceEntry URL normalization", () => {
 // Workspace guidance is resolved ONCE per ingest (DW-141)
 // ---------------------------------------------------------------------------
 
+import { createGuidanceCache } from "../guidance-cache";
 import { _resetLocks } from "../lock";
+import { createNamesTerm } from "../names-terms";
 import { wikiProfilePath } from "../wiki-paths";
 import { createWiki } from "../wikis";
 import { saveWorkspaceProfile } from "../workspace-profile";
@@ -3732,6 +3735,8 @@ import { saveWorkspaceProfile } from "../workspace-profile";
 describe("ingest resolves workspace guidance once per document", () => {
   const OWNER = "alice";
   const PURPOSE = "Track Project Lighthouse decisions.";
+  /** Where the owner's Names & Terms dictionary lives on disk. */
+  const DICTIONARY_PATH = `tenants/${tenantForOwner(OWNER)}/names-terms.json`;
   /**
    * Half again over `MAX_LLM_INPUT_CHARS`, so `chunkText` always yields more
    * than one chunk and synthesis takes the map/reduce branch. The repeat count
@@ -3827,6 +3832,97 @@ describe("ingest resolves workspace guidance once per document", () => {
     expect(mockedCallLLM.mock.calls.length).toBeGreaterThan(1);
     expect(reads(wikiProfilePath(OWNER, wikiId))).toBe(1);
     expect(systemPrompts().some((prompt) => prompt.includes(PURPOSE))).toBe(true);
+  });
+
+  it("reads the Names & Terms dictionary once across the whole document", async () => {
+    // DW-322. THREE dictionary reads in this scenario without a handle:
+    // `buildIngestSystemPrompt`, the map/reduce REDUCE step, and the direct
+    // `listNamesTerms` that canonicalizes the extracted concept. (A fourth,
+    // reconcile-on-merge, only happens when the ingest lands on an EXISTING
+    // page — this fixture starts empty, so it does not run here; the
+    // reconcile path is covered by the sibling case above.) One handle per
+    // `ingest()` collapses those three to a single read — and the dictionary
+    // must still reach the prompt that goes to the model.
+    await createNamesTerm(OWNER, {
+      kind: "project",
+      canonical: "Project Lighthouse",
+      aliases: ["Lighthouse"],
+    });
+
+    const reads = countReads();
+
+    await ingest("Lighthouse Long", LONG_CONTENT, {
+      author: OWNER,
+      owner: OWNER,
+    });
+
+    // More than one LLM call ⇒ the map/reduce branch really ran.
+    expect(mockedCallLLM.mock.calls.length).toBeGreaterThan(1);
+    expect(reads(DICTIONARY_PATH)).toBe(1);
+    expect(reads(wikiProfilePath(OWNER, wikiId))).toBe(1);
+    const prompts = systemPrompts();
+    expect(prompts.some((prompt) => prompt.includes("WORKSPACE NAMES & TERMS")))
+      .toBe(true);
+    expect(prompts.some((prompt) => prompt.includes("aliases: Lighthouse")))
+      .toBe(true);
+  });
+
+  it("shares a CALLER-SUPPLIED handle across two whole documents", async () => {
+    // DW-324's seam: `options.guidanceCache` must actually be adopted, not
+    // quietly replaced by a freshly minted per-document handle. This is the
+    // only place the supplied-handle path is exercised against the real
+    // `ingest()` — the batch route's own tests module-mock `@/lib/ingest`, so
+    // they can only prove the route hands the SAME object to every call, not
+    // that `ingest()` honours it. Two documents, one handle, one read each.
+    await createNamesTerm(OWNER, {
+      kind: "project",
+      canonical: "Project Lighthouse",
+      aliases: ["Lighthouse"],
+    });
+
+    const reads = countReads();
+    const shared = createGuidanceCache();
+
+    await ingest("Lighthouse One", LONG_CONTENT, {
+      author: OWNER,
+      owner: OWNER,
+      guidanceCache: shared,
+    });
+    await ingest("Lighthouse Two", `${LONG_CONTENT} Different tail.`, {
+      author: OWNER,
+      owner: OWNER,
+      guidanceCache: shared,
+    });
+
+    expect(reads(DICTIONARY_PATH)).toBe(1);
+    expect(reads(wikiProfilePath(OWNER, wikiId))).toBe(1);
+    // The guidance still reached the model on both documents.
+    const prompts = systemPrompts();
+    expect(prompts.some((prompt) => prompt.includes("WORKSPACE NAMES & TERMS")))
+      .toBe(true);
+    expect(prompts.some((prompt) => prompt.includes(PURPOSE))).toBe(true);
+  });
+
+  it("still picks up a dictionary entry saved BETWEEN two ingests", async () => {
+    // The handle is per-document unless a caller supplies its own — it must
+    // never span two `ingest()` calls on its own.
+    await ingest("Lighthouse One", LONG_CONTENT, { author: OWNER, owner: OWNER });
+
+    await createNamesTerm(OWNER, {
+      kind: "project",
+      canonical: "Phoenix Reading Shelf",
+      aliases: ["Phoenix"],
+    });
+    mockedCallLLM.mockClear();
+
+    await ingest("Lighthouse Two", `${LONG_CONTENT} Different tail.`, {
+      author: OWNER,
+      owner: OWNER,
+    });
+
+    expect(
+      systemPrompts().some((prompt) => prompt.includes("Phoenix Reading Shelf")),
+    ).toBe(true);
   });
 
   it("shares the same handle with reconcile-on-merge", async () => {

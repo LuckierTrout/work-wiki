@@ -2855,7 +2855,8 @@ source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
 location: src/lib/names-terms.ts:327
 severity: medium
 reason: All three sites threaded in this change pair `buildWorkspaceGuidance(owner, cache)` with a bare `buildNamesTermsGuidance(owner)`, and `ingest()` calls `listNamesTerms` a fourth time. `buildNamesTermsGuidance` (names-terms.ts:327) has the same read-per-call shape `buildWorkspaceGuidance` had. This spec's "Never" clause deferred it to "a different ledger entry", but no open ledger entry covers dictionary guidance caching, so the deferral has nowhere to land.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-workspace-guidance-request-caching
 
 ### DW-323: A manual page merge gets neither Workspace Purpose nor Names & Terms guidance, while an ingest-time reconcile of the same two bodies gets both.
 origin: spec-deferred 0fb017929a75
@@ -2872,7 +2873,8 @@ source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
 location: src/app/api/ingest/batch/route.ts:152
 severity: medium
 reason: `POST /api/ingest/batch`'s off-Workers fallback (src/app/api/ingest/batch/route.ts:152) loops `ingestUrl` per URL inline when the queue is unavailable, and `POST /api/tasks/run` drains tasks one per request. On Workers each URL is a separate queued request, so per-document and per-request coincide in production and the DW-141 remedy is met there. The inline fallback is the residual case: closing it needs a handle threaded through `IngestOptions` and the `ingestUrl`/`ingestPdf`/`ingestImage` wrappers, which is a design extension beyond this spec.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-workspace-guidance-request-caching
 
 ### DW-325: `workspace-purpose-settings.test.tsx` "adopts a recheck that answers no wiki at all" is flaky under full-suite load and can red an unrelated CI run.
 origin: spec-deferred 09cd0fe96308
@@ -3431,4 +3433,36 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/app/api/ingest/history/route.ts
 severity: medium
 reason: The DW-270 gate keys on `listReadableWikiPages`, which filters the page INDEX, not a per-page read. `src/lib/lint.ts:94`'s `checkOrphanPages` exists because index/disk drift is a real state here. A done job whose page is in that state used to delete the page and clear the job record; it now answers 404 for the entire request, clearing nothing else selected alongside it. This is exact parity with the pre-existing `ingestIds` preflight, which has always behaved this way, so DW-270 inherited the behaviour rather than inventing it.
+status: open
+
+### DW-394: Both guidance memos are keyed by `owner`, but the files they memoize are addressed by TENANT, so two owner strings in one tenant key two entries over one file.
+origin: spec-deferred 1eea774dfd5c
+source_spec: `spec-dw-322-324-dictionary-guidance-and-request-cache.md`
+location: src/lib/names-terms.ts:214
+severity: low
+reason: `dictionaryPath` (src/lib/names-terms.ts:88) and `getCurrentWiki` both route the owner through `tenantForOwner` -> `ownerToTenant`, which lowercases and collapses punctuation. `"Alice"` and `"alice"` therefore occupy two `Map` slots pointing at one file: two reads instead of one, and two snapshots that can diverge under a single handle. Latent today — `owner` is one fixed string inside an `ingest()` and inside a batch request (`principal.handle`) — and inherited from DW-141, which set the owner-keying precedent. Keying on `tenantForOwner(owner)` would collapse both.
+status: open
+
+### DW-395: `src/mcp.ts`'s batch ingest tool loops `ingestUrl` over up to MAX_BATCH_URLS URLs with no handle — the same one-action-N-documents shape DW-324 just closed for the HTTP batch route.
+origin: spec-deferred a07d00ea301f
+source_spec: `spec-dw-322-324-dictionary-guidance-and-request-cache.md`
+location: src/mcp.ts:528
+severity: medium
+reason: `handleIngestBatch` (src/mcp.ts:526-532) calls `ingestUrl(url, {...})` sequentially inside a `for` loop, so every URL of one agent action resolves the Workspace Purpose and re-reads the dictionary from scratch. The remedy is now one line — add `guidanceCache: createGuidanceCache()` to that options literal — but DW-324 names `src/app/api/ingest/batch/route.ts` specifically and this spec's scope was held to the HTTP door, so the MCP door was deliberately not touched.
+status: open
+
+### DW-396: `IngestOptions` now carries a live, non-serializable object guarded only by the convention that queue task payloads are hand-written literals.
+origin: spec-deferred f8d8c4c6caab
+source_spec: `spec-dw-322-324-dictionary-guidance-and-request-cache.md`
+location: src/lib/ingest.ts:1328
+severity: low
+reason: `IngestOptions.guidanceCache` holds two `Map`s. The batch route keeps it out of the queue by building `enqueueTask`'s payload as a separate literal (src/app/api/ingest/batch/route.ts:143-150), and `tasks/run` and the agent ingest route do the same by hand. Nothing structural stops a future `enqueueTask({ kind: "ingest", ...ingestOptions })`: TypeScript does not excess-property-check spread properties, so it would compile and fail at structured-clone/JSON time. An `Omit<IngestOptions, "guidanceCache">` on the payload builders, or a handle passed as its own argument rather than a field on the data bag, would make it a compile error.
+status: open
+
+### DW-397: Under a handle the dictionary ENTRY OBJECTS are shared across every caller of the operation; only the top-level array is copied.
+origin: spec-deferred db45e54ae4f5
+source_spec: `spec-dw-322-324-dictionary-guidance-and-request-cache.md`
+location: src/lib/names-terms.ts:236
+severity: low
+reason: `listNamesTerms` returns `[...(await memo)]`, so a caller that sorts or splices its result cannot corrupt the next one (pinned by a test). The entries inside are the same objects, where before the memo each read produced fresh objects from `JSON.parse`. No caller in the repo mutates an entry (`canonicalizeNamesTerm`, `renderNamesTermsGuidance` and `applyNamesTermsToGeneratedText` all read), and the docblock says so, but nothing enforces it — one future `entry.aliases.push(...)` would leak into every later caller of that request. `Object.freeze` on resolve, or a test pinning the object-level invariant, would close it.
 status: open

@@ -28,11 +28,8 @@ import {
   canonicalizeNamesTerm,
   listNamesTerms,
 } from "./names-terms";
-import {
-  buildWorkspaceGuidance,
-  createWorkspaceGuidanceCache,
-  type WorkspaceGuidanceCache,
-} from "./workspace-guidance";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
+import { createGuidanceCache, type GuidanceCache } from "./guidance-cache";
 
 /**
  * Merge a provenance entry into a sources list. A real source URL supersedes a
@@ -1161,13 +1158,13 @@ export async function reconcilePage(
   existingBody: string,
   newBody: string,
   owner?: string,
-  cache?: WorkspaceGuidanceCache,
+  cache?: GuidanceCache,
 ): Promise<{ body: string; disputed: boolean }> {
   const user = `# Current page\n\n${existingBody}\n\n# Newly ingested article (same concept)\n\n${newBody}`;
   const [workspaceGuidance, dictionaryGuidance] = owner
     ? await Promise.all([
-        buildWorkspaceGuidance(owner, cache),
-        buildNamesTermsGuidance(owner),
+        buildWorkspaceGuidance(owner, cache?.workspace),
+        buildNamesTermsGuidance(owner, cache?.namesTerms),
       ])
     : ["", ""];
   const systemPrompt = RECONCILE_SYSTEM_PROMPT +
@@ -1220,7 +1217,7 @@ export async function collectTagVocabulary(
 
 export async function buildIngestSystemPrompt(
   owner?: string,
-  cache?: WorkspaceGuidanceCache,
+  cache?: GuidanceCache,
 ): Promise<string> {
   // DW-19 — deliberately NO argument: the conventions are deployment-global.
   // They come from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
@@ -1252,8 +1249,8 @@ ${vocab.join(", ")}`;
   }
   if (owner) {
     const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
-      buildWorkspaceGuidance(owner, cache),
-      buildNamesTermsGuidance(owner),
+      buildWorkspaceGuidance(owner, cache?.workspace),
+      buildNamesTermsGuidance(owner, cache?.namesTerms),
     ]);
     if (workspaceGuidance) prompt += `\n\n${workspaceGuidance}`;
     if (dictionaryGuidance) prompt += `\n\n${dictionaryGuidance}`;
@@ -1316,6 +1313,19 @@ export interface IngestOptions {
    * `agentic-systems`). Only honored on the direct synthesis path.
    */
   pinSlug?: string;
+  /**
+   * Widen the guidance memo from ONE DOCUMENT to the caller's whole operation
+   * (DW-324). Omitted, `ingest()` mints its own handle and behaves exactly as
+   * before: one Workspace Purpose resolution and one dictionary read per
+   * document. Supplied, every document sharing the handle resolves both once —
+   * which is what `POST /api/ingest/batch`'s queue-unavailable fallback wants,
+   * since one batch is one user action.
+   *
+   * NOT serializable, and deliberately absent from the queue task payload (a
+   * separate literal in that route) — a queued task is a different request and
+   * must resolve guidance fresh.
+   */
+  guidanceCache?: GuidanceCache;
 }
 
 /**
@@ -1467,7 +1477,7 @@ async function synthesizeBody(
   title: string,
   content: string,
   owner?: string,
-  cache?: WorkspaceGuidanceCache,
+  cache?: GuidanceCache,
 ): Promise<string> {
   if (!hasLLMKey()) {
     // Derived title so a title-less paste doesn't emit an empty `# ` H1.
@@ -1525,8 +1535,8 @@ async function synthesizeBody(
   }
   const [workspaceGuidance, dictionaryGuidance] = owner
     ? await Promise.all([
-        buildWorkspaceGuidance(owner, cache),
-        buildNamesTermsGuidance(owner),
+        buildWorkspaceGuidance(owner, cache?.workspace),
+        buildNamesTermsGuidance(owner, cache?.namesTerms),
       ])
     : ["", ""];
   return callLLM(
@@ -1588,12 +1598,16 @@ export async function ingest(
   // can scope a semantic merge to the same owner's silo.
   const actor = options?.author?.trim() || "system";
   const owner = options?.owner?.trim() || actor;
-  // ONE guidance resolution for this document (DW-141). Synthesis, the
-  // map/reduce REDUCE step and reconcile-on-merge all ask for the same active
-  // Wiki's Workspace Purpose, which cannot change mid-document. The handle is
-  // local to this call, so a Purpose saved between two ingests is still picked
-  // up by the next one.
-  const guidanceCache = createWorkspaceGuidanceCache();
+  // ONE guidance resolution for this document (DW-141, DW-322). Synthesis, the
+  // map/reduce REDUCE step, reconcile-on-merge and the concept canonicalization
+  // below all ask for the same active Wiki's Workspace Purpose and the same
+  // Names & Terms dictionary, neither of which can change mid-document.
+  //
+  // A caller may supply its own handle to widen that scope to its whole
+  // operation (DW-324). With none supplied the handle is local to this call, so
+  // a Purpose or dictionary entry saved between two ingests is still picked up
+  // by the next one.
+  const guidanceCache = options?.guidanceCache ?? createGuidanceCache();
 
   // Dedup by content: if identical content was already ingested (any slug),
   // attach the triggerer and skip the LLM + embedding.
@@ -1641,7 +1655,7 @@ export async function ingest(
     tags: conceptTags,
     body: conceptStrippedBody,
   } = parseConceptMarker(wikiContent);
-  const dictionary = await listNamesTerms(owner);
+  const dictionary = await listNamesTerms(owner, guidanceCache.namesTerms);
   const concept = extractedConcept
     ? canonicalizeNamesTerm(dictionary, extractedConcept)
     : extractedConcept;
