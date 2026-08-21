@@ -658,6 +658,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `_createEmbeddingModel` reads `loadConfigSync().embeddingBaseUrl` and applies it to the `openai` and `google` branches alike, with nothing tying the value to the provider it was typed for. This is the endpoint twin of the already-recorded vendor-agnostic `embeddingApiKey`, and it has the same resolution: keying the field per provider is a store-shape decision this story's acceptance does not settle. Nothing breaks today — the pair is usually changed together — but the silent reuse is real.
 status: open
+decision: 2026-08-21 Clear the base URL on switch — Clear the stored embeddingBaseUrl whenever the embedding provider changes, so an endpoint typed for one vendor is never sent to another; no stored shape change.
 decision: 2026-08-20 Clear the base URL on switch — Clear the stored embeddingBaseUrl whenever the embedding provider changes, so an endpoint typed for one vendor is never sent to another; no stored shape change.
 
 ### DW-73: A `workers-ai` embedding model outside the `@cf/` namespace satisfies the vector gate and is then silently discarded at resolution time.

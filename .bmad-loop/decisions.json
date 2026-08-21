@@ -178,5 +178,14 @@
     "key": "2",
     "label": "Clear the key on switch",
     "resolution": ""
+  },
+  "DW-72": {
+    "answered_at": "2026-08-21",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Clear the stored embeddingBaseUrl whenever the embedding provider changes, so an endpoint typed for one vendor is never sent to another; no stored shape change.",
+    "key": "2",
+    "label": "Clear the base URL on switch",
+    "resolution": ""
   }
 }
