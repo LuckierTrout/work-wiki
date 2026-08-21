@@ -35,6 +35,37 @@ deferred:
     location: >-
       src/hooks/useKeyboardShortcuts.ts:19-26 (isEditableTarget)
     severity: medium
+  - summary: >-
+      A trip through Settings re-expands every tree group the owner had collapsed, because
+      the left column — and with it `TreePanel`'s local `closed` state — is unmounted.
+    evidence: |-
+      `Workbench.tsx:1037` still swaps `TreePanel` for `SettingsNav` on `settingsOpen`, and
+      `TreePanel` holds the owner's collapsed groups in `const [closed, setClosed] =
+      useState<Record<string, boolean>>({})` (src/components/workbench/TreePanel.tsx:116),
+      seeded from nothing and persisted nowhere. This is the same class of loss DW-373 closes
+      one column over, and it is pre-existing rather than introduced here — the column swap
+      predates this change and DW-373's intent scopes it out. It is more visible now: the
+      `g s` prose names the column swap as "what is NOT preserved" without naming the state
+      it costs, and an owner who has just learned their Wiki draft survives Settings has no
+      reason to expect the tree beside it does not.
+    location: >-
+      src/components/workbench/Workbench.tsx:1037 (TreePanel/SettingsNav swap)
+    severity: medium
+  - summary: >-
+      Every `pnpm <script>` in this repo fails with `ERROR packages field missing or empty`,
+      so the documented `pnpm test` and `pnpm lint` commands cannot be run at all.
+    evidence: |-
+      `pnpm test` and `pnpm lint` both exit non-zero with `ERROR  packages field missing or
+      empty` on a clean tree at 5b613b8, with no test or lint output. There is no
+      `pnpm-workspace.yaml` at the repo root, while `package.json` defines `test`/`lint`
+      normally — so pnpm resolves this directory as a workspace root it then rejects.
+      Pre-existing and repo-wide, not caused by DW-373, but it is why this spec's own
+      acceptance criterion ("Given `pnpm test` and `pnpm lint` are run … both pass") has been
+      met via `npx vitest run` / `npx eslint` in two passes now. Every contributor and CI
+      step following the README hits it.
+    location: >-
+      package.json / missing pnpm-workspace.yaml (repo root)
+    severity: medium
 baseline_revision: '410c0a1726e1e1c4c079ef48bbe65a761fd4d594'
 ---
 
@@ -130,6 +161,21 @@ baseline_revision: '410c0a1726e1e1c4c079ef48bbe65a761fd4d594'
   - `[low]` `[patch]` New source scans pinned formatting rather than invariants — a one-line `<SettingsCanvas …/>` literal and a whitespace/prop-order regex on `<ModeCanvas>`. Replaced with an `opening(tag)` slice helper so each load-bearing prop is asserted independently of order and wrapping.
   - `[low]` `[patch]` `.wb-canvas` is the `overflow: auto` scroll container that `display: none` collapses, so a scrolled canvas returns from Settings at the top. Not a regression and out of scope, but the suite read as claiming a pixel-identical return; named in the coverage-limit paragraph.
 
+### 2026-08-21 — Review pass (follow-up)
+- intent_gap: 0
+- bad_spec: 0
+- patch: 6: (high 0, medium 1, low 5)
+- defer: 2: (high 0, medium 2, low 0)
+- reject: 15
+- addressed_findings:
+  - `[medium]` `[patch]` Nothing pinned that Esc is stood down over the hidden canvas — the one input that would silently undo DW-373, since `useDialogA11y` answers it by dismissing and a dismissed `CreateWikiDialog` resets its fields. It shares the `armed` gate with the scroll lock and the Tab trap today, which is precisely why it needed its own assertion: moving Esc back onto `open` alone is a one-line change. Added to the scroll-lock/Tab-trap case, and proved by making ONLY the Esc branch leak — the case fails on `escape.defaultPrevented`, with the other nine green. (A reviewer read this as a live defect; it is not — the listener is torn down. The gap was in the pinning, not the behaviour.)
+  - `[low]` `[patch]` The same case's closing line, "…and coming back re-arms both", checked one half — the scroll lock off the document, the Tab trap not at all. It now re-dispatches a Shift+Tab off the dialog container (the branch an armed trap answers by pulling focus to the last focusable; a plain Tab from the container is a no-op either way and could not tell them apart) and asserts focus returned to the dialog.
+  - `[low]` `[patch]` The heading-id case asserted `h2[id]` document-wide with `toBeGreaterThanOrEqual(2)`, which passes when one canvas renders two headings and the other renders none — the exact shape a regression takes, since dropping the second `useId` with its heading makes a duplicate id impossible too. Re-asked per section, on the heading each canvas NAMES ITSELF BY (the mode canvas legitimately holds two, its stub plus `WikiWorkbench`'s, which DW-26 keeps mounted), plus document-wide uniqueness of both ids. `aria-labelledby` is asserted non-empty first: `CSS.escape("")` builds the selector `"#"`, which throws a SyntaxError instead of failing readably.
+  - `[low]` `[patch]` `opening(tag)` in `workbench-settings.test.ts` sliced to `indexOf(">")`, which lands inside the first `=>` or `>` in a prop value; the helper is documented as the general "read each element as its own slice" idiom, so the first callback prop added to either tag would have silently truncated the slice and every `toContain` under it. Now scans past balanced braces and throws on an unterminated tag.
+  - `[low]` `[patch]` `workbench-chrome.test.ts` added three exact-literal `toContain` pins on the new conditional attributes — breakable by a pure reformat, which is the fragility the sibling scan in `workbench-settings.test.ts` gave up literals to escape in this same change. Re-expressed as whitespace-tolerant regexes; the one-occurrence counts beside them, which are the actual invariant, are untouched.
+  - `[low]` `[patch]` The cascade guard read as broader than it is. `canvasRules()` sees only rules in `globals.css` whose selector names `.wb-canvas` as a whole token — not `.wb-shell > section`, a bare `section`, a `[hidden] { display: revert }` reset, a utility class, or any other stylesheet — and its `@media` flattening drops the condition. Both limits are now stated where the helper is defined and at the case that leans on it, alongside why flattening is deliberate rather than a bug.
+  - `[low]` `[patch]` The Auto Run Result recorded the new suite as "11 mounted cases"; it has 10 (consistent with the previous pass's own negative control, "7 of the then-9"). Corrected — an artifact whose value is being an accurate record cannot be off by one about its own contents.
+
 ## Design Notes
 
 Two canvases mount at `grid-column: 3`; only one is displayed, so the grid is unchanged. `SettingsCanvas` is rendered FIRST so that `document.querySelector(".wb-canvas")` — an idiom several existing suites already use — always resolves to the canvas that is showing.
@@ -160,28 +206,33 @@ Status: done
 
 **Change:** Opening the in-shell Settings surface no longer unmounts the mode canvas. `Workbench` renders `SettingsCanvas` (still conditional) BESIDE an unconditional `ModeCanvas`, and passes `hidden={settingsOpen}` — the same `hidden` withdrawal DW-26 already uses one level down at `.wb-canvas-mode`, moved up to the `<section>` that holds the Wiki subtree. An open Create Wiki dialog, the name typed into it and the error it was showing now survive a trip through Settings, by the rail control and by `g s` alike. `SettingsCanvas` still unmounts on close, so it keeps owning discard-on-leave for its own draft — the question DW-373's ledger entry left open.
 
+This spec has had two review passes. The first produced the implementation and 7 patches; the second (a follow-up review of the committed change, dispatched from the deferred-work bundle) added no production change and 6 test/record patches, listed below.
+
 **Files changed:**
 - `src/components/workbench/ModeCanvas.tsx` — required `hidden` prop; `hidden` on the `<section>`; `id`/`tabIndex` conditional so only the SHOWING canvas carries `CANVAS_ID` and the landing place; `SurfaceVisibilityProvider visible={wikiActive && !hidden}`.
 - `src/components/workbench/Workbench.tsx` — the canvas swap becomes two mounted siblings; a second `useId` for the Settings heading; the stale `openSettings` and canvas comments rewritten.
 - `src/app/globals.css` — `.wb-canvas[hidden] { display: none; }` beside the DW-26 rule, outside every media query.
 - `src/components/workbench/SettingsCanvas.tsx` — doc comments corrected; the surface now sits beside the hidden canvas rather than replacing it.
 - `src/hooks/useKeyboardShortcuts.ts` — `g s` prose corrected, including what is NOT preserved (the Preview undock, the left-column swap).
-- `src/components/workbench/__tests__/settings-canvas-persistence.test.tsx` — NEW, 11 mounted cases covering every I/O Matrix row plus the single-commit mode switch out of Settings and a real-cascade `getComputedStyle` check.
-- `src/lib/__tests__/workbench-chrome.test.ts` — the `CANVAS_ID`/`tabIndex` count scans widened to admit the conditional, with exact-expression assertions added alongside.
-- `src/lib/__tests__/workbench-settings.test.ts` — the vacuous `toContain("{settingsOpen ? (")` (which passed on the unrelated left-column ternary) replaced with order- and wrap-tolerant pins on the real shape, plus a source-order assertion for the canvas ordering.
+- `src/components/workbench/__tests__/settings-canvas-persistence.test.tsx` — NEW, 10 mounted cases covering every I/O Matrix row plus the single-commit mode switch out of Settings and a real-cascade `getComputedStyle` check. Follow-up pass: Esc stood down over the hidden canvas and the Tab trap's re-arm now asserted rather than claimed; the heading-id case re-asked per canvas; the cascade guard's reach documented at both the helper and the case.
+- `src/lib/__tests__/workbench-chrome.test.ts` — the `CANVAS_ID`/`tabIndex` count scans widened to admit the conditional, with exact-expression assertions added alongside; follow-up pass made those three rewrap-tolerant.
+- `src/lib/__tests__/workbench-settings.test.ts` — the vacuous `toContain("{settingsOpen ? (")` (which passed on the unrelated left-column ternary) replaced with order- and wrap-tolerant pins on the real shape, plus a source-order assertion for the canvas ordering; follow-up pass made the `opening(tag)` slice brace-aware.
 - `src/components/workbench/__tests__/settings-shortcut.test.tsx` — doc paragraph re-pointed at the new suite.
 
-**Review findings:** 7 patches applied (4 medium, 3 low), 2 items deferred (both medium), 11 rejected, 0 intent gaps, 0 spec defects.
+**Review findings (follow-up pass):** 6 patches applied (1 medium, 5 low), 2 items deferred (both medium), 15 rejected, 0 intent gaps, 0 spec defects. Cumulative across both passes: 13 patches, 4 deferrals, 26 rejections.
 
-**Follow-up review recommended:** true. Patched this pass: high 0, medium 4, low 3 — score `3 × 4 + 1 × 3 = 15`, which is ≥ 5.
+**Follow-up review recommended:** true. Patched this pass: high 0, medium 1, low 5 — score `3 × 1 + 1 × 5 = 8`, which is ≥ 5.
 
-**Verification:**
-- `npx vitest run` — 271 files / 6066 tests passed, exit 0 (`pnpm test` itself fails in this environment with a pnpm workspace-resolution error on the clean tree too; this is the identical invocation the script wraps).
+**Verification (follow-up pass):**
+- `npx vitest run` — 271 files / 6066 tests passed, exit 0. (`pnpm test` cannot be run in this repo at all — see the deferred entry: every `pnpm <script>` exits with `ERROR  packages field missing or empty` on a clean tree. `npx vitest run` is the identical invocation the script wraps.)
 - `npx tsc --noEmit` — exit 0.
-- `npx eslint` — exit 0, no errors; output matches the pre-change baseline (three pre-existing `jsx-ast-utils` `TSNonNullExpression` notices).
-- Negative control: reverting only the `Workbench.tsx` JSX to the old ternary failed 7 of the then-9 new cases. Each of the two new guards (the cascade check and the canvas ordering) was proved by temporarily introducing the exact defect it exists to catch.
+- `npx eslint` — exit 0, output identical to the pre-change baseline (three pre-existing `jsx-ast-utils` `TSNonNullExpression` notices).
+- Negative control for the one medium patch: making ONLY the Esc branch of `useDialogA11y` leak past the `armed` gate fails the new assertion (`escape.defaultPrevented`) with the other nine cases green — so the pin catches the specific regression it names, not the Tab/scroll-lock ones beside it. `useDialogA11y.ts` restored byte-for-byte afterwards.
+- Claims checked and NOT patched, because they were false rather than unfixed: Esc does not reach the hidden dialog (its listener shares the `armed` gate and is torn down); the focus case is not vacuous (it fails if `useDialogA11y`'s hide-vs-close teardown branch is removed, since focus would then be restored to the opener inside the hidden subtree); re-focusing the dialog on return is DW-26's designed re-arm, documented at `useDialogA11y.ts:84-89`; and no component in the now-permanently-mounted subtree registers a document-level listener.
 
 **Residual risks:**
 - The mode canvas's effects now keep running while Settings is showing. Already true across mode switches since DW-26, so this is consistency rather than a new class, but it is a real widening.
 - `.wb-canvas` is the `overflow: auto` scroll container that `display: none` collapses, so a scrolled canvas returns from Settings at the top. React state survives; a DOM scroll offset is not React state. Not a regression — the old code unmounted the section — and named in the suite's coverage-limit paragraph.
-- One full-suite run during this session reported a single failure in `src/components/__tests__/workspace-purpose-settings.test.tsx:926` (a `waitFor` timeout). It was observed BEFORE any test in this change existed, passes in isolation, and did not reproduce across six subsequent full runs — a pre-existing load-dependent flake in an untouched file, not caused here.
+- The cascade guard proves the withdrawal wins against every `.wb-canvas` rule in `globals.css`, which is where a competing rule would plausibly be written, but it is not a proof that nothing in the cascade can reach the section. The limit is now stated in the file rather than implied by the case name.
+- Two adjacent surfaces still lose state through Settings and are deferred, not fixed: the docked Preview (deliberately out of scope per the intent) and the left column's collapsed tree groups. The user model this ships is "the Wiki canvas survives Settings", which is narrower than an owner is likely to generalise it to.
+- One full-suite run during the first pass reported a single failure in `src/components/__tests__/workspace-purpose-settings.test.tsx:926` (a `waitFor` timeout). It did not reproduce in this pass's full run.

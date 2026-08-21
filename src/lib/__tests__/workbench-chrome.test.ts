@@ -537,9 +537,15 @@ describe("the shell owns the viewport at /", () => {
     expect(canvas.match(/tabIndex=\{[^{}]*-1\}/g) ?? []).toHaveLength(1);
     // …and the withdrawal is conditioned on the prop the shell passes, not on
     // anything this file decides for itself.
-    expect(canvas).toContain("hidden={hidden}");
-    expect(canvas).toContain("id={hidden ? undefined : CANVAS_ID}");
-    expect(canvas).toContain("tabIndex={hidden ? undefined : -1}");
+    //
+    // Matched with the whitespace open, not as exact literals: the counts above
+    // are the invariant, and these three say WHAT the one occurrence of each
+    // spells. A formatter wrapping the ternary across lines changes neither,
+    // and the sibling scan in `workbench-settings.test.ts` gave up exact
+    // literals for the same reason in the same change.
+    expect(canvas).toMatch(/hidden=\{\s*hidden\s*\}/);
+    expect(canvas).toMatch(/id=\{\s*hidden\s*\?\s*undefined\s*:\s*CANVAS_ID\s*\}/);
+    expect(canvas).toMatch(/tabIndex=\{\s*hidden\s*\?\s*undefined\s*:\s*-1\s*\}/);
   });
 
   it("the landing page mounts the Workbench and no metrics dashboard", async () => {

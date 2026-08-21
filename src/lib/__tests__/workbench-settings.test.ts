@@ -4697,10 +4697,22 @@ describe("the Settings components stay inside the shell", () => {
     // closes the opening tag — so what follows pins WHAT is passed rather than
     // the order the props happen to sit in or the column the formatter wrapped
     // them at. A case named for the canvas id must not fail on a rewrap.
+    //
+    // The `>` is found by scanning past braced prop values rather than by
+    // `indexOf(">")`: the first `>` in `<Foo onBar={() => baz}>` belongs to the
+    // arrow, and a slice truncated there would assert against half a tag —
+    // silently, since every `toContain` below would simply stop finding things.
     const opening = (tag: string) => {
       const start = shell.indexOf(`<${tag}`);
       expect(start).toBeGreaterThan(-1);
-      return shell.slice(start, shell.indexOf(">", start) + 1);
+      let depth = 0;
+      for (let i = start; i < shell.length; i += 1) {
+        const char = shell[i];
+        if (char === "{") depth += 1;
+        else if (char === "}") depth -= 1;
+        else if (char === ">" && depth === 0) return shell.slice(start, i + 1);
+      }
+      throw new Error(`unterminated opening tag for <${tag}`);
     };
     // Settings is the CONDITIONAL one: its unmount on close is the discard.
     expect(shell).toContain("{settingsOpen && (");

@@ -3286,7 +3286,8 @@ source_spec: `spec-dw-26-62-283-320-workbench-client-state-and-nav.md`
 location: src/components/workbench/Workbench.tsx (settingsOpen canvas swap)
 severity: medium
 reason: `Workbench.tsx` renders `settingsOpen ? <SettingsCanvas …/> : <ModeCanvas …>{children}</ModeCanvas>`, so `children` (`WikiWorkbench`) leaves the tree when the rail's Settings control — or, since this change, `g s` — opens the surface. Pre-existing: the rail control has behaved this way since Story 1.9, and DW-26 names `ModeCanvas` and mode switching only. Closing it means deciding how `SettingsCanvas` keeps owning discard-on-leave for its own draft while no longer being the thing that unmounts the canvas beside it.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-settings-canvas-mount-preservation
 
 ### DW-374: Only `TimeoutError`/`AbortError` are treated as unconfirmed, so a dropped connection or a 502/504 is reported as a known failure — with transport vocabulary — and no refresh runs.
 origin: spec-deferred e6705ae0513e
@@ -3598,4 +3599,36 @@ source_spec: `spec-dw-377-data-version-refresh-budget.md`
 location: package.json / pnpm-workspace.yaml
 severity: low
 reason: Both abort with `ERROR packages field missing or empty` from the pnpm workspace config; `npx vitest run` and `npx eslint .` on the same tree run clean. `spec-dw-48-data-version-refresh-retry.md`'s Auto Run Result records the identical failure, so it long predates this story. It matters because `vitest.config.ts`'s own comment states that `.github/workflows/ci.yml` runs `pnpm test` and nothing else — whatever the exact script resolution, the documented developer entry points are broken.
+status: open
+
+### DW-412: Opening Settings with `g s` while a modal dialog inside the mode canvas holds focus drops the keyboard on `<body>`, because the section it is in goes `display: none`.
+origin: spec-deferred a438c49568e0
+source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
+location: src/components/workbench/Workbench.tsx (openSettings)
+severity: medium
+reason: `openSettings` sets `settingsOpen` and nothing moves focus. With the Create Wiki dialog focused (`useDialogA11y` focuses the container on open), hiding the section blurs the focused node in a real browser; jsdom leaves `activeElement` on the hidden node, so no mounted case can observe the outcome either way. Not a regression — the old code unmounted the section, which lost focus the same way — but DW-373 makes the state survivable, so where focus should land (the Settings canvas already carries `tabIndex={-1}`) is now a decidable question rather than a moot one. The rail path is unaffected: the owner's click puts focus on the control before the hide.
+status: open
+
+### DW-413: Global `g <key>` shortcuts fire while a modal dialog holds focus, so the keyboard can leave a dialog the owner is mid-way through without closing it.
+origin: spec-deferred 6632becdc7e9
+source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
+location: src/hooks/useKeyboardShortcuts.ts:19-26 (isEditableTarget)
+severity: medium
+reason: `isEditableTarget` in src/hooks/useKeyboardShortcuts.ts guards only INPUT / TEXTAREA / SELECT / contenteditable, so a keydown on the dialog container or any of its buttons reaches the dispatcher. Pre-existing and unrelated to DW-373, but more visible now that the dialog survives the resulting surface change instead of being torn down: the owner presses `g s`, Settings appears, and an open modal is still mounted behind it.
+status: open
+
+### DW-414: A trip through Settings re-expands every tree group the owner had collapsed, because the left column — and with it `TreePanel`'s local `closed` state — is unmounted.
+origin: spec-deferred 96ddf1630ffb
+source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
+location: src/components/workbench/Workbench.tsx:1037 (TreePanel/SettingsNav swap)
+severity: medium
+reason: `Workbench.tsx:1037` still swaps `TreePanel` for `SettingsNav` on `settingsOpen`, and `TreePanel` holds the owner's collapsed groups in `const [closed, setClosed] = useState<Record<string, boolean>>({})` (src/components/workbench/TreePanel.tsx:116), seeded from nothing and persisted nowhere. This is the same class of loss DW-373 closes one column over, and it is pre-existing rather than introduced here — the column swap predates this change and DW-373's intent scopes it out. It is more visible now: the `g s` prose names the column swap as "what is NOT preserved" without naming the state it costs, and an owner who has just learned their Wiki draft survives Settings has no reason to expect the tree beside it does not.
+status: open
+
+### DW-415: Every `pnpm <script>` in this repo fails with `ERROR packages field missing or empty`, so the documented `pnpm test` and `pnpm lint` commands cannot be run at all.
+origin: spec-deferred cb272d56d683
+source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
+location: package.json / missing pnpm-workspace.yaml (repo root)
+severity: medium
+reason: `pnpm test` and `pnpm lint` both exit non-zero with `ERROR packages field missing or empty` on a clean tree at 5b613b8, with no test or lint output. There is no `pnpm-workspace.yaml` at the repo root, while `package.json` defines `test`/`lint` normally — so pnpm resolves this directory as a workspace root it then rejects. Pre-existing and repo-wide, not caused by DW-373, but it is why this spec's own acceptance criterion ("Given `pnpm test` and `pnpm lint` are run … both pass") has been met via `npx vitest run` / `npx eslint` in two passes now. Every contributor and CI step following the README hits it.
 status: open

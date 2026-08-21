@@ -130,10 +130,19 @@ let injected: HTMLStyleElement[] = [];
  *
  * `.wb-canvas` as a whole token, so `.wb-canvas-mode`, `.wb-canvas-pad` and
  * `.wb-canvas-preview-note` — three different elements — stay out of it. Rules
- * are collected at EVERY nesting depth and injected flat: a `display` handed to
- * this class from inside an `@media` block is exactly as capable of defeating
- * the withdrawal as one at the top level, so flattening turns that into a
- * failure here rather than into a width nobody tested.
+ * are collected at EVERY nesting depth and injected flat, so a `display` handed
+ * to this class from inside an `@media` block is caught here rather than at a
+ * width nobody tested. Flattening drops the condition, which is deliberate: a
+ * `display` on this class cannot be width-scoped and still leave the withdrawal
+ * intact at the widths it covers.
+ *
+ * WHAT THIS DOES NOT SEE, because the case it backs is named for the cascade: a
+ * rule reaching the section any other way — `.wb-shell > section`, a bare
+ * `section`, a `[hidden] { display: revert }` reset, a utility class — or one
+ * from any stylesheet other than `globals.css`, the only file read. The guard
+ * covers the shape a competing rule would plausibly take in THIS stylesheet,
+ * which is the shape the triage that prompted it found; it is not a proof that
+ * nothing in the cascade can reach the element.
  *
  * The pattern reads "a run with no braces in it, then a braced body with no
  * braces in it" — a declaration block holds no `{`, which is what separates one
@@ -400,9 +409,40 @@ describe("an open Create Wiki dialog survives a trip through Settings (DW-373)",
     expect(tab.defaultPrevented).toBe(false);
     expect(document.activeElement).toBe(railButton);
 
-    // …and coming back re-arms both.
+    // Esc is stood down with them, and it is the one input that could undo this
+    // whole change: `useDialogA11y` answers it by calling `onDismiss`, and a
+    // dismissed `CreateWikiDialog` resets its fields — so a live handler over a
+    // canvas nobody can see would wipe the draft the owner still expects to
+    // find. It shares the `armed` gate with the two above TODAY, which is
+    // exactly why it is worth pinning separately: splitting it back onto `open`
+    // alone is a one-line change that leaves every other case here green.
+    const escape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    railButton.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(false);
+    expect(nameFieldNode()?.value).toBe("Quarterly review");
+
+    // …and coming back re-arms all three. The scroll lock is read off the
+    // document; the trap is re-dispatched rather than assumed, because "both"
+    // was previously claimed by a comment and checked in one half.
     await toggleSettings();
     expect(document.body.style.overflow).toBe("hidden");
+    const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
+    expect(document.activeElement).toBe(dialog);
+    // Shift+Tab off the container is the branch the trap answers by pulling
+    // focus to the LAST focusable inside it — a plain Tab from the container
+    // is a no-op in an armed trap too, so it could not tell the two apart.
+    const trapped = new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    dialog.dispatchEvent(trapped);
+    expect(trapped.defaultPrevented).toBe(true);
   });
 
   it("does not move focus when it hides the canvas", async () => {
@@ -514,14 +554,35 @@ describe("an open Create Wiki dialog survives a trip through Settings (DW-373)",
     await act(async () => {});
     await toggleSettings();
 
-    const headings = Array.from(document.querySelectorAll("h2[id]"));
-    const ids = headings.map((heading) => heading.id);
-    expect(ids.length).toBeGreaterThanOrEqual(2);
-    expect(new Set(ids).size).toBe(ids.length);
-    // …and each section is named by its OWN heading.
-    for (const section of Array.from(document.querySelectorAll("section.wb-canvas"))) {
+    // Asked of EACH canvas rather than of the document: a document-wide count
+    // of `h2[id]` is satisfied by one canvas that renders two headings and one
+    // that renders none — and none is the shape a regression takes here, since
+    // dropping the second `useId` along with the heading it names makes a
+    // duplicate id impossible too, which is the very thing being pinned.
+    //
+    // The mode canvas legitimately holds more than one `<h2 id>`: its own stub
+    // heading for the non-Wiki mode, plus `WikiWorkbench`'s, which stays in the
+    // tree behind `.wb-canvas-mode[hidden]` (DW-26). So the assertion is on the
+    // heading each section NAMES ITSELF BY, not on how many it contains.
+    const sections = Array.from(document.querySelectorAll("section.wb-canvas"));
+    expect(sections).toHaveLength(2);
+    const ids = sections.map((section) => {
+      // `aria-labelledby` is asserted non-empty first: `CSS.escape("")` builds
+      // the selector `"#"`, which throws a SyntaxError rather than failing with
+      // a readable message.
       const labelledBy = section.getAttribute("aria-labelledby") ?? "";
-      expect(section.querySelector(`#${CSS.escape(labelledBy)}`)).toBeTruthy();
+      expect(labelledBy).not.toBe("");
+      const heading = section.querySelector(`#${CSS.escape(labelledBy)}`);
+      // Inside its OWN section, and a heading — not resolved across the
+      // document to the other canvas's, which is exactly what a shared id did.
+      expect(heading?.tagName).toBe("H2");
+      return labelledBy;
+    });
+    // Unique across the DOCUMENT, which is where an id collision is resolved —
+    // not merely across the two ids collected above.
+    expect(new Set(ids).size).toBe(2);
+    for (const id of ids) {
+      expect(document.querySelectorAll(`#${CSS.escape(id)}`)).toHaveLength(1);
     }
   });
 
