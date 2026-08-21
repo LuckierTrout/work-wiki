@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/owner", () => ({ isOwnerHandle: vi.fn() }));
@@ -25,6 +25,7 @@ import {
 } from "@/lib/email-ingest";
 import { getAgent } from "@/lib/agents";
 import { getVault, vaultOwnedBy } from "@/lib/vault";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedIsOwner = vi.mocked(isOwnerHandle);
@@ -42,8 +43,14 @@ function request(body: Record<string, unknown>) {
   });
 }
 
+let savedReadOnly: string | undefined;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  savedReadOnly = process.env.YOPEDIA_READONLY;
+  // Cleared rather than inherited: a value exported in a developer's shell
+  // would otherwise turn every writable case below into a 403.
+  delete process.env.YOPEDIA_READONLY;
   mockedPrincipal.mockResolvedValue({ id: "user_1", handle: "LuckierTrout" });
   mockedIsOwner.mockReturnValue(true);
   mockedLoad.mockResolvedValue({
@@ -60,6 +67,66 @@ beforeEach(() => {
     destinationAgentId: input.destinationAgentId ?? "",
     updatedAt: "2026-08-01T12:00:00.000Z",
   }));
+});
+
+afterEach(() => {
+  if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+  else process.env.YOPEDIA_READONLY = savedReadOnly;
+});
+
+/**
+ * The settings save on a read-only deployment (DW-300).
+ *
+ * `saveEmailIngestConfig` reaches no kernel writer, so before this gate the
+ * panel reported a save that had happened — including flipping ingestion ON for
+ * a deployment that refuses every ingest behind it.
+ */
+describe("PUT /api/email/settings on a read-only deployment", () => {
+  const VALID = {
+    enabled: true,
+    inboundAddress: "ingest@example.com",
+    allowedSenders: ["owner@example.com"],
+  };
+
+  beforeEach(() => {
+    process.env.YOPEDIA_READONLY = "1";
+  });
+
+  it("403s without saving", async () => {
+    const { PUT } = await import("@/app/api/email/settings/route");
+    const response = await PUT(request(VALID));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.emailSettings });
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("keeps the not-found cloak ahead of the refusal for a non-owner", async () => {
+    // THE ordering assertion. The gate sits after `requireOwner()`, so a
+    // non-owner still gets 404 — a 403 here would tell them this owner-only
+    // door exists, which is exactly what the cloak is for.
+    mockedIsOwner.mockReturnValue(false);
+    const { PUT } = await import("@/app/api/email/settings/route");
+    const response = await PUT(request(VALID));
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "Not found" });
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("refuses BEFORE validating the body", async () => {
+    // An invalid body would otherwise 400 first, blaming the owner's input for
+    // a save the deployment was never going to accept.
+    const { PUT } = await import("@/app/api/email/settings/route");
+    const response = await PUT(request({ enabled: "yes" }));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.emailSettings });
+  });
+
+  it("still SERVES the configuration — the read is not refused", async () => {
+    const { GET } = await import("@/app/api/email/settings/route");
+    const response = await GET();
+    expect(response.status).toBe(200);
+    expect(mockedLoad).toHaveBeenCalled();
+  });
 });
 
 describe("/api/email/settings", () => {

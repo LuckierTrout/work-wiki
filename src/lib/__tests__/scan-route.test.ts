@@ -34,6 +34,7 @@ import {
   listPendingMonitorDigestDeliveries,
   markMonitorDigestQueued,
 } from "@/lib/monitor-digests";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 
 const mockedGetService = vi.mocked(getServicePrincipal);
 const mockedScan = vi.mocked(scanForMaintenance);
@@ -63,12 +64,17 @@ async function scan(query = "") {
 
 let savedFlag: string | undefined;
 let savedOwnerHandle: string | undefined;
+let savedReadOnly: string | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
   savedFlag = process.env.AUTONOMOUS_MAINTENANCE;
   savedOwnerHandle = process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  savedReadOnly = process.env.YOPEDIA_READONLY;
   delete process.env.AUTONOMOUS_MAINTENANCE;
   delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  // Cleared rather than inherited: a value exported in a developer's shell
+  // would otherwise turn every case below into a 403.
+  delete process.env.YOPEDIA_READONLY;
   mockedGetService.mockReturnValue({ id: "service:yopedia", handle: "yopedia" });
   mockedScan.mockResolvedValue(SAMPLE);
   mockedRebuild.mockResolvedValue({});
@@ -83,6 +89,8 @@ beforeEach(() => {
   mockedMarkDigestQueued.mockResolvedValue(null);
 });
 afterEach(() => {
+  if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+  else process.env.YOPEDIA_READONLY = savedReadOnly;
   if (savedFlag === undefined) delete process.env.AUTONOMOUS_MAINTENANCE;
   else process.env.AUTONOMOUS_MAINTENANCE = savedFlag;
   if (savedOwnerHandle === undefined) delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
@@ -301,5 +309,65 @@ describe("POST /api/tasks/scan", () => {
     });
     // staleness op omits lintType and targetSlug
     expect(body.tasks[0]).toEqual({ op: "staleness", slug: "stale" });
+  });
+});
+
+/**
+ * The scan on a read-only deployment (DW-314).
+ *
+ * This route wrote bytes ON A TIMER with no gate at all: the index rebuild and
+ * the ingest-job GC run every pass, the orphan sweep DELETES `wikis/<uuid>/`
+ * directories, and the DW-137 backfill relocates workspace profiles. None of
+ * them reaches a kernel writer, so nothing behind the handler would have
+ * refused — a cron against a read-only deployment simply kept working.
+ */
+describe("POST /api/tasks/scan on a read-only deployment", () => {
+  beforeEach(() => {
+    process.env.YOPEDIA_READONLY = "1";
+  });
+
+  it("403s without scanning, sweeping, backfilling or enqueuing", async () => {
+    const res = await scan();
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: READ_ONLY_REFUSAL.maintenanceScan });
+    expect(mockedScan).not.toHaveBeenCalled();
+    expect(mockedRebuild).not.toHaveBeenCalled();
+    expect(mockedPurge).not.toHaveBeenCalled();
+    expect(mockedSweepOrphanWikiDirs).not.toHaveBeenCalled();
+    expect(mockedBackfillProfiles).not.toHaveBeenCalled();
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("refuses WHOLE — `?dry=1` does not buy an inspection 200", async () => {
+    // The decision this case exists to pin. `dry` is documented as the one true
+    // inspection switch and its 200 says "here is what a scan would do"; a
+    // read-only deployment answering that shape would be reporting a scan that
+    // never ran. So the refusal wins, and the consumer treats the 4xx as
+    // terminal exactly as it does for `POST /api/tasks/run`.
+    const res = await scan("?dry=1");
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: READ_ONLY_REFUSAL.maintenanceScan });
+    expect(mockedScan).not.toHaveBeenCalled();
+  });
+
+  it("refuses with AUTONOMOUS_MAINTENANCE=on too", async () => {
+    // The two flags are independent: `AUTONOMOUS_MAINTENANCE` gates page
+    // auto-EDITS, and read-only gates every byte. Turning the first on must not
+    // reach past the second.
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+
+    expect((await scan()).status).toBe(403);
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("still 401s without the service token, so the gate stays behind auth", async () => {
+    mockedGetService.mockReturnValue(null);
+
+    const res = await scan();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "Unauthorized" });
   });
 });

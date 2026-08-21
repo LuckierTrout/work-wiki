@@ -1,70 +1,36 @@
-"use client";
+import { isReadOnly } from "@/lib/config";
+import { NewWikiForm } from "./NewWikiForm";
 
-import { useRouter } from "next/navigation";
-import { useState, useMemo } from "react";
-import { slugify } from "@/lib/slugify";
-import { getErrorMessage } from "@/lib/errors";
-import { Alert } from "@/components/Alert";
-import { TemplateSelector } from "@/components/TemplateSelector";
+/**
+ * REQUIRED, not a performance choice — this page has no other dynamic API.
+ *
+ * `isReadOnly()` reads `process.env.YOPEDIA_READONLY` at CALL time, and a
+ * server component with no `params` to await, no cookies and no data fetch is
+ * PRERENDERED AT BUILD: the flag would be baked into static HTML, and flipping
+ * it on a running deployment would never reach {@link NewWikiForm}. The whole
+ * refusal below would be inert in production while every test stayed green.
+ * `src/app/wiki/new/__tests__/new-wiki-page-seam.test.ts` pins this line for
+ * that reason. Same declaration `src/app/page.tsx` carries, for the same class
+ * of reason.
+ */
+export const dynamic = "force-dynamic";
 
+/**
+ * `/wiki/new` — compose a page and create it through `POST /api/wiki`.
+ *
+ * A SERVER COMPONENT, and only just: everything interactive lives in
+ * {@link NewWikiForm} beside it. The split exists for one fact — `isReadOnly()`
+ * reads `process.env.YOPEDIA_READONLY`, which no `"use client"` module can do —
+ * and the whole page used to be the form, so a read-only deployment let the
+ * owner compose a title, a slug and an entire markdown body before the 403.
+ *
+ * The same SEAM as `src/app/u/[handle]/[slug]/edit/page.tsx`, which reads the
+ * flag here and hands it to `WikiEditor` — but not the same rendering mode for
+ * free: that page awaits `params` and calls `getPrincipal()`, so Next makes it
+ * dynamic on its own. This one has nothing of the kind and has to say so
+ * explicitly, which is what the `dynamic` export above is.
+ */
 export default function NewWikiPage() {
-  const router = useRouter();
-  const [title, setTitle] = useState("");
-  const [slugOverride, setSlugOverride] = useState("");
-  const [content, setContent] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const autoSlug = useMemo(() => slugify(title), [title]);
-  const slug = slugOverride || autoSlug;
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-
-    const trimmedSlug = slug.trim();
-    if (!trimmedSlug) {
-      setError("Please enter a title or slug.");
-      return;
-    }
-
-    // Build the markdown body — prepend an H1 from the title if the user
-    // didn't already start the content with one.
-    let body = content.trim();
-    const hasH1 = /^#\s+.+$/m.test(body);
-    if (!hasH1 && title.trim()) {
-      body = `# ${title.trim()}\n\n${body}`;
-    }
-    if (!body) {
-      setError("Content must not be empty.");
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const res = await fetch("/api/wiki", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug: trimmedSlug, content: body }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? `Error ${res.status}`);
-        return;
-      }
-      // Navigate to the canonical owner-qualified URL (owner echoed by the API).
-      const tenant =
-        typeof data.owner === "string" && data.owner.trim()
-          ? data.owner.trim().toLowerCase()
-          : "yopedia";
-      router.push(`/u/${tenant}/${trimmedSlug}`);
-    } catch (err) {
-      setError(getErrorMessage(err, "Network error"));
-    } finally {
-      setLoading(false);
-    }
-  }
-
   return (
     <div className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
       <p className="fmark" style={{ marginBottom: 16 }}>create knowledge</p>
@@ -73,85 +39,7 @@ export default function NewWikiPage() {
         Start from a useful template, add source-aware content, and publish with a revision receipt.
       </p>
 
-      <form onSubmit={handleSubmit} className="max-w-4xl space-y-5 border-t border-rule pt-7">
-        {/* Title */}
-        <div>
-          <label htmlFor="title" className="block text-sm font-medium mb-1">
-            Title
-          </label>
-          <input
-            id="title"
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g. Transformer Architecture"
-            className="w-full rounded-lg border border-foreground/10 bg-transparent px-4 py-2 text-sm outline-none focus:border-foreground/30 transition-colors"
-          />
-        </div>
-
-        {/* Slug */}
-        <div>
-          <label htmlFor="slug" className="block text-sm font-medium mb-1">
-            Slug
-          </label>
-          <input
-            id="slug"
-            type="text"
-            value={slugOverride || autoSlug}
-            onChange={(e) => setSlugOverride(e.target.value)}
-            placeholder="auto-generated-from-title"
-            className="w-full rounded-lg border border-foreground/10 bg-transparent px-4 py-2 text-sm font-mono outline-none focus:border-foreground/30 transition-colors"
-          />
-          {slug && (
-            <p className="mt-1 text-xs text-foreground/50">
-              Will be created as: <code className="font-mono">{slug}.md</code>
-            </p>
-          )}
-        </div>
-
-        {/* Template selector */}
-        <TemplateSelector onSelect={(tpl) => setContent(tpl)} />
-
-        {/* Content */}
-        <div>
-          <label htmlFor="content" className="block text-sm font-medium mb-1">
-            Content (Markdown)
-          </label>
-          <textarea
-            id="content"
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            rows={14}
-            placeholder={`Write your wiki page content here…\n\nThe title above will be added as an H1 heading automatically.\n\n## Overview\n\nA brief summary paragraph…\n\n## Details\n\nMore in-depth information…`}
-            className="w-full rounded-lg border border-foreground/10 bg-transparent px-4 py-2 text-sm font-mono outline-none focus:border-foreground/30 transition-colors resize-y"
-          />
-        </div>
-
-        {/* Error */}
-        {error && (
-          <Alert variant="error">
-            {error}
-          </Alert>
-        )}
-
-        {/* Actions */}
-        <div className="flex items-center gap-3">
-          <button
-            type="submit"
-            disabled={loading || !slug}
-            className="btn primary disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading ? "Creating…" : "Create page"}
-          </button>
-          <button
-            type="button"
-            onClick={() => router.push("/")}
-            className="btn ghost"
-          >
-            Cancel
-          </button>
-        </div>
-      </form>
+      <NewWikiForm readOnly={isReadOnly()} />
     </div>
   );
 }

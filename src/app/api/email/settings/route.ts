@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { isOwnerHandle } from "@/lib/owner";
 import {
   MAX_EMAIL_SENDERS,
@@ -46,6 +48,18 @@ export async function PUT(request: Request) {
   const principal = await requireOwner();
   if (!principal) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  // Deployment read-only (DW-300). AFTER `requireOwner()`, so the not-found
+  // cloak still wins: a non-owner must not learn from a 403 that this door
+  // exists at all. Before the parse and before `saveEmailIngestConfig`, which
+  // reaches no kernel writer and so refuses nothing of its own — without this
+  // the form reports a save that never happened.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.emailSettings },
+      { status: 403 },
+    );
   }
 
   try {

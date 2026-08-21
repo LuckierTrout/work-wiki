@@ -84,7 +84,15 @@ export async function GET(request: NextRequest) {
       .filter((e) => e.primary_slug && readable.has(e.primary_slug))
       .slice(0, limit ?? 50);
 
-    return NextResponse.json({ entries });
+    // The deployment fact, carried on the answer the surface already asks for
+    // (DW-265). `/ingest` is a `"use client"` page all the way down, so
+    // `isReadOnly()` — which reads `process.env` — cannot be evaluated where
+    // `RecentIngests` renders, and no prop can reach it from a server component.
+    // Riding along on the GET the list already makes is the same seam
+    // `/api/workspace-profile` gives `WorkspacePurposeSettings`: no extra
+    // request, and the fact arrives from the very route whose DELETE would
+    // refuse.
+    return NextResponse.json({ entries, readOnly: isReadOnly() });
   } catch (error) {
     logger.error("ingest", "Ingest history GET error", error);
     return NextResponse.json(

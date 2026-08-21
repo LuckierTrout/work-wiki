@@ -38,6 +38,29 @@ export interface EmbeddingSettingsProps {
   rebuilding: boolean;
   onRebuild: () => void;
   rebuildResult: { ok: boolean; message: string } | null;
+  /**
+   * `YOPEDIA_READONLY=1`, as `GET /api/settings` reported it (DW-299).
+   *
+   * Refuses PER CONTROL rather than through the page's old
+   * `<fieldset disabled>` — see `ProviderFormProps.readOnly` for the DW-191
+   * reasoning. Here that covers TWO controls: the model box, whose stored value
+   * must stay readable and reachable, and Rebuild Vector Index, whose route
+   * (`POST /api/settings/rebuild-embeddings`) already answers 403 — so the
+   * button was live-looking over a refusal it would only meet after a round
+   * trip.
+   *
+   * Optional and off by default, so every existing caller renders unchanged.
+   */
+  readOnly?: boolean;
+  /**
+   * The id of the sentence that says WHY — see `ProviderFormProps.describedBy`.
+   *
+   * COMPOSED with this component's own two notes rather than replacing them: a
+   * read-only deployment can be substituting an embedding model and reporting
+   * an inactive vector switch at the same time, and a control that stated only
+   * one of the three reasons would describe part of why it will not run.
+   */
+  describedBy?: string;
 }
 
 /**
@@ -83,6 +106,8 @@ export function EmbeddingSettings({
   rebuilding,
   onRebuild,
   rebuildResult,
+  readOnly = false,
+  describedBy,
 }: EmbeddingSettingsProps) {
   // ONE condition, read by both the note and the `aria-describedby` that points
   // at it — two expressions would be two rules that agree today, and the way
@@ -95,10 +120,17 @@ export function EmbeddingSettings({
   // both are absent, which is what keeps the "no dangling describedby" property
   // literally true rather than merely empty.
   const showVectorNotice = typeof vectorNotice === "string" && vectorNotice.length > 0;
-  const describedBy =
+  // The page's read-only sentence joins the same list rather than replacing it:
+  // all three conditions are independent, and the attribute must name exactly
+  // the ids that are in the document. `readOnlyNoteId` is guarded on `readOnly`
+  // as well as on being passed, so a caller that hands down an id without the
+  // flag cannot leave a dangling pointer.
+  const readOnlyNoteId = readOnly && describedBy ? describedBy : null;
+  const notes =
     [
       showOverrideNote ? OVERRIDE_NOTE_ID : null,
       showVectorNotice ? VECTOR_NOTICE_ID : null,
+      readOnlyNoteId,
     ]
       .filter((id): id is string => id !== null)
       .join(" ") || undefined;
@@ -131,7 +163,8 @@ export function EmbeddingSettings({
           onChange={(e) => setEmbeddingModel(e.target.value)}
           placeholder="e.g. text-embedding-3-small (OpenAI) or embedding-001 (Google)"
           className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20 font-mono"
-          aria-describedby={describedBy}
+          readOnly={readOnly}
+          aria-describedby={notes}
         />
       )}
       {/*
@@ -185,9 +218,22 @@ export function EmbeddingSettings({
       <div className="mt-3 flex items-center gap-3">
         <button
           type="button"
-          onClick={onRebuild}
+          // BEFORE the request, like every other refusing control: the route
+          // answers 403 either way, and a rebuild the owner waits out only to
+          // be refused is the harm the gate exists to remove.
+          onClick={() => {
+            if (readOnly) return;
+            onRebuild();
+          }}
+          // `rebuilding` is TRANSIENT and keeps `disabled`; the standing
+          // refusal is `aria-disabled`, so the button stays in the tab order
+          // and can be announced with the sentence it points at.
           disabled={rebuilding}
-          className="rounded-md border border-foreground/20 px-3 py-1.5 text-xs font-medium text-foreground/80 transition-colors hover:bg-foreground/5 disabled:opacity-50"
+          aria-disabled={readOnly || undefined}
+          aria-describedby={readOnly ? readOnlyNoteId ?? undefined : undefined}
+          className={`rounded-md border border-foreground/20 px-3 py-1.5 text-xs font-medium text-foreground/80 transition-colors disabled:opacity-50 ${
+            readOnly ? "opacity-50 cursor-default" : "hover:bg-foreground/5"
+          }`}
         >
           {rebuilding ? (
             <span className="inline-flex items-center gap-1.5">

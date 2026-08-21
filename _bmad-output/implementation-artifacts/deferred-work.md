@@ -2351,7 +2351,8 @@ source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
 location: src/app/wiki/new/page.tsx:45
 severity: medium
 reason: This change is what makes `POST /api/wiki` refuse on a read-only deployment (src/app/api/wiki/route.ts, catch maps ReadOnlyError to 403). `src/app/wiki/new/page.tsx:45` is a client page that fetches that route on submit with no read-only signal, so the owner types a title and a full body and meets the refusal only afterwards — the DW-149 confirm-then-403 harm, on a door this bundle opened. It was left alone because it is not a surface the bundle intent names (DW-190 names only ArticleActions) and it sits on no existing `readOnly` seam: the page is `"use client"`, so the fact would have to arrive through a new server wrapper rather than the ArticleView thread the Re-ingest and Revert mirrors reuse.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-read-only-doors-and-affordances
 
 ### DW-265: The `/ingest` page's bulk-delete control confirms an irreversible delete in front of a `DELETE /api/ingest/history` that now answers 403.
 origin: spec-deferred 2f18f66dd0d3
@@ -2359,7 +2360,8 @@ source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
 location: src/components/RecentIngests.tsx:229
 severity: medium
 reason: `src/components/RecentIngests.tsx:229` raises a `window.confirm` naming permanent removal, then calls the route this change gated at `src/app/api/ingest/history/route.ts:121`. Same confirm-then-403 shape as the Re-ingest and Revert controls that WERE mirrored here. Left alone for the same two reasons: not named by the bundle intent, and `/ingest` (src/app/ingest/page.tsx:414) carries no `readOnly` prop today — though it is a server component, so the thread is one attribute plus a prop, cheaper than `/wiki/new`.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-read-only-doors-and-affordances
 
 ### DW-266: `putWikiArtifact` writes `schema.md` and `purpose.md` without the gate `writeWikiArtifact` now carries, so wiki seeding still writes.
 origin: spec-deferred 41aab9652a70
@@ -2608,7 +2610,8 @@ source_spec: `spec-dw-161-164-storage-write-integrity.md`
 location: src/app/api/research/route.ts
 severity: medium
 reason: `src/app/api/wikis/route.ts` refuses creates with 403 when the deployment is read-only and most write routes do the same. The research create writes to storage and does not. Pre-existing; this change touched only the error classification in the same handler.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-read-only-doors-and-affordances
 
 ### DW-295: `POST /api/research` answers 500 for a malformed or non-object JSON body.
 origin: spec-deferred eb0c1ee445f5
@@ -2648,7 +2651,8 @@ source_spec: `spec-dw-189-191-read-only-surface-affordances.md`
 location: src/app/settings/page.tsx:118
 severity: medium
 reason: `src/app/settings/page.tsx:118` is `<fieldset disabled={readOnly} className="max-w-4xl disabled:opacity-60">` around `ProviderForm`, `StructuredKnowledgeSettings`, `EmbeddingSettings`, the Save submit (`:161`) and `Test Connection` (`:167`) — and that same page renders `<WorkspacePurposeSettings />` at `:205`. So after this change one scroll of `/settings` refuses read-only two contradictory ways: the lower form keeps every stored value readable and in the tab order, the upper one still removes the stored provider, model, base URL, embedding model and the (non-writing) `Test Connection` button from it entirely. `SettingsCanvas` — the Workbench twin of that same form — already refuses per control. No suite mounts `src/app/settings/page.tsx` at all (no test file references it), so the inconsistency is invisible in both directions. Pre-existing; the bundle intent names WorkspacePurposeSettings and WikiWorkbench only.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-read-only-doors-and-affordances
 
 ### DW-300: `/api/names-terms` and `/api/email/settings` have no `isReadOnly()` gate, so those Settings forms silently SUCCEED on a read-only deployment.
 origin: spec-deferred 62ef6bcca620
@@ -2656,7 +2660,8 @@ source_spec: `spec-dw-189-191-read-only-surface-affordances.md`
 location: src/app/api/names-terms/route.ts:23
 severity: medium
 reason: `src/app/api/names-terms/route.ts:23` (POST), `src/app/api/names-terms/[id]/route.ts:15,39` (PUT, DELETE) and `src/app/api/email/settings/route.ts:45` (PUT) contain no `isReadOnly` reference and reach no kernel writer, so `YOPEDIA_READONLY=1` does not refuse them. `NamesTermsSettings` and `EmailIngestSettings` render immediately below `WorkspacePurposeSettings` on the same page, so the owner now meets three behaviours in one column: a form that refuses and says so, a form that refuses by removing itself from the tab order (the entry above), and two that write. Pre-existing and wider than a surface fix — the doors need gating before their surfaces can mirror anything.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-read-only-doors-and-affordances
 
 ### DW-301: The `!wiki` leg of WorkspacePurposeSettings' fieldset carries the same tab-order harm DW-191 named, on bytes the route answers so they can be READ.
 origin: spec-deferred 4ca76f982d23
@@ -2780,7 +2785,8 @@ source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
 location: src/lib/wikis.ts (deleteWiki, setCurrentWiki, sweepOrphanWikiDirectories); src/app/api/tasks/scan/route.ts
 severity: medium
 reason: `deleteWiki` rewrites `wikis.json` and calls `getStorage().deleteDirectory(wikiDirPath(...))` — the most destructive operation in the module — and `setCurrentWiki` rewrites the registry; neither calls `assertWritable`. `sweepOrphanWikiDirectories` deletes directories and is reached from `src/app/api/tasks/scan/route.ts`, which carries no `isReadOnly()` gate at all, so it can delete on a timer on a read-only deployment. Their HTTP doors do gate (`src/app/api/wikis/[id]/route.ts:63`, `src/app/api/wikis/current/route.ts:19`), which is exactly the "route gates, kernel does not" shape DW-266 names. Out of scope here: the bundle's intent names `putWikiArtifact` and `putWorkspaceProfile`, and neither of these three writes through either putter.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw-read-only-doors-and-affordances
 
 ### DW-315: `read-only-door-coverage.test.ts` still registers four kernel writers, so the newly refusing wiki-lifecycle exports are invisible to the scan that guards tomorrow's doors.
 origin: spec-deferred 451eef2b76ed
@@ -3341,4 +3347,44 @@ source_spec: `spec-dw-209-289-wiki-rename-refresh-and-sweep-cap.md`
 location: src/lib/wikis.ts (sweepOrphans / ORPHAN_SWEEP_CANDIDATE_CAP)
 severity: low
 reason: `ORPHAN_SWEEP_CANDIDATE_CAP` truncates the candidate list before `newestWriteTime`, and an unreadable age is treated as too young — a deliberate skip that never clears on its own if the underlying storage error is permanent. The tombstone half of this shape was closed during review (the probe now resolves before the cap); the age half cannot be, because reading the age IS the expensive walk the cap exists to bound. Related to DW-290, which records the future-mtime variant of the same permanently-unsweepable candidate.
+status: open
+
+### DW-384: The sibling research routes (PATCH/DELETE `/api/research/[id]`, POST `/api/research/[id]/run`) still write and delete research-project records with no read-only gate.
+origin: spec-deferred 4a4bbd173b0f
+source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md`
+location: src/app/api/research/[id]/route.ts; src/app/api/research/[id]/run/route.ts
+severity: medium
+reason: DW-294 named only `POST /api/research`, which this change gated. The `[id]` handlers reach `updateResearchProject`/`deleteResearchProject`, reach no kernel writer, and contain no `isReadOnly` reference — so the feature refuses creates and accepts edits, deletes and runs.
+status: open
+
+### DW-385: The research, Names & Terms and email-ingest stores carry no `assertWritable`, so a CLI, MCP or agent-runtime caller still writes them on a read-only deployment.
+origin: spec-deferred 192b376cbc62
+source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md`
+location: src/lib/research-projects.ts; src/lib/names-terms.ts; src/lib/email-ingest.ts
+severity: medium
+reason: DW-314's whole argument is that a route gate is not enough because a direct library caller reaches the kernel with no route in front. This change applied that argument to `wikis.ts` only; `createResearchProject`, `createNamesTerm`/`updateNamesTerm`/`deleteNamesTerm` and `saveEmailIngestConfig` got HTTP gates alone.
+status: open
+
+### DW-386: Three surfaces now compose a write in front of a door this change taught to answer 403, with no read-only mirror — the DW-264/DW-265 shape, one bundle later.
+origin: spec-deferred 56c9d9c9eb3d
+source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md`
+location: src/components/NamesTermsSettings.tsx; src/components/EmailIngestSettings.tsx; src/components/KnowledgeStudio.tsx
+severity: medium
+reason: `NamesTermsSettings` and `EmailIngestSettings` render immediately below the `/settings` form that now refuses per control, and `KnowledgeStudio` posts to `/api/research`; all three submit and meet the new 403 afterwards. `READ_ONLY_REFUSAL.namesTerms` and `.emailSettings` consequently have no client counterpart and no parity-test entry.
+status: open
+
+### DW-387: `/settings` now states three different sentences for one deployment state, none of them owned by `READ_ONLY_REFUSAL` and none pinned by the parity suite.
+origin: spec-deferred cba66956e0ae
+source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md`
+location: src/app/settings/page.tsx:147; src/app/api/settings/route.ts:130; src/app/api/settings/rebuild-embeddings/route.ts
+severity: medium
+reason: The banner every refused control now points at reads "Read-only mode — This deployment has explicitly disabled settings changes."; `PUT /api/settings` answers "Settings are read-only in this deployment."; `POST /api/settings/rebuild-embeddings` answers a third wording. Only the banner is on screen, so the owner reads one sentence before pressing and another if anything reaches the route.
+status: open
+
+### DW-388: Nothing outside code comments records that `POST /api/tasks/scan` now answers 403 on every cron pass of a read-only deployment.
+origin: spec-deferred 49c9a3138d42
+source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md`
+location: DEPLOY.md; src/app/api/tasks/scan/route.ts:62
+severity: low
+reason: The scan is the only trigger for the DW-137 workspace-profile backfill and the only scheduled trigger for the orphan-directory sweep, and a monitor that treats non-2xx as failure will now alert once per tick while `YOPEDIA_READONLY` is set. DEPLOY.md's read-only section documents the Workbench settings affordances and says nothing about the scan.
 status: open

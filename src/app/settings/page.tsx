@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useId } from "react";
 import { providerLabel } from "@/lib/providers";
 import { ProviderForm } from "@/components/ProviderForm";
 import { EmbeddingSettings } from "@/components/EmbeddingSettings";
@@ -46,6 +47,34 @@ export default function SettingsPage() {
     rebuildResult,
     vectorNotice,
   } = useSettings();
+
+  /**
+   * The read-only banner's id, so every control refused for that reason can
+   * resolve it through `aria-describedby`.
+   *
+   * ONE sentence for the whole form rather than one per panel: the three panels
+   * refuse for the identical reason, and three copies would be three things to
+   * keep in step. Only handed down while `readOnly`, so the attribute is only
+   * ever set when there is a node with this id to point at.
+   */
+  const readOnlyNoteId = useId();
+  const describedBy = readOnly ? readOnlyNoteId : undefined;
+
+  /**
+   * The submit, refused BEFORE `handleSave` runs.
+   *
+   * Here rather than inside `useSettings`, because the hook is shared and its
+   * contract is unchanged: this page decides what its own Save button does. The
+   * `preventDefault` still fires, or the browser would navigate away on a form
+   * submission this handler declined to make a request for.
+   */
+  function onSubmit(event: React.FormEvent) {
+    if (readOnly) {
+      event.preventDefault();
+      return;
+    }
+    void handleSave(event);
+  }
 
   // ------------------------------------------
   // Render
@@ -107,17 +136,37 @@ export default function SettingsPage() {
         )}
       </div>
 
-      {/* ---- Read-only banner ---- */}
+      {/* ---- Read-only banner ----
+
+          Identified, because it is the sentence every refused control below
+          points at through `aria-describedby` (DW-299). `aria-disabled`
+          announces "dimmed" and a `readOnly` input announces "read only";
+          neither says which deployment state caused it, and this is the only
+          place that is stated at all. Not `role="alert"` — nothing failed; it
+          is the deployment's standing state. */}
       {readOnly && (
-        <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-50 p-4 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-400">
+        <div
+          id={readOnlyNoteId}
+          className="mt-4 rounded-lg border border-amber-500/20 bg-amber-50 p-4 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-400"
+        >
           <strong>Read-only mode</strong> — This deployment has explicitly
           disabled settings changes.
         </div>
       )}
 
-      {/* ---- Form ---- */}
-      <fieldset disabled={readOnly} className="max-w-4xl disabled:opacity-60">
-      <form onSubmit={handleSave} className="mt-8 space-y-6">
+      {/* ---- Form ----
+
+          NO `<fieldset disabled>` any more (DW-299 — the DW-191 defect, second
+          instance). `disabled` on a fieldset takes every descendant out of the
+          tab order, so the stored provider, model, base URL and embedding model
+          — the values a read-only deployment leaves an owner to READ — became
+          unreachable by keyboard and by screen reader, and **Test Connection**,
+          which writes nothing at all, was refused along with them. Each control
+          states its own refusal instead, following `WorkspacePurposeSettings`:
+          `disabled` stays only for transient state, the standing refusal is
+          `aria-disabled`, and the handler is what actually refuses. */}
+      <div className="max-w-4xl">
+      <form onSubmit={onSubmit} className="mt-8 space-y-6">
         <ProviderForm
           provider={provider}
           setProvider={setProvider}
@@ -130,6 +179,8 @@ export default function SettingsPage() {
             setSaveResult(null);
             setTestResult(null);
           }}
+          readOnly={readOnly}
+          describedBy={describedBy}
         />
 
         <StructuredKnowledgeSettings
@@ -142,6 +193,8 @@ export default function SettingsPage() {
             setSaveResult(null);
             setTestResult(null);
           }}
+          readOnly={readOnly}
+          describedBy={describedBy}
         />
 
         {/*
@@ -161,17 +214,32 @@ export default function SettingsPage() {
           rebuilding={rebuilding}
           onRebuild={handleRebuildEmbeddings}
           rebuildResult={rebuildResult}
+          readOnly={readOnly}
+          describedBy={describedBy}
         />
 
         {/* Action buttons */}
         <div className="flex flex-wrap items-center gap-3 pt-2">
           <button
             type="submit"
-            disabled={saving || readOnly}
-            className="rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50"
+            // `saving` is TRANSIENT and keeps `disabled`; the standing refusal
+            // is `aria-disabled`, so the button keeps its place in the tab
+            // order and the banner above can be announced with it. `onSubmit`
+            // early-returns, which is what actually refuses.
+            disabled={saving}
+            aria-disabled={readOnly || undefined}
+            aria-describedby={describedBy}
+            className={`rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity disabled:opacity-50${
+              readOnly ? " opacity-50 cursor-default" : " hover:opacity-90"
+            }`}
           >
             {saving ? "Saving…" : "Save Settings"}
           </button>
+          {/* NOT refused. `POST /api/settings/test` probes the configured
+              provider and stores nothing, so a read-only deployment has no
+              reason to withhold it — and it is the one control that tells the
+              owner whether what they can still read actually works. The old
+              fieldset disabled it purely by being its ancestor. */}
           <button
             type="button"
             onClick={handleTest}
@@ -208,7 +276,7 @@ export default function SettingsPage() {
           </div>
         )}
       </form>
-      </fieldset>
+      </div>
 
       <div className="max-w-4xl">
         <WorkspacePurposeSettings />

@@ -29,16 +29,25 @@ import { DELETE_PAGE_READ_ONLY_COPY } from "@/components/DeletePageButton";
 import { REINGEST_READ_ONLY_COPY } from "@/components/ReingestButton";
 import { REVERT_READ_ONLY_COPY } from "@/components/RevisionHistory";
 import { WORKSPACE_PURPOSE_READ_ONLY_COPY } from "@/components/WorkspacePurposeSettings";
+import { BULK_DELETE_READ_ONLY_COPY } from "@/components/RecentIngests";
+import { CREATE_PAGE_READ_ONLY_COPY } from "@/app/wiki/new/NewWikiForm";
 import { PREVIEW_HISTORY_READ_ONLY_COPY } from "../workbench-preview";
 
 /**
  * A route's own 403 sentence, read out of its source.
  *
- * Three of the doors below spell their refusal INLINE rather than through
- * `READ_ONLY_REFUSAL` — they gate at the HTTP layer on `isReadOnly()` instead of
- * reaching a kernel writer — so there is no constant to compare against and a
- * literal restated here would only pin this file to itself. Reading the handler
- * means a reworded route body fails on the next run, which is the whole point.
+ * FIVE route files below spell their refusal INLINE rather than through
+ * `READ_ONLY_REFUSAL` — `wikis/route.ts`, `wikis/[id]/template/route.ts`,
+ * `wikis/[id]/route.ts` (rename AND delete), `wikis/current/route.ts` and
+ * `workspace-profile/route.ts`. They gate at the HTTP layer on `isReadOnly()`
+ * instead of reaching a kernel writer, so there is no constant to compare
+ * against and a literal restated here would only pin this file to itself.
+ * Reading the handler means a reworded route body fails on the next run, which
+ * is the whole point.
+ *
+ * The doors gated LATER (DW-294/DW-300/DW-314) import the constant instead —
+ * they had no body to preserve — and are pinned by NAME further down rather
+ * than through this helper.
  */
 async function routeSource(route: string): Promise<string> {
   return readFile(path.resolve(__dirname, "../../app/api", route), "utf8");
@@ -50,9 +59,10 @@ async function routeSource(route: string): Promise<string> {
  * A bare `toContain(sentence)` matches anywhere — a comment quoting the old
  * wording, or a dead branch left behind by the rewrite — so a route that
  * reworded its actual response body would still pass while the owner read one
- * sentence before pressing and another in the 403 afterwards. All three
- * handlers below answer through `NextResponse.json({ error: "…" }, …)`, so the
- * `error:` key is what gets pinned.
+ * sentence before pressing and another in the 403 afterwards. Every handler
+ * read through {@link routeSource} answers through
+ * `NextResponse.json({ error: "…" }, …)`, so the `error:` key is what gets
+ * pinned.
  */
 function servedAs(sentence: string): string {
   return `error: ${JSON.stringify(sentence)}`;
@@ -183,6 +193,90 @@ describe("client refusal copy mirrors the server's", () => {
     // sentence actionable.
     expect(served).toContain("read-only");
     expect(READ_ONLY_REFUSAL.wikiFileWrite).toContain("read-only");
+  });
+
+  it("the bulk delete says exactly what DELETE /api/ingest/history answers", () => {
+    // DW-265. The control opened a `window.confirm` promising an irreversible
+    // delete in front of that 403, so the sentence the owner now reads INSTEAD
+    // of confirming has to be the one the door would have answered afterwards.
+    expect(BULK_DELETE_READ_ONLY_COPY).toBe(READ_ONLY_REFUSAL.bulkPageDelete);
+  });
+
+  it("Create page is narrower than the kernel sentence behind it, on purpose", () => {
+    // DW-264's sibling case to Revert: `POST /api/wiki` spells no
+    // refusal of its own — it maps the kernel writer's, which covers create,
+    // edit, revert and re-ingest alike. "Pages cannot be written…" beside a
+    // button labelled Create page is true and useless, so the form narrows it.
+    // Pinned as a DIFFERENCE rather than left to look like the re-ingest bug
+    // above.
+    expect(CREATE_PAGE_READ_ONLY_COPY).not.toBe(READ_ONLY_REFUSAL.pageWrite);
+    expect(CREATE_PAGE_READ_ONLY_COPY).toContain("created");
+    // Distinct from the OTHER narrowing of the same kernel sentence: two
+    // surfaces refusing two verbs, and one string reused for both is how a
+    // re-point goes unnoticed.
+    expect(CREATE_PAGE_READ_ONLY_COPY).not.toBe(REVERT_READ_ONLY_COPY);
+    // Both still name the deployment state, which is what makes either
+    // sentence actionable.
+    expect(READ_ONLY_REFUSAL.pageWrite).toContain("read-only");
+    expect(CREATE_PAGE_READ_ONLY_COPY).toContain("read-only");
+  });
+
+  it("the wiki delete/switch kernel sentences equal the literals their routes serve", async () => {
+    // DW-314 gated `deleteWiki` and `setCurrentWiki` themselves, so CLI, MCP
+    // and library callers inherit the refusal the two routes already answer
+    // inline. The routes keep their literals — rewriting those bodies was out
+    // of scope — so the constant and the literal are two copies of one
+    // sentence, and this is what stops them drifting.
+    expect(await routeSource("wikis/[id]/route.ts")).toContain(
+      servedAs(READ_ONLY_REFUSAL.wikiDelete),
+    );
+    expect(await routeSource("wikis/current/route.ts")).toContain(
+      servedAs(READ_ONLY_REFUSAL.wikiSwitch),
+    );
+  });
+
+  it("the orphan sweep's sentence mirrors no route, and says so", async () => {
+    // The one wiki-lifecycle key with nothing to mirror.
+    // `sweepOrphanWikiDirectories` is reached from `deleteWiki` and from
+    // `POST /api/tasks/scan`, and neither spells a sentence about it — the scan
+    // answers its OWN refusal before the sweep is ever called. Asserted rather
+    // than merely stated in a comment, so a future route that starts serving
+    // this sentence inline has to come back and decide which side owns it.
+    const scan = await routeSource("tasks/scan/route.ts");
+    // The scan is one of the new doors, so it serves the CONSTANT rather than a
+    // literal — pinned by name for that reason.
+    expect(scan).toContain("error: READ_ONLY_REFUSAL.maintenanceScan");
+    expect(scan).not.toContain("READ_ONLY_REFUSAL.wikiDirectorySweep");
+    expect(scan).not.toContain(servedAs(READ_ONLY_REFUSAL.wikiDirectorySweep));
+    // And it is about DIRECTORIES, not about deleting a Wiki — an owner reading
+    // "Wikis cannot be deleted…" beside a scheduled GC pass would go looking
+    // for a delete nobody asked for.
+    expect(READ_ONLY_REFUSAL.wikiDirectorySweep).not.toBe(
+      READ_ONLY_REFUSAL.wikiDelete,
+    );
+    expect(READ_ONLY_REFUSAL.wikiDirectorySweep).toContain("wiki directories");
+  });
+
+  it("the newly gated doors serve their own constant, not a literal", async () => {
+    // DW-294/DW-300/DW-314 — five route files, four sentences (the two
+    // Names & Terms handlers share one). These had NO refusal at all, so unlike
+    // the wiki-lifecycle routes there was no body to preserve — each imports
+    // the constant directly, which is the shape every new door should take. Pinned
+    // by NAME (`READ_ONLY_REFUSAL.x`) rather than by value, because a literal
+    // reappearing in one of these handlers is exactly the regression the
+    // one-owner rule exists to prevent.
+    for (const [route, key] of [
+      ["research/route.ts", "researchCreate"],
+      ["names-terms/route.ts", "namesTerms"],
+      ["names-terms/[id]/route.ts", "namesTerms"],
+      ["email/settings/route.ts", "emailSettings"],
+      ["tasks/scan/route.ts", "maintenanceScan"],
+    ] as const) {
+      const source = await routeSource(route);
+      expect(source, route).toContain(`error: READ_ONLY_REFUSAL.${key}`);
+      // …and never as a re-typed string beside it.
+      expect(source, route).not.toContain(servedAs(READ_ONLY_REFUSAL[key]));
+    }
   });
 
   it("every server sentence names read-only and reads as a sentence", () => {

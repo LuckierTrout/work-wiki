@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import Link from "next/link";
 import { forgetRecentJobs, getRecentJobIds } from "@/lib/recent-ingests";
 import { useSlugTenants } from "@/hooks/useSlugTenants";
@@ -40,6 +40,20 @@ interface EmailJob {
   };
 }
 
+/**
+ * Why the bulk delete refuses, said out loud.
+ *
+ * CHARACTER-IDENTICAL to `READ_ONLY_REFUSAL.bulkPageDelete`, the sentence
+ * `DELETE /api/ingest/history` answers with its 403 — so the owner reads the
+ * same words whether the surface stated the refusal or the server did. It is
+ * duplicated rather than imported because `read-only.ts` pulls `./config` (the
+ * settings/storage graph, and `process.env`), which does not belong in a browser
+ * bundle. `read-only-copy-parity.test.ts` compares the two so the duplication
+ * cannot drift.
+ */
+export const BULK_DELETE_READ_ONLY_COPY =
+  "Ingested pages cannot be deleted while this deployment is read-only.";
+
 function ago(iso: string): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return "";
@@ -72,6 +86,25 @@ export function RecentIngests() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [deleteNotice, setDeleteNotice] = useState("");
+  /**
+   * `YOPEDIA_READONLY=1`, as the history GET reported it (DW-265).
+   *
+   * `/ingest` is `"use client"` from the page down, so this cannot arrive as a
+   * prop from a server component — it rides on the answer this list already
+   * fetches. Defaults to `false` so a signed-out viewer, a 401, or a failed
+   * load renders exactly what it rendered before this existed; the server
+   * refuses regardless, and claiming read-only over a fetch that never answered
+   * would be a refusal invented on the client.
+   */
+  const [readOnly, setReadOnly] = useState(false);
+  /**
+   * The refusal sentence's id, so both refused controls can point at it.
+   *
+   * `useId()` rather than a literal, matching every other surface in this
+   * change: nothing outside this component names the id, and a hand-picked
+   * string is one collision away from describing somebody else's node.
+   */
+  const readOnlyNoteId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -84,9 +117,16 @@ export function RecentIngests() {
       try {
         const res = await fetch("/api/ingest/history?limit=20");
         if (res.ok) {
-          const data = (await res.json()) as { entries?: LedgerEntry[] };
+          const data = (await res.json()) as {
+            entries?: LedgerEntry[];
+            readOnly?: boolean;
+          };
           if (!cancelled) {
             setHistory(Array.isArray(data.entries) ? data.entries : []);
+            // Only ever adopted from an OK answer, and only as a boolean: a
+            // route that stopped serving the field leaves the list live rather
+            // than refusing everything on an `undefined`.
+            setReadOnly(data.readOnly === true);
             setErrored(false);
           }
         } else if (res.status !== 401) {
@@ -208,6 +248,14 @@ export function RecentIngests() {
   }
 
   async function deleteSelected() {
+    // BEFORE the confirm, not after (DW-149's rule): the server answers 403
+    // either way, and asking the owner to accept "permanently removed" for a
+    // delete that cannot happen is the exact harm this gate exists to remove.
+    // The entry control below refuses first, so this is the second lock on the
+    // same door — reachable if a selection was already open when the answer
+    // arrived.
+    if (readOnly) return;
+
     const ingestIds = historyEntries
       .filter((entry) => selected.has(`ingest:${entry.ingest_id}`))
       .map((entry) => entry.ingest_id);
@@ -367,7 +415,15 @@ export function RecentIngests() {
             ) : (
               <button
                 type="button"
+                // `aria-disabled`, never `disabled`: the control keeps its place
+                // in the tab order so the sentence below can be announced with
+                // it — the `ReingestButton` convention. The handler is what
+                // actually refuses, and it refuses BEFORE selection mode opens,
+                // so the owner never reaches the confirm at all.
+                aria-disabled={readOnly || undefined}
+                aria-describedby={readOnly ? readOnlyNoteId : undefined}
                 onClick={() => {
+                  if (readOnly) return;
                   setSelectionMode(true);
                   setDeleteNotice("");
                 }}
@@ -376,9 +432,10 @@ export function RecentIngests() {
                   borderRadius: 999,
                   background: "var(--paper-2)",
                   color: "var(--ink-2)",
-                  cursor: "pointer",
+                  cursor: readOnly ? "default" : "pointer",
                   fontSize: 12,
                   fontWeight: 600,
+                  opacity: readOnly ? 0.55 : 1,
                   padding: "6px 11px",
                 }}
               >
@@ -388,6 +445,31 @@ export function RecentIngests() {
           </div>
         )}
       </div>
+      {/* Identified so every refused control above can point at it: this is the
+          only place the reason for their refusal is stated at all. Not
+          `role="alert"` — nothing failed; it is the deployment's standing
+          state. Rendered before the selection panel, so the refusal is on
+          screen ahead of anything that looks like a way into the delete.
+
+          GUARDED ON THERE BEING A CONTROL. The Bulk delete button only renders
+          when something is selectable, so on a read-only deployment whose list
+          holds nothing deletable this sentence would otherwise stand alone —
+          announcing a refusal of an operation the owner was never offered, with
+          no control anywhere pointing at it. The `selectionMode` leg is for the
+          case where a selection was already open when the answer arrived. */}
+      {readOnly && (selectableKeys.length > 0 || selectionMode) && (
+        <p
+          id={readOnlyNoteId}
+          style={{
+            color: "var(--muted)",
+            fontSize: 12,
+            lineHeight: 1.45,
+            margin: "0 0 12px",
+          }}
+        >
+          {BULK_DELETE_READ_ONLY_COPY}
+        </p>
+      )}
       {selectionMode && (
         <div
           style={{
@@ -413,7 +495,12 @@ export function RecentIngests() {
             <button
               type="button"
               onClick={deleteSelected}
+              // `disabled` stays for the two TRANSIENT/value states it always
+              // carried; the standing refusal is `aria-disabled`, and
+              // `deleteSelected` early-returns on it.
               disabled={selectedCount === 0 || deleting}
+              aria-disabled={readOnly || undefined}
+              aria-describedby={readOnly ? readOnlyNoteId : undefined}
               style={{
                 border: 0,
                 borderRadius: 999,

@@ -27,7 +27,11 @@
  * It does NOT own the sentences client components render beside a dimmed
  * control. Those live as their own exported constants next to the component
  * (`DELETE_PAGE_READ_ONLY_COPY`, `EDIT_PAGE_READ_ONLY_COPY`,
- * `REINGEST_READ_ONLY_COPY`, `REVERT_READ_ONLY_COPY`) because this module
+ * `REINGEST_READ_ONLY_COPY`, `REVERT_READ_ONLY_COPY`,
+ * `WORKSPACE_PURPOSE_READ_ONLY_COPY`, `BULK_DELETE_READ_ONLY_COPY`,
+ * `CREATE_PAGE_READ_ONLY_COPY`, and the `workbench-tree`/`workbench-preview`
+ * pair `WIKI_CREATE_READ_ONLY_COPY`/`WIKI_TEMPLATE_READ_ONLY_COPY` and
+ * `PREVIEW_HISTORY_READ_ONLY_COPY`) because this module
  * imports `./config`, which pulls the settings/storage/embeddings graph and
  * reads `process.env` — none of which belongs in a browser bundle. So the
  * boundary is deliberate, not an oversight, and the drift it allows is pinned
@@ -35,18 +39,27 @@
  * client constant against the server sentence it mirrors.
  *
  * THE WIKI-LIFECYCLE ROUTES KEEP THEIR INLINE LITERALS. `POST /api/wikis`,
- * `POST /api/wikis/[id]/template` and `PATCH /api/wikis/[id]` gate at the HTTP
- * layer on `isReadOnly()` and spell their 403 body in place. DW-266 added
- * {@link READ_ONLY_REFUSAL.wikiCreate}, `.wikiTemplate` and `.wikiRename` for
- * the KERNEL functions behind them (`createWiki`, `applyScenarioTemplate`,
- * `renameWiki`), which any DIRECT LIBRARY CALLER — a CLI command, a future MCP
- * tool, a maintenance script — reaches with no route in front. Today the four
- * wiki routes are their only callers, so the gates change no behaviour the app
- * has; they are there for the caller added next. Importing the constant into those handlers would have rewritten route
- * bodies this change is not allowed to touch, so the sentences are duplicated
- * on purpose and the duplication is pinned by TEST rather than by import:
- * `read-only-copy-parity.test.ts` compares each constant against the literal
- * the handler actually serves, so a reworded route fails on the next run.
+ * `POST /api/wikis/[id]/template`, `PATCH`/`DELETE /api/wikis/[id]` and
+ * `PUT /api/wikis/current` gate at the HTTP layer on `isReadOnly()` and spell
+ * their 403 body in place. DW-266 added {@link READ_ONLY_REFUSAL.wikiCreate},
+ * `.wikiTemplate` and `.wikiRename`, and DW-314 added `.wikiDelete` and
+ * `.wikiSwitch`, for the KERNEL functions behind them (`createWiki`,
+ * `applyScenarioTemplate`, `renameWiki`, `deleteWiki`, `setCurrentWiki`), which
+ * any DIRECT LIBRARY CALLER — a CLI command, a future MCP tool, a maintenance
+ * script — reaches with no route in front. Today the wiki routes are their only
+ * callers, so the gates change no behaviour the app has; they are there for the
+ * caller added next. Importing the constant into those handlers would have
+ * rewritten route bodies this change is not allowed to touch, so the sentences
+ * are duplicated on purpose and the duplication is pinned by TEST rather than
+ * by import: `read-only-copy-parity.test.ts` compares each constant against the
+ * literal the handler actually serves, so a reworded route fails on the next
+ * run.
+ *
+ * {@link READ_ONLY_REFUSAL.wikiDirectorySweep} is the one wiki-lifecycle key
+ * with NO route literal to mirror: `sweepOrphanWikiDirectories` is reached from
+ * `deleteWiki` and from `POST /api/tasks/scan`, and neither spells a sentence
+ * about it — the scan answers its own {@link READ_ONLY_REFUSAL.maintenanceScan}
+ * before the sweep is ever called.
  *
  * A CLIENT SENTENCE MAY BE NARROWER THAN THE SERVER'S. The Revert control is
  * the case: the server refusal it meets is `pageWrite`, the KERNEL's sentence
@@ -108,6 +121,34 @@ export const READ_ONLY_REFUSAL = {
   /** `renameWiki` and `PATCH /api/wikis/[id]`. */
   wikiRename: "Wikis cannot be renamed while this deployment is read-only.",
   /**
+   * `deleteWiki` and `DELETE /api/wikis/[id]`. Character-identical to the
+   * sentence the route already serves inline — see the module note on the
+   * wiki-lifecycle doors below.
+   */
+  wikiDelete: "Wikis cannot be deleted while this deployment is read-only.",
+  /**
+   * `setCurrentWiki` and `PUT /api/wikis/current`. Character-identical to the
+   * route's inline literal, for the same reason as {@link wikiDelete}.
+   *
+   * A switch writes ONE file — `wikis.json` — and nothing else, which is
+   * exactly why it needs saying: "nothing was deleted" is not "nothing was
+   * written", and which Wiki is current decides which `schema.md` every ingest,
+   * chat and lint prompt runs on.
+   */
+  wikiSwitch:
+    "The active wiki cannot be changed while this deployment is read-only.",
+  /**
+   * `sweepOrphanWikiDirectories` — the orphan-directory reclaim, reached from
+   * `deleteWiki` and, on a timer, from `POST /api/tasks/scan`.
+   *
+   * Its own sentence rather than {@link wikiDelete}'s: the sweep removes
+   * directories the registry never names, so an owner (or a log line) reading
+   * "Wikis cannot be deleted…" beside a scheduled GC pass would be looking for a
+   * delete nobody asked for.
+   */
+  wikiDirectorySweep:
+    "Orphaned wiki directories cannot be reclaimed while this deployment is read-only.",
+  /**
    * The two unlocked byte putters under `tenants/<t>/wikis/<id>/` —
    * `putWikiArtifact` in `wikis.ts` and `putWorkspaceProfile` in
    * `workspace-profile.ts` — plus `saveWorkspaceProfile`, the locked wrapper
@@ -141,6 +182,31 @@ export const READ_ONLY_REFUSAL = {
   lintFix: "Lint issues cannot be auto-fixed while this deployment is read-only.",
   /** `POST /api/tasks/run` — the queue consumer. */
   queuedWork: "Queued work cannot run while this deployment is read-only.",
+  /** `POST /api/research` — creating a research project. */
+  researchCreate:
+    "Research projects cannot be created while this deployment is read-only.",
+  /**
+   * The three Names & Terms writers — `POST /api/names-terms` and
+   * `PUT`/`DELETE /api/names-terms/[id]`.
+   *
+   * ONE sentence for all three, the {@link pageWrite} reasoning: they are one
+   * store reached by three verbs, and three near-identical sentences would be
+   * three things to keep in step for no gain the owner can act on.
+   */
+  namesTerms:
+    "Names & Terms entries cannot be changed while this deployment is read-only.",
+  /** `PUT /api/email/settings` — the owner's email-ingestion configuration. */
+  emailSettings:
+    "Email ingestion settings cannot be changed while this deployment is read-only.",
+  /**
+   * `POST /api/tasks/scan` — the autonomous-maintenance producer.
+   *
+   * The scan refuses WHOLE rather than degrading to `?dry=1`: `dry` is the
+   * documented inspection switch, and answering a dry-looking 200 would report
+   * a scan that never ran.
+   */
+  maintenanceScan:
+    "Maintenance scans cannot run while this deployment is read-only.",
 } as const;
 
 /**

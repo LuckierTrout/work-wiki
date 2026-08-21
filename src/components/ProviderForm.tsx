@@ -37,6 +37,31 @@ export interface ProviderFormProps {
   setOllamaBaseUrl: (v: string) => void;
   settings: EffectiveSettings | null;
   onFieldChange?: () => void;
+  /**
+   * `YOPEDIA_READONLY=1`, as `GET /api/settings` reported it (DW-299).
+   *
+   * REFUSES PER CONTROL. `/settings` used to wrap this whole form in
+   * `<fieldset disabled>`, which is the DW-191 defect: `disabled` on a fieldset
+   * takes every descendant out of the tab order, so the STORED provider, model
+   * and base URL — values the owner is entitled to READ — became unreachable by
+   * keyboard and by screen reader on the one deployment where reading is all
+   * that is left. So the select takes `aria-disabled` and a handler that
+   * returns, the text inputs take `readOnly`, and the values stay where they
+   * are.
+   *
+   * Optional and off by default, so every existing caller renders unchanged.
+   */
+  readOnly?: boolean;
+  /**
+   * The id of the sentence that says WHY a refused control refuses.
+   *
+   * Passed in rather than composed here: the page owns the sentence (one of
+   * them, for the whole form), and a note minted per component would be the
+   * same sentence three times over. `aria-disabled` alone announces "dimmed"
+   * and a `readOnly` input announces "read only" — neither says read-only
+   * DEPLOYMENT, which is the only part the owner can act on.
+   */
+  describedBy?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +86,8 @@ export function ProviderForm({
   setOllamaBaseUrl,
   settings,
   onFieldChange,
+  readOnly = false,
+  describedBy,
 }: ProviderFormProps) {
   // The provider to use for conditional field display:
   // if form has a selection, use that; otherwise fall back to effective settings
@@ -100,7 +127,15 @@ export function ProviderForm({
         <select
           id="provider"
           value={provider}
+          // `aria-disabled`, never `disabled`: a <select> has no `readonly`, and
+          // `disabled` would take the picker out of the tab order along with
+          // the provider this deployment is running on — the
+          // `WorkspacePurposeSettings` scenario picker refuses the same way for
+          // the same reason. The handler is what actually refuses.
+          aria-disabled={readOnly || undefined}
+          aria-describedby={readOnly ? describedBy : undefined}
           onChange={(e) => {
+            if (readOnly) return;
             setProvider(e.target.value);
             onFieldChange?.();
           }}
@@ -142,6 +177,10 @@ export function ProviderForm({
             type="text"
             value={model}
             onChange={(e) => setModel(e.target.value)}
+            // `readOnly`, not `disabled`: the stored model stays selectable,
+            // copyable and in the tab order, which is the whole point.
+            readOnly={readOnly}
+            aria-describedby={readOnly ? describedBy : undefined}
             placeholder={
               effectiveProvider
                 ? DEFAULT_MODELS[effectiveProvider] ?? "Enter model name"
@@ -177,6 +216,8 @@ export function ProviderForm({
               type="text"
               value={ollamaBaseUrl}
               onChange={(e) => setOllamaBaseUrl(e.target.value)}
+              readOnly={readOnly}
+              aria-describedby={readOnly ? describedBy : undefined}
               placeholder="http://localhost:11434/api"
               className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20 font-mono"
             />

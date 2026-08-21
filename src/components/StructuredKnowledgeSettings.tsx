@@ -10,6 +10,19 @@ export interface StructuredKnowledgeSettingsProps {
   setModel: (value: string) => void;
   settings: EffectiveSettings | null;
   onFieldChange?: () => void;
+  /**
+   * `YOPEDIA_READONLY=1`, as `GET /api/settings` reported it (DW-299).
+   *
+   * Refuses PER CONTROL rather than through the page's old
+   * `<fieldset disabled>` — see `ProviderFormProps.readOnly`, which documents
+   * why (DW-191): a disabled fieldset takes the stored extraction provider and
+   * model out of the tab order, and reading them is exactly what a read-only
+   * deployment leaves an owner. Optional and off by default, so every existing
+   * caller renders unchanged.
+   */
+  readOnly?: boolean;
+  /** The id of the sentence that says WHY — see `ProviderFormProps.describedBy`. */
+  describedBy?: string;
 }
 
 export function StructuredKnowledgeSettings({
@@ -19,6 +32,8 @@ export function StructuredKnowledgeSettings({
   setModel,
   settings,
   onFieldChange,
+  readOnly = false,
+  describedBy,
 }: StructuredKnowledgeSettingsProps) {
   const effectiveProvider =
     provider || settings?.structuredKnowledgeProvider || null;
@@ -84,7 +99,13 @@ export function StructuredKnowledgeSettings({
           <select
             id="structuredKnowledgeProvider"
             value={provider}
+            // `aria-disabled` + a returning handler, never `disabled`: a
+            // <select> has no `readonly`, and the stored routing choice is
+            // state the owner is entitled to read.
+            aria-disabled={readOnly || undefined}
+            aria-describedby={readOnly ? describedBy : undefined}
             onChange={(event) => {
+              if (readOnly) return;
               setProvider(event.target.value);
               onFieldChange?.();
             }}
@@ -114,6 +135,8 @@ export function StructuredKnowledgeSettings({
               setModel(event.target.value);
               onFieldChange?.();
             }}
+            readOnly={readOnly}
+            aria-describedby={readOnly ? describedBy : undefined}
             placeholder={
               provider
                 ? DEFAULT_MODELS[provider] ?? "Enter model name"

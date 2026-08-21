@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { getErrorMessage } from "@/lib/errors";
 import {
   deleteNamesTerm,
@@ -16,6 +18,14 @@ export async function PUT(request: Request, { params }: RouteContext) {
   const principal = await getPrincipal();
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+  }
+  // Deployment read-only (DW-300), after the 401 and before the parse — the
+  // sibling `POST /api/names-terms` gate, one sentence for all three writers.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.namesTerms },
+      { status: 403 },
+    );
   }
   try {
     const { id } = await params;
@@ -40,6 +50,13 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   const principal = await getPrincipal();
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+  }
+  // Deployment read-only (DW-300) — same point, same sentence as PUT above.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.namesTerms },
+      { status: 403 },
+    );
   }
   try {
     const { id } = await params;

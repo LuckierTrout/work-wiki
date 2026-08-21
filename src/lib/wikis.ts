@@ -34,21 +34,25 @@
  * caller is visible here; `putWorkspaceProfile` is not, so the token rides down
  * through {@link seedWikiArtifacts}.
  *
- * READ-ONLY (DW-266): {@link createWiki}, {@link applyScenarioTemplate} and
- * {@link renameWiki} each refuse BEFORE taking the lock and before reading a
- * byte, so a refusal on a stably read-only deployment never reaches a
- * compensation path; the putters refuse again as a backstop. The wiki routes
- * keep their own inline 403s and gate first, so these gates change nothing the
- * app does today — they exist for a DIRECT LIBRARY CALLER (a CLI command, a
- * future MCP tool) reaching the kernel with no route in front.
+ * READ-ONLY (DW-266, DW-314): {@link createWiki}, {@link applyScenarioTemplate},
+ * {@link renameWiki}, {@link deleteWiki}, {@link setCurrentWiki} and
+ * {@link sweepOrphanWikiDirectories} each refuse BEFORE taking the lock and
+ * before reading a byte, so a refusal on a stably read-only deployment never
+ * reaches a compensation path; the putters refuse again as a backstop. The wiki
+ * routes keep their own inline 403s and gate first, so these gates change
+ * nothing the app does today — they exist for a DIRECT LIBRARY CALLER (a CLI
+ * command, a future MCP tool, the maintenance scan) reaching the kernel with no
+ * route in front.
  *
- * WHAT IS NOT GATED, stated so the coverage is not mistaken for the family.
- * {@link deleteWiki}, {@link setCurrentWiki} and
- * {@link sweepOrphanWikiDirectories} still write `wikis.json` and delete Wiki
- * directories with NO `assertWritable` — a known gap this change did not close,
- * because the bundle that added the three gates above did not name them. Their
- * HTTP doors gate, so the gap is the same direct-library-caller one, one level
- * further out.
+ * THE WHOLE LIFECYCLE IS COVERED NOW, which the earlier note said it was not.
+ * DW-266 gated the three creating writers and recorded the other three as a
+ * known gap; DW-314 closed it. {@link deleteWiki} is the one that most needed
+ * it: it swallows BOTH byte-removal failures, so a refusal raised inside the
+ * lock would land after `wikis.json` had already been rewritten and would be
+ * logged rather than surfaced. {@link sweepOrphanWikiDirectories} needed it for
+ * a different reason — `POST /api/tasks/scan` reaches it on a TIMER, so an
+ * ungated sweep deleted directories on a read-only deployment with nobody
+ * asking.
  *
  * The registry idiom (path, lock key, `crypto.randomUUID()`, ENOENT → empty,
  * a hard cap) mirrors `research-projects.ts`.
@@ -1215,6 +1219,13 @@ export async function setCurrentWiki(
   owner: string,
   wikiId: string,
 ): Promise<WikiRecord | null> {
+  // Deployment read-only (DW-314), BEFORE the lock and before the registry is
+  // read. `wikis.json` is the only file a switch writes, and that is exactly
+  // why it is gated: which Wiki is current decides which `schema.md` executes
+  // in every ingest, chat and lint prompt, so a switch is a change to what the
+  // whole workspace runs on. `PUT /api/wikis/current` already refuses first, so
+  // this is the backstop for a direct library caller.
+  assertWritable(READ_ONLY_REFUSAL.wikiSwitch);
   return withWikiLock(owner, async () => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
@@ -1632,6 +1643,13 @@ async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<numb
  * beside a concurrent create.
  */
 export async function sweepOrphanWikiDirectories(owner: string): Promise<number> {
+  // Deployment read-only (DW-314), BEFORE the lock. This one is not reached by
+  // an owner pressing anything: `POST /api/tasks/scan` runs it on a cron, so
+  // ungated it deleted Wiki directories on a read-only deployment on a timer.
+  // The scan refuses whole now, so this is the backstop — and, since the sweep
+  // is also called from `deleteWiki`'s locked body through `sweepOrphans`, the
+  // gate here is what a DIRECT caller of this exported entry point meets.
+  assertWritable(READ_ONLY_REFUSAL.wikiDirectorySweep);
   return withWikiLock(owner, async () =>
     sweepOrphans(owner, await readRegistry(owner)),
   );
@@ -1669,6 +1687,15 @@ export async function deleteWiki(
   owner: string,
   wikiId: string,
 ): Promise<WikiRecord | null> {
+  // Deployment read-only (DW-314), BEFORE the lock — and the ordering matters
+  // more here than at any other wiki writer. Both byte-removal steps below are
+  // FAIL-SOFT by design, so a gate inside the locked body would raise its
+  // refusal only after `writeRegistry` had already removed the entry: the Wiki
+  // would be gone from every read in the app, and the refusal would be caught
+  // by one of the two `logger.warn` handlers rather than reaching the caller.
+  // `DELETE /api/wikis/[id]` already refuses first, so this is the backstop for
+  // a direct library caller.
+  assertWritable(READ_ONLY_REFUSAL.wikiDelete);
   return withWikiLock(owner, async () => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);

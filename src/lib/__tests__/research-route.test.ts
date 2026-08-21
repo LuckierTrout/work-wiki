@@ -7,7 +7,7 @@
  * here is the mapping alone: a `ClientInputError` is a 400 by TYPE, anything
  * else stays a 500, and the message regex that predates the class still stands.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/research-projects", () => ({
@@ -19,6 +19,7 @@ import { POST } from "@/app/api/research/route";
 import { getPrincipal } from "@/lib/auth";
 import { ClientInputError } from "@/lib/errors";
 import { createResearchProject } from "@/lib/research-projects";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedCreate = vi.mocked(createResearchProject);
@@ -33,11 +34,65 @@ const request = (body: unknown) =>
 const BODY = { title: "Launch research", question: "What supports the date?" };
 
 describe("POST /api/research failure classification", () => {
+  let savedReadOnly: string | undefined;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    savedReadOnly = process.env.YOPEDIA_READONLY;
+    // Cleared rather than inherited: a value exported in a developer's shell
+    // would otherwise turn every case below into a 403.
+    delete process.env.YOPEDIA_READONLY;
     mockedPrincipal.mockResolvedValue({ handle: "alice" } as Awaited<
       ReturnType<typeof getPrincipal>
     >);
+  });
+
+  afterEach(() => {
+    if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = savedReadOnly;
+  });
+
+  it("403s on a read-only deployment without reaching the store", async () => {
+    // DW-294. `createResearchProject` writes the project record straight to
+    // storage and reaches no kernel writer, so nothing behind this handler
+    // would have refused — the form simply reported a create that happened.
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await POST(request(BODY));
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: READ_ONLY_REFUSAL.researchCreate,
+    });
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it("still 401s an unauthenticated caller on a read-only deployment", async () => {
+    // The gate sits AFTER the 401, so a signed-out caller learns it is signed
+    // out rather than being told about a deployment state it cannot see.
+    process.env.YOPEDIA_READONLY = "1";
+    mockedPrincipal.mockResolvedValue(null);
+
+    expect((await POST(request(BODY))).status).toBe(401);
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it("refuses BEFORE the body is parsed", async () => {
+    // A malformed body would otherwise 500 through the catch, hiding the
+    // refusal behind a server fault the deployment did not have.
+    process.env.YOPEDIA_READONLY = "1";
+    const malformed = new Request("http://localhost/api/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{ not json",
+    });
+
+    const response = await POST(malformed);
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: READ_ONLY_REFUSAL.researchCreate,
+    });
   });
 
   it("400s the MAX_PROJECTS refusal", async () => {

@@ -51,7 +51,7 @@ import {
 } from "@/lib/wiki";
 import { canWriteFrontmatter } from "@/lib/authz";
 import { deleteIngestJob, getIngestJob } from "@/lib/ingest-jobs";
-import { DELETE } from "@/app/api/ingest/history/route";
+import { DELETE, GET } from "@/app/api/ingest/history/route";
 import { WRITE_DENIAL, WRITE_DENIAL_REALM } from "@/lib/write-denial";
 
 const mockedReadLedger = vi.mocked(readLedger);
@@ -73,6 +73,10 @@ const ledgerEntry = (id: string, slug: string) => ({
   finished_at: "2026-08-06T10:01:00.000Z",
   status: "completed",
 });
+
+function historyRequest(): NextRequest {
+  return new NextRequest("http://localhost/api/ingest/history?limit=20");
+}
 
 function request(body: unknown): NextRequest {
   return new NextRequest("http://localhost/api/ingest/history", {
@@ -341,5 +345,52 @@ describe("DELETE /api/ingest/history", () => {
     expect(data.deletedPageSlugs).toEqual(["page-a", "page-b"]);
     expect(data.failed).toEqual([]);
     expect(data.rawSourcesRetained).toBe(true);
+  });
+});
+
+/**
+ * `GET` carries the deployment's read-only state (DW-265).
+ *
+ * The PRODUCING side of the seam `RecentIngests` reads. `/ingest` is
+ * `"use client"` from the page down, so the fact cannot arrive as a prop and
+ * rides on this answer instead — and the mounted suite hand-stubs the payload,
+ * which means deleting `readOnly: isReadOnly()` from the handler would leave
+ * every assertion over there green while the DW-265 fix silently reverted. This
+ * is the case that fails instead.
+ */
+describe("GET /api/ingest/history serves the read-only fact", () => {
+  it("reports true on a read-only deployment, alongside the entries", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await GET(historyRequest());
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      entries: unknown[];
+      readOnly: boolean;
+    };
+    expect(body.readOnly).toBe(true);
+    // The READ is not refused — the flag rides along with the list rather than
+    // replacing it, which is the whole point of putting it here.
+    expect(body.entries).toHaveLength(1);
+  });
+
+  it("reports false when the flag is unset", async () => {
+    // The discriminator. Without it a handler hard-coding `readOnly: true`
+    // would satisfy the case above, and every surface would refuse forever.
+    const response = await GET(historyRequest());
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ readOnly: false });
+  });
+
+  it("still 401s an unauthenticated caller rather than answering the flag", async () => {
+    mockedGetPrincipal.mockResolvedValue(null);
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await GET(historyRequest());
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "Unauthorized" });
   });
 });

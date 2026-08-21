@@ -24,8 +24,12 @@ import { patchMetadata } from "../patch-metadata";
 import {
   applyScenarioTemplate,
   createWiki,
+  deleteWiki,
+  getWikiRegistry,
   readWikiArtifact,
   renameWiki,
+  setCurrentWiki,
+  sweepOrphanWikiDirectories,
   writeWikiArtifact,
 } from "../wikis";
 import { getWorkspaceProfile, saveWorkspaceProfile } from "../workspace-profile";
@@ -278,20 +282,23 @@ describe("the kernel writers refuse on a read-only deployment", () => {
 });
 
 /**
- * Four wiki writers gated by DW-266: `createWiki`, `applyScenarioTemplate`,
- * `renameWiki` and `saveWorkspaceProfile`.
+ * The wiki lifecycle writers gated by DW-266 and DW-314: `createWiki`,
+ * `applyScenarioTemplate`, `renameWiki`, `saveWorkspaceProfile`, `deleteWiki`,
+ * `setCurrentWiki` and `sweepOrphanWikiDirectories`.
  *
  * Not kernel writers in the DW-188 sense — `read-only-door-coverage.test.ts`
  * keeps `KERNEL_WRITERS` at four on purpose — but the same exposure: they are
  * exported library functions that write bytes, and a DIRECT LIBRARY CALLER (a
  * CLI command, a future MCP tool, a maintenance script) reaches them with no
- * route in front. Today the four API routes are their only callers and every
- * one of those gates first, so what these cases pin is the direct call.
+ * route in front. Today the API routes are their only callers and every one of
+ * those gates first, so what these cases pin is the direct call.
  *
- * NOT A CLAIM ABOUT THE FAMILY. `deleteWiki`, `setCurrentWiki` and
- * `sweepOrphanWikiDirectories` still write `wikis.json` and delete Wiki
- * directories with no `assertWritable` — the bundle did not name them, so they
- * are a known gap rather than something these cases cover.
+ * THE FAMILY IS COMPLETE NOW, which this note used to say it was not. DW-266
+ * left `deleteWiki`, `setCurrentWiki` and `sweepOrphanWikiDirectories` writing
+ * `wikis.json` and deleting Wiki directories with no `assertWritable` at all —
+ * a recorded gap, closed by DW-314 and covered by the three cases below. The
+ * sweep mattered most: `POST /api/tasks/scan` reaches it on a CRON, so nobody
+ * had to press anything for a read-only deployment to lose directories.
  *
  * WHAT THE BYTE SNAPSHOTS PROVE, AND WHAT THEY DO NOT. They prove the operation
  * committed nothing: no registry entry, no seeded file, no retitled heading, no
@@ -382,7 +389,80 @@ describe("the wiki lifecycle writers refuse on a read-only deployment", () => {
     expect(await snapshot()).toEqual(before);
   });
 
-  it("all four are unchanged on a writable deployment — the control case", async () => {
+  it("setCurrentWiki — the pointer and every registry byte survive", async () => {
+    // TWO wikis, because a switch is only observable against a registry that
+    // has somewhere else to point.
+    const first = await createWiki(OWNER, { name: "Field notes", scenario: "research" });
+    const second = await createWiki(OWNER, { name: "Second", scenario: "business" });
+    const before = await snapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    // Switch AWAY from the one `createWiki` left current, so a gate that
+    // silently no-opped would be indistinguishable from success.
+    await expectRefusal(
+      () => setCurrentWiki(OWNER, first.id),
+      READ_ONLY_REFUSAL.wikiSwitch,
+    );
+
+    // `wikis.json` is the ONLY file a switch writes, so the whole-tree snapshot
+    // is exactly the right assertion — and `currentId` is named separately
+    // because it is the field that decides which `schema.md` every prompt in
+    // the app runs on.
+    expect(await snapshot()).toEqual(before);
+    delete process.env.YOPEDIA_READONLY;
+    expect((await getWikiRegistry(OWNER)).currentId).toBe(second.id);
+  });
+
+  it("deleteWiki — the entry stays, the directory stays, nothing is swallowed", async () => {
+    // The DOOMED one first, because `createWiki` leaves the wiki it just made
+    // current and `deleteWiki` refuses the CURRENT wiki with a
+    // `ClientInputError` — a target chosen the other way round would make this
+    // case pass on the wrong refusal entirely.
+    const doomed = await createWiki(OWNER, { name: "Field notes", scenario: "research" });
+    const current = await createWiki(OWNER, { name: "Second", scenario: "business" });
+    expect((await getWikiRegistry(OWNER)).currentId).toBe(current.id);
+    const before = await snapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => deleteWiki(OWNER, doomed.id),
+      READ_ONLY_REFUSAL.wikiDelete,
+    );
+
+    // THE assertion this case exists for. Both byte-removal steps inside
+    // `deleteWiki` are fail-soft: a refusal raised inside the lock would be
+    // caught by one of the two `logger.warn` handlers and never reach the
+    // caller — after `writeRegistry` had already removed the entry. So a gate
+    // moved down is not merely slower here, it is silently wrong, and this
+    // snapshot plus the registry read below is what catches it.
+    expect(await snapshot()).toEqual(before);
+    delete process.env.YOPEDIA_READONLY;
+    expect((await getWikiRegistry(OWNER)).wikis.map((w) => w.id).sort()).toEqual(
+      [current.id, doomed.id].sort(),
+    );
+    expect(await readWikiArtifact(OWNER, doomed.id, "schema.md")).not.toBeNull();
+  });
+
+  it("sweepOrphanWikiDirectories — an orphan the cron would have reclaimed stays put", async () => {
+    // A REAL orphan, made the way the sweep expects to find one: a directory
+    // under `wikis/` that the registry does not name. Without it the case would
+    // pass against a sweep that simply had nothing to do.
+    await createWiki(OWNER, { name: "Field notes", scenario: "research" });
+    const orphanDir = path.join(tmpDir, "tenants", OWNER, "wikis", "00000000-0000-4000-8000-0000000000ff");
+    await fs.mkdir(orphanDir, { recursive: true });
+    await fs.writeFile(path.join(orphanDir, "schema.md"), "# Orphaned Schema\n", "utf8");
+    const before = await snapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => sweepOrphanWikiDirectories(OWNER),
+      READ_ONLY_REFUSAL.wikiDirectorySweep,
+    );
+
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("all seven are unchanged on a writable deployment — the control case", async () => {
     // `YOPEDIA_READONLY` is UNSET. Without this, every "unchanged" assertion
     // above would also pass against a lifecycle writer that simply stopped
     // working.
@@ -407,6 +487,18 @@ describe("the wiki lifecycle writers refuse on a read-only deployment", () => {
       pageConventions: "",
     });
     expect(saved.purpose).toBe("Owner-authored.");
+
+    // …and the three DW-314 additions, which the cases above only ever observe
+    // REFUSING. Without this every "unchanged" assertion there would also pass
+    // against a writer that simply stopped working.
+    const second = await createWiki(OWNER, { name: "Second", scenario: "business" });
+    expect((await setCurrentWiki(OWNER, second.id))?.id).toBe(second.id);
+    // `wiki` is no longer current, so it is deletable.
+    expect((await deleteWiki(OWNER, wiki.id))?.id).toBe(wiki.id);
+    expect((await getWikiRegistry(OWNER)).wikis.map((w) => w.id)).toEqual([second.id]);
+    // The delete already swept, so the standalone sweep has nothing left —
+    // which is the answer it should give, not a throw.
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
   });
 });
 
@@ -443,6 +535,12 @@ describe("the read-only gate precedes the wiki lock", () => {
       ["wikis", "createWiki"],
       ["wikis", "applyScenarioTemplate"],
       ["wikis", "renameWiki"],
+      // DW-314’s three. `deleteWiki` is the one the ordering is load-bearing
+      // for: both of its byte-removal steps are fail-soft, so a gate inside the
+      // lock would be logged and swallowed after the registry was rewritten.
+      ["wikis", "deleteWiki"],
+      ["wikis", "setCurrentWiki"],
+      ["wikis", "sweepOrphanWikiDirectories"],
       ["workspace-profile", "saveWorkspaceProfile"],
       // The DW-137 backfill: the one gated writer whose caller is a SCAN rather
       // than an owner, so it catches the refusal and answers 0 instead of

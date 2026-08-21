@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServicePrincipal } from "@/lib/auth";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import {
   scanForMaintenance,
   rebuildDerivedIndexes,
@@ -55,6 +57,27 @@ export async function POST(req: Request) {
   const principal = getServicePrincipal(req);
   if (!principal) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Deployment read-only (DW-314). After the service-principal 401 and before
+  // `scanForMaintenance`, because this scan writes bytes ON A TIMER: the index
+  // rebuild and the ingest-job GC run on every pass, the orphan sweep DELETES
+  // wiki directories, and the DW-137 backfill relocates workspace profiles.
+  // None of those reach a kernel writer, so nothing behind this handler would
+  // have refused.
+  //
+  // REFUSES WHOLE rather than degrading to `dry`. `?dry=1` is the documented
+  // inspection switch and its 200 says "here is what a scan would do"; a
+  // read-only deployment answering that shape would report a scan that never
+  // ran, and `AUTONOMOUS_MAINTENANCE` semantics stay exactly as documented
+  // above. `POST /api/tasks/run` refuses the same way, and the consumer treats
+  // a 4xx as terminal — which is the honest answer here too, since retrying
+  // cannot succeed while the deployment is read-only.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.maintenanceScan },
+      { status: 403 },
+    );
   }
 
   try {
