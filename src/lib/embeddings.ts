@@ -7,6 +7,7 @@ import type { EmbeddingModel } from "ai";
 import type { Ai } from "./storage/cloudflare-types";
 import { listWikiPages, readWikiPage } from "./wiki";
 import { getStorage } from "./storage";
+import type { EmbeddingEntry } from "./storage";
 import {
   loadConfigSync,
   getEmbeddingModelOverride,
@@ -941,6 +942,22 @@ export interface RebuildResult {
 }
 
 /**
+ * How many rebuilt vectors accumulate before the store is written.
+ *
+ * The per-page door (`storage.upsertEmbedding`) is a whole-blob load, rewrite
+ * and fsync on the filesystem provider, so a rebuild over N pages wrote a
+ * growing blob N times — the dominant cost of the whole operation, and the one
+ * measured at 27 ms → 5091 ms. Flushing in windows makes it ceil(N / 32) + 1.
+ *
+ * WHAT A WINDOW COSTS ON A CRASH: at most one window's vectors, for a rebuild
+ * that is re-runnable by design — it is already an upsert over every current
+ * page, so running it again produces the same store. That is why the single-page
+ * `upsertEmbedding` door, which serves live edits and has no such re-run, keeps
+ * writing per call.
+ */
+export const EMBEDDING_FLUSH_WINDOW = 32;
+
+/**
  * Re-embed every wiki page and upsert it into the vector store. Used to backfill
  * after provisioning the index or switching embedding models.
  *
@@ -949,6 +966,30 @@ export interface RebuildResult {
  * with the caller's readable/scoped slug set, so an orphan can't surface.
  *
  * Throws if no embedding provider is configured.
+ *
+ * WRITES IN WINDOWS, NOT PER PAGE. Successful vectors accumulate and are flushed
+ * through `storage.upsertEmbeddings` every {@link EMBEDDING_FLUSH_WINDOW}
+ * entries and once at the end, so the store is written ceil(N / 32) + 1 times
+ * instead of N. A crash mid-rebuild therefore loses at most one unflushed
+ * window — which costs nothing that a re-run does not restore, because this
+ * operation is an upsert over every current page and is designed to be re-run.
+ * `embedded` counts pages whose vector actually reached the store: a flush that
+ * fails counts its whole WINDOW as skipped and warns. That is coarser than the
+ * per-page version, which could only ever blame the one page it was upserting —
+ * a provider that landed part of a flush before failing still has every page in
+ * that window reported as skipped, because the door reports one outcome for the
+ * batch and this has no way to ask which entries survived. Skipped-but-stored is
+ * the safe direction: it under-claims what the store holds, and a re-run fixes
+ * the count.
+ *
+ * `onProgress` FIRES AT THE SAME POINTS IT ALWAYS DID — once per page, N times
+ * for N pages — but it no longer means the page's vector is stored. At the
+ * moment it fires, that vector may still be pending in the current window, so
+ * "64 of 64" means every page has been read and embedded, not that every vector
+ * is on disk. Only the return value distinguishes those, and only after the
+ * final flush. Callers use this to draw a progress bar, which is what it still
+ * measures; a caller that needed "durably stored" would have to wait for the
+ * result.
  *
  * @param onProgress Optional callback invoked after each page is processed.
  */
@@ -969,6 +1010,26 @@ export async function rebuildVectorStore(
 
   let embedded = 0;
   let skipped = 0;
+
+  // One lock acquisition per FLUSH, not per page — the lock is held across the
+  // whole window's write, which is the same shape the per-page version had, just
+  // 32 pages wider.
+  const pending: EmbeddingEntry[] = [];
+  const flush = async (): Promise<void> => {
+    if (pending.length === 0) return;
+    const window = pending.splice(0, pending.length);
+    try {
+      await withFileLock("vectors", () => storage.upsertEmbeddings(window));
+      embedded += window.length;
+    } catch (err) {
+      logger.warn(
+        "embeddings",
+        `flushing ${window.length} rebuilt embedding(s) failed:`,
+        err,
+      );
+      skipped += window.length;
+    }
+  };
 
   // Upsert every current page. This overwrites in place; embeddings for pages
   // that no longer exist are left untouched (no bulk-clear on a managed index),
@@ -996,17 +1057,18 @@ export async function rebuildVectorStore(
         model: modelName,
         contentHash: contentHash(page.content),
       };
-      await withFileLock("vectors", () =>
-        storage.upsertEmbedding(entry.slug, embedding, meta),
-      );
-      embedded++;
+      pending.push({ id: entry.slug, vector: embedding, metadata: meta });
     } catch (err) {
       logger.warn("embeddings", `embed page "${entry.slug}" failed:`, err);
       skipped++;
     }
 
+    if (pending.length >= EMBEDDING_FLUSH_WINDOW) await flush();
+
     onProgress?.(i + 1, total);
   }
+
+  await flush();
 
   return { total, embedded, skipped, model: modelName };
 }

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { FilesystemStorageProvider } from "../storage/filesystem";
+import { BATCH_SYNC_WINDOW, FilesystemStorageProvider } from "../storage/filesystem";
 
 describe("FilesystemStorageProvider", () => {
   let tmpDir: string;
@@ -16,6 +16,18 @@ describe("FilesystemStorageProvider", () => {
   afterEach(async () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
+
+  /** The inode of a path — the observable that separates rename from truncate. */
+  async function inodeOf(rel: string): Promise<bigint> {
+    const st = await fs.stat(path.join(tmpDir, rel), { bigint: true });
+    return st.ino;
+  }
+
+  /** Scratch files a staged write leaves behind if it does not clean up. */
+  async function tmpArtifactsIn(rel: string): Promise<string[]> {
+    const entries = await fs.readdir(path.join(tmpDir, rel));
+    return entries.filter((name) => /^\.tmp-.*\.tmp$/.test(name));
+  }
 
   // -------------------------------------------------------------------------
   // Text files
@@ -203,6 +215,300 @@ describe("FilesystemStorageProvider", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Exact compare-and-set (DW-371)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The etag used to be `${mtime}-${size}`, which described the file rather than
+   * its bytes. Two writers could then both "win": a rewrite of the same byte
+   * length inside one millisecond produced an IDENTICAL tag, and `saveConfig`
+   * writes a fixed-shape JSON object, so equal length is the ordinary case.
+   *
+   * These rows stage that collision deliberately — write the replacement, then
+   * put the mtime back to what it was — because waiting for two writes to land
+   * in one millisecond is a race the suite cannot depend on. Restoring the mtime
+   * is not a contrivance around the fix: it is exactly the state the old scheme
+   * could not tell apart, reproduced without a timing dependency.
+   */
+  describe("content-hash etag", () => {
+    /** Replace `rel` with equal-length content, leaving mtime and size untouched. */
+    async function rewriteInPlaceKeepingMtime(rel: string, content: string): Promise<void> {
+      const abs = path.join(tmpDir, rel);
+      const before = await fs.stat(abs);
+      await provider.writeFile(rel, content);
+      const after = await fs.stat(abs);
+      expect(after.size).toBe(before.size);
+      await fs.utimes(abs, before.atime, before.mtime);
+    }
+
+    it("is stable across reads with no write between, and prefixed h1:", async () => {
+      await provider.writeFile("etag.txt", "v1");
+
+      const first = await provider.readFileWithEtag("etag.txt");
+      const second = await provider.readFileWithEtag("etag.txt");
+
+      expect(first.etag).toBe(second.etag);
+      expect(first.etag.startsWith("h1:")).toBe(true);
+    });
+
+    it("changes when equal-length content is rewritten within one millisecond", async () => {
+      await provider.writeFile("etag.txt", "AAA");
+      const before = await provider.readFileWithEtag("etag.txt");
+      const statBefore = await fs.stat(path.join(tmpDir, "etag.txt"));
+
+      await rewriteInPlaceKeepingMtime("etag.txt", "BBB");
+
+      const after = await provider.readFileWithEtag("etag.txt");
+      const statAfter = await fs.stat(path.join(tmpDir, "etag.txt"));
+      // The control: the pair the OLD etag was built from is byte-identical, so
+      // an `mtime-size` tag would have called these two files the same version.
+      expect(statAfter.mtime.getTime()).toBe(statBefore.mtime.getTime());
+      expect(statAfter.size).toBe(statBefore.size);
+
+      expect(after.content).toBe("BBB");
+      expect(after.etag).not.toBe(before.etag);
+    });
+
+    it("refuses a losing CAS even when the other writer matched length and mtime", async () => {
+      await provider.writeFile("cas.txt", "AAA");
+      const { etag } = await provider.readFileWithEtag("cas.txt");
+
+      // Another writer gets there first, indistinguishably to the old scheme.
+      await rewriteInPlaceKeepingMtime("cas.txt", "BBB");
+
+      expect(await provider.writeFileIfMatch("cas.txt", "CCC", etag)).toBe(false);
+      // The other writer's content stands — a refused CAS writes nothing.
+      expect(await provider.readFile("cas.txt")).toBe("BBB");
+      expect(await tmpArtifactsIn(".")).toEqual([]);
+    });
+
+    it("publishes a winning CAS and hands back a tag that matches the new bytes", async () => {
+      await provider.writeFile("cas.txt", "v1");
+      const { etag } = await provider.readFileWithEtag("cas.txt");
+
+      expect(await provider.writeFileIfMatch("cas.txt", "v2", etag)).toBe(true);
+
+      const after = await provider.readFileWithEtag("cas.txt");
+      expect(after.content).toBe("v2");
+      expect(after.etag).not.toBe(etag);
+      expect(await tmpArtifactsIn(".")).toEqual([]);
+    });
+
+    it("creates neither the file nor its parent directory when the path is missing", async () => {
+      expect(await provider.writeFileIfMatch("absent/deep/cas.txt", "v1", "h1:whatever")).toBe(
+        false,
+      );
+
+      // The cheap pre-check is what keeps this true: staging first would have
+      // `mkdir -p`'d the parent before discovering there was nothing to replace.
+      expect(await provider.fileExists("absent/deep/cas.txt")).toBe(false);
+      await expect(fs.stat(path.join(tmpDir, "absent"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Bulk write doors (DW-293)
+  // -------------------------------------------------------------------------
+
+  describe("writeBatch", () => {
+    it("lands every entry whole, mixing text and binary, with no tmp residue", async () => {
+      await provider.writeBatch([
+        { path: "batch/a.md", body: "alpha" },
+        { path: "batch/nested/b.bin", body: new Uint8Array([1, 2, 3]).buffer as ArrayBuffer },
+        { path: "batch/c.md", body: "gamma" },
+      ]);
+
+      expect(await provider.readFile("batch/a.md")).toBe("alpha");
+      expect(Buffer.from(await provider.readAsset("batch/nested/b.bin"))).toEqual(
+        Buffer.from([1, 2, 3]),
+      );
+      expect(await provider.readFile("batch/c.md")).toBe("gamma");
+      expect(await tmpArtifactsIn("batch")).toEqual([]);
+      expect(await tmpArtifactsIn("batch/nested")).toEqual([]);
+    });
+
+    it("replaces each destination by rename, exactly as the single-file door does", async () => {
+      await provider.writeFile("batch/a.md", "old");
+      const before = await inodeOf("batch/a.md");
+
+      await provider.writeBatch([{ path: "batch/a.md", body: "new" }]);
+
+      expect(await provider.readFile("batch/a.md")).toBe("new");
+      expect(await inodeOf("batch/a.md")).not.toBe(before);
+    });
+
+    it("cleans up the whole window when one entry cannot be published", async () => {
+      // A directory is a destination `rename` can never replace, so this entry
+      // faults at the LAST step — after every entry in the window is staged.
+      await provider.writeFile("blocked/child.md", "keep me");
+
+      await expect(
+        provider.writeBatch([
+          { path: "ok-before.md", body: "before" },
+          { path: "blocked", body: "nope" },
+          { path: "ok-after.md", body: "after" },
+        ]),
+      ).rejects.toThrow();
+
+      // Not a transaction, and the interface says so: the entries that were
+      // already published stay published.
+      expect(await provider.readFile("ok-before.md")).toBe("before");
+      expect(await provider.readFile("ok-after.md")).toBe("after");
+      // The blocked destination is untouched, and nothing scratch survives.
+      expect(await provider.readFile("blocked/child.md")).toBe("keep me");
+      expect(await tmpArtifactsIn(".")).toEqual([]);
+      expect(await tmpArtifactsIn("blocked")).toEqual([]);
+    });
+
+    it("rejects duplicate paths before writing anything", async () => {
+      await expect(
+        provider.writeBatch([
+          { path: "dupe/a.md", body: "first" },
+          { path: "dupe/b.md", body: "other" },
+          { path: "dupe/a.md", body: "second" },
+        ]),
+      ).rejects.toThrow(/dupe\/a\.md/);
+
+      // "Before writing anything" is the part worth pinning: the refusal must
+      // not leave half the batch on disk.
+      expect(await provider.fileExists("dupe/a.md")).toBe(false);
+      expect(await provider.fileExists("dupe/b.md")).toBe(false);
+      expect(await provider.listFiles("dupe")).toEqual([]);
+    });
+
+    it("catches a duplicate that only two different spellings of one path share", async () => {
+      await expect(
+        provider.writeBatch([
+          { path: "same/a.md", body: "first" },
+          { path: "./same/a.md", body: "second" },
+        ]),
+      ).rejects.toThrow(/same\/a\.md/);
+    });
+
+    it("rejects an entry whose path is a directory prefix of another's", async () => {
+      // `a` has to be a file for one entry and a directory for the other, and
+      // the window stages both concurrently — so which one fails is a race
+      // rather than an answer, and the pair is refused instead.
+      await expect(
+        provider.writeBatch([
+          { path: "nest/a", body: "file" },
+          { path: "nest/a/b.md", body: "child" },
+        ]),
+      ).rejects.toThrow(/directory prefix/);
+
+      // …in either listed order: the ancestor may come second.
+      await expect(
+        provider.writeBatch([
+          { path: "nest/a/b.md", body: "child" },
+          { path: "nest/a", body: "file" },
+        ]),
+      ).rejects.toThrow(/directory prefix/);
+
+      expect(await provider.listFiles("nest")).toEqual([]);
+    });
+
+    it("writes nothing and syncs nothing for an empty batch", async () => {
+      await provider.writeBatch([]);
+      expect(await provider.listFiles(".")).toEqual([]);
+    });
+
+    it("preserves the mode of an overwritten destination", async () => {
+      // The batch door stages through its own helper rather than through
+      // `atomicWrite`, so the mode carry-over the single-file rows pin is a
+      // SECOND implementation and needs its own row.
+      await provider.writeFile("secret.md", "v1");
+      await fs.chmod(path.join(tmpDir, "secret.md"), 0o600);
+
+      await provider.writeBatch([{ path: "secret.md", body: "v2" }]);
+
+      const st = await fs.stat(path.join(tmpDir, "secret.md"));
+      expect(st.mode & 0o777).toBe(0o600);
+      expect(await provider.readFile("secret.md")).toBe("v2");
+    });
+
+    it("gives a new batched file the same default mode a plain write would", async () => {
+      await provider.writeBatch([{ path: "plain.md", body: "batched" }]);
+      await fs.writeFile(path.join(tmpDir, "control.md"), "control", "utf-8");
+
+      const [written, control] = await Promise.all([
+        fs.stat(path.join(tmpDir, "plain.md")),
+        fs.stat(path.join(tmpDir, "control.md")),
+      ]);
+      expect(written.mode & 0o777).toBe(control.mode & 0o777);
+    });
+
+    it("spans more than one sync window without losing entries", async () => {
+      // Derived from the provider's own window so raising it cannot make this
+      // row stop crossing a boundary — the seam where a mis-sliced chunk would
+      // silently drop or duplicate entries.
+      const count = BATCH_SYNC_WINDOW * 2;
+      const entries = Array.from({ length: count }, (_, i) => ({
+        path: `wide/f-${i}.md`,
+        body: `body-${i}`,
+      }));
+
+      await provider.writeBatch(entries);
+
+      const names = (await provider.listFiles("wide")).map((e) => e.name);
+      expect(names).toHaveLength(count);
+      expect(await provider.readFile("wide/f-0.md")).toBe("body-0");
+      expect(await provider.readFile(`wide/f-${count - 1}.md`)).toBe(
+        `body-${count - 1}`,
+      );
+      expect(await tmpArtifactsIn("wide")).toEqual([]);
+    });
+  });
+
+  describe("upsertEmbeddings", () => {
+    it("replaces stored ids in place, appends new ones, and lets the later entry win", async () => {
+      await provider.upsertEmbedding("a", [1, 0], { v: "old-a" });
+      await provider.upsertEmbedding("b", [0, 1], { v: "old-b" });
+
+      await provider.upsertEmbeddings([
+        { id: "b", vector: [0, 2], metadata: { v: "new-b" } },
+        { id: "c", vector: [1, 1], metadata: { v: "new-c" } },
+        // Same id twice in one flush: one stored entry, holding the last value.
+        { id: "c", vector: [2, 2], metadata: { v: "last-c" } },
+      ]);
+
+      expect(await provider.getEmbeddingById("a")).toEqual({
+        id: "a",
+        vector: [1, 0],
+        metadata: { v: "old-a" },
+      });
+      expect(await provider.getEmbeddingById("b")).toEqual({
+        id: "b",
+        vector: [0, 2],
+        metadata: { v: "new-b" },
+      });
+      expect(await provider.getEmbeddingById("c")).toEqual({
+        id: "c",
+        vector: [2, 2],
+        metadata: { v: "last-c" },
+      });
+      // Three ids, not four — a repeated id must not append a second copy.
+      expect(await provider.queryEmbeddings([1, 1], 10)).toHaveLength(3);
+    });
+
+    it("writes nothing for an empty flush", async () => {
+      await provider.upsertEmbeddings([]);
+      expect(await provider.getIndex("embeddings")).toBeNull();
+    });
+
+    it("replaces the embeddings blob by rename", async () => {
+      await provider.upsertEmbedding("a", [1, 0], {});
+      const before = await inodeOf(".indexes/embeddings.json");
+
+      await provider.upsertEmbeddings([{ id: "b", vector: [0, 1], metadata: {} }]);
+
+      expect(await inodeOf(".indexes/embeddings.json")).not.toBe(before);
+      expect(await tmpArtifactsIn(".indexes")).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Derived indexes
   // -------------------------------------------------------------------------
 
@@ -316,17 +622,9 @@ describe("FilesystemStorageProvider", () => {
    * round-trip assertion above while still truncating in place.
    */
   describe("atomic whole-file writes", () => {
-    /** The inode of a path — the observable that separates rename from truncate. */
-    async function inodeOf(rel: string): Promise<bigint> {
-      const st = await fs.stat(path.join(tmpDir, rel), { bigint: true });
-      return st.ino;
-    }
-
-    /** Scratch files `atomicWrite` leaves behind if it does not clean up. */
-    async function tmpArtifactsIn(rel: string): Promise<string[]> {
-      const entries = await fs.readdir(path.join(tmpDir, rel));
-      return entries.filter((name) => /^\.tmp-.*\.tmp$/.test(name));
-    }
+    // `inodeOf` / `tmpArtifactsIn` live at the suite level: the bulk-write rows
+    // above pin the same two observables, and one definition keeps them meaning
+    // the same thing in both places.
 
     it("replaces the destination by rename, not by truncating it in place", async () => {
       await provider.writeFile("a.md", "old");

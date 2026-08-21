@@ -587,6 +587,130 @@ describe("R2StorageProvider", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Bulk write doors (DW-293)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The batch doors exist so shared code (`portable-archive.ts`, `backups.ts`,
+   * `document-sources.ts`, `embeddings.ts`) has ONE way to write a set. That only
+   * holds if both providers answer the same way, so the rows the filesystem
+   * provider pins are pinned here too — with the one difference stated: R2 has no
+   * fsync, so the batch buys concurrency rather than a collapsed barrier.
+   */
+  describe("writeBatch", () => {
+    it("lands every entry, mixing text and binary", async () => {
+      await provider.writeBatch([
+        { path: "batch/a.md", body: "alpha" },
+        { path: "batch/b.bin", body: new Uint8Array([1, 2, 3]).buffer as ArrayBuffer },
+      ]);
+
+      expect(await provider.readFile("batch/a.md")).toBe("alpha");
+      expect(Buffer.from(await provider.readAsset("batch/b.bin"))).toEqual(
+        Buffer.from([1, 2, 3]),
+      );
+    });
+
+    it("spans more than one concurrency window without losing entries", async () => {
+      await provider.writeBatch(
+        Array.from({ length: 40 }, (_, i) => ({
+          path: `wide/f-${i}.md`,
+          body: `body-${i}`,
+        })),
+      );
+
+      expect(await provider.listFiles("wide")).toHaveLength(40);
+      expect(await provider.readFile("wide/f-0.md")).toBe("body-0");
+      expect(await provider.readFile("wide/f-39.md")).toBe("body-39");
+    });
+
+    it("rejects duplicate paths before writing anything", async () => {
+      await expect(
+        provider.writeBatch([
+          { path: "dupe/a.md", body: "first" },
+          { path: "dupe/a.md", body: "second" },
+        ]),
+      ).rejects.toThrow(/dupe\/a\.md/);
+
+      expect(await provider.fileExists("dupe/a.md")).toBe(false);
+    });
+
+    it("catches a duplicate that only two different spellings of one path share", async () => {
+      // The filesystem provider compares RESOLVED paths, so these are one file
+      // there and the batch is refused. R2 keys are opaque strings, so without a
+      // normalized comparison the same batch would be accepted here and silently
+      // last-write-win — one interface answering two ways about one input.
+      await expect(
+        provider.writeBatch([
+          { path: "same/a.md", body: "first" },
+          { path: "./same/a.md", body: "second" },
+        ]),
+      ).rejects.toThrow(/same\/a\.md/);
+    });
+
+    it("writes nothing for an empty batch", async () => {
+      await provider.writeBatch([]);
+      expect(await provider.listFiles("")).toEqual([]);
+    });
+
+    it("propagates a failing PUT and stops issuing the rest of the batch", async () => {
+      const faultEnv = createMockEnv();
+      const realPut = faultEnv.YOPEDIA_BUCKET.put.bind(faultEnv.YOPEDIA_BUCKET);
+      const fault = new Error("R2 put failed");
+      const attempted: string[] = [];
+      faultEnv.YOPEDIA_BUCKET.put = async (key, value, options) => {
+        attempted.push(key);
+        if (key === "fan/f-5.md") throw fault;
+        return realPut(key, value, options);
+      };
+      const faultProvider = new R2StorageProvider(faultEnv);
+
+      // More entries than the concurrency window, so there is a "rest of the
+      // batch" for the fault to stop.
+      const entries = Array.from({ length: 60 }, (_, i) => ({
+        path: `fan/f-${i}.md`,
+        body: `body-${i}`,
+      }));
+
+      // Identity, not just "some error": the batch door promises the faulting
+      // entry's own error, unchanged.
+      await expect(faultProvider.writeBatch(entries)).rejects.toBe(fault);
+
+      // Bounded: the PUTs already in flight may still land, but the workers must
+      // not keep working through a batch whose result the caller will never see.
+      expect(attempted.length).toBeLessThan(entries.length);
+    });
+  });
+
+  describe("upsertEmbeddings (KV fallback)", () => {
+    it("replaces stored ids, appends new ones, and lets the later entry win", async () => {
+      await provider.upsertEmbedding("a", [1, 0], { v: "old-a" });
+
+      await provider.upsertEmbeddings([
+        { id: "a", vector: [0, 1], metadata: { v: "new-a" } },
+        { id: "b", vector: [1, 1], metadata: { v: "first-b" } },
+        { id: "b", vector: [2, 2], metadata: { v: "last-b" } },
+      ]);
+
+      expect(await provider.getEmbeddingById("a")).toEqual({
+        id: "a",
+        vector: [0, 1],
+        metadata: { v: "new-a" },
+      });
+      expect(await provider.getEmbeddingById("b")).toEqual({
+        id: "b",
+        vector: [2, 2],
+        metadata: { v: "last-b" },
+      });
+      expect(await provider.queryEmbeddings([1, 1], 10)).toHaveLength(2);
+    });
+
+    it("writes nothing for an empty flush", async () => {
+      await provider.upsertEmbeddings([]);
+      expect(await provider.getIndex("embeddings")).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Embeddings — Vectorize
   // -------------------------------------------------------------------------
 
@@ -614,6 +738,57 @@ describe("R2StorageProvider", () => {
 
       const results = await vecProvider.queryEmbeddings([1, 0, 0], 5);
       expect(results).toHaveLength(0);
+    });
+
+    it("upserts a whole batch through ONE Vectorize call", async () => {
+      await vecProvider.upsertEmbeddings([
+        { id: "page1", vector: [1, 0, 0], metadata: { hash: "a" } },
+        { id: "page2", vector: [0, 1, 0], metadata: { hash: "b" } },
+      ]);
+
+      const results = await vecProvider.queryEmbeddings([1, 0, 0], 2);
+      expect(results).toHaveLength(2);
+      expect(results[0].id).toBe("page1");
+      expect(await vecProvider.getEmbeddingById("page2")).toEqual({
+        id: "page2",
+        vector: [0, 1, 0],
+        metadata: { hash: "b" },
+      });
+    });
+
+    it("collapses a repeated id BEFORE handing the batch to Vectorize", async () => {
+      // The in-memory mock happens to apply a duplicate-id payload last-wins,
+      // so asserting only on the stored result would pass without the merge.
+      // Real Vectorize does not define which of two mutations for one id in one
+      // call survives, so what has to be pinned is the PAYLOAD: one entry per id.
+      const spyEnv = createMockEnv({ withVectorize: true });
+      const index = spyEnv.YOPEDIA_VECTORIZE!;
+      const realUpsert = index.upsert.bind(index);
+      const payloads: VectorizeVector[][] = [];
+      index.upsert = async (vecs) => {
+        payloads.push(vecs);
+        return realUpsert(vecs);
+      };
+      const spyProvider = new R2StorageProvider(spyEnv);
+
+      await spyProvider.upsertEmbeddings([
+        { id: "page1", vector: [1, 0, 0], metadata: { v: "first" } },
+        { id: "page2", vector: [0, 1, 0], metadata: { v: "other" } },
+        { id: "page1", vector: [0, 0, 1], metadata: { v: "last" } },
+      ]);
+
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].map((v) => v.id)).toEqual(["page1", "page2"]);
+      expect(payloads[0][0]).toMatchObject({
+        id: "page1",
+        values: [0, 0, 1],
+        metadata: { v: "last" },
+      });
+      expect(await spyProvider.getEmbeddingById("page1")).toEqual({
+        id: "page1",
+        vector: [0, 0, 1],
+        metadata: { v: "last" },
+      });
     });
 
     it("getEmbeddingById fetches a stored vector via getByIds", async () => {

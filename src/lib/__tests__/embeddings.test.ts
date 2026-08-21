@@ -53,6 +53,7 @@ import {
   embedText,
   embedTexts,
   rebuildVectorStore,
+  EMBEDDING_FLUSH_WINDOW,
   WORKERS_AI_EMBEDDING_DIMENSIONS,
   getWorkersAiBinding,
   _resetEmbeddingWarnings,
@@ -1578,6 +1579,101 @@ describe("rebuildVectorStore", () => {
     expect(result.total).toBe(0);
     expect(result.embedded).toBe(0);
     expect(result.skipped).toBe(0);
+  });
+
+  /** Two full windows' worth of pages, derived so raising the window still spans one. */
+  const REBUILD_PAGES = EMBEDDING_FLUSH_WINDOW * 2;
+
+  /** Seed the mocks for a rebuild over `count` identical, embeddable pages. */
+  function stageRebuild(count: number): void {
+    mockListWikiPages.mockResolvedValue(
+      Array.from({ length: count }, (_, i) => ({
+        title: `p-${i}`,
+        slug: `p-${i}`,
+        summary: `p-${i}`,
+      })),
+    );
+    mockReadWikiPage.mockImplementation(async (slug: string) => ({
+      slug,
+      title: slug,
+      content: `content ${slug}`,
+      path: `/fake/${slug}.md`,
+    }));
+    mockEmbed.mockResolvedValue({ embedding: [0.1, 0.2] });
+  }
+
+  it("flushes the vector store in windows, not once per page (DW-293)", async () => {
+    // The per-page door is a whole-blob load, rewrite and fsync on the
+    // filesystem provider, so an N-page rebuild wrote a growing blob N times.
+    stageRebuild(REBUILD_PAGES);
+
+    const storage = getStorage();
+    const bulk = vi.spyOn(storage, "upsertEmbeddings");
+    const single = vi.spyOn(storage, "upsertEmbedding");
+
+    const result = await rebuildVectorStore();
+
+    expect(result.embedded).toBe(REBUILD_PAGES);
+    expect(result.skipped).toBe(0);
+    // EXACTLY the full windows. The trailing flush after the loop finds nothing
+    // pending when the page count divides evenly, so it costs no write — an
+    // upper bound of "windows + 1" would have hidden a per-page regression of
+    // one, and would have passed with the trailing flush writing a duplicate.
+    expect(bulk).toHaveBeenCalledTimes(REBUILD_PAGES / EMBEDDING_FLUSH_WINDOW);
+    for (const [batch] of bulk.mock.calls) {
+      expect(batch).toHaveLength(EMBEDDING_FLUSH_WINDOW);
+    }
+    expect(single).not.toHaveBeenCalled();
+
+    // The budget must not have been met by storing fewer vectors.
+    expect(await storage.getEmbeddingById("p-0")).not.toBeNull();
+    expect(
+      await storage.getEmbeddingById(`p-${REBUILD_PAGES - 1}`),
+    ).not.toBeNull();
+    expect(await storage.queryEmbeddings([0.1, 0.2], REBUILD_PAGES * 2)).toHaveLength(
+      REBUILD_PAGES,
+    );
+  });
+
+  it("flushes a partial trailing window", async () => {
+    // The other half of the seam: with a remainder, the flush after the loop is
+    // the only thing that stores those pages at all.
+    const count = EMBEDDING_FLUSH_WINDOW + 3;
+    stageRebuild(count);
+
+    const storage = getStorage();
+    const bulk = vi.spyOn(storage, "upsertEmbeddings");
+
+    const result = await rebuildVectorStore();
+
+    expect(result.embedded).toBe(count);
+    expect(bulk).toHaveBeenCalledTimes(2);
+    expect(bulk.mock.calls[1][0]).toHaveLength(3);
+    expect(await storage.getEmbeddingById(`p-${count - 1}`)).not.toBeNull();
+  });
+
+  it("counts a whole window as skipped when its flush fails, and warns once", async () => {
+    // The one place windowing changes `RebuildResult`: the per-page version
+    // could only ever blame the page it was upserting, and this reports the
+    // whole window. Skipped-but-possibly-stored is the safe direction — it
+    // under-claims what the store holds, and the rebuild is re-runnable.
+    const count = EMBEDDING_FLUSH_WINDOW;
+    stageRebuild(count);
+
+    const storage = getStorage();
+    const fault = new Error("vector store unavailable");
+    vi.spyOn(storage, "upsertEmbeddings").mockRejectedValue(fault);
+
+    const { result, warnings } = await withWarnSpy(() => rebuildVectorStore());
+
+    expect(result.total).toBe(count);
+    expect(result.embedded).toBe(0);
+    expect(result.skipped).toBe(count);
+    // One line for the window, not one per page — the same restraint DW-273
+    // asked for on the model-mismatch warning.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(`${count}`);
+    expect(await storage.getEmbeddingById("p-0")).toBeNull();
   });
 
   it("skips pages where embedding throws an error", async () => {

@@ -2611,7 +2611,8 @@ source_spec: `spec-dw-161-164-storage-write-integrity.md`
 location: src/lib/storage/filesystem.ts
 severity: medium
 reason: Measured under the full parallel suite: contributors 27ms -> 5091ms, lint 35ms -> 4854ms, query-history 102ms -> 24204ms. The same per-write cost is paid by `portable-archive.ts` on import (one write per archive entry), `backups.ts` on restore (one per asset), `embeddings.ts` on rebuild (each `upsertEmbedding` rewrites AND fsyncs the whole `.indexes/embeddings.json`) and by ingest. The cost is the durability guarantee working as specified, not a defect — but no benchmark, batching, or bound exists for those paths.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-filesystem-write-path-integrity
 decision: 2026-08-20 Batch the loop paths — Keep fsync as the default for single writes, and give the loop paths a batched form: a bulk-write door that fsyncs once per batch (or a directory sync at the end) for portable-archive import, backup restore and ingest, plus an accumulate-then-flush shape for `upsertEmbedding` so an embeddings rebuild stops rewriting and syncing the whole index per vector. Add a benchmark that fails if any of those paths regresses past a recorded bound.
 
 ### DW-294: `POST /api/research` has no `isReadOnly()` gate, unlike ~20 sibling write routes.
@@ -3270,7 +3271,8 @@ source_spec: `spec-dw-71-326-272-settings-config-resolution-hardening.md`
 location: src/lib/storage/filesystem.ts:266
 severity: medium
 reason: src/lib/storage/filesystem.ts:266-299. `readFileWithEtag` resolves `fs.readFile` and `fs.stat` through `Promise.all` — an unordered pair, so a write landing between them can yield old content with a fresh etag, and the CAS then MATCHES on a stale merge base. The etag itself is `${mtime.getTime()}-${size}`, so two saves in the same millisecond that swap equal-length values collide. Measured ~190/200 identical etags for back-to-back rewrites without fsync on a scratch file, 0/100 through the provider's fsync+rename path. Never worse than the unconditional write it replaced, and R2's server-side conditional put is exact — but the fs guard is narrower than "refuses instead" reads. Closing it means a content hash or stat-then-read ordering in the storage layer, whose contract and other consumer (graphify-jobs.ts) are outside this bundle. Documented at src/lib/config.ts's saveConfig docblock rather than hidden.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-filesystem-write-path-integrity
 
 ### DW-372: A pre-DW-272 build reading the new single-object config carries `__settingsVersion` through as an ordinary key and writes it back, so the stamp stops rotating on a rollback.
 origin: spec-deferred 9589cff245eb
@@ -3631,4 +3633,28 @@ source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
 location: package.json / missing pnpm-workspace.yaml (repo root)
 severity: medium
 reason: `pnpm test` and `pnpm lint` both exit non-zero with `ERROR packages field missing or empty` on a clean tree at 5b613b8, with no test or lint output. There is no `pnpm-workspace.yaml` at the repo root, while `package.json` defines `test`/`lint` normally — so pnpm resolves this directory as a workspace root it then rejects. Pre-existing and repo-wide, not caused by DW-373, but it is why this spec's own acceptance criterion ("Given `pnpm test` and `pnpm lint` are run … both pass") has been met via `npx vitest run` / `npx eslint` in two passes now. Every contributor and CI step following the README hits it.
+status: open
+
+### DW-416: `importPortableArchive`'s second loop re-encodes and rewrites every page the first loop already published to the same compatibility path.
+origin: spec-deferred 0b3e3e2b4aa9
+source_spec: `spec-dw-293-371-filesystem-write-path-integrity.md`
+location: src/lib/portable-archive.ts:206-234
+severity: low
+reason: Loop 1 writes `wikiRelPath(entry.path.slice("wiki/".length))` for every `wiki/` manifest entry; loop 2 then reads each page back, re-encodes it and writes the same bytes to the same path again. Loop 2 only adds value for tenant pages that were NOT in the archive. Pre-existing structure, but the new fsync budget makes the cost legible: it is a second full batch of barriers for bytes just written (visible in the import budget row).
+status: open
+
+### DW-417: The bulk doors stop at writes, so cleanup loops keep the exact per-item barrier cost this work removed from the write paths.
+origin: spec-deferred e7906ecaa4d2
+source_spec: `spec-dw-293-371-filesystem-write-path-integrity.md`
+location: src/lib/storage/types.ts
+severity: low
+reason: `deleteFile` and `removeEmbedding` gained no batch counterpart. Any loop that deletes per item still pays one round-trip each, and `removeEmbedding` still rewrites and fsyncs the whole embeddings blob per id — the same shape `upsertEmbedding` had before `upsertEmbeddings` existed. Not caused by this change; surfaced by having the write half done.
+status: open
+
+### DW-418: The filesystem CAS's check-then-publish window is narrowed to a bare `rename` but is not closed.
+origin: spec-deferred 530664b84f3b
+source_spec: `spec-dw-293-371-filesystem-write-path-integrity.md`
+location: src/lib/storage/filesystem.ts
+severity: low
+reason: `writeFileIfMatch` now stages and fsyncs the replacement, re-reads the destination to compare an exact content hash, and only then renames — so a writer that lands between the comparison and the rename still loses its update. Closing it needs a lock or a new storage primitive, which DW-371 scoped out and this spec's Block If names explicitly. Recorded in the `writeFileIfMatch` and `saveConfig` docblocks rather than hidden.
 status: open

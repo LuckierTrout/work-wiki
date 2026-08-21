@@ -2,6 +2,7 @@ import type { ExtractedDocument } from "./document-extract";
 import { serializeFrontmatter } from "./frontmatter";
 import { writeWikiPageWithSideEffects } from "./lifecycle";
 import { getStorage } from "./storage";
+import type { BatchWrite } from "./storage";
 import {
   rawRelPath,
   readWikiPageWithFrontmatter,
@@ -143,6 +144,14 @@ export async function preserveDocumentSources(
   const storage = getStorage();
   const tenant = tenantForOwner(owner);
   const stored: StoredDocumentSource[] = [];
+  // Every original and every extracted figure across every source, issued as one
+  // batch after the loop instead of a write (and an fsync round-trip) per file —
+  // a directory upload is a nested loop over both. Keyed by destination because
+  // the keys are CONTENT-derived: uploading the same bytes twice in one request
+  // produces the same `originalKey` and the same figure names, which used to mean
+  // an identical rewrite and would otherwise be an ambiguity `writeBatch`
+  // refuses. Collapsing them here keeps the outcome the loop already had.
+  const writes = new Map<string, BatchWrite>();
 
   for (const [sourceIndex, source] of sources.entries()) {
     const digest = await sha256(source.bytes);
@@ -151,7 +160,7 @@ export async function preserveDocumentSources(
     const originalKey = rawRelPath(
       `originals/${tenant}/${slug}/${shortDigest}-${filename}`,
     );
-    await storage.writeAsset(originalKey, source.bytes);
+    writes.set(originalKey, { path: originalKey, body: source.bytes });
 
     const assets: StoredDocumentSource["assets"] = [];
     for (const [assetIndex, asset] of source.extracted.assets.entries()) {
@@ -160,7 +169,8 @@ export async function preserveDocumentSources(
         `image-${assetIndex + 1}`,
       );
       const storedName = `source-${shortDigest}-${assetIndex + 1}-${assetName}`;
-      await storage.writeAsset(rawRelPath(`assets/${slug}/${storedName}`), asset.bytes);
+      const assetPath = rawRelPath(`assets/${slug}/${storedName}`);
+      writes.set(assetPath, { path: assetPath, body: asset.bytes });
       assets.push({
         filename: asset.filename,
         mediaType: asset.mediaType,
@@ -182,6 +192,8 @@ export async function preserveDocumentSources(
       assets,
     });
   }
+
+  await storage.writeBatch([...writes.values()]);
 
   const indexKey = recordIndexKey(owner, slug);
   const existing = await storage.getIndex<StoredDocumentSource[]>(indexKey);

@@ -1,5 +1,6 @@
 import { isEnoent } from "./errors";
 import { getStorage } from "./storage";
+import type { BatchWrite } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
 import { recordOperationSafe } from "./operation-ledger";
 import { withFileLock } from "./lock";
@@ -28,6 +29,18 @@ export type BackupSummary = Omit<BackupManifest, "files"> & { fileCount: number 
 
 const MAX_BACKUP_FILES = 10_000;
 const MAX_BACKUP_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
+ * How many files' bytes a backup holds in memory before flushing them.
+ *
+ * The batch door exists to bound how many durability barriers a copy loop pays,
+ * but accumulating the WHOLE backup first would trade that for an unbounded
+ * heap: `MAX_BACKUP_BYTES` is 2 GB, and the loop this replaced held exactly one
+ * file's bytes at a time. Flushing in windows keeps both bounds — a window's
+ * worth of buffers is released before the next window is read, and the barrier
+ * count still falls by a factor of this window rather than to one.
+ */
+const BACKUP_BATCH_WINDOW = 32;
 
 function ownerTenant(owner: string): string {
   const value = tenantForOwner(owner);
@@ -86,6 +99,22 @@ async function createOwnerBackupUnlocked(
   const entries: BackupFileEntry[] = [];
   let totalBytes = 0;
 
+  // Copies are issued a window at a time (see {@link BACKUP_BATCH_WINDOW}), so
+  // the loop pays a bounded number of durability barriers WITHOUT holding the
+  // whole backup in memory. `pending` is keyed by destination so it carries at
+  // most one buffer per file, and it is cleared — releasing that window's bytes
+  // — before the next window is read.
+  //
+  // The size cap is unaffected: it is checked as each source is READ, and the
+  // first read that crosses it throws before that window is flushed.
+  const pending = new Map<string, ArrayBuffer>();
+  const flush = async (): Promise<void> => {
+    if (pending.size === 0) return;
+    const window: BatchWrite[] = [...pending].map(([path, body]) => ({ path, body }));
+    pending.clear();
+    await getStorage().writeBatch(window);
+  };
+
   for (const sourcePath of files) {
     const data = await getStorage().readAsset(sourcePath);
     totalBytes += data.byteLength;
@@ -94,14 +123,21 @@ async function createOwnerBackupUnlocked(
     }
     const relative = sourcePath.slice(sourceRoot.length + 1);
     const destination = `${root}/files/${relative}`;
-    await getStorage().writeAsset(destination, data);
+    // `walkFiles` yields distinct paths, so a repeat here would mean two sources
+    // collapsing onto one backup path — flush first so the earlier copy is
+    // written before the later one replaces it, which is what the per-file loop
+    // did and what `writeBatch` refuses to guess at.
+    if (pending.has(destination)) await flush();
+    pending.set(destination, data);
     entries.push({
       path: sourcePath,
       backupPath: destination,
       size: data.byteLength,
       sha256: await sha256(data),
     });
+    if (pending.size >= BACKUP_BATCH_WINDOW) await flush();
   }
+  await flush();
 
   const manifest: BackupManifest = {
     version: 1,
@@ -173,6 +209,36 @@ export async function verifyOwnerBackup(
   if (!manifest) throw new Error("Backup not found");
   const verificationRoot = `restore-verification/${ownerTenant(owner)}/${id}`;
   try {
+    // Restores are written a window at a time and read back within that same
+    // window, so this keeps the per-file "write it, then prove it round-trips"
+    // shape while paying a bounded number of durability barriers — and, as in
+    // the create path, it never holds more than one window of bytes.
+    //
+    // Keyed BY DESTINATION rather than positionally: a manifest is stored data,
+    // not something re-derived here, so two entries can slice to one
+    // verification-relative path. Keying it collapses them the way the
+    // sequential loop did — and flushing before a repeat means the earlier copy
+    // is still written and checked against its OWN digest, rather than the batch
+    // being refused as ambiguous or the later bytes being checked against the
+    // earlier digest.
+    const pending = new Map<string, { data: ArrayBuffer; file: BackupFileEntry }>();
+    const flushAndVerify = async (): Promise<void> => {
+      if (pending.size === 0) return;
+      const window = [...pending];
+      pending.clear();
+      const writes: BatchWrite[] = window.map(([path, entry]) => ({
+        path,
+        body: entry.data,
+      }));
+      await getStorage().writeBatch(writes);
+      for (const [path, entry] of window) {
+        const restored = await getStorage().readAsset(path);
+        if (await sha256(restored) !== entry.file.sha256) {
+          throw new Error(`Restore verification failed for ${entry.file.path}`);
+        }
+      }
+    };
+
     for (const file of manifest.files) {
       const data = await getStorage().readAsset(file.backupPath);
       if (data.byteLength !== file.size || await sha256(data) !== file.sha256) {
@@ -180,12 +246,12 @@ export async function verifyOwnerBackup(
       }
       const relative = file.path.slice(`tenants/${manifest.tenant}/`.length);
       const restoredPath = `${verificationRoot}/${relative}`;
-      await getStorage().writeAsset(restoredPath, data);
-      const restored = await getStorage().readAsset(restoredPath);
-      if (await sha256(restored) !== file.sha256) {
-        throw new Error(`Restore verification failed for ${file.path}`);
-      }
+      if (pending.has(restoredPath)) await flushAndVerify();
+      pending.set(restoredPath, { data, file });
+      if (pending.size >= BACKUP_BATCH_WINDOW) await flushAndVerify();
     }
+    await flushAndVerify();
+
     manifest.verifiedAt = now.toISOString();
     manifest.verificationStatus = "passed";
     delete manifest.verificationError;

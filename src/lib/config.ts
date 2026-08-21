@@ -630,11 +630,11 @@ export async function readConfig(): Promise<ConfigRead> {
  * stripped before it leaves {@link readStoredConfig}.
  *
  * On R2 that read is also the same single round-trip `readFile` was, since the
- * etag rides on the object. On the filesystem provider `readFileWithEtag` adds a
- * `stat` beside the `readFile`, so these ~50 defaults-only reads pay one extra
- * local syscall each for an etag they do not use — cheaper than the second file
- * open it replaced, and the price of having ONE read door that cannot answer
- * differently to `loadConfig` and `readConfig`.
+ * etag rides on the object. On the filesystem provider it is likewise ONE read:
+ * the etag is a hash of the bytes that read returned, not a `stat` alongside
+ * them, so these ~50 defaults-only reads pay a hash of a small file for a tag
+ * they do not use and no extra syscall at all. (It used to pay a `stat`, and
+ * that pair described two different instants — see {@link saveConfig}.)
  */
 export async function loadConfig(): Promise<AppConfig> {
   const read = await readStoredConfig();
@@ -670,15 +670,27 @@ export type ConfigSave = { status: "ok"; version: string } | { status: "conflict
  * save would be silently overwritten. `writeFileIfMatch` refuses instead, and
  * this answers `conflict` so the route can say so.
  *
- * HOW EXACT THAT REFUSAL IS DEPENDS ON THE BACKEND. On R2 it is exact: the
- * conditional put is evaluated server-side against the object's own etag, so a
- * losing writer cannot win. On the filesystem provider the etag is `mtime-size`
- * and `readFileWithEtag` pairs a `readFile` with a `stat`, so a concurrent
- * rewrite landing in the same millisecond at the same byte length produces a
- * MATCHING etag and the losing save is allowed through — and the check-then-write
- * is not one atomic step there either. That is a narrower window than the one
- * this closes, on the deployment shape (one local process) least likely to have
- * two concurrent writers at all; it is bounded and written down, not closed.
+ * THE REFUSAL IS EXACT ON BOTH BACKENDS, and what remains open is narrow and
+ * different in kind. On R2 the conditional put is evaluated server-side against
+ * the object's own etag, so a losing writer cannot win. On the filesystem
+ * provider the etag is a HASH OF THE CONTENT (`h1:<sha256>`) read in the same
+ * single `readFile` that returned it, and `writeFileIfMatch` compares that hash
+ * against the file again after staging its replacement. Neither of the two ways
+ * a losing save used to be allowed through survives: an `mtime-size` tag could
+ * not tell apart a rewrite of the same byte length in the same millisecond —
+ * which is the COMMON shape here, since this writes a fixed-shape JSON object —
+ * and the `readFile`/`stat` pair behind the old tag described two different
+ * instants, so a write landing between them produced stale content carrying a
+ * fresh tag.
+ *
+ * WHAT IS STILL OPEN on the filesystem is the `rename` that publishes the
+ * replacement: the comparison happens immediately before it, with the new bytes
+ * already written and flushed, so a writer whose own rename lands inside that
+ * gap is overwritten unnoticed. Closing it would need a lock or a storage
+ * primitive the interface does not have. It is orders of magnitude narrower than
+ * the read-modify-write window this closes, on the deployment shape (one local
+ * process) least likely to have two concurrent writers at all; it is bounded and
+ * written down, not closed.
  *
  * WITHOUT an etag it writes unconditionally, and that is the FIRST write only:
  * `readConfig` returns `etag: null` exactly when there was no object to read.
