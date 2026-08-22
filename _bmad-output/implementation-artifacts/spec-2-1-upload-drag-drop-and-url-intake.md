@@ -177,9 +177,39 @@ deferred:
 - Given I drop a PDF, DOCX, or other office/ebook type, when Intake runs, then it fails visibly, no Source is stored, and no sidecar extract job is created.
 - Given the URL is HTML, when the kernel fetches it, then it becomes clean Markdown via Readability + `htmlToMarkdown`, and the stored Source is immutable after save.
 
+### Review Findings
+
+Independent follow-up review of `f93bae14..a3c8fcc` (2026-08-22). The first pass's seven spec-deferred items stay owned here as defer; new holes the 202 enqueue patch did not close are listed as patch.
+
+- [x] [Review][Patch] Ingest URL re-ingest mints a content-hashed snapshot (FR-2); `sources[]` points at the new id; old bytes stay [`src/lib/ingest.ts:1791`] — decided 2026-08-22 option 1
+- [x] [Review][Patch] Post-store `createIngestJob` / `stageText` still 500 after bytes landed [`src/app/api/workbench/intake/route.ts:218`]
+- [x] [Review][Patch] Silo-mirror repair does not bump `dataVersion`, so Files can stay empty [`src/lib/raw.ts:116`]
+- [x] [Review][Patch] Existence-check fail-open can overwrite an occupied immutable key [`src/lib/raw.ts:64`]
+- [x] [Review][Patch] `onDragEnd` on the drop target may not fire for OS file drags, so the overlay can stick [`src/components/workbench/Workbench.tsx:981`]
+- [x] [Review][Patch] `intakeBusy` is React state, so two first-tick events can both pass the gate [`src/components/workbench/Workbench.tsx:901`]
+- [x] [Review][Patch] Drop overlay still lights while a batch is already in flight [`src/components/workbench/Workbench.tsx:957`]
+- [x] [Review][Patch] A Files-typed drop with an empty `dataTransfer.files` list is a silent no-op [`src/components/workbench/Workbench.tsx:1011`]
+
+- [x] [Review][Defer] Hashed `syncSiloForPage` / `removeSiloForPage` miss `raw/sources/<slug>/<rawId>.md` [`src/lib/silo.ts:106`] — deferred, pre-existing
+- [x] [Review][Defer] Identical re-arrival still creates an Ingest job [`src/app/api/workbench/intake/route.ts:218`] — deferred, pre-existing
+- [x] [Review][Defer] `listRawSources` is still non-recursive [`src/lib/raw.ts`] — deferred, pre-existing
+- [x] [Review][Defer] `alreadyStored` then `writeFile` is not exclusive [`src/lib/raw.ts:116`] — deferred, pre-existing
+- [x] [Review][Defer] Client 15s deadline wraps the server URL fetch's 15s budget [`src/lib/workbench-request.ts:33`] — deferred, pre-existing
+- [x] [Review][Defer] `queued: false` 202 still reads "Ingest is queued." [`src/lib/workbench-intake-client.ts:117`] — deferred, pre-existing
+- [x] [Review][Defer] `fetchUrlContent` skips the allowlist when Content-Type is missing [`src/lib/fetch.ts:232`] — deferred, pre-existing
+
 ## Spec Change Log
 
 ## Review Triage Log
+
+### 2026-08-22 — Independent follow-up review
+- intent_gap: 0
+- bad_spec: 0
+- decision_needed: 1 → patch (option 1: content-hash new snapshots; no overwrite)
+- patch: 8: (high 2, medium 2, low 4)
+- defer: 7: (high 0, medium 4, low 3)
+- dismiss: 17
+- layers: blind-hunter, edge-case-hunter, verification-gap, acceptance-auditor (none failed)
 
 ### 2026-08-22 — Review pass
 - intent_gap: 0

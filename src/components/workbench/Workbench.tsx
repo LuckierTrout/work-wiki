@@ -74,6 +74,7 @@ import {
 } from "@/lib/workbench-preview";
 import {
   INTAKE_DROP_COPY,
+  INTAKE_FILE_REQUIRED_COPY,
   INTAKE_IN_FLIGHT_COPY,
   INTAKE_READ_ONLY_COPY,
   intakeDragHasFiles,
@@ -217,6 +218,11 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // differently. Deliberately not persisted — an arrival is an event, and a
   // reload must not restore a sentence about one that finished.
   const [intakeBusy, setIntakeBusy] = useState(false);
+  // The disabled chrome reads `intakeBusy` state. The GATE reads this ref: two
+  // drops or a drop+click in the same tick both see the state as false, share
+  // one `finally`, and the first to resolve clears the flag while the second
+  // is still posting. The ref is set synchronously before either request.
+  const intakeBusyRef = useRef(false);
   const [intakeStatus, setIntakeStatus] = useState("");
   // Is a file drag currently over the shell? The visible affordance only.
   const [dropActive, setDropActive] = useState(false);
@@ -894,20 +900,25 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       if (readOnly || picked.length === 0) return;
       // A batch is already in flight. The controls are disabled, but a DROP has
       // no disabled state and the platform delivers it anyway — and two batches
-      // sharing one `intakeBusy` flag race their own `finally`: the first to
-      // resolve clears the flag while the second is still posting, and the
-      // second's report overwrites the first's sentence. One at a time, and the
-      // owner keeps the sentence they are reading.
-      if (intakeBusy) return;
+      // sharing one flag race their own `finally` if that flag is only React
+      // state: two first-tick events both read false, the first to resolve
+      // clears it while the second is still posting, and the second's report
+      // overwrites the first's sentence. The ref is the gate; state is the
+      // chrome. One at a time, and the owner keeps the sentence they are reading.
+      if (intakeBusyRef.current) return;
+      intakeBusyRef.current = true;
       setIntakeBusy(true);
       // The previous batch's sentence goes as this one starts. Leaving it up
       // would put a stale "Stored 3 sources" beside a control reading "Storing…".
       setIntakeStatus("");
       void submitIntakeFiles(picked)
         .then(reportIntake)
-        .finally(() => setIntakeBusy(false));
+        .finally(() => {
+          intakeBusyRef.current = false;
+          setIntakeBusy(false);
+        });
     },
-    [intakeBusy, readOnly, reportIntake],
+    [readOnly, reportIntake],
   );
 
   /** The same, for the in-app URL field. One URL, one Source, one queue item. */
@@ -915,14 +926,18 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     (url: string) => {
       // Same single-flight rule as the file door, and the same flag: a URL
       // submitted while a drop is still posting would race its `finally` too.
-      if (readOnly || intakeBusy) return;
+      if (readOnly || intakeBusyRef.current) return;
+      intakeBusyRef.current = true;
       setIntakeBusy(true);
       setIntakeStatus("");
       void submitIntakeUrl(url)
         .then((outcome) => reportIntake([outcome]))
-        .finally(() => setIntakeBusy(false));
+        .finally(() => {
+          intakeBusyRef.current = false;
+          setIntakeBusy(false);
+        });
     },
-    [intakeBusy, readOnly, reportIntake],
+    [readOnly, reportIntake],
   );
 
   /**
@@ -954,7 +969,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       // is about to be refused is worse than showing nothing. The drop itself is
       // still claimed and still answered with the read-only sentence — the
       // affordance is what is withheld, not the explanation.
-      if (!readOnly) setDropActive(true);
+      if (!readOnly && !intakeBusyRef.current) setDropActive(true);
     },
     [readOnly],
   );
@@ -970,18 +985,52 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   }, []);
 
   /**
+   * Clear the drop overlay. Shared by the shell handlers and the window
+   * listeners: an OS file drag's `dragend` fires on the desktop, not on this
+   * element, so the target-only handler is not enough.
+   */
+  const resetDropAffordance = useCallback(() => {
+    dragDepthRef.current = 0;
+    setDropActive(false);
+  }, []);
+
+  useEffect(() => {
+    const onWindowDragEnd = () => resetDropAffordance();
+    const onWindowDragLeave = (event: DragEvent) => {
+      // Left the viewport. `relatedTarget` is null when the pointer exits the
+      // document; some browsers also omit it while still inside, so the
+      // coordinates have to agree that we are outside before we reset —
+      // otherwise a leave between two children would kill the overlay mid-drag.
+      if (event.relatedTarget !== null) return;
+      if (
+        event.clientX > 0 &&
+        event.clientY > 0 &&
+        event.clientX < window.innerWidth &&
+        event.clientY < window.innerHeight
+      ) {
+        return;
+      }
+      resetDropAffordance();
+    };
+    window.addEventListener("dragend", onWindowDragEnd);
+    window.addEventListener("dragleave", onWindowDragLeave);
+    return () => {
+      window.removeEventListener("dragend", onWindowDragEnd);
+      window.removeEventListener("dragleave", onWindowDragLeave);
+    };
+  }, [resetDropAffordance]);
+
+  /**
    * The drag ENDED — cancelled with Esc, or released outside the window.
    *
    * Neither of those fires `drop`, and a cancel outside the shell need not fire
    * a matching `dragleave` either, so without this the counter keeps whatever
    * depth the abandoned drag left and the overlay stays lit over a Workbench
    * nobody is dragging anything onto. Reset rather than decremented, for the
-   * same reason the drop resets it.
+   * same reason the drop resets it. Window listeners above cover OS file drags,
+   * whose `dragend` never reaches this element.
    */
-  const onShellDragEnd = useCallback(() => {
-    dragDepthRef.current = 0;
-    setDropActive(false);
-  }, []);
+  const onShellDragEnd = resetDropAffordance;
 
   const onShellDrop = useCallback(
     (event: ReactDragEvent<HTMLDivElement>) => {
@@ -990,8 +1039,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       // A drop fires no `dragleave`, so the counter is reset rather than
       // decremented — otherwise the affordance stays lit for the rest of the
       // session over the depth the drag left behind.
-      dragDepthRef.current = 0;
-      setDropActive(false);
+      resetDropAffordance();
       if (readOnly) {
         // The controls are dimmed, but a DROP has no disabled state to respect
         // — the platform delivers it either way. Refusing silently would be
@@ -1000,17 +1048,26 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
         announce(INTAKE_READ_ONLY_COPY);
         return;
       }
-      if (intakeBusy) {
+      if (intakeBusyRef.current) {
         // Same reasoning as the read-only branch: the drop cannot be queued
-        // behind the batch in flight (one `intakeBusy` flag, one set of
-        // outcomes), so it is refused OUT LOUD rather than dropped on the floor.
+        // behind the batch in flight (one busy flag, one set of outcomes), so
+        // it is refused OUT LOUD rather than dropped on the floor.
         setIntakeStatus(INTAKE_IN_FLIGHT_COPY);
         announce(INTAKE_IN_FLIGHT_COPY);
         return;
       }
-      runIntakeFiles(Array.from(event.dataTransfer.files));
+      const files = Array.from(event.dataTransfer.files);
+      // The types list claimed Files, but the file list can still be empty
+      // (a cancelled OS drag, or a types-only claim). Silent return here is
+      // indistinguishable from losing the file.
+      if (files.length === 0) {
+        setIntakeStatus(INTAKE_FILE_REQUIRED_COPY);
+        announce(INTAKE_FILE_REQUIRED_COPY);
+        return;
+      }
+      runIntakeFiles(files);
     },
-    [announce, intakeBusy, readOnly, runIntakeFiles],
+    [announce, readOnly, resetDropAffordance, runIntakeFiles],
   );
 
   /**

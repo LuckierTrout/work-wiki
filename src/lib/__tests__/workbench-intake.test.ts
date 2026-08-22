@@ -315,6 +315,7 @@ import { isReadOnly } from "@/lib/config";
 import { fetchUrlContent } from "@/lib/fetch";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { createIngestJob } from "@/lib/ingest-jobs";
+import { stageText } from "@/lib/ingest-staging";
 import { saveRawSourceFor } from "@/lib/raw";
 import { POST } from "@/app/api/workbench/intake/route";
 
@@ -323,6 +324,7 @@ const mockedReadOnly = vi.mocked(isReadOnly);
 const mockedFetchUrl = vi.mocked(fetchUrlContent);
 const mockedSave = vi.mocked(saveRawSourceFor);
 const mockedJob = vi.mocked(createIngestJob);
+const mockedStage = vi.mocked(stageText);
 const mockedEnqueue = vi.mocked(enqueueOrInline);
 
 /** A multipart request carrying one file, as the picker and the drop both send. */
@@ -452,6 +454,29 @@ describe("POST /api/workbench/intake — files", () => {
     // NOT rolled back. Deleting stored bytes to tidy up a queue error is the one
     // thing FR-2 forbids, and there is no writer here that could do it anyway.
     expect(mockedSave).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers 202 when store succeeded and the job record failed", async () => {
+    mockedJob.mockRejectedValueOnce(new Error("jobs unavailable"));
+    const { status, body } = await post(fileRequest(new File(["x"], "notes.md")));
+    expect(status).toBe(202);
+    expect(body.queued).toBe(false);
+    expect(body.path).toMatch(/^raw\/sources\//);
+    expect(String(body.error)).toContain("jobs unavailable");
+    expect(mockedSave).toHaveBeenCalledTimes(1);
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("answers 202 when store succeeded and staging the queue payload failed", async () => {
+    mockedStage.mockRejectedValueOnce(new Error("stage full"));
+    const huge = "x".repeat(96_001);
+    const { status, body } = await post(fileRequest(new File([huge], "huge.md")));
+    expect(status).toBe(202);
+    expect(body.queued).toBe(false);
+    expect(body.path).toMatch(/^raw\/sources\//);
+    expect(String(body.error)).toContain("stage full");
+    expect(mockedSave).toHaveBeenCalledTimes(1);
+    expect(mockedEnqueue).not.toHaveBeenCalled();
   });
 
   it("refuses an office or ebook file with no Source and no job", async () => {

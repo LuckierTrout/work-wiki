@@ -3805,3 +3805,13 @@ location: src/lib/__tests__/pnpm-workspace-root.test.ts (pnpmDirTargets)
 severity: low
 reason: `pnpmDirTargets` in src/lib/__tests__/pnpm-workspace-root.test.ts matches pnpm's two directory flags. A workflow step using GitHub Actions' `working-directory:` key, or a plain `cd`, is not scraped. The on-disk lockfile walk added in review covers every real nested package (a pnpm package installed with --frozen-lockfile necessarily has one), so the residual gap is a directory installed without a committed lockfile.
 status: open
+
+## Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)
+
+- Hashed `syncSiloForPage` / `removeSiloForPage` still copy and delete only `raw/sources/<slug>.md`, not hashed Intake trees at `raw/sources/<slug>/<rawId>.md`. Intake mirrors hashed keys at write time via `{ owner }`; ingest callers still omit owner. Cascade delete is Story 2.10. [`src/lib/silo.ts:106`]
+- An identical re-arrival still creates an Ingest job even though the Source bytes are not rewritten. SHA256 skip is Story 2.7. [`src/app/api/workbench/intake/route.ts:218`]
+- `listRawSources` is still non-recursive, so CLI/lint listings miss hashed `raw/sources/<slug>/<id>.md` arrivals. Spec allowed the recursive Files walk as the observed surface. [`src/lib/raw.ts`]
+- `alreadyStored` then `writeFile` is not exclusive, so two concurrent stores of a new key can overwrite. No create-only compare-and-swap. [`src/lib/raw.ts:116`]
+- The client's 15s `send`/`sendForm` deadline wraps a server URL fetch that already uses the same 15s budget. A slow but valid HTML fetch can surface as an unconfirmed write while the route still finishes and stores. [`src/lib/workbench-request.ts:33`]
+- When store succeeds and enqueue returns `queued: false`, the batch sentence still says "Ingest is queued." The client treats any 2xx as stored. [`src/lib/workbench-intake-client.ts:117`]
+- `fetchUrlContent` skips the content-type allowlist when the response omits Content-Type (`if (mimeType && !allowed.includes)`). Pre-existing empty-header behaviour; this story only passed a narrowed list. [`src/lib/fetch.ts:232`]

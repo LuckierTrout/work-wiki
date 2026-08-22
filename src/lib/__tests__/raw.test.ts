@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -13,6 +13,7 @@ import {
 import { ensureDirectories, tenantForOwner } from "../wiki";
 import { getDataDir } from "../paths";
 import { readDataVersion } from "../data-version";
+import { getStorage } from "../storage";
 
 let tmpDir: string;
 let originalWikiDir: string | undefined;
@@ -325,6 +326,27 @@ describe("per-source raw snapshots", () => {
       "first arrival",
     );
   });
+
+  it("refuses the write when existence cannot be confirmed (FR-2)", async () => {
+    // Fail-open used to treat a thrown exists-check as "absent" and write
+    // anyway, which rewrote an occupied key. A flaky HEAD must not mutate
+    // immutable bytes — the arrival fails and the owner can retry.
+    await ensureDirectories();
+    await saveRawSourceFor("occupied", "abc123", "first arrival");
+    const spy = vi.spyOn(getStorage(), "fileExists").mockRejectedValue(
+      new Error("head failed"),
+    );
+    try {
+      await expect(
+        saveRawSourceFor("occupied", "abc123", "mutant"),
+      ).rejects.toThrow(/head failed/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect((await readRawSourceById("occupied", "abc123")).content).toBe(
+      "first arrival",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -392,6 +414,19 @@ describe("intake writes (owner option)", () => {
 
     await saveRawSourceFor("bumped", "1a2b3c", "new bytes", { owner: OWNER });
     expect(await readDataVersion()).toBe(afterWrite);
+  });
+
+  it("bumps dataVersion when a declined write repairs the silo", async () => {
+    // First write has no owner, so the silo is empty and the bump already
+    // happened. The retry only copies the mirror — without a second bump the
+    // watcher is forward-only and Files stays empty.
+    await saveRawSourceFor("repaired-bump", "ee33ff", "bytes");
+    const afterFirst = await readDataVersion();
+    await saveRawSourceFor("repaired-bump", "ee33ff", "bytes", { owner: OWNER });
+    expect(await readDataVersion()).toBeGreaterThan(afterFirst);
+    expect(await fs.readFile(siloAbs("repaired-bump/ee33ff.md"), "utf-8")).toBe(
+      "bytes",
+    );
   });
 
   it("keeps the stored Source when the silo mirror fails", async () => {

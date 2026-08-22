@@ -58,8 +58,8 @@ export function mergeSourceEntry(sources: SourceEntry[], entry: SourceEntry): So
       ...base[idx],
       fetched: entry.fetched,
       triggered_by: entry.triggered_by,
-      // Carry the new snapshot id (same URL → same id; also upgrades a legacy
-      // entry that predates per-source raw).
+      // Carry the new snapshot id (a new body mints a new content-hashed
+      // id; also upgrades a legacy entry that predates per-source raw).
       ...(entry.raw_id ? { raw_id: entry.raw_id } : {}),
     };
   } else {
@@ -1781,18 +1781,16 @@ export async function ingest(
 
   // Build the structured sources[] provenance entry for this ingest, and keep a
   // per-source raw snapshot so a multi-source page can show each source's raw.
-  // The id is keyed on the source URL (so re-ingesting a URL refreshes that
-  // snapshot, matching how mergeSourceEntry dedups by url); paste/upload key on
-  // content instead, since they share the "text-paste" placeholder url.
+  // The id is a hash of the arriving BYTES (FR-2): a later ingest of the same
+  // URL with a new body mints a new key instead of rewriting the old one.
+  // mergeSourceEntry still dedups the page row by URL and points raw_id at the
+  // latest snapshot. Paste/upload/email share a placeholder url, so they were
+  // already content-hashed; URL ingest now uses the same rule.
   const sourceType = options?.sourceType
     ?? (options?.sourceUrl ? "url" : "text");
   const sourceUrl =
     options?.sourceUrl ?? (sourceType === "email" ? "email" : "text-paste");
-  const rawId = contentHash(
-    sourceUrl !== "text-paste" && sourceUrl !== "upload" && sourceUrl !== "email"
-      ? sourceUrl
-      : content,
-  );
+  const rawId = contentHash(content);
   await saveRawSourceFor(slug, rawId, content);
   const sourceEntry = buildSourceEntry(sourceUrl, sourceType, options?.triggeredBy, rawId);
   frontmatter.sources = serializeSources([sourceEntry]);

@@ -216,24 +216,6 @@ async function storeAndQueue(input: {
   };
 
   const jobId = crypto.randomUUID();
-  await createIngestJob({ jobId, owner, title, ...(sourceUrl ? { url: sourceUrl } : {}) });
-
-  const base = {
-    kind: "ingest" as const,
-    ...(title ? { title } : {}),
-    owner,
-    author: owner,
-    triggeredBy: owner,
-    sourceType,
-    ...(sourceUrl ? { sourceUrl } : {}),
-    jobId,
-  };
-  // Small enough to ride inline in the queue message; otherwise staged to R2,
-  // exactly as `/api/ingest` does for a large paste.
-  const task: Task =
-    text.length <= MAX_INLINE_CONTENT_CHARS
-      ? { ...base, content: text }
-      : { ...base, staged: { key: await stageText(jobId, text), kind: "text" } };
 
   // THE SOURCE IS ALREADY ON DISK from here down, so a failure below is not a
   // failed arrival. Answering 500 told the client the whole thing failed: it
@@ -241,12 +223,33 @@ async function storeAndQueue(input: {
   // trees were never re-polled — so bytes that had landed, and were listable in
   // Files, stayed invisible until something else happened to bump the version.
   //
-  // So a rejected queue is a PARTIAL success: 202 with the stored path and
-  // `queued: false`. The Source is NOT rolled back — deleting stored bytes to
-  // tidy up a queue error would be the one thing FR-2 forbids, and Ingest can be
-  // re-driven for a Source that exists.
+  // The same hole used to sit on `createIngestJob` and `stageText`: they run
+  // after the write and a throw became a 500. So ANY post-store failure is a
+  // PARTIAL success: 202 with the stored path and `queued: false`. The Source
+  // is NOT rolled back — deleting stored bytes to tidy up a queue error would
+  // be the one thing FR-2 forbids, and Ingest can be re-driven for a Source
+  // that exists.
   let response: Response;
   try {
+    await createIngestJob({ jobId, owner, title, ...(sourceUrl ? { url: sourceUrl } : {}) });
+
+    const base = {
+      kind: "ingest" as const,
+      ...(title ? { title } : {}),
+      owner,
+      author: owner,
+      triggeredBy: owner,
+      sourceType,
+      ...(sourceUrl ? { sourceUrl } : {}),
+      jobId,
+    };
+    // Small enough to ride inline in the queue message; otherwise staged to R2,
+    // exactly as `/api/ingest` does for a large paste.
+    const task: Task =
+      text.length <= MAX_INLINE_CONTENT_CHARS
+        ? { ...base, content: text }
+        : { ...base, staged: { key: await stageText(jobId, text), kind: "text" } };
+
     response = await enqueueOrInline(jobId, task, () => ingest(title, text, options));
   } catch (error) {
     const message = getErrorMessage(error);

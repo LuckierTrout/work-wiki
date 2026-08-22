@@ -944,6 +944,37 @@ describe("ingest — structured sources[] provenance", () => {
     expect(sources[0].fetched).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
+  it("re-ingest of the same URL with a new body mints a new raw snapshot (FR-2)", async () => {
+    const firstBody = "First snapshot body. Details here.";
+    const secondBody = "Second snapshot body. More info here.";
+    await ingest("Sources Snapshot", firstBody, {
+      sourceUrl: "https://example.com/same-snap",
+    });
+    const { readWikiPageWithFrontmatter, readRawSourceById } = await import("../wiki");
+    const firstPage = await readWikiPageWithFrontmatter("sources-snapshot");
+    const firstId = parseSources(firstPage!.frontmatter.sources as string)[0]!.raw_id!;
+    expect(firstId).toBe(contentHash(firstBody));
+    expect((await readRawSourceById("sources-snapshot", firstId)).content).toBe(
+      firstBody,
+    );
+
+    await ingest("Sources Snapshot", secondBody, {
+      sourceUrl: "https://example.com/same-snap",
+    });
+    const secondPage = await readWikiPageWithFrontmatter("sources-snapshot");
+    const sources = parseSources(secondPage!.frontmatter.sources as string);
+    expect(sources).toHaveLength(1);
+    const secondId = sources[0]!.raw_id!;
+    expect(secondId).toBe(contentHash(secondBody));
+    expect(secondId).not.toBe(firstId);
+    expect((await readRawSourceById("sources-snapshot", firstId)).content).toBe(
+      firstBody,
+    );
+    expect((await readRawSourceById("sources-snapshot", secondId)).content).toBe(
+      secondBody,
+    );
+  });
+
   it("re-ingest of text-paste over existing URL preserves both entries", async () => {
     // First ingest with a URL
     await ingest("Sources Mixed", "URL content. Full sentence here.", {

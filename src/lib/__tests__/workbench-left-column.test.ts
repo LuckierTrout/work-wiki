@@ -746,6 +746,10 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
     // it the browser navigates to the dropped file and replaces the shell.
     expect(source).toContain("event.preventDefault();");
     expect(source).toContain('data-drop={dropActive ? "true" : "false"}');
+    // OS file drags never fire `dragend` on the drop target (the source is the
+    // desktop), so the overlay reset also listens on `window`.
+    expect(source).toContain('window.addEventListener("dragend"');
+    expect(source).toContain('window.addEventListener("dragleave"');
   });
 
   it("says what happened wherever the drop landed, in one place", async () => {
@@ -772,14 +776,17 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
     // `intakeBusy` and race their own `finally`: the first to resolve clears the
     // flag while the second is still posting, and the second's report overwrites
     // a sentence the owner may not have read yet.
-    expect(source.match(/if \(readOnly \|\| intakeBusy\) return;/g) ?? []).toHaveLength(1);
-    expect(source).toContain("if (intakeBusy) return;");
+    expect(source.match(/if \(readOnly \|\| intakeBusyRef\.current\) return;/g) ?? []).toHaveLength(1);
+    expect(source).toContain("if (intakeBusyRef.current) return;");
     // A DROP has no disabled state for the platform to respect, so the refusal
     // is said rather than swallowed — a silent drop is indistinguishable from a
     // lost file, which is the one thing this door must never be.
     expect(source).toContain("INTAKE_IN_FLIGHT_COPY");
-    // …and the overlay does not INVITE a drop the deployment will refuse.
-    expect(source).toContain("if (!readOnly) setDropActive(true);");
+    // …and the overlay does not INVITE a drop the deployment will refuse, or
+    // one that is already being stored.
+    expect(source).toContain("if (!readOnly && !intakeBusyRef.current) setDropActive(true);");
+    // A Files-typed drop with an empty list is said, not swallowed.
+    expect(source).toContain("INTAKE_FILE_REQUIRED_COPY");
   });
 
   it("refreshes through the watcher's nudge and nothing else", async () => {

@@ -56,17 +56,17 @@ export interface SaveRawSourceOptions {
 /**
  * Does this key already hold bytes?
  *
- * A store that cannot answer is treated as "absent" and the write proceeds —
- * the same outcome every caller had before immutability was enforced, so a
- * flaky existence check degrades to the old behaviour rather than silently
- * dropping an arrival.
+ * A store that cannot answer must not write. Treating a failed check as
+ * "absent" used to degrade to the old overwrite behaviour; under FR-2 that is
+ * the worse failure — a flaky HEAD on an occupied key would mutate immutable
+ * bytes. The arrival fails visibly and the owner can retry.
  */
 async function alreadyStored(rel: string): Promise<boolean> {
   try {
     return await getStorage().fileExists(rel);
   } catch (err) {
-    logger.warn("raw", `existence check failed for "${rel}"; writing anyway`, err);
-    return false;
+    logger.warn("raw", `existence check failed for "${rel}"; refusing write`, err);
+    throw err;
   }
 }
 
@@ -80,15 +80,17 @@ async function mirrorSourceToSilo(
   rest: string,
   content: string,
   owner: string | null | undefined,
-): Promise<void> {
-  if (!owner) return;
+): Promise<boolean> {
+  if (!owner) return false;
   try {
     const rel = tenantRawSourceRelPath(tenantForOwner(owner), rest);
     // Immutable in the silo too: a re-arrival must not rewrite what is there.
-    if (await alreadyStored(rel)) return;
+    if (await alreadyStored(rel)) return false;
     await getStorage().writeFile(rel, content);
+    return true;
   } catch (err) {
     logger.warn("raw", `silo mirror failed for raw source "${rest}"`, err);
+    return false;
   }
 }
 
@@ -104,7 +106,9 @@ async function mirrorSourceToSilo(
  * and "the same bytes are already stored" mean the same thing there.
  *
  * A NEW write bumps `dataVersion` so the Workbench's trees catch up without a
- * reload; a skipped write changes nothing and therefore bumps nothing.
+ * reload. A skipped write that only repairs a missing silo copy also bumps —
+ * the Files tree just gained a key the watcher would otherwise never see. A
+ * skipped write that changed nothing bumps nothing.
  */
 async function storeRawSource(
   rest: string,
@@ -115,8 +119,11 @@ async function storeRawSource(
   const rel = rawSourceRelPath(rest);
   if (await alreadyStored(rel)) {
     // Still repair the mirror: the flat bytes exist, and a silo that never
-    // received them would leave the Source invisible forever.
-    await mirrorSourceToSilo(rest, content, options?.owner);
+    // received them would leave the Source invisible forever. The first write
+    // already bumped; without a second bump here the watcher is forward-only
+    // and Files stays empty after a fail-then-repair.
+    const repaired = await mirrorSourceToSilo(rest, content, options?.owner);
+    if (repaired) await bumpDataVersion();
     return false;
   }
   await getStorage().writeFile(rel, content);
