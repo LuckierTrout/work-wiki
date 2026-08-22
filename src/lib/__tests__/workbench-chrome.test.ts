@@ -1,13 +1,13 @@
 /**
  * Story 1.3 — the shell's structural invariants, pinned by source scan.
  *
- * Vitest runs `environment: "node"` and only `src/**\/__tests__/**\/*.test.ts`:
- * there is no jsdom and no testing-library, and adding them is out of scope
- * here. So this follows the `single-ia.test.ts` / `create-wiki-ui.test.ts`
- * convention and reads the components as text. What it really pins is that
- * nobody turns mode switching into routing, drops the rail's accessible names,
- * inlines empty-state copy next to the shared module, leaks the Preview serif
- * into chrome, or reintroduces a device branch under the responsive rules.
+ * A `node`-project suite (`*.test.ts`, `environment: "node"`), so it does not
+ * mount anything — that is the `dom` project's half. It follows the
+ * `single-ia.test.ts` / `create-wiki-ui.test.ts` convention and reads the
+ * components as text. What it really pins is that nobody turns mode switching
+ * into routing, drops the rail's accessible names, inlines empty-state copy
+ * next to the shared module, leaks the Preview serif into chrome, or
+ * reintroduces a device branch under the responsive rules.
  */
 import { describe, expect, it } from "vitest";
 import { readFile, readdir } from "node:fs/promises";

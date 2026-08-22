@@ -93,9 +93,9 @@ import { PreviewBody } from "./PreviewBody";
  * write path — and the Wiki's `schema.md` saves through
  * `PUT /api/workbench/artifact`, which is the only writer for bytes the page
  * route cannot address. WHICH of the two, and which sentences the dialog shows,
- * are `previewEditTarget` and `previewEditCopy`: functions the node suite
- * executes, because this repo has no DOM test environment and a rule typed into
- * JSX here could only ever be grepped for.
+ * are `previewEditTarget` and `previewEditCopy`: pure functions the `node`
+ * project executes over every case, rather than rules typed into the JSX here,
+ * which that project can only read as source text.
  *
  * The field names in the strip are the page's own frontmatter keys, not authored
  * labels — the same convention the mockup's `.fm` block uses.
@@ -462,8 +462,9 @@ function PreviewPane({
 
     // One branch per outcome, and no decision of its own: whether a response is
     // stale (the owner picked another row mid-flight), gone (a 404) or merely
-    // unreachable is decided by `fetchPreview`, which the node suite executes
-    // with a stubbed fetch. Left inline here it could only ever be grepped for.
+    // unreachable is decided by `fetchPreview`, which the `node` project
+    // executes with a stubbed fetch. Left inline here it would reach that
+    // project as source text instead of as a rule it can call.
     void fetchPreview(previewRequestUrl(selection), controller.signal).then((result) => {
       if (result.status === "stale") return;
       // Both flags are cleared EXPLICITLY, not only via the reset block above: a
@@ -594,8 +595,8 @@ function PreviewPane({
 
   // WHETHER there is unsaved text is one executed function (`previewDraftDirty`),
   // never a comparison typed here: this is the whole of what stands between a
-  // stray click on a tree row and the owner's markdown, and inline it could only
-  // ever be grepped for.
+  // stray click on a tree row and the owner's markdown, so the `node` project
+  // runs it over every case rather than matching a condition in this file.
   const dirty = previewDraftDirty({ editing, draft, seed: draftSeed });
 
   // Reported UP in an effect rather than from the handlers that change it, so
@@ -1017,8 +1018,9 @@ function PreviewPane({
     // WHICH state this is, decided by an executed function rather than by four
     // conditions spelled inline — see `previewBodyState`. Left here, inverting
     // the empty test showed `This file is empty.` for every readable file with
-    // the whole suite green, because a source scan is all a node suite can do
-    // to a component. This function only maps a state to its element.
+    // the whole suite green: a condition in this file is source text to the
+    // `node` project, whereas the extracted function is run over all five
+    // states. This function only maps a state to its element.
     const state = previewBodyState({ loading, gone, payload });
     if (state.kind === "loading") {
       return <p className="wb-preview-note">{PREVIEW_LOADING_COPY}</p>;

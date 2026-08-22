@@ -12,10 +12,11 @@
  *
  * Everything a node suite can execute is executed: the route for each status
  * against a real temp `DATA_DIR`, the writer for the bytes, and the pure
- * decisions directly. `vitest.config.ts` is `environment: "node"` with no DOM
- * (DW-15), so the wiring inside `PreviewColumn` and the two routes is the one
- * thing left to a source scan — and it is scoped to the specific lines a
- * rewrite would keep the wording of while changing the behaviour.
+ * decisions directly. This file is a `node`-project suite (DW-15), so the
+ * wiring inside `PreviewColumn` and the two routes is the one thing left to a
+ * source scan here — mounting belongs to the `dom` project — and the scan is
+ * scoped to the specific lines a rewrite would keep the wording of while
+ * changing the behaviour.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";

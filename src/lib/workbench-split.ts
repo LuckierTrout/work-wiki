@@ -5,10 +5,11 @@
  * Pure and client-safe, exactly like `workbench-modes.ts` and `workbench-tree.ts`:
  * the shell and the separator control import it in the browser, and the node
  * suite imports it to EXECUTE the bounds, the clamp, pointer-x → width and
- * key → width. There is no DOM test environment here (`vitest.config.ts` is
- * `environment: "node"`), so a comparison typed into an event handler could only
- * ever be grepped for — which is why the component below holds state and reads
- * `getBoundingClientRect()` but spells no bound, no comparison and no step.
+ * key → width. Every one of those is a pure function the `node` project runs
+ * directly — which is why the separator control holds state and reads
+ * `getBoundingClientRect()` but spells no bound, no comparison and no step: the
+ * `dom` project mounts it to check the wiring, and the geometry itself is
+ * settled here.
  *
  * The constants restate the six `--wb-*` geometry tokens declared in the single
  * `.wb-shell { … }` block in `globals.css`. Two copies of a number is drift

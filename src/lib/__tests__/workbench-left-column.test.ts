@@ -1,15 +1,16 @@
 /**
  * Story 1.4 — the left column's structural invariants, pinned by source scan.
  *
- * Vitest runs `environment: "node"` and only `src/**\/__tests__/**\/*.test.ts`:
- * there is no jsdom and no testing-library, and adding them is out of scope
- * here (DW-24). So this follows the `single-ia.test.ts` / `workbench-chrome.
- * test.ts` convention and reads the sources as text. What it really pins is
- * that nobody turns the tree into routing, drops the tablist semantics, inlines
- * a sentence next to the shared module, turns the Preview into a navigating or
- * always-editable surface (or lets its reading face leak into chrome),
- * reintroduces "Open project folder", or lands the docked grid variants ahead
- * of the rules they have to outrank.
+ * A `node`-project suite (`*.test.ts`, `environment: "node"`), so it does not
+ * mount anything. Nothing else does either: the left column and `TreePanel`
+ * have no `.test.tsx` counterpart in the `dom` project today (DW-24, DW-109),
+ * so this scan is the whole of their coverage. It follows the
+ * `single-ia.test.ts` / `workbench-chrome.test.ts` convention and reads the
+ * sources as text. What it really pins is that nobody turns the tree into
+ * routing, drops the tablist semantics, inlines a sentence next to the shared
+ * module, turns the Preview into a navigating or always-editable surface (or
+ * lets its reading face leak into chrome), reintroduces "Open project folder",
+ * or lands the docked grid variants ahead of the rules they have to outrank.
  */
 import { describe, expect, it } from "vitest";
 import { readFile, readdir } from "node:fs/promises";

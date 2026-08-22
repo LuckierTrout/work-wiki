@@ -8,12 +8,11 @@
  * by the route to refuse a write). Both are pinned here by execution rather
  * than by reading source.
  *
- * `vitest.config.ts` is `environment: "node"` with no DOM (DW-15), so every
- * decision the surface makes lives in `../workbench-settings` and is run
- * directly; the route is run against a real temp `DATA_DIR` so the merge, the
- * refusals and the stored bytes are the real ones; and only the wiring inside
- * the three components — which a node suite genuinely cannot execute — is left
- * to a source scan.
+ * This is a `node`-project suite (DW-15): every decision the surface makes lives
+ * in `../workbench-settings` and is run directly here; the route is run against
+ * a real temp `DATA_DIR` so the merge, the refusals and the stored bytes are the
+ * real ones; and only the wiring inside the three components is left to a source
+ * scan, because mounting belongs to the `dom` project's `.test.tsx` suites.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs, { readFile } from "fs/promises";
@@ -4469,8 +4468,8 @@ describe("the Settings components stay inside the shell", () => {
     // read-only deployment could not reach the provider pickers at all — could
     // not read which provider is stored, and never heard the hint that is wired
     // as the vector switch's own description. Every refused control therefore
-    // carries `aria-disabled` instead. A node suite cannot mount this, so the
-    // wiring is pinned as source.
+    // carries `aria-disabled` instead. This suite is in the `node` project, so
+    // the wiring is pinned as source here rather than mounted.
     // The negative lookbehind is what makes these real: `aria-disabled={…}`
     // CONTAINS `disabled={…}`, so a plain substring check would pass on the very
     // attribute it is meant to forbid.

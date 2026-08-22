@@ -989,7 +989,8 @@ source_spec: `spec-dom-test-environment.md`
 location: src/lib/workbench-data-version.ts:9
 severity: medium
 reason: `src/lib/workbench-data-version.ts:9`, `workbench-split.ts:8`, `workbench-settings.ts:10`, `workbench-preview.ts:243`, four components under `src/components/workbench/`, and nine `__tests__` files say so in prose — e.g. "a rule living inside a React effect could only ever be grepped for". After this pass that premise is false, so a future agent will reproduce the workaround on a reason that no longer holds. The spec's Never forbade touching `src/` in this pass, which is why it was not done here.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-doc-and-comment-drift-corrections
 
 ### DW-109: Most of DW-24's own verbatim list is still scan-only — the collapse toggle, badge rendering at 0 vs > 0, the sidecar dot's three states, and the live-region announcement.
 origin: spec-deferred e63cd3a386e5
@@ -1189,7 +1190,8 @@ source_spec: `spec-retire-dead-machinery-round-2.md`
 location: src/app/wiki/graph/page.tsx:161
 severity: medium
 reason: `src/app/wiki/graph/page.tsx:161` sets `aria-label="Wiki page relationship graph. Visit the wiki index for a text-based list of all pages."` and the canvas fallback text (`:164`) repeats it, but `/wiki` is listed in `RETIRED_SURFACES` (`src/lib/retired.ts:23`) and 404s. Deleting `HomeGraph.tsx` in this pass made this the only remaining graph canvas, so it is now the sole accessibility escape hatch for the visualization and it leads nowhere. The file was not touched by this pass and fixing it means choosing a live replacement target, which is a product call.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-doc-and-comment-drift-corrections
 decision: 2026-08-19 Point at the Workbench Knowledge tree — Retarget the graph canvas's aria-label and fallback text at the Workbench's Knowledge tree (the live text-based list of the active Wiki's pages), updating the copy to name that surface and linking to it, and pin the new target so it cannot rot into another retired route.
 
 ### DW-132: Two more hand-maintained tool/task inventories have no test pinning them against their source of truth.
@@ -3003,7 +3005,8 @@ source_spec: `spec-dw-127-309-doc-drift-corrections.md`
 location: SCHEMA.md:126
 severity: medium
 reason: SCHEMA.md:126-167 lists GET/POST discuss, GET/PATCH the thread, and POST comments as live. All five are entries in RETIRED_SURFACES (src/lib/retired.ts:37-40) and answer 404. Same drift class as DW-129, one heading above the block this change corrected; the intent named only the contributor surface.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-doc-and-comment-drift-corrections
 
 ### DW-339: SCHEMA.md's planned-evolution status still calls talk pages and contributor profiles complete, contradicting the new retired-surfaces block.
 origin: spec-deferred 493f9af093ca
@@ -3855,4 +3858,12 @@ source_spec: `spec-dw-357-361-364-email-ingest-accounting-and-worker-tests.md`
 location: workers/email-ingest/index.ts:248
 severity: low
 reason: The reply quotes one figure ("larger than 13.7 MB") against `message.rawSize`, but the bounce this bundle pins is caused by the document and the body together -- exactly the case where shrinking the obvious culprit does not help. DW-361 records the trade-off as accepted; the sender-facing copy was left out of that acceptance. Out of scope here: the intent was to prove the trade-off without moving any cap.
+status: open
+
+### DW-442: Nothing pins SCHEMA.md's "Retired surfaces" prose to `RETIRED_SURFACES`, so both retired-surface blocks can rot the same way the Talk block just did.
+origin: spec-deferred 9b10f77ef413
+source_spec: `spec-dw-108-131-338-doc-and-comment-drift-corrections.md`
+location: SCHEMA.md:156
+severity: medium
+reason: This change added a second hand-maintained doc/code coupling: SCHEMA.md's new Talk-pages "Retired surfaces" paragraph and the DW-129 contributor paragraph (`SCHEMA.md:207-217`) both restate entries of `RETIRED_SURFACES` (`src/lib/retired.ts`) in prose, and no source or test file references either heading. `retired-surfaces.test.ts` derives the constant from the tree on disk, so retiring or un-retiring a surface stays honest in code and silently stales the docs — the exact mechanism that produced DW-129 and then DW-338. The graph href got a pin in this pass; the prose did not, because the intent named only the marking-retired edit.
 status: open

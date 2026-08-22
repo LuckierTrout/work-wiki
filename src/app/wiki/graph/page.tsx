@@ -1,9 +1,11 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { useGraphSimulation } from "@/hooks/useGraphSimulation";
+import { KNOWLEDGE_TREE_HREF } from "@/lib/workbench-url";
 
 export default function GraphPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -146,8 +148,30 @@ export default function GraphPage() {
         </p>
       ) : (
         <>
+          {/*
+            The canvas below names the Knowledge tree as its accessible
+            alternative, so that tree has to be reachable while the canvas is
+            rendering too: a `<canvas>` fallback child is exposed only to a
+            client that cannot render the canvas at all, and `role="img"` prunes
+            it from the a11y tree besides. This visible link is the reachable
+            one, and `retired-surfaces.test.ts` pins it as such.
+
+            Both links point at `KNOWLEDGE_TREE_HREF` — this page spells no
+            route of its own. The visible one is a `next/link`, the house
+            convention for in-app navigation; the fallback stays a plain `<a>`,
+            since a client with no canvas has no use for client-side routing.
+
+            The copy names the WIKI's pages, not "all pages": this graph is
+            lens-scoped (`?scope=` — mine, a vault, or another owner), so the
+            two sets are not the same one and promising the graph's contents
+            would be a promise the tree does not keep.
+          */}
           <p className="text-sm text-foreground/60 mb-4">
-            Click a node to open the page.
+            Click a node to open the page. Or open the{" "}
+            <Link href={KNOWLEDGE_TREE_HREF} className="underline">
+              Workbench Knowledge tree
+            </Link>{" "}
+            for a text list of this wiki&rsquo;s pages.
           </p>
           <div className="w-full overflow-hidden rounded-lg border border-foreground/10">
             <canvas
@@ -158,10 +182,12 @@ export default function GraphPage() {
               className="block w-full"
               style={{ height: 560, backgroundColor: canvasBg }}
               role="img"
-              aria-label="Wiki page relationship graph. Visit the wiki index for a text-based list of all pages."
+              aria-label="Wiki page relationship graph. Open the Workbench Knowledge tree for a text list of this wiki's pages."
               tabIndex={0}
             >
-              Wiki relationship graph — see wiki index for accessible page listing.
+              Wiki relationship graph — open the{" "}
+              <a href={KNOWLEDGE_TREE_HREF}>Workbench Knowledge tree</a> for a
+              text list of this wiki&rsquo;s pages.
             </canvas>
           </div>
           <p className="text-xs text-foreground/40 mt-2">

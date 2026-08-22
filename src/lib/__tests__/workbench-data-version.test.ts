@@ -10,10 +10,11 @@
  * a mocked principal, the poll against a stubbed fetch, and every decision
  * function directly.
  *
- * What is left is the component wiring, which `environment: "node"` cannot
- * render at all. That is pinned by source scan, the `workbench-left-column.
- * test.ts` convention — chiefly that the shell and the column stayed router-free
- * and that the watcher spells no version comparison of its own.
+ * What is left is the component wiring, which this `node`-project suite does
+ * not mount — the `dom` project's `data-version-watcher.test.tsx` does. Here it
+ * is pinned by source scan, the `workbench-left-column.test.ts` convention —
+ * chiefly that the shell and the column stayed router-free and that the watcher
+ * spells no version comparison of its own.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";

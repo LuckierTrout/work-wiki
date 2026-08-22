@@ -287,8 +287,8 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   const surface = workbenchMode(mode);
 
   // The dock rule is a pure function in `workbench-tree`, not a condition typed
-  // here: it is the story's headline behaviour, and inlined in JSX it could only
-  // ever be grepped for, never executed by a test.
+  // here: it is the story's headline behaviour, so the `node` project runs it
+  // over every combination instead of matching a condition in this file.
   // …with one conjunction: a docked Preview beside a Settings detail column
   // would describe a tree row the owner cannot point at, because the trees are
   // not on screen while the settings nav has the left column.

@@ -292,12 +292,14 @@ export function previewDraftDirty(input: {
  * The branch ORDER is the whole content of this decision — `loading` before
  * `gone`, a missing payload folded into `failed`, `unsupported` before
  * `empty` because a blob this reader cannot render has no body to be empty —
- * and inline in JSX it could only ever be grepped for. Inverting one test there
- * (`payload.body.trim().length === 0` → `> 0`) rendered `This file is empty.`
- * for every readable file and an empty column for an empty one, with the whole
- * suite green; deleting the `loading` branch left `Loading…` unreachable. A pure
- * function is what lets the node suite RUN all five, which is the same move
- * `fetchPreview` and `canEditPreview` already made out of this component.
+ * and inline in JSX the `node` project could only restate it in a source scan
+ * rather than run it. Inverting one test there
+ * (`payload.body.trim().length === 0` → `> 0`)
+ * rendered `This file is empty.` for every readable file and an empty column
+ * for an empty one, with the whole suite green; deleting the `loading` branch
+ * left `Loading…` unreachable. A pure function is what lets the `node` project
+ * RUN all five, which is the same move `fetchPreview` and `canEditPreview`
+ * already made out of this component.
  */
 export type PreviewBodyState =
   | { kind: "loading" }
@@ -429,10 +431,10 @@ export type PreviewWriteTarget =
 /**
  * Decide the write target for a payload, or `null` when there is none.
  *
- * A pure function rather than a branch typed into the component: this suite runs
- * `environment: "node"` with no DOM, so a rule living inside a React effect can
- * only ever be grepped for — and "which URL does Save go to" is precisely the
- * kind of rule a rewrite keeps the wording of while changing the behaviour.
+ * A pure function rather than a branch typed into the component, so the `node`
+ * project runs it directly — and "which URL does Save go to" is precisely the
+ * kind of rule a rewrite keeps the wording of while changing the behaviour, so
+ * it is better executed than matched as source text.
  *
  * `truncated` is refused here, for both kinds, for the reason
  * {@link canEditPreview} documents. `editable` is the SERVER's judgement and is
@@ -872,11 +874,11 @@ export interface PreviewEditCopy {
 /**
  * Which of the two copy sets the confirm dialog and the save show.
  *
- * A function the node suite executes rather than a ternary typed into JSX, for
- * the same reason {@link previewWriteTarget} is one: with no DOM environment, a
- * branch in the component can only be matched as source text, and "the dialog
- * says page when it is about to overwrite the Schema" is a wording bug a source
- * scan cannot see.
+ * A function the `node` project executes rather than a ternary typed into JSX,
+ * for the same reason {@link previewWriteTarget} is one: "the dialog says page
+ * when it is about to overwrite the Schema" is a wording bug a source scan
+ * cannot see, so the choice is made where a test can call it and read the
+ * answer.
  *
  * A `null` target answers the PAGE copy — the dialog is unreachable without a
  * target (`canEditPreview` is the same predicate), so this only has to be
@@ -1054,14 +1056,13 @@ export function previewUnreachableAnnouncement(input: {
 // ---------------------------------------------------------------------------
 //
 // Both functions below exist so the DECISIONS they carry are executed by a test
-// rather than grepped for inside a React effect. This repo has no DOM test
-// environment and this story is forbidden from adding one, so a rule that lives
-// in a component body can only ever be pinned by matching its source text — and
-// the two rules here are exactly the kind a rewrite would keep the wording of
-// while changing the behaviour: "a response that arrives after the owner picked
-// another row must not reach state" and "a rejected save shows the server's
-// sentence, never the transport's". Same technique the shell already uses for
-// `shouldDockPreview` and `readableSlugsFromKnowledge`.
+// rather than matched as source text inside a React effect. The `node` project
+// calls them directly with a stubbed fetch; the `dom` project mounts the column
+// around them. The two rules here are exactly the kind a rewrite would keep the
+// wording of while changing the behaviour: "a response that arrives after the
+// owner picked another row must not reach state" and "a rejected save shows
+// the server's sentence, never the transport's". Same technique the shell
+// already uses for `shouldDockPreview` and `readableSlugsFromKnowledge`.
 //
 // Still pure and client-safe: no React, no storage, and `fetch` is a parameter
 // so the node suite drives them with a stub and never opens a socket.
