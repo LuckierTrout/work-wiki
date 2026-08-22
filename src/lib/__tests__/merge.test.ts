@@ -592,3 +592,306 @@ describe("mergePages — re-pointing backlinks", () => {
     expect(await readWikiPage("absorbed-c")).not.toBeNull();
   });
 });
+
+// ===========================================================================
+// The merge door carries the SURVIVOR's owner guidance into the reconcile
+// prompt — the same guidance the ingest door carries (DW-323)
+// ===========================================================================
+
+import { _resetLocks } from "../lock";
+import { createNamesTerm } from "../names-terms";
+import { createWiki } from "../wikis";
+import { saveWorkspaceProfile } from "../workspace-profile";
+
+describe("mergePages — reconcile prompt carries owner guidance", () => {
+  const ALICE_PURPOSE = "Track Project Lighthouse decisions.";
+  const BOB_PURPOSE = "Catalogue Phoenix reading notes.";
+  const SYSTEM_PURPOSE = "Keep the automation runbook current.";
+
+  /** Give `owner` a current Wiki with a Purpose, so guidance renders for them. */
+  async function seedGuidance(owner: string, purpose: string): Promise<void> {
+    const wiki = await createWiki(owner, { name: `${owner} Ops`, scenario: "business" });
+    await saveWorkspaceProfile(owner, wiki.id, {
+      scenario: "custom",
+      purpose,
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    });
+  }
+
+  beforeEach(() => {
+    // `createWiki` / `createNamesTerm` / `saveWorkspaceProfile` all take file
+    // locks; the outer `beforeEach` already points DATA_DIR at a fresh tmpdir,
+    // so only the lock table needs clearing between cases.
+    _resetLocks();
+  });
+
+  afterEach(() => {
+    _resetLocks();
+  });
+
+  /** A stable sentence from `RECONCILE_SYSTEM_PROMPT` — guidance is APPENDED to
+   *  the base prompt, never a replacement for it. */
+  const RECONCILE_MARKER =
+    "You are a wiki editor maintaining a single canonical page about one concept.";
+
+  /** The reconcile system prompt. `reconcilePage` is the only `callLLM` in
+   *  `mergePages`, and the call-count assertion is what keeps that true: a
+   *  second LLM call would otherwise silently shift which prompt every
+   *  assertion below inspects. */
+  function reconcileSystemPrompt(): string {
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    const prompt = mockedCallLLM.mock.calls[0][0] as string;
+    expect(prompt).toContain(RECONCILE_MARKER);
+    return prompt;
+  }
+
+  it("carries the owner's Workspace Purpose on a same-owner merge", async () => {
+    await seedGuidance("alice", ALICE_PURPOSE);
+    await seedPage("survivor-g", { title: "Survivor G" });
+    await seedPage("absorbed-g", { title: "Absorbed G" });
+    mockedCallLLM.mockClear();
+
+    await mergePages({ from: "absorbed-g", into: "survivor-g", actor: "alice" });
+
+    const prompt = reconcileSystemPrompt();
+    expect(prompt).toContain("WORKSPACE PURPOSE");
+    expect(prompt).toContain(ALICE_PURPOSE);
+  });
+
+  it("uses the SURVIVOR's guidance on a cross-owner merge, never the absorbed page's", async () => {
+    await seedGuidance("alice", ALICE_PURPOSE);
+    await seedGuidance("bob", BOB_PURPOSE);
+    // The acting principal has guidance of its own, so "survivor owner wins"
+    // is pinned against the ACTOR too, not only against the absorbed page.
+    await seedGuidance("system", SYSTEM_PURPOSE);
+    await createNamesTerm("alice", {
+      kind: "project",
+      canonical: "Meridian Rollout",
+      aliases: ["Meridian"],
+    });
+    await createNamesTerm("bob", {
+      kind: "project",
+      canonical: "Phoenix Reading Shelf",
+      aliases: ["Phoenix"],
+    });
+    await seedPage("survivor-x", { title: "Survivor X", owner: "alice" });
+    await seedPage("absorbed-x", { title: "Absorbed X", owner: "bob" });
+    mockedCallLLM.mockClear();
+
+    await mergePages({
+      from: "absorbed-x",
+      into: "survivor-x",
+      actor: "system",
+      bypassOwnerCheck: true,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    // ALICE owns the page that keeps existing, so the fold happens under her
+    // Purpose and her dictionary.
+    expect(prompt).toContain("WORKSPACE PURPOSE");
+    expect(prompt).toContain(ALICE_PURPOSE);
+    expect(prompt).toContain("WORKSPACE NAMES & TERMS");
+    // A canonical that appears NOWHERE in her Purpose, so this pins the
+    // dictionary half specifically and not the Purpose text a second time.
+    expect(prompt).toContain("Meridian Rollout");
+    expect(prompt).toContain("Meridian"); // her alias travels with the entry
+    // BOB's page is absorbed; none of his guidance reaches the prompt.
+    expect(prompt).not.toContain(BOB_PURPOSE);
+    expect(prompt).not.toContain("Phoenix Reading Shelf");
+    expect(prompt).not.toContain("Phoenix");
+    // Nor does the ACTING principal's: `system` is merely the trusted caller
+    // here, and the survivor's owner outranks it.
+    expect(prompt).not.toContain(SYSTEM_PURPOSE);
+  });
+
+  it("falls back to the acting principal — not the absorbed page's owner — when the survivor names no owner", async () => {
+    await seedGuidance("alice", ALICE_PURPOSE);
+    // BOB owns the absorbed page and has guidance of his own, so an
+    // implementation reading `into.owner ?? from.owner` fails here rather than
+    // passing by coincidence.
+    await seedGuidance("bob", BOB_PURPOSE);
+    // Written straight through the side-effecting writer so the frontmatter can
+    // omit `owner` entirely — `seedPage` always stamps one.
+    await writeWikiPageWithSideEffects({
+      slug: "survivor-noowner",
+      title: "Survivor No Owner",
+      content: serializeFrontmatter(
+        { created: "2026-01-01", updated: "2026-01-01" },
+        "# Survivor No Owner\n\nContent without an owner.",
+      ),
+      summary: "Content without an owner.",
+      logOp: "ingest",
+      crossRefSource: null,
+      author: "alice",
+    });
+    await seedPage("absorbed-noowner", { title: "Absorbed No Owner", owner: "bob" });
+    mockedCallLLM.mockClear();
+
+    // The same-owner guard reads the stored owner, which is absent here, so a
+    // trusted caller is the only way to reach the fold at all.
+    await mergePages({
+      from: "absorbed-noowner",
+      into: "survivor-noowner",
+      actor: "alice",
+      bypassOwnerCheck: true,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    expect(prompt).toContain(ALICE_PURPOSE);
+    expect(prompt).not.toContain(BOB_PURPOSE);
+  });
+
+  it("still merges, with an unguided prompt, when the guidance read fails", async () => {
+    await seedGuidance("alice", ALICE_PURPOSE);
+    await seedPage("survivor-eio", { title: "Survivor EIO" });
+    await seedPage("absorbed-eio", { title: "Absorbed EIO" });
+
+    // Break ONLY the Wiki registry read, so `buildWorkspaceGuidance` takes its
+    // fail-soft `catch` and returns "". The merge itself must not notice.
+    const { getStorage } = await import("../storage");
+    const { tenantForOwner } = await import("../wiki");
+    const registryPath = `tenants/${tenantForOwner("alice")}/wikis.json`;
+    const storage = getStorage();
+    const real = storage.readFile.bind(storage);
+    const spy = vi.spyOn(storage, "readFile").mockImplementation(async (target: string) => {
+      if (target === registryPath) {
+        const err = new Error(`EIO: i/o error, read '${target}'`) as NodeJS.ErrnoException;
+        err.code = "EIO";
+        throw err;
+      }
+      return real(target);
+    });
+    mockedCallLLM.mockClear();
+
+    try {
+      await mergePages({ from: "absorbed-eio", into: "survivor-eio", actor: "alice" });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const prompt = reconcileSystemPrompt();
+    expect(prompt).not.toContain("WORKSPACE PURPOSE");
+    expect(prompt).not.toContain(ALICE_PURPOSE);
+    // And the fold still landed on the survivor.
+    const into = await readWikiPageWithFrontmatter("survivor-eio");
+    expect(into!.body).toContain("Folded body covering both sources.");
+  });
+
+  it("still FOLDS, with the Purpose but no dictionary, when the Names & Terms read fails", async () => {
+    // The two halves fail differently: `buildWorkspaceGuidance` swallows its
+    // errors, `listNamesTerms` rethrows a non-ENOENT one. Unguarded, that
+    // rejection would surface as a failed reconcile and cost the LLM fold — a
+    // regression this door cannot absorb, because it hard-deletes `from`.
+    await seedGuidance("alice", ALICE_PURPOSE);
+    await createNamesTerm("alice", {
+      kind: "project",
+      canonical: "Meridian Rollout",
+      aliases: ["Meridian"],
+    });
+    await seedPage("survivor-dict", { title: "Survivor Dict" });
+    await seedPage("absorbed-dict", { title: "Absorbed Dict" });
+
+    const { getStorage } = await import("../storage");
+    const { tenantForOwner } = await import("../wiki");
+    const dictionaryPath = `tenants/${tenantForOwner("alice")}/names-terms.json`;
+    const storage = getStorage();
+    const real = storage.readFile.bind(storage);
+    const spy = vi.spyOn(storage, "readFile").mockImplementation(async (target: string) => {
+      if (target === dictionaryPath) {
+        const err = new Error(`EIO: i/o error, read '${target}'`) as NodeJS.ErrnoException;
+        err.code = "EIO";
+        throw err;
+      }
+      return real(target);
+    });
+    mockedCallLLM.mockClear();
+
+    try {
+      await mergePages({ from: "absorbed-dict", into: "survivor-dict", actor: "alice" });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const prompt = reconcileSystemPrompt();
+    // The half that CAN be read still reaches the prompt…
+    expect(prompt).toContain(ALICE_PURPOSE);
+    // …the half that cannot is simply absent…
+    expect(prompt).not.toContain("WORKSPACE NAMES & TERMS");
+    expect(prompt).not.toContain("Meridian");
+    // …and the LLM fold still landed, rather than degrading to appended bodies.
+    const into = await readWikiPageWithFrontmatter("survivor-dict");
+    expect(into!.body).toContain("Folded body covering both sources.");
+  });
+
+  it("asks for no guidance at all when neither the survivor nor the caller names an owner", async () => {
+    // The floor of the fallback chain: `into.frontmatter.owner ?? actor` is
+    // `undefined`, so `reconcilePage` skips its guidance branch entirely — the
+    // pre-DW-323 behaviour, kept for the case that has no principal to key on.
+    // Alice's Purpose exists on disk purely so a wrong owner resolution would
+    // have something to leak into the prompt.
+    await seedGuidance("alice", ALICE_PURPOSE);
+    await writeWikiPageWithSideEffects({
+      slug: "survivor-anon",
+      title: "Survivor Anon",
+      content: serializeFrontmatter(
+        { created: "2026-01-01", updated: "2026-01-01" },
+        "# Survivor Anon\n\nContent without an owner.",
+      ),
+      summary: "Content without an owner.",
+      logOp: "ingest",
+      crossRefSource: null,
+      author: undefined,
+    });
+    await seedPage("absorbed-anon", { title: "Absorbed Anon" });
+    mockedCallLLM.mockClear();
+
+    // No `actor` — and no stored owner either, so the same-owner guard can only
+    // be cleared by a trusted caller.
+    await mergePages({
+      from: "absorbed-anon",
+      into: "survivor-anon",
+      bypassOwnerCheck: true,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    expect(prompt).not.toContain("WORKSPACE PURPOSE");
+    expect(prompt).not.toContain("WORKSPACE NAMES & TERMS");
+    expect(prompt).not.toContain(ALICE_PURPOSE);
+  });
+
+  it("degrades to appended bodies when the GUIDED reconcile call throws", async () => {
+    // The guided call must not have made the fold any less fail-soft: the
+    // pre-existing `catch` still swallows an LLM error and appends, and the
+    // merge still deletes the absorbed page and returns.
+    await seedGuidance("alice", ALICE_PURPOSE);
+    await seedPage("survivor-throw", {
+      title: "Survivor Throw",
+      body: "# Survivor Throw\n\nThe survivor sentence.",
+    });
+    await seedPage("absorbed-throw", {
+      title: "Absorbed Throw",
+      body: "# Absorbed Throw\n\nThe absorbed sentence.",
+    });
+    mockedCallLLM.mockClear();
+    mockedCallLLM.mockRejectedValueOnce(new Error("model unavailable"));
+
+    const result = await mergePages({
+      from: "absorbed-throw",
+      into: "survivor-throw",
+      actor: "alice",
+    });
+
+    // Guidance was still assembled — the throw came from the model, not from
+    // resolving the owner.
+    expect(reconcileSystemPrompt()).toContain(ALICE_PURPOSE);
+    expect(result.intoSlug).toBe("survivor-throw");
+    const into = await readWikiPageWithFrontmatter("survivor-throw");
+    expect(into!.body).toContain("The survivor sentence.");
+    expect(into!.body).toContain("The absorbed sentence.");
+    expect(await readWikiPage("absorbed-throw")).toBeNull();
+  });
+});

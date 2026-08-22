@@ -2878,7 +2878,8 @@ source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
 location: src/lib/merge.ts:204
 severity: medium
 reason: `src/lib/merge.ts:204` calls `reconcilePage(into.body, from.body)` with no `owner`, so the guidance branch at ingest.ts:1168 is skipped entirely. The reconcile prompt is the same prompt in both cases, so the merged prose is held to a different standard depending on which door it came through. This change touched that signature (adding the cache parameter) without closing the asymmetry, which is out of DW-141's scope but worth a decision.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw2-decision-dw-323
 decision: 2026-08-21 Guide the merge door — Resolve the accountable owner from into.frontmatter.owner (falling back to the acting principal) and pass it plus a fresh createWorkspaceGuidanceCache() into reconcilePage from merge.ts, with a test pinning which owner's guidance a cross-owner merge uses.
 decision: 2026-08-20 Guide the merge door — Resolve the accountable owner from into.frontmatter.owner (falling back to the acting principal) and pass it plus a fresh createWorkspaceGuidanceCache() into reconcilePage from merge.ts, with a test pinning which owner's guidance a cross-owner merge uses.
 
@@ -3963,4 +3964,12 @@ source_spec: `spec-dw-253-email-oversized-attachment-skip.md`
 location: workers/email-ingest/index.ts:271
 severity: medium
 reason: MAX_RAW_EMAIL_BYTES is ceil(10 MiB x BASE64_EXPANSION_FACTOR) + 64 KiB, checked on message.rawSize before the MIME parse. An attachment of size S reaches the wire at about 1.368 x S, so a document more than roughly 47 KB over the 10 MB ceiling pushes rawSize past that gate and the sender gets the "larger than 13.7 MB" whole-message refusal -- body and every other attachment lost -- without ever reaching the new oversizedAttachments filter. The two "too big" replies also quote two different ceilings (10 MB vs 13.7 MB) depending on which gate catches the message. Pre-existing (the gate is DW-104's), surfaced by DW-253: it materially bounds how often the per-file skip can help, and the acknowledgement copy implies a broader guarantee.
+status: open
+
+### DW-454: An empty or whitespace-only reconcile response makes `mergePages` replace the survivor's body with the ABSORBED page's body, then hard-delete the absorbed page — silent data loss with no revision to r
+origin: spec-deferred 376999e4dd82
+source_spec: `spec-dw-323-merge-door-workspace-guidance.md`
+location: src/lib/merge.ts:302
+severity: medium
+reason: `reconcilePage` fails soft to the NEW body on an empty model response (src/lib/ingest.ts:1176 — `if (!out || out.trim() === "") return { body: newBody, ... }`). At the ingest door `newBody` is the freshly synthesized article, so that fallback is correct. At the merge door `newBody` is `from.body`, so the survivor's existing prose is overwritten wholesale by the page being absorbed, and step 5 then hard-deletes `from` along with its revision history. The `catch` in `mergePages` does not fire — the call RESOLVED. Pre-existing: predates DW-323, which only added the guidance arguments.
 status: open
