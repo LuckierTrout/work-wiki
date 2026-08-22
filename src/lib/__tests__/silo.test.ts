@@ -59,6 +59,44 @@ describe("syncSiloForPage", () => {
     expect(await syncSiloForPage("beta", "bob")).toBe(2); // md + the new revision
   });
 
+  it("mirrors a Source from raw/sources/, and removes it again (Story 2.1)", async () => {
+    // Sources moved under `raw/sources/` when Workbench Intake landed. This sync
+    // knew only the flat `raw/<slug>.md` address, so every ingest whose snapshot
+    // went to the new one mirrored the page and silently left the Source behind
+    // — and the Files tab reads `raw/` silo-only (DW-40), so "silently left
+    // behind" means "not there at all" from the owner's side.
+    await writeWikiPage("delta", "# Delta\n\nBody.");
+    await getStorage().writeFile("raw/sources/delta.md", "the source bytes");
+
+    // Two copies: the page md and the Source beside it.
+    expect(await syncSiloForPage("delta", "alice")).toBe(2);
+    expect(
+      await getStorage().readFile("tenants/alice/raw/sources/delta.md"),
+    ).toBe("the source bytes");
+
+    // And the removal knows the same address. A delete that missed it would
+    // leave a Source in the silo for a page that no longer exists — visible in
+    // Files, with nothing to open from the other tab.
+    await removeSiloForPage("delta", "alice");
+    expect(
+      await getStorage().fileExists("tenants/alice/raw/sources/delta.md"),
+    ).toBe(false);
+    expect(await getStorage().fileExists("tenants/alice/wiki/delta.md")).toBe(false);
+  });
+
+  it("still mirrors a pre-move Source from the flat raw root", async () => {
+    // The other half of the same change: a workspace ingested BEFORE the move
+    // has bytes only at the legacy address, and a sync that assumed one address
+    // would stop mirroring for it. Both are copied, each skipped when absent.
+    await writeWikiPage("epsilon", "# Epsilon");
+    await getStorage().writeFile("raw/epsilon.md", "legacy bytes");
+
+    expect(await syncSiloForPage("epsilon", "alice")).toBe(2);
+    expect(await getStorage().readFile("tenants/alice/raw/epsilon.md")).toBe(
+      "legacy bytes",
+    );
+  });
+
   it("removeSiloForPage clears the page from its silo", async () => {
     await writeWikiPage("gamma", "# Gamma");
     await syncSiloForPage("gamma", "alice");

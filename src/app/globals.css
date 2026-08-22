@@ -2643,6 +2643,14 @@ body:has(.wb-shell) {
   color: var(--wb-muted);
   font-weight: var(--wb-weight-strong);
 }
+/* The surface name inside that block. It was the block itself until Story 2.1
+   gave Sources an Intake control underneath it, and `margin: 0` has to travel
+   with the paragraph rather than stay on the wrapper — a UA <p> margin would
+   otherwise open a gap above the label and push the control off the fold. The
+   muted, strong face above is inherited, so the label reads exactly as it did. */
+.wb-left-surface-label {
+  margin: 0;
+}
 .wb-shell[data-collapsed="true"] {
   grid-template-columns: var(--wb-rail) 0 minmax(0, 1fr);
 }
@@ -3028,6 +3036,129 @@ body:has(.wb-shell) {
    `margin: 0` shared face and win only by source order. */
 .wb-wiki-switch-note.wb-wiki-switch-readonly {
   margin-top: var(--wb-space-1);
+}
+
+/* ---- Intake (Story 2.1) ----------------------------------------------- */
+/* Import / Upload and the in-app URL field. Two homes, one face: the tree
+   panel's header in Wiki mode, and the Sources column's own block otherwise —
+   the shell renders the same node into both, so there is nothing here that can
+   apply to one and not the other. */
+.wb-intake {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+}
+/* The same face as `New Wiki` and the switcher's actions, deliberately: this is
+   one more chrome control in the same column at the same density, and a second
+   button treatment there would read as a different KIND of action. */
+.wb-intake-pick,
+.wb-intake-submit {
+  flex: 0 0 auto;
+  padding: var(--wb-space-1) var(--wb-space-3);
+  min-height: 28px;
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font-size: var(--wb-font-size);
+  font-weight: var(--wb-weight-strong);
+  cursor: pointer;
+}
+.wb-intake-pick:hover:not([disabled]),
+.wb-intake-submit:hover:not([disabled]) {
+  background: var(--wb-rail-hover);
+}
+/* In flight, or a read-only deployment. Without this the controls still light
+   up on hover and still show a pointer cursor while refusing every click — the
+   same treatment `.wb-wiki-switch-action[disabled]` carries. */
+.wb-intake-pick[disabled],
+.wb-intake-submit[disabled],
+.wb-intake-field[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+.wb-intake-url {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+}
+.wb-intake-field {
+  flex: 1 1 auto;
+  /* Without this the field refuses to shrink below its intrinsic width and
+     pushes `Add URL` out of the 280px column — narrower still below the two
+     breakpoints. */
+  min-width: 0;
+  padding: var(--wb-space-1) var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font-size: var(--wb-font-size);
+  line-height: var(--wb-line-height);
+}
+/* The batch sentence and the read-only note. Token-only and muted, like
+   `.wb-wiki-switch-error`: the shell has no danger colour, and UX-DR15 reserves
+   red for destructive labels rather than for every failure. A refusal can name
+   several items, so it wraps rather than ellipsizing — a truncated reason is
+   not actionable. */
+.wb-intake-note {
+  margin: 0;
+  color: var(--wb-muted);
+  overflow-wrap: anywhere;
+}
+/* Intake's batch sentence, on the SHELL rather than in a left column: the drop
+   target is the whole Workbench in every mode, so a drop in Chat or Lint has to
+   be able to say what happened somewhere. Absolutely positioned for the same
+   reason the drop overlay is — a paragraph that appeared and disappeared as a
+   grid child would auto-place into a new row and shove the three columns each
+   time a batch reported. Above the overlay's z-index so the two can coexist for
+   the instant a second drag begins over a fresh sentence. */
+.wb-intake-status {
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  bottom: var(--wb-space-4);
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100% - 2 * var(--wb-space-4)));
+  margin: 0;
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  overflow-wrap: anywhere;
+}
+/* The tree panel's header. The same padding and rule as `.wb-left-head` above
+   it, so the column reads as head → intake → tabs → tree at one density. */
+.wb-tree-head {
+  flex: 0 0 auto;
+  padding: var(--wb-space-2) var(--wb-space-4);
+  border-bottom: 1px solid var(--wb-border);
+}
+
+/* The drop affordance, over the whole shell for as long as a file drag is
+   inside it. `pointer-events: none` is load-bearing rather than tidy: an
+   overlay that could take the pointer would become the drag's target the
+   instant it appeared, fire a `dragleave` for the shell underneath, and flicker
+   itself out of existence. */
+.wb-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: var(--wb-surface);
+  /* Translucent, so the owner can still see which column they are over. */
+  opacity: 0.9;
+  outline: 2px dashed var(--wb-foreground);
+  outline-offset: -6px;
+}
+.wb-drop-note {
+  margin: 0;
+  color: var(--wb-foreground);
+  font-weight: var(--wb-weight-strong);
 }
 
 /* ---- Knowledge | Files tabs ------------------------------------------- */

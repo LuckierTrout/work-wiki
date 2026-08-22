@@ -238,7 +238,10 @@ describe("saveRawSource", () => {
     const content = "Raw document content here.";
     const filePath = await saveRawSource("doc-001", content);
 
-    expect(filePath).toBe(path.join(tmpDir, "raw", "doc-001.md"));
+    // Under `raw/sources/` since Story 2.1 — the address the Workbench's
+    // silo-only raw resolve is built around. `raw.test.ts` owns the rest of the
+    // move (immutability, the silo mirror, the legacy read).
+    expect(filePath).toBe(path.join(tmpDir, "raw", "sources", "doc-001.md"));
     const stored = await fs.readFile(filePath, "utf-8");
     expect(stored).toBe(content);
   });

@@ -22,6 +22,7 @@ import {
   UNCONFIRMED_STATUSES,
   refusedWriteFailure,
   send,
+  sendForm,
   thrownWriteFailure,
   unconfirmedWriteMessage,
   writeFailure,
@@ -97,6 +98,47 @@ describe("send", () => {
     const [, init] = mock.mock.calls[0] as unknown as [string, RequestInit];
     expect(init.signal).not.toBe(caller.signal);
     expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("arms the same deadline for a multipart body, and sets no content type", async () => {
+    // `sendForm` is a SECOND fetch call site, so `send`'s cases say nothing
+    // about it: the deadline is the helper's promise to every consumer ("a
+    // `finally` cannot rescue a promise that never settles"), and an upload that
+    // hung with no signal would strand `intakeBusy` for the rest of the session
+    // — the exact failure this file was written for, on the one door that posts
+    // bytes rather than JSON.
+    const mock = stubFetch(() => answer({ queued: true }));
+
+    await expect(
+      sendForm<{ queued: boolean }>("/api/workbench/intake", new FormData()),
+    ).resolves.toEqual({ queued: true });
+
+    const [url, init] = mock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/workbench/intake");
+    expect(init.method).toBe("POST");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal?.aborted).toBe(false);
+    // Content type UNSET, deliberately: `fetch` derives it from the `FormData`
+    // body with the boundary parameter, and a label written by hand produces a
+    // body no server can parse.
+    expect(new Headers(init.headers).get("Content-Type")).toBeNull();
+  });
+
+  it("reports a refused upload in the same words as every other write", async () => {
+    // The status has to RIDE the error here too, or `writeFailure` cannot tell a
+    // gateway that gave up (unconfirmed — the bytes may be stored) from a route
+    // that refused. Two helpers, one failure vocabulary.
+    stubFetch(() => answer({ error: "PDF is not a Markdown, text, or HTML source." }, {
+      ok: false,
+      status: 400,
+    }));
+
+    await expect(
+      sendForm("/api/workbench/intake", new FormData()),
+    ).rejects.toMatchObject({
+      message: "PDF is not a Markdown, text, or HTML source.",
+      status: 400,
+    });
   });
 
   it("throws the server's own message on a non-2xx", async () => {

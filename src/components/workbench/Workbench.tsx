@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type DragEvent as ReactDragEvent,
   type ReactNode,
 } from "react";
 import { APP_NAME } from "@/lib/brand";
@@ -72,6 +73,20 @@ import {
   previewDockAnnouncement,
 } from "@/lib/workbench-preview";
 import {
+  INTAKE_DROP_COPY,
+  INTAKE_IN_FLIGHT_COPY,
+  INTAKE_READ_ONLY_COPY,
+  intakeDragHasFiles,
+} from "@/lib/workbench-intake";
+import {
+  intakeReport,
+  intakeShouldRefresh,
+  submitIntakeFiles,
+  submitIntakeUrl,
+  type IntakeOutcome,
+} from "@/lib/workbench-intake-client";
+import { requestDataVersionCheck } from "@/lib/workbench-data-version";
+import {
   DEFAULT_TREE_TAB,
   isSameSelection,
   restorableSelection,
@@ -84,6 +99,7 @@ import {
 } from "@/lib/workbench-tree";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { IconRail } from "./IconRail";
+import { IntakeControls } from "./IntakeControls";
 import { CANVAS_ID, ModeCanvas } from "./ModeCanvas";
 import { PreviewColumn } from "./PreviewColumn";
 import { SettingsCanvas } from "./SettingsCanvas";
@@ -194,6 +210,23 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // held pick changes nothing else — no announcement, no `ownerPickedRef` write,
   // no storage write — so cancelling leaves the shell byte-identical.
   const [pendingSelection, setPendingSelection] = useState<TreeSelection | null>(null);
+  // Story 2.1's Intake state, all three pieces owned HERE rather than in
+  // `IntakeControls`: the same submit path is reached from the control and from
+  // this shell's own drop handler, and a control that owned the flag, the
+  // sentence or the outcomes would leave a drop and a pick reporting themselves
+  // differently. Deliberately not persisted — an arrival is an event, and a
+  // reload must not restore a sentence about one that finished.
+  const [intakeBusy, setIntakeBusy] = useState(false);
+  const [intakeStatus, setIntakeStatus] = useState("");
+  // Is a file drag currently over the shell? The visible affordance only.
+  const [dropActive, setDropActive] = useState(false);
+  // `dragenter`/`dragleave` fire for every DESCENDANT the pointer crosses, so a
+  // drag moving across the tree rows emits a leave for each row it exits. A
+  // counter is what distinguishes "left a child" from "left the shell"; without
+  // it the affordance flickers off over the first boundary it meets. A ref
+  // rather than state: nothing renders from the depth itself, only from the
+  // boolean above.
+  const dragDepthRef = useRef(0);
   // Stored layout state exists only in the browser. Rendering it during SSR
   // would hydrate a different tree than the server sent, so the first paint is
   // always the default and the restore lands in an effect.
@@ -816,6 +849,197 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     [announce, treeTab, files],
   );
 
+  /**
+   * What the owner is told after a batch, and the tree refresh it earns.
+   *
+   * The sentence itself is `intakeReport`'s, in `workbench-intake-client.ts`,
+   * where the node suite executes it — a mixed batch has to name both halves,
+   * and that rule composed inline here could only be grepped for.
+   *
+   * ANNOUNCED as well as rendered: an arrival changes a tree somewhere below
+   * with no focus move and no route change, so to a screen-reader user a pick
+   * that stores four Sources otherwise produces nothing at all. Same live
+   * region, same `announce`, as a mode switch and a Preview dock.
+   *
+   * The refresh is `requestDataVersionCheck`, and the shell re-renders nothing
+   * itself: it states no opinion about whether the write landed, it asks the
+   * watcher to poll, and the server's own integer decides. (Spelled without the
+   * router call token on purpose — `workbench-data-version.test.ts` bans that
+   * literal from this file, and a paragraph explaining the ban must not be what
+   * defeats it.) An unconfirmed outcome nudges too — see `intakeShouldRefresh`.
+   */
+  const reportIntake = useCallback(
+    (outcomes: readonly IntakeOutcome[]) => {
+      const sentence = intakeReport(outcomes);
+      setIntakeStatus(sentence);
+      if (sentence) announce(sentence);
+      if (intakeShouldRefresh(outcomes)) requestDataVersionCheck();
+    },
+    [announce],
+  );
+
+  /**
+   * Store and queue picked or dropped files — one request each (FR-41).
+   *
+   * Not `async`: this is reached from a change handler and a drop handler, and
+   * an async event handler is a floating promise React cannot see. The `finally`
+   * is what guarantees the in-flight flag clears — `submitIntakeFiles` resolves
+   * with per-item outcomes rather than throwing, so the only way to strand the
+   * controls would be to clear the flag on the success path alone.
+   */
+  const runIntakeFiles = useCallback(
+    (picked: readonly File[]) => {
+      // Nothing attached, or a deployment that will refuse before staging: no
+      // request, and no sentence about an arrival that was never attempted.
+      if (readOnly || picked.length === 0) return;
+      // A batch is already in flight. The controls are disabled, but a DROP has
+      // no disabled state and the platform delivers it anyway — and two batches
+      // sharing one `intakeBusy` flag race their own `finally`: the first to
+      // resolve clears the flag while the second is still posting, and the
+      // second's report overwrites the first's sentence. One at a time, and the
+      // owner keeps the sentence they are reading.
+      if (intakeBusy) return;
+      setIntakeBusy(true);
+      // The previous batch's sentence goes as this one starts. Leaving it up
+      // would put a stale "Stored 3 sources" beside a control reading "Storing…".
+      setIntakeStatus("");
+      void submitIntakeFiles(picked)
+        .then(reportIntake)
+        .finally(() => setIntakeBusy(false));
+    },
+    [intakeBusy, readOnly, reportIntake],
+  );
+
+  /** The same, for the in-app URL field. One URL, one Source, one queue item. */
+  const runIntakeUrl = useCallback(
+    (url: string) => {
+      // Same single-flight rule as the file door, and the same flag: a URL
+      // submitted while a drop is still posting would race its `finally` too.
+      if (readOnly || intakeBusy) return;
+      setIntakeBusy(true);
+      setIntakeStatus("");
+      void submitIntakeUrl(url)
+        .then((outcome) => reportIntake([outcome]))
+        .finally(() => setIntakeBusy(false));
+    },
+    [intakeBusy, readOnly, reportIntake],
+  );
+
+  /**
+   * The shell is the drop target, in every mode (Story 2.1).
+   *
+   * `preventDefault` on `dragover` is what makes an element a drop target at
+   * all — without it the browser navigates to the dropped file and the whole
+   * shell is replaced by a text document. It is conditional on the drag actually
+   * carrying FILES: a selection dragged out of the Preview or a link dragged
+   * from another tab also passes over this element, and claiming those drops
+   * would swallow behaviour the shell has nothing to do with. `intakeDragHasFiles`
+   * is that rule, in `workbench-intake.ts` where the suite runs it.
+   */
+  const onShellDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!intakeDragHasFiles(Array.from(event.dataTransfer?.types ?? []))) return;
+    event.preventDefault();
+    // The cursor the platform shows. `copy` because Intake stores a copy of the
+    // bytes and never moves or links the owner's file.
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const onShellDragEnter = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      if (!intakeDragHasFiles(Array.from(event.dataTransfer?.types ?? []))) return;
+      event.preventDefault();
+      dragDepthRef.current += 1;
+      // Not lit on a read-only deployment: the overlay INVITES the drop ("Drop
+      // Markdown, text, or HTML files to store them"), and inviting a drop that
+      // is about to be refused is worse than showing nothing. The drop itself is
+      // still claimed and still answered with the read-only sentence — the
+      // affordance is what is withheld, not the explanation.
+      if (!readOnly) setDropActive(true);
+    },
+    [readOnly],
+  );
+
+  const onShellDragLeave = useCallback(() => {
+    // Unconditional on the types, unlike its enter: a drag whose enter was
+    // ignored never incremented, so the guard is the depth itself. Clamped at
+    // zero because a drag that began INSIDE the shell can emit a leave with no
+    // matching enter, and a negative depth would leave the affordance stuck on.
+    if (dragDepthRef.current === 0) return;
+    dragDepthRef.current -= 1;
+    if (dragDepthRef.current === 0) setDropActive(false);
+  }, []);
+
+  /**
+   * The drag ENDED — cancelled with Esc, or released outside the window.
+   *
+   * Neither of those fires `drop`, and a cancel outside the shell need not fire
+   * a matching `dragleave` either, so without this the counter keeps whatever
+   * depth the abandoned drag left and the overlay stays lit over a Workbench
+   * nobody is dragging anything onto. Reset rather than decremented, for the
+   * same reason the drop resets it.
+   */
+  const onShellDragEnd = useCallback(() => {
+    dragDepthRef.current = 0;
+    setDropActive(false);
+  }, []);
+
+  const onShellDrop = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      if (!intakeDragHasFiles(Array.from(event.dataTransfer?.types ?? []))) return;
+      event.preventDefault();
+      // A drop fires no `dragleave`, so the counter is reset rather than
+      // decremented — otherwise the affordance stays lit for the rest of the
+      // session over the depth the drag left behind.
+      dragDepthRef.current = 0;
+      setDropActive(false);
+      if (readOnly) {
+        // The controls are dimmed, but a DROP has no disabled state to respect
+        // — the platform delivers it either way. Refusing silently would be
+        // indistinguishable from losing the file.
+        setIntakeStatus(INTAKE_READ_ONLY_COPY);
+        announce(INTAKE_READ_ONLY_COPY);
+        return;
+      }
+      if (intakeBusy) {
+        // Same reasoning as the read-only branch: the drop cannot be queued
+        // behind the batch in flight (one `intakeBusy` flag, one set of
+        // outcomes), so it is refused OUT LOUD rather than dropped on the floor.
+        setIntakeStatus(INTAKE_IN_FLIGHT_COPY);
+        announce(INTAKE_IN_FLIGHT_COPY);
+        return;
+      }
+      runIntakeFiles(Array.from(event.dataTransfer.files));
+    },
+    [announce, intakeBusy, readOnly, runIntakeFiles],
+  );
+
+  /**
+   * Intake's controls plus the batch sentence, composed ONCE and rendered into
+   * whichever left column is on screen — the tree panel's header in Wiki mode,
+   * the Sources column's own block otherwise.
+   *
+   * One node rather than two call sites: the two surfaces must offer the same
+   * affordance with the same state, and a second `<IntakeControls>` spelled out
+   * below is how they would start diverging (one passing `busy`, the other
+   * forgetting `readOnly`). The URL field is the one difference, and it is a
+   * prop — the Sources column is where UX-DR5 puts it.
+   *
+   * The batch SENTENCE is not part of this node. It used to be, and that put it
+   * on screen only where a left column was rendering one: the drop target is the
+   * whole shell in every mode, so a drop in Chat or Lint was announced and then
+   * had nowhere to appear. It lives on the shell now — one paragraph, rendered
+   * once, in every mode.
+   */
+  const intakePanel = (
+    <IntakeControls
+      onFiles={runIntakeFiles}
+      onUrl={runIntakeUrl}
+      busy={intakeBusy}
+      readOnly={readOnly}
+      url={mode === "sources"}
+    />
+  );
+
   // Esc closes the sheet — on the BUBBLE phase, deliberately. `useDialogA11y`
   // takes Esc on capture and stops propagation, so an open ConfirmDialog wins
   // first and exactly one layer closes per press. The sheet is navigation, not
@@ -1048,6 +1272,17 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       data-mounted={mounted ? "true" : "false"}
       data-preview={previewOpen ? "true" : "false"}
       data-resizing={resizing ? "true" : "false"}
+      // A file drag is over the shell. CSS draws the affordance from this
+      // attribute, the same way every other shell state above is drawn.
+      data-drop={dropActive ? "true" : "false"}
+      // Intake's drop target is the WHOLE shell, in every mode (Story 2.1) —
+      // not a bordered rectangle the owner has to aim at. The handlers claim
+      // only drags that carry files; see `onShellDragOver`.
+      onDragOver={onShellDragOver}
+      onDragEnter={onShellDragEnter}
+      onDragLeave={onShellDragLeave}
+      onDragEnd={onShellDragEnd}
+      onDrop={onShellDrop}
     >
       <button
         type="button"
@@ -1078,6 +1313,29 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       {sheetOpen && (
         <div className="wb-backdrop" onClick={closeSheet} aria-hidden="true" />
       )}
+
+      {/* The drop affordance. `aria-hidden`, and deliberately: it exists for as
+          long as a pointer is holding files over the shell, which is a state no
+          keyboard or screen-reader user can be in — the picker is their path,
+          and the batch sentence is what either path reports. It is also
+          `pointer-events: none` in CSS, so it cannot become the drag's target
+          and fire a `dragleave` for the shell it covers. */}
+      {dropActive && (
+        <div className="wb-drop-overlay" aria-hidden="true">
+          <p className="wb-drop-note">{INTAKE_DROP_COPY}</p>
+        </div>
+      )}
+
+      {/* Intake's batch sentence, rendered ONCE and in every mode. The drop
+          target is the whole shell, so a drop in Chat or Lint — where no left
+          column shows an Intake control — must still be able to say what
+          happened; while it lived inside the two left columns it was announced
+          into the live region and then had nowhere to appear.
+
+          Not a live region itself. The announcement goes through the shell's
+          one `aria-live` paragraph at the bottom, and a second region holding
+          the same words would speak them twice. */}
+      {intakeStatus && <p className="wb-intake-status">{intakeStatus}</p>}
 
       {/* Header (product title, Wiki switcher, New Wiki), then the tabs and the
           tree — but the trees describe the Wiki surface, so every other mode
@@ -1111,6 +1369,9 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
             with nothing behind it, and it holds no state to lose. */}
         {mode === "wiki" ? (
           <TreePanel
+            // Import / Upload above the tabs (UX-DR5). The shell composes it,
+            // because the shell owns the intake state — see `intakePanel`.
+            header={intakePanel}
             tab={treeTab}
             onTabChange={selectTreeTab}
             knowledge={knowledge}
@@ -1126,9 +1387,14 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
             hidden={settingsOpen}
           />
         ) : settingsOpen ? null : (
-          <p className="wb-left-surface">
-            {surface.label}
-          </p>
+          <div className="wb-left-surface">
+            <p className="wb-left-surface-label">{surface.label}</p>
+            {/* Sources gets the picker AND the in-app URL field; every other
+                unbuilt mode keeps the muted label alone it has had since Story
+                1.3. Putting the URL field under, say, Lint would offer an
+                arrival on a surface that has nothing to do with one. */}
+            {mode === "sources" && intakePanel}
+          </div>
         )}
         {/* Settings' own nav takes the column the trees usually have (UX-DR14).
             AFTER the withdrawn panel, so the reading and tab order of the

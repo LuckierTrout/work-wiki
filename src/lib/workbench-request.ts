@@ -74,6 +74,38 @@ export async function send<T>(url: string, init: RequestInit): Promise<T> {
 }
 
 /**
+ * {@link send}'s sibling for a MULTIPART body — a file upload.
+ *
+ * It cannot be a `send` call with a `FormData` init: that helper's whole
+ * invariant is a JSON `Content-Type` header, and a multipart request needs the
+ * boundary parameter the browser generates. Setting the label by hand produces a
+ * body no server can parse, and making the header optional in `send` would give
+ * away the invariant its docblock promises for every other caller.
+ *
+ * SO THE HEADER IS THE ONLY DIFFERENCE. The deadline, the `{ error }` sentence
+ * and the {@link RequestFailedError} carrying the status are all `send`'s
+ * verbatim, which is what keeps a failed upload reported in the same words as
+ * every other Workbench write (via {@link writeFailure}). Content type is left
+ * UNSET rather than assigned: `fetch` fills it in from the `FormData` body,
+ * boundary included.
+ */
+export async function sendForm<T>(url: string, body: FormData): Promise<T> {
+  const response = await fetch(url, {
+    method: "POST",
+    body,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  const parsed = (await response.json().catch(() => ({}))) as T & { error?: string };
+  if (!response.ok) {
+    throw new RequestFailedError(
+      parsed.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
+  return parsed;
+}
+
+/**
  * The statuses that mean NOBODY ANSWERED — not "the route said no".
  *
  * The rule is not "5xx" and not "anything a proxy can emit": it is whether an

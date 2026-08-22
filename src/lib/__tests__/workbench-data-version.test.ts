@@ -1016,15 +1016,19 @@ describe("the bump lives at exactly one site", () => {
         offenders.push(path.relative(SRC, file).split(path.sep).join("/"));
       }
     }
-    // The definition, the page pipeline's one call site, and `lib/wikis.ts`,
-    // which owns a class of bytes the page pipeline cannot address at all
-    // (`schema.md` has no slug and no page-index entry). WHICH functions in
-    // that module bump is pinned by the next test, since this list is
-    // file-granular; `seedWikiArtifacts` is not one of them, and every other
-    // writer that bypasses both pipelines is still deliberately absent.
+    // The definition, the page pipeline's one call site, `lib/wikis.ts`, which
+    // owns a class of bytes the page pipeline cannot address at all
+    // (`schema.md` has no slug and no page-index entry) — and, since Story 2.1,
+    // `lib/raw.ts`, which owns another: a Source stored under `raw/sources/` is
+    // not a page write, so the pipeline never sees it, and the Workbench's
+    // trees would only catch up on a full reload. WHICH functions in `wikis.ts`
+    // bump is pinned by the next test, since this list is file-granular;
+    // `seedWikiArtifacts` is not one of them, and every other writer that
+    // bypasses all three paths is still deliberately absent.
     expect(offenders.sort()).toEqual([
       "lib/data-version.ts",
       "lib/lifecycle.ts",
+      "lib/raw.ts",
       "lib/wikis.ts",
     ]);
   });
@@ -1142,6 +1146,41 @@ describe("the bump lives at exactly one site", () => {
     const seederClose = source.indexOf("\n}\n", seederAt);
     expect(seederClose).toBeGreaterThan(seederAt);
     expect(source.slice(seederAt, seederClose)).not.toContain("bumpDataVersion");
+  });
+
+  it("has exactly one site inside raw.ts, on the path that actually wrote bytes", async () => {
+    // The list above is FILE-granular, so allowlisting `lib/raw.ts` would
+    // otherwise buy a blanket exemption for the module that owns every Source
+    // write. This pins WHERE the bump is, the way the `wikis.ts` test above
+    // pins its four.
+    //
+    // One site, in the private `storeRawSource`, which both public writers
+    // (`saveRawSource` and `saveRawSourceFor`) go through. It has to be AFTER
+    // the write and BELOW the early return that declines an occupied key: a
+    // Source is immutable (FR-2), so a re-arrival stores nothing — and a
+    // counter that moved anyway would re-render the shell on every re-ingest of
+    // a page, for bytes that did not change.
+    const stripComments = (text: string): string =>
+      text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+    const source = stripComments(await readSource("lib/raw.ts"));
+
+    // Both forms, for the reason the `wikis.ts` case gives: the identifier form
+    // is what catches a bump fired unawaited, which the await form cannot see.
+    expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(1);
+    expect(source.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(1);
+
+    const at = source.indexOf("async function storeRawSource(");
+    expect(at).toBeGreaterThan(-1);
+    const close = source.indexOf("\n}\n", at);
+    expect(close).toBeGreaterThan(at);
+    const body = source.slice(at, close);
+
+    const skip = body.indexOf("return false;");
+    const write = body.indexOf("writeFile(rel, content)");
+    const bump = body.indexOf("await bumpDataVersion();");
+    expect(skip).toBeGreaterThan(-1);
+    expect(bump).toBeGreaterThan(write);
+    expect(bump).toBeGreaterThan(skip);
   });
 
   it("introduces no second refresh paradigm anywhere in src", async () => {

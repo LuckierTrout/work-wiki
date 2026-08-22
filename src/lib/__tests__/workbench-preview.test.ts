@@ -1368,8 +1368,18 @@ describe("readWorkbenchFile", () => {
   });
 
   it("refuses a path deeper than the walk can list", async () => {
-    await writeSilo("raw", "a/b/c.md", "deep");
-    expect(await readWorkbenchFile(OWNER, null, "raw/a/b/c.md", gate())).toBeNull();
+    // The invariant is that the read gate agrees with the LISTING bound — a
+    // path the walk could never have shown is not served just because the caller
+    // named it. The bound itself moved (Story 2.1 raised
+    // `WORKBENCH_FILE_MAX_DEPTH` to 4 so `raw/sources/<slug>/<hash>.md` lists),
+    // so the fixture follows it: level 4 now lists AND reads, and level 5 is the
+    // one that must not.
+    await writeSilo("raw", "a/b/c.md", "at the cap");
+    await writeSilo("raw", "a/b/c/d.md", "past it");
+    await expect(
+      readWorkbenchFile(OWNER, null, "raw/a/b/c.md", gate()),
+    ).resolves.toEqual({ content: "at the cap" });
+    expect(await readWorkbenchFile(OWNER, null, "raw/a/b/c/d.md", gate())).toBeNull();
   });
 
   it("prefers the tenant silo over the flat root", async () => {

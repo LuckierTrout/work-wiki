@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from "react";
 import { SPLIT_NARROW_QUERY, treeScrollActive } from "@/lib/workbench-split";
 import { readStoredTreeScroll, writeStoredTreeScroll } from "@/lib/workbench-state";
@@ -44,6 +45,18 @@ import { ChevronLeftIcon } from "./RailIcons";
  */
 
 export interface TreePanelProps {
+  /**
+   * The panel's chrome ABOVE the tabs — Intake's Import / Upload control
+   * (UX-DR5, Story 2.1).
+   *
+   * A slot rather than the control itself, because the shell owns every piece of
+   * intake state there is: the in-flight flag, the per-item outcomes and the
+   * status sentence are all reached from the shell's own drop handler as well as
+   * from this header, and a control that owned them here would leave a drop and
+   * a pick reporting themselves differently. Header actions belong with this
+   * chrome and not on the rail — the rail is modes.
+   */
+  header?: ReactNode;
   tab: TreeTabId;
   onTabChange: (tab: TreeTabId) => void;
   knowledge: readonly KnowledgeGroup[];
@@ -116,6 +129,7 @@ function indent(depth: number): CSSProperties {
 }
 
 export function TreePanel({
+  header,
   tab,
   onTabChange,
   knowledge,
@@ -318,6 +332,11 @@ export function TreePanel({
 
   return (
     <div className="wb-tree-panel" hidden={hidden}>
+      {/* Before the tablist, so the reading and tab order of the column is
+          head → intake → tabs → tree. Rendered only when the shell supplies it:
+          an empty div above the tabs would take vertical space in a column whose
+          density is fixed by the mockups. */}
+      {header && <div className="wb-tree-head">{header}</div>}
       <div className="wb-tabs" role="tablist" aria-label="Left column trees">
         {TREE_TABS.map((entry) => (
           <button

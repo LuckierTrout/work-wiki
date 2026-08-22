@@ -29,6 +29,7 @@ import {
   tenantForOwner,
   validateTenant,
 } from "./wiki";
+import { rawSourceRelPath, tenantRawSourceRelPath } from "./raw";
 import { logger } from "./logger";
 
 async function copyText(src: string, dst: string): Promise<boolean> {
@@ -96,6 +97,19 @@ export async function syncSiloForPage(
   // wiki page + raw source
   if (await copyText(wikiRelPath(`${slug}.md`), tenantWikiRelPath(tenant, `${slug}.md`)))
     n++;
+  // Sources live at `raw/sources/<slug>.md` (Story 2.1). The legacy flat
+  // `raw/<slug>.md` is copied too — not as a duplicate, as the pre-move
+  // location: a workspace ingested before the move has bytes only there, and a
+  // sync that assumed one address would silently stop mirroring for it. Each
+  // copy is skipped when its source is absent, so a slug written after the move
+  // costs one missing-file check rather than a second write.
+  if (
+    await copyText(
+      rawSourceRelPath(`${slug}.md`),
+      tenantRawSourceRelPath(tenant, `${slug}.md`),
+    )
+  )
+    n++;
   if (await copyText(rawRelPath(`${slug}.md`), tenantRawRelPath(tenant, `${slug}.md`)))
     n++;
 
@@ -156,6 +170,7 @@ export async function removeSiloForPage(
   validateTenant(tenant);
   await Promise.all([
     deleteSafe(tenantWikiRelPath(tenant, `${slug}.md`)),
+    deleteSafe(tenantRawSourceRelPath(tenant, `${slug}.md`)),
     deleteSafe(tenantRawRelPath(tenant, `${slug}.md`)),
     deleteSafe(`tenants/${tenant}/discuss/${slug}.json`),
     deleteDirSafe(tenantWikiRelPath(tenant, `.revisions/${slug}`)),

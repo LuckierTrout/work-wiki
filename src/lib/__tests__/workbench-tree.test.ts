@@ -47,6 +47,7 @@ import {
 import { wikiArtifactPath } from "../wikis";
 import { tenantForOwner, tenantRawRelPath, tenantWikiRelPath } from "../wiki";
 import { getDataDir } from "../paths";
+import { saveRawSource, saveRawSourceFor } from "../raw";
 import type { IndexEntry } from "../types";
 
 function entry(partial: Partial<IndexEntry> & { slug: string }): IndexEntry {
@@ -698,6 +699,67 @@ describe("listWorkbenchFilePaths", () => {
     expect(await readWorkbenchFile(OWNER, null, "raw/theirs.md", gate())).toBeNull();
   });
 
+  it("shows a source that Intake actually stored, under raw/sources/ (Story 2.1)", async () => {
+    // The end of the intake path, joined to the start of this one, through the
+    // writer THE ROUTE CALLS. Every other silo case here writes its own bytes
+    // with `writeSilo`, which proves the LISTING and assumes the write — so a
+    // saver that stopped mirroring, or mirrored under a different prefix, would
+    // leave all of them green and the Files tab empty.
+    //
+    // `saveRawSourceFor` and not `saveRawSource`: the hash-keyed writer is what
+    // `/api/workbench/intake` uses, and it lands one level DEEPER
+    // (`raw/sources/<slug>/<hash>.md`, level 4). A join test against the flat
+    // writer passes at a depth cap of 3, which is exactly how the arrival that
+    // ships could be invisible while this case stayed green.
+    const rawId = "a1b2c3";
+    const stored = await saveRawSourceFor(
+      "intake-doc",
+      rawId,
+      "# stored bytes\n",
+      { owner: OWNER },
+    );
+    expect(stored).toContain(`sources/intake-doc/${rawId}.md`);
+
+    const display = `raw/sources/intake-doc/${rawId}.md`;
+    const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
+    expect(paths).toContain("raw/sources/");
+    expect(paths).toContain("raw/sources/intake-doc/");
+    expect(paths).toContain(display);
+    // The deepest key the kernel writes is AT the cap, not past it: a listing
+    // that reported truncation here would be telling the owner their Source
+    // tree is incomplete every single time one arrived.
+    expect(truncated).toBe(false);
+    // And it opens: listed-but-unreadable is the failure this pair catches.
+    await expect(readWorkbenchFile(OWNER, null, display, gate())).resolves.toEqual({
+      content: "# stored bytes\n",
+    });
+
+    // It renders as nested directories, not as one literal `sources/…` leaf.
+    const sources = findFileNode(buildFileTree(paths), "raw/sources");
+    expect(sources?.isDirectory).toBe(true);
+    const slugDir = findFileNode(buildFileTree(paths), "raw/sources/intake-doc");
+    expect(slugDir?.isDirectory).toBe(true);
+    expect(slugDir?.children.map((n) => n.path)).toEqual([display]);
+  });
+
+  it("keeps an un-mirrored source out of an empty silo (DW-40)", async () => {
+    // The same saver WITHOUT an owner: the flat key is still the system of
+    // record, and the tab still refuses to read from it. This is the half of
+    // the immutability change that could regress quietly into a listing that
+    // shows every tenant's sources to whoever asks first.
+    await saveRawSource("someone-elses-doc", "not yours", {});
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, gate());
+    expect(paths).toEqual(["raw/", "wiki/"]);
+    expect(paths).not.toContain("raw/sources/someone-elses-doc.md");
+    expect(
+      await readWorkbenchFile(OWNER, null, "raw/sources/someone-elses-doc.md", gate()),
+    ).toBeNull();
+    expect(
+      await workbenchFileExists(OWNER, null, "raw/sources/someone-elses-doc.md", gate()),
+    ).toBe(false);
+  });
+
   it("does not fall back to the flat roots when the silo read FAILED", async () => {
     // A missing silo answers with an empty list; only a real error rejects. So a
     // rejection here must not be read as "the silo is empty" — answering a
@@ -794,11 +856,14 @@ describe("listWorkbenchFilePaths", () => {
     // The truncation rule is unchanged: a directory that would have been SHOWN
     // still counts, an all-filtered leaf set does not. Under the wiki root every
     // leaf past level 1 is filtered, so this subtree omits nothing showable.
-    await fs.mkdir(path.join(tmpDir, "wiki", "a", "b"), { recursive: true });
-    await fs.writeFile(path.join(tmpDir, "wiki", "a", "b", "deep.md"), "x", "utf-8");
+    // The directory sits AT the cap (level 4), which is one deeper than it was
+    // before Story 2.1 raised it — the case is about the boundary, so it has to
+    // follow the boundary.
+    await fs.mkdir(path.join(tmpDir, "wiki", "a", "b", "c"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, "wiki", "a", "b", "c", "deep.md"), "x", "utf-8");
 
     const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate("deep"));
-    expect(paths).toContain("wiki/a/b/");
+    expect(paths).toContain("wiki/a/b/c/");
     expect(truncated).toBe(false);
   });
 
@@ -808,11 +873,11 @@ describe("listWorkbenchFilePaths", () => {
     // truncation trigger for this root, so without this case the term could be
     // deleted and the suite would stay green while the owner stopped being told
     // the tree is incomplete.
-    await fs.mkdir(path.join(tmpDir, "wiki", "a", "b", "c"), { recursive: true });
+    await fs.mkdir(path.join(tmpDir, "wiki", "a", "b", "c", "d"), { recursive: true });
 
     const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
-    expect(paths).toContain("wiki/a/b/");
-    expect(paths).not.toContain("wiki/a/b/c/");
+    expect(paths).toContain("wiki/a/b/c/");
+    expect(paths).not.toContain("wiki/a/b/c/d/");
     expect(truncated).toBe(true);
   });
 
@@ -897,17 +962,20 @@ describe("listWorkbenchFilePaths", () => {
   });
 
   it("omits anything past the depth cap and reports the truncation", async () => {
-    // raw/ (1) → a/ (2) → b/ (3) → deep.md (4): the file is one level too far.
-    await writeSilo("raw", "a/b/deep.md");
+    // raw/ (1) → a/ (2) → b/ (3) → c/ (4) → deep.md (5): one level too far.
+    // The cap is 4 because `raw/sources/<slug>/<hash>.md` — every Intake
+    // arrival — is exactly that deep; a fifth level is beyond anything the
+    // kernel writes.
+    await writeSilo("raw", "a/b/c/deep.md");
 
     const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
-    expect(paths).toContain("raw/a/b/");
-    expect(paths).not.toContain("raw/a/b/deep.md");
+    expect(paths).toContain("raw/a/b/c/");
+    expect(paths).not.toContain("raw/a/b/c/deep.md");
     expect(truncated).toBe(true);
   });
 
   it("does not cry truncation over an empty directory at the depth cap", async () => {
-    const rel = tenantRawRelPath(tenantForOwner(OWNER), "a/b");
+    const rel = tenantRawRelPath(tenantForOwner(OWNER), "a/b/c");
     await fs.mkdir(path.join(getDataDir(), rel), { recursive: true });
     const { truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
     expect(truncated).toBe(false);
@@ -969,7 +1037,10 @@ describe("listWorkbenchFilePaths", () => {
 
   it("ships the caps the truncation sentence advertises", () => {
     expect(WORKBENCH_FILE_LIMIT).toBe(2000);
-    expect(WORKBENCH_FILE_MAX_DEPTH).toBe(3);
+    // 4, not 3: `raw/sources/<slug>/<hash>.md` is the deepest key the kernel
+    // writes, and a cap of 3 stranded every Intake arrival one level below the
+    // listing (Story 2.1).
+    expect(WORKBENCH_FILE_MAX_DEPTH).toBe(4);
     // Derived, not typed: the numeral cannot outlive the cap.
     expect(FILES_TRUNCATED_COPY).toBe("File list truncated at 2,000 entries.");
   });

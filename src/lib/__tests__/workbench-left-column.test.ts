@@ -652,6 +652,149 @@ describe("the shell follows a wikilink without clearing the selection", () => {
   });
 });
 
+describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => {
+  it("puts Import / Upload above the tabs, from the one shared constant", async () => {
+    const panel = await read("TreePanel.tsx");
+    // A slot on this panel — header actions belong with the tree chrome
+    // (UX-DR5), not on the rail, which is modes.
+    expect(panel).toContain("header?: ReactNode");
+    expect(panel).toContain('<div className="wb-tree-head">{header}</div>');
+    // ABOVE the tablist, so the column reads head → intake → tabs → tree.
+    expect(panel.indexOf('className="wb-tree-head"')).toBeLessThan(
+      panel.indexOf('className="wb-tabs"'),
+    );
+
+    const controls = await read("IntakeControls.tsx");
+    // The label is imported, never retyped: two literals that must stay
+    // identical are two definitions however close together they sit.
+    expect(controls).toContain("INTAKE_IMPORT_LABEL");
+    expect(controls).not.toMatch(/["'`]Import \/ Upload["'`]/);
+    // A real file input, with the accept attribute DERIVED from the allowlist.
+    expect(controls).toContain('type="file"');
+    expect(controls).toContain("accept={INTAKE_ACCEPT_ATTR}");
+    // …and no directory picker: recursive folder import is Story 2.2, and
+    // either attribute on this input would ship half of it. Matched as
+    // ATTRIBUTES rather than as bare words, so a docblock explaining their
+    // absence is not what fails.
+    expect(controls).not.toMatch(/\bwebkitdirectory\b\s*[={]/);
+    expect(controls).not.toMatch(/\bdirectory\s*[={]/);
+    expect(controls).not.toContain("mozdirectory");
+  });
+
+  it("dims the hidden picker with its button, and names the control once", async () => {
+    const controls = await read("IntakeControls.tsx");
+    const input = controls.slice(controls.indexOf('type="file"'));
+    const hidden = input.slice(0, input.indexOf("/>"));
+    // The BUTTON's `disabled` stops the click that opens the dialog; it does not
+    // stop a `.click()` reaching the input from anywhere else. Both carry it.
+    expect(hidden).toContain("disabled={disabled}");
+    // One accessible name for one control. The visible button owns it; a label
+    // on the hidden input too put a second node with the same name in the tree.
+    expect(hidden).toContain('aria-hidden="true"');
+    expect(hidden).not.toContain("aria-label");
+  });
+
+  it("keeps the URL draft until the shell has reported the outcome", async () => {
+    const controls = await read("IntakeControls.tsx");
+    // `setDraft("")` inside the submit handler throws away the URL the owner
+    // needs most on the failure path: the outcome is not known until the shell
+    // reports it, long after this handler returned. The only `setDraft` calls
+    // left are the field's own `onChange`.
+    const submit = controls.slice(controls.indexOf("onSubmit="));
+    expect(submit).toContain("onUrl(draft)");
+    expect(submit.slice(0, submit.indexOf("</form>"))).not.toContain('setDraft("")');
+  });
+
+  it("offers the same control in Wiki mode and on the Sources column", async () => {
+    const source = await read("Workbench.tsx");
+    // ONE composed node handed to both surfaces. A second element spelled out
+    // for the other column is how the two would start diverging (one passing
+    // `busy`, the other forgetting `readOnly`). Counted with comments removed,
+    // so an element NAMED in a docblock — including the one this file's own
+    // paragraphs would otherwise trip over — is not counted as a second use.
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "")
+      .replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+    expect(code.match(/<IntakeControls/g) ?? []).toHaveLength(1);
+    expect(source).toContain("header={intakePanel}");
+    expect(source).toContain('{mode === "sources" && intakePanel}');
+    // The in-app URL field is the one difference between them (UX-DR5).
+    expect(source).toContain('url={mode === "sources"}');
+    // Read-only is withheld BEFORE the request, not after the route's 403.
+    expect(source).toContain("readOnly={readOnly}");
+  });
+
+  it("makes the whole shell the drop target, and claims only file drags", async () => {
+    const source = await read("Workbench.tsx");
+    for (const handler of [
+      "onDragOver=",
+      "onDragEnter=",
+      "onDragLeave=",
+      // A drag cancelled with Esc or released outside the window fires neither
+      // `drop` nor, reliably, a matching `dragleave` — so without this the
+      // overlay stays lit over a shell nobody is dragging anything onto.
+      "onDragEnd=",
+      "onDrop=",
+    ]) {
+      expect(source, handler).toContain(handler);
+    }
+    // The rule itself is a pure function the node suite executes, not a
+    // condition typed into a handler where only a grep could reach it.
+    expect(source).toContain("intakeDragHasFiles(");
+    // `preventDefault` is what makes an element a drop target at all — without
+    // it the browser navigates to the dropped file and replaces the shell.
+    expect(source).toContain("event.preventDefault();");
+    expect(source).toContain('data-drop={dropActive ? "true" : "false"}');
+  });
+
+  it("says what happened wherever the drop landed, in one place", async () => {
+    const source = await read("Workbench.tsx");
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "")
+      .replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+    // EXACTLY ONE rendering of the sentence, and it is on the shell rather than
+    // inside either left column: the drop target is the whole Workbench, so a
+    // drop in Chat or Lint was previously announced into the live region and
+    // then had nowhere on screen to appear. Two renderings would paint it twice
+    // in Wiki and Sources, which is what moving it out of `intakePanel` fixed.
+    expect(code.match(/wb-intake-status/g) ?? []).toHaveLength(1);
+    expect(code).toContain('{intakeStatus && <p className="wb-intake-status">');
+    // Still ONE live region for the whole shell. The status paragraph is not a
+    // second one — two regions holding the same words speak them twice.
+    expect(code.match(/aria-live=/g) ?? []).toHaveLength(1);
+  });
+
+  it("refuses a second arrival while one is in flight, out loud", async () => {
+    const source = await read("Workbench.tsx");
+    // Both doors read the same flag. Without it two batches share one
+    // `intakeBusy` and race their own `finally`: the first to resolve clears the
+    // flag while the second is still posting, and the second's report overwrites
+    // a sentence the owner may not have read yet.
+    expect(source.match(/if \(readOnly \|\| intakeBusy\) return;/g) ?? []).toHaveLength(1);
+    expect(source).toContain("if (intakeBusy) return;");
+    // A DROP has no disabled state for the platform to respect, so the refusal
+    // is said rather than swallowed — a silent drop is indistinguishable from a
+    // lost file, which is the one thing this door must never be.
+    expect(source).toContain("INTAKE_IN_FLIGHT_COPY");
+    // …and the overlay does not INVITE a drop the deployment will refuse.
+    expect(source).toContain("if (!readOnly) setDropActive(true);");
+  });
+
+  it("refreshes through the watcher's nudge and nothing else", async () => {
+    const source = await read("Workbench.tsx");
+    expect(source).toContain("requestDataVersionCheck()");
+    // The shell states no opinion about whether the write landed: the server's
+    // integer decides. (The router-call ban itself is pinned in
+    // `workbench-data-version.test.ts`, which owns that scan.)
+    expect(source).not.toMatch(/\buseRouter\(/);
+    // Announced as well as rendered: an arrival changes a tree below with no
+    // focus move and no route change.
+    expect(source).toContain("announce(sentence)");
+  });
+});
+
 describe("the retired affordance stays retired", () => {
   it("no source under src/ renders `Open project folder`", async () => {
     const offenders: string[] = [];

@@ -51,7 +51,7 @@ export function isUrl(input: string): boolean {
 // MIME types that fetchUrlContent will accept. Anything outside this list
 // (e.g. image/png) is rejected early to avoid feeding binary garbage into the
 // HTML-parsing pipeline. PDFs are handled via a dedicated extraction path.
-const ALLOWED_CONTENT_TYPES = [
+export const ALLOWED_CONTENT_TYPES = [
   "text/html",
   "application/xhtml+xml",
   "text/plain",
@@ -60,6 +60,23 @@ const ALLOWED_CONTENT_TYPES = [
   "text/xml",
   "application/pdf",
 ];
+
+/** Per-call overrides for {@link fetchUrlContent}. */
+export interface FetchUrlOptions {
+  /**
+   * The content types this CALLER accepts, defaulting to
+   * {@link ALLOWED_CONTENT_TYPES}.
+   *
+   * Narrowing is a door policy, not a capability question. Workbench Intake
+   * passes a list without `application/pdf` because that surface must FAIL a
+   * PDF visibly rather than extract it (Epic 2 runs no sidecar extract), while
+   * the vault's URL ingest keeps the full list. Expressed as an argument so the
+   * two doors share one fetch, one redirect chain, one SSRF guard and one
+   * Readability path — a second fetcher for the narrow door is how the SSRF
+   * guard eventually gets left out of one of them.
+   */
+  allowedContentTypes?: readonly string[];
+}
 
 /**
  * Extract a PDF's text WITH layout structure preserved.
@@ -149,7 +166,10 @@ async function extractPdfText(
  */
 export async function fetchUrlContent(
   url: string,
+  options?: FetchUrlOptions,
 ): Promise<{ title: string; content: string }> {
+  const allowedContentTypes = options?.allowedContentTypes ?? ALLOWED_CONTENT_TYPES;
+
   // SSRF protection: reject private/reserved addresses before fetching
   validateUrlSafety(url);
 
@@ -209,8 +229,11 @@ export async function fetchUrlContent(
     ? rawContentType.split(";")[0].trim().toLowerCase()
     : null;
 
-  if (mimeType && !ALLOWED_CONTENT_TYPES.includes(mimeType)) {
-    throw new Error(
+  if (mimeType && !allowedContentTypes.includes(mimeType)) {
+    // A ClientInputError, not a bare Error: the response arrived and was
+    // understood — the CALLER's door does not take this type — so the route
+    // above answers 400 with this sentence rather than logging a 500.
+    throw new ClientInputError(
       `Unsupported content type: ${mimeType}. Only HTML and text content can be ingested.`,
     );
   }

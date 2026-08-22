@@ -4,6 +4,7 @@ import {
   fetchUrlContent,
 } from "../fetch";
 import { MAX_RESPONSE_SIZE, MAX_PDF_SIZE } from "../constants";
+import { INTAKE_ALLOWED_CONTENT_TYPES } from "../workbench-intake";
 
 // ---------------------------------------------------------------------------
 // Mock unpdf — dynamic import is used in production, vitest hoists vi.mock
@@ -344,6 +345,54 @@ describe("fetchUrlContent", () => {
     await expect(fetchUrlContent("https://example.com/empty")).rejects.toThrow(
       /No text content/,
     );
+  });
+
+  it("refuses a PDF when the CALLER narrows the allowed types (Story 2.1)", async () => {
+    // Workbench Intake hands in `INTAKE_ALLOWED_CONTENT_TYPES`, which leaves
+    // `application/pdf` out: that door runs no extract at all (Epic 7 owns the
+    // sidecar), so a PDF URL has to fail visibly rather than be routed into
+    // `unpdf`. The case above proves the module DEFAULT still extracts PDFs for
+    // the vault's callers — this one proves the narrowing is what decides, and
+    // that the extractor is never reached.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/pdf" }),
+        arrayBuffer: () => Promise.resolve(new ArrayBuffer(100)),
+      }),
+    );
+
+    await expect(
+      fetchUrlContent("https://example.com/doc.pdf", {
+        allowedContentTypes: INTAKE_ALLOWED_CONTENT_TYPES,
+      }),
+    ).rejects.toThrow(/Unsupported content type/);
+    expect(mockGetDocumentProxy).not.toHaveBeenCalled();
+    expect(mockExtractText).not.toHaveBeenCalled();
+  });
+
+  it("still takes the Readability path for HTML under the narrowed list", async () => {
+    // The narrowing must refuse PDF WITHOUT changing what HTML does: AD-16's
+    // Readability + `htmlToMarkdown` clip is the whole value of the in-app URL
+    // field, and a list that dropped `text/html` would refuse every article.
+    const html = articleHtml(
+      "Narrowed Page",
+      "The body of an article fetched through the Workbench's narrower intake door.",
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockResponse(html, { headers: { "content-type": "text/html" } }),
+      ),
+    );
+
+    const result = await fetchUrlContent("https://example.com/page", {
+      allowedContentTypes: INTAKE_ALLOWED_CONTENT_TYPES,
+    });
+    expect(result.title).toBeTruthy();
+    expect(result.content).toContain("Workbench");
   });
 
   it("rejects image content types", async () => {
