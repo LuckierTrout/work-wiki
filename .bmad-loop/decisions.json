@@ -152,6 +152,15 @@
     "label": "Warn once, keep selecting",
     "resolution": ""
   },
+  "DW-404": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.",
+    "key": "1",
+    "label": "Require a whole-window match",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

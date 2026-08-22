@@ -3579,6 +3579,7 @@ location: src/lib/embeddings.ts (searchByVector re-arm branch)
 severity: medium
 reason: `queryEmbeddings` sorts and slices to `topK` BEFORE `searchByVector` applies the model filter (src/lib/storage/filesystem.ts queryEmbeddings; contract in src/lib/storage/types.ts). With one stale-tagged and one current-tagged vector and `topK: 1`, eight alternating queries emitted FOUR drift lines instead of one. This is not contrived: `rebuildVectorStore` upserts page by page with no bulk swap, so the store is mixed for the whole duration of the very operation the re-arm exists to detect, and it deliberately leaves stale orphans behind. The tighter gate (`kept.length === matches.length`, or a rebuild-completion epoch) was NOT applied because the recorded 2026-08-21 decision names `kept.length > 0` as the trigger verbatim; narrowing it is a decision this run does not hold.
 status: open
+decision: 2026-08-22 Require a whole-window match — Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.
 
 ### DW-405: A single unlabelled legacy vector satisfies `kept.length > 0` and re-arms `drift:<active model>` on a corpus where every labelled vector is still stale, so a genuinely un-rebuilt corpus can repeat the
 origin: spec-deferred f6e0ffb78ddc
