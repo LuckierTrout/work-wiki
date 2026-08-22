@@ -215,6 +215,15 @@
     "label": "Budget the body inside the cap",
     "resolution": ""
   },
+  "DW-457": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Clamp to 25 MiB now with the source recorded as unverified-but-conservative, accepting that DW-362's ten-part worst case becomes unreachable by design, and update the quoted figure and tests.",
+    "key": "2",
+    "label": "Clamp conservatively to 25 MiB",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

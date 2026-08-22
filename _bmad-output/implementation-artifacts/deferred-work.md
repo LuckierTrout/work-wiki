@@ -4011,6 +4011,7 @@ location: workers/email-ingest/index.ts (MAX_RAW_EMAIL_MB refusal copy)
 severity: medium
 reason: Two independent reviewers flagged that Email Routing enforces a platform inbound ceiling (reported as 25 MiB, unverified offline and recorded nowhere in this repo). If that holds, messages between the platform limit and 32,781,108 bytes are rejected upstream and never reach the Worker, so the refusal copy invites a sender to resend under a ceiling that will also fail -- and the very scenario DW-358 names (a byte-dense 10 MB .csv sent quoted-printable, 32,715,573 bytes on the wire) could still never arrive. Clamping MAX_RAW_EMAIL_MB to a recorded transport bound is a different decision from "widen for worst-case encoding" and needs its own.
 status: open
+decision: 2026-08-22 Clamp conservatively to 25 MiB — Clamp to 25 MiB now with the source recorded as unverified-but-conservative, accepting that DW-362's ten-part worst case becomes unreachable by design, and update the quoted figure and tests.
 
 ### DW-458: Three open ledger entries now carry reasons that are stale or false against the widened cap and will be read as current by the next sweep.
 origin: spec-deferred e94dd403c72e
