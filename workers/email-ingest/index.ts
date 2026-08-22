@@ -51,6 +51,64 @@ export const MAX_EMAIL_DOCUMENT_BYTES = 10 * 1024 * 1024;
  */
 const MAX_EMAIL_DOCUMENT_MB = MAX_EMAIL_DOCUMENT_BYTES / 1024 / 1024;
 /**
+ * Supported attachments forwarded from one email. Must equal the route's
+ * `MAX_EMAIL_DOCUMENTS`, which rejects anything above it with a 400 — pinned by
+ * the parity test, since this module cannot import the constant.
+ */
+export const MAX_EMAIL_ATTACHMENTS = 10;
+/**
+ * The per-document average the aggregate budget is STATED at.
+ *
+ * This module's reading of DW-362's worked example, not a figure quoted from the
+ * decision. The recorded decision names no size at all — it asks only for "a
+ * stated aggregate budget (up to `MAX_EMAIL_ATTACHMENTS` documents, or an
+ * explicit total)" — and the ledger's example is ten 2 MB documents, decimal.
+ * 2 MiB is chosen here as the nearest binary figure to that example, so the
+ * budget lands slightly above what the ledger described rather than below it.
+ *
+ * Stated rather than derived because the derived alternative —
+ * `MAX_EMAIL_ATTACHMENTS * MAX_EMAIL_DOCUMENT_BYTES` — is 100 MiB decoded and
+ * ~312 MB on the worst-case wire, a shape no mail transport carries and a direct
+ * worsening of the buffered-decoded-bytes exposure recorded as DW-360/DW-456.
+ */
+export const AGGREGATE_DOCUMENT_AVERAGE_BYTES = 2 * 1024 * 1024;
+/**
+ * The DECODED attachment budget one message is sized for: `MAX_EMAIL_ATTACHMENTS`
+ * documents at `AGGREGATE_DOCUMENT_AVERAGE_BYTES` each — 20,971,520 bytes
+ * (20 MiB).
+ *
+ * It exists because the raw cap used to be derived from exactly ONE full-size
+ * document while this Worker advertises, and forwards, up to
+ * `MAX_EMAIL_ATTACHMENTS` of them, so several mid-size files respecting every
+ * per-document and per-count limit were still refused wholesale at the door
+ * (DW-362).
+ *
+ * What that WIDENS, stated as a band rather than as a fix. The over-cap
+ * acknowledgement line further down needs more than `MAX_EMAIL_ATTACHMENTS`
+ * supported parts to survive the gate, so it is reachable only for messages of
+ * eleven or more attachments whose average stays under what the cap leaves each
+ * one: ~1.82 MiB decoded on the worst-case wire (11 parts of
+ * `AGGREGATE_DOCUMENT_AVERAGE_BYTES` reach 71,974,287 bytes and are still
+ * refused), ~4.15 MiB under base64, and less again as the count rises. Wider
+ * than the "small attachments" band it had before, not unbounded.
+ *
+ * Floored at `MAX_EMAIL_DOCUMENT_BYTES` with a `Math.max` — the same shape
+ * `WORST_CASE_TRANSFER_ENCODING_FACTOR` uses — so both terms stay live and the
+ * DW-104/DW-358 admission (ONE full-size document must fit under either
+ * encoding) is computed rather than assumed. Lowering the average or the
+ * attachment count can therefore never push the budget below a single document.
+ * Pinned by `src/lib/__tests__/email-ingest-allowlist-parity.test.ts`.
+ *
+ * This is the cap's DERIVATION only. Nothing enforces the aggregate after
+ * decoding: the per-document ceiling and the attachment count are still the only
+ * post-decode gates, and bounding buffered decoded bytes is DW-360/DW-456's
+ * subject, not this constant's.
+ */
+export const MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES = Math.max(
+  MAX_EMAIL_DOCUMENT_BYTES,
+  MAX_EMAIL_ATTACHMENTS * AGGREGATE_DOCUMENT_AVERAGE_BYTES,
+);
+/**
  * Base64 writes 4 characters for every 3 bytes, and RFC 2045 wraps the result at
  * 76 characters with a CRLF after each line — 78 wire bytes per 76 characters of
  * payload. `message.rawSize` is the on-the-wire RFC 822 byte count, measured
@@ -73,15 +131,23 @@ export const BASE64_EXPANSION_FACTOR = (4 / 3) * (78 / 76);
  * a line is `3k + 3` wire bytes, so the per-byte ratio `(3k + 3) / k` RISES as
  * `k` falls — 3.12 at k=25, 3.125 at k=24 (a 72-column wrap), 3.1304 at k=23.
  *
- * The residual, stated rather than left implicit: a maximally-escaped
+ * The residual, stated rather than left implicit. A maximally-escaped
  * `MAX_EMAIL_DOCUMENT_BYTES` document reaches 32,715,573 bytes at k=25 and
- * 32,768,001 at k=24, leaving 65,535 and 13,107 bytes of slack under
- * `MAX_RAW_EMAIL_BYTES`. So `MIME_ENVELOPE_HEADROOM_BYTES` absorbs wraps down to
- * 72 columns. At k=23 it reaches 32,824,989 and does not fit: a sender that both
- * wraps below 72 columns AND escapes every octet of a full-size document is
- * still refused at the door. That is a bounded, known limit, not an oversight —
- * widening for it would cost headroom against a shape no mainstream client
- * emits. Pinned at k=24 by
+ * 32,768,001 at k=24, both far under the 65,496,679-byte
+ * `MAX_RAW_EMAIL_BYTES` the aggregate budget now yields — and so is every
+ * narrower wrap, down to k=1 at 62,914,560 bytes. Since `(3k + 3) / k` only
+ * rises as `k` falls, ONE full-size document is admissible at every conforming
+ * wrap; the k=23 limit this comment used to record was a property of the old
+ * single-document derivation and no longer exists (DW-362).
+ *
+ * The bounded limit MOVED rather than disappeared, and it now lives at the
+ * aggregate the cap is sized for: `MAX_EMAIL_ATTACHMENTS` parts of
+ * `AGGREGATE_DOCUMENT_AVERAGE_BYTES` reach 65,431,170 bytes at k=25 and fit, but
+ * 65,536,020 at k=24 (a 72-column wrap) and do not. So a sender who fills a
+ * message to the full aggregate AND wraps narrower than the 76-character maximum
+ * is still refused at the door. That is a bounded, known limit, not an oversight
+ * — widening for it would cost headroom against a shape no mainstream client
+ * emits. Pinned at both widths by
  * `src/lib/__tests__/email-ingest-allowlist-parity.test.ts`.
  */
 export const QUOTED_PRINTABLE_EXPANSION_FACTOR = 3 * (78 / 75);
@@ -100,19 +166,39 @@ export const WORST_CASE_TRANSFER_ENCODING_FACTOR = Math.max(
   QUOTED_PRINTABLE_EXPANSION_FACTOR,
 );
 /**
- * Headroom for everything that is not the encoded document: part headers,
- * boundary markers, and an ordinary text body. It is not enough for a maximal body — a
- * document at `MAX_EMAIL_DOCUMENT_BYTES` leaves 65,535 bytes here, well under
+ * Headroom for everything that is not the encoded attachment bodies: per-part
+ * headers and boundary markers for up to `MAX_EMAIL_ATTACHMENTS` parts, the
+ * per-part remainder `WORST_CASE_TRANSFER_ENCODING_FACTOR` under-counts (each
+ * part pays its own short final line, so ten 2 MiB parts cost 65,431,170 bytes
+ * against one 20 MiB part's 65,431,143), and an ordinary text body.
+ *
+ * It is not enough for a maximal body — a message at the full
+ * `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` leaves 65,509 bytes here, under
  * `MAX_EMAIL_CONTENT_CHARS` — and is not meant to be: the pair only has to be
  * simultaneously satisfiable for realistic mail, not at both extremes at once.
+ * Pinned as a trade-off by `src/lib/__tests__/email-ingest-worker.test.ts`.
  */
 export const MIME_ENVELOPE_HEADROOM_BYTES = 64 * 1024;
 /**
- * The pre-decode ceiling, derived rather than restated: a message carrying one
- * `MAX_EMAIL_DOCUMENT_BYTES` document has to fit under it once transfer
- * encoding, the RFC 2045 line wrap and the MIME envelope are paid for —
- * otherwise the route's own `MAX_DOCUMENT_SIZE` gate is unreachable over email
- * and a full-size document is refused at the door (DW-104).
+ * The pre-decode ceiling, derived rather than restated: a message carrying the
+ * whole `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` budget has to fit under it once
+ * transfer encoding, the RFC 2045 line wrap and the MIME envelope are paid for —
+ * otherwise the route's own gates are unreachable over email and a message every
+ * per-document and per-count limit admits is refused at the door.
+ *
+ * Sized for the AGGREGATE, not for one document (DW-362). This Worker advertises
+ * and forwards up to `MAX_EMAIL_ATTACHMENTS` attachments, so a cap derived from
+ * a single `MAX_EMAIL_DOCUMENT_BYTES` document put its own advertised maximum
+ * out of reach: ten 2 MiB files bounced wholesale at ~65 MB on the wire.
+ *
+ * That ~65 MB is the residual, and it is the reason this change is not already
+ * covered by DW-358. The ledger's worked example was measured in BASE64 (~27 MB
+ * for ten 2 MB files) and has fitted since DW-358 widened the cap to 32,781,108
+ * bytes — DW-458 records that premise as stale. What still failed, and what this
+ * derivation fixes, is the same aggregate under the WORST-CASE encoding the cap
+ * is derived from: quoted-printable puts those ten parts at 65,431,170 bytes,
+ * twice the old cap. See `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` for the band the
+ * over-cap acknowledgement line is reachable in as a result.
  *
  * Derived from the WORST transfer encoding a client may pick, not from base64
  * alone (DW-358). `message.rawSize` is counted before anything is decoded, and
@@ -123,25 +209,24 @@ export const MIME_ENVELOPE_HEADROOM_BYTES = 64 * 1024;
  * base64, left unfixed for the other encoding.
  *
  * The factor is a per-byte RATIO, not the exact per-message arithmetic, and it
- * can under-count by a byte or two: at `MAX_EMAIL_DOCUMENT_BYTES` it yields
- * 32,715,572 against an exact worst-case wire size of 32,715,573, because the
- * final short line pays for a soft break and a CRLF that no ratio can express.
- * `MIME_ENVELOPE_HEADROOM_BYTES` absorbs that difference along with everything
- * else, which is why the cap is derived from the ratio and not from the exact
- * formula: the exact one lives in the test helper, where it can be calibrated
- * against a real fixture.
+ * under-counts: at `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` it yields 65,431,143
+ * against an exact worst-case wire size of 65,431,170 for ten separate parts,
+ * because every part's final short line pays for a soft break and a CRLF that no
+ * ratio can express. `MIME_ENVELOPE_HEADROOM_BYTES` absorbs that difference
+ * along with everything else, which is why the cap is derived from the ratio and
+ * not from the exact formula: the exact one lives in the test helper, where it
+ * can be calibrated against a real fixture.
  *
- * That lands the cap at 32,781,108 bytes (~31.26 MiB), far above the "about
- * 13.4 MB" recorded in the 2026-08-19 decision — which was a bare
- * `MAX_DOCUMENT_SIZE * 4 / 3`, the arithmetic of one encoding rather than its
- * intent. The operative clause was "so a `MAX_DOCUMENT_SIZE` attachment
- * survives" expansion, and the 2026-08-21 "Widen for worst-case encoding"
- * decision restates it as whichever encoding the sender happens to use. Only
- * this cap moves: the per-document ceiling, the body cap and the
- * `message.rawSize` gate itself are unchanged.
+ * That lands the cap at 65,496,679 bytes (~62.46 MiB), quoted to senders as
+ * 62.4 MB. Far above the "about 13.4 MB" recorded in the 2026-08-19 decision —
+ * which was a bare `MAX_DOCUMENT_SIZE * 4 / 3`, the arithmetic of one encoding
+ * rather than its intent — and above the 32,781,108-byte single-document figure
+ * DW-358 left behind. Only this cap moves: the per-document ceiling, the
+ * attachment count, the body cap and the `message.rawSize` gate itself are
+ * unchanged, and nothing new is enforced after decoding.
  */
 export const MAX_RAW_EMAIL_BYTES =
-  Math.ceil(MAX_EMAIL_DOCUMENT_BYTES * WORST_CASE_TRANSFER_ENCODING_FACTOR) +
+  Math.ceil(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES * WORST_CASE_TRANSFER_ENCODING_FACTOR) +
   MIME_ENVELOPE_HEADROOM_BYTES;
 /**
  * Rounded DOWN to the displayed precision, so the figure quoted back to the
@@ -216,12 +301,6 @@ export const SUPPORTED_MIME_TYPES: ReadonlySet<string> = new Set([
   "text/rtf",
   "application/x-mobipocket-ebook",
 ]);
-/**
- * Supported attachments forwarded from one email. Must equal the route's
- * `MAX_EMAIL_DOCUMENTS`, which rejects anything above it with a 400 — pinned by
- * the parity test, since this module cannot import the constant.
- */
-export const MAX_EMAIL_ATTACHMENTS = 10;
 
 export function supportedAttachment(filename: string | null, mimeType: string): boolean {
   // `.trim()` mirrors `extension()` in `src/lib/document-extract.ts`. Without it

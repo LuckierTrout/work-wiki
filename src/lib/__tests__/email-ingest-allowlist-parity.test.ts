@@ -12,7 +12,9 @@ import {
   MAX_EMAIL_DOCUMENTS,
 } from "../email-ingest";
 import {
+  AGGREGATE_DOCUMENT_AVERAGE_BYTES,
   BASE64_EXPANSION_FACTOR,
+  MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
   MAX_EMAIL_ATTACHMENTS,
   MAX_EMAIL_ATTACHMENT_NAMES_RECORDED,
   MAX_EMAIL_CONTENT_CHARS as WORKER_MAX_EMAIL_CONTENT_CHARS,
@@ -183,13 +185,89 @@ describe("email-ingest allowlist parity", () => {
     expect(base64WireSize).toBeGreaterThan(Math.ceil(MAX_DOCUMENT_SIZE * (4 / 3)));
     // Derived from the exported terms, never restated as a literal: a hand-typed
     // cap would keep the comparisons above true only by coincidence, and would
-    // stop tracking `MAX_DOCUMENT_SIZE` the moment it moved.
+    // stop tracking `MAX_DOCUMENT_SIZE` the moment it moved. The budget the cap
+    // is derived from is the AGGREGATE one now (DW-362), not one document.
     expect(MAX_RAW_EMAIL_BYTES).toBe(
-      Math.ceil(MAX_EMAIL_DOCUMENT_BYTES * WORST_CASE_TRANSFER_ENCODING_FACTOR) +
-        MIME_ENVELOPE_HEADROOM_BYTES,
+      Math.ceil(
+        MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES * WORST_CASE_TRANSFER_ENCODING_FACTOR,
+      ) + MIME_ENVELOPE_HEADROOM_BYTES,
     );
     // Part headers, boundaries and the text body still have to fit.
     expect(MAX_RAW_EMAIL_BYTES - wireSize).toBeGreaterThanOrEqual(1024);
+  });
+
+  /**
+   * The cap is sized for the number of attachments this Worker actually
+   * advertises and forwards, not for one document (DW-362). Before that, a
+   * sender who respected every per-document and per-count limit could still be
+   * refused wholesale at the door, and the over-cap acknowledgement line was
+   * unreachable for anything but small files.
+   *
+   * The reachability claim is OBSERVED here rather than asserted in a comment:
+   * the aggregate is measured part by part on the worst-case wire and compared
+   * with the constant.
+   */
+  it("admits MAX_EMAIL_ATTACHMENTS mid-size documents at the stated average", () => {
+    // Measured PER PART, never by scaling one measurement. Ten separate 2 MiB
+    // parts cost slightly more than one 20 MiB part -- each pays its own short
+    // final line, a soft break and a CRLF -- and it is the ten-part figure the
+    // envelope headroom has to absorb.
+    const aggregateWireSize =
+      MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES);
+    expect(aggregateWireSize).toBeGreaterThan(
+      quotedPrintablePartWireSize(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES),
+    );
+    expect(aggregateWireSize).toBeLessThan(MAX_RAW_EMAIL_BYTES);
+    // And the envelope headroom is still positive afterwards by the amount
+    // `MIME_ENVELOPE_HEADROOM_BYTES` claims to cover -- headers and a boundary
+    // marker for EVERY part, not a flat slack figure that ten parts could
+    // exhaust while the assertion stayed green.
+    //
+    // 512 bytes per part, stated rather than measured: a real part preamble is a
+    // `--boundary` line, `Content-Type` with a filename parameter,
+    // `Content-Disposition: attachment` with the filename again, and
+    // `Content-Transfer-Encoding` -- a few hundred bytes for ordinary filenames,
+    // and 512 leaves room for a long or RFC 2231-encoded one. Generous on
+    // purpose: the point is that the margin scales with the part count, so an
+    // over-estimate makes the assertion harder to pass, not easier.
+    const PART_HEADER_AND_BOUNDARY_BUDGET_BYTES = 512;
+    expect(MAX_RAW_EMAIL_BYTES - aggregateWireSize).toBeGreaterThanOrEqual(
+      MAX_EMAIL_ATTACHMENTS * PART_HEADER_AND_BOUNDARY_BUDGET_BYTES,
+    );
+    // The bounded limit the `QUOTED_PRINTABLE_EXPANSION_FACTOR` comment now
+    // names, pinned rather than left as prose: a sender filling the whole
+    // aggregate AND wrapping at 72 columns is over the cap. Recorded so a future
+    // widening that admits it is prompted to update that comment.
+    expect(
+      MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES, 24),
+    ).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
+  });
+
+  /**
+   * The budget's floor. `Math.max` keeps both terms live so the DW-104/DW-358
+   * admission survives any future lowering of the average or the attachment
+   * count -- a plain multiplication would let a smaller `MAX_EMAIL_ATTACHMENTS`
+   * silently push the cap below one full-size document again.
+   */
+  it("never budgets less than a single full-size document, and reaches the advertised count", () => {
+    expect(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES).toBeGreaterThanOrEqual(MAX_EMAIL_DOCUMENT_BYTES);
+    // Deliberately NOT re-stating `Math.max(MAX_EMAIL_DOCUMENT_BYTES,
+    // MAX_EMAIL_ATTACHMENTS * AGGREGATE_DOCUMENT_AVERAGE_BYTES)` here. Copying
+    // the source expression into the assertion can only ever detect an edit, and
+    // would agree with the source however wrong both were. The assertions in this
+    // case are the ones that say something the source does not.
+    //
+    // It really does reach across the advertised attachment count today --
+    // otherwise the floor would be doing all the work and the aggregate case
+    // above would be passing on the single-document derivation.
+    expect(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES).toBe(
+      MAX_EMAIL_ATTACHMENTS * AGGREGATE_DOCUMENT_AVERAGE_BYTES,
+    );
+    // The stated average has to stay a MID-SIZE one: at or above the
+    // per-document ceiling the budget becomes `MAX_EMAIL_ATTACHMENTS` full-size
+    // documents, ~312 MB on the worst-case wire, which is the shape DW-362
+    // deliberately did not buy.
+    expect(AGGREGATE_DOCUMENT_AVERAGE_BYTES).toBeLessThan(MAX_EMAIL_DOCUMENT_BYTES);
   });
 
   /**
@@ -200,9 +278,10 @@ describe("email-ingest allowlist parity", () => {
    * that claim as a pin rather than as prose.
    */
   it("still admits a full-size document from a sender that wraps at 72 columns", () => {
-    // 24 escapes per line: 72 characters of payload plus the `=` soft break, the
-    // narrowest wrap the headroom covers. Computed through the same helper the
-    // cap is measured with, not hand-typed, so it tracks the real formula.
+    // 24 escapes per line: 72 characters of payload plus the `=` soft break. Kept
+    // as an explicit case because it is the admission DW-358 shipped and this
+    // widening must not weaken. Computed through the same helper the cap is
+    // measured with, not hand-typed, so it tracks the real formula.
     expect(quotedPrintablePartWireSize(MAX_DOCUMENT_SIZE, 24)).toBeLessThan(MAX_RAW_EMAIL_BYTES);
     // And narrower really does cost more, so the direction of the claim is
     // pinned too: a test that only checked one width could not tell a widening
@@ -210,13 +289,17 @@ describe("email-ingest allowlist parity", () => {
     expect(quotedPrintablePartWireSize(MAX_DOCUMENT_SIZE, 24)).toBeGreaterThan(
       quotedPrintablePartWireSize(MAX_DOCUMENT_SIZE),
     );
-    // 23 escapes (a 70-column wrap) is over the cap and stays over it. Recorded
-    // as the KNOWN, BOUNDED limit the factor's comment names -- if a future
-    // widening admits it, this assertion is the prompt to update that comment
-    // rather than to leave it describing a boundary that has moved.
-    expect(quotedPrintablePartWireSize(MAX_DOCUMENT_SIZE, 23)).toBeGreaterThan(
+    // Under the aggregate derivation the single-document admission survives
+    // EVERY conforming wrap, not just 72 columns: `(3k + 3) / k` is monotonic in
+    // `k`, so the narrowest wrap expressible -- one escape per line, ratio 6 --
+    // is the worst of them, and it fits. Pinned at the extreme rather than at
+    // some arbitrary width, because that one comparison settles all the others.
+    expect(quotedPrintablePartWireSize(MAX_DOCUMENT_SIZE, 1)).toBeLessThan(
       MAX_RAW_EMAIL_BYTES,
     );
+    // The k=23 bound this test used to record belonged to the single-document
+    // derivation and is gone with it (DW-362); the surviving bounded limit is
+    // the aggregate one, pinned in the aggregate case above.
   });
 
   it("computes the worst-case factor from the encodings it names", () => {

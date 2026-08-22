@@ -3214,7 +3214,8 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: workers/email-ingest/index.ts:59
 severity: medium
 reason: `MAX_EMAIL_ATTACHMENTS` is 10 and `MAX_DOCUMENT_SIZE` is 10 MB, so the advertised envelope is up to ten documents; ten 2 MB documents encode to roughly 27 MB and are bounced by `MAX_RAW_EMAIL_BYTES` (14.4 MB) with "larger than 13.7 MB". The per-message cap and the per-email attachment cap describe incompatible envelopes, which also makes the new over-cap acknowledgement line unreachable for anything but small files. Pre-existing and worse before this change (the cap was 10 MB); distinct from the aggregate-memory item above, which is about the forwarding copies rather than the gate.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw2-decision-dw-362
 decision: 2026-08-21 Derive an aggregate budget — Derive MAX_RAW_EMAIL_BYTES from a stated aggregate budget (up to MAX_EMAIL_ATTACHMENTS documents, or an explicit total) so the advertised attachment count is actually reachable, re-pin the parity test, and add a multi-document aggregate case.
 decision: 2026-08-20 Derive an aggregate budget — Derive MAX_RAW_EMAIL_BYTES from a stated aggregate budget (up to MAX_EMAIL_ATTACHMENTS documents, or an explicit total) so the advertised attachment count is actually reachable, re-pin the parity test, and add a multi-document aggregate case.
 
@@ -4005,4 +4006,44 @@ source_spec: `spec-dw-358-raw-email-cap-worst-case-encoding.md`
 location: _bmad-output/implementation-artifacts/deferred-work.md (DW-361, DW-362, DW-453)
 severity: low
 reason: DW-361's trade-off ("a full-size document plus a maximal body is refused") no longer binds for base64: 14,448,938 now fits under 32,781,108, and only the quoted-printable measurement still bounces. DW-362's premise ("ten 2 MB documents encode to roughly 27 MB and are bounced by MAX_RAW_EMAIL_BYTES (14.4 MB)") is now false -- 27 MB fits. DW-453's band ("a document more than roughly 47 KB over the 10 MB ceiling pushes rawSize past that gate") widens by more than two orders of magnitude, and its quoted "larger than 13.7 MB" copy is now "31.2 MB". This session was forbidden to edit the ledger, so the re-verification is recorded here instead.
+status: open
+
+### DW-459: The aggregate attachment budget is the raw cap's derivation only; nothing bounds the decoded bytes a single message actually buffers.
+origin: spec-deferred cbc839a81bd2
+source_spec: `spec-dw-362-email-raw-cap-aggregate-budget.md`
+location: workers/email-ingest/index.ts
+severity: medium
+reason: `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` widens `MAX_RAW_EMAIL_BYTES` from one document to ten, so a message may now legitimately carry up to 20 MiB of decoded attachments (and, since the only post-decode gates are the per-document `MAX_EMAIL_DOCUMENT_BYTES` filter and the `MAX_EMAIL_ATTACHMENTS` slice, roughly 47 MB decoded if the sender picks base64 -- the cheap encoding the cap is NOT derived from -- rather than the worst-case one it is). The Worker decodes every eligible part into a `Uint8Array` up front in `eligibleAttachments`, so that is buffered in the isolate at once, and `src/app/api/email/ingest/route.ts` then buffers the same forwarded payload again with `await request.formData()`. Adding a post-decode aggregate gate, a skip reason, or sender-visible copy was explicitly out of scope for DW-362 (Never: "The stated budget is only the cap's derivation here"); bounding buffered decoded bytes is DW-360/DW-456's subject.
+status: open
+
+### DW-460: The cap now quoted to senders (62.4 MB) is roughly 2.5x the inbound message-size ceiling DW-457 reports Cloudflare Email Routing enforcing, so the widening DW-362 bought may be unreachable in producti
+origin: spec-deferred fdbab632977d
+source_spec: `spec-dw-362-email-raw-cap-aggregate-budget.md`
+location: workers/email-ingest/index.ts (MAX_RAW_EMAIL_MB refusal copy)
+severity: medium
+reason: DW-457 (open) records a reported 25 MiB Email Routing inbound limit, unverified offline and recorded nowhere in this repo, against the then-new 31.2 MB figure. This change takes `MAX_RAW_EMAIL_MB` to 62.4 MB, and the scenario the change exists to admit -- ten 2 MiB parts, 65,431,170 bytes on the worst-case wire -- sits about 2.6x that reported ceiling. If DW-457's premise holds, the refusal copy at `workers/email-ingest/index.ts` invites a resend under a ceiling the transport rejects first. Clamping the cap to a recorded transport bound is DW-457's own decision, not DW-362's, so nothing was clamped here -- but DW-457's magnitude doubled and its entry does not say so.
+status: open
+
+### DW-461: Six open ledger entries now quote cap figures this change invalidates, the same staleness DW-458 was filed for and which nothing has yet corrected.
+origin: spec-deferred 6406b6d1e5d9
+source_spec: `spec-dw-362-email-raw-cap-aggregate-budget.md`
+location: _bmad-output/implementation-artifacts/deferred-work.md (DW-361, DW-362, DW-453, DW-456, DW-457, DW-458)
+severity: low
+reason: DW-361, DW-362, DW-453, DW-456, DW-457 and DW-458 itself all quote 32,781,108 bytes / 31.2 MB / 23.9 MB decoded. `MAX_RAW_EMAIL_BYTES` is now 65,496,679 (62.4 MB quoted) and the base64-carried decoded payload rises from ~23.9 MB to ~47.8 MB. DW-458 exists precisely because the DW-358 session was forbidden to edit the ledger and recorded the staleness in its spec instead; this session is under the same prohibition, so the re-verification is recorded here rather than in the entries.
+status: open
+
+### DW-462: Ten documents above the stated 2 MiB average but under the advertised 10 MB per-document ceiling are still refused wholesale -- the accepted residual of choosing an explicit total over the full advert
+origin: spec-deferred 0d9272e76d4f
+source_spec: `spec-dw-362-email-raw-cap-aggregate-budget.md`
+location: workers/email-ingest/index.ts (MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES)
+severity: low
+reason: The human decision offered "up to `MAX_EMAIL_ATTACHMENTS` documents, or an explicit total" and this change took the explicit total (20 MiB), because the full envelope -- 10 x `MAX_EMAIL_DOCUMENT_BYTES` -- is ~312 MB on the worst-case wire. So the shape DW-362 describes ("several mid-size supported documents refused wholesale even though every per-document and per-count limit is respected") still occurs above ~1.91 MiB per document at ten attachments under worst-case encoding (~4.34 MB under base64); the threshold moved rather than disappeared. Nothing sender-visible advertises the 2 MiB average, while the 10 MB per-document ceiling is still quoted back to senders in the oversized-attachment line.
+status: open
+
+### DW-463: `MAX_RAW_EMAIL_MB` computes in MiB and quotes the result to senders as "MB", and the widening grows that mislabelling from ~1 MB to ~3 MB.
+origin: spec-deferred 01082dfde612
+source_spec: `spec-dw-362-email-raw-cap-aggregate-budget.md`
+location: workers/email-ingest/index.ts (MAX_RAW_EMAIL_MB)
+severity: low
+reason: `(MAX_RAW_EMAIL_BYTES / 1024 / 1024)` floored to one decimal yields 62.4 and is written as "larger than 62.4 MB"; 65,496,679 bytes is 65.5 decimal MB. Pre-existing and shared with `MAX_EMAIL_DOCUMENT_MB` and the route's own "10 MB" copy, so correcting it is a copy decision across both surfaces, not a local fix -- but the absolute gap is now large enough for a sender to act on it, and this is the same figure DW-457 says may be unachievable.
 status: open

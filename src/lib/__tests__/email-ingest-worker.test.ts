@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import worker, {
+  AGGREGATE_DOCUMENT_AVERAGE_BYTES,
   MAX_EMAIL_ATTACHMENTS,
   MAX_EMAIL_ATTACHMENT_NAMES_RECORDED,
   MAX_EMAIL_CONTENT_CHARS,
@@ -1200,6 +1201,26 @@ describe("email-ingest raw message cap", () => {
     expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
   });
 
+  it("forwards a message carrying the whole aggregate attachment budget", async () => {
+    // DW-362 at the gate, which is where a sender learns whether their ten
+    // mid-size files were refused. The parity suite pins the same aggregate
+    // against the constant; this pins it against `message.rawSize`, the only
+    // surface the sender sees. Measured per part, because ten short final lines
+    // cost more than one.
+    const msg = {
+      ...message(ATTACHMENT_EMAIL, "Quarterly report"),
+      rawSize:
+        MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES),
+    };
+    const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
+    expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
+  });
+
   it("forwards a message sitting exactly on the cap", async () => {
     // The gate is `>`, and the refusal copy quotes the cap as the size a message
     // may not EXCEED. A `>=` would make that sentence false for exactly one byte
@@ -1239,7 +1260,7 @@ describe("email-ingest raw message cap", () => {
     expect(quoted * 1024 * 1024).toBeLessThanOrEqual(MAX_RAW_EMAIL_BYTES);
   });
 
-  it("bounces a full-size document carried alongside a maximal body", async () => {
+  it("bounces a full aggregate of documents carried alongside a maximal body", async () => {
     // The trade-off `MIME_ENVELOPE_HEADROOM_BYTES` records in its comment,
     // enforced instead of merely stated: the headroom covers part headers,
     // boundaries and an ORDINARY body, not a body at `MAX_EMAIL_CONTENT_CHARS`.
@@ -1258,18 +1279,29 @@ describe("email-ingest raw message cap", () => {
     // falsely true by the bound being loose.
     //
     // Measured on the quoted-printable wire size, because that is what
-    // `MAX_RAW_EMAIL_BYTES` is now derived from (DW-358): against a cap widened
-    // for worst-case expansion, a base64 document plus a maximal body fits
+    // `MAX_RAW_EMAIL_BYTES` is derived from (DW-358): against a cap widened for
+    // worst-case expansion, a base64 payload plus a maximal body fits
     // comfortably, so the base64 measurement would no longer be testing the
     // trade-off at all -- it would just be asserting a true-by-slack inequality.
     //
-    // This guards the trade-off AS RECORDED TODAY; it is not a veto on widening
-    // the cap further. DW-362 (an aggregate multi-document budget) carries an
-    // accepted decision to re-derive `MAX_RAW_EMAIL_BYTES` upward again and is
-    // expected to move this assertion with it. Re-derive the expectation there;
-    // do not read a failure here as a reason to leave the cap alone.
-    const rawSize = quotedPrintablePartWireSize(MAX_EMAIL_DOCUMENT_BYTES) + MAX_EMAIL_CONTENT_CHARS;
+    // Re-derived at the AGGREGATE ceiling the cap now binds at (DW-362). The
+    // trade-off is unchanged in kind, only in where it binds: one full-size
+    // document plus a maximal body now fits with room to spare, so measuring
+    // there would test nothing. Measured PER PART rather than by scaling one
+    // part, for the same reason the parity suite measures it that way: ten short
+    // final lines cost more than one.
+    //
+    // This still guards the trade-off AS RECORDED TODAY; it is not a veto on
+    // widening the cap again. Re-derive the expectation from the constants if
+    // the budget moves; do not read a failure here as a reason to leave the cap
+    // alone.
+    const aggregateWireSize =
+      MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES);
+    const rawSize = aggregateWireSize + MAX_EMAIL_CONTENT_CHARS;
     expect(rawSize).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
+    // ...while the attachments ALONE are under it, so what this case proves is
+    // the body/headroom trade-off and not an oversized aggregate.
+    expect(aggregateWireSize).toBeLessThan(MAX_RAW_EMAIL_BYTES);
 
     const msg = { ...message(ATTACHMENT_EMAIL, "Quarterly report"), rawSize };
     const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
