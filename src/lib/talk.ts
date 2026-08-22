@@ -12,7 +12,6 @@ import { getStorage } from "./storage";
 import { getDataDir } from "./paths";
 import { withFileLock } from "./lock";
 import { isEnoent } from "./errors";
-import { isAgentHandle } from "./agent-handle";
 import { logger } from "./logger";
 import type { TalkThread, TalkComment } from "./types";
 
@@ -186,48 +185,29 @@ export async function createThread(
   });
 }
 
-/** Title of the auto-opened reconciliation thread — also its idempotency key. */
-export const RECONCILE_THREAD_TITLE = "Sources disagree — reconciliation needed";
-
-/**
- * Open a reconciliation discussion thread for a page just flagged `disputed`
- * (a source contradicts it), UNLESS an open one already exists — idempotent
- * across re-ingests, keyed on {@link RECONCILE_THREAD_TITLE}. The first comment
- * is authored by a NON-agent: `author` if it's a human/system handle, else
- * coerced to "system" (an agent-handle actor — e.g. a `yoyo` staleness
- * re-ingest — would otherwise make the thread invisible to the maintenance scan,
- * which only acts on threads whose latest comment is human-side). Fail-soft: a
- * thread-open failure never breaks the caller.
- */
-export async function ensureReconciliationThread(
-  pageSlug: string,
-  author: string,
-  detail?: string,
-): Promise<void> {
-  try {
-    const threads = await listThreads(pageSlug);
-    if (
-      threads.some(
-        (t) => t.status === "open" && t.title === RECONCILE_THREAD_TITLE,
-      )
-    ) {
-      return; // a reconciliation is already open — don't duplicate
-    }
-    // Keep the latest comment human-side so the scan + "ask yoyo" can act on it.
-    const safeAuthor = !author || isAgentHandle(author) ? "system" : author;
-    const body =
-      `An ingested source contradicts this page${detail ? ` (${detail})` : ""}, ` +
-      `so it's flagged **disputed** with both views kept. Please reconcile the ` +
-      `contradiction — edit the page, or ask yoyo to take a pass.`;
-    await createThread(pageSlug, RECONCILE_THREAD_TITLE, safeAuthor, body);
-  } catch (err) {
-    logger.warn(
-      "talk",
-      `failed to open reconciliation thread for "${pageSlug}"`,
-      err,
-    );
-  }
-}
+// ---------------------------------------------------------------------------
+// RETIRED (DW-230): the auto-opened reconciliation-thread writer, and the title
+// constant that was its idempotency key, both lived here.
+//
+// A `disputed: false → true` transition on the ingest, merge and metadata-patch
+// paths used to open a talk thread through them. The talk HTTP surfaces are
+// gone, so no surface could ever read that thread: the writer produced a
+// discuss file nobody would see, on a page whose `disputed` flag already says
+// the same thing where a reader can find it. The three call sites and the
+// writer were deleted together.
+//
+// WHAT IS LEFT, HONESTLY. Only three exports still have non-test callers:
+// `deleteDiscussions` (the page-lifecycle teardown in `lifecycle.ts`),
+// `getDiscussRelPrefix` (`discuss-stats-index.ts`, `contributors.ts`) and
+// `getDiscussionStatsForSlugs` (`browse.ts`). The rest of the thread API —
+// `listThreads`, `createThread`, `getThread`, `addComment`, `resolveThread`,
+// `hasOpenThread` — is now READERLESS outside this module's own tests: the talk
+// HTTP surfaces that drove it are retired, and removing this writer took the
+// last programmatic caller with it. They are deliberately NOT deleted here.
+// Retiring that surface is a wider question than DW-230 asked, so it is
+// recorded as deferred work rather than resolved in passing — but nothing
+// below should be read as evidence that it is still in use.
+// ---------------------------------------------------------------------------
 
 /**
  * True iff `pageSlug` has at least one OPEN discussion thread. Fail-soft: a
@@ -335,18 +315,6 @@ export interface DiscussionStats {
   total: number;
   /** Number of threads with status "open". */
   open: number;
-}
-
-/** Return discussion thread counts for a single page. Lightweight — reads
- *  the JSON file but only counts statuses, doesn't expose full content. */
-export async function getDiscussionStats(
-  pageSlug: string,
-): Promise<DiscussionStats> {
-  const threads = await readDiscussFile(pageSlug);
-  return {
-    total: threads.length,
-    open: threads.filter((t) => t.status === "open").length,
-  };
 }
 
 /**

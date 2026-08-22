@@ -125,7 +125,7 @@ export function SourceMonitorDesk() {
   const errors = monitors.filter((monitor) => monitor.state === "error").length;
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>source watch</p>
@@ -133,7 +133,7 @@ export function SourceMonitorDesk() {
             Let sources come back to you.
           </h1>
           <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 0", maxWidth: "64ch" }}>
-            Monitor durable URLs. WorkWiki filters minor noise and drafts a cited update only when the meaning changes.
+            Monitor durable URLs. work-wiki filters minor noise and drafts a cited update only when the meaning changes.
           </p>
         </div>
         <div className="row" style={{ gap: 22 }}>
@@ -227,7 +227,7 @@ export function SourceMonitorDesk() {
           </article>
         ))}
       </div>
-    </main>
+    </div>
   );
 }
 

@@ -11,6 +11,7 @@ import {
 } from "./wiki";
 import { extractSummary } from "./ingest";
 import type { Principal } from "./auth";
+import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 
 /** Frontmatter keys that PATCH is allowed to set. */
 export const PATCHABLE_KEYS = new Set([
@@ -50,11 +51,19 @@ export interface PatchMetadataResult {
  * - Appends `author` to `contributors` (deduplicated) when provided.
  * - Does NOT modify the page body.
  *
- * Throws on invalid input, lifecycle key violation, or missing page.
+ * Throws on a read-only deployment (DW-188), invalid input, lifecycle key
+ * violation, or missing page.
  */
 export async function patchMetadata(
   args: PatchMetadataArgs,
 ): Promise<PatchMetadataResult> {
+  // Deployment read-only (DW-188), answered at the very top — before the
+  // lifecycle-key rejection and before the ACL. `writeWikiPageWithSideEffects`
+  // below would refuse this anyway; gating here is what makes the MESSAGE right
+  // (metadata, not a page body) and keeps the refusal deployment-wide rather
+  // than ordered behind a permission answer the caller does not actually lack.
+  assertWritable(READ_ONLY_REFUSAL.pageMetadata);
+
   const { slug, metadata, author, principal = null } = args;
 
   // Reject lifecycle-managed keys.
@@ -89,14 +98,27 @@ export async function patchMetadata(
   }
 
   // Realm-aware write ACL: a private page's metadata may only be patched by its
-  // owner (or their agents / the service principal); public commons pages stay
-  // collectively editable. Enforced here so REST and MCP share the same gate.
+  // owner (or their agents / the service principal), and — since DW-121 — a
+  // public knowledge page's metadata is service/admin-only, exactly like its
+  // body and its deletion. Enforced here so REST and MCP share the same gate.
   // Denied → cloak: a private page the caller can't read is "not found" (no
   // existence oracle, matching reads); a readable-but-unwritable page is 403.
   const { canReadFrontmatter, canWriteFrontmatter } = await import("./authz");
   if (!canWriteFrontmatter(existing.frontmatter, principal)) {
     if (canReadFrontmatter(existing.frontmatter, principal)) {
-      const err = new Error("You don't have permission to edit this page.");
+      // Routed through the shared resolver like every other write denial. The
+      // realm CAN now be what refuses a metadata patch, so this branch is
+      // reachable and the sentence it answers is the REALM one: the cloak below
+      // already took every unreadable page, and a READABLE private page is
+      // writable by exactly the principals that could read it — so
+      // readable-and-denied implies the realm. The resolver re-derives that
+      // from this page rather than inheriting it from the argument, which is
+      // why the call passes the frontmatter and the write kind instead of
+      // reading `WRITE_DENIAL_REALM` directly.
+      const { resolveWriteDenial } = await import("./write-denial");
+      const err = new Error(
+        resolveWriteDenial("edit", existing.frontmatter, "metadata"),
+      );
       (err as NodeJS.ErrnoException).code = "NOT_OWNER";
       throw err;
     }
@@ -105,15 +127,11 @@ export async function patchMetadata(
     throw err;
   }
 
-  // Making a page private is a paid, owner-only action — enforced here, the
-  // single shared write path for both REST and MCP.
+  // Making a page private is an owner-only action — enforced here, the single
+  // shared write path for both REST and MCP. It is NOT a paid action: billing
+  // retired with the commons, so there is no plan check.
   if ("visibility" in metadata && metadata.visibility === "private") {
-    const { canSetPrivate, canReadPage } = await import("./authz");
-    if (!(await canSetPrivate(principal))) {
-      const err = new Error("Setting a page private requires a paid plan.");
-      (err as NodeJS.ErrnoException).code = "PLAN_REQUIRED";
-      throw err;
-    }
+    const { canReadPage } = await import("./authz");
     const owner =
       typeof existing.frontmatter.owner === "string"
         ? existing.frontmatter.owner
@@ -156,12 +174,6 @@ export async function patchMetadata(
   // Re-serialize with the existing body (unchanged).
   const mergedContent = serializeFrontmatter(mergedFrontmatter, existing.body);
 
-  // Capture disputed transition BEFORE writing — we need to know if the patch
-  // is the one that flipped disputed to true (not an unrelated edit on an
-  // already-disputed page).
-  const wasDisputed = existing.frontmatter.disputed === true;
-  const nowDisputed = mergedFrontmatter.disputed === true;
-
   await writeWikiPageWithSideEffects({
     slug,
     title: existing.title,
@@ -173,17 +185,12 @@ export async function patchMetadata(
     logDetails: () => `metadata updated via PATCH`,
   });
 
-  // When a metadata patch transitions disputed from false→true, open a
-  // reconciliation thread so the maintenance scan can pick it up — matching
-  // the behavior of ingest and merge paths.
-  if (!wasDisputed && nowDisputed) {
-    const { ensureReconciliationThread } = await import("./talk");
-    await ensureReconciliationThread(
-      slug,
-      authorStr ?? "system",
-      "flagged disputed via metadata patch",
-    );
-  }
+  // A `disputed: false → true` transition used to open a talk reconciliation
+  // thread here (and on the ingest and merge paths). DW-230 removed all three:
+  // the talk HTTP surfaces are retired, so nothing could read the thread the
+  // write produced — a maintenance loop with no reader is storage churn that
+  // reads like a working feature. `disputed` itself still rides in the
+  // frontmatter and still surfaces on the page.
 
   return { slug, title: existing.title, updated: true };
 }

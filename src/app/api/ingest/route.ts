@@ -9,6 +9,8 @@ import { stageText } from "@/lib/ingest-staging";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { addToVault, vaultOwnedBy } from "@/lib/vault";
 
 /** Pasted text larger than this is staged to R2 rather than carried inline in
@@ -26,6 +28,26 @@ export async function POST(request: NextRequest) {
     const principal = (await getPrincipal()) ?? getServicePrincipal(request);
     if (!principal) {
       return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+    }
+
+    // Deployment read-only (DW-187). Answered HERE — after the 401, before any
+    // work — and not left to the kernel writer, because this door meets BOTH
+    // halves of the rule:
+    //   - IRREVERSIBLE WORK ALREADY COMMITTED: the async path creates an
+    //     ingest-job record and stages oversized text to R2, and `ingest()`
+    //     itself writes `raw/<slug>.md` — all long before the page write. A
+    //     kernel-only refusal would leave an orphaned raw file and a `failed`
+    //     job behind on every attempt.
+    //   - EXPENSIVE, FAILABLE WORK FIRST: the source fetch and two LLM calls
+    //     run ahead of the write, and a fetch failure would answer 400/500 in
+    //     place of the refusal — after the tokens were spent.
+    // Ordered after `getPrincipal()` so an unauthenticated caller still learns
+    // it is unauthenticated, matching `DELETE /api/ingest/history`.
+    if (isReadOnly()) {
+      return NextResponse.json(
+        { error: READ_ONLY_REFUSAL.ingest },
+        { status: 403 },
+      );
     }
 
     const body = await request.json();
@@ -201,6 +223,15 @@ export async function POST(request: NextRequest) {
       return result;
     });
   } catch (error) {
+    // Mid-request flag flip: the gate above already answered for a deployment
+    // that was read-only on arrival, so a `ReadOnlyError` here came from the
+    // kernel page writer. It is a refusal, not a server fault.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json(
+        { error: getErrorMessage(error) },
+        { status: 403 },
+      );
+    }
     const msg = getErrorMessage(error);
     // Bad-input failures (e.g. a deleted/private X post, an unsafe URL) are
     // tagged ClientInputError → 400 + warn. Anything else is a real server

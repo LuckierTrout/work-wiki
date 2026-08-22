@@ -1,10 +1,5 @@
 @import "tailwindcss";
 
-.locale-switcher {
-  display: inline-flex;
-  align-items: center;
-}
-
 /* Agent command approval docket ------------------------------------------------ */
 .agent-command-docket {
   position: relative;
@@ -171,22 +166,6 @@
   .vault-figure-lightbox-head button { position: absolute; top: 20px; right: 20px; }
 }
 
-.locale-switcher select {
-  height: 34px;
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  background: var(--paper-2);
-  color: var(--muted);
-  padding: 0 8px;
-  font: 600 10px/1 var(--font-mono);
-  letter-spacing: 0.04em;
-  cursor: pointer;
-}
-
-.locale-switcher select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:where(.dark, .dark *));
@@ -646,66 +625,7 @@ body {
   }
 }
 
-/* ---- Paper mobile navigation dock ------------------------------------ */
-.mobile-navigation-dock {
-  display: none;
-}
-
 @media (max-width: 767px) {
-  body:has(.mobile-navigation-dock) {
-    padding-bottom: calc(70px + env(safe-area-inset-bottom));
-  }
-
-  .mobile-navigation-dock {
-    position: fixed;
-    z-index: 60;
-    inset: auto 0 0;
-    display: flex;
-    min-height: calc(70px + env(safe-area-inset-bottom));
-    align-items: flex-start;
-    justify-content: center;
-    gap: 2px;
-    padding: 7px 12px calc(7px + env(safe-area-inset-bottom));
-    border-top: 1px solid var(--rule);
-    background: color-mix(in srgb, var(--paper) 94%, transparent);
-    backdrop-filter: saturate(1.6) blur(16px);
-    -webkit-backdrop-filter: saturate(1.6) blur(16px);
-  }
-
-  .mobile-navigation-link {
-    display: flex;
-    min-width: 58px;
-    max-width: 74px;
-    flex: 1 1 0;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 3px;
-    min-height: 54px;
-    border-radius: var(--radius-lg);
-    color: var(--muted);
-    font-size: 10px;
-    font-weight: 500;
-    line-height: 12px;
-    text-decoration: none;
-    transition: color 0.15s ease, background 0.15s ease;
-  }
-
-  .mobile-navigation-link svg {
-    width: 19px;
-    height: 19px;
-  }
-
-  .mobile-navigation-link[aria-current="page"] {
-    background: var(--paper-3);
-    color: var(--ink);
-    font-weight: 600;
-  }
-
-  .mobile-navigation-link:active {
-    background: var(--paper-2);
-  }
-
   .paper-route {
     max-width: none;
   }
@@ -1451,473 +1371,6 @@ textarea.studio-input { resize: vertical; }
   }
 }
 
-/* ---- Signed-in home dashboard ---------------------------------------- */
-.home-dashboard {
-  min-height: 100%;
-  padding: 50px 0 96px;
-  background:
-    linear-gradient(180deg, var(--paper-2) 0, var(--paper) 240px);
-}
-.dashboard-shell {
-  max-width: 1332px;
-}
-.dashboard-masthead {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 32px;
-}
-.dashboard-masthead h1 {
-  margin: 14px 0 0;
-  font-size: clamp(38px, 5vw, 64px);
-  max-width: 15ch;
-}
-.dashboard-deck {
-  max-width: 57ch;
-  margin: 14px 0 0;
-  color: var(--ink-2);
-  font-size: 17px;
-  line-height: 1.55;
-}
-.dashboard-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 9px;
-  padding-bottom: 5px;
-}
-.dashboard-today-strip {
-  display: flex;
-  align-items: stretch;
-  gap: 0;
-  margin: 34px 0 0;
-  padding: 15px 0;
-  border-top: 1px solid var(--rule-strong);
-  border-bottom: 1px solid var(--rule-strong);
-  animation-delay: 0.04s;
-}
-.dashboard-today-strip > div {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-  padding: 0 22px;
-  border-left: 1px solid var(--rule);
-}
-.dashboard-today-strip > div:first-child {
-  padding-left: 0;
-  border-left: 0;
-}
-.dashboard-today-strip dt,
-.dashboard-today-strip > p {
-  margin: 0;
-  color: var(--faint);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-.dashboard-today-strip dd {
-  order: -1;
-  margin: 0;
-  color: var(--ink);
-  font-family: var(--font-mono);
-  font-size: 15px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.dashboard-today-strip > p {
-  align-self: center;
-  margin-left: auto;
-  color: var(--accent);
-}
-.dashboard-ask {
-  display: grid;
-  grid-template-columns: minmax(170px, 0.32fr) minmax(0, 1fr);
-  gap: clamp(26px, 4vw, 58px);
-  align-items: center;
-  margin-top: 38px;
-  padding: clamp(24px, 3vw, 36px);
-  border: 1px solid var(--rule);
-  border-radius: 20px;
-  background: var(--paper);
-  box-shadow: var(--shadow);
-  animation-delay: 0.08s;
-}
-.dashboard-ask-intro h2 {
-  margin: 11px 0 0;
-  font-size: clamp(27px, 3vw, 38px);
-  max-width: 8ch;
-}
-.dashboard-ask form > div {
-  box-shadow: none !important;
-}
-.dashboard-grid {
-  display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: 18px;
-  margin-top: 18px;
-}
-.dashboard-widget {
-  min-width: 0;
-  border: 1px solid var(--rule);
-  border-radius: 18px;
-  background: var(--paper);
-  overflow: hidden;
-}
-.dashboard-documents {
-  grid-column: 1 / span 7;
-  grid-row: span 2;
-  animation-delay: 0.12s;
-}
-.dashboard-tasks,
-.dashboard-chat {
-  grid-column: 8 / -1;
-}
-.dashboard-tasks {
-  animation-delay: 0.16s;
-}
-.dashboard-chat {
-  animation-delay: 0.2s;
-}
-.dashboard-explore {
-  grid-column: 1 / -1;
-  padding-bottom: 22px;
-  animation-delay: 0.24s;
-}
-.dashboard-widget-heading {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 22px 24px 18px;
-  border-bottom: 1px solid var(--rule);
-}
-.dashboard-widget-heading .fmark {
-  margin: 0 0 9px;
-}
-.dashboard-widget-heading h2 {
-  margin: 0;
-  font-size: clamp(24px, 2.5vw, 32px);
-}
-.dashboard-text-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  transition: color 0.16s ease;
-}
-.dashboard-text-link:hover {
-  color: var(--accent);
-}
-.dashboard-document-list,
-.dashboard-task-list,
-.dashboard-chat-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.dashboard-document-list li,
-.dashboard-task-list li,
-.dashboard-chat-list li {
-  border-bottom: 1px solid var(--rule);
-}
-.dashboard-document-list li:last-child,
-.dashboard-task-list li:last-child,
-.dashboard-chat-list li:last-child {
-  border-bottom: 0;
-}
-.dashboard-document-list a {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 14px;
-  align-items: start;
-  padding: 19px 24px;
-  color: var(--ink);
-  transition: background 0.16s ease;
-}
-.dashboard-document-list a:hover,
-.dashboard-task-list a:hover,
-.dashboard-chat-list a:hover {
-  background: var(--paper-hover);
-}
-.dashboard-document-icon,
-.dashboard-chat-icon,
-.dashboard-empty-check {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--rule);
-  border-radius: 9px;
-  background: var(--paper-2);
-  color: var(--accent);
-}
-.dashboard-document-copy,
-.dashboard-task-list a > span:last-child,
-.dashboard-chat-list a > span:last-child {
-  min-width: 0;
-}
-.dashboard-document-title,
-.dashboard-task-title,
-.dashboard-chat-title {
-  display: block;
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 14.5px;
-  font-weight: 600;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dashboard-document-summary {
-  display: -webkit-box;
-  margin-top: 5px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 13.5px;
-  line-height: 1.5;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-.dashboard-document-meta,
-.dashboard-task-meta,
-.dashboard-chat-meta {
-  display: block;
-  margin-top: 8px;
-  overflow: hidden;
-  color: var(--faint);
-  font-size: 9.5px;
-  letter-spacing: 0.02em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dashboard-row-arrow {
-  margin-top: 8px;
-  color: var(--faint);
-  transition: color 0.16s ease, transform 0.16s ease;
-}
-.dashboard-document-list a:hover .dashboard-row-arrow {
-  color: var(--accent);
-  transform: translateX(2px);
-}
-.dashboard-task-list a,
-.dashboard-chat-list a {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
-  padding: 16px 24px;
-  transition: background 0.16s ease;
-}
-.dashboard-priority {
-  width: 8px;
-  height: 8px;
-  margin-top: 5px;
-  border: 1px solid var(--faint);
-  border-radius: 50%;
-}
-.dashboard-priority-high {
-  border-color: var(--rust);
-  background: var(--rust);
-}
-.dashboard-priority-medium {
-  border-color: var(--accent);
-  background: var(--accent);
-}
-.dashboard-priority-low {
-  background: transparent;
-}
-.dashboard-chat-icon {
-  width: 30px;
-  height: 30px;
-  color: var(--agent);
-}
-.dashboard-empty {
-  padding: 56px 24px;
-  text-align: center;
-}
-.dashboard-empty p {
-  margin: 0;
-  color: var(--muted);
-}
-.dashboard-empty a {
-  display: inline-block;
-  margin-top: 8px;
-  color: var(--accent);
-  font-size: 13px;
-}
-.dashboard-empty-compact {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 25px 24px;
-  text-align: left;
-}
-.dashboard-empty-compact p {
-  font-size: 13.5px;
-  line-height: 1.5;
-}
-.dashboard-empty-check {
-  width: 32px;
-  height: 32px;
-}
-.dashboard-widget-deck {
-  max-width: 58ch;
-  margin: 20px 24px 0;
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1.55;
-}
-.dashboard-topics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 18px 24px 0;
-}
-.dashboard-topics a {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  padding: 6px 10px;
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  color: var(--ink-2);
-  font-size: 12px;
-  transition: border-color 0.16s ease, color 0.16s ease;
-}
-.dashboard-topics a:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.dashboard-topics .receipt {
-  color: var(--faint);
-  font-size: 9px;
-}
-.dashboard-explore-links {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin: 22px 24px 0;
-}
-.dashboard-explore-links > a {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 11px;
-  align-items: start;
-  padding: 15px;
-  border: 1px solid var(--rule);
-  border-radius: 12px;
-  color: var(--accent);
-  transition: border-color 0.16s ease, background 0.16s ease;
-}
-.dashboard-explore-links > a:hover {
-  border-color: var(--rule-strong);
-  background: var(--paper-2);
-}
-.dashboard-explore-links strong,
-.dashboard-explore-links small {
-  display: block;
-}
-.dashboard-explore-links strong {
-  color: var(--ink);
-  font-size: 13.5px;
-  font-weight: 600;
-}
-.dashboard-explore-links small {
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 11.5px;
-  line-height: 1.4;
-}
-
-@media (max-width: 980px) {
-  .dashboard-masthead {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-  .dashboard-actions {
-    justify-content: flex-start;
-  }
-  .dashboard-today-strip {
-    flex-wrap: wrap;
-    row-gap: 10px;
-  }
-  .dashboard-today-strip > p {
-    width: 100%;
-    margin: 0;
-    padding-top: 10px;
-    border-top: 1px solid var(--rule);
-  }
-  .dashboard-documents,
-  .dashboard-tasks,
-  .dashboard-chat,
-  .dashboard-explore {
-    grid-column: 1 / -1;
-  }
-  .dashboard-explore-links {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 720px) {
-  .home-dashboard {
-    padding-top: 32px;
-  }
-  .dashboard-ask {
-    grid-template-columns: 1fr;
-  }
-  .dashboard-ask-intro h2 {
-    max-width: none;
-  }
-  .dashboard-today-strip > div {
-    width: 50%;
-    padding: 4px 12px;
-  }
-  .dashboard-today-strip > div:nth-child(3) {
-    padding-left: 0;
-    border-left: 0;
-  }
-}
-
-@media (max-width: 520px) {
-  .dashboard-actions,
-  .dashboard-actions .btn {
-    width: 100%;
-  }
-  .dashboard-actions .btn {
-    justify-content: center;
-  }
-  .dashboard-ask {
-    margin-inline: -4px;
-    padding: 20px 16px;
-    border-radius: 16px;
-  }
-  .dashboard-widget-heading,
-  .dashboard-document-list a,
-  .dashboard-task-list a,
-  .dashboard-chat-list a {
-    padding-inline: 18px;
-  }
-  .dashboard-widget-heading {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .dashboard-explore-links {
-    grid-template-columns: 1fr;
-    margin-inline: 18px;
-  }
-  .dashboard-widget-deck,
-  .dashboard-topics {
-    margin-inline: 18px;
-  }
-}
-
 /* Article: marginalia rail drops below the prose on narrow viewports. */
 @media (max-width: 900px) {
   .article-grid {
@@ -1945,911 +1398,6 @@ textarea.studio-input { resize: vertical; }
   .browse-head {
     grid-template-columns: 1fr !important;
     gap: 10px !important;
-  }
-}
-
-/* ---- Browse file explorer --------------------------------------------- */
-.browse-explorer-page {
-  padding-bottom: 72px;
-}
-.browse-explorer-shell {
-  width: 100%;
-  max-width: var(--container-explorer);
-  margin: 0 auto;
-  padding-inline: 28px;
-}
-.browse-explorer-header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 28px;
-  padding-top: 38px;
-  padding-bottom: 20px;
-}
-.browse-explorer-title {
-  margin: 10px 0 0;
-  font-size: clamp(34px, 4vw, 50px);
-}
-.browse-explorer-deck {
-  max-width: 62ch;
-  margin: 9px 0 0;
-  color: var(--ink-2);
-  font-size: 15px;
-  line-height: 1.5;
-}
-.browse-explorer-header-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.browse-explorer-path {
-  display: flex;
-  min-height: 35px;
-  align-items: center;
-  gap: 8px;
-  border-block: 1px solid var(--rule);
-  color: var(--faint);
-  font-size: 10px;
-}
-.browse-explorer-path > span:nth-child(odd) {
-  color: var(--muted);
-}
-.browse-explorer-path button {
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  font: inherit;
-  cursor: pointer;
-}
-.browse-explorer-path-count {
-  margin-left: auto;
-  color: var(--faint) !important;
-  white-space: nowrap;
-}
-.browse-explorer-grid {
-  display: grid;
-  grid-template-columns: 224px minmax(360px, 0.92fr) minmax(360px, 1.08fr);
-  min-height: 720px;
-  height: calc(100vh - 152px);
-  height: calc(100dvh - 152px);
-  max-height: 1040px;
-}
-.browse-explorer-sidebar,
-.browse-explorer-register,
-.browse-explorer-details {
-  min-width: 0;
-  min-height: 0;
-  border-bottom: 1px solid var(--rule-strong);
-}
-.browse-explorer-sidebar {
-  overflow-y: auto;
-  padding: 18px 12px 24px;
-  border-left: 1px solid var(--rule-strong);
-  background: var(--paper-2);
-}
-.browse-explorer-register {
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--rule-strong);
-  background: var(--paper);
-}
-.browse-explorer-details {
-  overflow-y: auto;
-  border-inline: 1px solid var(--rule-strong);
-  background: var(--paper-hover);
-}
-.browse-explorer-sidebar-section + .browse-explorer-sidebar-section {
-  margin-top: 22px;
-  padding-top: 17px;
-  border-top: 1px solid var(--rule);
-}
-.browse-explorer-section-label {
-  margin: 0 8px 8px;
-  color: var(--faint);
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-.browse-explorer-location,
-.browse-explorer-nav-button {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--ink-2);
-  padding: 7px 9px;
-  font: inherit;
-  font-size: 12.5px;
-  line-height: 1.25;
-  text-align: left;
-  text-decoration: none;
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.browse-explorer-location:hover,
-.browse-explorer-nav-button:hover:not(:disabled) {
-  background: var(--paper-3);
-  color: var(--ink);
-}
-.browse-explorer-location.is-active {
-  background: var(--ink);
-  color: var(--paper);
-}
-.browse-explorer-location.is-active .browse-explorer-count {
-  color: inherit;
-  opacity: 0.68;
-}
-.browse-explorer-nav-button.is-active {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-.browse-explorer-nav-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.browse-explorer-nav-copy {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 7px;
-}
-.browse-explorer-nav-copy > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.browse-explorer-nav-copy svg {
-  flex: 0 0 auto;
-}
-.browse-explorer-count {
-  flex: 0 0 auto;
-  color: var(--faint);
-  font-size: 9.5px;
-}
-.browse-explorer-more {
-  margin: 8px 9px 0;
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  padding: 0;
-  font-size: 9.5px;
-  cursor: pointer;
-}
-.browse-explorer-steward {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  margin-top: 24px;
-  padding: 17px 8px 0;
-  border-top: 1px solid var(--rule);
-}
-.browse-explorer-steward img {
-  width: 28px;
-  height: auto;
-  flex: 0 0 auto;
-}
-.browse-explorer-steward > span {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 4px;
-  color: var(--muted);
-  font-size: 9.5px;
-  line-height: 1.45;
-}
-.browse-explorer-steward > span > span:last-child {
-  color: var(--faint);
-}
-.browse-explorer-steward i {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-.browse-explorer-register-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 17px 18px 12px;
-}
-.browse-explorer-register-head .browse-explorer-section-label {
-  margin: 0 0 5px;
-}
-.browse-explorer-register-head h2 {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
-}
-.browse-explorer-sort select {
-  max-width: 148px;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  cursor: pointer;
-}
-.browse-explorer-sort select:disabled {
-  color: var(--faint);
-  cursor: default;
-}
-.browse-explorer-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 18px 13px;
-  padding: 9px 11px;
-  border: 1px solid var(--rule-strong);
-  border-radius: 9px;
-  background: var(--paper-2);
-  color: var(--faint);
-}
-.browse-explorer-search:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
-}
-.browse-explorer-search input {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-size: 13px;
-}
-.browse-explorer-search > span.receipt {
-  color: var(--faint);
-  font-size: 9px;
-  white-space: nowrap;
-}
-.browse-explorer-search button {
-  border: 0;
-  background: transparent;
-  color: var(--faint);
-  padding: 0 2px;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-}
-.browse-explorer-error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 0 18px 12px;
-  border-left: 2px solid var(--rust);
-  background: var(--rust-soft);
-  color: var(--rust);
-  padding: 9px 11px;
-  font-size: 11px;
-}
-.browse-explorer-error button {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-weight: 650;
-  cursor: pointer;
-}
-.browse-explorer-files {
-  flex: 1;
-  overflow-y: auto;
-  border-top: 1px solid var(--rule);
-  transition: opacity 0.15s ease;
-}
-.browse-explorer-file {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 14px;
-  width: 100%;
-  align-items: start;
-  padding: 14px 13px 14px 17px;
-  border: 0;
-  border-bottom: 1px solid var(--rule);
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  content-visibility: auto;
-  contain-intrinsic-size: 88px;
-  transition: background 0.15s ease;
-}
-.browse-explorer-file:hover {
-  background: var(--paper-hover);
-}
-.browse-explorer-file.is-selected {
-  background: var(--accent-soft);
-}
-.browse-explorer-file.is-selected::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  background: var(--accent);
-}
-.browse-explorer-file-copy {
-  display: block;
-  min-width: 0;
-}
-.browse-explorer-file-title,
-.browse-explorer-file-summary,
-.browse-explorer-file-meta {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.browse-explorer-file-title {
-  font-size: 13.5px;
-  font-weight: 650;
-  letter-spacing: -0.015em;
-}
-.browse-explorer-file-summary {
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.browse-explorer-file-meta {
-  margin-top: 6px;
-  color: var(--faint);
-  font-size: 8.8px;
-}
-.browse-explorer-file-confidence {
-  min-width: 62px;
-  align-self: center;
-  color: var(--faint);
-  font-size: 11px;
-}
-.browse-explorer-file-confidence .conf {
-  gap: 1px;
-}
-.browse-explorer-file-confidence .conf i {
-  width: 3px;
-  height: 10px;
-}
-.browse-explorer-empty {
-  display: flex;
-  min-height: 300px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 36px;
-  color: var(--faint);
-  text-align: center;
-}
-.browse-explorer-empty h3 {
-  margin: 14px 0 4px;
-  color: var(--ink);
-  font-size: 17px;
-}
-.browse-explorer-empty p {
-  max-width: 32ch;
-  margin: 0 0 18px;
-  color: var(--muted);
-  font-size: 13px;
-}
-.browse-explorer-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 43px;
-  padding: 8px 14px;
-  border-top: 1px solid var(--rule-strong);
-  color: var(--muted);
-  font-size: 9.5px;
-}
-.browse-explorer-pagination button {
-  display: inline-grid;
-  width: 27px;
-  height: 27px;
-  place-items: center;
-  border: 1px solid var(--rule);
-  border-radius: 50%;
-  background: transparent;
-  color: var(--ink-2);
-  cursor: pointer;
-}
-.browse-explorer-pagination button:disabled {
-  color: var(--faint);
-  cursor: default;
-  opacity: 0.5;
-}
-.browse-explorer-page-number {
-  color: var(--faint);
-}
-.browse-explorer-details-heading {
-  padding: 25px 27px 19px;
-  border-bottom: 1px solid var(--rule);
-}
-.browse-explorer-details-kicker {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  color: var(--faint);
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-.browse-explorer-details-heading h2 {
-  margin: 13px 0 0;
-  font-family: var(--font-display);
-  font-size: clamp(24px, 2.5vw, 35px);
-  font-weight: 600;
-  line-height: 1.08;
-  letter-spacing: -0.026em;
-  overflow-wrap: anywhere;
-}
-.browse-explorer-details-heading > p {
-  margin: 12px 0 0;
-  color: var(--ink-2);
-  font-size: 13.5px;
-  line-height: 1.58;
-}
-.browse-explorer-details-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 18px;
-}
-.browse-explorer-details-actions .btn {
-  font-size: 12px;
-}
-.browse-explorer-facts {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px 24px;
-  margin: 0;
-  padding: 15px 27px;
-  border-bottom: 1px solid var(--rule);
-}
-.browse-explorer-facts div {
-  min-width: 0;
-}
-.browse-explorer-facts dt {
-  color: var(--faint);
-  font-size: 8px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-.browse-explorer-facts dd {
-  overflow: hidden;
-  margin: 3px 0 0;
-  color: var(--ink-2);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.browse-explorer-confidence-block {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 27px;
-  border-bottom: 1px solid var(--rule);
-}
-.browse-explorer-confidence-block .browse-explorer-section-label {
-  margin: 0;
-}
-.browse-lineage {
-  padding: 18px 27px 20px;
-  border-bottom: 1px solid var(--rule);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 42%, transparent), transparent 124px),
-    var(--paper-hover);
-}
-.browse-lineage-title-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-}
-.browse-lineage-title-row .browse-explorer-section-label {
-  margin: 0 0 5px;
-}
-.browse-lineage-title-row h3 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 650;
-  letter-spacing: -0.015em;
-}
-.browse-lineage-title-row > button {
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  padding: 0;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 650;
-  cursor: pointer;
-}
-.browse-lineage-live {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--accent);
-  font-size: 8px;
-  white-space: nowrap;
-}
-.browse-lineage-live::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: currentColor;
-}
-.browse-lineage-pulse {
-  width: 8px;
-  height: 8px;
-  margin-top: 4px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 32%, transparent);
-  animation: browse-lineage-pulse 1.4s ease-out infinite;
-}
-@keyframes browse-lineage-pulse {
-  to { box-shadow: 0 0 0 8px transparent; }
-}
-.browse-lineage-skeleton {
-  display: grid;
-  gap: 8px;
-  margin-top: 16px;
-}
-.browse-lineage-skeleton span {
-  height: 42px;
-  border-radius: 8px;
-  background: var(--paper-3);
-  animation: browse-lineage-fade 1.2s ease-in-out infinite alternate;
-}
-.browse-lineage-skeleton span:nth-child(2) { width: 88%; }
-.browse-lineage-skeleton span:nth-child(3) { width: 72%; }
-@keyframes browse-lineage-fade {
-  to { opacity: 0.42; }
-}
-.browse-lineage-trunk {
-  position: relative;
-  display: grid;
-  gap: 0;
-  margin-top: 15px;
-}
-.browse-lineage-node {
-  position: relative;
-  display: grid;
-  grid-template-columns: 23px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 9px;
-  min-height: 51px;
-  border: 1px solid var(--rule-strong);
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--paper) 86%, transparent);
-  padding: 8px 10px;
-}
-.browse-lineage-node-mark {
-  display: grid;
-  width: 23px;
-  height: 23px;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--accent);
-  color: var(--paper);
-  font-family: var(--font-mono);
-  font-size: 8px;
-}
-.browse-lineage-node > span:nth-child(2) {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-.browse-lineage-node strong {
-  font-size: 11px;
-  font-weight: 650;
-}
-.browse-lineage-node small {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 9.5px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.browse-lineage-node > a {
-  color: var(--accent);
-  font-size: 9.5px;
-  font-weight: 650;
-  text-decoration: none;
-}
-.browse-lineage-connector {
-  display: flex;
-  height: 23px;
-  align-items: center;
-  gap: 7px;
-  margin-left: 21px;
-  color: var(--faint);
-  font-size: 7px;
-  text-transform: uppercase;
-}
-.browse-lineage-connector::before {
-  content: "";
-  width: 1px;
-  height: 23px;
-  margin-left: 0;
-  background: var(--accent);
-}
-.browse-lineage-branch-label {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin: 16px 0 9px;
-  color: var(--faint);
-  font-size: 7.5px;
-  text-transform: uppercase;
-}
-.browse-lineage-branch-label::before,
-.browse-lineage-branch-label::after {
-  content: "";
-  height: 1px;
-  background: var(--rule-strong);
-}
-.browse-lineage-branch-label::before { width: 12px; }
-.browse-lineage-branch-label::after { flex: 1; }
-.browse-lineage-outputs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-}
-.browse-lineage-output {
-  display: flex;
-  min-width: 0;
-  min-height: 94px;
-  flex-direction: column;
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--paper-2) 88%, transparent);
-  color: var(--ink);
-  padding: 10px;
-  text-decoration: none;
-  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
-}
-a.browse-lineage-output:hover {
-  border-color: var(--accent);
-  background: var(--paper);
-  transform: translateY(-1px);
-}
-.browse-lineage-output-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 10.5px;
-  font-weight: 650;
-}
-.browse-lineage-output-head .receipt {
-  color: var(--accent);
-  font-size: 7px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-.browse-lineage-output-detail {
-  margin-top: 6px;
-  color: var(--muted);
-  font-size: 9px;
-  line-height: 1.4;
-}
-.browse-lineage-output-link {
-  margin-top: auto;
-  padding-top: 7px;
-  color: var(--accent);
-  font-size: 8.5px;
-  font-weight: 650;
-}
-.browse-lineage-note {
-  margin: 11px 0 0;
-  color: var(--faint);
-  font-size: 8.8px;
-  line-height: 1.45;
-}
-.browse-explorer-tags {
-  padding: 16px 27px;
-  border-bottom: 1px solid var(--rule);
-}
-.browse-explorer-tags .browse-explorer-section-label {
-  margin-inline: 0;
-}
-.browse-explorer-tags > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.browse-explorer-tags button {
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  padding: 3px 8px;
-  font-family: var(--font-mono);
-  font-size: 8.8px;
-  cursor: pointer;
-}
-.browse-explorer-tags button:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.browse-explorer-owner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 15px 27px;
-  border-bottom: 1px solid var(--rule);
-}
-.browse-explorer-owner > span:last-child {
-  color: var(--faint);
-  font-size: 9px;
-}
-.browse-explorer-details-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin: 0 27px;
-  padding: 15px 0 22px;
-  color: var(--faint);
-  font-size: 8.5px;
-}
-.browse-explorer-details-footer > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.browse-explorer-details-empty {
-  position: relative;
-  display: flex;
-  min-height: 100%;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 46px;
-}
-.browse-explorer-details-empty h2 {
-  margin: 14px 0 7px;
-  font-family: var(--font-display);
-  font-size: 30px;
-  letter-spacing: -0.025em;
-}
-.browse-explorer-details-empty > p:last-child {
-  max-width: 34ch;
-  margin: 0;
-  color: var(--muted);
-  font-size: 14px;
-}
-.browse-explorer-paper-mark {
-  position: absolute;
-  inset: 38px 36px auto auto;
-  width: 70px;
-  height: 90px;
-  border: 1px solid var(--rule-strong);
-  border-radius: 3px 10px 10px 3px;
-  box-shadow: inset 5px 0 0 var(--accent-soft);
-  opacity: 0.75;
-}
-
-@media (max-width: 1180px) {
-  .browse-explorer-grid {
-    grid-template-columns: 208px minmax(330px, 0.95fr) minmax(330px, 1.05fr);
-  }
-  .browse-explorer-details-heading,
-  .browse-explorer-tags,
-  .browse-explorer-owner {
-    padding-inline: 22px;
-  }
-  .browse-explorer-facts,
-  .browse-explorer-confidence-block,
-  .browse-lineage {
-    padding-inline: 22px;
-  }
-  .browse-explorer-details-footer {
-    margin-inline: 22px;
-  }
-}
-
-@media (max-width: 920px) {
-  .browse-explorer-grid {
-    grid-template-columns: 205px minmax(0, 1fr);
-    height: auto;
-    max-height: none;
-  }
-  .browse-explorer-sidebar,
-  .browse-explorer-register {
-    height: clamp(660px, 78dvh, 820px);
-  }
-  .browse-explorer-details {
-    grid-column: 1 / -1;
-    min-height: 430px;
-    border-top: 0;
-  }
-  .browse-explorer-details-heading h2 {
-    max-width: 28ch;
-  }
-}
-
-@media (max-width: 700px) {
-  .browse-explorer-shell {
-    padding-inline: 18px;
-  }
-  .browse-explorer-header {
-    align-items: flex-start;
-    flex-direction: column;
-    padding-top: 28px;
-  }
-  .browse-explorer-header-actions {
-    justify-content: flex-start;
-  }
-  .browse-explorer-path {
-    overflow-x: auto;
-  }
-  .browse-explorer-grid {
-    grid-template-columns: 1fr;
-  }
-  .browse-explorer-sidebar,
-  .browse-explorer-register {
-    height: auto;
-  }
-  .browse-explorer-sidebar {
-    max-height: 340px;
-    border-right: 1px solid var(--rule-strong);
-  }
-  .browse-explorer-register {
-    min-height: 560px;
-    border-top: 0;
-    border-right: 1px solid var(--rule-strong);
-  }
-  .browse-explorer-files {
-    max-height: 520px;
-  }
-  .browse-explorer-details {
-    min-height: 440px;
-  }
-  .browse-explorer-register-head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-  .browse-explorer-sort select {
-    max-width: none;
-  }
-  .browse-explorer-page-number {
-    display: none;
-  }
-  .browse-explorer-details-empty {
-    padding: 40px 28px;
-  }
-  .browse-lineage-outputs {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .browse-lineage-pulse,
-  .browse-lineage-skeleton span {
-    animation: none;
-  }
-  a.browse-lineage-output:hover {
-    transform: none;
   }
 }
 
@@ -3768,5 +2316,1781 @@ a.browse-lineage-output:hover {
   }
   .sg-pair > .sg-col:first-child {
     padding-right: 0;
+  }
+}
+
+/* ===========================================================================
+   Workbench shell (Story 1.3) — nashsu icon rail + chrome.
+
+   SCOPED, NOT GLOBAL. Every value below is a DESIGN.md token written as a
+   literal inside `.wb-shell` rather than as a `:root` variable, for two
+   reasons: the app's `.dark` class must not be able to reach in and repaint
+   chrome that is specified light-theme-only, and the existing Folio palette
+   (`--paper`/`--ink`/`--accent`) keeps owning every other route. Nothing above
+   this block is modified.
+
+   Type is system sans at 13px/1.45 for all chrome. The Preview body's reading
+   face (Story 1.5) is declared once as `--wb-font-read` in the token block
+   below, beside `--wb-font` and `--wb-font-mono`, and is applied by nothing
+   except the `.wb-preview-body` rules — chrome, trees, Chat and the Preview
+   header and frontmatter strip all stay sans.
+   =========================================================================== */
+.wb-shell {
+  /* Colors — DESIGN.md `colors.*`, light theme only. */
+  --wb-surface: #ffffff;
+  --wb-surface-subtle: #fafafa;
+  --wb-surface-rail: #fafafa;
+  --wb-foreground: #171717;
+  --wb-muted: #737373;
+  --wb-border: #e5e5e5;
+  --wb-primary: #171717;
+  --wb-primary-foreground: #ffffff;
+  --wb-live: #16a34a;
+  --wb-badge: #171717;
+  --wb-badge-foreground: #ffffff;
+  --wb-overlay: #17171766;
+  /* Not in DESIGN.md's token table: the active wash is specified as a wash of
+     `foreground` and only the mockups give a number (todos.html). Hover is
+     specified as `surface-subtle`, which is the rail's own background and so
+     unusable there — this is the next step on the same neutral ramp. */
+  --wb-active-wash: #e5e5e5;
+  --wb-rail-hover: #f0f0f0;
+
+  /* Radii — DESIGN.md `rounded.*`. */
+  --wb-radius-sm: 4px;
+  --wb-radius-md: 6px;
+  --wb-radius-lg: 8px;
+  --wb-radius-full: 9999px;
+
+  /* Spacing / layout — DESIGN.md `spacing.*`. */
+  --wb-space-1: 4px;
+  --wb-space-2: 8px;
+  --wb-space-3: 12px;
+  --wb-space-4: 16px;
+  --wb-rail: 48px;
+  --wb-tree: 280px;
+  --wb-split-min-tree: 200px;
+  --wb-split-min-chat: 320px;
+  --wb-split-min-preview: 200px;
+  /* Story 1.4: the docked Preview's preferred width and the tree's per-level
+     indent — `mockups/chat-cited.html:108` and `mockups/todos.html:111`. */
+  --wb-preview: 360px;
+  --wb-tree-indent: 12px;
+  /* Story 1.6: the grab strip a divider offers, widened to WCAG 2.2 AA SC
+     2.5.8's 24x24 CSS px minimum (DW-44). The only geometry token this story
+     adds — every width and floor it clamps to is already above, and
+     `workbench-split.ts` restates those six plus this one, which DW-44's widened
+     target makes load-bearing in both copies. Wider than the 1px hairline
+     it draws, because a 1px pointer target is not one; the spacing exception
+     does not rescue 9px here, since the tree rows beside the divider are
+     adjacent targets. */
+  --wb-split-hit: 24px;
+
+  /* Type — DESIGN.md `typography.ui` / `ui-strong` / `title` / `mono`. */
+  --wb-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --wb-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Story 1.5: the Preview BODY's reading face, and the only serif in the app's
+     chrome. Declared here with the rest of the type scale — and applied by the
+     `.wb-preview-body` rules alone — so the face has one definition and one
+     reader, and the blanket `.wb-shell *` rule above keeps it out of everything
+     else by construction. */
+  --wb-font-read: Georgia, "Times New Roman", serif;
+  --wb-font-size: 13px;
+  --wb-line-height: 1.45;
+  --wb-weight-strong: 600;
+  --wb-title-size: 18px;
+  --wb-title-line-height: 1.3;
+
+  /* ---- The Folio palette, pinned to its light values --------------------
+     The `--wb-*` tokens above are hard literals so `.dark` cannot repaint the
+     chrome — but the shell's SUBTREE is ordinary app markup. `WikiWorkbench`
+     paints itself with `text-foreground`, `border-foreground/15`,
+     `bg-background`, `.receipt` and `.btn`, all of which resolve through the
+     Folio tokens; `.dark` (set on <html> from `localStorage.theme` by the boot
+     script in layout.tsx) redefines `--ink` to near-white and `--rule` to near
+     black. An owner who ever toggled dark mode would land here on white-on-
+     white — and `ThemeToggle` only mounts inside NavHeader, which this route
+     no longer renders, so there would be no way back.
+
+     So the light values are restated here at their exact `:root` bytes. This
+     REDECLARES; it does not edit `:root`, `.dark`, or `@theme inline`.
+     The Story 1.3 chrome rules below deliberately use `--wb-*` only. */
+  --paper: #ffffff;
+  --paper-2: #f7f7f8;
+  --paper-3: #efeff1;
+  --paper-hover: #fafafa;
+  --ink: #18181b;
+  --ink-2: #3f3f46;
+  --muted: #71717a;
+  --faint: #a1a1aa;
+  --rule: #e4e4e7;
+  --rule-strong: #d4d4d8;
+  --accent: #1e3a5f;
+  --accent-2: #142b49;
+  --accent-soft: #edf2f7;
+  --on-accent: #ffffff;
+  --agent: #6b7280;
+  --agent-soft: #f0f0f2;
+  --rust: #9a4b28;
+  --rust-soft: #f7f2ef;
+  --shadow: 0 1px 2px rgba(24, 24, 27, 0.04), 0 8px 30px rgba(24, 24, 27, 0.05);
+  --shadow-lg: 0 2px 6px rgba(24, 24, 27, 0.06), 0 24px 60px rgba(24, 24, 27, 0.1);
+
+  /* Legacy aliases. `--accent-hover` and friends are `var()`-derived at
+     `:root`, and a custom property is substituted where it is DECLARED, so an
+     inherited copy would still carry the dark value. They are restated too. */
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --surface: var(--paper-2);
+  --surface-strong: var(--paper-3);
+  --border: var(--rule);
+  --accent-hover: var(--accent-2);
+  --accent-foreground: var(--on-accent);
+  --agent-foreground: var(--on-accent);
+
+  /* Belt and braces for Tailwind v4: `@theme inline` should inline `var(--ink)`
+     straight into `.text-foreground`, which the redeclarations above already
+     fix. If a utility instead references `--color-*`, those resolve at `:root`
+     — in dark scope — so the same names are re-pointed here. */
+  --color-paper: var(--paper);
+  --color-paper-2: var(--paper-2);
+  --color-paper-3: var(--paper-3);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-agent: var(--agent);
+  --color-agent-soft: var(--agent-soft);
+  --color-rust: var(--rust);
+  --color-rust-soft: var(--rust-soft);
+  --color-background: var(--paper);
+  --color-foreground: var(--ink);
+  --color-surface: var(--paper-2);
+  --color-surface-strong: var(--paper-3);
+  --color-border: var(--rule);
+  --color-accent-hover: var(--accent-2);
+  --color-accent-foreground: var(--on-accent);
+  --color-agent-foreground: var(--on-accent);
+
+  /* Without this the native <select> in the Wiki canvas renders as a dark
+     control on the shell's white canvas. */
+  color-scheme: light;
+
+  display: grid;
+  grid-template-columns: var(--wb-rail) minmax(var(--wb-split-min-tree), var(--wb-tree)) minmax(0, 1fr);
+  /* Story 1.6: the containing block the two dividers are positioned against.
+     They sit on the column boundaries, which is a property of the shell, not of
+     any one column — and a column cannot host a control that straddles it. */
+  position: relative;
+  /* The shell lives inside layout.tsx's `min-h-screen flex flex-col` body with
+     `<main class="flex-1">`, so it claims the viewport by height rather than
+     assuming it owns <body>. */
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font-family: var(--wb-font);
+  font-size: var(--wb-font-size);
+  line-height: var(--wb-line-height);
+  letter-spacing: normal;
+}
+
+/* layout.tsx's <body> carries `min-h-screen`, i.e. `min-height: 100vh` — the
+   LARGE viewport height. The shell is `100dvh`, the dynamic one. Wherever the
+   browser's own UI is showing (mobile, most of the time) 100vh exceeds 100dvh,
+   so the body outgrows the shell and the page picks up a stray outer scrollbar
+   on a surface whose entire point is that it does not scroll. Scoped by `:has`
+   so no other route is touched. */
+body:has(.wb-shell) {
+  min-height: 100dvh;
+}
+
+.wb-shell *,
+.wb-shell *::before,
+.wb-shell *::after {
+  font-family: var(--wb-font);
+}
+
+/* The blanket above is what keeps the Preview serif out of chrome, but it also
+   flattens monospace — and DESIGN.md `typography.mono` is specified for paths,
+   token fields and code fences. `.receipt` renders the seeded file list in the
+   Wiki canvas, so it must stay tabular mono. Sans and mono only; no serif. */
+.wb-shell :where(code, pre, kbd, samp, .receipt),
+.wb-shell :where(code, pre, kbd, samp, .receipt) * {
+  font-family: var(--wb-font-mono);
+}
+
+/* The global focus ring is `outline-offset: 3px`, which a 32px item in a 48px
+   rail would clip against its neighbours. Pull it in shell-wide rather than
+   removing it. `select` is in the list because the Wiki canvas renders two of
+   them; leaving it out is what the note above `color-scheme` warns about.
+
+   Only the outline is set here. Restating `border-radius` would reshape the
+   control on focus — the rail items are 6px and the count badge is a pill. */
+.wb-shell :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--wb-foreground);
+  outline-offset: 1px;
+}
+
+/* ---- Rail ------------------------------------------------------------- */
+.wb-rail {
+  grid-column: 1;
+  width: var(--wb-rail);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--wb-space-2) 0;
+  gap: var(--wb-space-1);
+  background: var(--wb-surface-rail);
+  border-right: 1px solid var(--wb-border);
+  overflow-y: auto;
+  min-height: 0;
+}
+.wb-rail-spacer {
+  flex: 1 1 auto;
+}
+.wb-rail-item {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  border-radius: var(--wb-radius-md);
+  color: var(--wb-foreground);
+  display: grid;
+  place-items: center;
+  position: relative;
+  cursor: pointer;
+  padding: 0;
+}
+.wb-rail-item:hover {
+  background: var(--wb-rail-hover);
+}
+/* State is a gray wash, never a hue change (UX-DR3). */
+.wb-rail-item--active {
+  background: var(--wb-active-wash);
+}
+.wb-rail-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  background: var(--wb-badge);
+  color: var(--wb-badge-foreground);
+  border-radius: var(--wb-radius-full);
+  font-size: 9px;
+  font-weight: var(--wb-weight-strong);
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+.wb-status {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--wb-radius-full);
+  background: var(--wb-border);
+  margin: 6px 0;
+}
+.wb-status--live {
+  background: var(--wb-live);
+}
+.wb-shell[data-collapsed="true"] .wb-rail-chevron svg {
+  transform: rotate(180deg);
+}
+
+/* ---- Left column ------------------------------------------------------ */
+.wb-left {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  /* `hidden`, not `auto` (Story 1.4): the header and the tabs stay put and the
+     tree body is the only thing that scrolls. Scrolling the whole column would
+     take the Wiki switcher off screen the moment a tree got long. */
+  overflow: hidden;
+  background: var(--wb-surface-subtle);
+  border-right: 1px solid var(--wb-border);
+}
+.wb-left-head {
+  flex: 0 0 auto;
+  padding: var(--wb-space-3) var(--wb-space-4);
+  border-bottom: 1px solid var(--wb-border);
+}
+.wb-title {
+  margin: 0;
+  font-size: var(--wb-title-size);
+  font-weight: var(--wb-weight-strong);
+  line-height: var(--wb-title-line-height);
+  letter-spacing: normal;
+  color: var(--wb-foreground);
+}
+.wb-left-surface {
+  margin: 0;
+  padding: var(--wb-space-3) var(--wb-space-4);
+  color: var(--wb-muted);
+  font-weight: var(--wb-weight-strong);
+}
+.wb-shell[data-collapsed="true"] {
+  grid-template-columns: var(--wb-rail) 0 minmax(0, 1fr);
+}
+.wb-shell[data-collapsed="true"] .wb-left {
+  display: none;
+}
+/* `display: none` above also removes the page's only <h1> from the
+   accessibility tree, leaving the document with no top-level heading while the
+   column is collapsed. The shell renders a clipped restatement of the title for
+   exactly that state; these three rules are what keep the two mutually
+   exclusive, mirroring the column's own visibility. */
+.wb-title-fallback {
+  display: none;
+}
+.wb-shell[data-collapsed="true"] .wb-title-fallback {
+  display: block;
+}
+
+/* ---- Canvas ----------------------------------------------------------- */
+.wb-canvas {
+  grid-column: 3;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--wb-surface);
+}
+.wb-canvas-pad {
+  padding: var(--wb-space-4);
+}
+/* The Wiki subtree stays MOUNTED in every mode (DW-26) and goes off screen
+   behind `hidden` instead, so that an open Create Wiki dialog keeps the name
+   the owner typed into it — `CreateWikiDialog` resets its fields on close, so
+   closing it to hide it would discard exactly what this preserves.
+
+   `hidden` is only a presentation hint: the UA sheet's `display: none` loses to
+   ANY author rule that sets `display` on the same element, and a wrapper this
+   deep inside a grid is precisely where a future `display: flex` or
+   `display: block` would be added without a thought for the attribute. Stated
+   here, with the attribute in the selector, the withdrawal cannot be undone by
+   accident — and the accessibility tree and tab-order removals that the whole
+   fix rests on go with the pixels.
+
+   Deliberately outside every media query: the subtree is hidden at all three
+   widths whenever another mode is showing. */
+.wb-canvas-mode[hidden] {
+  display: none;
+}
+/* And the canvas SECTION goes the same way while Settings is open (DW-373).
+   Settings used to be rendered INSTEAD of the mode canvas, which unmounted the
+   subtree the rule above exists to keep; the shell now renders both and hides
+   this one, so the dialog and its draft are still there on the way back.
+
+   Same reason the attribute is in the selector: `.wb-canvas` already carries an
+   author `grid-column`, `overflow` and `background`, and one author `display`
+   added to that block — a `flex` for a toolbar, a `grid` for a split — would
+   silently beat the UA sheet's `hidden` default and put the withdrawn canvas
+   back on screen underneath Settings.
+
+   Deliberately outside every media query, and NOT merged into the rule above:
+   the `@media` block further down re-points `.wb-canvas` to `grid-column: 1`,
+   so a withdrawal stated inside a width query would hold at some widths and
+   not others. */
+.wb-canvas[hidden] {
+  display: none;
+}
+/* …and so does the docked Preview while Settings is showing (DW-412). Opening
+   Settings used to gate the column off with `previewOpen && …`, which unmounted
+   it and destroyed whatever unsaved markdown its editor was holding — the same
+   loss the two rules above exist to prevent, one column over. It stays mounted
+   and goes behind `hidden` for the visit instead.
+
+   The attribute is in the selector for the same reason it is above, and here
+   the hazard is not hypothetical at all: the `.wb-preview` block below already
+   declares `display: flex`, which beats the user-agent sheet's `hidden` default
+   outright — without this rule the withdrawn column simply stays on screen.
+
+   Deliberately outside every media query. The stacking block further down
+   re-points `.wb-preview` to `grid-column: 1`, so a withdrawal stated inside a
+   width query would hold at some widths and not others — and wherever it
+   missed, a Preview nobody asked for would sit under the Settings surface.
+   (Spelled without the query literal on purpose: `workbench-split.test.ts`
+   counts the responsive blocks by that exact text, and a mention in prose would
+   be indistinguishable from a third block.) */
+.wb-preview[hidden] {
+  display: none;
+}
+/* …and so does the tree panel, for the disclosure state it owns. The SIBLING of
+   the rule above — same bundle, same mechanism, a different column — and NOT
+   DW-412 itself: that entry is about the Preview's markdown draft and says
+   nothing about this panel. What was lost here is that the left column used to
+   render `SettingsNav` INSTEAD of the panel, which unmounted it — and which
+   groups and directories the owner has collapsed is `TreePanel`'s own `closed`
+   state, so every Settings visit silently re-opened the whole tree.
+
+   Same reason for the attribute: the `.wb-tree-panel` block below declares
+   `display: flex` so it can be the left column's growing flex child, and that
+   author declaration beats the `hidden` default. Outside every media query,
+   because the panel is withdrawn at all three widths whenever Settings has the
+   column — including below 900px, where the stylesheet force-shows a collapsed
+   column and would otherwise put the tree back beside the settings nav. */
+.wb-tree-panel[hidden] {
+  display: none;
+}
+.wb-surface-title {
+  margin: 0 0 var(--wb-space-3);
+  font-size: var(--wb-title-size);
+  font-weight: var(--wb-weight-strong);
+  line-height: var(--wb-title-line-height);
+  letter-spacing: normal;
+  color: var(--wb-foreground);
+}
+.wb-empty {
+  margin: 0;
+  color: var(--wb-muted);
+}
+/* Exactly one of the Graph sentences is visible at any width; the swap is a
+   media query, never a user-agent branch. */
+.wb-empty--narrow {
+  display: none;
+}
+/* Exactly one preview surface at a time (DW-39): the docked column and this
+   sentence describe the same slot, and the canvas is `children` of the shell,
+   so the state's owner decides it here rather than through a prop it cannot
+   see. Same shape as `.wb-title-fallback` above — a shell data attribute
+   withdrawing a canvas element — NOT the Graph pair, which swaps on width.
+   Deliberately outside every media query: `data-preview="true"` means a
+   `PreviewColumn` is ON SCREEN at all three widths, so a wrapper here would put
+   both surfaces back on screen wherever it did not apply. (On screen rather
+   than merely mounted since DW-412 — the column outlives its own visibility
+   through a Settings visit, and the note it silences is inside the mode canvas,
+   which is withdrawn for exactly that visit.) */
+.wb-shell[data-preview="true"] .wb-canvas-preview-note {
+  display: none;
+}
+
+.wb-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- Sheet trigger and backdrop (hidden until the narrow breakpoint) --- */
+.wb-sheet-trigger {
+  display: none;
+}
+.wb-backdrop {
+  display: none;
+}
+
+/* Restoring the stored collapse state happens in a mount effect, so before the
+   shell is mounted nothing may animate — otherwise a reload plays the collapse
+   back at the owner as if they had just done it. */
+.wb-shell[data-mounted="false"] *,
+.wb-shell[data-mounted="false"] *::before,
+.wb-shell[data-mounted="false"] *::after {
+  transition: none !important;
+}
+
+/* ---- 900–1199px: honour the minimum tree width ------------------------ */
+@media (max-width: 1199px) {
+  .wb-shell {
+    grid-template-columns: var(--wb-rail) var(--wb-split-min-tree) minmax(0, 1fr);
+  }
+}
+
+/* ---- Below 900px: the rail becomes an off-canvas sheet ----------------- */
+@media (max-width: 899px) {
+  .wb-shell,
+  .wb-shell[data-collapsed="true"],
+  /* Story 1.9's force-show rule is two attributes wide and therefore outranks
+     the single-attribute selectors here; it has to be named explicitly or the
+     shell keeps its three desktop columns below the breakpoint. */
+  .wb-shell[data-collapsed="true"][data-settings="true"] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+  .wb-rail {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 40;
+    transform: translateX(-100%);
+    /* `transform` alone only moves the rail offscreen: its twelve controls stay
+       focusable and in the accessibility tree, so a keyboard user tabs through
+       an invisible sheet before reaching content. `visibility` takes them out
+       of both. It is transitioned (not snapped) so it does not blank the rail
+       mid-slide. */
+    visibility: hidden;
+    transition:
+      transform 0.18s ease,
+      visibility 0.18s ease;
+    border-right: 1px solid var(--wb-border);
+  }
+  .wb-shell[data-sheet-open="true"] .wb-rail {
+    transform: translateX(0);
+    visibility: visible;
+  }
+  .wb-sheet-trigger {
+    display: inline-flex;
+    align-items: center;
+    align-self: start;
+    justify-self: start;
+    margin: var(--wb-space-2);
+    padding: var(--wb-space-1) var(--wb-space-3);
+    min-height: 32px;
+    border: 1px solid var(--wb-border);
+    border-radius: var(--wb-radius-md);
+    background: var(--wb-surface);
+    color: var(--wb-foreground);
+    font-size: var(--wb-font-size);
+    font-weight: var(--wb-weight-strong);
+    cursor: pointer;
+  }
+  .wb-shell[data-sheet-open="true"] .wb-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: var(--wb-overlay);
+  }
+  /* One column: the left panel stacks above the canvas as a header strip
+     rather than vanishing — it carries the page's only h1. */
+  .wb-left {
+    grid-column: 1;
+    border-right: 0;
+    border-bottom: 1px solid var(--wb-border);
+    overflow: visible;
+  }
+  /* The collapse state is persisted, so collapsing on desktop and then loading
+     narrow would otherwise arrive here with the left column still hidden by
+     the unscoped `[data-collapsed]` rule (0-3-0, which `.wb-left` cannot
+     outrank) — a shell with no product title and no <h1> at all. Collapsing is
+     a desktop split-pane affordance; at this width there is no split to
+     collapse. */
+  .wb-shell[data-collapsed="true"] .wb-left {
+    display: flex;
+  }
+  /* …and because it is showing, its <h1> is in the tree again, so the clipped
+     restatement must withdraw or the page would expose two. */
+  .wb-shell[data-collapsed="true"] .wb-title-fallback {
+    display: none;
+  }
+  /* Same reason: with the column force-shown there is no split to collapse, so
+     the chevron would report a state the layout contradicts and persist it back
+     to the desktop. A control that cannot change what it names is worse than no
+     control. */
+  .wb-rail-chevron {
+    display: none;
+  }
+  .wb-canvas {
+    grid-column: 1;
+  }
+  .wb-empty--wide {
+    display: none;
+  }
+  .wb-empty--narrow {
+    display: block;
+  }
+}
+
+/* ---- Forced colours (Windows High Contrast) --------------------------- */
+/* The active mode is a background wash and nothing else — UX-DR3 forbids a hue
+   change, so there is no second channel. Forced-colours modes discard author
+   backgrounds, which leaves all ten rail items identical and the sighted user
+   with no way to tell which surface they are on. `aria-current` still carries
+   it to assistive tech; this restores it visually, still without a hue. */
+@media (forced-colors: active) {
+  .wb-rail-item--active {
+    outline: 2px solid CanvasText;
+    outline-offset: -2px;
+  }
+}
+
+/* ===========================================================================
+   Workbench left column and Preview dock (Story 1.4).
+
+   Appended after the Story 1.3 chrome so the docked-grid variants land later in
+   the cascade than the rules they have to outrank. The two layout tokens these
+   rules read (`--wb-preview`, `--wb-tree-indent`) are declared with the rest of
+   the spacing scale in the `.wb-shell` block above. Everything below paints
+   through `--wb-*` only — no Folio token, no second colour mode, no book face.
+   =========================================================================== */
+
+/* ---- Wiki switcher (left column header) ------------------------------- */
+.wb-wiki-switch {
+  margin-top: var(--wb-space-2);
+}
+.wb-wiki-switch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+}
+.wb-wiki-switch-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--wb-space-1) var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font-size: var(--wb-font-size);
+  line-height: var(--wb-line-height);
+}
+/* Rename and Delete sit on their OWN row: three controls beside the <select>
+   do not fit the 280px column. They take the New Wiki treatment rather than a
+   second button face — same size, same border, same hover. */
+.wb-wiki-switch-actions {
+  display: flex;
+  align-items: center;
+  /* The children are `flex: 0 0 auto`, so without this they overflow the 280px
+     column rather than stacking — and the column is narrower still below the
+     1199px and 899px breakpoints. */
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+  margin-top: var(--wb-space-1);
+}
+.wb-wiki-switch-new,
+.wb-wiki-switch-action {
+  flex: 0 0 auto;
+  padding: var(--wb-space-1) var(--wb-space-3);
+  min-height: 28px;
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font-size: var(--wb-font-size);
+  font-weight: var(--wb-weight-strong);
+  cursor: pointer;
+}
+.wb-wiki-switch-new:hover:not([aria-disabled="true"]),
+.wb-wiki-switch-action:hover:not([disabled]):not([aria-disabled="true"]) {
+  background: var(--wb-rail-hover);
+}
+/* Both actions are disabled while a switch is in flight, so they need the
+   shell's disabled treatment — the same one `.wb-preview-action` and
+   `.wb-set-save` carry. Without it they still light up on hover and still show
+   a pointer cursor while refusing every click. */
+.wb-wiki-switch-action[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+/* The read-only deployment's face (DW-37). These controls keep `disabled` for
+   the transient `switching` state and take `aria-disabled` for the standing
+   refusal — so the same treatment has to be reachable through both selectors,
+   or a control that refuses every click still lights up on hover and still
+   shows a pointer cursor. The <select> is included: it too is only
+   `aria-disabled`, so the browser gives it no dimmed face of its own. */
+.wb-wiki-switch-select[aria-disabled="true"],
+.wb-wiki-switch-new[aria-disabled="true"],
+.wb-wiki-switch-action[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+.wb-wiki-switch-note,
+.wb-wiki-switch-error {
+  margin: 0;
+  color: var(--wb-muted);
+}
+.wb-wiki-switch-error {
+  margin-top: var(--wb-space-1);
+}
+/* The scope sentence sits under the switcher row and needs the same separation
+   the error gets. Its own rule, not a change to `.wb-wiki-switch-note`: that
+   face is shared with the `unavailable` note, which is the only child of its
+   branch and must keep `margin: 0`. The element carries BOTH classes, so this
+   selector is compound rather than single: at equal specificity it would beat
+   `margin: 0` only by sitting later in the file, and the spacing would vanish
+   the moment either rule moved. */
+.wb-wiki-switch-note.wb-wiki-switch-scope {
+  margin-top: var(--wb-space-1);
+}
+/* The read-only sentence, which may sit under the scope sentence or (with no
+   wikis yet) directly under the `New Wiki` row — it needs the same separation
+   in both places. Compound for the same reason the rule above is: the element
+   carries both classes, and a single-class selector would tie with the
+   `margin: 0` shared face and win only by source order. */
+.wb-wiki-switch-note.wb-wiki-switch-readonly {
+  margin-top: var(--wb-space-1);
+}
+
+/* ---- Knowledge | Files tabs ------------------------------------------- */
+.wb-tree-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.wb-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  border-bottom: 1px solid var(--wb-border);
+}
+.wb-tab {
+  flex: 1;
+  padding: var(--wb-space-2);
+  border: 0;
+  /* A transparent underline on every tab, recoloured on the active one, so the
+     row does not shift by two pixels when the selection moves. */
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--wb-muted);
+  font-size: var(--wb-font-size);
+  line-height: var(--wb-line-height);
+  text-align: center;
+  cursor: pointer;
+}
+.wb-tab:hover {
+  background: var(--wb-rail-hover);
+}
+.wb-tab--active {
+  color: var(--wb-foreground);
+  font-weight: var(--wb-weight-strong);
+  border-bottom-color: var(--wb-foreground);
+}
+
+/* ---- Trees ------------------------------------------------------------- */
+.wb-tree-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--wb-space-2) var(--wb-space-3);
+}
+.wb-tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.wb-tree-row {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-1);
+  width: 100%;
+  /* 12px per level. The depth is an inline custom property on the row, so the
+     step itself stays a token here instead of a number in the component. */
+  padding: 2px var(--wb-space-1) 2px calc(var(--wb-depth, 0) * var(--wb-tree-indent) + var(--wb-space-1));
+  /* 2px over 13px/1.45 is ~23px, under the 24×24 target-size floor the tabs and
+     the header button already clear (WCAG 2.5.8). */
+  min-height: 24px;
+  border: 0;
+  border-radius: var(--wb-radius-sm);
+  background: transparent;
+  color: var(--wb-foreground);
+  font-size: var(--wb-font-size);
+  line-height: var(--wb-line-height);
+  text-align: left;
+  cursor: pointer;
+}
+.wb-tree-row:hover {
+  background: var(--wb-rail-hover);
+}
+/* A directory with nothing in it is a label, not a control: no chevron, no
+   pointer, no hover affordance promising an expansion that cannot happen.
+   After the hover rule above, which it shares specificity with. */
+.wb-tree-row--static {
+  cursor: default;
+}
+.wb-tree-row--static:hover {
+  background: transparent;
+}
+.wb-tree-row[aria-current="true"] {
+  background: var(--wb-active-wash);
+  font-weight: var(--wb-weight-strong);
+}
+.wb-tree-row--group {
+  font-weight: var(--wb-weight-strong);
+}
+.wb-tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-tree-count {
+  margin-left: auto;
+  color: var(--wb-muted);
+  font-weight: normal;
+}
+.wb-tree-chevron {
+  flex: 0 0 auto;
+  /* The rail's chevron points left; a collapsed disclosure points right and an
+     expanded one points down. One glyph, two rotations, no icon dependency. */
+  transform: rotate(180deg);
+  transition: transform 0.15s ease;
+}
+.wb-tree-row[aria-expanded="true"] .wb-tree-chevron {
+  transform: rotate(270deg);
+}
+.wb-tree-empty,
+.wb-tree-note {
+  margin: 0;
+  color: var(--wb-muted);
+}
+.wb-tree-note {
+  margin-top: var(--wb-space-2);
+}
+
+/* ---- Preview dock ------------------------------------------------------ */
+/* Header and frontmatter only — Story 1.5 adds the body under these. */
+.wb-preview {
+  grid-column: 4;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--wb-surface);
+  border-left: 1px solid var(--wb-border);
+}
+.wb-preview-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-2);
+  padding: 10px var(--wb-space-4);
+  border-bottom: 1px solid var(--wb-border);
+}
+.wb-preview-title {
+  font-weight: var(--wb-weight-strong);
+}
+.wb-preview-name {
+  min-width: 0;
+  color: var(--wb-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-preview-fm {
+  flex: 0 0 auto;
+  padding: var(--wb-space-2) var(--wb-space-4);
+  border-bottom: 1px solid var(--wb-border);
+  color: var(--wb-muted);
+  font-size: 12px;
+}
+.wb-preview-fm-row {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.wb-preview-path {
+  /* The monospace face itself comes from the shell-wide `code` rule above. */
+  font-size: 12px;
+}
+
+/* ---- The Preview body (Story 1.5) -------------------------------------- */
+/* UX-DR2's type line, in CSS: the header and the frontmatter strip above stay
+   system sans, and everything from here down reads in `--wb-font-read`. */
+.wb-preview-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--wb-space-3) var(--wb-space-4);
+  color: var(--wb-foreground);
+  font-family: var(--wb-font-read);
+  font-size: 16px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+/* `.wb-shell *` sets `--wb-font` on EVERY descendant at the same specificity as
+   this rule, so inheritance alone would never reach a paragraph — the face has
+   to be re-applied per element. The list is an ALLOWLIST rather than a `:not()`:
+   `code`, `pre`, `kbd` and `samp` are absent from it, which is what leaves the
+   shell's monospace rule the last word inside a code fence. */
+.wb-preview-body :where(
+    p, h1, h2, h3, h4, h5, h6, ul, ol, li, dl, dt, dd, blockquote,
+    table, thead, tbody, tfoot, tr, th, td, caption, col, colgroup,
+    a, button, span, label, input, em, strong, del, ins, sup, sub, small,
+    abbr, cite, mark, q, s, time, b, i, u, br, hr, img,
+    section, aside, details, summary, figure, figcaption
+  ) {
+  font-family: var(--wb-font-read);
+}
+.wb-preview-body :where(h1, h2, h3, h4, h5, h6) {
+  /* UX-DR2 fixes body 16px/1.65 and headings 22px. The scale below h2 steps
+     down rather than repeating 22px three times, which would flatten the
+     outline a long Page depends on. */
+  margin: var(--wb-space-4) 0 var(--wb-space-2);
+  font-size: 22px;
+  line-height: 1.3;
+  font-weight: var(--wb-weight-strong);
+}
+.wb-preview-body :where(h3) {
+  font-size: 18px;
+}
+.wb-preview-body :where(h4, h5, h6) {
+  font-size: 16px;
+}
+.wb-preview-body :where(p, ul, ol, blockquote, pre) {
+  margin: 0 0 var(--wb-space-3);
+}
+.wb-preview-body :where(ul, ol) {
+  padding-left: var(--wb-space-4);
+  list-style: revert;
+}
+.wb-preview-body :where(blockquote) {
+  padding-left: var(--wb-space-3);
+  border-left: 3px solid var(--wb-border);
+  color: var(--wb-muted);
+}
+.wb-preview-body :where(pre) {
+  padding: var(--wb-space-2) var(--wb-space-3);
+  background: var(--wb-surface-subtle);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  overflow-x: auto;
+  font-size: 12px;
+}
+.wb-preview-body :where(img) {
+  max-width: 100%;
+  height: auto;
+}
+.wb-preview-body :where(hr) {
+  margin: var(--wb-space-4) 0;
+  border: 0;
+  border-top: 1px solid var(--wb-border);
+}
+/* GFM tables are bordered, and scroll inside their own box: the column is
+   360px at its widest, so a wide table must not be able to widen the shell. */
+.wb-preview-table {
+  margin: 0 0 var(--wb-space-3);
+  overflow-x: auto;
+}
+.wb-preview-body :where(table) {
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.wb-preview-body :where(th, td) {
+  padding: 6px 10px;
+  border: 1px solid var(--wb-border);
+  text-align: left;
+  vertical-align: top;
+}
+.wb-preview-body :where(th) {
+  background: var(--wb-surface-subtle);
+  font-weight: var(--wb-weight-strong);
+}
+/* GFM task lists: `remark-gfm` emits `<li class="task-list-item"><input
+   type="checkbox" disabled>`. Without these the marker and the box both render,
+   and the box sits on the text baseline half a line low. */
+.wb-preview-body :where(.task-list-item) {
+  list-style: none;
+  margin-left: calc(var(--wb-space-4) * -1);
+}
+.wb-preview-body :where(input[type="checkbox"]) {
+  margin-right: var(--wb-space-2);
+  vertical-align: middle;
+}
+
+/* GFM footnotes: a trailing `<section class="footnotes">`. It is an apparatus,
+   not prose, so it is separated from the body and set one step down. */
+.wb-preview-body :where(.footnotes) {
+  margin-top: var(--wb-space-4);
+  padding-top: var(--wb-space-3);
+  border-top: 1px solid var(--wb-border);
+  font-size: 14px;
+}
+.wb-preview-body :where(.footnotes h2) {
+  /* `sr-only` in the emitted markup; it carries no visible role here. */
+  font-size: 14px;
+}
+
+/* A `.txt` file is shown verbatim, so it keeps the mono face the shell-wide
+   `pre` rule gives it — it is not prose and must not be re-flowed. */
+.wb-preview-plain {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+/* ---- Wikilinks --------------------------------------------------------- */
+/* A resolved link is a real <button> — it re-points the selection, it does not
+   navigate — so it is stripped back to link-shaped text. Scoped UNDER
+   `.wb-preview-body`, which is both where the class only ever appears and what
+   keeps `--wb-font-read` applied by nothing but the body's own rules. */
+.wb-preview-body .wb-wikilink {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-family: var(--wb-font-read);
+  color: var(--wb-foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.wb-preview-body .wb-wikilink:hover {
+  background: var(--wb-rail-hover);
+}
+/* Unresolved: not a control at all, and marked by more than colour — the
+   dotted underline carries the state where colour cannot, and a clipped
+   `(missing page)` carries it for a screen reader. */
+.wb-preview-body .wb-wikilink--missing {
+  color: var(--wb-muted);
+  text-decoration: underline dotted;
+  cursor: default;
+}
+/* A link the Preview will not follow because following it would leave the
+   Workbench in the same tab — a root-relative `/u/…`, a relative source path,
+   or an href the sanitizer emptied. Same non-control treatment as an unresolved
+   wikilink, without the `(missing page)` word: the page may exist perfectly
+   well, it is just not reachable from a column that does not navigate. */
+.wb-preview-body .wb-preview-deadlink {
+  color: var(--wb-muted);
+  text-decoration: underline dotted;
+}
+/* The link that IS followed — an external `https:` one, opened in a new tab.
+   Both of its neighbours above are painted from `--wb-*`; left unstated this one
+   alone would take the user agent's blue and visited purple, which are the only
+   colours in the shell that come from nowhere. Same shape as a wikilink, since
+   both are links; where they go is what differs, not what they are. */
+.wb-preview-body :where(a) {
+  color: var(--wb-foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.wb-preview-body :where(a):hover {
+  background: var(--wb-rail-hover);
+}
+
+/* ---- The confirm-gated editor ------------------------------------------ */
+.wb-preview-edit {
+  /* The head is `space-between` with two existing children; this absorbs the
+     free space so the title and the name stay together on the left. */
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 2px var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  cursor: pointer;
+}
+.wb-preview-edit:not([disabled]):hover {
+  background: var(--wb-rail-hover);
+}
+/* The shell's one disabled treatment, the same pair `.wb-preview-action[disabled]`
+   uses. Reached while a revert is in flight (DW-214), when seeding the editor
+   from bytes that are about to be replaced would turn the owner's own Save into
+   a conflict this column caused. */
+.wb-preview-edit[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+.wb-preview-editor {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+  min-height: 0;
+  padding: var(--wb-space-3) var(--wb-space-4);
+}
+.wb-preview-textarea {
+  flex: 1 1 auto;
+  min-height: 200px;
+  padding: var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  /* Raw markdown, so the mono face — and no serif: this is not the reading
+     surface, it is the source. */
+  font-family: var(--wb-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: none;
+}
+.wb-preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--wb-space-2);
+}
+.wb-preview-action {
+  padding: 4px var(--wb-space-3);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  cursor: pointer;
+}
+.wb-preview-action--primary {
+  background: var(--wb-primary);
+  border-color: var(--wb-primary);
+  color: var(--wb-primary-foreground);
+}
+.wb-preview-action[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Token-only, like `.wb-wiki-switch-error`: the shell has no danger colour, and
+   UX-DR15 reserves red for destructive LABELS rather than for every failure. The
+   `role="alert"` is what announces it; the muted tone is what keeps it chrome. */
+.wb-preview-error {
+  margin: 0;
+  color: var(--wb-muted);
+}
+/* Loading, empty, unsupported, failed and truncated are CHROME sentences, not
+   body prose (DESIGN.md:232), so they stay sans and muted. */
+.wb-preview-note {
+  margin: 0;
+  padding: var(--wb-space-3) var(--wb-space-4);
+  color: var(--wb-muted);
+}
+
+/* ---- The stale strip (DW-54) ------------------------------------------- */
+/* A read that could not be REACHED, over bytes that are still on screen and
+   still true. Token-only and muted, exactly like `.wb-preview-error`: no alert
+   colour, because UX-DR15 reserves red for destructive labels and nothing here
+   was lost, refused or deleted. It sits above the body as a strip rather than
+   replacing it, which is the whole distinction this story draws — a 404 takes
+   the body, a blip takes nothing. */
+.wb-preview-stale {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-2) var(--wb-space-4);
+  border-bottom: 1px solid var(--wb-border);
+  background: var(--wb-surface-subtle);
+  color: var(--wb-muted);
+  font-size: 12px;
+}
+.wb-preview-stale-note {
+  margin: 0;
+  min-width: 0;
+}
+/* The same control geometry as `.wb-preview-edit`, because it is the same kind
+   of thing: a small secondary action living in a strip of chrome. */
+.wb-preview-retry {
+  flex: 0 0 auto;
+  /* WCAG 2.2 SC 2.5.8 floor (24×24 CSS px). `.wb-preview-edit`'s 2px padding
+     alone leaves ~20px at this 12px face, and unlike that control this one
+     exists FOR the narrow breakpoint — where the column is a stacked row and
+     the pointer is a thumb. The horizontal axis clears 24px on the label. */
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font-size: 12px;
+  cursor: pointer;
+}
+/* Narrowed to a control that can still be pressed (DW-184): while the retry it
+   started is in flight it is `disabled`, and a button that refuses every click
+   must not light up under the pointer. */
+.wb-preview-retry:not([disabled]):hover {
+  background: var(--wb-rail-hover);
+}
+/* The shell's one disabled treatment, the same pair `.wb-preview-action[disabled]`
+   uses — no new token and no new colour, because the state is already spelled by
+   the label (`Retrying…`) and by `aria-busy`. */
+.wb-preview-retry[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ---- The History panel (DW-214) ---------------------------------------- */
+/* The recovery half of Story 1.8, and CHROME rather than reading surface: it is
+   a list of dates and sizes about the file, not the file. So it takes the same
+   treatment every other strip in this column has — sans, 12px, `--wb-muted`,
+   token-only, no danger colour (UX-DR15 reserves red for destructive LABELS,
+   and `Revert` is a label, not a colour). Nothing here introduces a token.
+
+   BELOW the body in DOM order, which is also the tab order: a reader reaches
+   the bytes before the machinery for replacing them. */
+.wb-preview-history {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--wb-border);
+  padding: var(--wb-space-2) var(--wb-space-4);
+  font-size: 12px;
+}
+/* The same control geometry as `.wb-preview-retry`, for the same reason: a small
+   secondary action in a strip of chrome, and the WCAG 2.2 SC 2.5.8 24px floor
+   applies to it exactly as it does there — below 900px this column is a stacked
+   row and the pointer is a thumb. */
+.wb-preview-history-toggle {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font-size: 12px;
+  cursor: pointer;
+}
+.wb-preview-history-toggle:hover {
+  background: var(--wb-rail-hover);
+}
+.wb-preview-history-panel {
+  margin-top: var(--wb-space-2);
+  /* A long history must scroll INSIDE the panel rather than pushing the body
+     out of the column — the reading surface is what the column is for. It is
+     `tabindex="0"` and named in the markup for that reason: a scrollable box
+     with no focusable descendant is unreachable by keyboard (WCAG 2.1.1). */
+  max-height: 40vh;
+  overflow-y: auto;
+}
+/* Loading, empty and the read-only refusal are chrome sentences in the same
+   muted tone as `.wb-preview-note`, but they carry their own bottom margin
+   instead of that class's page padding: these sit INSIDE the panel, which
+   already supplies the inset, and the space below is what keeps them off the
+   list. */
+.wb-preview-history-note {
+  margin: 0 0 var(--wb-space-2);
+  color: var(--wb-muted);
+}
+/* The panel's failure sentence. Token-only and muted like `.wb-preview-error`
+   for the same reason — UX-DR15 reserves colour for destructive labels, and
+   `role="alert"` is what announces it — but spaced like its sibling notes
+   rather than like the editor's, which lives in a flex column that supplies its
+   own gap. Without the margin the alert collides with the list beneath it. */
+.wb-preview-history-error {
+  margin: 0 0 var(--wb-space-2);
+  color: var(--wb-muted);
+}
+.wb-preview-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+}
+.wb-preview-history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: var(--wb-space-2);
+  border-bottom: 1px solid var(--wb-border);
+}
+.wb-preview-history-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.wb-preview-history-meta {
+  margin: 0;
+  color: var(--wb-muted);
+  /* The date, size, author and reason are one line that may not fit; wrapping
+     is what keeps the two controls below reachable at every width. */
+  overflow-wrap: anywhere;
+}
+.wb-preview-history-actions {
+  display: flex;
+  gap: var(--wb-space-2);
+}
+.wb-preview-history-action {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font-size: 12px;
+  cursor: pointer;
+}
+.wb-preview-history-action:not([disabled]):not([data-readonly]):hover {
+  background: var(--wb-rail-hover);
+}
+/* The shell's one disabled treatment, the same pair `.wb-preview-retry` uses.
+   The read-only case is `aria-disabled` rather than `disabled` — the control
+   stays in the tab order so a reader can reach the sentence explaining it — so
+   it needs the same muting from its own attribute. */
+.wb-preview-history-action[disabled],
+.wb-preview-history-action[data-readonly] {
+  opacity: 0.6;
+  cursor: default;
+}
+/* One revision's bytes, verbatim. The SOURCE of an executable Schema, so the
+   mono face `.wb-preview-textarea` uses — never the reading surface's serif,
+   which would make an old version look like the one above it. */
+/* …and it is `tabindex="0"` and named in the markup for the same reason the
+   panel is: a Schema is long, so this scrolls, and a scrollable box no keyboard
+   can enter is a WCAG 2.1.1 failure. */
+.wb-preview-history-content {
+  margin: 0;
+  padding: var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface-subtle);
+  color: var(--wb-foreground);
+  font-family: var(--wb-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 30vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The two focusable CONTAINERS above are not controls, so they get the outline
+   and nothing else — no hover wash, which would suggest they do something when
+   pressed. Stated explicitly rather than left to the user agent, because the
+   default outline on a `--wb-surface-subtle` panel is what a keyboard user has
+   to see to know the scroll landed somewhere. */
+.wb-preview-history-panel:focus-visible,
+.wb-preview-history-content:focus-visible {
+  outline: 2px solid var(--wb-foreground);
+  outline-offset: -2px;
+}
+
+/* ===========================================================================
+   Settings inside the shell (Story 1.9).
+
+   Built from the existing `--wb-*` tokens only — no new token and no new
+   colour, because "colour means state" (UX-DR15) and a hue introduced for a
+   form field would be a colour that means nothing. The settings nav reuses the
+   tree row's geometry and the same `--wb-active-wash` the rail's active mode
+   paints with, so "which row is current" looks the same everywhere in the shell.
+   =========================================================================== */
+
+/* ---- A collapsed column still has to show the settings nav -------------- */
+/* `.wb-shell[data-collapsed="true"] .wb-left { display: none }` would leave the
+   Settings surface with no reachable category — and `collapsed` is persisted, so
+   an owner who collapsed the tree once would never see a category again. These
+   force the column back for the duration; nothing rewrites the stored
+   preference, and it applies again as soon as Settings closes. Two attributes
+   outrank the one-attribute collapse rules above by specificity, so source order
+   is not doing the work for `display`.
+
+   The COLUMN TEMPLATE is a different matter and has to be scoped by width. The
+   below-900px block above sets a single stacked column for this exact selector,
+   at the exact same specificity (0,3,0) — and a media query adds none — so the
+   later of the two wins outright. This rule is later, so unscoped it would
+   restore three desktop columns below the breakpoint. `min-width: 900px` is what
+   keeps each rule to the width it was written for. */
+@media (min-width: 900px) {
+  .wb-shell[data-collapsed="true"][data-settings="true"] {
+    grid-template-columns: var(--wb-rail) minmax(var(--wb-split-min-tree), var(--wb-tree)) minmax(0, 1fr);
+  }
+}
+.wb-shell[data-collapsed="true"][data-settings="true"] .wb-left {
+  display: flex;
+}
+/* The clipped restatement covers the state where the real <h1> is hidden. It is
+   not hidden here, so exposing both would give the document two. */
+.wb-shell[data-collapsed="true"][data-settings="true"] .wb-title-fallback {
+  display: none;
+}
+
+/* ---- The left column's second list ------------------------------------- */
+.wb-set-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding: var(--wb-space-2) var(--wb-space-3);
+}
+.wb-set-nav-item {
+  display: block;
+  width: 100%;
+  padding: var(--wb-space-1) var(--wb-space-2);
+  /* 4px over 13px/1.45 is ~27px, clear of the 24×24 target-size floor. */
+  min-height: 24px;
+  border: 0;
+  border-radius: var(--wb-radius-sm);
+  background: transparent;
+  color: var(--wb-foreground);
+  font-size: var(--wb-font-size);
+  line-height: var(--wb-line-height);
+  text-align: left;
+  cursor: pointer;
+}
+.wb-set-nav-item:hover {
+  background: var(--wb-rail-hover);
+}
+.wb-set-nav-item--active {
+  background: var(--wb-active-wash);
+  font-weight: var(--wb-weight-strong);
+}
+
+/* ---- The detail column -------------------------------------------------- */
+/* The canvas is the scroll container (`.wb-canvas { overflow: auto }`), which is
+   what the save bar below sticks inside. */
+.wb-set-pad {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.wb-set-detail {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-3);
+  max-width: 640px;
+}
+.wb-set-heading {
+  margin: var(--wb-space-2) 0 0;
+  font-size: var(--wb-font-size);
+  font-weight: var(--wb-weight-strong);
+  line-height: var(--wb-line-height);
+  color: var(--wb-foreground);
+}
+.wb-set-note {
+  margin: 0;
+  color: var(--wb-muted);
+}
+.wb-set-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--wb-space-1);
+  margin: 0;
+}
+.wb-set-label {
+  font-weight: var(--wb-weight-strong);
+  color: var(--wb-foreground);
+}
+.wb-set-input,
+.wb-set-select {
+  width: 100%;
+  max-width: 420px;
+  padding: 4px var(--wb-space-2);
+  /* 4px over 13px/1.45 leaves a ~27px control; the floor is 24px. */
+  min-height: 24px;
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font-size: var(--wb-font-size);
+  line-height: var(--wb-line-height);
+}
+.wb-set-input[readonly] {
+  background: var(--wb-surface-subtle);
+  color: var(--wb-muted);
+}
+/* A <select> has no `readonly`, so the refused pickers carry `aria-disabled`
+   instead (DW-37) — which the browser dresses not at all. This is the same face
+   `[readonly]` gives the text rows beside them, so a read-only Settings pane
+   reads as one surface rather than as inputs that are dimmed next to pickers
+   that are not. `cursor: default` because every activation is refused. */
+.wb-set-select[aria-disabled="true"] {
+  background: var(--wb-surface-subtle);
+  color: var(--wb-muted);
+  cursor: default;
+}
+.wb-set-check {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  font-weight: var(--wb-weight-strong);
+  color: var(--wb-foreground);
+  cursor: pointer;
+}
+/* The vector switch, refused either because the deployment is read-only or
+   because the selected provider cannot support it. Same reasoning: the
+   attribute carries the state to assistive tech, this carries it to the eye. */
+.wb-set-check input[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+/* The label WRAPS the input, so it is the wider click target — leaving it on
+   `cursor: pointer` would promise a toggle over the whole row while the input
+   inside it refuses. */
+.wb-set-check:has(input[aria-disabled="true"]) {
+  cursor: default;
+}
+.wb-set-hint {
+  color: var(--wb-muted);
+}
+/* A value the surface reports rather than one the owner may change — Language,
+   the product name. Foreground, because it is content, not chrome guidance. */
+.wb-set-static {
+  color: var(--wb-foreground);
+}
+.wb-set-action {
+  padding: 2px var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  cursor: pointer;
+}
+.wb-set-action:hover {
+  background: var(--wb-rail-hover);
+}
+
+/* ---- The sticky save bar ------------------------------------------------ */
+/* `Changes apply after saving` is the surface's standing promise, so the bar is
+   present whether or not anything is dirty — a bar that appeared on the first
+   keystroke would be announcing a state change instead of stating a rule. */
+.wb-set-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-3);
+  margin-top: var(--wb-space-4);
+  padding: var(--wb-space-2) 0;
+  background: var(--wb-surface);
+  border-top: 1px solid var(--wb-border);
+}
+.wb-set-bar-note {
+  color: var(--wb-muted);
+}
+/* Token-only, like `.wb-preview-error`: the shell has no danger colour, and
+   UX-DR15 reserves red for destructive LABELS rather than for every failure.
+   The `role="alert"` is what announces it; the muted tone keeps it chrome. */
+.wb-set-error {
+  color: var(--wb-muted);
+}
+/* The landed-save confirmation. Same muted tone as the standing note beside it —
+   colour means state in this shell (UX-DR15), and a save that worked is not a
+   state worth a colour. Empty most of the time, so it takes no room. */
+.wb-set-status {
+  color: var(--wb-muted);
+}
+.wb-set-save {
+  margin-left: auto;
+  /* One primary per cluster (UX-DR15) — this is the Settings surface's. */
+  padding: 4px var(--wb-space-3);
+  border: 1px solid var(--wb-primary);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-primary);
+  color: var(--wb-primary-foreground);
+  cursor: pointer;
+}
+.wb-set-save[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ---- Drag-resize separators (Story 1.6) -------------------------------- */
+/* The handle is positioned from the SAME custom properties the grid tracks read.
+   Computing `left` in JavaScript would be a second derivation of the layout, and
+   the applied width and the divider's position have to agree to the pixel or the
+   owner grabs a strip of nothing. Reading `calc(var(--wb-rail) + var(--wb-tree)
+   - …)` here makes the handle read the exact value the track read, whether that
+   value came from the token block or from the shell's inline style. */
+.wb-split-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: var(--wb-split-hit);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  /* Without this a touch drag scrolls the page instead of moving the divider,
+     and pointer capture never sees the moves. */
+  touch-action: none;
+}
+/* The visible hairline is a pseudo-element at the strip's LEADING edge, so the
+   target can be 24px wide while the divider still reads as a 1px rule sitting
+   exactly on the boundary. Both modifiers below start AT the boundary and extend
+   to its right, so `left: 0` is the boundary for both — DW-44 asks to keep the
+   visual divider at its current width, and this is what keeps the widened target
+   from also widening the line. It is invisible at rest: the columns already have
+   borders, and a second permanent line beside them would be chrome the layout
+   does not need. */
+.wb-split-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: transparent;
+}
+.wb-split-handle:hover::before,
+.wb-split-handle:focus-visible::before {
+  background: var(--wb-border);
+}
+/* Both strips start AT their boundary and extend RIGHT of it (DW-44), which is
+   off the scrollbar in both cases and so collapses to one rule. `.wb-tree-body`
+   is `overflow: auto`, so the tree's scrollbar sits at the tree/canvas boundary;
+   `.wb-canvas` is `overflow: auto` too, so ITS scrollbar sits at the
+   canvas/Preview boundary. Centring a 24px strip would bury both, and putting
+   the Preview's strip on the canvas side would bury the canvas's under 24px of
+   `z-index: 2` handle — unscrollable by mouse wherever the platform draws
+   classic scrollbars. Offsetting rightwards keeps every scrollbar clickable. */
+.wb-split-handle--tree {
+  left: calc(var(--wb-rail) + var(--wb-tree));
+}
+/* `right` is measured to the element's own right edge, so subtracting the strip
+   width puts its LEFT edge on the boundary — the same relationship the tree's
+   `left` states directly. */
+.wb-split-handle--preview {
+  right: calc(var(--wb-preview) - var(--wb-split-hit));
+}
+/* …and its indicator steps ONE pixel inside that boundary. The boundary pixel
+   at this divider is already painted: `.wb-preview` carries
+   `border-left: 1px solid var(--wb-border)`, the same width and the same colour
+   this pseudo-element draws. Left at `left: 0` the focus and hover states would
+   paint over a line that is always there, so focusing the Preview separator
+   would produce no visible change at all (WCAG 2.4.7). Offsetting by the
+   border's own width puts the indicator immediately inside it, which reads as
+   the same 2px rule the tree side already produces against `.wb-left`'s
+   `border-right`. The tree side needs no override: nothing paints the canvas's
+   first pixel. */
+.wb-split-handle--preview::before {
+  left: 1px;
+}
+/* A drag that selects the tree labels it passes over is a drag the owner has to
+   undo afterwards, and the cursor must not revert every time the pointer leaves
+   the grab strip mid-gesture. */
+.wb-shell[data-resizing="true"] {
+  cursor: col-resize;
+  /* Prefixed too: Safari only dropped `-webkit-` for this property in 17.4, and
+     without it every drag on an older one sweeps a selection across the tree
+     labels the pointer passes over — the exact thing this rule exists to stop.
+     The file already carries `-webkit-` for the same reason elsewhere. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ---- Docking the Preview as a fourth column ---------------------------- */
+/* These follow every base grid rule in the file on purpose: `[data-preview]`
+   and `[data-collapsed]` have the same specificity, so source order is what
+   decides, and the combined selector outranks both. */
+.wb-shell[data-preview="true"] {
+  grid-template-columns:
+    var(--wb-rail)
+    minmax(var(--wb-split-min-tree), var(--wb-tree))
+    minmax(0, 1fr)
+    minmax(var(--wb-split-min-preview), var(--wb-preview));
+}
+.wb-shell[data-collapsed="true"][data-preview="true"] {
+  grid-template-columns:
+    var(--wb-rail)
+    0
+    minmax(0, 1fr)
+    minmax(var(--wb-split-min-preview), var(--wb-preview));
+}
+
+/* 900–1199px: honour the minimum widths for BOTH side panels, so the canvas
+   gives up the space rather than the tree (`epics.md` resize limits). */
+@media (max-width: 1199px) {
+  /* Both side columns are pinned to their minimums from here down, so there is
+     no width left to drag and the inline width tokens have nothing to do. The
+     breakpoint stays in CSS: a `window.innerWidth` comparison in the shell would
+     be a second copy of this rule, free to drift from it. */
+  .wb-split-handle {
+    display: none;
+  }
+  .wb-shell[data-preview="true"] {
+    grid-template-columns:
+      var(--wb-rail)
+      var(--wb-split-min-tree)
+      minmax(0, 1fr)
+      var(--wb-split-min-preview);
+  }
+  .wb-shell[data-collapsed="true"][data-preview="true"] {
+    grid-template-columns:
+      var(--wb-rail)
+      0
+      minmax(0, 1fr)
+      var(--wb-split-min-preview);
+  }
+  /* The column is down to its 200px floor here, so the body gives up its side
+     padding before it gives up line length, and a table stops being wider than
+     the column it scrolls inside. */
+  .wb-preview-body,
+  .wb-preview-editor,
+  .wb-preview-note,
+  .wb-preview-stale {
+    padding-left: var(--wb-space-2);
+    padding-right: var(--wb-space-2);
+  }
+  .wb-preview-body :where(table) {
+    font-size: 13px;
+  }
+}
+
+/* Below 900px there are no columns to dock into: the Preview stacks under the
+   canvas as a fourth row, the same way the left column becomes a header strip. */
+@media (max-width: 899px) {
+  .wb-shell[data-preview="true"],
+  .wb-shell[data-collapsed="true"][data-preview="true"] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    /* DW-34: the clamp is RELEASED while a Preview is docked. `.wb-shell` is
+       `height: 100dvh; max-height: 100dvh; overflow: hidden`, which is right
+       for a three-column desktop surface that must not scroll as a page — but
+       here the Preview is a fourth ROW, so that rule places it past the bottom
+       of a box that clips. Not "below the fold": UNREACHABLE, by scroll, by
+       `scrollIntoView`, by anything. A tap on a tree row appeared to do
+       nothing at all.
+
+       `min-height`, so a short shell still fills the viewport, and
+       `overflow: visible`, so the DOCUMENT scrolls rather than the grid. The
+       two stacked children that would otherwise run away are already capped
+       (`.wb-tree-body` at 40vh, `.wb-preview-body` at 50vh), which leaves the
+       canvas row: with no clamp above it, `minmax(0, 1fr)` resolves to its
+       content instead of scrolling inside `.wb-canvas`'s own `overflow: auto`,
+       so a long surface makes a long PAGE while a Preview is docked. That is the
+       trade this rule makes deliberately — one document that scrolls, with the
+       tree and the Preview both reachable in it, rather than a fourth row
+       nothing can reach. Scoped to `[data-preview]` and to this breakpoint: the
+       wide layout keeps every rule it had. */
+    height: auto;
+    min-height: 100dvh;
+    max-height: none;
+    overflow: visible;
+  }
+  /* …and the clamp comes BACK while the mode sheet is open. This is exactly the
+     breakpoint at which the rail is a `position: fixed` off-canvas sheet over a
+     fixed backdrop, so a document that scrolls scrolls the page BEHIND an open
+     modal — the backdrop stays put while the content slides under it, which
+     reads as a broken overlay and lets a pointer drag content the backdrop is
+     there to make unreachable. Two attributes wide, so it outranks the docked
+     selectors above without depending on source order. */
+  .wb-shell[data-preview="true"][data-sheet-open="true"],
+  .wb-shell[data-collapsed="true"][data-preview="true"][data-sheet-open="true"] {
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
+  }
+  .wb-preview {
+    grid-column: 1;
+    border-left: 0;
+    border-top: 1px solid var(--wb-border);
+  }
+  /* The column is `overflow: visible` at this width, so the tree body has no
+     bounded height to scroll inside and would push the canvas off screen. */
+  .wb-tree-body {
+    max-height: 40vh;
+  }
+  /* Same reason for the Preview: stacked as the last row it has no column
+     height to scroll inside, so a long Page would run off the bottom of the
+     document instead of scrolling in place. */
+  .wb-preview-body,
+  .wb-preview-editor {
+    max-height: 50vh;
+  }
+  .wb-preview-textarea {
+    min-height: 160px;
+  }
+  /* Story 1.9: the canvas is a stacked ROW here, so there is no column height
+     for the save bar to stick inside — it simply follows the fields. */
+  .wb-set-bar {
+    position: static;
+  }
+  .wb-set-nav {
+    max-height: 30vh;
   }
 }

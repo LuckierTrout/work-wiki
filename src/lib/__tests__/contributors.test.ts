@@ -258,6 +258,13 @@ describe("contributors data layer", () => {
   });
 
   describe("trust score", () => {
+    // ~60 sequential `saveRevision` calls, each a whole-file write that since
+    // DW-161 fsyncs a tmp file before renaming it into place. Measured here:
+    // ~27ms before the change, ~0.5s after it solo, and ~5.1s under the full
+    // parallel suite — i.e. straddling the default 5s budget. Same situation as
+    // the query-history cap row: the durability cost is real and intended, but
+    // it leaves this row with no headroom, so it needs an explicit budget
+    // rather than a coin flip on CI. Only the budget moves.
     it("caps at 1.0 for prolific contributors", async () => {
       await createPage("page-trust", "Trust Page", "# Trust\n\nContent.");
 
@@ -269,7 +276,7 @@ describe("contributors data layer", () => {
       const profile = await buildContributorProfile("prolific");
       expect(profile.editCount).toBe(60);
       expect(profile.trustScore).toBe(1);
-    });
+    }, 30_000);
 
     it("computes trust proportionally for low activity", async () => {
       await createPage("page-low", "Low Page", "# Low\n\nContent.");

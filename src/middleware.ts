@@ -1,11 +1,16 @@
 import { clerkMiddleware } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import {
+  E2E_COOKIE_NAME,
+  isE2eIdentityArmed,
+  principalFromCookieValue,
+} from "@/lib/e2e-identity";
 
 // HTTP methods that mutate state.
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-// WorkWiki is a private, single-owner deployment. Every application page and
+// work-wiki is a private, single-owner deployment. Every application page and
 // API request requires the configured Clerk owner session. The only exceptions
 // are Clerk's own proxy path (needed to establish a session) and machine write
 // routes that authenticate in-route with an existing bearer token.
@@ -15,7 +20,6 @@ const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 // callers — the auth just lives in the handler):
 //   - /api/agents/seed            — Clerk session OR the system service token
 //   - /api/agents/<id>/ingest     — the agent's own per-agent token
-//   - /api/agents/<id>/publish    — the agent's own per-agent token
 //   - /api/ingest                 — Clerk session OR the system service token
 //   - /api/ingest/batch           — Clerk session OR the system service token
 //   - /api/ingest/document        — Clerk session OR the system service token
@@ -32,6 +36,25 @@ const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 //   - /api/wiki/<slug>/revisions   — Clerk session OR the system service token
 //   - /api/mcp                    — remote MCP: Bearer agent/service token
 // This is not a hole.
+//
+// ONE VERB ON ONE PATH ALSO REQUIRES `If-Match` (DW-194): `PUT /api/wiki/<slug>`.
+// The header carries the version of the whole stored file (frontmatter block
+// included), quoted as a strong validator, and that is true for a service-token
+// caller exactly as it is for a browser session: no header — or `*`, unquoted,
+// weak, or a list — is 428, a version that is not the stored one is 412, and in
+// both cases nothing is written. The route's own docblock states the full
+// contract; it is noted here because this list is where a non-browser caller
+// looks to learn how to authenticate, and authenticating alone is not enough to
+// PUT a page body.
+//
+// EVERYTHING ELSE IN THIS LIST IS STILL UNCONDITIONAL, deliberately. DW-194
+// gated one verb, not this exemption list: `PATCH /api/wiki/<slug>` (metadata),
+// `POST /api/wiki`, `POST /api/wiki/<slug>/revisions`, every `/api/ingest/*`
+// path and `/api/mcp` — whose tools reach `writeWikiPageWithSideEffects` and
+// `patchMetadata` directly — all write with no precondition of any kind. So a
+// bearer token that is refused a `PUT` for a missing header can still rewrite
+// the same page's frontmatter through `PATCH`, and its body through MCP. Do not
+// read the line above as a claim about this list as a whole.
 const IN_ROUTE_AUTH_PATHS = new Set([
   "/api/agents/seed",
   // Remote (HTTP) MCP endpoint — authenticates in-route via a Bearer token
@@ -70,7 +93,6 @@ const IN_ROUTE_AUTH_PATHS = new Set([
   "/api/wiki",
 ]);
 const AGENT_INGEST_RE = /^\/api\/agents\/[^/]+\/ingest$/;
-const AGENT_PUBLISH_RE = /^\/api\/agents\/[^/]+\/publish$/;
 // Wiki page mutations by slug: authenticated in-route via Clerk session OR the
 // service token (agents update/patch/delete pages via REST).
 // The regex matches /api/wiki/<segment> — but fixed sub-routes (browse,
@@ -103,7 +125,6 @@ export function authenticatesInRoute(pathname: string): boolean {
   return (
     IN_ROUTE_AUTH_PATHS.has(pathname) ||
     AGENT_INGEST_RE.test(pathname) ||
-    AGENT_PUBLISH_RE.test(pathname) ||
     (WIKI_SLUG_RE.test(pathname) && !WIKI_FIXED_ROUTES.has(pathname)) ||
     WIKI_REVISIONS_RE.test(pathname) ||
     ADMIN_TENANT_RE.test(pathname)
@@ -151,11 +172,33 @@ function jsonError(message: string, status: number): NextResponse {
   return privateResponse(NextResponse.json({ error: message }, { status }));
 }
 
-export default clerkMiddleware(async (auth, req) => {
+type MiddlewareAuth = (() => Promise<{
+  userId: string | null;
+  redirectToSignIn: (opts: { returnBackUrl: string }) => Response;
+}>) & {
+  redirectToSignIn?: (opts: { returnBackUrl: string }) => Response;
+};
+
+function unsignedInResponse(req: NextRequest, isApi: boolean): Response {
+  if (isApi) return jsonError("Authentication required.", 401);
+  const signIn = new URL("/sign-in", req.url);
+  signIn.searchParams.set("redirect_url", req.url);
+  return privateResponse(NextResponse.redirect(signIn));
+}
+
+/**
+ * The private-app gate. Exported so the write-gate suite can call it without
+ * constructing Clerk's wrapper, and so the E2E identity can share the same
+ * owner check the live Clerk path uses.
+ */
+export async function handlePrivateRequest(
+  auth: MiddlewareAuth,
+  req: NextRequest,
+): Promise<Response> {
   const { pathname } = req.nextUrl;
 
   // The authentication surface and Clerk proxy are the only public app paths.
-  // They expose no WorkWiki content and are required to establish a session.
+  // They expose no work-wiki content and are required to establish a session.
   if (SIGN_IN_RE.test(pathname) || CLERK_PROXY_RE.test(pathname)) {
     return privateResponse(NextResponse.next());
   }
@@ -167,6 +210,28 @@ export default clerkMiddleware(async (auth, req) => {
   }
 
   const isApi = pathname.startsWith("/api/");
+
+  // Local Playwright identity: same owner gate, no Clerk session. Never armed
+  // on the production origin — see `isE2eIdentityArmed`.
+  if (isE2eIdentityArmed()) {
+    const ownerUserId = process.env.YOPEDIA_OWNER_USER_ID?.trim();
+    const identity = await principalFromCookieValue(
+      req.cookies.get(E2E_COOKIE_NAME)?.value,
+    );
+    if (!identity) return unsignedInResponse(req, isApi);
+    if (!ownerUserId) {
+      return isApi
+        ? jsonError("Private deployment is not configured.", 503)
+        : privateResponse(new NextResponse("Service unavailable", { status: 503 }));
+    }
+    if (identity.id !== ownerUserId) {
+      return isApi
+        ? jsonError("Owner access required.", 403)
+        : privateResponse(new NextResponse("Not Found", { status: 404 }));
+    }
+    return privateResponse(NextResponse.next());
+  }
+
   const { userId, redirectToSignIn } = await auth();
 
   if (!userId) {
@@ -194,7 +259,31 @@ export default clerkMiddleware(async (auth, req) => {
   }
 
   return privateResponse(NextResponse.next());
-}, { signInUrl: "/sign-in" });
+}
+
+const e2eUnusedAuth = Object.assign(
+  async () => {
+    throw new Error("e2e identity must not call Clerk");
+  },
+  {
+    redirectToSignIn() {
+      throw new Error("e2e identity must not call Clerk");
+    },
+  },
+) as MiddlewareAuth;
+
+function e2eMiddleware(req: NextRequest): Promise<Response> {
+  return handlePrivateRequest(e2eUnusedAuth, req);
+}
+
+// When the Playwright harness is armed, skip Clerk's wrapper entirely — dummy
+// keys make `clerkMiddleware` refuse every request before the owner cookie
+// can be read. Production never sets `YOPEDIA_E2E`, so the live export stays
+// the Clerk gate. Evaluated at module load so `next dev` (runtime env) and
+// the write-gate suite (e2e off at import) each see the right function.
+export default isE2eIdentityArmed()
+  ? e2eMiddleware
+  : clerkMiddleware(handlePrivateRequest, { signInUrl: "/sign-in" });
 
 export const config = {
   matcher: [

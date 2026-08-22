@@ -5,6 +5,13 @@ const EMAIL_CONFIG_INDEX_KEY = "email-ingest-config";
 export const MAX_EMAIL_SENDERS = 50;
 export const MAX_EMAIL_CONTENT_CHARS = 100_000;
 export const MAX_EMAIL_ATTACHMENTS_RECORDED = 20;
+/**
+ * Supported document attachments accepted from one email. The inbound Worker
+ * truncates to the same number before forwarding (`MAX_EMAIL_ATTACHMENTS` in
+ * `workers/email-ingest/index.ts`, which cannot import this module); the two are
+ * pinned in agreement by `email-ingest-allowlist-parity.test.ts`.
+ */
+export const MAX_EMAIL_DOCUMENTS = 10;
 
 export interface EmailIngestConfig {
   enabled: boolean;

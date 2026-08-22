@@ -8,8 +8,11 @@
  *    (escalating `disputed` on contradiction), exactly like accumulate-and-
  *    reconcile on re-ingest.
  *  - sources / contributors / authors / aliases are UNIONed; `from`'s title AND
- *    slug are recorded as aliases of `into` so a later ingest — and the
- *    `/wiki/<from>` URL (via the slug alias redirect) — resolve to the survivor.
+ *    slug are recorded as aliases of `into` so a later ingest under either name
+ *    converges on the survivor. NOTE: the alias URL redirect that used to
+ *    forward `/wiki/<from>` is gone — that route is retired with the commons
+ *    (AD-21) and no owner-scoped equivalent was rebuilt, so a link to an
+ *    absorbed slug 404s. Aliases still steer ingest, not routing.
  *  - internal `[..](<from>.md)` backlinks are re-pointed to `into` BEFORE the
  *    delete (otherwise {@link deleteWikiPage} would strip them).
  *  - `from` is then hard-deleted. NOTE: its revision history and discussion
@@ -21,7 +24,6 @@ import { logger } from "./logger";
 import { hasLLMKey } from "./llm";
 import { listWikiPages, readWikiPageWithFrontmatter } from "./wiki";
 import { isArtifactType } from "./page-types";
-import { ensureReconciliationThread } from "./talk";
 import {
   reconcilePage,
   sameHumanOwner,
@@ -227,7 +229,8 @@ export async function mergePages({
     asStringArray(from.frontmatter.authors),
   );
   // Record `from`'s title AND slug as aliases of `into` so a later ingest under
-  // that name converges here, and `/wiki/<from>` redirects to the survivor.
+  // that name converges here. This no longer affects routing — see the module
+  // header: alias URL forwarding went with the retired commons route.
   fm.aliases = unionStrings(
     asStringArray(into.frontmatter.aliases),
     asStringArray(from.frontmatter.aliases),
@@ -273,11 +276,11 @@ export async function mergePages({
     author: actor,
   });
 
-  // If the fold left the survivor disputed, open a reconciliation thread so the
-  // dispute is actionable (same loop as ingest). Idempotent + fail-soft.
-  if (disputed) {
-    await ensureReconciliationThread(intoSlug, actor ?? "system", `merged in "${fromSlug}"`);
-  }
+  // A fold that leaves the survivor disputed used to auto-open a talk
+  // reconciliation thread here. Removed with the other two call sites (DW-230):
+  // the talk HTTP surfaces are retired, so nothing could read it. The survivor's
+  // `disputed` frontmatter still records the contradiction, and `mergePages`
+  // still returns `disputed` to its caller.
 
   // 5. Delete the absorbed page (hard delete — its revisions + discussions go
   // with it; see the module note).

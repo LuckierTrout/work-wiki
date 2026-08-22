@@ -12,7 +12,7 @@ interface IngestSuccessProps {
 export function IngestSuccess({ slug, relatedUpdated, onReset }: IngestSuccessProps) {
   const { hrefForSlug } = useSlugTenants();
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
+    <div className="mx-auto max-w-3xl px-6 py-12">
       <div className="rounded-lg border border-foreground/10 p-8 text-center">
         <p className="text-2xl font-semibold">✓ Ingested as wiki page</p>
         <div className="mt-6 flex flex-col items-center gap-3">
@@ -44,10 +44,10 @@ export function IngestSuccess({ slug, relatedUpdated, onReset }: IngestSuccessPr
           )}
           <div className="flex gap-4 mt-2">
             <Link
-              href="/wiki"
+              href="/"
               className="text-sm text-foreground/60 hover:text-foreground transition-colors"
             >
-              Back to wiki
+              Back to home
             </Link>
             <button
               onClick={onReset}
@@ -58,6 +58,6 @@ export function IngestSuccess({ slug, relatedUpdated, onReset }: IngestSuccessPr
           </div>
         </div>
       </div>
-    </main>
+    </div>
   );
 }

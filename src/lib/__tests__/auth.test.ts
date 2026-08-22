@@ -7,8 +7,19 @@ vi.mock("@clerk/nextjs/server", () => ({
   currentUser: vi.fn(),
 }));
 
+const cookieValue = vi.hoisted(() => ({ current: undefined as string | undefined }));
+vi.mock("next/headers", () => ({
+  cookies: vi.fn(async () => ({
+    get: (name: string) =>
+      name === "yopedia_e2e" && cookieValue.current
+        ? { value: cookieValue.current }
+        : undefined,
+  })),
+}));
+
 import { getServicePrincipal, getPrincipal } from "../auth";
 import { auth, currentUser } from "@clerk/nextjs/server";
+import { mintE2eCookie } from "../e2e-identity";
 import { logger } from "../logger";
 
 const mockedAuth = vi.mocked(auth);
@@ -193,4 +204,43 @@ describe("getPrincipal", () => {
     warn.mockRestore();
     error.mockRestore();
   });
+
+  it("returns the local E2E owner without calling Clerk when the harness is armed", async () => {
+    const saved = {
+      flag: process.env.YOPEDIA_E2E,
+      secret: process.env.YOPEDIA_E2E_SECRET,
+      owner: process.env.YOPEDIA_OWNER_USER_ID,
+      site: process.env.YOPEDIA_SITE_URL,
+      handle: process.env.NEXT_PUBLIC_OWNER_HANDLE,
+    };
+    process.env.YOPEDIA_E2E = "1";
+    process.env.YOPEDIA_E2E_SECRET = "e2e-local-secret-do-not-use-in-prod-32";
+    process.env.YOPEDIA_OWNER_USER_ID = "user_e2e_owner";
+    delete process.env.YOPEDIA_SITE_URL;
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = "e2e-owner";
+    cookieValue.current = await mintE2eCookie(
+      "user_e2e_owner",
+      "e2e-local-secret-do-not-use-in-prod-32",
+    );
+    mockedAuth.mockClear();
+    try {
+      await expect(getPrincipal()).resolves.toEqual({
+        id: "user_e2e_owner",
+        handle: "e2e-owner",
+      });
+      expect(mockedAuth).not.toHaveBeenCalled();
+    } finally {
+      cookieValue.current = undefined;
+      restoreEnv("YOPEDIA_E2E", saved.flag);
+      restoreEnv("YOPEDIA_E2E_SECRET", saved.secret);
+      restoreEnv("YOPEDIA_OWNER_USER_ID", saved.owner);
+      restoreEnv("YOPEDIA_SITE_URL", saved.site);
+      restoreEnv("NEXT_PUBLIC_OWNER_HANDLE", saved.handle);
+    }
+  });
 });
+
+function restoreEnv(key: string, value: string | undefined) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}

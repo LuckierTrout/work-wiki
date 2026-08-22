@@ -9,6 +9,7 @@ import { stageBytes, stageText } from "@/lib/ingest-staging";
 import type { Task } from "@/lib/tasks";
 import {
   MAX_EMAIL_CONTENT_CHARS,
+  MAX_EMAIL_DOCUMENTS,
   emailJobId,
   loadEmailIngestConfig,
   normalizeEmailAddress,
@@ -17,6 +18,8 @@ import {
   senderIsAllowed,
 } from "@/lib/email-ingest";
 import { getErrorMessage } from "@/lib/errors";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { logger } from "@/lib/logger";
 import { addAgentLearningPage, getAgent } from "@/lib/agents";
 import {
@@ -26,7 +29,6 @@ import {
 import { addToVault, getVault, vaultOwnedBy } from "@/lib/vault";
 
 const MAX_INLINE_CONTENT_CHARS = 96_000;
-const MAX_EMAIL_DOCUMENTS = 10;
 
 interface EmailPayload {
   from: string;
@@ -36,6 +38,30 @@ interface EmailPayload {
   content: string;
   attachmentNames: string[];
   attachments: File[];
+  /**
+   * What the inbound Worker never forwarded — unsupported parts plus supported
+   * ones it dropped at its own per-email cap. Both payload branches read it, so
+   * it is absent only when a caller omits the field or sends an unusable value
+   * (non-numeric, non-finite, or negative); the route then falls back to
+   * deriving a minimum from the recorded names.
+   */
+  skippedAttachmentCount?: number;
+}
+
+/**
+ * Missing, non-numeric, non-finite and negative values are all "absent", not
+ * zero: an unparseable field must fall back to the local subtraction rather than
+ * silently reporting that nothing was skipped. One guard for both payload
+ * branches, so the JSON number and the multipart string cannot diverge.
+ */
+function parseSkippedCount(value: unknown): number | undefined {
+  const raw =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : NaN;
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : undefined;
 }
 
 async function parsePayload(request: Request): Promise<EmailPayload> {
@@ -59,6 +85,7 @@ async function parsePayload(request: Request): Promise<EmailPayload> {
         form.getAll("attachmentName").filter((entry): entry is string => typeof entry === "string"),
       ),
       attachments,
+      skippedAttachmentCount: parseSkippedCount(form.get("skippedAttachmentCount")),
     };
   }
 
@@ -75,6 +102,7 @@ async function parsePayload(request: Request): Promise<EmailPayload> {
         : [],
     ),
     attachments: [],
+    skippedAttachmentCount: parseSkippedCount(body.skippedAttachmentCount),
   };
 }
 
@@ -82,6 +110,20 @@ export async function POST(request: Request) {
   const principal = getServicePrincipal(request);
   if (!principal) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Deployment read-only (DW-187). Answered here, after the 401 and before the
+  // payload is parsed, because this door meets BOTH halves of the rule:
+  //   - IRREVERSIBLE WORK ALREADY COMMITTED: an ingest-job record is created and
+  //     every supported attachment is staged to R2 before `ingest()` is reached,
+  //     so a kernel-only refusal strands both on every inbound message.
+  //   - EXPENSIVE, FAILABLE WORK FIRST: document extraction and two LLM calls
+  //     run ahead of the page write.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.ingest },
+      { status: 403 },
+    );
   }
 
   try {
@@ -231,6 +273,21 @@ export async function POST(request: Request) {
       task.staged = { key, kind: "text" };
     }
 
+    // The Worker's count and the route's own rejections are disjoint losses: the
+    // Worker reports what it never forwarded, and the route can additionally drop
+    // a forwarded file that fails `isSupportedDocument`. Sum them — and never
+    // report below what is locally derivable, so a caller that sends no count (or
+    // an implausibly low one) still gets an honest floor.
+    const localSkipped = Math.max(0, attachmentNames.length - attachments.length);
+    const skippedAttachmentCount =
+      payload.skippedAttachmentCount === undefined
+        ? localSkipped
+        : Math.max(
+            localSkipped,
+            payload.skippedAttachmentCount +
+              Math.max(0, payload.attachments.length - attachments.length),
+          );
+
     const response = await enqueueOrInline(jobId, task, async () => {
       let combined = content;
       const documentSources: DocumentSourceInput[] = [];
@@ -265,9 +322,18 @@ export async function POST(request: Request) {
       ...responseBody,
       accepted: true,
       supportedAttachmentCount: attachments.length,
-      skippedAttachmentCount: Math.max(0, attachmentNames.length - attachments.length),
+      skippedAttachmentCount,
     }, { status: response.status });
   } catch (error) {
+    // Mid-request flag flip: the gate above already answered for a deployment
+    // that was read-only on arrival, so a `ReadOnlyError` here came from the
+    // kernel page writer. It is a refusal, not a server fault.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json(
+        { error: getErrorMessage(error) },
+        { status: 403 },
+      );
+    }
     logger.error("email-ingest", "email ingest request failed", error);
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }

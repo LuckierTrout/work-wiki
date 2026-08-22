@@ -64,6 +64,7 @@ import {
   FixValidationError,
   FixNotFoundError,
 } from "../lint-fix";
+import { ALL_CHECK_TYPES, AUTO_FIXABLE_CHECK_TYPES } from "../lint-types";
 
 const mockedReadWikiPage = vi.mocked(readWikiPage);
 const mockedReadWikiPageWithFrontmatter = vi.mocked(readWikiPageWithFrontmatter);
@@ -826,6 +827,34 @@ describe("fixLintIssue", () => {
     expect(mockedWriteWikiPageWithSideEffects).toHaveBeenCalledOnce();
   });
 
+  it("dispatches broken-link to fixBrokenLink, REMOVING the dead link", async () => {
+    // The one entry with no dispatcher case before this. `fixBrokenLink` and
+    // `fixMissingCrossRef` share the `(slug, targetSlug, author)` signature, so
+    // wiring `"broken-link"` to the wrong one keeps `tsc` clean while inverting
+    // the fix — appending a link where it should strip one. Asserting the
+    // written CONTENT is what tells the two apart; a returned `FixResult` does
+    // not.
+    mockedReadWikiPage.mockResolvedValue({
+      slug: "src",
+      title: "Src",
+      content: "# Src\n\nSee [the target](gone.md) and [a live one](tgt.md).",
+      path: "/wiki/src.md",
+    });
+
+    const result = await fixLintIssue("broken-link", "src", "gone");
+
+    expect(result.success).toBe(true);
+    expect(mockedWriteWikiPageWithSideEffects).toHaveBeenCalledOnce();
+    const written = mockedWriteWikiPageWithSideEffects.mock.calls[0][0];
+    // The dead link is gone, its text kept…
+    expect(written.content).toContain("See the target and");
+    expect(written.content).not.toContain("gone.md");
+    // …and nothing was appended: a "## Related" section here would mean the
+    // cross-ref handler ran instead.
+    expect(written.content).not.toContain("## Related");
+    expect(written.content).toContain("[a live one](tgt.md)");
+  });
+
   it("dispatches contradiction to fixContradiction", async () => {
     mockedHasLLMKey.mockReturnValue(true);
     mockedReadWikiPage
@@ -935,15 +964,6 @@ describe("fixLintIssue", () => {
     );
   });
 
-  it("throws helpful FixValidationError for disputed-page type", async () => {
-    await expect(fixLintIssue("disputed-page", "some-slug")).rejects.toThrow(
-      FixValidationError,
-    );
-    await expect(fixLintIssue("disputed-page", "some-slug")).rejects.toThrow(
-      "Disputed pages cannot be auto-fixed",
-    );
-  });
-
   it("dispatches supersedes-dangling to fixSupersededDangling (clears the dead ref)", async () => {
     // Page declares supersedes: "ghost"; "ghost" has no page → dangling.
     mockedReadWikiPageWithFrontmatter.mockImplementation(async (slug: string) =>
@@ -970,6 +990,26 @@ describe("fixLintIssue", () => {
     );
   });
 
+  it("throws helpful FixValidationError for disputed-page type", async () => {
+    // Explicit branch, not the generic default: clearing `disputed` asserts a
+    // human reviewed the conflicting claims, so the error has to name that
+    // action rather than say "not supported".
+    await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
+      FixValidationError,
+    );
+    await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
+      "Disputed pages cannot be auto-fixed.",
+    );
+    await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
+      "clear the Disputed toggle in the page editor",
+    );
+    // The slug is interpolated, not a literal `<slug>` placeholder, so the
+    // PATCH the message names can be copy-pasted as-is.
+    await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
+      "PATCH /api/wiki/contested-page with metadata { disputed: false }",
+    );
+  });
+
   it("dispatches unmigrated-page to fixUnmigratedPage", async () => {
     mockedReadWikiPageWithFrontmatter.mockResolvedValue({
       slug: "old-page",
@@ -984,61 +1024,111 @@ describe("fixLintIssue", () => {
 
     expect(result.success).toBe(true);
     expect(result.slug).toBe("old-page");
-    expect(result.message).toContain("yopedia defaults");
+    expect(result.message).toContain("work-wiki defaults");
     expect(mockedWriteWikiPageWithSideEffects).toHaveBeenCalledOnce();
   });
 });
 
 // ---------------------------------------------------------------------------
-// UI fixable types consistency — ensure the LintIssueCard component declares
-// stale-page and unmigrated-page as fixable, matching backend support.
+// Human-only check types — every entry `AUTO_FIXABLE_CHECK_TYPES` does NOT name
+// must reject with its own explanation, never the generic fall-through.
 // ---------------------------------------------------------------------------
-describe("LintIssueCard fixable types consistency", () => {
-  // These mirror the sets in src/components/LintIssueCard.tsx.
-  // If the component changes, update these to match.
-  const uiFixableTypes = new Set([
-    "missing-crossref",
-    "orphan-page",
-    "stale-index",
-    "empty-page",
-    "contradiction",
-    "missing-concept-page",
-    "broken-link",
-    "stale-page",
-    "unmigrated-page",
-  ]);
 
-  const uiFixLabels: Record<string, string> = {
-    "missing-crossref": "Fix",
-    "orphan-page": "Add to index",
-    "stale-index": "Remove from index",
-    "empty-page": "Delete page",
-    "contradiction": "Resolve",
-    "missing-concept-page": "Create page",
-    "broken-link": "Remove link",
-    "stale-page": "Extend expiry",
-    "unmigrated-page": "Add defaults",
-  };
+/**
+ * This describe used to hold a hand-copy of `LintIssueCard`'s `fixableTypes` and
+ * `fixLabel` and assert them against each other — a literal compared to itself,
+ * which passed no matter how far either drifted from the dispatcher below. It is
+ * exactly how `supersedes-dangling` stayed button-less for so long (DW-229).
+ *
+ * The card's side is now asserted MOUNTED in
+ * `src/components/__tests__/lint-check-parity.test.tsx`, against
+ * `AUTO_FIXABLE_CHECK_TYPES`. What is left for this file is the other half: that
+ * the complement of that const — the types with no auto-fix — each reject for a
+ * stated reason. Without this, a check type could be dropped from both the
+ * handler table and the message map and land in the `default` arm, which reads
+ * "Auto-fix not supported for this issue type" and tells a user nothing about
+ * what to do instead. `tsc` closes `NOT_AUTO_FIXABLE`; this pins that the
+ * closure is reached at runtime rather than shadowed by the fall-through.
+ */
+describe("check types with no auto-fix", () => {
+  const HUMAN_ONLY_CHECK_TYPES = ALL_CHECK_TYPES.filter(
+    (type) => !(AUTO_FIXABLE_CHECK_TYPES as readonly string[]).includes(type),
+  );
 
-  it("includes stale-page in fixable types", () => {
-    expect(uiFixableTypes.has("stale-page")).toBe(true);
+  async function rejection(type: string): Promise<unknown> {
+    return fixLintIssue(type, "contested-page").then(
+      () => null,
+      (error: unknown) => error,
+    );
+  }
+
+  it("has some — the complement is not accidentally empty", () => {
+    expect(HUMAN_ONLY_CHECK_TYPES.length).toBeGreaterThan(0);
+    expect(HUMAN_ONLY_CHECK_TYPES.length).toBe(
+      ALL_CHECK_TYPES.length - AUTO_FIXABLE_CHECK_TYPES.length,
+    );
   });
 
-  it("includes unmigrated-page in fixable types", () => {
-    expect(uiFixableTypes.has("unmigrated-page")).toBe(true);
+  it.each(HUMAN_ONLY_CHECK_TYPES)(
+    "rejects with its own explanation, not the generic fall-through: %s",
+    async (type) => {
+      const error = await rejection(type);
+
+      expect(error).toBeInstanceOf(FixValidationError);
+      expect((error as Error).message).not.toContain(
+        "Auto-fix not supported for this issue type",
+      );
+      expect((error as Error).message).toMatch(/cannot be auto-fixed|human judgment/i);
+    },
+  );
+
+  it("gives each one a distinct message, so none is a copy-paste of another", async () => {
+    const messages = await Promise.all(
+      HUMAN_ONLY_CHECK_TYPES.map(async (type) =>
+        ((await rejection(type)) as Error).message,
+      ),
+    );
+
+    expect(new Set(messages).size).toBe(HUMAN_ONLY_CHECK_TYPES.length);
   });
 
-  it("has a descriptive label for stale-page", () => {
-    expect(uiFixLabels["stale-page"]).toBe("Extend expiry");
+  it("still interpolates the slug for disputed-page", async () => {
+    const error = await rejection("disputed-page");
+
+    expect((error as Error).message).toContain('"contested-page"');
+    expect((error as Error).message).toContain("/api/wiki/contested-page");
   });
 
-  it("has a descriptive label for unmigrated-page", () => {
-    expect(uiFixLabels["unmigrated-page"]).toBe("Add defaults");
+  it("does not dispatch a type that merely COERCES to a real one", async () => {
+    // `src/app/api/lint/fix/route.ts` destructures `type` off an unvalidated
+    // `await req.json()`, and `hasOwnProperty.call` runs its key through
+    // `ToPropertyKey` — so `["orphan-page"]` stringifies to `"orphan-page"`.
+    // The `switch (type)` this table replaced compared with `===` and rejected
+    // it; a bare table lookup would have MUTATED THE PAGE.
+    for (const coercible of [
+      ["orphan-page"] as unknown as string,
+      ["disputed-page"] as unknown as string,
+      { toString: () => "orphan-page" } as unknown as string,
+    ]) {
+      const error = await rejection(coercible);
+
+      expect(error).toBeInstanceOf(FixValidationError);
+      expect((error as Error).message).toBe(
+        "Auto-fix not supported for this issue type",
+      );
+    }
+    expect(mockedWriteWikiPageWithSideEffects).not.toHaveBeenCalled();
   });
 
-  it("every fixable type has a label", () => {
-    for (const type of uiFixableTypes) {
-      expect(uiFixLabels[type]).toBeDefined();
+  it("does not answer an inherited Object.prototype key as a fix", async () => {
+    // `type` arrives unvalidated from the API route; a bare table index would
+    // return `Object.prototype.constructor` here and then call it.
+    for (const key of ["constructor", "toString", "hasOwnProperty"]) {
+      const error = await rejection(key);
+      expect(error).toBeInstanceOf(FixValidationError);
+      expect((error as Error).message).toBe(
+        "Auto-fix not supported for this issue type",
+      );
     }
   });
 });

@@ -3,10 +3,16 @@
  *
  * A thin dispatcher: drains the `yopedia-tasks` Cloudflare Queue and POSTs each
  * message to the main work-wiki app's `/api/tasks/run` endpoint with the system
- * token. The actual work (reconcile / ingest) runs in the main app, which has
- * the full `src/lib` + OpenNext request context. This worker imports NO `src/lib`
- * code — that would transitively pull Clerk/Next and the OpenNext context a
- * standalone worker can't provide.
+ * token. The actual work runs in the main app, which has the full `src/lib` +
+ * OpenNext request context. The queue carries the `Task` union defined in
+ * `src/lib/tasks.ts` (the single source of truth — don't restate the kinds
+ * here): async ingestion, knowledge extraction/compilation, agent and research
+ * runs, source-monitor and integration/digest delivery, backups, and autonomous
+ * `maintain` upkeep. Dispatch itself is kind-agnostic — it forwards whatever it
+ * drains — with one exception: an `ingest` task carrying email metadata also
+ * gets a "Ready"/"Could not import" receipt mailed back (`notifyEmailReceipt`).
+ * It imports NO `src/lib` code, since that would transitively pull Clerk/Next
+ * and the OpenNext context a standalone worker can't provide.
  *
  * Ack/retry maps straight onto Cloudflare Queues semantics:
  *   - 2xx  → ack (done).
@@ -61,6 +67,9 @@ async function runTask(
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
+      // WIRE PROTOCOL — `src/app/api/tasks/run/route.ts` reads this exact
+      // name to drive retry accounting and the terminal-failure branch.
+      // AD-7: `X-Yopedia-*` headers are runtime identifiers, never renamed.
       "X-Yopedia-Queue-Attempt": String(message.attempts),
     },
     body: JSON.stringify(message.body),
@@ -80,7 +89,7 @@ async function runTask(
     if (message.attempts >= MAX_DELIVERY_ATTEMPTS) {
       await notifyEmailReceipt(env, message.body, {
         status: "failed",
-        detail: "Yopedia could not finish processing the message after several attempts.",
+        detail: "work-wiki could not finish processing the message after several attempts.",
       }).catch((error) =>
         console.error(`task-consumer: final failure email failed for ${message.id}`, error),
       );
@@ -108,7 +117,7 @@ async function runTask(
     console.warn(`task-consumer: poison ${message.id} (${res.status}): ${snip}`);
     await notifyEmailReceipt(env, message.body, {
       status: "failed",
-      detail: snip || `Yopedia rejected the message (${res.status}).`,
+      detail: snip || `work-wiki rejected the message (${res.status}).`,
     }).catch((error) =>
       console.error(`task-consumer: failure email failed for ${message.id}`, error),
     );
@@ -122,7 +131,7 @@ async function runTask(
     const snip = (await res.text().catch(() => "")).slice(0, 200).replace(/\s+/g, " ");
     await notifyEmailReceipt(env, message.body, {
       status: "failed",
-      detail: snip || "Yopedia could not finish processing the message after several attempts.",
+      detail: snip || "work-wiki could not finish processing the message after several attempts.",
     }).catch((error) =>
       console.error(`task-consumer: final failure email failed for ${message.id}`, error),
     );
@@ -174,7 +183,7 @@ async function notifyEmailReceipt(
       from,
       to: email.from,
       subject: `Could not import: ${email.subject}`,
-      text: `Yopedia could not finish processing your email.\n\n${detail || "Open Recent ingests in Settings for more detail."}`,
+      text: `work-wiki could not finish processing your email.\n\n${detail || "Open Recent ingests in Settings for more detail."}`,
     });
     return;
   }
@@ -183,7 +192,12 @@ async function notifyEmailReceipt(
   if (!slug) return;
 
   const site = (env.YOPEDIA_SITE_URL || env.YOPEDIA_URL || "").replace(/\/+$/, "");
-  const pageUrl = site ? `${site}/wiki/${encodeURIComponent(slug)}` : slug;
+  // The public commons URL `/wiki/<slug>` is retired (404). Workers cannot
+  // import `src/lib`, so the owner-scoped form is inlined here: addressing a
+  // page through the default tenant `yopedia` is safe because
+  // `/u/[handle]/[slug]` 308-redirects a mismatched handle to the page's real
+  // tenant (the same mechanism `slugPath()` relies on).
+  const pageUrl = site ? `${site}/u/yopedia/${encodeURIComponent(slug)}` : slug;
   const attachmentNote = email.processedAttachmentCount
     ? `\n\n${email.processedAttachmentCount} supported attachment${email.processedAttachmentCount === 1 ? " was" : "s were"} included in the page.`
     : "";
@@ -191,7 +205,7 @@ async function notifyEmailReceipt(
     from,
     to: email.from,
     subject: `Ready: ${email.subject}`,
-    text: `Yopedia finished processing your email.\n\n${pageUrl}${attachmentNote}`,
+    text: `work-wiki finished processing your email.\n\n${pageUrl}${attachmentNote}`,
   });
 }
 
@@ -215,9 +229,14 @@ export default {
     }
   },
 
-  // Autonomous-maintenance cron (Q2). POSTs the scanner, which enqueues
-  // `maintain` tasks — or dry-runs (logs only) when AUTONOMOUS_MAINTENANCE isn't
-  // "on" in the main app. So this is safe to run on schedule before it's enabled.
+  // Autonomous-maintenance cron (Q2). POSTs the scanner. Only its `maintain`
+  // tasks are gated on AUTONOMOUS_MAINTENANCE — they dry-run (logs only) while
+  // the flag is off in the main app. The scan's other enqueues (`run-agent`,
+  // `monitor-source`, digest/outbox delivery, backups) are gated on `?dry=1`
+  // alone, so they fire on every tick regardless of the flag; see
+  // `src/app/api/tasks/scan/route.ts`. Safe to schedule before enabling the
+  // flag in the sense that no autonomous page edits happen — not in the sense
+  // that the scan does nothing.
   async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
     const base = (env.YOPEDIA_URL ?? "").replace(/\/+$/, "");
     const token = env.YOPEDIA_SERVICE_TOKEN;

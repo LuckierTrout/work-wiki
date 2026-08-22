@@ -65,10 +65,10 @@ These were added in Phase 1 of the work-wiki pivot.
 | `valid_from` | ISO date string (YYYY-MM-DD) | Today (ingest date) | Initial ingest and re-ingest (always resets to today — the content is re-verified) | `stale-page` lint check (flags pages verified over 180 days ago); page view temporal range ("Verified May 2026 · Review by Oct 2026") |
 | `owner` | string (principal handle) | the acting user (`"system"` for legacy/MCP) | Set from the authenticated session on write (never client-supplied); preserved on re-ingest | Accountability; basis (with `contributors`) for the "Mine" personal lens |
 | `visibility` | `"public"` \| `"private"` | `"public"` | Set on create; preserved on re-ingest (a private page is never silently re-published). `private` is a future paid feature | Read filtering (future, when private content lands) |
-| `authors` | string array | the acting user (`["system"]` for legacy/MCP) | Initial ingest from the session actor; preserved on re-ingest (never reset) | `/wiki/contributors` page, `ContributorBadge` component, contributor profiles API |
-| `contributors` | string array | `[]` | Re-ingest / edit appends the acting identity (session principal) if not already present | `/wiki/contributors` page, `ContributorBadge` component, contributor profiles API |
+| `authors` | string array | the acting user (`["system"]` for legacy/MCP) | Initial ingest from the session actor; preserved on re-ingest (never reset) | The contributor index (maintained on every write and rebuilt by the daily maintenance scan) and the contributor profiles computed from it — no product surface renders them today; the author union when two pages merge; the CLI page view's `Authors:` line |
+| `contributors` | string array | `[]` | Re-ingest / edit appends the acting identity (session principal) if not already present | The contributor index (maintained on every write and rebuilt by the daily maintenance scan) and the contributor profiles computed from it — no product surface renders them today; the contributor union when two pages merge; basis (with `owner`) for the "Mine" personal lens |
 | `content_hash` | string (FNV-1a hex) | hash of the ingested content | Set on ingest | Ingest dedup (`source_index`): identical content attaches to the existing page instead of re-synthesizing |
-| `disputed` | boolean | `false` | Set manually or by future contradiction resolution; preserved on re-ingest | `disputed-page` lint check; talk page system (`discuss/` directory); wiki page view warning badge |
+| `disputed` | boolean | `false` | Set by ingest when a merge contradicts the existing page (or manually); nothing clears it automatically; preserved on re-ingest | Wiki page view warning badge (the `ArticleView` disputed banner); `disputed-page` lint check (lists the flagged pages for an owner to reconcile) |
 | `supersedes` | string (slug) | `""` (empty) | Set manually when a page replaces another; preserved on re-ingest | Future redirect system |
 | `aliases` | string array | `[]` | Set manually for alternative names; preserved on re-ingest | Alias index for entity deduplication at ingest time; `duplicate-entity` lint check; search resolution |
 | `sources` | JSON string (SourceEntry[]) | `"[]"` | Ingest appends a new entry; re-ingest appends if the source URL is new | Wiki page view provenance section; parseSources() in `src/lib/sources.ts` |
@@ -190,16 +190,21 @@ with 100 edits and 5 reverts has trust 0.5.
 **Revert detection:** A revision counts as "reverted" when a subsequent revision
 by a different author reduces content size by more than 50%.
 
-**API routes:**
+**Retired surfaces:** the public contributor UI and its REST routes were cut
+with the move to a private, single-owner Workbench. `GET /api/contributors`,
+`GET /api/contributors/:handle` and the `/wiki/contributors` index page are all
+entries in `RETIRED_SURFACES` (`src/lib/retired.ts`). The two REST routes answer
+a bodiless 404 through `retiredRoute()`; the page body is `retiredPage()`, which
+is Next's `notFound()`, so it renders the app's own 404 UI. There is no
+`/wiki/contributors/:handle` detail page, and the `ContributorBadge` component
+no longer exists anywhere in `src/`.
 
-- `GET /api/contributors` — list all contributors, sorted by edit count
-- `GET /api/contributors/:handle` — single contributor profile
-
-**UI:** Contributor index page at `/wiki/contributors` lists all contributors
-with trust badges. Detail pages at `/wiki/contributors/:handle` show full stats
-(edit count, pages edited, comments, threads created, reverts if non-zero,
-first/last seen dates). `ContributorBadge` components on wiki pages link through
-to contributor detail pages.
+**Still live:** the library underneath. `buildContributorProfile()` and
+`listContributors()` in `src/lib/contributors.ts` are still exported and still
+compute the profile above (trust score, edit and comment counts, threads
+created, reverts, first/last seen), and the scan they share
+(`computeScanData()`) still backs `src/lib/contributor-index.ts`, which the
+maintenance scan rebuilds daily. No product surface renders them today.
 
 ## Revision attribution (Phase 2)
 
@@ -593,18 +598,10 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
   frontmatter fields (`confidence`, `expiry`, `authors`), indicating it
   predates the schema migration. Auto-fix: add sensible defaults
   (confidence 0.5, expiry 90 days out, authors `["system"]`, etc.).
-- **`unresolved-discussions`** (warning) — page has open (unresolved)
-  discussion threads on its talk page. No auto-fix — requires reviewing
-  and resolving the open threads on the talk page.
-- **`disputed-page`** (warning) — page has `disputed: true` in its
-  frontmatter, indicating unresolved contradictions. Reports whether
-  the page has open discussion threads to resolve the dispute or needs
-  one opened. No auto-fix — requires reviewing the page content and
-  talk page to resolve the dispute through discussion.
 - **`supersedes-dangling`** (warning) — page declares a `supersedes` field
   pointing to a slug that doesn't exist on disk. The supersession chain is
-  broken. No auto-fix — create the target page or remove the `supersedes`
-  field.
+  broken. Auto-fix: clear the dead reference (re-verified missing before
+  clearing).
 - **`incomplete-coverage`** (info) — LLM comparison of raw source content
   (`raw/<slug>.md`) against the corresponding wiki page (`wiki/<slug>.md`)
   flags cases where significant information from the source is absent from
@@ -613,6 +610,15 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
   source on disk. Requires an LLM key; skipped when no key is configured.
   No auto-fix — requires re-ingesting with an updated prompt or manually
   adding the missing content.
+- **`disputed-page`** (warning) — page's `disputed` frontmatter flag is `true`:
+  a merge contradicted the existing page (or someone set the flag by hand) and
+  no review has cleared it. The flag is never cleared automatically, and this
+  is the first surface to report the flagged pages unprompted as actionable
+  issues (a dataview `queryByFrontmatter` filter can also list them on
+  request). No auto-fix —
+  clearing `disputed` asserts a human reconciled the conflicting claims, done
+  via the Disputed toggle in the page editor (`PATCH /api/wiki/<slug>` with
+  metadata `{ disputed: false }`).
 
 ## Provider configuration
 
@@ -644,10 +650,10 @@ sessions should pick from this list:
   via RRF. Batch rebuild of the full vector index is available via the Settings
   page (`/api/settings/rebuild-embeddings`).
   Anthropic-only users see no regression (pure BM25 fallback).
-- Lint auto-fix handles nine of sixteen checks (`orphan-page`, `stale-index`,
+- Lint auto-fix handles ten of fifteen checks (`orphan-page`, `stale-index`,
   `empty-page`, `broken-link`, `missing-crossref`, `contradiction`,
-  `missing-concept-page`, `stale-page`, `unmigrated-page`) via
-  `POST /api/lint/fix`.
+  `missing-concept-page`, `stale-page`, `unmigrated-page`,
+  `supersedes-dangling`) via `POST /api/lint/fix`.
   The `contradiction` fix uses the LLM to rewrite the affected page.
   The `missing-concept-page` fix generates a stub page via the LLM.
   The `broken-link` fix removes broken links from the source page.
@@ -655,15 +661,14 @@ sessions should pick from this list:
   refreshes `valid_from` to today.
   The `unmigrated-page` fix adds sensible work-wiki defaults (confidence 0.5,
   expiry 90 days out, authors `["system"]`).
-  The seven exceptions without auto-fix are: `low-confidence` (requires
+  The `supersedes-dangling` fix clears the dead reference (re-verified
+  missing before clearing).
+  The five exceptions without auto-fix are: `low-confidence` (requires
   ingesting additional sources), `duplicate-entity` (requires human judgment
   to merge), `uncited-claims` (requires adding citations or ingesting
-  sources), `unresolved-discussions` (requires reviewing and resolving
-  open threads on the talk page), `disputed-page` (requires resolving
-  the dispute through discussion), `supersedes-dangling` (requires
-  creating the target page or removing the supersedes field), and
-  `incomplete-coverage` (requires ingesting additional sources to
-  improve topic coverage).
+  sources), `incomplete-coverage` (requires ingesting additional sources
+  to improve topic coverage), and `disputed-page` (requires an owner to
+  reconcile the conflicting claims and clear the flag).
 - Long documents are chunked at ingest time (12K chars per chunk ≈ 3K
   tokens) so they fit within provider context windows. Token counting is
   character-based (not tokenizer-exact), which is conservative but not

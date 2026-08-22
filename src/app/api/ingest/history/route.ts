@@ -7,6 +7,7 @@ import {
   readWikiPageWithFrontmatter,
 } from "@/lib/wiki";
 import { canWriteFrontmatter } from "@/lib/authz";
+import { resolveWriteDenial } from "@/lib/write-denial";
 import {
   deleteIngestJob,
   getIngestJob,
@@ -14,8 +15,24 @@ import {
 } from "@/lib/ingest-jobs";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 
 const MAX_BULK_DELETE = 50;
+
+/**
+ * The one sentence this route answers for "that is not a selection you can
+ * make" — a missing ledger entry, a job that is not yours, and (since DW-270) a
+ * job whose page you may not read.
+ *
+ * ONE CONSTANT BECAUSE THE THREE MUST BE INDISTINGUISHABLE. The read gate's
+ * whole job is to make an unreadable page look like an unselectable one; three
+ * hand-typed literals could drift a word apart and turn the 404 back into the
+ * existence oracle it exists to prevent. Deliberately vague about WHICH
+ * selection failed and why — naming the entry would answer the question the
+ * cloak is refusing.
+ */
+const SELECTION_NOT_FOUND = "One or more selected ingests were not found.";
 
 function parseIdList(
   value: unknown,
@@ -81,7 +98,15 @@ export async function GET(request: NextRequest) {
       .filter((e) => e.primary_slug && readable.has(e.primary_slug))
       .slice(0, limit ?? 50);
 
-    return NextResponse.json({ entries });
+    // The deployment fact, carried on the answer the surface already asks for
+    // (DW-265). `/ingest` is a `"use client"` page all the way down, so
+    // `isReadOnly()` — which reads `process.env` — cannot be evaluated where
+    // `RecentIngests` renders, and no prop can reach it from a server component.
+    // Riding along on the GET the list already makes is the same seam
+    // `/api/workspace-profile` gives `WorkspacePurposeSettings`: no extra
+    // request, and the fact arrives from the very route whose DELETE would
+    // refuse.
+    return NextResponse.json({ entries, readOnly: isReadOnly() });
   } catch (error) {
     logger.error("ingest", "Ingest history GET error", error);
     return NextResponse.json(
@@ -108,6 +133,19 @@ export async function DELETE(request: NextRequest) {
   const principal = await getPrincipal();
   if (!principal) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Deployment read-only (DW-187), answered BEFORE any mutation — and this is
+  // the one door where the kernel's own refusal arrives too late to be correct.
+  // `deleteWikiPage` failures are swallowed per-slug into `failed` below and the
+  // handler still returns 200, and `deleteIngestJob` is NOT a kernel writer, so
+  // a kernel-only refusal would clear every selected ingest job and answer 200
+  // with a `failed` list. An early refusal is what keeps the batch atomic.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.bulkPageDelete },
+      { status: 403 },
+    );
   }
 
   let body: unknown;
@@ -159,7 +197,7 @@ export async function DELETE(request: NextRequest) {
       )
     ) {
       return NextResponse.json(
-        { error: "One or more selected ingests were not found." },
+        { error: SELECTION_NOT_FOUND },
         { status: 404 },
       );
     }
@@ -169,7 +207,7 @@ export async function DELETE(request: NextRequest) {
       const job = await getIngestJob(jobId);
       if (!job || job.owner !== principal.handle) {
         return NextResponse.json(
-          { error: "One or more selected ingests were not found." },
+          { error: SELECTION_NOT_FOUND },
           { status: 404 },
         );
       }
@@ -192,9 +230,54 @@ export async function DELETE(request: NextRequest) {
     for (const slug of slugs) {
       const page = await readWikiPageWithFrontmatter(slug);
       if (!page) continue; // Already gone: clear its terminal UI record below.
-      if (!canWriteFrontmatter(page.frontmatter, principal, "delete")) {
+      // THE READ CLOAK, and it lands HERE for two reasons (DW-270).
+      //
+      // WHY IT WAS NEEDED. `ingestIds` were already safe: the preflight above
+      // 404s any entry whose page is outside `listReadableWikiPages`. `jobIds`
+      // were not — the only gate they pass is `job.owner !== principal.handle`,
+      // a check on the JOB record, so a caller who owned a job whose page they
+      // may not read reached the ACL below holding that page. This route was
+      // the one deny site in the app that could describe a page the caller was
+      // never allowed to learn existed.
+      //
+      // WHY IN THIS LOOP RATHER THAN IN THE `jobIds` PREFLIGHT. The loop
+      // already reads each page, so the check costs nothing and covers BOTH
+      // selection paths in one place — "everything that reaches the delete ACL
+      // is readable" is now true for either way a slug got here. And it sits
+      // AFTER `if (!page) continue`, which preserves the already-gone cleanup
+      // that only the `jobIds` path exercises: a done job whose page has since
+      // been deleted is not readable, and a flat gate up in the preflight would
+      // 404 exactly those records instead of clearing them.
+      //
+      // The sentence is `SELECTION_NOT_FOUND`, the same constant both preflights
+      // answer — an unreadable page must look like an unselectable one, not like
+      // a permission the caller lacks.
+      //
+      // WHAT THIS ORDERING KNOWINGLY LEAVES BEHIND. Because the gate sits after
+      // `if (!page) continue`, a `jobIds` selection whose page EXISTS but is
+      // unreadable answers 404, while one whose page is already GONE answers
+      // 200 — so a caller who owns the job can still tell those two apart. That
+      // is a deliberate trade, not an oversight: the only way to close it is to
+      // gate before the cleanup branch, which would 404 every already-gone
+      // record instead of clearing it and break the one repair this route
+      // exists to perform. The residue is narrow — it leaks "a page still
+      // exists at this slug" to someone who already holds a job record naming
+      // that slug, and nothing about the page's owner, realm or contents.
+      if (!readable.has(slug)) {
         return NextResponse.json(
-          { error: "You don't have permission to delete one or more selected pages." },
+          { error: SELECTION_NOT_FOUND },
+          { status: 404 },
+        );
+      }
+      if (!canWriteFrontmatter(page.frontmatter, principal, "delete")) {
+        // Read-cloaked above, so the resolver may name this page's realm: a
+        // readable page that the delete ACL still refuses is a realm page, and
+        // the resolver re-derives that from the frontmatter rather than
+        // inheriting it from this comment.
+        return NextResponse.json(
+          {
+            error: resolveWriteDenial("bulkDelete", page.frontmatter, "delete"),
+          },
           { status: 403 },
         );
       }
@@ -255,6 +338,15 @@ export async function DELETE(request: NextRequest) {
       rawSourcesRetained: true,
     });
   } catch (error) {
+    // The flag can only have flipped mid-request to reach here, but the answer
+    // still belongs at 403 rather than 500 — the outer catch is the only thing
+    // standing between the kernel's refusal and a server-error page.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json(
+        { error: getErrorMessage(error) },
+        { status: 403 },
+      );
+    }
     logger.error("ingest", "Bulk ingest delete failed", error);
     return NextResponse.json(
       { error: getErrorMessage(error) },

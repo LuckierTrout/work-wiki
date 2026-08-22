@@ -1,14 +1,45 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@/lib/ingest", () => ({ readLedger: vi.fn() }));
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
-vi.mock("@/lib/wiki", () => ({
-  deleteWikiPage: vi.fn(),
-  listReadableWikiPages: vi.fn(),
-  readWikiPageWithFrontmatter: vi.fn(),
+/**
+ * `@/lib/wiki` is stubbed down to the three functions this route calls — plus
+ * the two pure `type` predicates `belongsInCommons` re-exports from it. Those
+ * are needed because the route's 403 sentence is now resolved through the REAL
+ * realm predicate (below): with them missing, `belongsInCommons` would call
+ * `undefined` and this route would answer 500 where it means 403. They are
+ * taken from `@/lib/page-types`, the client-safe module `wiki.ts` itself
+ * re-exports them from, so no logic is restated here.
+ */
+vi.mock("@/lib/wiki", async () => {
+  const { isAgentScopedType, isArtifactType } = await import("@/lib/page-types");
+  return {
+    deleteWikiPage: vi.fn(),
+    listReadableWikiPages: vi.fn(),
+    readWikiPageWithFrontmatter: vi.fn(),
+    isAgentScopedType,
+    isArtifactType,
+  };
+});
+/**
+ * PARTIAL, not total: `canWriteFrontmatter` is the gate each case below drives,
+ * but `isRealmRestrictedWrite` — which `resolveWriteDenial` consults to decide
+ * whether this route's 403 may name the page's realm — must stay REAL.
+ *
+ * DW-270 gave this route a read cloak (`readable.has(slug)` in the ACL loop),
+ * so it is no longer the one deny site without one — but the reason to keep the
+ * predicate real did not go away, it moved. The read gate and the realm
+ * sentence are now two independent guards on the same leak, and this suite
+ * drives cases on both sides of the gate: a stubbed realm predicate would let
+ * the 403 branch describe a page's realm without ever evaluating it, and the
+ * only case that would catch it is the one where the gate has already passed.
+ * Stubbing both would leave nothing checking either.
+ */
+vi.mock("@/lib/authz", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/authz")>()),
+  canWriteFrontmatter: vi.fn(),
 }));
-vi.mock("@/lib/authz", () => ({ canWriteFrontmatter: vi.fn() }));
 vi.mock("@/lib/ingest-jobs", () => ({
   deleteIngestJob: vi.fn(),
   getIngestJob: vi.fn(),
@@ -26,7 +57,8 @@ import {
 } from "@/lib/wiki";
 import { canWriteFrontmatter } from "@/lib/authz";
 import { deleteIngestJob, getIngestJob } from "@/lib/ingest-jobs";
-import { DELETE } from "@/app/api/ingest/history/route";
+import { DELETE, GET } from "@/app/api/ingest/history/route";
+import { WRITE_DENIAL, WRITE_DENIAL_REALM } from "@/lib/write-denial";
 
 const mockedReadLedger = vi.mocked(readLedger);
 const mockedGetPrincipal = vi.mocked(getPrincipal);
@@ -48,6 +80,10 @@ const ledgerEntry = (id: string, slug: string) => ({
   status: "completed",
 });
 
+function historyRequest(): NextRequest {
+  return new NextRequest("http://localhost/api/ingest/history?limit=20");
+}
+
 function request(body: unknown): NextRequest {
   return new NextRequest("http://localhost/api/ingest/history", {
     method: "DELETE",
@@ -56,8 +92,25 @@ function request(body: unknown): NextRequest {
   });
 }
 
+let originalReadOnly: string | undefined;
+// The leak case below runs the REAL `canWriteFrontmatter`, and `isAdmin` reads
+// both of these at call time. Either exported on a developer's machine would
+// make the test principal an admin, turn its 403 into a delete, and hide the
+// leak this suite exists to guard — on that machine only.
+let originalAdmin: string | undefined;
+let originalOwnerHandle: string | undefined;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  originalAdmin = process.env.ADMIN_HANDLES;
+  originalOwnerHandle = process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  delete process.env.ADMIN_HANDLES;
+  delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  // Cleared rather than inherited: every case but the read-only one asserts
+  // what an ordinary deployment does, so a value exported in a developer's
+  // shell would turn this file red there and nowhere else.
+  originalReadOnly = process.env.YOPEDIA_READONLY;
+  delete process.env.YOPEDIA_READONLY;
   mockedGetPrincipal.mockResolvedValue({ id: "owner-id", handle: "owner" });
   mockedReadLedger.mockResolvedValue([ledgerEntry("ing-a", "page-a")]);
   mockedListReadable.mockResolvedValue([
@@ -79,6 +132,15 @@ beforeEach(() => {
   });
   mockedGetJob.mockResolvedValue(null);
   mockedDeleteJob.mockResolvedValue(true);
+});
+
+afterEach(() => {
+  if (originalReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+  else process.env.YOPEDIA_READONLY = originalReadOnly;
+  if (originalAdmin === undefined) delete process.env.ADMIN_HANDLES;
+  else process.env.ADMIN_HANDLES = originalAdmin;
+  if (originalOwnerHandle === undefined) delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  else process.env.NEXT_PUBLIC_OWNER_HANDLE = originalOwnerHandle;
 });
 
 describe("DELETE /api/ingest/history", () => {
@@ -123,6 +185,184 @@ describe("DELETE /api/ingest/history", () => {
     const response = await DELETE(request({ ingestIds: ["ing-a"] }));
     expect(response.status).toBe(403);
     expect(mockedDeletePage).not.toHaveBeenCalled();
+  });
+
+  /**
+   * DW-122/DW-270 — the sentence this door answers, and the page it may never
+   * describe at all.
+   *
+   * Every realm deny read-cloaks the page before the ACL runs, which is what
+   * makes "this page is public knowledge" provable. This door was the last one
+   * cloaked on only ONE of its two selection paths:
+   *
+   *   - `ingestIds` are preflighted against `listReadableWikiPages` and 404 for
+   *     a page the caller cannot read, so they arrive readable.
+   *   - `jobIds` pass only `job.owner !== principal.handle` — a check on the
+   *     JOB record — and the job's `slug` page was never read-gated. A caller
+   *     who owned a job whose page they may not read reached the delete ACL
+   *     holding an unreadable page.
+   *
+   * DW-270 closed that with a `readable.has(slug)` check inside the ACL loop,
+   * so the second case below is now a 404 rather than a 403 whose silence had
+   * to be argued from the resolver. The realm explanation is still earned per
+   * page from the predicate rather than assumed from the fact of a refusal.
+   */
+  it("explains the realm when a selected page really is public knowledge", async () => {
+    mockedCanWrite.mockReturnValue(false);
+    mockedReadPage.mockResolvedValue({
+      slug: "page-a",
+      title: "Page A",
+      content: "---\nowner: alice\n---\n# Page A",
+      path: "/test/wiki/page-a.md",
+      body: "# Page A",
+      frontmatter: { owner: "alice", visibility: "public" },
+    });
+
+    const response = await DELETE(request({ ingestIds: ["ing-a"] }));
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toBe(WRITE_DENIAL_REALM.bulkDelete);
+  });
+
+  it("404s a jobIds selection whose page the caller cannot read (DW-270)", async () => {
+    // THE FORMER LEAK PATH, driven end to end.
+    //
+    // `owner` owns job-a, so it clears the only gate the `jobIds` path has —
+    // but the job's page belongs to BOB and is private, so it is absent from
+    // `listReadableWikiPages`. Before DW-270 nothing read-gated it and the
+    // route answered a 403 whose silence depended entirely on the resolver
+    // picking the generic sentence. Now the page never reaches the ACL: the
+    // answer is the same 404 selection sentence the two preflights use, so an
+    // unreadable page looks like an unselectable one.
+    //
+    // The real `canWriteFrontmatter` is restored for this case (the shared stub
+    // is what makes the other cases synthetic), so a regression that dropped
+    // the read gate would fall through to the predicate's own 403 and fail
+    // here on the status rather than passing by accident.
+    const actualAuthz =
+      await vi.importActual<typeof import("@/lib/authz")>("@/lib/authz");
+    mockedCanWrite.mockImplementation(actualAuthz.canWriteFrontmatter);
+    mockedGetJob.mockResolvedValue({
+      jobId: "job-a",
+      owner: "owner",
+      status: "done",
+      slug: "bob-secret",
+      createdAt: "2026-08-06T10:00:00.000Z",
+      updatedAt: "2026-08-06T10:01:00.000Z",
+    });
+    mockedReadPage.mockResolvedValue({
+      slug: "bob-secret",
+      title: "Bob Secret",
+      content: "---\nowner: bob\nvisibility: private\n---\n# Bob Secret",
+      path: "/test/wiki/bob-secret.md",
+      body: "# Bob Secret",
+      frontmatter: { owner: "bob", visibility: "private" },
+    });
+
+    const response = await DELETE(request({ jobIds: ["job-a"] }));
+    expect(response.status).toBe(404);
+    const { error } = await response.json();
+    expect(error).toBe("One or more selected ingests were not found.");
+    // Not a permission sentence, and not a description of the page: no realm,
+    // no slug, nothing that says the page exists.
+    expect(error).not.toBe(WRITE_DENIAL.bulkDelete);
+    expect(error).not.toMatch(/public knowledge/i);
+    expect(error).not.toMatch(/agent-maintained/i);
+    expect(error).not.toMatch(/permission/i);
+    expect(error).not.toMatch(/bob-secret/);
+    expect(mockedDeletePage).not.toHaveBeenCalled();
+    expect(mockedDeleteJob).not.toHaveBeenCalled();
+  });
+
+  it("still deletes a jobIds selection whose page the caller CAN read", async () => {
+    // The bound on the case above: the read gate must 404 the unreadable page
+    // and nothing else. Same shape, same real predicate — only the page's
+    // readability and ownership differ, and the batch goes through.
+    const actualAuthz =
+      await vi.importActual<typeof import("@/lib/authz")>("@/lib/authz");
+    mockedCanWrite.mockImplementation(actualAuthz.canWriteFrontmatter);
+    mockedListReadable.mockResolvedValue([
+      { slug: "owner-note", title: "Owner Note", summary: "" },
+    ]);
+    mockedGetJob.mockResolvedValue({
+      jobId: "job-ok",
+      owner: "owner",
+      status: "done",
+      slug: "owner-note",
+      createdAt: "2026-08-06T10:00:00.000Z",
+      updatedAt: "2026-08-06T10:01:00.000Z",
+    });
+    mockedReadPage.mockResolvedValue({
+      slug: "owner-note",
+      title: "Owner Note",
+      content: "---\nowner: owner\nvisibility: private\n---\n# Owner Note",
+      path: "/test/wiki/owner-note.md",
+      body: "# Owner Note",
+      frontmatter: { owner: "owner", visibility: "private" },
+    });
+    mockedDeletePage.mockResolvedValue({
+      slug: "owner-note",
+      removedFromIndex: true,
+      strippedBacklinksFrom: [],
+    });
+
+    const response = await DELETE(request({ jobIds: ["job-ok"] }));
+    expect(response.status).toBe(200);
+    expect(mockedDeletePage).toHaveBeenCalledWith("owner-note", "owner");
+    expect(mockedDeleteJob).toHaveBeenCalledWith("job-ok", "owner");
+  });
+
+  it("still clears a done job whose page is already gone (the cleanup DW-270 must not break)", async () => {
+    // The reason the read gate lives INSIDE the ACL loop, after
+    // `if (!page) continue`, rather than in the `jobIds` preflight. A done job
+    // whose page has since been deleted is not in `listReadableWikiPages` —
+    // there is no page to read — so a flat gate up front would 404 exactly the
+    // records this route exists to clean up.
+    mockedListReadable.mockResolvedValue([]);
+    mockedGetJob.mockResolvedValue({
+      jobId: "job-gone",
+      owner: "owner",
+      status: "done",
+      slug: "already-deleted",
+      createdAt: "2026-08-06T10:00:00.000Z",
+      updatedAt: "2026-08-06T10:01:00.000Z",
+    });
+    mockedReadPage.mockResolvedValue(null);
+
+    const response = await DELETE(request({ jobIds: ["job-gone"] }));
+    expect(response.status).toBe(200);
+    expect(mockedDeleteJob).toHaveBeenCalledWith("job-gone", "owner");
+    expect(mockedDeletePage).not.toHaveBeenCalled();
+  });
+
+  it("refuses the whole batch on a read-only deployment (DW-187)", async () => {
+    // This door KEEPS a route-level check after the kernel writers were gated
+    // (DW-188), and atomicity is the reason. `deleteWikiPage` failures are
+    // swallowed per-slug into `failed` and the handler still returns 200, and
+    // `deleteIngestJob` is not a kernel writer at all — so a kernel-only refusal
+    // would clear every selected ingest JOB, answer 200, and leave the owner
+    // with a half-applied batch.
+    process.env.YOPEDIA_READONLY = "1";
+    mockedGetJob.mockResolvedValue({
+      jobId: "job-done",
+      owner: "owner",
+      status: "done",
+      slug: "page-b",
+      createdAt: "2026-08-06T10:00:00.000Z",
+      updatedAt: "2026-08-06T10:01:00.000Z",
+    });
+
+    const response = await DELETE(
+      request({ ingestIds: ["ing-a"], jobIds: ["job-done"] }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(String((await response.json()).error)).toContain("read-only");
+    // Both halves of the batch survive — the page AND the ingest job.
+    expect(mockedDeletePage).not.toHaveBeenCalled();
+    expect(mockedDeleteJob).not.toHaveBeenCalled();
+    // Answered before any preflight read, so nothing about the ledger leaks
+    // either.
+    expect(mockedReadLedger).not.toHaveBeenCalled();
   });
 
   it("deletes unique generated pages, clears terminal jobs, and retains raw provenance", async () => {
@@ -183,5 +423,52 @@ describe("DELETE /api/ingest/history", () => {
     expect(data.deletedPageSlugs).toEqual(["page-a", "page-b"]);
     expect(data.failed).toEqual([]);
     expect(data.rawSourcesRetained).toBe(true);
+  });
+});
+
+/**
+ * `GET` carries the deployment's read-only state (DW-265).
+ *
+ * The PRODUCING side of the seam `RecentIngests` reads. `/ingest` is
+ * `"use client"` from the page down, so the fact cannot arrive as a prop and
+ * rides on this answer instead — and the mounted suite hand-stubs the payload,
+ * which means deleting `readOnly: isReadOnly()` from the handler would leave
+ * every assertion over there green while the DW-265 fix silently reverted. This
+ * is the case that fails instead.
+ */
+describe("GET /api/ingest/history serves the read-only fact", () => {
+  it("reports true on a read-only deployment, alongside the entries", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await GET(historyRequest());
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      entries: unknown[];
+      readOnly: boolean;
+    };
+    expect(body.readOnly).toBe(true);
+    // The READ is not refused — the flag rides along with the list rather than
+    // replacing it, which is the whole point of putting it here.
+    expect(body.entries).toHaveLength(1);
+  });
+
+  it("reports false when the flag is unset", async () => {
+    // The discriminator. Without it a handler hard-coding `readOnly: true`
+    // would satisfy the case above, and every surface would refuse forever.
+    const response = await GET(historyRequest());
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ readOnly: false });
+  });
+
+  it("still 401s an unauthenticated caller rather than answering the flag", async () => {
+    mockedGetPrincipal.mockResolvedValue(null);
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await GET(historyRequest());
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "Unauthorized" });
   });
 });

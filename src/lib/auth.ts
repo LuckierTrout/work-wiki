@@ -12,7 +12,13 @@
 // requirement is relaxed).
 
 import { auth, currentUser } from "@clerk/nextjs/server";
+import { cookies } from "next/headers";
 import { unstable_rethrow } from "next/navigation";
+import {
+  E2E_COOKIE_NAME,
+  isE2eIdentityArmed,
+  principalFromCookieValue,
+} from "./e2e-identity";
 import { logger } from "./logger";
 
 export interface Principal {
@@ -63,7 +69,22 @@ function resolveHandle(user: {
  * (e.g. the dynamic-rendering bailout) are re-thrown, not treated as auth
  * failures. See the body.
  */
+async function getE2ePrincipal(): Promise<Principal | null> {
+  if (!isE2eIdentityArmed()) return null;
+  try {
+    const jar = await cookies();
+    return await principalFromCookieValue(jar.get(E2E_COOKIE_NAME)?.value);
+  } catch {
+    // No request cookie store (a non-request scope, or a unit test). Fail
+    // closed into the Clerk path rather than inventing an owner.
+    return null;
+  }
+}
+
 export async function getPrincipal(): Promise<Principal | null> {
+  const e2e = await getE2ePrincipal();
+  if (e2e) return e2e;
+
   // getPrincipal is only ever called from request-scoped routes / server
   // components (the cron/queue worker uses getServicePrincipal instead), so at
   // runtime a request context always exists. The two Clerk calls still fail

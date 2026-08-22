@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 // ---------------------------------------------------------------------------
@@ -19,9 +19,24 @@ vi.mock("@/lib/ingest-staging", () => ({
   stageText: vi.fn(async () => "raw/uploads/job/text.md"),
 }));
 
-vi.mock("@/lib/wiki", () => ({
-  readWikiPageWithFrontmatter: vi.fn(),
-}));
+/**
+ * Stubbed down to the one function these routes call — plus the two pure `type`
+ * predicates `belongsInCommons` re-exports from `wiki.ts`. Those are needed
+ * because the re-ingest route's 403 sentence is resolved through the REAL realm
+ * predicate (DW-122): on a PUBLIC page `belongsInCommons` calls them, and with
+ * them missing the route would answer 500 where it means 403. (A private page
+ * short-circuits before either is reached, which is why the pre-existing cloak
+ * case never needed them.) They come from `@/lib/page-types`, the client-safe
+ * module `wiki.ts` itself re-exports them from, so no logic is restated here.
+ */
+vi.mock("@/lib/wiki", async () => {
+  const { isAgentScopedType, isArtifactType } = await import("@/lib/page-types");
+  return {
+    readWikiPageWithFrontmatter: vi.fn(),
+    isAgentScopedType,
+    isArtifactType,
+  };
+});
 
 vi.mock("@/lib/fetch", () => ({
   isUrl: (s: string) => s.startsWith("http://") || s.startsWith("https://"),
@@ -64,6 +79,7 @@ import { POST as POST_BATCH } from "@/app/api/ingest/batch/route";
 import { POST as POST_REINGEST } from "@/app/api/ingest/reingest/route";
 import type { IngestResult } from "@/lib/types";
 import { ClientInputError } from "@/lib/errors";
+import { WRITE_DENIAL_REALM } from "@/lib/write-denial";
 
 const mockedIngest = vi.mocked(ingest);
 const mockedIngestUrl = vi.mocked(ingestUrl);
@@ -74,6 +90,8 @@ const mockedGetServicePrincipal = vi.mocked(getServicePrincipal);
 const mockedEnqueue = vi.mocked(enqueueTask);
 const mockedCreateJob = vi.mocked(createIngestJob);
 const mockedVaultOwnedBy = vi.mocked(vaultOwnedBy);
+import { stageText } from "@/lib/ingest-staging";
+const mockedStageText = vi.mocked(stageText);
 
 function makeRequest(url: string, body: unknown, token?: string): NextRequest {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -612,6 +630,86 @@ describe("POST /api/ingest/batch — async (queue) mode", () => {
   });
 });
 
+// ===========================================================================
+// POST /api/ingest/batch — one guidance cache per REQUEST (DW-324)
+// ===========================================================================
+/**
+ * Without a request-scoped handle the queue-unavailable fallback resolves the
+ * Workspace Purpose and re-reads the Names & Terms dictionary from scratch for
+ * every URL in one HTTP request. `@/lib/ingest` is module-mocked here, so the
+ * route can only be observed through what it hands `ingestUrl` — and that is
+ * exactly the contract: every inline call gets the SAME handle object, and the
+ * queued path's task payload carries none (a queued task is a different request
+ * and must resolve fresh — a live `Map` could not be serialized onto a queue
+ * anyway).
+ */
+describe("POST /api/ingest/batch — request-scoped guidance cache", () => {
+  beforeEach(() => {
+    mockedEnqueue.mockClear();
+    mockedIngestUrl.mockClear();
+  });
+
+  it("hands every inline ingestUrl call the SAME handle", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    mockedIngestUrl.mockResolvedValue(fakeResult);
+
+    const res = await POST_BATCH(
+      makeRequest("http://localhost:3000/api/ingest/batch", {
+        urls: [
+          "https://example.com/a",
+          "https://example.com/b",
+          "https://example.com/c",
+        ],
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ mode: "inline", total: 3 });
+
+    expect(mockedIngestUrl).toHaveBeenCalledTimes(3);
+    const handles = mockedIngestUrl.mock.calls.map((call) => call[1]?.guidanceCache);
+    expect(handles[0]).toBeDefined();
+    // Identity, not shape: two fresh handles would look alike but would each
+    // pay their own reads.
+    expect(handles[1]).toBe(handles[0]);
+    expect(handles[2]).toBe(handles[0]);
+  });
+
+  it("mints a fresh handle per request, never reusing one across requests", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    mockedIngestUrl.mockResolvedValue(fakeResult);
+
+    const body = { urls: ["https://example.com/a"] };
+    await POST_BATCH(makeRequest("http://localhost:3000/api/ingest/batch", body));
+    await POST_BATCH(makeRequest("http://localhost:3000/api/ingest/batch", body));
+
+    expect(mockedIngestUrl).toHaveBeenCalledTimes(2);
+    const [first, second] = mockedIngestUrl.mock.calls.map(
+      (call) => call[1]?.guidanceCache,
+    );
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+  });
+
+  it("keeps the handle out of the queued task payload", async () => {
+    mockedEnqueue.mockResolvedValue(true);
+
+    const res = await POST_BATCH(
+      makeRequest("http://localhost:3000/api/ingest/batch", {
+        urls: ["https://example.com/a", "https://example.com/b"],
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ mode: "async", queued: 2, total: 2 });
+
+    expect(mockedIngestUrl).not.toHaveBeenCalled();
+    expect(mockedEnqueue).toHaveBeenCalledTimes(2);
+    for (const [payload] of mockedEnqueue.mock.calls) {
+      expect(payload).not.toHaveProperty("guidanceCache");
+    }
+  });
+});
+
 describe("POST /api/ingest/batch — service token auth", () => {
   it("accepts a valid service token when Clerk session is absent", async () => {
     mockedGetPrincipal.mockResolvedValue(null);
@@ -728,6 +826,204 @@ describe("POST /api/ingest/reingest — direct re-synthesis", () => {
 });
 
 // ===========================================================================
+// POST /api/ingest — read-only deployment (DW-187)
+// ===========================================================================
+//
+// The primary ingest door keeps a route-level gate because it meets BOTH halves
+// of the rule: an ingest-job record is created and oversized text is staged to
+// R2 before `ingest()` is reached, `ingest()` itself writes `raw/<slug>.md`
+// before the page write, and a source fetch plus two LLM calls run in between.
+// A kernel-only refusal would accumulate an orphaned raw file and a `failed`
+// job on every attempt, and pay for the model calls first.
+
+describe("POST /api/ingest — read-only deployment", () => {
+  let originalReadOnly: string | undefined;
+
+  beforeEach(() => {
+    // Cleared rather than inherited: every other describe in this file asserts
+    // what an ordinary deployment does.
+    originalReadOnly = process.env.YOPEDIA_READONLY;
+    delete process.env.YOPEDIA_READONLY;
+    // This file shares module-level mocks across describes and never clears
+    // them, so the call COUNTERS carry over. Every assertion below is
+    // "not.toHaveBeenCalled", which would be satisfied by an earlier suite's
+    // calls rather than by this route's behaviour. `clearAllMocks` resets the
+    // counters only — the `vi.mock` factory implementations survive it.
+    vi.clearAllMocks();
+    mockedGetPrincipal.mockResolvedValue({ id: "u", handle: "yuanhao" });
+    mockedGetServicePrincipal.mockReturnValue(null);
+    mockedVaultOwnedBy.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    if (originalReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = originalReadOnly;
+  });
+
+  it("answers 403 with no job record, no staged bytes and no ingest", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await POST(
+      makeRequest("http://localhost/api/ingest", {
+        title: "A note",
+        content: "some pasted text",
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(String((await res.json()).error)).toContain("read-only");
+    // The three irreversible things that precede the page write, none of them
+    // kernel writers, none of them reached.
+    expect(mockedCreateJob).not.toHaveBeenCalled();
+    expect(mockedStageText).not.toHaveBeenCalled();
+    // `ingest` owns `raw/<slug>.md` and both LLM calls.
+    expect(mockedIngest).not.toHaveBeenCalled();
+    expect(mockedIngestUrl).not.toHaveBeenCalled();
+  });
+
+  it("refuses the URL path the same way", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await POST(
+      makeRequest("http://localhost/api/ingest", {
+        url: "https://example.com/page",
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(mockedIngestUrl).not.toHaveBeenCalled();
+    expect(mockedCreateJob).not.toHaveBeenCalled();
+  });
+
+  it("still answers 401 to an unauthenticated caller — the gate sits below it", async () => {
+    // Ordering, matching every other ingest door and `DELETE /api/ingest/history`:
+    // a caller with no credential learns that first, and the deployment's write
+    // posture is not disclosed to it.
+    mockedGetPrincipal.mockResolvedValue(null);
+    mockedGetServicePrincipal.mockReturnValue(null);
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await POST(
+      makeRequest("http://localhost/api/ingest", { title: "t", content: "c" }),
+    );
+
+    expect(res.status).toBe(401);
+  });
+
+  it("refuses a batch before a single URL is touched", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await POST_BATCH(
+      makeRequest("http://localhost/api/ingest/batch", {
+        urls: ["https://example.com/a", "https://example.com/b"],
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(String((await res.json()).error)).toContain("read-only");
+    expect(mockedIngestUrl).not.toHaveBeenCalled();
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("ingests exactly as before with the flag unset — the control case", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    mockedIngest.mockResolvedValue({
+      rawPath: "raw/a.md",
+      primarySlug: "a-note",
+      relatedUpdated: [],
+      wikiPages: ["a-note"],
+      indexUpdated: true,
+    });
+
+    const res = await POST(
+      makeRequest("http://localhost/api/ingest", {
+        title: "A note",
+        content: "some pasted text",
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockedIngest).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ===========================================================================
+// POST /api/ingest/reingest — read-only deployment (DW-187)
+// ===========================================================================
+//
+// This is one of the two doors that KEEPS a route-level check after the kernel
+// writers were gated (DW-188), and the reason is the reason it is tested here:
+// `reingest()` re-fetches the source URL and runs two LLM calls BEFORE it
+// reaches `writeWikiPageWithSideEffects`. A kernel-only refusal would pay for
+// all of that first, and a fetch or model failure along the way would answer
+// 500 in place of the refusal — so what this pins is that `reingest` is never
+// entered at all.
+
+describe("POST /api/ingest/reingest — read-only deployment", () => {
+  const fakeResult: IngestResult = {
+    rawPath: "",
+    primarySlug: "p",
+    relatedUpdated: [],
+    wikiPages: ["p"],
+    indexUpdated: true,
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ownedPage: any = {
+    content: "# P",
+    frontmatter: {
+      title: "P",
+      source_url: "https://example.com/s",
+      owner: "yuanhao",
+      visibility: "private",
+    },
+  };
+  let originalReadOnly: string | undefined;
+
+  beforeEach(() => {
+    // Cleared rather than inherited: every OTHER describe in this file asserts
+    // what an ordinary deployment does, and a value exported in one developer's
+    // shell would turn them red there and nowhere else.
+    originalReadOnly = process.env.YOPEDIA_READONLY;
+    delete process.env.YOPEDIA_READONLY;
+    mockedGetPrincipal.mockResolvedValue({ id: "u", handle: "yuanhao" });
+    mockedReadWikiPage.mockResolvedValue(ownedPage);
+    mockedReingest.mockResolvedValue(fakeResult);
+  });
+
+  afterEach(() => {
+    if (originalReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = originalReadOnly;
+  });
+
+  it("answers 403 before the source fetch and the LLM calls", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await POST_REINGEST(
+      makeRequest("http://localhost/api/ingest/reingest", { slug: "p" }),
+    );
+
+    expect(res.status).toBe(403);
+    // The refusal NAMES the deployment state; "forbidden" alone would leave the
+    // owner hunting a permission they do not lack.
+    expect(String((await res.json()).error)).toContain("read-only");
+    // `reingest` owns the fetch and both LLM calls, so "never called" is the
+    // whole claim: not one network round trip and not one token was spent.
+    expect(mockedReingest).not.toHaveBeenCalled();
+    // Answered before the page is even read — the same shape as the three
+    // `/api/wiki/[slug]` gates, so it is no existence oracle either.
+    expect(mockedReadWikiPage).not.toHaveBeenCalled();
+  });
+
+  it("re-ingests exactly as before on a writable deployment — the control case", async () => {
+    const res = await POST_REINGEST(
+      makeRequest("http://localhost/api/ingest/reingest", { slug: "p" }),
+    );
+    expect(res.status).toBe(200);
+    expect(mockedReingest).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ===========================================================================
 // POST /api/ingest/reingest — service token auth
 // ===========================================================================
 describe("POST /api/ingest/reingest — service token auth", () => {
@@ -835,6 +1131,96 @@ describe("POST /api/ingest/reingest — service token auth", () => {
     );
     // A private page the caller can't read is "not found" (no existence oracle).
     expect(res.status).toBe(404);
+    // The cloak is the BODY too: it must read like a missing page and carry
+    // none of the realm wording its sibling 403 now uses (DW-122), or it tells
+    // a viewer who may not read this page what kind of page it is.
+    const cloak = await res.json();
+    expect(cloak.error).toMatch(/not found/i);
+    expect(cloak.error).not.toMatch(/public knowledge/i);
+    expect(cloak.error).not.toMatch(/agent-maintained/i);
+    expect(mockedReingest).not.toHaveBeenCalled();
+  });
+
+  it("explains the realm re-ingesting a PUBLIC knowledge page (403), never calling reingest", async () => {
+    // The other side of the same door (DW-122). A public knowledge page is
+    // READABLE by this caller, so there is nothing to cloak — and a bare
+    // "You don't have permission to re-ingest this page." would leave the page
+    // owner hunting a permission they do not lack. The realm sentence names
+    // why, and comes from the shared table so this pin tracks the copy every
+    // other surface answers.
+    mockedGetPrincipal.mockResolvedValue({ id: "clerk-user", handle: "alice" });
+    mockedGetServicePrincipal.mockReturnValue(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const publicKnowledgePage: any = {
+      content: "# Transformers",
+      frontmatter: {
+        title: "Transformers",
+        source_url: "https://example.com/source",
+        owner: "alice",
+        visibility: "public",
+      },
+    };
+    mockedReadWikiPage.mockResolvedValue(publicKnowledgePage);
+
+    const res = await POST_REINGEST(
+      makeRequest("http://localhost:3000/api/ingest/reingest", {
+        slug: "transformers",
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe(WRITE_DENIAL_REALM.reingest);
+    // The refusal lands BEFORE the source re-fetch and both LLM calls.
+    expect(mockedReingest).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Why there is NO "generic sentence" case for this route.
+   *
+   * `resolveWriteDenial` has two branches, and only one of them is reachable
+   * here. The route asks `canWriteFrontmatter(fm, p, "body")`, which fails in
+   * exactly two ways: the commons realm refused a public knowledge page (the
+   * case above), or the page is PRIVATE and `p` cannot read it — and that
+   * second case takes the 404 cloak before any sentence is chosen. There is no
+   * third shape, because a READABLE private page is writable by precisely the
+   * principals that could read it, and every other public page passes the gate
+   * outright (an `html` artifact and an `agent-` page both fail
+   * `belongsInCommons` and fall through to the public `return true`).
+   *
+   * So `WRITE_DENIAL.reingest` cannot be produced through this door at all. It
+   * is pinned where it IS reachable — at the resolver, in
+   * `src/lib/__tests__/write-denial.test.ts` — and what this case pins instead
+   * is the cloak's silence on the one page class that could leak.
+   */
+  it("cloaks another user's PRIVATE artifact (404) — no sentence is chosen at all", async () => {
+    mockedGetPrincipal.mockResolvedValue({ id: "clerk-user", handle: "alice" });
+    mockedGetServicePrincipal.mockReturnValue(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bobArtifact: any = {
+      content: "<h1>Chart</h1>",
+      frontmatter: {
+        title: "Chart",
+        source_url: "https://example.com/source",
+        owner: "bob",
+        visibility: "private",
+        type: "html",
+      },
+    };
+    mockedReadWikiPage.mockResolvedValue(bobArtifact);
+
+    const res = await POST_REINGEST(
+      makeRequest("http://localhost:3000/api/ingest/reingest", {
+        slug: "bob-chart",
+      }),
+    );
+
+    // Private + unreadable → the cloak, reached BEFORE the resolver runs, so it
+    // carries neither the realm explanation nor any hint of the page's type.
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toMatch(/not found/i);
+    expect(body.error).not.toMatch(/public knowledge/i);
+    expect(body.error).not.toMatch(/agent-maintained/i);
     expect(mockedReingest).not.toHaveBeenCalled();
   });
 });

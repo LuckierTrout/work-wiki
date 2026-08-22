@@ -7,8 +7,19 @@ import type { EmbeddingModel } from "ai";
 import type { Ai } from "./storage/cloudflare-types";
 import { listWikiPages, readWikiPage } from "./wiki";
 import { getStorage } from "./storage";
-import { loadConfigSync, getEmbeddingModelOverride, getOllamaBaseUrl } from "./config";
-import { EMBEDDING_PROVIDERS, isEmbeddingProvider, type EmbeddingProvider } from "./providers";
+import {
+  loadConfigSync,
+  getEmbeddingModelOverride,
+  getOllamaBaseUrl,
+  envOllamaBaseUrl,
+} from "./config";
+import {
+  EMBEDDING_PROVIDERS,
+  WORKERS_AI_EMBEDDING_DIMENSIONS,
+  embeddingModelMatchesProvider,
+  isEmbeddingProvider,
+  type EmbeddingProvider,
+} from "./providers";
 import { withFileLock } from "./lock";
 import { MAX_EMBED_CHARS } from "./constants";
 import { logger } from "./logger";
@@ -16,6 +27,101 @@ import { logger } from "./logger";
 // ---------------------------------------------------------------------------
 // Embedding provider detection
 // ---------------------------------------------------------------------------
+
+/**
+ * Misconfiguration identities this process has already spoken about.
+ *
+ * The four warnings below describe *standing* misconfiguration — a stale
+ * `EMBEDDING_MODEL`, an override that cannot embed, an unbound `AI` binding, a
+ * corpus embedded with a model this deployment no longer uses.
+ * Every embed door re-enters the resolvers (`getEmbeddingModelName`,
+ * `getEmbeddingModel`, `embedText`, `embedTexts`, `runWorkersAiEmbedding`), and
+ * `getWorkersAiBinding` is reached from several seams, not one: `GET`/`PUT
+ * /api/settings` call it once per request (DW-278), `vision.ts` calls it per
+ * vision request, and `resolveEmbeddingProvider`'s Workers AI auto-detect calls
+ * it from every embed door in turn. Unthrottled, a single `logger.warn`
+ * therefore repeats the same sentence per page of a rebuild and per request
+ * served (DW-273) — noise that buries the one line an operator needs to read.
+ *
+ * The state is module-level on purpose: one process (one Workers isolate) is
+ * exactly the lifetime over which "you have this misconfigured" is one piece
+ * of news. Keys carry the misconfiguration's *identity*, not its call site, so
+ * a CHANGED misconfiguration is a new key and speaks again — the guard
+ * suppresses repetition, never information.
+ *
+ * The trade-off that buys, stated plainly and scoped: for THREE of the four
+ * identities — the stale `EMBEDDING_MODEL`, the unservable override, the
+ * unbound `AI` binding — one that is fixed and then re-introduced with the
+ * IDENTICAL value stays silent for the rest of the process. Nothing clears
+ * those three keys, deliberately: each is env/binding state that a restart (or
+ * a new isolate) already fixes, so carrying "resolved" state through every
+ * resolution for them would be dead weight.
+ *
+ * `drift:<active model>` is the ONE deliberate exception (DW-332). Drift is
+ * different in kind: it is fixed IN-process, by `rebuildVectorStore`, with no
+ * restart involved — and `searchByVector` already computes the signal that a
+ * rebuild has landed (`kept.length > 0`, in the same branch chain that decides
+ * whether to warn), so it re-arms that single key there through
+ * `rearmWarningAbout`. Without it, a corpus that drifts, is rebuilt, and drifts
+ * again under the SAME active model would be silent for the rest of the
+ * process. Exactly one key re-arms; the other three never do — and the signal
+ * is narrower than "the corpus is healthy", which the branch itself records.
+ *
+ * ONE warning in this module is left UNGUARDED on purpose and should stay that
+ * way: `runWorkersAiEmbedding`'s unexpected-response-shape line. That line
+ * reports a per-CALL event — *this* response did not carry a data array — and
+ * the next call may well succeed, so throttling it would hide real failures
+ * rather than repetition.
+ *
+ * `searchByVector`'s model-drift breadcrumb used to be listed beside it and no
+ * longer is (DW-310). "Every stored vector was embedded with a model this
+ * deployment no longer uses" is not an event: it is standing state that holds
+ * until the corpus is rebuilt, and the door it was logged from is a per-QUERY
+ * one, so a drifted corpus emitted the same sentence for every search anyone
+ * ran. It belongs with the other three, keyed on the drifted identity — the
+ * ACTIVE MODEL name. That is also why its sentence had to stop naming the
+ * per-query match count: the count is a property of the query, not of the
+ * misconfiguration, and keying on it would have re-armed the warning for every
+ * distinct number of hits.
+ */
+const warnedMisconfigurations = new Set<string>();
+
+/** Emit `message` the first time `key` is seen; later repeats are silent. */
+function warnOnceAbout(key: string, message: string): void {
+  if (warnedMisconfigurations.has(key)) return;
+  warnedMisconfigurations.add(key);
+  logger.warn("embeddings", message);
+}
+
+/**
+ * Forget `key` so the NEXT occurrence of this identity speaks again.
+ *
+ * The counterpart to `warnOnceAbout`, for the one misconfiguration a caller can
+ * see EVIDENCE of ending from inside the process: embedding-model drift,
+ * cleared by a corpus rebuild (DW-332) — see the re-arm branch in
+ * `searchByVector` for how strong that evidence is and is not. Deleting a key
+ * that was never set is a silent no-op, so a caller can re-arm unconditionally
+ * on its success path without first asking whether it ever warned. Named rather
+ * than an inline `.delete` at the call site so the Set keeps exactly two
+ * mutators plus the test-only reset, all greppable from here.
+ */
+function rearmWarningAbout(key: string): void {
+  warnedMisconfigurations.delete(key);
+}
+
+/**
+ * Forget every recorded misconfiguration so the next occurrence warns again.
+ *
+ * Mirrors `_resetStorage`/`_resetLocks`/`_resetConfigCache`: without it the
+ * first test to assert a warning would silence it for every test after. There
+ * is no central reset registry in `vitest.setup.ts`, so it is wired into the
+ * `beforeEach` of each suite that asserts these warnings — a suite that asserts
+ * one without calling it is order-dependent.
+ * @internal
+ */
+export function _resetEmbeddingWarnings(): void {
+  warnedMisconfigurations.clear();
+}
 
 /**
  * Default embedding models per provider. Can be overridden with the
@@ -29,16 +135,14 @@ const DEFAULT_EMBEDDING_MODELS: Record<EmbeddingProvider, string> = {
   "workers-ai": "@cf/baai/bge-m3",
 };
 
-/** Fixed output widths for Workers AI embedding models supported here. */
-export const WORKERS_AI_EMBEDDING_DIMENSIONS: Readonly<Record<string, number>> = {
-  "@cf/baai/bge-small-en-v1.5": 384,
-  "@cf/baai/bge-base-en-v1.5": 768,
-  "@cf/baai/bge-large-en-v1.5": 1024,
-  "@cf/baai/bge-m3": 1024,
-};
-
-/** Workers AI model ids are namespaced with this prefix (e.g. @cf/baai/...). */
-const WORKERS_AI_MODEL_PREFIX = "@cf/";
+/**
+ * Fixed output widths for Workers AI embedding models supported here.
+ *
+ * A RE-EXPORT, not a copy: the table lives in `providers.ts` so the client-safe
+ * vector gate can test membership against the same object the dimension check
+ * below reads. Existing importers of this name are unaffected.
+ */
+export { WORKERS_AI_EMBEDDING_DIMENSIONS };
 
 /**
  * Return the Cloudflare Workers AI binding if available, else null.
@@ -58,8 +162,11 @@ export function getWorkersAiBinding(): Ai | null {
     return null;
   }
   if (!env.AI) {
-    logger.warn(
-      "embeddings",
+    // One fixed key: there is only one way for the binding to be missing, and
+    // the off-Workers `catch` above returns before reaching here, so a silent
+    // local run never consumes it — a later real Workers miss can still speak.
+    warnOnceAbout(
+      "binding:workers-ai",
       "On the Workers runtime but the AI binding is not bound — embeddings " +
         "will fall back to the LLM provider or be disabled. Check the `ai` " +
         "binding in wrangler.jsonc.",
@@ -86,14 +193,34 @@ export function getWorkersAiBinding(): Ai | null {
 function resolveEmbeddingProvider(
   cfg: ReturnType<typeof loadConfigSync>,
 ): EmbeddingProvider | null {
-  const override = process.env.EMBEDDING_PROVIDER ?? cfg.embeddingProvider;
+  // WHICH value wins is untouched (DW-311): `??` still takes the environment
+  // ahead of the store, and a set-but-empty `EMBEDDING_PROVIDER=` still falls
+  // through the truthiness check below into auto-detect exactly as before. The
+  // env read is only lifted into a local so the refusal can say where the value
+  // it is refusing came from.
+  const envOverride = process.env.EMBEDDING_PROVIDER;
+  const override = envOverride ?? cfg.embeddingProvider;
   if (override) {
+    // Inside this branch `override` is truthy, so it came from the environment
+    // exactly when `envOverride` is: `??` falls through on `undefined`/`null`
+    // only, and a set-but-empty variable is falsy here and never gets in.
+    const source: "env" | "stored" = envOverride ? "env" : "stored";
     if (!isEmbeddingProvider(override)) {
-      logger.warn(
-        "embeddings",
-        `EMBEDDING_PROVIDER="${override}" is not embedding-capable ` +
-          `(valid: ${EMBEDDING_PROVIDERS.join(", ")}); embeddings are disabled. ` +
-          "Fix the override or unset it to auto-detect.",
+      // Keyed on the SOURCE and the rejected string: swapping one bad override
+      // for another bad one is a different misconfiguration, and so is the same
+      // bad string arriving from the other feeder — the two have different
+      // remedies, so letting whichever came first silence the other would leave
+      // an owner reading an instruction they cannot follow (DW-311).
+      warnOnceAbout(
+        `provider-override:${source}:${override}`,
+        source === "env"
+          ? `EMBEDDING_PROVIDER="${override}" is not embedding-capable ` +
+              `(valid: ${EMBEDDING_PROVIDERS.join(", ")}); embeddings are disabled. ` +
+              "Fix the override or unset it to auto-detect."
+          : `The embedding provider saved in Settings, "${override}", is not ` +
+              `embedding-capable (valid: ${EMBEDDING_PROVIDERS.join(", ")}); ` +
+              "embeddings are disabled. Choose a supported embedding provider " +
+              "in Settings.",
       );
       return null;
     }
@@ -101,7 +228,7 @@ function resolveEmbeddingProvider(
       return getWorkersAiBinding() ? override : null;
     }
     if (override === "ollama") return override;
-    return embeddingApiKeyFor(override) ? override : null;
+    return embeddingApiKeyFor(override, cfg) ? override : null;
   }
 
   // Auto-select Workers AI when its binding is available.
@@ -109,7 +236,7 @@ function resolveEmbeddingProvider(
 
   // Prefer the owner's saved generation provider when it can also embed.
   if (cfg.provider && isEmbeddingProvider(cfg.provider)) {
-    if (cfg.provider === "ollama" || embeddingApiKeyFor(cfg.provider)) {
+    if (cfg.provider === "ollama" || embeddingApiKeyFor(cfg.provider, cfg)) {
       return cfg.provider;
     }
   }
@@ -119,21 +246,77 @@ function resolveEmbeddingProvider(
   // first while a valid OpenAI or Google embedding key also exists.
   if (process.env.OPENAI_API_KEY) return "openai";
   if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) return "google";
-  if (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_MODEL) return "ollama";
+  // The same "usable, not merely present" rule `detectEnvProvider` applies
+  // (DW-370), through the same function — this was the second copy of the bare
+  // presence test, and a refused `OLLAMA_BASE_URL` selecting `ollama` here
+  // embedded a whole corpus against an endpoint the owner never named.
+  // `OLLAMA_MODEL` remains an independent, usable signal.
+  if (envOllamaBaseUrl() !== undefined || nonEmpty(process.env.OLLAMA_MODEL) !== null) {
+    return "ollama";
+  }
 
   return null;
 }
 
-/** Resolve the API key for an embedding provider from its own env var. */
-function embeddingApiKeyFor(provider: EmbeddingProvider): string | null {
+/**
+ * Resolve the API key for an embedding provider.
+ *
+ * Its own env var first, then the key the owner stored through Settings (Story
+ * 1.9). Env still wins, so a deployment that already carries the secret keeps
+ * it out of the config JSON — and with nothing stored every branch resolves
+ * exactly as it did before, which is what keeps `hasEmbeddingSupport()`'s
+ * current answers (and `embeddings.test.ts`) untouched.
+ *
+ * Without this fallback, "vector search needs an endpoint, a model and a key"
+ * would store three values that no code path could ever use.
+ *
+ * Every leg goes through {@link nonEmpty} rather than `??`, because a
+ * set-but-empty `OPENAI_API_KEY=` line short-circuits `??` to `""` and masks the
+ * key the owner just stored. `config.ts`'s vector gate reads the same two env
+ * vars through its own trim-and-null, so `??` here would also make the switch
+ * report itself on while every embedding call resolved nothing.
+ *
+ * `cfg` is REQUIRED and comes from the caller rather than from
+ * `loadConfigSync()` here (DW-313). All three call sites already hold a
+ * snapshot, and re-entering the 5 s-TTL cache from inside a resolution meant
+ * one answer could be assembled from two different snapshots — the cache can
+ * expire between the caller's read and this one, which on a cold cache means
+ * the key is looked for in `{}` while the provider was chosen from a real
+ * config. One resolution, one snapshot.
+ */
+function embeddingApiKeyFor(
+  provider: EmbeddingProvider,
+  cfg: ReturnType<typeof loadConfigSync>,
+): string | null {
+  // The stored credential is ONE flat field read by both vendor branches below,
+  // and it is bounded the same way the endpoint is (DW-69/DW-72): both save
+  // paths delete it whenever the STORED `embeddingProvider` moves, so for a
+  // vendor chosen through Settings what is read here was entered for that
+  // vendor. Without that clear this line would hand `sk-…` to Google on the
+  // strength of the owner having once configured OpenAI.
+  //
+  // The SAME two exceptions the endpoint's note above spells out apply here:
+  // `EMBEDDING_PROVIDER` overrides the stored selection, and an absent stored
+  // selection falls back to the detected generation provider — neither of which
+  // any save moves, so on those paths a stored key can still be offered to a
+  // vendor it was not entered for. Deferred follow-up, not a claim this
+  // function makes.
+  const stored = nonEmpty(cfg.embeddingApiKey);
   switch (provider) {
     case "openai":
-      return process.env.OPENAI_API_KEY ?? null;
+      return nonEmpty(process.env.OPENAI_API_KEY) ?? stored;
     case "google":
-      return process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? null;
+      return nonEmpty(process.env.GOOGLE_GENERATIVE_AI_API_KEY) ?? stored;
     default:
       return null; // ollama and workers-ai are keyless
   }
+}
+
+/** Trim-and-null: `""` and whitespace are "unset", not "set to nothing". */
+function nonEmpty(value: string | undefined | null): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**
@@ -141,24 +324,63 @@ function embeddingApiKeyFor(provider: EmbeddingProvider): string | null {
  *
  * Priority: `EMBEDDING_MODEL` env → `config.embeddingModel` → provider default.
  *
- * The override is only honored when it belongs to the resolved provider's
- * namespace — Workers AI ids start with `@cf/`, the AI-SDK providers don't.
- * This prevents a stale override left over from a previous provider (e.g.
+ * The override is only honored when {@link embeddingModelMatchesProvider} says
+ * the resolved provider can actually serve it — Workers AI ids must be in the
+ * supported catalog, the AI-SDK providers' ids must sit outside `@cf/`. This
+ * prevents a stale override left over from a previous provider (e.g.
  * `EMBEDDING_MODEL=text-embedding-3-small`) from leaking into a Workers AI
  * call (or vice versa) and producing an invalid model id.
+ *
+ * Both legs are read through {@link nonEmpty}, the SAME trim-and-null (and the
+ * same env-over-config ordering) `getVectorSearchSettings` applies (DW-221,
+ * DW-227). Without it a stored `" @cf/baai/bge-m3"` satisfied the gate — which
+ * reads it trimmed — and was then dropped here for the provider default,
+ * because the raw string with its leading space is not a catalog id; and a
+ * whitespace-only `EMBEDDING_MODEL` read as absent to the gate while being
+ * truthy enough to be sent to the provider verbatim as a model name.
  */
 function resolveEmbeddingModelName(
   provider: EmbeddingProvider,
   cfg: ReturnType<typeof loadConfigSync>,
 ): string {
-  const override = getEmbeddingModelOverride() ?? cfg.embeddingModel;
-  if (override) {
-    const overrideIsWorkersAi = override.startsWith(WORKERS_AI_MODEL_PREFIX);
-    const providerIsWorkersAi = provider === "workers-ai";
-    if (overrideIsWorkersAi === providerIsWorkersAi) return override;
-    // Namespace mismatch — ignore the override and use the provider default.
-  }
-  return DEFAULT_EMBEDDING_MODELS[provider] ?? provider;
+  const fallback = DEFAULT_EMBEDDING_MODELS[provider] ?? provider;
+  const override =
+    nonEmpty(getEmbeddingModelOverride()) ?? nonEmpty(cfg.embeddingModel);
+  if (!override) return fallback;
+  if (embeddingModelMatchesProvider(provider, override)) return override;
+
+  // Mismatch — ignore the override and use the provider default, AUDIBLY.
+  //
+  // The settings gate refuses this combination (DW-73) on BOTH write paths now
+  // — since DW-217 the legacy flat `PUT /api/settings` branch runs the same
+  // rule over its post-merge config, so a flat save can no longer smuggle a
+  // mismatch past it. But the gate is not the only way a value reaches here:
+  // an `EMBEDDING_MODEL` env override bypasses the store entirely, and a
+  // deployment with vector search OFF is never gated at all (the rule only
+  // runs when the merged flag is on). So the fallback is not dead code for
+  // stray bytes — it is the live behaviour on the paths the gate does not
+  // cover, and it stays.
+  //
+  // What changes is that it stops being SILENT (DW-224, DW-226). Every embed
+  // door (`getEmbeddingModelName`, `getEmbeddingModel`, `embedText`,
+  // `embedTexts`, `runWorkersAiEmbedding`) routes through here, so this one
+  // warning is what makes the substitution visible on the embed path itself —
+  // mirroring the warning `resolveEmbeddingProvider` already emits when it
+  // refuses an override. The log is not behaviour: the default is still
+  // returned, exactly as before.
+  //
+  // Said ONCE per distinct `(provider, override)` pair (DW-273), because every
+  // one of those doors would otherwise repeat it — a rebuild over N pages
+  // logged it ~2N times. `fallback` is a pure function of `provider`, so it
+  // adds nothing to the key.
+  warnOnceAbout(
+    `model:${provider}:${override}`,
+    `Embedding model "${override}" cannot be served by the "${provider}" ` +
+      `embedding provider; embedding with "${fallback}" instead. ` +
+      "Vectors are tagged with the model that produced them, so a corpus " +
+      "already embedded with a different model needs rebuilding.",
+  );
+  return fallback;
 }
 
 /**
@@ -170,9 +392,21 @@ function resolveEmbeddingModelName(
  *   1. `EMBEDDING_MODEL` env var (highest priority)
  *   2. `config.embeddingModel` from config file
  *   3. Provider-specific default
+ *
+ * @param cfg OPTIONAL, and defaulting to `loadConfigSync()` — which is what
+ *   every caller outside the two settings resolvers wants, so passing nothing
+ *   is byte-identical to the behaviour before the parameter existed. What
+ *   passing one buys is "resolve against THIS snapshot": `loadConfigSync()` is
+ *   a 5 s-TTL cache, so a caller that already read it and then asks this door
+ *   for the other half of its answer can otherwise be told about a different
+ *   snapshot than the one it is describing (DW-313). `getEffectiveSettings`
+ *   and `getWorkbenchSettings` both hold a `cfg` and both pass it, which is how
+ *   their "what is set" and "what is in effect" halves are guaranteed to be
+ *   about the same config.
  */
-export function getEmbeddingModelName(): string | null {
-  const cfg = loadConfigSync();
+export function getEmbeddingModelName(
+  cfg: ReturnType<typeof loadConfigSync> = loadConfigSync(),
+): string | null {
   const provider = resolveEmbeddingProvider(cfg);
   if (!provider) return null;
   return resolveEmbeddingModelName(provider, cfg);
@@ -186,9 +420,16 @@ export function getEmbeddingModelName(): string | null {
  * Provider is resolved by {@link resolveEmbeddingProvider}; the API key comes
  * from {@link embeddingApiKeyFor} (the embedding provider's own env var, so it
  * works even when the LLM provider differs).
+ *
+ * @param cfg OPTIONAL, defaulting to `loadConfigSync()` — the same door
+ *   {@link getEmbeddingModelName} carries, and for the same reason (DW-313).
+ *   `embedText`/`embedTexts` pass the snapshot they already resolved their
+ *   provider from, so the model that gets CONSTRUCTED cannot be built from a
+ *   later read of the 5 s-TTL cache than the one that chose the provider.
  */
-export function getEmbeddingModel(): EmbeddingModel | null {
-  const cfg = loadConfigSync();
+export function getEmbeddingModel(
+  cfg: ReturnType<typeof loadConfigSync> = loadConfigSync(),
+): EmbeddingModel | null {
   const provider = resolveEmbeddingProvider(cfg);
 
   // Workers AI is not an AI SDK provider — it is called via the binding in
@@ -196,31 +437,75 @@ export function getEmbeddingModel(): EmbeddingModel | null {
   if (!provider || provider === "workers-ai") return null;
 
   const modelName = resolveEmbeddingModelName(provider, cfg);
-  return _createEmbeddingModel(provider, embeddingApiKeyFor(provider), modelName);
+  return _createEmbeddingModel(provider, embeddingApiKeyFor(provider, cfg), modelName, cfg);
 }
 
 /**
  * Internal helper to construct an AI SDK embedding model instance.
  *
- * Ollama base URL is resolved via `getOllamaBaseUrl()` from the config layer.
+ * Ollama base URL is resolved via `getOllamaBaseUrl(cfg)` from the config layer.
+ * OpenAI and Google honour a stored `embeddingBaseUrl` (Story 1.9's "endpoint"
+ * half of the vector gate) — additive, so with nothing stored the option is
+ * omitted entirely and both providers resolve to their own defaults exactly as
+ * before.
+ *
+ * `cfg` is REQUIRED and comes from the caller for the same reason
+ * {@link embeddingApiKeyFor}'s does (DW-313): the endpoint has to be read out of
+ * the snapshot the provider and the key were resolved from, not out of whatever
+ * the cache answers by the time construction happens.
  */
 function _createEmbeddingModel(
   provider: string,
   apiKey: string | null,
   modelName: string,
+  cfg: ReturnType<typeof loadConfigSync>,
 ): EmbeddingModel | null {
+  // ONE flat `embeddingBaseUrl` serving whichever vendor is selected, which is
+  // narrower than it looks (DW-69/DW-72): both SAVE PATHS clear
+  // `embeddingBaseUrl` and `embeddingApiKey` whenever the STORED
+  // `embeddingProvider` moves — `applyWorkbenchSettings` and the flat branch of
+  // `PUT /api/settings`, both through `embeddingProviderChanged`. So for a
+  // provider that was CHOSEN through Settings, the endpoint read here was typed
+  // after that vendor was selected. The fix is deliberately not here:
+  // per-provider keying would change the stored shape and need a migration,
+  // which the recorded decisions rule out.
+  //
+  // TWO PATHS SIT OUTSIDE THAT GUARANTEE, and this comment must not be read as
+  // covering them:
+  //
+  //   - `EMBEDDING_PROVIDER` wins over the stored field in
+  //     `resolveEmbeddingProvider`, and no save can move an environment
+  //     variable — so setting it can point a stored endpoint at a vendor it was
+  //     never entered for.
+  //   - with no provider stored and no override set, the same resolver falls
+  //     back to the detected LLM provider (and to `cfg.provider` for `ollama`),
+  //     which the embedding-provider select never touched.
+  //
+  // A config written before this change, or hand-edited, can also already hold
+  // a mismatched pair — nothing migrates it. Both are recorded as deferred
+  // follow-up rather than fixed here.
+  const stored = cfg.embeddingBaseUrl;
+  const baseUrlOption =
+    typeof stored === "string" && stored.trim().length > 0
+      ? { baseURL: stored.trim() }
+      : {};
   switch (provider) {
     case "openai": {
-      const openai = createOpenAI({ apiKey: apiKey! });
+      const openai = createOpenAI({ apiKey: apiKey!, ...baseUrlOption });
       return openai.embedding(modelName);
     }
     case "google": {
-      const google = createGoogleGenerativeAI({ apiKey: apiKey! });
+      const google = createGoogleGenerativeAI({ apiKey: apiKey!, ...baseUrlOption });
       return google.embedding(modelName);
     }
     case "ollama": {
-      // Resolve Ollama base URL via centralized config layer.
-      const baseURL = getOllamaBaseUrl();
+      // Resolve Ollama base URL via centralized config layer, against the SAME
+      // `cfg` snapshot `embeddingBaseUrl` above is resolved from (DW-313). With
+      // no argument this half answered from the 5 s cache while the other half
+      // answered from the object passed in, so one function could resolve two
+      // different configs — which is exactly what the accessor's parameter
+      // exists to rule out.
+      const baseURL = getOllamaBaseUrl(cfg);
       const ollama = baseURL ? createOllama({ baseURL }) : createOllama();
       return ollama.embedding(modelName);
     }
@@ -231,9 +516,17 @@ function _createEmbeddingModel(
 
 /**
  * Returns true if an embedding-capable provider is configured.
+ *
+ * @param cfg OPTIONAL, defaulting to `loadConfigSync()`, and threaded straight
+ *   through to {@link getEmbeddingModelName} — see the note there. Passing the
+ *   snapshot a caller already holds is what stops "does this deployment embed?"
+ *   and "with what?" from being answered about two different reads of the
+ *   5 s-TTL config cache (DW-313).
  */
-export function hasEmbeddingSupport(): boolean {
-  return getEmbeddingModelName() !== null;
+export function hasEmbeddingSupport(
+  cfg: ReturnType<typeof loadConfigSync> = loadConfigSync(),
+): boolean {
+  return getEmbeddingModelName(cfg) !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -246,9 +539,15 @@ export function hasEmbeddingSupport(): boolean {
  *
  * Long texts are truncated to {@link MAX_EMBED_CHARS} before being sent to
  * the model to stay within provider token limits.
+ *
+ * @param cfg OPTIONAL, defaulting to `loadConfigSync()`. Passing one lets a
+ *   caller that must later ASK which model did the embedding — `searchByVector`
+ *   is the one — resolve both halves from the same snapshot (DW-313).
  */
-export async function embedText(text: string): Promise<number[] | null> {
-  const cfg = loadConfigSync();
+export async function embedText(
+  text: string,
+  cfg: ReturnType<typeof loadConfigSync> = loadConfigSync(),
+): Promise<number[] | null> {
   const provider = resolveEmbeddingProvider(cfg);
   if (!provider) return null;
 
@@ -259,7 +558,7 @@ export async function embedText(text: string): Promise<number[] | null> {
     return vectors?.[0] ?? null;
   }
 
-  const model = getEmbeddingModel();
+  const model = getEmbeddingModel(cfg);
   if (!model) return null;
   const result = await embed({ model, value: truncated });
   return result.embedding;
@@ -271,11 +570,16 @@ export async function embedText(text: string): Promise<number[] | null> {
  *
  * Each text is truncated to {@link MAX_EMBED_CHARS} before being sent to the
  * model.
+ *
+ * @param cfg OPTIONAL, defaulting to `loadConfigSync()` — the same door
+ *   {@link embedText} carries, kept here for symmetry: the two are one function
+ *   in two arities, and a caller that can pin the snapshot for one should not
+ *   have to know which of them it happens to be calling.
  */
 export async function embedTexts(
   texts: string[],
+  cfg: ReturnType<typeof loadConfigSync> = loadConfigSync(),
 ): Promise<number[][] | null> {
-  const cfg = loadConfigSync();
   const provider = resolveEmbeddingProvider(cfg);
   if (!provider) return null;
 
@@ -287,7 +591,7 @@ export async function embedTexts(
     return runWorkersAiEmbedding(truncated, cfg);
   }
 
-  const model = getEmbeddingModel();
+  const model = getEmbeddingModel(cfg);
   if (!model) return null;
   const result = await embedMany({ model, values: truncated });
   return result.embeddings;
@@ -515,15 +819,38 @@ export function cosineSimilarity(a: number[], b: number[]): number {
  * Returns an empty array if no embedding support is available, the store
  * is empty, or the store was built with a different embedding model (stale
  * embeddings would produce meaningless similarity scores).
+ *
+ * ONE config snapshot, read here and passed to BOTH halves (DW-313). This is
+ * the caller the `cfg` doors exist for, and the drift key below is only
+ * trustworthy because of it: `embedText` has a network round-trip inside it, so
+ * two independent reads of the 5 s-TTL cache can straddle an expiry easily. The
+ * query would then be embedded with the model from one snapshot while the filter
+ * compared against the model from another, every hit would be dropped, and the
+ * drift line would fire for a corpus that has not drifted. Before the throttle
+ * that mis-fire corrected itself on the next query; now it would BURN the
+ * `drift:<model>` key, and a later REAL drift under that same active model
+ * would be silent until something re-armed it. The model that embedded and the
+ * model the filter compares against have to come from the same read.
+ *
+ * The key does re-arm, on exactly one signal: a read that KEEPS at least one
+ * match under the active model (DW-332) — the signal that a rebuild has landed,
+ * which is what makes rebuild-then-re-drift under the same model audible a
+ * second time. That delete is subject to this same one-snapshot rule, and for a
+ * sharper reason than the warn: it must use the SAME `currentModel` the filter
+ * compared against, never a second `getEmbeddingModelName()` read, because a
+ * re-derived name straddling the expiry would re-arm a DIFFERENT identity than
+ * the one this read said anything about — un-burning some other model's key on
+ * evidence that has nothing to do with it.
  */
 export async function searchByVector(
   query: string,
   topK: number = 10,
 ): Promise<Array<{ slug: string; score: number }>> {
-  const queryEmbedding = await embedText(query);
+  const cfg = loadConfigSync();
+  const queryEmbedding = await embedText(query, cfg);
   if (!queryEmbedding) return [];
 
-  const currentModel = getEmbeddingModelName();
+  const currentModel = getEmbeddingModelName(cfg);
   // A query can throw on a dimension mismatch (e.g. mid model-migration, when
   // the store still holds vectors of the previous dimension). Degrade to "no
   // vector results" rather than propagating — callers fuse/fall back on [].
@@ -534,11 +861,30 @@ export async function searchByVector(
     // active model name has drifted from what every stored vector was embedded
     // with — vector search is silently disabled until a re-embed/rebuild. Leave
     // a breadcrumb so that's diagnosable rather than looking like "no matches".
-    if (matches.length > 0 && kept.length === 0) {
-      logger.warn(
-        "embeddings",
-        `searchByVector: all ${matches.length} matches dropped by the model filter ` +
-          `(active="${currentModel}") — likely embedding-model drift; rebuild embeddings.`,
+    //
+    // Said ONCE per drifted ACTIVE MODEL per process (DW-310). The drift is
+    // standing state — it holds for every query until the corpus is rebuilt —
+    // but this is a per-query door, so an unthrottled line repeated itself for
+    // every search anyone ran against a drifted corpus. The key is the active
+    // model name and nothing else: the query is not part of the identity, and
+    // neither is how many hits it happened to return, which is why the sentence
+    // no longer names `matches.length` — keying on a per-query count would have
+    // re-armed the warning for every distinct number of hits and defeated the
+    // throttle. An active model that CHANGES and still drifts is a new identity
+    // and speaks again.
+    if (kept.length > 0) {
+      // Re-arm (DW-332; rationale on `warnedMisconfigurations`). A kept match
+      // establishes only that THIS read was answerable under the active model,
+      // not that the whole corpus is: `modelMatches` keeps unlabelled legacy
+      // vectors, and `queryEmbeddings` slices to topK BEFORE this filter. An
+      // early re-arm costs a repeated line; a missing one loses the next outage.
+      rearmWarningAbout(`drift:${currentModel}`);
+    } else if (matches.length > 0) {
+      warnOnceAbout(
+        `drift:${currentModel}`,
+        "searchByVector: the model filter dropped every match " +
+          `(active="${currentModel}") — likely embedding-model drift; ` +
+          "rebuild embeddings.",
       );
     }
     return kept.map((m) => ({ slug: m.id, score: m.score }));

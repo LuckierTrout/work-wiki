@@ -153,6 +153,67 @@ export async function canReadSlug(
 // ---------------------------------------------------------------------------
 
 /**
+ * The **realm gate**, as a pure predicate over the page alone — no principal.
+ *
+ * This is the exact condition {@link canWritePage}'s realm branch denies on:
+ * ANY write — body, metadata or delete — against a page {@link belongsInCommons}
+ * selects (public, not agent-scoped, not an artifact). It is exported so that
+ * the surfaces which have to *talk about* that deny — the Delete, Re-ingest and
+ * Revert gates threaded into the client islands, and every server refusal
+ * sentence in `src/lib/write-denial.ts` — read the same expression the gate
+ * decides on instead of a copy of it that can drift.
+ *
+ * KIND-INDEPENDENT SINCE DW-121. The realm used to admit `"metadata"` while
+ * refusing `"body"` and `"delete"`, which put this module in direct conflict
+ * with the only UI that reaches a metadata patch: the edit page refuses the
+ * whole screen on `"body"`, so the collective metadata loop the old docblock
+ * described had no surface and existed only as a hole in the ACL. A metadata
+ * patch is now refused exactly where a body rewrite is.
+ *
+ * It answers "would the realm deny this write?", NOT "is this write denied?":
+ * a service principal and an admin pass {@link canWritePage} above this branch,
+ * so a `true` here does not mean the caller was refused. Callers that need the
+ * real answer must still call {@link canWritePage}.
+ *
+ * `writeKind` is REQUIRED here, unlike on {@link canWritePage}, whose
+ * `"metadata"` default is long-standing API. It no longer changes today's
+ * answer, but it stays because the parameter is what makes a FUTURE kind
+ * expressible — and the `switch` below is exhaustive with no `default`, so
+ * adding a fourth `WriteKind` is a compile error rather than a silent
+ * inheritance of the permissive `false`. A predicate whose accidental answer is
+ * the unsafe one has no safe default, so it takes none.
+ */
+export function isRealmRestrictedWrite(
+  meta: PageReadMeta,
+  writeKind: WriteKind,
+): boolean {
+  switch (writeKind) {
+    case "body":
+    case "metadata":
+    case "delete":
+      return belongsInCommons(meta);
+  }
+}
+
+/**
+ * {@link isRealmRestrictedWrite} over a parsed frontmatter record.
+ *
+ * `writeKind` is required for the same reason as above — see that docblock.
+ */
+export function isRealmRestrictedFrontmatterWrite(
+  fm: { visibility?: unknown; type?: unknown },
+  writeKind: WriteKind,
+): boolean {
+  return isRealmRestrictedWrite(
+    {
+      visibility: typeof fm.visibility === "string" ? fm.visibility : undefined,
+      type: typeof fm.type === "string" ? fm.type : undefined,
+    },
+    writeKind,
+  );
+}
+
+/**
  * True iff `principal` may perform a write of kind `writeKind` on a page,
  * mirroring the realm model and staying symmetric with {@link canReadPage}:
  *
@@ -160,12 +221,16 @@ export async function canReadSlug(
  *     anything — it is how autonomous agents and scheduled jobs write on an
  *     owner's behalf (the caller sets `owner` explicitly).
  *   - **Admins** may write/delete/manage every page.
- *   - **Commons body/delete** writes are agent-only: a commons page's prose is
- *     maintained by agents; humans steer via metadata patches and talk threads.
- *     Body replacements and deletions by non-service, non-admin principals are
- *     denied.
- *   - **Public** (commons) metadata patches are collectively editable by any
- *     signed-in user — the commons is a shared wiki.
+ *   - **Any write to a public knowledge page** is service- and admin-only: a
+ *     page that is public, not agent-scoped and not an artifact (exactly what
+ *     {@link belongsInCommons} selects) has agent- and admin-maintained prose
+ *     and frontmatter, so a non-service, non-admin principal may not replace its
+ *     body, patch its metadata, or delete it. The commons product surface and
+ *     talk threads are retired (AD-21); `belongsInCommons` survives only as the
+ *     predicate naming that class. Metadata is included since DW-121: the only
+ *     UI that reaches a metadata patch is the edit page, which already refused
+ *     the whole screen on `"body"`, so admitting `"metadata"` here described a
+ *     loop no human surface offered.
  *   - **Private** (vault) pages are writable ONLY by the set {@link canReadPage}
  *     admits for a private page: the owner's human and that human's agents
  *     (`<user>--<name>` resolves to `<user>`). So a user's agents can write
@@ -186,18 +251,26 @@ export function canWritePage(
   // Admins may write/delete/manage every page (incl. others' private pages).
   if (isAdmin(principal)) return true;
 
-  // ── Realm gate: commons body/delete writes are agent-only ──
-  // A commons page's prose is maintained by agents; humans steer via metadata
-  // patches and talk threads. Body replacements and deletions by non-service,
-  // non-admin principals are denied.
-  if (
-    (writeKind === "body" || writeKind === "delete") &&
-    belongsInCommons(meta)
-  ) {
+  // ── Realm gate: ANY write to a public knowledge page is service/admin-only ──
+  // The commons product surface and talk threads are retired (AD-21), but this
+  // deny still earns its place: a public, non-agent-scoped, non-artifact page's
+  // prose and frontmatter are agent- and admin-maintained, so it stops a
+  // non-service, non-admin principal from overwriting, re-tagging or deleting a
+  // curated public page. Service principals (agents, cron) and admins pass
+  // above. Since DW-121 this covers `"metadata"` too — the kind asymmetry it
+  // used to carry contradicted the edit page, which refuses the whole screen on
+  // `"body"` and is the only UI that reaches a metadata patch.
+  //
+  // The condition itself lives in `isRealmRestrictedWrite` so the client Delete/
+  // Re-ingest/Revert gates and every refusal sentence read THIS expression
+  // rather than a copy.
+  if (isRealmRestrictedWrite(meta, writeKind)) {
     return false;
   }
 
-  // Public / collective commons — metadata editable by any caller the write-gate admits.
+  // Public and OUTSIDE the realm (an artifact, or an agent-scoped page) — the
+  // per-page ACL does not restrict it; the write-gate middleware already
+  // rejected unauthenticated mutations.
   if (meta.visibility !== "private") return true;
   // Private — exactly the owner-equivalence class that may READ it (requires an
   // authenticated, matching principal).
@@ -226,28 +299,13 @@ export function canWriteFrontmatter(
 }
 
 /**
- * True when the principal is entitled to create private (paid) content.
+ * Whether `principal` may set a page to `visibility: private`.
  *
- * Reads Clerk `publicMetadata.plan === "pro"`. No Clerk Billing checkout is
- * wired in this codebase yet; provisioning the plan (dashboard or a billing
- * webhook that sets `publicMetadata.plan`) is owner-side config. Fail-closed:
- * service/token principals and any Clerk error yield `false`.
+ * Billing is retired with the commons: private is the app's default posture,
+ * not a paid upgrade, so any authenticated principal qualifies. No Clerk plan
+ * lookup happens here. Page ownership is still enforced separately by
+ * `patch-metadata.ts` (a non-owner gets `NOT_OWNER`).
  */
-export async function hasPaidPlan(principal: Principal): Promise<boolean> {
-  if (principal.id.startsWith("service:")) return false;
-  try {
-    const { currentUser } = await import("@clerk/nextjs/server");
-    const user = await currentUser();
-    if (!user) return false;
-    const meta = user.publicMetadata as Record<string, unknown> | undefined;
-    return meta?.plan === "pro";
-  } catch {
-    return false;
-  }
-}
-
-/** Whether `principal` may set a page to `visibility: private`. */
 export async function canSetPrivate(principal: Principal | null): Promise<boolean> {
-  if (!principal) return false;
-  return hasPaidPlan(principal);
+  return principal !== null;
 }

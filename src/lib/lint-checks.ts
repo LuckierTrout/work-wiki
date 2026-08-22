@@ -8,29 +8,19 @@ import type { LintIssue } from "./types";
 import { logger } from "./logger";
 import { findDuplicateEntities } from "./alias-index";
 import { parseSources } from "./sources";
-import { getDiscussionStatsForSlugs, getDiscussionStats } from "./talk";
 import { listRawSources, readRawSource } from "./raw";
 import { getPageIndex } from "./page-index";
 
-/** All known lint check types (const tuple for Zod enum compatibility). */
-export const ALL_CHECK_TYPES = [
-  "orphan-page",
-  "stale-index",
-  "empty-page",
-  "missing-crossref",
-  "broken-link",
-  "contradiction",
-  "missing-concept-page",
-  "stale-page",
-  "low-confidence",
-  "unmigrated-page",
-  "duplicate-entity",
-  "uncited-claims",
-  "unresolved-discussions",
-  "disputed-page",
-  "supersedes-dangling",
-  "incomplete-coverage",
-] as const satisfies readonly LintIssue["type"][];
+/**
+ * All known lint check types (const tuple for Zod enum compatibility).
+ *
+ * Declared in `./lint-types` — a pure, client-safe module — and re-exported
+ * here so every existing `@/lib/lint-checks` importer keeps working. Do NOT
+ * reintroduce a second declaration: this module imports `./storage`, `./llm`
+ * and `./wiki`, so a client component cannot import it, and the copy that used
+ * to live in `LintFilterControls` for that reason drifted three entries behind.
+ */
+export { ALL_CHECK_TYPES } from "./lint-types";
 
 // Files that are part of the wiki infrastructure, not content pages.
 export const INFRASTRUCTURE_FILES = new Set(["index.md", "log.md"]);
@@ -403,6 +393,17 @@ export async function checkContradictions(
 
   // Load SCHEMA.md conventions once for all cluster checks so the
   // contradiction detector is aware of the wiki's structural rules.
+  //
+  // DW-19 — deliberately NO argument: the conventions are deployment-global,
+  // resolved from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
+  // inside `readActiveWikiSchema`). This detector takes no owner at all. The
+  // only owner gate is on the HTTP entry point (`src/app/api/lint/route.ts`,
+  // via `isOwnerHandle`); `runLint` in `src/cli.ts` reaches the same code with
+  // no principal. So do not read this as "caller == site owner" — the
+  // conventions come from the site owner either way. A second tenant means
+  // threading a tenant argument through `loadPageConventions()` and down
+  // through `lint()` from both entry points. See the invariant on
+  // `readActiveWikiSchema` in `wikis.ts`.
   const conventions = await loadPageConventions();
   let systemPrompt = CONTRADICTION_SYSTEM_PROMPT;
   if (conventions) {
@@ -547,7 +548,18 @@ export async function checkMissingConceptPages(
 
   const userMessage = `Existing wiki pages:\n${existingTitles}\n\nPage contents (samples):\n\n${pagesText}`;
 
-  // Load SCHEMA.md conventions
+  // Load SCHEMA.md conventions.
+  //
+  // DW-19 — deliberately NO argument: the conventions are deployment-global,
+  // resolved from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
+  // inside `readActiveWikiSchema`). This detector takes no owner at all. The
+  // only owner gate is on the HTTP entry point (`src/app/api/lint/route.ts`,
+  // via `isOwnerHandle`); `runLint` in `src/cli.ts` reaches the same code with
+  // no principal. So do not read this as "caller == site owner" — the
+  // conventions come from the site owner either way. A second tenant means
+  // threading a tenant argument through `loadPageConventions()` and down
+  // through `lint()` from both entry points. See the invariant on
+  // `readActiveWikiSchema` in `wikis.ts`.
   const conventions = await loadPageConventions();
   let systemPrompt = MISSING_CONCEPT_SYSTEM_PROMPT;
   if (conventions) {
@@ -678,6 +690,47 @@ export async function checkLowConfidence(): Promise<LintIssue[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Disputed-page check — flags pages whose `disputed` frontmatter flag is set.
+// ---------------------------------------------------------------------------
+
+/**
+ * Check for disputed pages — pages whose `disputed` frontmatter flag is `true`.
+ *
+ * Ingest sets the flag when a merge contradicts the existing page, and nothing
+ * clears it automatically, so without this check the flag is close to one-way:
+ * the `ArticleView` banner tells a *reader* the page is contested, but nothing
+ * hands an owner a worklist. (A dataview query can already list them —
+ * `queryByFrontmatter` in `./dataview` filters on arbitrary frontmatter fields
+ * — but only if someone thinks to ask; this is the first surface that reports
+ * them unprompted, as actionable lint issues alongside the other checks.)
+ *
+ * This is deliberately NOT the version that was deleted with the talk surface:
+ * the old one called `getDiscussionStats()` to describe open threads. Talk is
+ * retired, so the message states the flag and the suggestion names the
+ * surviving clear path — the Disputed toggle in the page editor, which is a
+ * `PATCH /api/wiki/<slug>` metadata write. Clearing stays an owner decision;
+ * there is no auto-fix (see the `disputed-page` branch in `./lint-fix`).
+ */
+export async function checkDisputedPages(): Promise<LintIssue[]> {
+  const pages = await listWikiPages();
+  const issues: LintIssue[] = [];
+
+  for (const entry of pages) {
+    const page = await readWikiPageWithFrontmatter(entry.slug);
+    if (!page) continue;
+    if (page.frontmatter.disputed !== true) continue;
+    issues.push({
+      type: "disputed-page",
+      slug: entry.slug,
+      message: `Page is flagged disputed — its sources disagree and no review has cleared it`,
+      severity: "warning",
+      suggestion: `Review "${entry.slug}", reconcile the conflicting claims in the page body, then clear the Disputed toggle in the page editor (PATCH /api/wiki/${entry.slug} with metadata { disputed: false })`,
+    });
+  }
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
 // Unmigrated-page check — flags pages missing ALL core work-wiki metadata.
 // ---------------------------------------------------------------------------
 
@@ -793,57 +846,6 @@ export async function checkUncitedClaims(): Promise<LintIssue[]> {
       message: `Page has no sources and no inline citations — claims are unverifiable`,
       severity: "warning",
       suggestion: `Ingest a source URL about "${entry.title}" to add provenance, or add inline citations manually`,
-    });
-  }
-  return issues;
-}
-
-export async function checkUnresolvedDiscussions(
-  diskSlugs: string[],
-): Promise<LintIssue[]> {
-  const statsMap = await getDiscussionStatsForSlugs(diskSlugs);
-  const issues: LintIssue[] = [];
-  for (const [slug, stats] of statsMap) {
-    if (stats.open > 0) {
-      const plural = stats.open === 1 ? "thread" : "threads";
-      issues.push({
-        type: "unresolved-discussions",
-        slug,
-        message: `${stats.open} unresolved discussion ${plural}`,
-        severity: "warning",
-        suggestion: `Review and resolve the open discussion threads on the "${slug}" talk page.`,
-      });
-    }
-  }
-  return issues;
-}
-
-export async function checkDisputedPages(): Promise<LintIssue[]> {
-  const pages = await listWikiPages();
-  const issues: LintIssue[] = [];
-  for (const entry of pages) {
-    const page = await readWikiPageWithFrontmatter(entry.slug);
-    if (!page) continue;
-    if (page.frontmatter.disputed !== true) continue;
-
-    // Check whether the page already has unresolved discussion threads
-    const stats = await getDiscussionStats(entry.slug);
-    const hasOpenThreads = stats.open > 0;
-
-    const message = hasOpenThreads
-      ? `Page is marked as disputed and has ${stats.open} unresolved discussion ${stats.open === 1 ? "thread" : "threads"}`
-      : `Page is marked as disputed but has no discussion threads`;
-
-    const suggestion = hasOpenThreads
-      ? `Review and resolve the ${stats.open} open discussion ${stats.open === 1 ? "thread" : "threads"} on the "${entry.slug}" talk page to clear the dispute`
-      : `Open a discussion thread to resolve the dispute on "${entry.slug}"`;
-
-    issues.push({
-      type: "disputed-page",
-      slug: entry.slug,
-      message,
-      severity: "warning",
-      suggestion,
     });
   }
   return issues;

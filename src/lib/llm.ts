@@ -10,6 +10,12 @@ import {
   loadConfig,
   loadConfigSync,
   apiKeyForProvider,
+  getChatModelSettings,
+  getCustomBaseUrl,
+  getIngestModelSettings,
+  getOllamaBaseUrl,
+  llmTimeoutOption,
+  providerIsConfigured,
   DEFAULT_MODELS,
 } from "./config";
 import type { ProviderValue } from "./config";
@@ -175,9 +181,16 @@ export async function retryWithBackoff<T>(
  *   - Google:    GOOGLE_GENERATIVE_AI_API_KEY
  *   - DeepSeek:  DEEPSEEK_API_KEY (OpenAI-compatible endpoint)
  *   - Ollama Cloud: OLLAMA_API_KEY
- *   - Ollama:    OLLAMA_BASE_URL or OLLAMA_MODEL (Ollama is typically keyless;
- *                presence of either env var signals intent to use a local
- *                Ollama server)
+ *   - Ollama:    OLLAMA_BASE_URL or OLLAMA_MODEL (Ollama is typically keyless,
+ *                so the env vars themselves are the signal). The two are not
+ *                read the same way (DW-370): OLLAMA_BASE_URL counts only when
+ *                it is an ABSOLUTE http(s) URL, because a value
+ *                `getOllamaBaseUrl` refuses is ignored at resolution time (with
+ *                a warning) and the call would go to the SDK's own localhost
+ *                default rather than the address the owner typed. OLLAMA_MODEL
+ *                still counts on presence alone — a model name is usable on its
+ *                own, and the SDK's default endpoint is then the honest
+ *                resolution.
  *
  * Additional env vars (used by src/lib/embeddings.ts, not this module):
  *   - EMBEDDING_MODEL: override the default embedding model name for the
@@ -195,7 +208,16 @@ export function hasLLMKey(): boolean {
 
   // Ollama is keyless — only config-file provider path that works without env vars
   const cfg = loadConfigSync();
-  return cfg.provider === "ollama";
+  if (cfg.provider === "ollama") return true;
+
+  // Story 1.9's `custom` provider is the other config-file path that works
+  // without env vars: both its endpoint and its key may live in the store. Every
+  // LLM feature in this repo gates on THIS function, so leaving it out would let
+  // an owner select Custom, save it, see the deployment report itself configured
+  // — and have ingest, lint, vision, search and the query route all silently
+  // skip their LLM steps. `providerIsConfigured` is the one rule for "can this
+  // provider actually be constructed", so it is called rather than restated.
+  return cfg.provider === "custom" && providerIsConfigured("custom");
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +283,38 @@ function getModel() {
       });
       return deepseek.chat(model);
     }
+    case "custom": {
+      // An owner-pointed OpenAI-compatible endpoint (Story 1.9) — exactly the
+      // treatment `deepseek` gets above and for the same reason, including
+      // `.chat()`: the provider's default callable targets OpenAI's Responses
+      // API (/responses), which a compatible server generally does not
+      // implement. A provider the owner can SELECT but the runtime cannot
+      // CONSTRUCT would be a silently inert save, so both halves are required.
+      if (!creds.customBaseUrl) {
+        throw new Error(
+          "The Custom provider needs a base URL. Set it in Settings → LLM Models.",
+        );
+      }
+      if (!creds.apiKey) {
+        throw new Error(
+          "The Custom provider needs an API key. Set it in Settings → LLM Models.",
+        );
+      }
+      // `DEFAULT_MODELS.custom` is deliberately absent, so there is no name to
+      // fall back to. `getResolvedCredentials` returns `null` here rather than
+      // the `?? provider` fallback, and this is what turns that into a sentence
+      // the owner can act on instead of a request for a model called "custom".
+      if (!model) {
+        throw new Error(
+          "The Custom provider needs a model name. Set it in Settings → LLM Models.",
+        );
+      }
+      const custom = createOpenAI({
+        apiKey: creds.apiKey,
+        baseURL: creds.customBaseUrl,
+      });
+      return custom.chat(model);
+    }
     case "google": {
       const google = createGoogleGenerativeAI({ apiKey: creds.apiKey! });
       return google(model);
@@ -293,45 +347,93 @@ function getModel() {
 // Public API
 // ---------------------------------------------------------------------------
 
+/**
+ * Which workload a caller is resolving a model for (Story 1.9).
+ *
+ * Story 1.9 owns the SETTING and this resolver; Epics 2 and 3 own the call
+ * sites. Nothing in `ingest.ts` or `chat.ts` passes `workload` yet, deliberately
+ * (`epic-1-context.md:63`) — rewiring them here would pre-empt two stories.
+ */
+export type LlmWorkload = "chat" | "ingest";
+
 /** Resolve the active AI SDK model for server-side agents and structured jobs. */
 export async function getConfiguredModel(options?: {
   provider?: ProviderValue;
   model?: string;
+  workload?: LlmWorkload;
 }) {
   await loadConfig();
-  if (options?.provider) {
-    const provider = options.provider;
+
+  let provider = options?.provider;
+  let model = options?.model;
+  if (!provider && options?.workload) {
+    const settings =
+      options.workload === "chat" ? getChatModelSettings() : getIngestModelSettings();
+    // An UNSET workload inherits: falling through to `getModel()` IS the primary
+    // route, and re-deriving it here would be a second ladder free to drift from
+    // `getResolvedCredentials`'.
+    if (!settings.usesPrimary && settings.provider) {
+      provider = settings.provider;
+      model = model ?? settings.model ?? undefined;
+    }
+  }
+
+  if (provider) {
     const apiKey = apiKeyForProvider(provider);
     if (provider !== "ollama" && !apiKey) {
       throw new Error(`The ${provider} provider is not configured on this server.`);
     }
-    const model =
-      options.model?.trim() ||
+    const resolvedModel =
+      model?.trim() ||
       ((provider === "ollama" || provider === "ollama-cloud")
         ? process.env.OLLAMA_MODEL
         : undefined) ||
       DEFAULT_MODELS[provider];
     switch (provider) {
       case "anthropic":
-        return createAnthropic({ apiKey: apiKey! })(model);
+        return createAnthropic({ apiKey: apiKey! })(resolvedModel);
       case "openai":
-        return createOpenAI({ apiKey: apiKey! })(model);
+        return createOpenAI({ apiKey: apiKey! })(resolvedModel);
       case "google":
-        return createGoogleGenerativeAI({ apiKey: apiKey! })(model);
+        return createGoogleGenerativeAI({ apiKey: apiKey! })(resolvedModel);
       case "deepseek":
-        return createOpenAI({ apiKey: apiKey!, baseURL: DEEPSEEK_BASE_URL }).chat(model);
-      case "ollama":
-        return createOllama({
-          ...(process.env.OLLAMA_BASE_URL
-            ? { baseURL: process.env.OLLAMA_BASE_URL }
-            : {}),
-        })(model);
+        return createOpenAI({ apiKey: apiKey!, baseURL: DEEPSEEK_BASE_URL }).chat(
+          resolvedModel,
+        );
+      case "custom": {
+        // No `DEFAULT_MODELS.custom` exists on purpose, so an unnamed model here
+        // would reach the SDK as `undefined` and fail at the wire with a message
+        // about nothing. Both halves are named instead.
+        const baseURL = getCustomBaseUrl();
+        if (!baseURL) {
+          throw new Error(
+            "The Custom provider needs a base URL. Set it in Settings → LLM Models.",
+          );
+        }
+        if (!resolvedModel) {
+          throw new Error(
+            "The Custom provider needs a model name. Set it in Settings → LLM Models.",
+          );
+        }
+        return createOpenAI({ apiKey: apiKey!, baseURL }).chat(resolvedModel);
+      }
+      case "ollama": {
+        // THROUGH THE ACCESSOR (DW-326), which was a raw
+        // `process.env.OLLAMA_BASE_URL` read — a third copy of the ladder, and
+        // the one place an unchecked endpoint could still reach `createOllama`.
+        // It also means a STORED endpoint now applies to a workload-routed
+        // `ollama` call, matching what the primary path has always done: this
+        // leg used to ignore `cfg.ollamaBaseUrl` entirely, so an owner who set
+        // the endpoint in Settings had chat and ingest talk to localhost.
+        const baseURL = getOllamaBaseUrl();
+        return createOllama(baseURL ? { baseURL } : {})(resolvedModel);
+      }
       case "ollama-cloud":
         return createOllama({
           baseURL: "https://ollama.com/api",
           headers: { Authorization: `Bearer ${apiKey}` },
           compatibility: "strict",
-        })(model);
+        })(resolvedModel);
     }
   }
   return getModel();
@@ -363,6 +465,8 @@ export async function callLLM(
       system: systemPrompt,
       messages: [{ role: "user", content: userMessage }],
       maxOutputTokens: options?.maxOutputTokens ?? LLM_MAX_OUTPUT_TOKENS,
+      // Constructed inside the thunk — see `llmTimeoutOption`.
+      ...llmTimeoutOption(),
     }),
   );
 
@@ -403,6 +507,8 @@ export async function callVisionLLM(
         },
       ],
       maxOutputTokens: options?.maxOutputTokens ?? 512,
+      // Constructed inside the thunk — see `llmTimeoutOption`.
+      ...llmTimeoutOption(),
     }),
   );
 
@@ -448,5 +554,8 @@ export async function callLLMStream(
     system: systemPrompt,
     messages: [{ role: "user", content: userMessage }],
     maxOutputTokens: options?.maxOutputTokens ?? LLM_MAX_OUTPUT_TOKENS,
+    // One deadline for the whole stream: there is no retry thunk here (see the
+    // docblock above), so nothing would give a second attempt a fresh one.
+    ...llmTimeoutOption(),
   });
 }

@@ -4,8 +4,9 @@ import { slugify } from "@/lib/slugify";
 import type { Frontmatter } from "@/lib/frontmatter";
 import type { WikiPage } from "@/lib/types";
 import { findBacklinks, findSimilarPages, buildSlugTenantMap } from "@/lib/wiki";
-import { resolveSlugPath, profileHref } from "@/lib/links";
-import { getCommonsSlugSet, belongsInCommons, isVaultEligible } from "@/lib/commons";
+import { resolveSlugPath } from "@/lib/links";
+import { isVaultEligible } from "@/lib/commons";
+import { isRealmRestrictedWrite } from "@/lib/authz";
 import type { Principal } from "@/lib/auth";
 import { parseSources, dedupeSourcesForDisplay, sourceLabel } from "@/lib/sources";
 import { stripLeadingH1 } from "@/lib/markdown";
@@ -16,10 +17,8 @@ import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { HtmlPreview } from "@/components/HtmlPreview";
 import { isHtmlDeck } from "@/lib/html";
 import { SlidePreview } from "@/components/SlidePreview";
-import { SharePageButton } from "@/components/SharePageButton";
 import { ArticleActions } from "@/components/ArticleActions";
 import { RevisionHistory } from "@/components/RevisionHistory";
-import { DiscussionPanel } from "@/components/DiscussionPanel";
 import { contentHash } from "@/lib/embeddings";
 import type { EvidenceLocation, PageEvidenceBundle } from "@/lib/evidence";
 
@@ -115,19 +114,20 @@ interface ArticleViewProps {
   pageTenant: string;
   /**
    * The reader identity — used ONLY to filter backlinks to readable pages.
-   * Pass `null` from the public commons route (public backlinks only); pass the
-   * real principal from the auth-gated private route.
+   * Always the real principal now: the owner-scoped route is the only reader.
    */
   principal: Principal | null;
-  /**
-   * Whether an open discussion thread actually exists — so the `disputed` banner
-   * only claims "a reconciliation is open" when true. Computed by both read
-   * routes (`/wiki/<slug>`, `/u/<handle>/<slug>`); optional with a safe `false`
-   * default so a caller that hasn't computed it can't make the banner over-claim.
-   */
-  hasOpenReconciliation?: boolean;
   /** Owner-only, claim-level provenance. Public pages omit this private bundle. */
   evidenceBundle?: PageEvidenceBundle | null;
+  /**
+   * `YOPEDIA_READONLY=1`, read by the route page (a server component) and
+   * carried through to every affordance here that sits in front of a gated
+   * write: the action bar's Delete and Re-ingest controls, and each Revert
+   * button in the revision history. This is the ONE seam — no client island
+   * below fetches the fact separately, so the affordance and the refusal cannot
+   * disagree.
+   */
+  readOnly?: boolean;
 }
 
 function evidenceLocationLabel(location: EvidenceLocation): string {
@@ -146,23 +146,20 @@ function evidenceLocationLabel(location: EvidenceLocation): string {
  * The shared READ rendering for a wiki page (Folio redesign). Deliberately
  * principal-light: the only per-viewer branch is the backlink readability
  * filter (`findBacklinks(slug, principal)`). The action bar self-gates client-
- * side via {@link ArticleActions}, so the server render is context-free and
- * cacheable when `principal` is `null` (the public commons route).
+ * side via {@link ArticleActions}.
  */
 export async function ArticleView({
   page,
   slug,
   pageTenant,
   principal,
-  hasOpenReconciliation = false,
   evidenceBundle = null,
+  readOnly = false,
 }: ArticleViewProps) {
-  // Slug→tenant map + commons slug set so in-content links and backlinks resolve
-  // to each target's canonical URL: PUBLIC targets to the global `/wiki/<slug>`,
-  // others to the owner-scoped `/u/<tenant>/<slug>` (falling back to this page's
-  // tenant for dangling targets).
+  // Slug→tenant map so in-content links and backlinks resolve to each target's
+  // canonical owner-scoped URL `/u/<tenant>/<slug>` (falling back to this page's
+  // tenant for dangling targets). There is no public `/wiki/<slug>` form left.
   const slugTenants = await buildSlugTenantMap();
-  const commonsSlugs = await getCommonsSlugSet();
 
   const backlinks = await findBacklinks(slug, principal);
   // Semantic "Related pages" — exclude any page already listed under "what
@@ -185,9 +182,10 @@ export async function ArticleView({
     ? (page.frontmatter.contributors as string[])
     : [];
 
-  // Whether this page is a commons (public, non-agent) page — gates the curate
-  // action in the client action bar.
-  const isCommonsPage = belongsInCommons({
+  // The realm facts about this page, coerced once from frontmatter. Both
+  // predicates below are pure and read the same two fields, so they share one
+  // coercion rather than each re-deriving it.
+  const realmMeta = {
     visibility:
       typeof page.frontmatter.visibility === "string"
         ? page.frontmatter.visibility
@@ -196,19 +194,32 @@ export async function ArticleView({
       typeof page.frontmatter.type === "string"
         ? page.frontmatter.type
         : undefined,
-  });
-  // Curatable into a vault: public + non-agent, INCLUDING artifacts (which the
-  // commons gate above excludes). Gates the "Save to vault" button.
-  const isCuratable = isVaultEligible({
-    visibility:
-      typeof page.frontmatter.visibility === "string"
-        ? page.frontmatter.visibility
-        : undefined,
-    type:
-      typeof page.frontmatter.type === "string"
-        ? page.frontmatter.type
-        : undefined,
-  });
+  };
+
+  // Curatable into a vault: public + non-agent, INCLUDING artifacts. Gates the
+  // "Save to vault" button.
+  const isCuratable = isVaultEligible(realmMeta);
+
+  // The realm half of the Delete gate, evaluated HERE because it has to be.
+  // `isRealmRestrictedWrite` reaches `belongsInCommons` (`@/lib/commons`),
+  // whose import graph pulls storage, locks and `wiki.ts` — none of which may
+  // enter the `"use client"` island below. So the server answers the question
+  // it alone can answer and hands down one boolean; the island supplies the
+  // identity half, which only the browser's Clerk session knows. This is the
+  // SAME expression `canWritePage`'s realm branch decides on, not a copy of it.
+  const realmDeniesDelete = isRealmRestrictedWrite(realmMeta, "delete");
+  // The same fact for the BODY-write doors: Re-ingest (`POST /api/ingest/
+  // reingest`) and Revert (`POST /api/wiki/[slug]/revisions {action:"revert"}`)
+  // both pass `"body"` to the very branch above, and both were still offered
+  // where it refuses — the shape DW-120 already fixed for Delete (DW-269).
+  //
+  // TWO BOOLEANS THAT ARE PROVABLY EQUAL, ON PURPOSE. DW-121 made the realm
+  // kind-independent, so `realmDeniesDelete === realmDeniesBodyWrite` for every
+  // page today. They stay separate because each names the write kind the route
+  // behind its door actually passes, so if a future rule splits the realm by
+  // kind again the seams already carry the right question. The equality is a
+  // property of today's predicate, not an oversight in this file.
+  const realmDeniesBodyWrite = isRealmRestrictedWrite(realmMeta, "body");
 
   // Dedup by URL for display so a page whose sources predate the write-time
   // URL dedup (or were recorded under two types) never shows the same link twice.
@@ -262,11 +273,7 @@ export async function ArticleView({
             return (
               <span key={id} className="row" style={{ gap: 6 }}>
                 <Avatar id={id} agent={agent} size={22} />
-                <Mark
-                  id={id}
-                  agent={agent}
-                  href={agent ? undefined : profileHref(id)}
-                />
+                <Mark id={id} agent={agent} />
               </span>
             );
           })}
@@ -309,18 +316,9 @@ export async function ArticleView({
           className="row receipt"
           style={{ gap: 8, fontSize: 12, color: "var(--muted)" }}
         >
-          {/* Commons pages live under the commons; owner-scoped pages (html
-              artifacts, private, agent) live under their owner's profile, so
-              don't mislabel those as "commons". */}
-          {isCommonsPage ? (
-            <Link href="/wiki" style={{ color: "var(--muted)" }}>
-              commons
-            </Link>
-          ) : (
-            <Link href={`/u/${pageTenant}`} style={{ color: "var(--muted)" }}>
-              @{pageTenant}
-            </Link>
-          )}
+          {/* The public commons index and the public profile are both retired,
+              so the owner segment is a label, not a link. */}
+          <span style={{ color: "var(--muted)" }}>@{pageTenant}</span>
           <span style={{ color: "var(--faint)" }}>/</span>
           <span style={{ color: "var(--ink-2)" }}>{slug}</span>
         </div>
@@ -334,15 +332,13 @@ export async function ArticleView({
             style={{ gap: 10, marginBottom: 18, flexWrap: "wrap" }}
           >
             {tags.map((t) => (
-              <Link
+              <span
                 key={t}
-                href={`/wiki?tag=${encodeURIComponent(t)}`}
                 className="receipt"
-                style={{ fontSize: 11.5, color: "var(--accent)", textDecoration: "none" }}
-                title={`Browse all pages tagged #${t}`}
+                style={{ fontSize: 11.5, color: "var(--accent)" }}
               >
                 #{t}
-              </Link>
+              </span>
             ))}
           </div>
         )}
@@ -417,11 +413,7 @@ export async function ArticleView({
             <span className="fresh warn" style={{ marginTop: 6 }} />
             <span>
               This page is <strong>disputed</strong> and low-confidence — its
-              sources disagree.
-              {hasOpenReconciliation
-                ? " A reconciliation is open on the discussion."
-                : ""}{" "}
-              Read with care.
+              sources disagree. Read with care.
             </span>
           </div>
         )}
@@ -461,7 +453,6 @@ export async function ArticleView({
                 headingIds={toc.map((t) => t.id)}
                 tenant={pageTenant}
                 slugTenants={slugTenants}
-                commonsSlugs={commonsSlugs}
               />
             )}
           </article>
@@ -479,7 +470,6 @@ export async function ArticleView({
                         bl.slug,
                         slugTenants,
                         pageTenant,
-                        commonsSlugs,
                       )}
                       className="text-sm"
                       style={{ color: "var(--accent)" }}
@@ -505,7 +495,6 @@ export async function ArticleView({
                         r.slug,
                         slugTenants,
                         pageTenant,
-                        commonsSlugs,
                       )}
                       className="text-sm"
                       style={{ color: "var(--accent)" }}
@@ -518,18 +507,23 @@ export async function ArticleView({
             </section>
           )}
 
-          <DiscussionPanel slug={slug} pageOwner={pageOwner} />
-          <RevisionHistory slug={slug} />
+          <RevisionHistory
+            slug={slug}
+            realmDeniesRevert={realmDeniesBodyWrite}
+            readOnly={readOnly}
+          />
 
           <ArticleActions
             slug={slug}
             tenant={pageTenant}
             owner={pageOwner}
             contributors={pageContributors}
-            isCommonsPage={isCommonsPage}
             isCuratable={isCuratable}
+            realmDeniesDelete={realmDeniesDelete}
+            realmDeniesBodyWrite={realmDeniesBodyWrite}
             hasRawSource={hasRawSource}
             hasSourceUrl={hasSourceUrl}
+            readOnly={readOnly}
           />
         </div>
 
@@ -658,7 +652,6 @@ export async function ArticleView({
           >
             <Icon.spark width="15" height="15" /> Ask about this page
           </Link>
-          <SharePageButton path={`/share/${pageTenant}/${slug}`} />
 
           <div className="rule" style={{ margin: "24px 0" }} />
           <TableOfContents items={toc} />

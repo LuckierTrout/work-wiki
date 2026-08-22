@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { Alert } from "@/components/Alert";
@@ -57,6 +58,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export function ActionInbox() {
+  const { hrefForSlug } = useSlugTenants();
   const [items, setItems] = useState<ActionItem[]>([]);
   const [tab, setTab] = useState<ActionItemStatus | "all">("inbox");
   const [loading, setLoading] = useState(true);
@@ -208,13 +210,13 @@ export function ActionInbox() {
   const proposed = scopedItems.filter((item) => item.status === "inbox").length;
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 88 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 88 }}>
       <p className="fmark" style={{ marginBottom: 16 }}>private action ledger</p>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <h1 className="display" style={{ fontSize: "clamp(34px,4.4vw,56px)", margin: 0 }}>Your task inbox.</h1>
           <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "10px 0 0", maxWidth: "58ch" }}>
-            WorkWiki proposes actions from new material. Nothing becomes active until you accept it.
+            work-wiki proposes actions from new material. Nothing becomes active until you accept it.
           </p>
         </div>
         <div style={{ textAlign: "right" }}>
@@ -382,7 +384,7 @@ export function ActionInbox() {
                         {item.assignee && <span className="receipt" style={{ fontSize: 10.5 }}>owner · {item.assignee}</span>}
                         {item.dueDate && <span className="receipt" style={{ fontSize: 10.5 }}>due · {item.dueDate}</span>}
                         {typeof item.confidence === "number" && <span className="receipt" style={{ fontSize: 10.5 }}>{Math.round(item.confidence * 100)}% confidence</span>}
-                        {item.sourceSlug && <Link href={`/wiki/${item.sourceSlug}`} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>source · {item.sourceSlug}</Link>}
+                        {item.sourceSlug && <Link href={hrefForSlug(item.sourceSlug)} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>source · {item.sourceSlug}</Link>}
                       </div>
                     </div>
                     <div className="row" style={{ gap: 6, alignSelf: "start", flexWrap: "wrap", justifyContent: "end" }}>
@@ -399,6 +401,6 @@ export function ActionInbox() {
           })}
         </div>
       )}
-    </main>
+    </div>
   );
 }

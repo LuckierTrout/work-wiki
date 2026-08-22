@@ -118,7 +118,7 @@ export function LocalSyncPanel({ vaults }: { vaults: VaultOption[] }) {
         <div className="local-sync-register">
           <div className="local-sync-register-head"><span className="receipt">Connected clients</span><strong>{clients.length}</strong></div>
           {clients.length === 0 ? (
-            <div className="studio-empty"><p className="studio-empty-title">No companion has checked in yet</p><p>Run the generated command from the WorkWiki repository. Its first successful operation will appear here.</p></div>
+            <div className="studio-empty"><p className="studio-empty-title">No companion has checked in yet</p><p>Run the generated command from the work-wiki repository. Its first successful operation will appear here.</p></div>
           ) : clients.map((client) => (
             <article key={client.id} className={`local-sync-client is-${client.state}`}>
               <div><span className="local-sync-state" aria-hidden="true" /><div><h4>{client.label}</h4><p>{client.mode === "sources" ? "Source folder" : "Archive backup"} · {client.operation}</p></div></div>

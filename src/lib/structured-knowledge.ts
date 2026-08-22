@@ -2,6 +2,7 @@ import { generateText, NoObjectGeneratedError, Output } from "ai";
 import { z } from "zod";
 import {
   getStructuredKnowledgeModelSettings,
+  llmTimeoutOption,
   loadConfig,
 } from "./config";
 import { contentHash } from "./embeddings";
@@ -19,7 +20,7 @@ import {
 } from "./names-terms";
 import { getStorage } from "./storage";
 import { tenantForOwner, tenantWikiRelPath, validateSlug, validateTenant } from "./wiki";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 
 export type KnowledgeKind =
   | "person"
@@ -318,6 +319,8 @@ export async function extractStructuredKnowledge(
         (workspaceGuidance ? `\n\n${workspaceGuidance}` : "") +
         (dictionaryGuidance ? `\n\n${dictionaryGuidance}` : ""),
       prompt: `Page: ${slug}\n\n${page.body.slice(0, 80_000)}`,
+      // Inside the thunk, so each retry gets its own fresh deadline.
+      ...llmTimeoutOption(),
     })));
   } catch (error) {
     if (NoObjectGeneratedError.isInstance(error)) {

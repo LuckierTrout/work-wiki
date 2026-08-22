@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import { getServicePrincipal } from "@/lib/auth";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import {
   scanForMaintenance,
   rebuildDerivedIndexes,
   purgeStaleJobs,
+  sweepOrphanWikiDirs,
+  backfillWorkspaceProfiles,
   DEFAULT_MAINTENANCE_CAP,
 } from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
@@ -24,16 +28,56 @@ import { isOwnerBackupDue } from "@/lib/backups";
  * POST /api/tasks/scan — the autonomous-maintenance producer (Q2).
  *
  * Service-token only (the sole caller is the task-consumer worker's cron). Scans
- * the wiki for maintenance work and enqueues `maintain` tasks. Gated by the
- * `AUTONOMOUS_MAINTENANCE` env: anything other than `"on"` means **dry-run** —
- * the scan still runs and logs/returns what it WOULD enqueue, but enqueues
- * nothing. `?dry=1` forces a dry-run regardless (for inspection). `?cap=N`
- * overrides the per-scan task cap.
+ * the wiki for maintenance work and enqueues `maintain` tasks.
+ *
+ * `AUTONOMOUS_MAINTENANCE` GATES PAGE AUTO-EDITS, NOT THE WHOLE RUN. Anything
+ * other than `"on"` means **dry-run** for the `maintain` queue — the scan still
+ * runs and logs/returns what it WOULD enqueue, but enqueues nothing — and that
+ * is all `dry: true` in the response means. It does NOT mean the request
+ * changed nothing: the index rebuild, the ingest-job GC, the orphan
+ * wiki-directory sweep and the Workspace Purpose backfill are self-healing
+ * upkeep and one-time migration rather than unattended content edits, so they
+ * run regardless, as do the scheduled-agent, source-monitor, digest, outbox and
+ * backup blocks.
+ *
+ * `?dry=1` IS THE ONE TRUE INSPECTION SWITCH: it suppresses every one of those
+ * side-effecting blocks as well as the enqueue, which is what makes it safe to
+ * point at a live deployment to see what a scan would do. `?cap=N` overrides the
+ * per-scan task cap.
+ *
+ * Response fields worth naming: `jobsPurged` (terminal ingest-job status files
+ * deleted), `orphanWikiDirsRemoved` (`tenants/<t>/wikis/<uuid>/` directories
+ * no registry entry named, reclaimed for good — this route is that sweep's only
+ * scheduled trigger) and `workspaceProfilesBackfilled` (Wikis handed a copy of
+ * the retired tenant-global Workspace Purpose before it is deleted, DW-137 —
+ * this route is that migration's only trigger of any kind, and the count is 0
+ * on every scan of a tenant that has nothing left to relocate).
  */
 export async function POST(req: Request) {
   const principal = getServicePrincipal(req);
   if (!principal) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Deployment read-only (DW-314). After the service-principal 401 and before
+  // `scanForMaintenance`, because this scan writes bytes ON A TIMER: the index
+  // rebuild and the ingest-job GC run on every pass, the orphan sweep DELETES
+  // wiki directories, and the DW-137 backfill relocates workspace profiles.
+  // None of those reach a kernel writer, so nothing behind this handler would
+  // have refused.
+  //
+  // REFUSES WHOLE rather than degrading to `dry`. `?dry=1` is the documented
+  // inspection switch and its 200 says "here is what a scan would do"; a
+  // read-only deployment answering that shape would report a scan that never
+  // ran, and `AUTONOMOUS_MAINTENANCE` semantics stay exactly as documented
+  // above. `POST /api/tasks/run` refuses the same way, and the consumer treats
+  // a 4xx as terminal — which is the honest answer here too, since retrying
+  // cannot succeed while the deployment is read-only.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.maintenanceScan },
+      { status: 403 },
+    );
   }
 
   try {
@@ -143,9 +187,31 @@ export async function POST(req: Request) {
       backupEnqueued = await enqueueTask({ kind: "create-backup", owner: backupOwner });
     }
 
+    // Reclaim `wikis/<uuid>/` directories no registry entry names. Byte
+    // removal, so it is gated like the scheduled-agent/monitor/backup blocks
+    // above — skipped only under `?dry=1` inspection, and NOT held back by
+    // `AUTONOMOUS_MAINTENANCE`, which gates auto-EDITS of pages rather than GC.
+    // This is the only scheduled trigger the sweep has: `deleteWiki` is its
+    // other caller, and a tenant that never deletes never reclaims anything.
+    let orphanWikiDirsRemoved = 0;
+    if (!forceDry) {
+      orphanWikiDirsRemoved = await sweepOrphanWikiDirs();
+    }
+
+    // Relocate the retired tenant-global Workspace Purpose onto the Wikis that
+    // have none of their own, then delete it (DW-137). Gated exactly like the
+    // sweep above and for the same reasons: it writes bytes, so `?dry=1`
+    // suppresses it, while `AUTONOMOUS_MAINTENANCE` — which gates unattended
+    // EDITS of page content — does not. This scan is the migration's only
+    // trigger, so a deployment that never scans never finishes migrating.
+    let workspaceProfilesBackfilled = 0;
+    if (!forceDry) {
+      workspaceProfilesBackfilled = await backfillWorkspaceProfiles();
+    }
+
     logger.info(
       "maintenance",
-      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued}`,
+      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued} jobsPurged=${jobsPurged} orphanWikiDirsRemoved=${orphanWikiDirsRemoved} workspaceProfilesBackfilled=${workspaceProfilesBackfilled}`,
     );
 
     return NextResponse.json({
@@ -168,13 +234,14 @@ export async function POST(req: Request) {
       backupOwnerConfigured: Boolean(backupOwner),
       backupDue,
       backupEnqueued,
+      orphanWikiDirsRemoved,
+      workspaceProfilesBackfilled,
       // The candidate list — for dry-run inspection of what it would do.
       tasks: tasks.map((t) =>
         t.kind === "maintain"
           ? {
               op: t.op,
               slug: t.slug,
-              ...(t.threadIndex !== undefined ? { threadIndex: t.threadIndex } : {}),
               ...(t.lintType !== undefined ? { lintType: t.lintType } : {}),
               ...(t.targetSlug !== undefined ? { targetSlug: t.targetSlug } : {}),
             }

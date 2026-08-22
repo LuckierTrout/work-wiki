@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -9,10 +9,17 @@ import {
   getWikiDir,
   type Frontmatter,
 } from "../wiki";
-import { createThread, addComment } from "../talk";
-import { scanForMaintenance, rebuildDerivedIndexes } from "../maintenance";
+import { createThread } from "../talk";
+import {
+  scanForMaintenance,
+  rebuildDerivedIndexes,
+  sweepOrphanWikiDirs,
+  backfillWorkspaceProfiles,
+} from "../maintenance";
 import { listCommonsPages } from "../commons";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
+import { wikisRootPath } from "../wiki-paths";
+import { ORPHAN_SWEEP_GRACE_MS } from "../wikis";
 
 let tmpDir: string;
 const saved: Record<string, string | undefined> = {};
@@ -21,7 +28,10 @@ const PAST = "2020-01-01";
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "maint-test-"));
-  for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR"]) saved[k] = process.env[k];
+  for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR", "NEXT_PUBLIC_OWNER_HANDLE"]) {
+    saved[k] = process.env[k];
+  }
+  delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
@@ -30,7 +40,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR"]) {
+  vi.restoreAllMocks();
+  for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR", "NEXT_PUBLIC_OWNER_HANDLE"]) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
@@ -80,22 +91,9 @@ describe("scanForMaintenance", () => {
     });
   });
 
-  it("enqueues a reconcile when a disputed page has an open thread awaiting a human reply", async () => {
+  it("produces no task for a disputed page (reconcile-from-talk retired)", async () => {
     await seed("disputed", { disputed: true });
     await createThread("disputed", "Issue", "bob", "This claim looks wrong.");
-    const tasks = await scanForMaintenance();
-    expect(tasks).toContainEqual({
-      kind: "maintain",
-      op: "reconcile",
-      slug: "disputed",
-      threadIndex: 0,
-    });
-  });
-
-  it("skips a disputed thread yoyo already answered (last comment is an agent)", async () => {
-    await seed("answered", { disputed: true });
-    await createThread("answered", "Issue", "bob", "Wrong claim.");
-    await addComment("answered", 0, "bob--yoyo", "I looked — keeping both views (disputed).");
     expect(await scanForMaintenance()).toHaveLength(0);
   });
 
@@ -381,5 +379,180 @@ describe("rebuildDerivedIndexes — commons index (#398)", () => {
     // And the rebuild actually populated it with the public page.
     const commons = await listCommonsPages();
     expect(commons.map((p) => p.slug)).toContain("agentic-systems");
+  });
+});
+
+describe("sweepOrphanWikiDirs — the scheduled orphan-directory GC (DW-147)", () => {
+  const OWNER = "alice";
+
+  /**
+   * Built from `wikisRootPath`, the same helper the sweep itself addresses
+   * through — never hand-joined. A helper that spelled the tenancy layout a
+   * second time would plant its "orphan" somewhere the sweep never looks the
+   * day that layout moves, and the no-op assertions below would then pass
+   * vacuously while the real behaviour had silently broken.
+   */
+  function wikisRoot(): string {
+    return path.join(tmpDir, ...wikisRootPath(OWNER).split("/"));
+  }
+
+  /** An unreferenced `wikis/<uuid>/`, backdated past the sweep's grace window. */
+  async function plantAgedOrphan(id: string): Promise<string> {
+    const dir = path.join(wikisRoot(), id);
+    await fs.mkdir(dir, { recursive: true });
+    const file = path.join(dir, "purpose.md");
+    await fs.writeFile(file, "# Orphan\n");
+    const when = new Date(Date.now() - ORPHAN_SWEEP_GRACE_MS * 2);
+    await fs.utimes(file, when, when);
+    await fs.utimes(dir, when, when);
+    return dir;
+  }
+
+  async function exists(target: string): Promise<boolean> {
+    try {
+      await fs.stat(target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("sweeps the configured owner's tenant and returns the count", async () => {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    // The registry has to NAME a wiki, or the sweep's empty-registry rule
+    // (a lost wikis.json reads identically) leaves everything alone.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const orphan = await plantAgedOrphan("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+
+    expect(await sweepOrphanWikiDirs()).toBe(1);
+
+    expect(await exists(orphan)).toBe(false);
+    expect(await exists(path.join(wikisRoot(), wiki.id))).toBe(true);
+  });
+
+  it("is a no-op when no owner handle is configured", async () => {
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    const orphan = await plantAgedOrphan("11111111-2222-4333-8444-555555555555");
+
+    // Single-owner deployment: with nobody configured there is no tenant to
+    // resolve, so the scan must not guess one and start deleting.
+    expect(await sweepOrphanWikiDirs()).toBe(0);
+    expect(await exists(orphan)).toBe(true);
+  });
+
+  it("returns 0 instead of throwing when the sweep fails", async () => {
+    // Fail-soft like `purgeStaleJobs`: this runs inside the maintenance scan,
+    // and a storage hiccup here must not 500 a scan that did everything else.
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    vi.spyOn(getStorage(), "listFiles").mockRejectedValue(
+      new Error("listing the wikis directory failed"),
+    );
+
+    await expect(sweepOrphanWikiDirs()).resolves.toBe(0);
+  });
+});
+
+describe("backfillWorkspaceProfiles — the scheduled Workspace Purpose migration (DW-137)", () => {
+  const OWNER = "alice";
+
+  /**
+   * The retired tenant-global profile, planted where the migration reads it.
+   *
+   * Hand-joined from `tenantForOwner` rather than imported from a helper,
+   * because there deliberately IS no exported helper for this address: DW-137
+   * left it spelled once, inside `workspace-profile-backfill.ts`, and
+   * `wiki-schema-edit.test.ts` fails the build if a second spelling appears in
+   * `src/`. A test fixture is the one place the duplicate is harmless.
+   */
+  async function plantLegacyProfile(): Promise<string> {
+    const { tenantForOwner } = await import("../wiki");
+    const file = path.join(
+      tmpDir,
+      "tenants",
+      tenantForOwner(OWNER),
+      "workspace-profile.json",
+    );
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        scenario: "custom",
+        purpose: "Hand-authored before the split.",
+        keyQuestions: [],
+        inScope: [],
+        outOfScope: [],
+        outputLanguage: "English",
+        pageConventions: "",
+        createdAt: "2020-01-01T00:00:00.000Z",
+        updatedAt: "2021-06-30T00:00:00.000Z",
+      }),
+    );
+    return file;
+  }
+
+  async function exists(target: string): Promise<boolean> {
+    try {
+      await fs.stat(target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("migrates the configured owner's tenant and returns the count", async () => {
+    // THE ONLY PRODUCTION PATH INTO THE MIGRATION. `scan-route.test.ts` mocks
+    // `@/lib/maintenance` wholesale and the backfill suite calls the library
+    // function directly, so without this case an `if (1) return 0;` at the top
+    // of the wrapper leaves every other suite in the repo green while the
+    // migration never runs anywhere.
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    const { wikiProfilePath } = await import("../wiki-paths");
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    // A wiki from before per-Wiki profiles: no file of its own.
+    const own = path.join(tmpDir, ...wikiProfilePath(OWNER, wiki.id).split("/"));
+    await fs.rm(own);
+    const legacy = await plantLegacyProfile();
+
+    expect(await backfillWorkspaceProfiles()).toBe(1);
+
+    const { getWorkspaceProfile } = await import("../workspace-profile");
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).purpose).toBe(
+      "Hand-authored before the split.",
+    );
+    expect(await exists(legacy)).toBe(false);
+  });
+
+  it("is a no-op when no owner handle is configured", async () => {
+    // Single-owner deployment: with nobody configured there is no tenant to
+    // resolve, so the scan must not guess one and start writing profiles.
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    const legacy = await plantLegacyProfile();
+
+    expect(await backfillWorkspaceProfiles()).toBe(0);
+    expect(await exists(legacy)).toBe(true);
+  });
+
+  it("returns 0 instead of throwing when the migration fails", async () => {
+    // Fail-soft like `sweepOrphanWikiDirs`: this runs inside the maintenance
+    // scan, and a storage hiccup in a one-time migration must not 500 a scan
+    // that did everything else. The registry read is what breaks here — it
+    // happens under the lock, past every guard that answers 0 on its own.
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await plantLegacyProfile();
+    const storage = getStorage();
+    const readFile = storage.readFile.bind(storage);
+    vi.spyOn(storage, "readFile").mockImplementation(async (target: string) => {
+      if (target.endsWith("wikis.json")) throw new Error("the registry is gone");
+      return readFile(target);
+    });
+
+    await expect(backfillWorkspaceProfiles()).resolves.toBe(0);
   });
 });

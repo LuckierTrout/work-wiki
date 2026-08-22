@@ -322,8 +322,54 @@ export async function wikiPageExists(slug: string): Promise<boolean> {
   }
 }
 
-/** Read a wiki page by slug. Returns `null` when the file doesn't exist or the slug is invalid. */
-export async function readWikiPage(slug: string): Promise<WikiPage | null> {
+/**
+ * Options for a page read.
+ */
+export interface ReadWikiPageOptions {
+  /**
+   * Bypass {@link pageCache} entirely for this read (DW-195).
+   *
+   * A bypassing read NEITHER CONSULTS NOR MUTATES the cache: it goes to
+   * storage, and it leaves whatever entry is there exactly as it was — so a
+   * bulk scan holding the cache open across this request keeps the entries it
+   * is iterating, and this caller still gets the stored bytes.
+   *
+   * WHAT IT BYPASSES IS `pageCache`, AND ONLY THAT. The read still resolves
+   * which silo path to try through {@link getPageIndex}, which has a cache and
+   * a consistency window of its own on the R2 backend — so `fresh` guarantees
+   * "not served from the per-operation page cache", not "the freshest bytes any
+   * layer could possibly return". That is the right guarantee for the
+   * precondition: a version derived here describes the bytes THIS read saw, and
+   * the artifact writer re-checks its own under a lock. A page-index lag can
+   * still make a write read the flat fallback, which is pre-existing and
+   * unchanged by this option.
+   *
+   * FOR PRECONDITION-BEARING READS. `pageCache` is module-global and
+   * ref-counted around bulk scans (`lint.ts`, `search.ts`, `query.ts`,
+   * `dataview.ts`), so one of those can be holding a superseded entry open when
+   * an unrelated request arrives. A read that SEEDS a precondition (the
+   * Preview, the edit screen) would then hand the editor a version of bytes
+   * that are no longer stored; a read that CHECKS one (the page `PUT`'s merge
+   * base) would compare against a file that is not the one it is about to
+   * overwrite. Both produce a 412 against a write nobody made, or a match
+   * against bytes that are gone.
+   *
+   * Default `false`: caching stays exactly as it was for every existing caller.
+   */
+  fresh?: boolean;
+}
+
+/**
+ * Read a wiki page by slug. Returns `null` when the file doesn't exist or the
+ * slug is invalid.
+ *
+ * Pass `{ fresh: true }` when the bytes (or their version) are about to back a
+ * write precondition — see {@link ReadWikiPageOptions.fresh}.
+ */
+export async function readWikiPage(
+  slug: string,
+  options?: ReadWikiPageOptions,
+): Promise<WikiPage | null> {
   try {
     validateSlug(slug);
   } catch (err) {
@@ -331,8 +377,10 @@ export async function readWikiPage(slug: string): Promise<WikiPage | null> {
     return null;
   }
 
-  // Check cache first (when active)
-  if (pageCache !== null && pageCache.has(slug)) {
+  const fresh = options?.fresh === true;
+
+  // Check cache first (when active, and when this read may use it)
+  if (!fresh && pageCache !== null && pageCache.has(slug)) {
     return pageCache.get(slug) ?? null;
   }
 
@@ -371,7 +419,11 @@ export async function readWikiPage(slug: string): Promise<WikiPage | null> {
       if (!isEnoent(err)) {
         logger.warn("wiki", `readWikiPage failed for "${slug}":`, err);
       }
-      if (pageCache !== null) {
+      // A fresh read leaves the cache as it found it — see
+      // `ReadWikiPageOptions.fresh`. Poisoning a scan's open cache with a
+      // negative entry is exactly the staleness this option exists to avoid,
+      // pointed the other way.
+      if (!fresh && pageCache !== null) {
         pageCache.set(slug, null);
       }
       return null;
@@ -383,7 +435,7 @@ export async function readWikiPage(slug: string): Promise<WikiPage | null> {
   const title = titleMatch ? titleMatch[1].trim() : slug;
   const result: WikiPage = { slug, title, content, path: actualPath };
 
-  if (pageCache !== null) {
+  if (!fresh && pageCache !== null) {
     pageCache.set(slug, result);
   }
 
@@ -401,11 +453,15 @@ export async function readWikiPage(slug: string): Promise<WikiPage | null> {
  *
  * Returns `null` when the page doesn't exist or the slug is invalid.
  * Throws when the file exists but its frontmatter block is malformed.
+ *
+ * `options` is forwarded verbatim to {@link readWikiPage} — pass
+ * `{ fresh: true }` when the bytes are about to back a write precondition.
  */
 export async function readWikiPageWithFrontmatter(
   slug: string,
+  options?: ReadWikiPageOptions,
 ): Promise<(WikiPage & { frontmatter: Frontmatter; body: string }) | null> {
-  const page = await readWikiPage(slug);
+  const page = await readWikiPage(slug, options);
   if (!page) return null;
   const { data, body } = parseFrontmatter(page.content);
   // Prefer the H1 inside the body so frontmatter lines can never contribute

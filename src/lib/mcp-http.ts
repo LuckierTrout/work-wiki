@@ -11,12 +11,13 @@
  * `tools/call`.
  *
  * Tool handlers are REUSED from the stdio server (`@/mcp`) — single source of
- * truth, no parallel write-path to drift (see `.yoyo/learnings.md`). All 49
+ * truth, no parallel write-path to drift (see `.yoyo/learnings.md`). All 40
  * tools are exposed — full parity with the stdio MCP server.
  *
  * Auth/attribution lives in the route (`src/app/api/mcp/route.ts`): a Bearer
- * token resolves to an `owner` handle; WRITE tools require it and attribute the
- * page to that owner. Reads run unauthenticated against the public commons.
+ * token resolves to an `owner` handle, and writes are attributed to that owner.
+ * This deployment is private, so EVERY `tools/call` — reads included — requires
+ * a principal; there is no anonymous read path.
  */
 import {
   handleSearchWiki,
@@ -32,16 +33,9 @@ import {
   handleDeletePage,
   handleSaveQueryAnswer,
   handleMaintenanceScan,
-  handlePublishToCommons,
   handleUpdateMetadata,
   handleLintWiki,
   handleFixLintIssue,
-  handleReconcilePage,
-  handleListDiscussions,
-  handleReadDiscussion,
-  handleCreateDiscussion,
-  handleAddComment,
-  handleResolveDiscussion,
   handleListRevisions,
   handleReadRevision,
   handleRevertRevision,
@@ -65,12 +59,11 @@ import {
   handleIngestImage,
   handleIngestPdf,
   handleIngestXMention,
-  handleListContributors,
-  handleGetContributor,
 } from "@/mcp";
 import { mergePages } from "@/lib/merge";
 import { readWikiPageWithFrontmatter } from "@/lib/wiki";
-import { canWriteFrontmatter } from "@/lib/authz";
+import { canWriteFrontmatter, isRealmRestrictedFrontmatterWrite } from "@/lib/authz";
+import { resolveWriteDenial } from "@/lib/write-denial";
 import { addToVault, vaultOwnedBy } from "@/lib/vault";
 import { getAgent, agentIdFor, assertCanMutateAgent } from "@/lib/agents";
 import { logger } from "@/lib/logger";
@@ -134,7 +127,7 @@ interface ToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  /** Write tools require an authenticated principal; reads don't. */
+  /** Marks a mutating tool. Reads and writes BOTH require a principal. */
   write: boolean;
   run: (
     args: Record<string, unknown>,
@@ -164,7 +157,7 @@ function attributed(
 export const MCP_TOOLS: ToolDef[] = [
   {
     name: "search_wiki",
-    description: "Search work-wiki wiki pages by query string (public commons).",
+    description: "Search work-wiki wiki pages by query string.",
     inputSchema: schema(
       {
         query: str("Search query"),
@@ -403,14 +396,31 @@ export const MCP_TOOLS: ToolDef[] = [
     inputSchema: schema({ slug: str("Page slug to re-ingest") }, ["slug"]),
     write: true,
     // Enforce the same write ACL as the REST reingest route: you can only
-    // re-synthesize a page you may write (public commons = collectively
-    // editable; another user's PRIVATE page = denied). Without this, any
-    // token-holder could overwrite/fork others' pages. A missing/unauthorized
-    // page throws a single cloaked error (no private-page existence oracle).
+    // re-synthesize a page you may write. Since DW-121 that excludes every
+    // public knowledge page for a non-service, non-admin principal — the realm
+    // reserves those for agents and admins — as well as another user's PRIVATE
+    // page. Without this, any token-holder could overwrite/fork others' pages.
+    // A missing/unauthorized page throws a single cloaked error (no
+    // private-page existence oracle).
     run: async (a, p) => {
       const slug = typeof a.slug === "string" ? a.slug : "";
       const page = slug ? await readWikiPageWithFrontmatter(slug) : null;
       if (!page || !canWriteFrontmatter(page.frontmatter, p, "body")) {
+        // WHETHER THIS TOOL MAY SPEAK AT ALL is a cloak decision, and it is the
+        // predicate — not the copy table — that settles it: only a page that was
+        // actually read and is realm-restricted is public, non-agent-scoped and
+        // non-artifact, so naming it leaks nothing. Every other denial — missing
+        // slug, missing page, another user's private page — keeps the
+        // deliberately merged cloak below, which is what stops this tool from
+        // being a private-page existence oracle.
+        //
+        // Once it may speak, the WORDS still come from `resolveWriteDenial`,
+        // like every other door (see the rule in `write-denial.ts`).
+        if (page && isRealmRestrictedFrontmatterWrite(page.frontmatter, "body")) {
+          throw new Error(
+            resolveWriteDenial("reingest", page.frontmatter, "body"),
+          );
+        }
         throw new Error(
           `Page not found or you don't have permission to re-ingest it: ${slug || "(missing slug)"}`,
         );
@@ -421,7 +431,7 @@ export const MCP_TOOLS: ToolDef[] = [
   {
     name: "maintenance_scan",
     description:
-      "Scan the wiki for maintenance tasks (disputed pages, expired sources, orphans, broken links). Read-only — returns candidates; does not enqueue or execute work.",
+      "Scan the wiki for maintenance tasks (expired sources, unmigrated pages, dangling supersedes, orphans, broken links). Read-only — returns candidates; does not enqueue or execute work. Disputed pages are not scanned here — list them with lint_wiki (check type 'disputed-page'); clearing the flag is a human review.",
     inputSchema: schema({
       cap: { type: "number", description: "Max tasks to return (default 10)" },
     }),
@@ -430,33 +440,6 @@ export const MCP_TOOLS: ToolDef[] = [
       handleMaintenanceScan(
         a as Parameters<typeof handleMaintenanceScan>[0],
       ),
-  },
-  {
-    name: "publish_to_commons",
-    description:
-      "Publish an agent-knowledge page to the public commons. Clears the agent type, " +
-      "transfers ownership to the agent's human owner, preserves the agent in contributors[]. " +
-      "One-way promotion — cannot be unpublished.",
-    inputSchema: schema(
-      {
-        slug: str("Slug of the agent-knowledge page to publish"),
-        agentId: str("ID of the agent that owns the page (e.g. alice--yoyo)"),
-      },
-      ["slug", "agentId"],
-    ),
-    write: true,
-    run: async (a, p) => {
-      const args = a as Parameters<typeof handlePublishToCommons>[0];
-      // Verify the caller owns the agent whose page is being published.
-      const agent = await getAgent(args.agentId);
-      if (!agent) throw new Error(`Agent not found: ${args.agentId}`);
-      if (!agent.owner || agent.owner !== p!.handle) {
-        throw new Error(
-          `Ownership mismatch: only the agent's owner can publish its pages to the commons.`,
-        );
-      }
-      return handlePublishToCommons(args);
-    },
   },
   {
     name: "update_metadata",
@@ -521,25 +504,6 @@ export const MCP_TOOLS: ToolDef[] = [
       }),
   },
   {
-    name: "reconcile_page",
-    description:
-      "Reconcile a wiki page by applying valid points from a discussion thread. " +
-      "Reads the page and thread, LLM-revises the page, posts a summary comment, and resolves the thread.",
-    inputSchema: schema(
-      {
-        pageSlug: str("Slug of the wiki page to reconcile"),
-        threadIndex: { type: "number", description: "Zero-based index of the discussion thread" },
-      },
-      ["pageSlug", "threadIndex"],
-    ),
-    write: true,
-    run: (a, p) =>
-      handleReconcilePage({
-        ...(a as { pageSlug: string; threadIndex: number }),
-        author: p!.handle,
-      }),
-  },
-  {
     name: "merge_pages",
     description:
       "Merge one wiki page into another: folds both bodies into the target (LLM reconcile), " +
@@ -562,92 +526,10 @@ export const MCP_TOOLS: ToolDef[] = [
         bypassOwnerCheck: false,
       }),
   },
-  // -- Discussion tools ---------------------------------------------------
-  {
-    name: "list_discussions",
-    description:
-      "List all discussion threads for a wiki page (public, read-only).",
-    inputSchema: schema(
-      { pageSlug: str("Slug of the wiki page to list discussions for") },
-      ["pageSlug"],
-    ),
-    write: false,
-    run: (a) =>
-      handleListDiscussions(a as Parameters<typeof handleListDiscussions>[0]),
-  },
-  {
-    name: "read_discussion",
-    description:
-      "Read a single discussion thread with full comment bodies (public, read-only). " +
-      "Use list_discussions first to discover thread indices.",
-    inputSchema: schema(
-      {
-        pageSlug: str("Slug of the wiki page the discussion belongs to"),
-        threadIndex: { type: "number", description: "Zero-based index of the thread (from list_discussions)" },
-      },
-      ["pageSlug", "threadIndex"],
-    ),
-    write: false,
-    run: (a) =>
-      handleReadDiscussion(a as Parameters<typeof handleReadDiscussion>[0]),
-  },
-  {
-    name: "create_discussion",
-    description:
-      "Start a new discussion thread on a wiki page for editorial discussion.",
-    inputSchema: schema(
-      {
-        pageSlug: str("Slug of the wiki page to discuss"),
-        title: str("Title of the discussion thread"),
-        body: str("Opening comment body (markdown)"),
-      },
-      ["pageSlug", "title", "body"],
-    ),
-    write: true,
-    run: (a, p) =>
-      handleCreateDiscussion({
-        ...(a as { pageSlug: string; title: string; body: string }),
-        author: p!.handle,
-      }),
-  },
-  {
-    name: "add_comment",
-    description:
-      "Add a comment to an existing discussion thread on a wiki page.",
-    inputSchema: schema(
-      {
-        pageSlug: str("Slug of the wiki page the discussion belongs to"),
-        threadIndex: { type: "number", description: "Zero-based index of the thread" },
-        content: str("Comment body (markdown)"),
-        parentId: str("Optional parent comment ID for threaded replies"),
-      },
-      ["pageSlug", "threadIndex", "content"],
-    ),
-    write: true,
-    run: (a, p) =>
-      handleAddComment({
-        ...(a as { pageSlug: string; threadIndex: number; content: string; parentId?: string }),
-        author: p!.handle,
-      }),
-  },
-  {
-    name: "resolve_discussion",
-    description:
-      "Resolve a discussion thread on a wiki page (mark as resolved or wontfix).",
-    inputSchema: schema(
-      {
-        pageSlug: str("Slug of the wiki page the discussion belongs to"),
-        threadIndex: { type: "number", description: "Zero-based index of the thread" },
-        resolution: str("Resolution status: open | resolved | wontfix"),
-      },
-      ["pageSlug", "threadIndex", "resolution"],
-    ),
-    write: true,
-    run: (a, _p) =>
-      handleResolveDiscussion(
-        a as Parameters<typeof handleResolveDiscussion>[0],
-      ),
-  },
+  // -- Discussion tools: RETIRED ------------------------------------------
+  // Talk is retired (AD-21). The REST handlers and the UI panel are gone, so an
+  // agent creating a thread here would write to a surface nothing can display.
+  // `src/lib/talk.ts` stays on disk (AD-21) with no reachable callers.
   // -- Revision tools -----------------------------------------------------
   {
     name: "list_revisions",
@@ -1020,28 +902,6 @@ export const MCP_TOOLS: ToolDef[] = [
     run: (a) =>
       handleIngestHistory(a as Parameters<typeof handleIngestHistory>[0]),
   },
-  // -- Contributor trust awareness (read-only) --------------------------------
-  {
-    name: "list_contributors",
-    description:
-      "List all contributors with trust scores and activity summaries. Returns a JSON array of " +
-      "contributor profiles including handle, editCount, revertCount, trustScore, and activity breakdown. " +
-      "Useful for assessing contributor reliability before accepting, reverting, or escalating edits.",
-    inputSchema: schema({}),
-    write: false,
-    run: () => handleListContributors(),
-  },
-  {
-    name: "get_contributor",
-    description:
-      "Get a specific contributor's trust profile by handle. Returns a single contributor profile " +
-      "including editCount, revertCount, trustScore, commentCount, and detailed activity. " +
-      "Useful for checking a contributor's track record before acting on their edits.",
-    inputSchema: schema({ handle: str("Contributor handle to look up") }, ["handle"]),
-    write: false,
-    run: (a) =>
-      handleGetContributor(a as Parameters<typeof handleGetContributor>[0]),
-  },
 ];
 
 /** Public (transport-facing) tool descriptor for `tools/list`. */
@@ -1147,11 +1007,15 @@ export async function dispatchMcp(
       if (!tool) {
         return ok(id, toolResult(`Unknown tool: ${params.name}`, true));
       }
-      if (tool.write && !principal) {
+      // Reads AND writes both require a principal: this is a private,
+      // single-owner deployment, so there is no anonymous read path (AD-8).
+      // `src/app/api/mcp/route.ts` already 401s a missing bearer, so this is
+      // defense-in-depth for any other caller of `dispatchMcp`.
+      if (!principal) {
         return ok(
           id,
           toolResult(
-            "Authentication required: this tool writes to your content. Send Authorization: Bearer <your work-wiki token>.",
+            "Authentication required: this deployment is private. Send Authorization: Bearer <your work-wiki token>.",
             true,
           ),
         );

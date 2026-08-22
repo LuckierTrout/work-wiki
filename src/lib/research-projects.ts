@@ -1,4 +1,4 @@
-import { isEnoent } from "./errors";
+import { ClientInputError, isEnoent } from "./errors";
 import { withFileLock } from "./lock";
 import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
@@ -50,7 +50,7 @@ export interface ResearchProjectInput {
   vaultId?: string | null;
 }
 
-const MAX_PROJECTS = 100;
+export const MAX_PROJECTS = 100;
 const STATUSES = new Set<ResearchProjectStatus>([
   "draft", "queued", "collecting", "ready", "complete", "failed", "cancelled",
 ]);
@@ -114,6 +114,21 @@ async function readProjects(owner: string): Promise<ResearchProject[]> {
   }
 }
 
+/**
+ * Persist the registry, keeping at most `MAX_PROJECTS` entries.
+ *
+ * Precisely: it keeps the LAST `MAX_PROJECTS` entries in array order, which is
+ * insertion order — NOT the most recently updated ones. Those are different
+ * sets as soon as anything is updated, because `listResearchProjects` orders by
+ * `updatedAt` while this array never reorders: touching the oldest-inserted
+ * project makes it the newest by `updatedAt` and leaves it first in line to be
+ * sliced off. Do not read this as an LRU.
+ *
+ * The `slice` is a backstop for legacy over-cap data reaching
+ * `updateResearchProject`/`deleteResearchProject`, not a create policy — the
+ * create path refuses at the cap before it gets here, so the create can no
+ * longer reach a state where this silently evicts a stored project.
+ */
 async function writeProjects(owner: string, projects: ResearchProject[]): Promise<void> {
   await getStorage().writeFile(
     projectPath(owner),
@@ -132,6 +147,23 @@ export async function getResearchProject(
   return (await readProjects(owner)).find((project) => project.id === id) ?? null;
 }
 
+/**
+ * Create a research project for `owner`.
+ *
+ * WHY THE CAP IS CHECKED FIRST. `writeProjects` persists only the last
+ * `MAX_PROJECTS` entries, so a create that pushed past the cap did not fail —
+ * it silently dropped the tenant's OLDEST project on the floor and reported
+ * success. That is a create destroying pre-existing state, and no compensation
+ * can undo it after the fact. Refusing before anything is mutated or written is
+ * the fix, and it is the same discipline `createWiki` applies at `MAX_WIKIS`.
+ *
+ * WHY THERE IS NO POST-WRITE UNDO. `createWiki` needs one because it seeds
+ * three files into a directory before its registry write, so a fault strands
+ * them. This create writes exactly ONE file and seeds no sibling artifacts, and
+ * the pushed array is function-local — so a rejected `writeProjects` leaves the
+ * stored registry byte-identical (`StorageProvider.writeFile` is atomic from
+ * the caller's view) and there is nothing behind to clean up.
+ */
 export async function createResearchProject(
   owner: string,
   input: ResearchProjectInput,
@@ -139,6 +171,11 @@ export async function createResearchProject(
   const cleaned = cleanInput(input);
   return withFileLock(lockKey(owner), async () => {
     const projects = await readProjects(owner);
+    if (projects.length >= MAX_PROJECTS) {
+      throw new ClientInputError(
+        `This workspace already has the maximum of ${MAX_PROJECTS} research projects.`,
+      );
+    }
     const now = new Date().toISOString();
     const project: ResearchProject = {
       id: crypto.randomUUID(),

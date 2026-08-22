@@ -1,0 +1,7 @@
+# Sweep reviews must not HALT on orchestrator ledger harvest.
+# The orchestrator squashes deferred-work.md into the story commit after the session.
+
+[workflow]
+persistent_facts = [
+  "On finalize, uncommitted `_bmad-output/implementation-artifacts/deferred-work.md` is orchestrator-owned harvest. Leave it alone and HALT status done. Only HALT blocked for dirty files this session was allowed to commit.",
+]

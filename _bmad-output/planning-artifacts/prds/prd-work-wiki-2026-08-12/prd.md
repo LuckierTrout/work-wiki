@@ -96,7 +96,7 @@ v1 exists so Christian can trust it at work: after a Plaud meeting, the wiki and
 - **Overview** — Global summary Page (`overview.md`) regenerated on every successful Ingest.
 - **Workbench** — The primary web shell: icon sidebar, three columns (Knowledge Tree or File Tree | Chat | Preview), plus an Activity panel.
 - **Knowledge Tree** — Left-column browse of Pages by wiki structure (concepts/entities/types), not raw files.
-- **File Tree** — Left-column browse of the Wiki’s files (Pages, Sources, purpose/Schema) as a tree.
+- **File Tree** — Left-column browse of the owner’s files as a tree: Pages and Sources, which are shared across Wikis, plus the active Wiki’s `purpose.md` and Schema.
 - **Activity panel** — Queue visualization: progress bar plus per-file pending / processing / succeeded / failed with cancel and retry.
 - **Scenario Template** — A named starter (Research, Reading, Personal Growth, Business, General) that pre-configures `purpose.md` and Schema for a new Wiki.
 - **Chat** — Query against the Wiki via a backend Agent runtime (not a browser-only loop). Multi-Conversation. Center column — not an icon-sidebar mode.

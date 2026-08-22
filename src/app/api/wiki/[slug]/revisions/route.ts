@@ -5,7 +5,9 @@ import { extractSummary } from "@/lib/ingest";
 import { serializeFrontmatter } from "@/lib/frontmatter";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { canReadSlug, canWriteFrontmatter, canReadFrontmatter } from "@/lib/authz";
+import { resolveWriteDenial } from "@/lib/write-denial";
 import { getErrorMessage } from "@/lib/errors";
+import { isReadOnlyError } from "@/lib/read-only";
 
 type RouteParams = { params: Promise<{ slug: string }> };
 
@@ -144,7 +146,11 @@ export async function POST(req: Request, { params }: RouteParams) {
     if (!canWriteFrontmatter(existing.frontmatter, principal, "body")) {
       return canReadFrontmatter(existing.frontmatter, principal)
         ? NextResponse.json(
-            { error: "You don't have permission to revert this page." },
+            {
+              // Readable (the cloak ran first); the resolver adds the realm
+              // explanation only when the realm gate is what refused.
+              error: resolveWriteDenial("revert", existing.frontmatter, "body"),
+            },
             { status: 403 },
           )
         : NextResponse.json(
@@ -205,6 +211,14 @@ export async function POST(req: Request, { params }: RouteParams) {
 
     return NextResponse.json(result);
   } catch (err) {
+    // Deployment read-only (DW-187). A revert is a full body rewrite behind a
+    // confirm; `writeWikiPageWithSideEffects` refuses it, and this is what turns
+    // that refusal into the 403 the caller can act on. The 404s above still win
+    // — a missing page and a missing revision are reads the flag does not
+    // change.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     const message = getErrorMessage(err);
     const status = message.toLowerCase().startsWith("invalid slug") ? 400 : 500;
     return NextResponse.json({ error: message }, { status });

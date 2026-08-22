@@ -179,7 +179,7 @@ export function SystemHealthDesk() {
   const attention = health?.status === "attention";
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>operator&apos;s desk</p>
@@ -248,7 +248,7 @@ export function SystemHealthDesk() {
       <section className="grid lg:grid-cols-[1fr_1fr]" style={{ gap: 24, marginTop: 24 }}>
         <form onSubmit={saveCase} style={panel}>
           <p className="fmark">new quality check</p>
-          <h2 className="display" style={heading}>Teach WorkWiki what good looks like.</h2>
+          <h2 className="display" style={heading}>Teach work-wiki what good looks like.</h2>
           <div style={{ display: "grid", gap: 12, marginTop: 18 }}>
             <Field label="Label"><input required value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Project status answer" style={inputStyle} /></Field>
             <Field label="Question"><textarea required value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="What decisions changed this week?" rows={3} style={{ ...inputStyle, resize: "vertical" }} /></Field>
@@ -298,9 +298,9 @@ export function SystemHealthDesk() {
       <aside style={{ ...panel, marginTop: 30, display: "grid", gap: 8 }}>
         <p className="fmark">deployment boundary</p>
         <p style={{ ...bodyCopy, margin: 0 }}>{health?.queue.note ?? "Queue telemetry is checked in Cloudflare."}</p>
-        <p style={{ ...bodyCopy, margin: 0 }}>Dead-letter queue depth is provider telemetry, while WorkWiki keeps owner-visible operation and retry receipts. <Link href="/integrations" className="underline">Inspect integrations</Link> or <Link href="/review" className="underline">open the Review Desk</Link>.</p>
+        <p style={{ ...bodyCopy, margin: 0 }}>Dead-letter queue depth is provider telemetry, while work-wiki keeps owner-visible operation and retry receipts. <Link href="/integrations" className="underline">Inspect integrations</Link> or <Link href="/review" className="underline">open the Review Desk</Link>.</p>
       </aside>
-    </main>
+    </div>
   );
 }
 

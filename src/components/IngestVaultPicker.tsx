@@ -58,7 +58,7 @@ export function IngestVaultPicker({ value, onChange }: IngestVaultPickerProps) {
         onChange={(e) => onChange(e.target.value || null)}
         className="rounded-lg border border-foreground/20 bg-transparent px-3 py-2 text-sm focus:border-foreground/50 focus:outline-none transition-colors"
       >
-        <option value="">None (commons only)</option>
+        <option value="">None (wiki only)</option>
         {vaults.map((v) => (
           <option key={v.id} value={v.id}>
             {v.name}

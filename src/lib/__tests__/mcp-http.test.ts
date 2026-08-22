@@ -17,6 +17,7 @@ import { createVault, vaultSlugs } from "../vault";
 import { registerAgent } from "../agents";
 import type { Principal } from "../auth";
 import type { Frontmatter } from "../frontmatter";
+import { WRITE_DENIAL_REALM } from "../write-denial";
 
 const ALICE: Principal = { id: "agent:a--yoyo", handle: "alice" };
 const BOB: Principal = { id: "user:bob", handle: "bob" };
@@ -92,8 +93,6 @@ describe("dispatchMcp — tools/list", () => {
     expect(names).toContain("wiki_graph");
     expect(names).toContain("activity_trail");
     expect(names).toContain("ingest_history");
-    expect(names).toContain("list_contributors");
-    expect(names).toContain("get_contributor");
     expect(names).toContain("delete_agent");
     expect(names).toContain("vault_delete");
     expect(names).toContain("vault_rename");
@@ -108,6 +107,74 @@ describe("dispatchMcp — tools/list", () => {
       expect(t).not.toHaveProperty("write");
       expect(t).not.toHaveProperty("run");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HTTP ↔ stdio parity
+// ---------------------------------------------------------------------------
+// `mcp-http.ts`'s header promises "full parity with the stdio MCP server", but
+// the two tool sets are maintained by hand in separate files (`MCP_TOOLS` here,
+// `server.registerTool` calls in `src/mcp.ts`). The existing guards only compare
+// `mcp.json` against the stdio registrations and grep a prose count, so a tool
+// added or retired on one side alone slipped through. Pin the two directly.
+describe("MCP_TOOLS ↔ stdio registration parity", () => {
+  it("exposes exactly the tools createMcpServer() registers", async () => {
+    const { createMcpServer } = await import("../../mcp");
+    const server = createMcpServer();
+    // _registeredTools is private in TypeScript but accessible at runtime —
+    // same idiom as mcp-annotations.test.ts / the mcp.json manifest-sync test.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stdioNames = Object.keys((server as any)._registeredTools);
+    const httpNames = MCP_TOOLS.map((t) => t.name);
+
+    const stdioSet = new Set(stdioNames);
+    const httpSet = new Set(httpNames);
+
+    const missingFromHttp = stdioNames.filter((n) => !httpSet.has(n));
+    const extraInHttp = httpNames.filter((n) => !stdioSet.has(n));
+
+    expect(
+      missingFromHttp,
+      `stdio registers tools the HTTP endpoint does not expose: ${missingFromHttp.join(", ")}`,
+    ).toEqual([]);
+    expect(
+      extraInHttp,
+      `HTTP endpoint exposes tools the stdio server does not register: ${extraInHttp.join(", ")}`,
+    ).toEqual([]);
+
+    // No duplicate descriptors on the HTTP side (the first would win silently).
+    expect(httpNames.length).toBe(httpSet.size);
+    expect([...httpNames].sort()).toEqual([...stdioNames].sort());
+  });
+
+  // Matching names is not parity on its own: `ToolDef.write` is what gates the
+  // HTTP side (auth requirement in `dispatchMcp`, the vault-filing suffix on
+  // write-tool descriptions), and its stdio counterpart is
+  // `annotations.readOnlyHint`. A tool whose two flags disagree passes the
+  // name check above while behaving differently on each transport.
+  it("agrees with the stdio readOnlyHint annotation on every tool's write flag", async () => {
+    const { createMcpServer } = await import("../../mcp");
+    const server = createMcpServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const registered = (server as any)._registeredTools as Record<
+      string,
+      { annotations?: { readOnlyHint?: boolean } }
+    >;
+
+    const disagreements = MCP_TOOLS.filter((t) => {
+      const readOnlyHint = registered[t.name]?.annotations?.readOnlyHint;
+      // An absent hint is its own drift — every tool declares one today.
+      return readOnlyHint === undefined || t.write === readOnlyHint;
+    }).map(
+      (t) =>
+        `${t.name} (write: ${t.write}, readOnlyHint: ${registered[t.name]?.annotations?.readOnlyHint})`,
+    );
+
+    expect(
+      disagreements,
+      `write flag disagrees with the stdio readOnlyHint annotation: ${disagreements.join(", ")}`,
+    ).toEqual([]);
   });
 });
 
@@ -142,11 +209,55 @@ describe("dispatchMcp — tools/call auth gating", () => {
     expect(r.content[0].text).toMatch(/not found or you don't have permission/i);
   });
 
+  /**
+   * DW-122 — the one place the merged cloak may be broken, and only there.
+   *
+   * This tool answers a single sentence for "missing" and "denied" alike, on
+   * purpose: a distinguishable denial would make it a private-page existence
+   * oracle. The commons realm is the exception, because a realm-denied page is
+   * PUBLIC — naming it reveals nothing a `read_page` would not. So the realm
+   * explanation replaces the cloak exactly when a page was read AND the realm
+   * predicate holds for it, and the cloak stands everywhere else.
+   */
+  it("reingest explains the realm on a readable public knowledge page", async () => {
+    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
+    const fm = { title: "Realm Page", owner: "alice", created: "2025-01-01", visibility: "public" };
+    await writeWikiPage("realm-reingest", serializeFrontmatter(fm as Frontmatter, "# Realm Page\n\nPublic knowledge."));
+
+    const res = await dispatchMcp(
+      { id: 1, method: "tools/call", params: { name: "reingest", arguments: { slug: "realm-reingest" } } },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    // `dispatchMcp` prefixes a thrown error with "Error: " on its way into the
+    // tool result, so the sentence is asserted as a suffix rather than
+    // re-spelled with the prefix baked in.
+    expect(r.content[0].text).toContain(WRITE_DENIAL_REALM.reingest);
+  });
+
+  it("reingest keeps the cloak on another user's private page", async () => {
+    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
+    const fm = { title: "Alice Private", owner: "alice", created: "2025-01-01", visibility: "private" };
+    await writeWikiPage("private-reingest", serializeFrontmatter(fm as Frontmatter, "# Alice Private\n\nSecret."));
+
+    const res = await dispatchMcp(
+      { id: 1, method: "tools/call", params: { name: "reingest", arguments: { slug: "private-reingest" } } },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    // Indistinguishable from the missing-slug case above — and, critically,
+    // carrying no word about what kind of page it is.
+    expect(r.content[0].text).toMatch(/not found or you don't have permission/i);
+    expect(r.content[0].text).not.toMatch(/public knowledge/i);
+  });
+
   it("every write tool is gated and every read tool is open", () => {
     const writes = MCP_TOOLS.filter((t) => t.write).map((t) => t.name);
     const reads = MCP_TOOLS.filter((t) => !t.write).map((t) => t.name);
     expect(writes).toEqual(
-      expect.arrayContaining(["ingest_url", "batch_ingest_urls", "ingest_text", "ingest_image", "ingest_pdf", "ingest_x_mention", "create_page", "update_page", "delete_page", "save_query_answer", "reingest", "update_metadata", "fix_lint_issue", "reconcile_page", "merge_pages", "delete_agent", "vault_delete", "vault_rename"]),
+      expect.arrayContaining(["ingest_url", "batch_ingest_urls", "ingest_text", "ingest_image", "ingest_pdf", "ingest_x_mention", "create_page", "update_page", "delete_page", "save_query_answer", "reingest", "update_metadata", "fix_lint_issue", "merge_pages", "delete_agent", "vault_delete", "vault_rename"]),
     );
     expect(reads).toEqual(
       expect.arrayContaining(["search_wiki", "read_page", "list_pages", "query_wiki", "lint_wiki", "query_history"]),
@@ -246,9 +357,18 @@ describe("dispatchMcp — update_metadata", () => {
   });
 
   it("forwards the principal to patchMetadata (updates metadata on an owned page)", async () => {
-    // Create a page owned by alice first.
+    // Create a page owned by alice first. PRIVATE, so `alice` is inside the set
+    // the per-page ACL admits: since DW-121 the commons realm refuses a human's
+    // metadata patch on a PUBLIC knowledge page exactly as it refuses a body
+    // write, and this case is about the PRINCIPAL reaching `patchMetadata` at
+    // all — not about the realm, which has its own coverage.
     const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
-    const fm = { title: "Meta Test", owner: "alice", created: "2025-01-01" };
+    const fm = {
+      title: "Meta Test",
+      owner: "alice",
+      visibility: "private",
+      created: "2025-01-01",
+    };
     await writeWikiPage("meta-test", serializeFrontmatter(fm, "# Meta Test\n\nBody."));
 
     const res = await dispatchMcp(
@@ -272,6 +392,107 @@ describe("dispatchMcp — update_metadata", () => {
     const page = await readFm("meta-test");
     expect(page!.frontmatter.disputed).toBe(true);
     expect(page!.frontmatter.confidence).toBe(0.5);
+  });
+
+  /**
+   * THE TWO DENY CASES, and why the happy path above cannot stand in for them.
+   *
+   * `handleUpdateMetadata` substitutes a write-anything `service:mcp` principal
+   * when `principal` is `undefined`, so a success case passes whether or not
+   * the tool's `run: (a, p) => handleUpdateMetadata({ …, principal: p })`
+   * actually forwards `p` — deleting `principal: p` from `mcp-http.ts` leaves
+   * every other case in this file green. That forwarding is not a detail: this
+   * is the one door where a non-service, non-admin principal (`agent:<id>`,
+   * which is what ALICE is) really arrives, and since DW-121 it is the whole
+   * metadata ACL for it. Both cases below fail if the forwarding is dropped,
+   * because the substituted service principal would be admitted.
+   */
+  it("refuses an agent principal patching a public knowledge page (DW-121)", async () => {
+    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
+    // Public and untyped → `belongsInCommons` → the realm reserves it for
+    // service principals and admins. ALICE owns it and is still refused, which
+    // is the DW-121 rule: the realm is not an ownership term.
+    const fm = { title: "Shared Knowledge", owner: "alice", created: "2025-01-01" };
+    await writeWikiPage(
+      "shared-knowledge",
+      serializeFrontmatter(fm as Frontmatter, "# Shared Knowledge\n\nBody."),
+    );
+
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "update_metadata",
+          arguments: { slug: "shared-knowledge", metadata: { disputed: true } },
+        },
+      },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    // The realm sentence, from the shared table — readable + denied implies the
+    // realm at this door like every other.
+    expect(r.content[0].text).toContain(WRITE_DENIAL_REALM.edit);
+
+    // …and nothing was written.
+    const { readWikiPageWithFrontmatter: readFm } = await import("../wiki");
+    expect((await readFm("shared-knowledge"))!.frontmatter.disputed).toBeUndefined();
+  });
+
+  it("cloaks another user's PRIVATE page rather than naming it", async () => {
+    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
+    const fm = {
+      title: "Alice Secret",
+      owner: "alice",
+      visibility: "private",
+      created: "2025-01-01",
+    };
+    await writeWikiPage(
+      "alice-secret",
+      serializeFrontmatter(fm as Frontmatter, "# Alice Secret\n\nPrivate."),
+    );
+
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "update_metadata",
+          arguments: { slug: "alice-secret", metadata: { disputed: true } },
+        },
+      },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    // No realm wording, and nothing that says what kind of page it is.
+    expect(r.content[0].text).not.toMatch(/public knowledge/i);
+    expect(r.content[0].text).not.toMatch(/agent-maintained/i);
+    expect(r.content[0].text).not.toBe(WRITE_DENIAL_REALM.edit);
+
+    // THE ACTUAL CLOAK TEST is indistinguishability, not slug-absence. This
+    // sentence does echo the slug — but it is the slug BOB just sent, so
+    // repeating it tells him nothing he did not already know, and every
+    // not-found cloak in the app has the same shape. What would be an oracle is
+    // a REAL page answering differently from a missing one, so the assertion is
+    // that the two are byte-identical apart from the name he supplied.
+    const missing = await dispatchMcp(
+      {
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "update_metadata",
+          arguments: { slug: "no-such-page", metadata: { disputed: true } },
+        },
+      },
+      BOB,
+    );
+    const m = missing!.result as { isError?: boolean; content: { text: string }[] };
+    expect(m.isError).toBe(true);
+    expect(r.content[0].text.replace("alice-secret", "SLUG")).toBe(
+      m.content[0].text.replace("no-such-page", "SLUG"),
+    );
   });
 });
 
@@ -430,66 +651,14 @@ describe("dispatchMcp — delete_page", () => {
   });
 });
 
-describe("dispatchMcp — publish_to_commons ownership check", () => {
-  it("rejects publish_to_commons when caller does not own the agent", async () => {
-    // Register an agent owned by alice.
-    await registerAgent({
-      id: "alice--yoyo",
-      name: "yoyo",
-      description: "Alice's agent",
-      owner: "alice",
-      identityPages: [],
-      learningPages: [],
-      socialPages: [],
-      registered: new Date().toISOString(),
-      lastUpdated: new Date().toISOString(),
-    });
-
-    // Bob tries to publish alice's agent page — should be rejected.
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "publish_to_commons",
-          arguments: { slug: "some-page", agentId: "alice--yoyo" },
-        },
-      },
-      BOB,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/ownership mismatch/i);
+describe("dispatchMcp — publish_to_commons is retired", () => {
+  it("is absent from tools/list", async () => {
+    const res = await dispatchMcp({ id: 1, method: "tools/list" }, ALICE);
+    const tools = (res!.result as { tools: { name: string }[] }).tools;
+    expect(tools.map((t) => t.name)).not.toContain("publish_to_commons");
   });
 
-  it("allows publish_to_commons when caller owns the agent", async () => {
-    // Register an agent owned by alice.
-    await registerAgent({
-      id: "alice--yoyo",
-      name: "yoyo",
-      description: "Alice's agent",
-      owner: "alice",
-      identityPages: [],
-      learningPages: [],
-      socialPages: [],
-      registered: new Date().toISOString(),
-      lastUpdated: new Date().toISOString(),
-    });
-
-    // Create an agent-knowledge page owned by the agent.
-    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
-    const fm = {
-      title: "Agent Knowledge",
-      owner: "alice--yoyo",
-      type: "agent-knowledge",
-      created: "2025-01-01",
-    };
-    await writeWikiPage(
-      "agent-topic",
-      serializeFrontmatter(fm, "# Agent Knowledge\n\nBody."),
-    );
-
-    // Alice (the agent's owner) publishes — should succeed.
+  it("is an unknown tool when called", async () => {
     const res = await dispatchMcp(
       {
         id: 1,
@@ -502,27 +671,8 @@ describe("dispatchMcp — publish_to_commons ownership check", () => {
       ALICE,
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBeFalsy();
-    const parsed = JSON.parse(r.content[0].text);
-    expect(parsed.published).toBe(true);
-    expect(parsed.owner).toBe("alice");
-  });
-
-  it("rejects publish_to_commons for a nonexistent agent", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "publish_to_commons",
-          arguments: { slug: "some-page", agentId: "ghost--yoyo" },
-        },
-      },
-      ALICE,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/agent not found/i);
+    expect(r.content[0].text).toMatch(/unknown tool/i);
   });
 });
 
@@ -533,14 +683,14 @@ describe("dispatchMcp — lint_wiki", () => {
     expect(tools.map((t) => t.name)).toContain("lint_wiki");
   });
 
-  it("lint_wiki works without authentication (read-only)", async () => {
+  it("lint_wiki works for an authenticated reader", async () => {
     const res = await dispatchMcp(
       {
         id: 1,
         method: "tools/call",
         params: { name: "lint_wiki", arguments: {} },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBeFalsy();
@@ -572,25 +722,76 @@ describe("dispatchMcp — fix_lint_issue", () => {
   });
 });
 
-describe("dispatchMcp — reconcile_page", () => {
-  it("tools/list returns reconcile_page", async () => {
+describe("dispatchMcp — reconcile_page (retired)", () => {
+  it("tools/list omits reconcile_page", async () => {
     const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
     const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("reconcile_page");
+    expect(tools.map((t) => t.name)).not.toContain("reconcile_page");
   });
 
-  it("rejects reconcile_page without auth (write-gated)", async () => {
+  it("is an unknown tool when called", async () => {
     const res = await dispatchMcp(
       {
         id: 1,
         method: "tools/call",
-        params: { name: "reconcile_page", arguments: { pageSlug: "test", threadIndex: 0 } },
+        params: {
+          name: "reconcile_page",
+          arguments: { pageSlug: "test", threadIndex: 0 },
+        },
       },
-      null,
+      ALICE,
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/authentication required/i);
+    expect(r.content[0].text).toMatch(/unknown tool/i);
+  });
+
+  it("lint_wiki rejects the retired discussion check type", async () => {
+    // `unresolved-discussions` retired with reconcile-from-talk and must not be
+    // accepted by the shared handler either (the schema here is free-form
+    // strings, so only the handler's own validation stands between a retired
+    // type and a silently empty result).
+    //
+    // Passed ALONE on purpose: paired with a second invalid type, the assertion
+    // passes whichever of the two the validator caught, so it would keep
+    // passing even after `unresolved-discussions` was quietly re-admitted.
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "lint_wiki",
+          arguments: { checks: ["unresolved-discussions"] },
+        },
+      },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/invalid check type/i);
+    expect(r.content[0].text).toMatch(/unresolved-discussions/);
+  });
+
+  it("lint_wiki accepts disputed-page as a valid check type", async () => {
+    // The other half of the retirement: `disputed` outlived talk, so
+    // `disputed-page` is a live check (DW-76) and this handler must let it
+    // through. Without this, the rejection test above is the only thing
+    // describing the handler's view of the roster, and it would read as though
+    // both types were retired.
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "lint_wiki",
+          arguments: { checks: ["disputed-page"] },
+        },
+      },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBeFalsy();
+    expect(r.content[0].text).not.toMatch(/invalid check type/i);
   });
 });
 
@@ -627,181 +828,6 @@ describe("dispatchMcp — merge_pages", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Discussion tools
-// ---------------------------------------------------------------------------
-
-describe("dispatchMcp — list_discussions", () => {
-  it("tools/list returns list_discussions", async () => {
-    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
-    const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("list_discussions");
-  });
-
-  it("list_discussions works without auth (read-only)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: { name: "list_discussions", arguments: { pageSlug: "nonexistent" } },
-      },
-      null,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBeFalsy();
-    const parsed = JSON.parse(r.content[0].text);
-    expect(parsed.pageSlug).toBe("nonexistent");
-    expect(parsed.threads).toEqual([]);
-  });
-});
-
-describe("dispatchMcp — read_discussion", () => {
-  it("tools/list returns read_discussion", async () => {
-    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
-    const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("read_discussion");
-  });
-
-  it("read_discussion works without auth (read-only, returns error for missing thread)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: { name: "read_discussion", arguments: { pageSlug: "test", threadIndex: 0 } },
-      },
-      null,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    // Handler throws for missing thread — surfaced as isError tool result, NOT a 401.
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/thread not found/i);
-  });
-});
-
-describe("dispatchMcp — create_discussion", () => {
-  it("tools/list returns create_discussion", async () => {
-    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
-    const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("create_discussion");
-  });
-
-  it("rejects create_discussion without auth (write-gated)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "create_discussion",
-          arguments: { pageSlug: "test", title: "Bug?", body: "Something looks wrong" },
-        },
-      },
-      null,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/authentication required/i);
-  });
-
-  it("sets author from principal handle when authenticated", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "create_discussion",
-          arguments: { pageSlug: "test-page", title: "Question", body: "Is this right?" },
-        },
-      },
-      ALICE,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBeFalsy();
-    const parsed = JSON.parse(r.content[0].text);
-    expect(parsed.comments[0].author).toBe("alice");
-  });
-});
-
-describe("dispatchMcp — add_comment", () => {
-  it("tools/list returns add_comment", async () => {
-    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
-    const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("add_comment");
-  });
-
-  it("rejects add_comment without auth (write-gated)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "add_comment",
-          arguments: { pageSlug: "test", threadIndex: 0, content: "I agree" },
-        },
-      },
-      null,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/authentication required/i);
-  });
-
-  it("sets author from principal handle when authenticated", async () => {
-    // First create a thread to comment on
-    await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "create_discussion",
-          arguments: { pageSlug: "comment-test", title: "Topic", body: "Start" },
-        },
-      },
-      ALICE,
-    );
-    // Now add a comment as BOB
-    const res = await dispatchMcp(
-      {
-        id: 2,
-        method: "tools/call",
-        params: {
-          name: "add_comment",
-          arguments: { pageSlug: "comment-test", threadIndex: 0, content: "Good point" },
-        },
-      },
-      BOB,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBeFalsy();
-    const parsed = JSON.parse(r.content[0].text);
-    expect(parsed.author).toBe("bob");
-  });
-});
-
-describe("dispatchMcp — resolve_discussion", () => {
-  it("tools/list returns resolve_discussion", async () => {
-    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
-    const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("resolve_discussion");
-  });
-
-  it("rejects resolve_discussion without auth (write-gated)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "resolve_discussion",
-          arguments: { pageSlug: "test", threadIndex: 0, resolution: "resolved" },
-        },
-      },
-      null,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/authentication required/i);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Revision tools
 // ---------------------------------------------------------------------------
 
@@ -812,7 +838,7 @@ describe("dispatchMcp — list_revisions", () => {
     expect(tools.map((t) => t.name)).toContain("list_revisions");
   });
 
-  it("returns revisions for a valid slug without auth (read-only)", async () => {
+  it("returns revisions for a valid slug for an authenticated reader", async () => {
     // Create a page then update it so a revision exists
     await writeWikiPage("rev-list-test", "# Rev\nOriginal content");
     await saveRevision("rev-list-test", "# Rev\nOriginal content");
@@ -823,7 +849,7 @@ describe("dispatchMcp — list_revisions", () => {
         method: "tools/call",
         params: { name: "list_revisions", arguments: { slug: "rev-list-test" } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBeFalsy();
@@ -840,7 +866,7 @@ describe("dispatchMcp — read_revision", () => {
     expect(tools.map((t) => t.name)).toContain("read_revision");
   });
 
-  it("returns revision content for a valid slug + timestamp without auth", async () => {
+  it("returns revision content for a valid slug + timestamp", async () => {
     // Set up a page with a revision
     await writeWikiPage("rev-read-test", "# Rev\nFirst version");
     await saveRevision("rev-read-test", "# Rev\nFirst version");
@@ -853,7 +879,7 @@ describe("dispatchMcp — read_revision", () => {
         method: "tools/call",
         params: { name: "list_revisions", arguments: { slug: "rev-read-test" } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const listParsed = JSON.parse(
       (listRes!.result as { content: { text: string }[] }).content[0].text,
@@ -867,7 +893,7 @@ describe("dispatchMcp — read_revision", () => {
         method: "tools/call",
         params: { name: "read_revision", arguments: { slug: "rev-read-test", timestamp: ts } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBeFalsy();
@@ -914,7 +940,7 @@ describe("dispatchMcp — revert_revision", () => {
         method: "tools/call",
         params: { name: "list_revisions", arguments: { slug: "rev-revert-test" } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const listParsed = JSON.parse(
       (listRes!.result as { content: { text: string }[] }).content[0].text,
@@ -969,7 +995,7 @@ describe("dispatchMcp — vault tools", () => {
 
     const res = await dispatchMcp(
       { id: 1, method: "tools/call", params: { name: "list_vaults", arguments: { owner: "bob" } } },
-      null, // no auth needed for reads
+      ALICE, // reads require a principal too (private deployment)
     );
     const r2 = res!.result as { content: { text: string }[] };
     const parsed = JSON.parse(r2.content[0].text);
@@ -977,14 +1003,14 @@ describe("dispatchMcp — vault tools", () => {
     expect(parsed.vaults.some((v: { name: string }) => v.name === "bob-notes")).toBe(true);
   });
 
-  it("list_vaults without owner or auth returns an error", async () => {
+  it("list_vaults is refused entirely without a principal", async () => {
     const res = await dispatchMcp(
       { id: 1, method: "tools/call", params: { name: "list_vaults", arguments: {} } },
       null,
     );
     const r2 = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r2.isError).toBe(true);
-    expect(r2.content[0].text).toMatch(/owner is required/i);
+    expect(r2.content[0].text).toMatch(/authentication required/i);
   });
 
   it("vault_pages returns enriched metadata for vault contents", async () => {
@@ -1013,7 +1039,7 @@ describe("dispatchMcp — vault tools", () => {
     expect(parsed.pages[0].title).toBe("Vault Test");
   });
 
-  it("vault_pages without owner or auth returns an error", async () => {
+  it("vault_pages is refused entirely without a principal", async () => {
     const res = await dispatchMcp(
       {
         id: 1,
@@ -1024,7 +1050,7 @@ describe("dispatchMcp — vault tools", () => {
     );
     const r2 = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r2.isError).toBe(true);
-    expect(r2.content[0].text).toMatch(/owner is required/i);
+    expect(r2.content[0].text).toMatch(/authentication required/i);
   });
 
   it("vault_curate, vault_create, vault_uncurate appear in tools/list", async () => {
@@ -1171,7 +1197,7 @@ describe("dispatchMcp — agent_context", () => {
         method: "tools/call",
         params: { name: "agent_context", arguments: { agent_id: "a--test-bot" } },
       },
-      null, // no auth required — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1195,7 +1221,7 @@ describe("dispatchMcp — agent_context", () => {
         method: "tools/call",
         params: { name: "agent_context", arguments: { agent_id: "nonexistent" } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBe(true);
@@ -1226,7 +1252,7 @@ describe("dispatchMcp — dataview_query", () => {
           },
         },
       },
-      null, // no auth — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1249,7 +1275,7 @@ describe("dispatchMcp — dataview_query", () => {
           },
         },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1281,7 +1307,7 @@ describe("dispatchMcp — wiki_graph", () => {
         method: "tools/call",
         params: { name: "wiki_graph", arguments: {} },
       },
-      null, // no auth — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1300,7 +1326,7 @@ describe("dispatchMcp — wiki_graph", () => {
         method: "tools/call",
         params: { name: "wiki_graph", arguments: { scope: "all" } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1331,7 +1357,7 @@ describe("dispatchMcp — batch_ingest_urls", () => {
           arguments: { urls: ["https://example.com"] },
         },
       },
-      null, // no auth
+      null,
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBe(true);
@@ -1367,7 +1393,7 @@ describe("dispatchMcp — activity_trail", () => {
         method: "tools/call",
         params: { name: "activity_trail", arguments: {} },
       },
-      null, // no auth — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
 
     expect(res).not.toBeNull();
@@ -1385,7 +1411,7 @@ describe("dispatchMcp — activity_trail", () => {
         method: "tools/call",
         params: { name: "activity_trail", arguments: { limit: 5 } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1407,7 +1433,7 @@ describe("dispatchMcp — ingest_history", () => {
         method: "tools/call",
         params: { name: "ingest_history", arguments: {} },
       },
-      null, // no auth — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
 
     expect(res).not.toBeNull();
@@ -1425,7 +1451,7 @@ describe("dispatchMcp — ingest_history", () => {
         method: "tools/call",
         params: { name: "ingest_history", arguments: { limit: 10 } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1437,61 +1463,33 @@ describe("dispatchMcp — ingest_history", () => {
 });
 
 // ---------------------------------------------------------------------------
-// list_contributors dispatch
+// Contributor tools (retired) — every contributor page and REST route 404s, so
+// the two MCP tools went with them.
 // ---------------------------------------------------------------------------
-describe("dispatchMcp — list_contributors", () => {
-  it("is registered as a read-only tool", () => {
-    const tool = MCP_TOOLS.find((t) => t.name === "list_contributors");
-    expect(tool).toBeDefined();
-    expect(tool!.write).toBe(false);
-  });
+describe.each(["list_contributors", "get_contributor"])(
+  "dispatchMcp — %s is retired",
+  (retired) => {
+    it("is absent from tools/list", async () => {
+      const res = await dispatchMcp({ id: 1, method: "tools/list" }, ALICE);
+      const tools = (res!.result as { tools: { name: string }[] }).tools;
+      expect(tools.map((t) => t.name)).not.toContain(retired);
+    });
 
-  it("returns contributors array without auth (read-only)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: { name: "list_contributors", arguments: {} },
-      },
-      null, // no auth — read-only
-    );
-
-    expect(res).not.toBeNull();
-    const r = res!.result as { content: { text: string }[] };
-    expect(r).not.toHaveProperty("isError");
-    const parsed = JSON.parse(r.content[0].text);
-    expect(parsed.contributors).toBeDefined();
-    expect(Array.isArray(parsed.contributors)).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// get_contributor dispatch
-// ---------------------------------------------------------------------------
-describe("dispatchMcp — get_contributor", () => {
-  it("is registered as a read-only tool", () => {
-    const tool = MCP_TOOLS.find((t) => t.name === "get_contributor");
-    expect(tool).toBeDefined();
-    expect(tool!.write).toBe(false);
-  });
-
-  it("returns an error for unknown contributor (read-only, no auth needed)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: { name: "get_contributor", arguments: { handle: "nonexistent-user" } },
-      },
-      null, // no auth — read-only
-    );
-
-    expect(res).not.toBeNull();
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    // Unknown handles throw from handleGetContributor, surfaced as isError
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain("nonexistent-user");
-  });
-});
+    it("is an unknown tool when called", async () => {
+      const res = await dispatchMcp(
+        {
+          id: 1,
+          method: "tools/call",
+          params: { name: retired, arguments: { handle: "alice" } },
+        },
+        ALICE,
+      );
+      const r = res!.result as { isError?: boolean; content: { text: string }[] };
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toMatch(/unknown tool/i);
+    });
+  },
+);
 
 // ---------------------------------------------------------------------------
 // list_agents dispatch
@@ -1523,7 +1521,7 @@ describe("dispatchMcp — list_agents", () => {
         method: "tools/call",
         params: { name: "list_agents", arguments: {} },
       },
-      null, // no auth — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
 
     expect(res).not.toBeNull();
@@ -1549,7 +1547,7 @@ describe("dispatchMcp — update_agent", () => {
         method: "tools/call",
         params: { name: "update_agent", arguments: { name: "new-name" } },
       },
-      null, // no auth
+      null,
     );
 
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
@@ -1608,7 +1606,7 @@ describe("dispatchMcp — seed_agent", () => {
           },
         },
       },
-      null, // no auth
+      null,
     );
 
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
@@ -1839,7 +1837,7 @@ describe("dispatchMcp — query_history", () => {
         method: "tools/call",
         params: { name: "query_history", arguments: { owner: "alice" } },
       },
-      null, // no auth — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
     const r = res!.result as { content: { text: string }[] };
     expect(r).not.toHaveProperty("isError");
@@ -1855,7 +1853,7 @@ describe("dispatchMcp — query_history", () => {
         method: "tools/call",
         params: { name: "query_history", arguments: { owner: "alice", limit: 5 } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const r = res!.result as { content: { text: string }[] };
     expect(r).not.toHaveProperty("isError");

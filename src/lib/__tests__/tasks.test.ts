@@ -22,13 +22,13 @@ beforeEach(() => {
 
 describe("enqueueTask", () => {
   it("no-ops (returns false) off the Workers runtime", async () => {
-    const ok = await enqueueTask({ kind: "reconcile", slug: "p", threadIndex: 0 });
+    const ok = await enqueueTask({ kind: "maintain", op: "staleness", slug: "p" });
     expect(ok).toBe(false);
   });
 
   it("no-ops when the TASK_QUEUE binding is absent on the runtime", async () => {
     mockGetCfContext.mockReturnValue({ env: { AI: {} } }); // no TASK_QUEUE
-    const ok = await enqueueTask({ kind: "reconcile", slug: "p", threadIndex: 0 });
+    const ok = await enqueueTask({ kind: "maintain", op: "staleness", slug: "p" });
     expect(ok).toBe(false);
   });
 
@@ -36,7 +36,7 @@ describe("enqueueTask", () => {
     const send = vi.fn().mockResolvedValue(undefined);
     mockGetCfContext.mockReturnValue({ env: { TASK_QUEUE: { send } } });
 
-    const task = { kind: "reconcile" as const, slug: "transformers", threadIndex: 2 };
+    const task = { kind: "maintain" as const, op: "staleness" as const, slug: "transformers" };
     const ok = await enqueueTask(task);
 
     expect(ok).toBe(true);
@@ -157,24 +157,13 @@ describe("parseTask", () => {
     expect(parseTask({ kind: "create-backup", owner: "" })).toBeNull();
   });
 
-  it("accepts a well-formed reconcile task", () => {
+  it("rejects the retired reconcile task kind as malformed (poison)", () => {
+    // reconcile-from-talk is retired; such queue messages must parse as
+    // malformed (null → 400 poison), never fall through to another handler.
+    expect(parseTask({ kind: "reconcile", slug: "p", threadIndex: 0 })).toBeNull();
     expect(
       parseTask({ kind: "reconcile", slug: "p", threadIndex: 3, requestedBy: "alice" }),
-    ).toEqual({ kind: "reconcile", slug: "p", threadIndex: 3, requestedBy: "alice" });
-  });
-
-  it("accepts a reconcile task without requestedBy", () => {
-    expect(parseTask({ kind: "reconcile", slug: "p", threadIndex: 0 })).toEqual({
-      kind: "reconcile",
-      slug: "p",
-      threadIndex: 0,
-    });
-  });
-
-  it("rejects a reconcile task with a bad slug or threadIndex", () => {
-    expect(parseTask({ kind: "reconcile", slug: "", threadIndex: 0 })).toBeNull();
-    expect(parseTask({ kind: "reconcile", slug: "p", threadIndex: 1.5 })).toBeNull();
-    expect(parseTask({ kind: "reconcile", slug: "p" })).toBeNull();
+    ).toBeNull();
   });
 
   it("accepts an ingest task with a url or content; rejects neither", () => {
@@ -342,17 +331,16 @@ describe("parseTask", () => {
     );
   });
 
-  it("accepts maintain tasks; reconcile needs a threadIndex", () => {
+  it("accepts maintain tasks; retired/bad ops are rejected", () => {
     expect(parseTask({ kind: "maintain", op: "staleness", slug: "p" })).toEqual({
       kind: "maintain",
       op: "staleness",
       slug: "p",
     });
+    // The retired reconcile op, or a bad op, is rejected (poison).
     expect(
       parseTask({ kind: "maintain", op: "reconcile", slug: "p", threadIndex: 1 }),
-    ).toEqual({ kind: "maintain", op: "reconcile", slug: "p", threadIndex: 1 });
-    // reconcile without a threadIndex, or a bad op, is rejected.
-    expect(parseTask({ kind: "maintain", op: "reconcile", slug: "p" })).toBeNull();
+    ).toBeNull();
     expect(parseTask({ kind: "maintain", op: "bogus", slug: "p" })).toBeNull();
     expect(parseTask({ kind: "maintain", op: "staleness", slug: "" })).toBeNull();
   });

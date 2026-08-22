@@ -1932,6 +1932,120 @@ describe("page cache", () => {
     expect(second!.content).toBe("# NC\n\nModified.");
   });
 
+  // -------------------------------------------------------------------------
+  // The fresh read (DW-195) — for the reads that seed or check a precondition
+  // -------------------------------------------------------------------------
+
+  it("a fresh read returns the STORED bytes while a stale entry is cached", async () => {
+    await ensureDirectories();
+    await writeWikiPage("fresh-page", "# Fresh\n\nOriginal content.");
+
+    const cleanup = beginPageCache();
+    try {
+      // Populate the cache, then let the file move underneath it — exactly what
+      // a concurrent write does while a bulk scan holds the cache open.
+      const first = await readWikiPage("fresh-page");
+      expect(first!.content).toBe("# Fresh\n\nOriginal content.");
+      const filePath = path.join(process.env.WIKI_DIR!, "fresh-page.md");
+      await fs.writeFile(filePath, "# Fresh\n\nStored content.", "utf-8");
+
+      // The cached read still serves the superseded bytes — the behaviour every
+      // existing caller keeps.
+      expect((await readWikiPage("fresh-page"))!.content).toBe(
+        "# Fresh\n\nOriginal content.",
+      );
+
+      // The fresh read serves what is actually stored, which is what a
+      // precondition has to be derived from.
+      const fresh = await readWikiPage("fresh-page", { fresh: true });
+      expect(fresh!.content).toBe("# Fresh\n\nStored content.");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("a fresh read leaves the cache entry exactly as it was", async () => {
+    await ensureDirectories();
+    await writeWikiPage("untouched-page", "# U\n\nOriginal content.");
+
+    const cleanup = beginPageCache();
+    try {
+      await readWikiPage("untouched-page");
+      expect(_getPageCacheSize()).toBe(1);
+      const filePath = path.join(process.env.WIKI_DIR!, "untouched-page.md");
+      await fs.writeFile(filePath, "# U\n\nStored content.", "utf-8");
+
+      await readWikiPage("untouched-page", { fresh: true });
+
+      // NEITHER consults NOR mutates: the scan holding the cache open still
+      // sees the entry it was iterating, unchanged and not evicted.
+      expect(_getPageCacheSize()).toBe(1);
+      expect((await readWikiPage("untouched-page"))!.content).toBe(
+        "# U\n\nOriginal content.",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("a fresh MISS neither caches a negative entry nor disturbs an existing one", async () => {
+    await ensureDirectories();
+    await writeWikiPage("kept-page", "# K\n\nContent.");
+
+    const cleanup = beginPageCache();
+    try {
+      await readWikiPage("kept-page");
+      expect(_getPageCacheSize()).toBe(1);
+
+      // A page that genuinely is not there, read fresh: `null`, and the cache
+      // gains nothing — poisoning an open scan's cache with a negative entry is
+      // the same staleness pointed the other way.
+      expect(await readWikiPage("gone-page", { fresh: true })).toBeNull();
+      expect(_getPageCacheSize()).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("forwards `fresh` through readWikiPageWithFrontmatter", async () => {
+    await ensureDirectories();
+    await writeWikiPage("fm-fresh", "---\nowner: alice\n---\n\n# FM\n\nOriginal.");
+
+    const cleanup = beginPageCache();
+    try {
+      await readWikiPageWithFrontmatter("fm-fresh");
+      const filePath = path.join(process.env.WIKI_DIR!, "fm-fresh.md");
+      await fs.writeFile(
+        filePath,
+        "---\nowner: alice\n---\n\n# FM\n\nStored.",
+        "utf-8",
+      );
+
+      // This is the page write's merge base AND the left-hand side of its
+      // `If-Match` comparison, so it has to be the stored file.
+      const fresh = await readWikiPageWithFrontmatter("fm-fresh", { fresh: true });
+      expect(fresh!.content).toContain("Stored.");
+      expect(fresh!.body).toContain("Stored.");
+      // The cached path is unchanged for every existing caller.
+      expect((await readWikiPageWithFrontmatter("fm-fresh"))!.content).toContain(
+        "Original.",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("is a no-op difference when the cache is inactive", async () => {
+    await ensureDirectories();
+    await writeWikiPage("no-cache-fresh", "# NCF\n\nContent.");
+
+    // Nothing to bypass, so the two reads agree and neither activates anything.
+    const cached = await readWikiPage("no-cache-fresh");
+    const fresh = await readWikiPage("no-cache-fresh", { fresh: true });
+    expect(fresh).toEqual(cached);
+    expect(_getPageCacheSize()).toBe(0);
+  });
+
   it("caches null for non-existent pages", async () => {
     await ensureDirectories();
 

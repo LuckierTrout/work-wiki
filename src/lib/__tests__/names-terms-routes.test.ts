@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/names-terms", async (original) => ({
@@ -18,6 +18,7 @@ import {
 } from "@/lib/names-terms";
 import { GET, POST } from "@/app/api/names-terms/route";
 import { DELETE, PUT } from "@/app/api/names-terms/[id]/route";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedCreate = vi.mocked(createNamesTerm);
@@ -42,13 +43,24 @@ function request(method: string, body: Record<string, unknown>) {
   });
 }
 
+let savedReadOnly: string | undefined;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  savedReadOnly = process.env.YOPEDIA_READONLY;
+  // Cleared rather than inherited: a value exported in a developer's shell
+  // would otherwise turn every writable case below into a 403.
+  delete process.env.YOPEDIA_READONLY;
   mockedPrincipal.mockResolvedValue({ id: "user-1", handle: "alice" });
   mockedList.mockResolvedValue([ENTRY]);
   mockedCreate.mockResolvedValue(ENTRY);
   mockedUpdate.mockResolvedValue(ENTRY);
   mockedDelete.mockResolvedValue(true);
+});
+
+afterEach(() => {
+  if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+  else process.env.YOPEDIA_READONLY = savedReadOnly;
 });
 
 describe("Names & Terms API", () => {
@@ -87,5 +99,62 @@ describe("Names & Terms API", () => {
     });
     expect((await DELETE(new Request("http://localhost"), context)).status).toBe(200);
     expect(mockedDelete).toHaveBeenCalledWith("alice", "entry-1");
+  });
+});
+
+/**
+ * The three writers on a read-only deployment (DW-300).
+ *
+ * The store behind them is not a kernel writer and refuses nothing of its own,
+ * so before these gates the Settings panel reported a save, an edit and a
+ * delete that had all happened. One sentence for all three, because they are
+ * one store reached by three verbs.
+ */
+describe("Names & Terms writers on a read-only deployment", () => {
+  const context = () => ({ params: Promise.resolve({ id: "entry-1" }) });
+  const INPUT = { kind: "person", canonical: "Christian Lee", aliases: [] };
+
+  beforeEach(() => {
+    process.env.YOPEDIA_READONLY = "1";
+  });
+
+  it("403s POST without creating", async () => {
+    const response = await POST(request("POST", INPUT));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.namesTerms });
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it("403s PUT without updating", async () => {
+    const response = await PUT(request("PUT", INPUT), context());
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.namesTerms });
+    expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
+  it("403s DELETE without deleting", async () => {
+    const response = await DELETE(new Request("http://localhost"), context());
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.namesTerms });
+    expect(mockedDelete).not.toHaveBeenCalled();
+  });
+
+  it("still LISTS — the read is not refused", async () => {
+    // The point of gating the writers only: a read-only deployment is a
+    // readable one, and a GET that started 403ing would be a different defect
+    // wearing the same flag.
+    const response = await GET();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ entries: [ENTRY] });
+  });
+
+  it("still 401s an unauthenticated caller, so the gate stays behind auth", async () => {
+    mockedPrincipal.mockResolvedValue(null);
+    expect((await POST(request("POST", INPUT))).status).toBe(401);
+    expect((await PUT(request("PUT", INPUT), context())).status).toBe(401);
+    expect((await DELETE(new Request("http://localhost"), context())).status).toBe(401);
+    expect(mockedCreate).not.toHaveBeenCalled();
+    expect(mockedUpdate).not.toHaveBeenCalled();
+    expect(mockedDelete).not.toHaveBeenCalled();
   });
 });

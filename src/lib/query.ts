@@ -24,7 +24,7 @@ import {
   buildNamesTermsGuidance,
   expandQueryWithNamesTerms,
 } from "./names-terms";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 import { UNTRUSTED_CONTENT_RULE, wrapUntrusted } from "./untrusted";
 import type { QueryResult } from "./types";
 import type { QueryFormat } from "./query-format";
@@ -200,10 +200,12 @@ export async function buildQuerySystemPrompt(
     const remainder = others.length - listed.length;
     const moreLine =
       remainder > 0 ? `\n…and ${remainder} more pages not listed here.\n` : "\n";
-    // The titles/summaries are collectively-editable, frontmatter-derived data
-    // (an attacker can plant instructions in a page title/summary), so the
-    // listing goes inside the same untrusted-content boundary as page bodies —
-    // the model may use the titles/slugs to cite, never obey text within.
+    // The titles/summaries are frontmatter-derived data whose text ultimately
+    // comes from ingested third-party sources (an attacker can plant
+    // instructions in a page title/summary), so the listing goes inside the
+    // same untrusted-content boundary as page bodies — the model may use the
+    // titles/slugs to cite, never obey text within. What makes it untrusted is
+    // where the text CAME FROM, not who is permitted to edit the page.
     indexSection = `\nThe wiki also contains these other pages (not loaded in full):\n${wrapUntrusted(
       indexListing,
       { source: "page index (titles + summaries)" },
@@ -216,6 +218,15 @@ export async function buildQuerySystemPrompt(
 
   // Append SCHEMA.md conventions so the query prompt stays in sync with the
   // wiki's page conventions — same pattern used by ingest.
+  //
+  // DW-19 — deliberately NO argument: the conventions are deployment-global.
+  // They come from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
+  // resolved inside `readActiveWikiSchema`), NOT from the `owner` used by the
+  // `if (owner)` guidance block below — that one is per-caller and may be a
+  // different handle entirely. Correct while work-wiki is single-owner; a
+  // second tenant means threading a tenant argument through
+  // `loadPageConventions()` and passing it here. See the invariant on
+  // `readActiveWikiSchema` in `wikis.ts`.
   const conventions = await loadPageConventions();
   if (conventions) {
     systemPrompt += `\n\nThe wiki you are querying follows these conventions (from SCHEMA.md):\n\n${conventions}`;

@@ -1,4 +1,5 @@
 import { generateText } from "ai";
+import { llmTimeoutOption } from "./config";
 import { contentHash } from "./embeddings";
 import { isEnoent } from "./errors";
 import { fetchUrlContent, validateUrlSafety } from "./fetch";
@@ -7,7 +8,7 @@ import { getConfiguredModel } from "./llm";
 import { withFileLock } from "./lock";
 import { createMemoryChangeProposal } from "./memory-proposals";
 import { buildNamesTermsGuidance } from "./names-terms";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 import { getStorage } from "./storage";
 import {
   buildClaimEvidence,
@@ -397,6 +398,8 @@ async function defaultDraftUpdate(input: {
       `Source URL: ${input.monitor.url}\nSource title: ${input.sourceTitle}\n\n` +
       `CURRENT PAGE BODY:\n${parsed.body.slice(0, 40_000)}\n\n` +
       `LATEST SOURCE CONTENT:\n${input.sourceContent.slice(0, 60_000)}`,
+    // No retry wrapper here, so this is the one and only deadline for the call.
+    ...llmTimeoutOption(),
   });
   const body = stripCodeFence(text);
   if (!body) throw new Error("The model returned an empty monitored update");
@@ -499,7 +502,7 @@ export async function runSourceMonitor(
         targetSlug: monitor.targetSlug,
         title: `Update ${monitor.name}`,
         summary: `A monitored source changed (${Math.round(score * 100)}% semantic token difference).`,
-        reason: `WorkWiki detected a meaningful change at ${monitor.url}. Review the proposed revision against the stored excerpt before accepting it.`,
+        reason: `work-wiki detected a meaningful change at ${monitor.url}. Review the proposed revision against the stored excerpt before accepting it.`,
         proposedContent,
         evidenceIds: [anchor.id],
         actor: `${owner}--source-monitor`,

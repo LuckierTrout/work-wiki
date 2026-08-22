@@ -10,7 +10,6 @@ import {
   type Frontmatter,
 } from "./wiki";
 import { buildCorpusStats, bm25Score, tokenize } from "./bm25";
-import { ensureReconciliationThread } from "./talk";
 import { callLLM, hasLLMKey } from "./llm";
 import { fetchUrlContent, fetchImageBytes, storeImageBytes } from "./fetch";
 import { describeImage } from "./vision";
@@ -29,7 +28,8 @@ import {
   canonicalizeNamesTerm,
   listNamesTerms,
 } from "./names-terms";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
+import { createGuidanceCache, type GuidanceCache } from "./guidance-cache";
 
 /**
  * Merge a provenance entry into a sources list. A real source URL supersedes a
@@ -1158,12 +1158,13 @@ export async function reconcilePage(
   existingBody: string,
   newBody: string,
   owner?: string,
+  cache?: GuidanceCache,
 ): Promise<{ body: string; disputed: boolean }> {
   const user = `# Current page\n\n${existingBody}\n\n# Newly ingested article (same concept)\n\n${newBody}`;
   const [workspaceGuidance, dictionaryGuidance] = owner
     ? await Promise.all([
-        buildWorkspaceGuidance(owner),
-        buildNamesTermsGuidance(owner),
+        buildWorkspaceGuidance(owner, cache?.workspace),
+        buildNamesTermsGuidance(owner, cache?.namesTerms),
       ])
     : ["", ""];
   const systemPrompt = RECONCILE_SYSTEM_PROMPT +
@@ -1214,7 +1215,19 @@ export async function collectTagVocabulary(
   }
 }
 
-export async function buildIngestSystemPrompt(owner?: string): Promise<string> {
+export async function buildIngestSystemPrompt(
+  owner?: string,
+  cache?: GuidanceCache,
+): Promise<string> {
+  // DW-19 — deliberately NO argument: the conventions are deployment-global.
+  // They come from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
+  // resolved inside `readActiveWikiSchema`), NOT from the `owner` parameter
+  // used for guidance below. `owner` is a PRINCIPAL, not a tenant — it can be
+  // `"system"`, an agent handle, or a monitor's owner, none of which may become
+  // a Schema storage key. Correct while work-wiki is single-owner; a second
+  // tenant means threading a tenant argument through `loadPageConventions()`
+  // and passing it here — the caller's TENANT, which is not necessarily
+  // `owner`. See the invariant on `readActiveWikiSchema` in `wikis.ts`.
   const conventions = await loadPageConventions();
   const vocab = await collectTagVocabulary();
 
@@ -1236,8 +1249,8 @@ ${vocab.join(", ")}`;
   }
   if (owner) {
     const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
-      buildWorkspaceGuidance(owner),
-      buildNamesTermsGuidance(owner),
+      buildWorkspaceGuidance(owner, cache?.workspace),
+      buildNamesTermsGuidance(owner, cache?.namesTerms),
     ]);
     if (workspaceGuidance) prompt += `\n\n${workspaceGuidance}`;
     if (dictionaryGuidance) prompt += `\n\n${dictionaryGuidance}`;
@@ -1300,6 +1313,19 @@ export interface IngestOptions {
    * `agentic-systems`). Only honored on the direct synthesis path.
    */
   pinSlug?: string;
+  /**
+   * Widen the guidance memo from ONE DOCUMENT to the caller's whole operation
+   * (DW-324). Omitted, `ingest()` mints its own handle and behaves exactly as
+   * before: one Workspace Purpose resolution and one dictionary read per
+   * document. Supplied, every document sharing the handle resolves both once —
+   * which is what `POST /api/ingest/batch`'s queue-unavailable fallback wants,
+   * since one batch is one user action.
+   *
+   * NOT serializable, and deliberately absent from the queue task payload (a
+   * separate literal in that route) — a queued task is a different request and
+   * must resolve guidance fresh.
+   */
+  guidanceCache?: GuidanceCache;
 }
 
 /**
@@ -1451,12 +1477,13 @@ async function synthesizeBody(
   title: string,
   content: string,
   owner?: string,
+  cache?: GuidanceCache,
 ): Promise<string> {
   if (!hasLLMKey()) {
     // Derived title so a title-less paste doesn't emit an empty `# ` H1.
     return generateFallbackPage(title, content);
   }
-  const systemPrompt = await buildIngestSystemPrompt(owner);
+  const systemPrompt = await buildIngestSystemPrompt(owner, cache);
   const chunks = chunkText(content, MAX_LLM_INPUT_CHARS);
   // Larger output budget so the ## Details section can preserve substantive
   // source content instead of being truncated.
@@ -1508,8 +1535,8 @@ async function synthesizeBody(
   }
   const [workspaceGuidance, dictionaryGuidance] = owner
     ? await Promise.all([
-        buildWorkspaceGuidance(owner),
-        buildNamesTermsGuidance(owner),
+        buildWorkspaceGuidance(owner, cache?.workspace),
+        buildNamesTermsGuidance(owner, cache?.namesTerms),
       ])
     : ["", ""];
   return callLLM(
@@ -1571,6 +1598,16 @@ export async function ingest(
   // can scope a semantic merge to the same owner's silo.
   const actor = options?.author?.trim() || "system";
   const owner = options?.owner?.trim() || actor;
+  // ONE guidance resolution for this document (DW-141, DW-322). Synthesis, the
+  // map/reduce REDUCE step, reconcile-on-merge and the concept canonicalization
+  // below all ask for the same active Wiki's Workspace Purpose and the same
+  // Names & Terms dictionary, neither of which can change mid-document.
+  //
+  // A caller may supply its own handle to widen that scope to its whole
+  // operation (DW-324). With none supplied the handle is local to this call, so
+  // a Purpose or dictionary entry saved between two ingests is still picked up
+  // by the next one.
+  const guidanceCache = options?.guidanceCache ?? createGuidanceCache();
 
   // Dedup by content: if identical content was already ingested (any slug),
   // attach the triggerer and skip the LLM + embedding.
@@ -1600,7 +1637,12 @@ export async function ingest(
     // text and the body is clean prose (no inline images, no `## Figures`
     // gallery, no re-hosting).
     const cleanContent = stripImageMarkdown(content);
-    wikiContent = await synthesizeBody(effectiveTitle, cleanContent, owner);
+    wikiContent = await synthesizeBody(
+      effectiveTitle,
+      cleanContent,
+      owner,
+      guidanceCache,
+    );
   }
 
   // Pull the leading `CONCEPT:` / `ALIASES:` header lines the synthesis prompt
@@ -1613,7 +1655,7 @@ export async function ingest(
     tags: conceptTags,
     body: conceptStrippedBody,
   } = parseConceptMarker(wikiContent);
-  const dictionary = await listNamesTerms(owner);
+  const dictionary = await listNamesTerms(owner, guidanceCache.namesTerms);
   const concept = extractedConcept
     ? canonicalizeNamesTerm(dictionary, extractedConcept)
     : extractedConcept;
@@ -1889,7 +1931,12 @@ export async function ingest(
       // Reconcile against the frontmatter-STRIPPED body (existing.content still
       // carries the YAML block; existing.body is the markdown) so page metadata
       // never bleeds into the merged prose.
-      const reconciled = await reconcilePage(existing.body, wikiContent, owner);
+      const reconciled = await reconcilePage(
+        existing.body,
+        wikiContent,
+        owner,
+        guidanceCache,
+      );
       wikiContent = reconciled.body;
       // Only escalate — never clear a disputed flag preserved from the existing
       // page above.
@@ -1972,14 +2019,10 @@ export async function ingest(
     hash,
   );
 
-  // When this ingest left the page disputed (a source contradicts it), open a
-  // reconciliation discussion thread so the dispute is actionable — by a human,
-  // by "ask yoyo", or by the maintenance scan. Idempotent (skips if one's open)
-  // + fail-soft; `ensureReconciliationThread` keeps the thread's author non-agent
-  // (coercing an agent actor to "system") so the scan can pick it up.
-  if (frontmatter.disputed === true) {
-    await ensureReconciliationThread(slug, actor);
-  }
+  // An ingest that leaves the page disputed used to auto-open a talk
+  // reconciliation thread here. Removed with the other two call sites (DW-230):
+  // the talk HTTP surfaces are retired, so nothing could read the thread this
+  // wrote. `frontmatter.disputed` is still set, and it is what the page shows.
 
   const result: IngestResult = {
     rawPath,

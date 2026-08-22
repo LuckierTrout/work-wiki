@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { WorkspacePurposeSettings } from "@/components/WorkspacePurposeSettings";
 import { LocalSyncPanel } from "@/components/LocalSyncPanel";
@@ -209,7 +210,7 @@ export function KnowledgeStudio() {
         ))}
       </aside>
 
-      <main className="studio-main">
+      <div className="studio-main">
         <header className="studio-main-header">
           <div>
             <p className="receipt">{SECTIONS.find((item) => item.id === section)?.group}</p>
@@ -268,7 +269,7 @@ export function KnowledgeStudio() {
         ) : null}
         {section === "portability" ? <PortabilityPanel setFeedback={setFeedback} /> : null}
         {section === "connections" ? <ConnectionsPanel vaults={vaults} /> : null}
-      </main>
+      </div>
 
       <aside className="studio-evidence" aria-label="Evidence and actions">
         <div className="studio-evidence-heading">
@@ -373,6 +374,7 @@ function SetupPanel({
 }
 
 function CompilePanel({ jobs, proposals, contributions, onEvidence }: { jobs: IngestJob[]; proposals: Proposal[]; contributions: SourceContribution[]; onEvidence: (value: Evidence) => void }) {
+  const { hrefForSlug } = useSlugTenants();
   return (
     <div className="studio-panel-stack">
       <section className="studio-intro">
@@ -395,7 +397,7 @@ function CompilePanel({ jobs, proposals, contributions, onEvidence }: { jobs: In
               eyebrow: contribution.sourceType,
               title: contribution.pageSlug,
               body: contribution.sourceUrl,
-              href: `/wiki/${encodeURIComponent(contribution.pageSlug)}`,
+              href: hrefForSlug(contribution.pageSlug),
               hrefLabel: "Open compiled page",
               signals: [`${contribution.structuredRecordIds.length} records`, `${contribution.structuredRelationIds.length} relations`, shortDate(contribution.observedAt)],
             })}>
@@ -599,6 +601,7 @@ function ResearchPanel({
   const [vaultId, setVaultId] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [provider, setProvider] = useState<ResearchProvider | "">(providers[0] ?? "");
+  const { slugTenants } = useSlugTenants();
 
   useEffect(() => {
     if (!provider && providers[0]) setProvider(providers[0]);
@@ -775,7 +778,7 @@ function ResearchPanel({
             {project.error ? <div className="studio-feedback error">{project.error}</div> : null}
             {project.results?.length ? <details className="studio-synthesis"><summary>{project.results.length} collected sources</summary><ol>{project.results.map((result) => <li key={result.url}><a href={result.url} target="_blank" rel="noreferrer">{result.title}</a><small>{result.query}</small></li>)}</ol></details> : null}
             {project.proposalId ? <div className="studio-action-row"><Link className="btn primary" href="/review">Review research draft</Link></div> : null}
-            {project.synthesis ? <div className="studio-synthesis"><p className="receipt">Saved synthesis</p><MarkdownRenderer content={project.synthesis} /></div> : null}
+            {project.synthesis ? <div className="studio-synthesis"><p className="receipt">Saved synthesis</p><MarkdownRenderer content={project.synthesis} slugTenants={slugTenants} /></div> : null}
           </article>
         ))}
         {projects.length === 0 ? <EmptyState title="No research briefs" body="Create one here, or turn a graph insight into a prefilled investigation." /> : null}

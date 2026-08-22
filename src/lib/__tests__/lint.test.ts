@@ -37,6 +37,7 @@ import {
   checkBrokenLinks,
 } from "../lint";
 import { saveRawSource } from "../raw";
+import { serializeFrontmatter } from "../frontmatter";
 
 let tmpDir: string;
 let originalWikiDir: string | undefined;
@@ -96,7 +97,7 @@ describe("lint", () => {
     // Only the contradiction-skipped and missing-concept-page-skipped info issues (no LLM key)
     // Also filter unmigrated-page and uncited-claims — the test page has no work-wiki frontmatter/sources by design
     const nonLLMSkipped = result.issues.filter(
-      (i) => i.type !== "contradiction" && i.type !== "missing-concept-page" && i.type !== "incomplete-coverage" && i.type !== "unmigrated-page" && i.type !== "uncited-claims" && i.type !== "unresolved-discussions",
+      (i) => i.type !== "contradiction" && i.type !== "missing-concept-page" && i.type !== "incomplete-coverage" && i.type !== "unmigrated-page" && i.type !== "uncited-claims",
     );
     expect(nonLLMSkipped).toHaveLength(0);
     expect(result.checkedAt).toBeTruthy();
@@ -1294,6 +1295,15 @@ describe("checkIncompleteCoverage", () => {
     expect(issues).toHaveLength(0);
   });
 
+  // 30 pages, each costing a page write plus a raw-source write, plus the index
+  // write — every one of them a whole-file write that since DW-161 fsyncs a tmp
+  // file before renaming it into place. Measured here: ~35ms before the change,
+  // ~0.5s after it solo, and ~4.9s under the full parallel suite, i.e. sitting
+  // right on the default 5s budget. Same situation as the query-history cap row
+  // and the contributors trust-score row: the durability cost is intended, but
+  // it leaves no headroom, so the row goes flaky on a loaded or slower machine
+  // without an explicit budget. Only the budget moves; the cap assertion below
+  // is untouched.
   it("processes at most MAX_COVERAGE_CHECKS pages per run", async () => {
     mockedHasLLMKey.mockReturnValue(true);
 
@@ -1317,7 +1327,7 @@ describe("checkIncompleteCoverage", () => {
 
     // The LLM should have been called at most MAX_COVERAGE_CHECKS times
     expect(mockedCallLLM).toHaveBeenCalledTimes(MAX_COVERAGE_CHECKS);
-  });
+  }, 30_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -1350,5 +1360,97 @@ describe("parseIncompleteCoverageResponse", () => {
   it("returns empty array for empty array response", () => {
     const result = parseIncompleteCoverageResponse("[]");
     expect(result).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// disputed-page dispatch
+// ---------------------------------------------------------------------------
+
+/**
+ * `checkDisputedPages` has its own unit coverage in `lint-checks.test.ts`. What
+ * only this file can observe is the WIRING: the check has to be imported into
+ * `lint.ts`, gated on the enabled-check set, awaited in the lightweight batch,
+ * AND concatenated into the returned issues. A check that is written but not
+ * spread into the result array passes every unit test and returns nothing to a
+ * caller — which is the exact failure mode `disputed-page` is being restored to
+ * fix (DW-76), so it is worth pinning end to end.
+ */
+describe("lint dispatches the disputed-page check", () => {
+  async function seedDisputedAndSettled() {
+    await writeWikiPage(
+      "contested-page",
+      serializeFrontmatter(
+        { disputed: true, created: "2025-01-01" },
+        "# Contested Page\n\nSources disagree about this page and it has enough body text.",
+      ),
+    );
+    await writeWikiPage(
+      "settled-page",
+      serializeFrontmatter(
+        { disputed: false, created: "2025-01-01" },
+        "# Settled Page\n\nNothing is contested here and it has enough body text.",
+      ),
+    );
+    const entries: IndexEntry[] = [
+      { slug: "contested-page", title: "Contested Page", summary: "Contested" },
+      { slug: "settled-page", title: "Settled Page", summary: "Settled" },
+    ];
+    await updateIndex(entries);
+  }
+
+  it("returns exactly one disputed-page warning, for the disputed slug", async () => {
+    await seedDisputedAndSettled();
+
+    const result = await lint();
+
+    const disputed = result.issues.filter((i) => i.type === "disputed-page");
+    expect(disputed).toHaveLength(1);
+    expect(disputed[0].slug).toBe("contested-page");
+    expect(disputed[0].severity).toBe("warning");
+    expect(disputed[0].suggestion).toContain("/api/wiki/contested-page");
+  });
+
+  it("skips the check when it is not in the requested check list", async () => {
+    await seedDisputedAndSettled();
+
+    const result = await lint({ checks: ["orphan-page"] });
+
+    expect(result.issues.filter((i) => i.type === "disputed-page")).toHaveLength(0);
+  });
+
+  it("runs nothing at all when checks is an EMPTY array", async () => {
+    await seedDisputedAndSettled();
+
+    // `lint()` branches on `options?.checks !== undefined`, so `[]` means "run
+    // no checks" and `undefined` means "run all". The distinction is one
+    // `?.length` truthiness refactor away from collapsing — at which point `[]`
+    // would silently re-enable every check, including this one. The UI relies
+    // on the current meaning: `useLint` posts `checks: []` when the user
+    // deselects everything, expecting an empty result rather than a full scan.
+    const result = await lint({ checks: [] });
+
+    expect(result.issues.filter((i) => i.type === "disputed-page")).toHaveLength(0);
+    expect(result.issues).toEqual([]);
+  });
+
+  it("runs the check when it is the ONLY requested check", async () => {
+    await seedDisputedAndSettled();
+
+    // The complement of the test above: asking for only `disputed-page` has to
+    // reach the check, or "gated off" and "never wired in" would look identical.
+    const result = await lint({ checks: ["disputed-page"] });
+
+    expect(result.issues.map((i) => i.type)).toEqual(["disputed-page"]);
+    expect(result.issues[0].slug).toBe("contested-page");
+  });
+
+  it("survives the warning severity floor", async () => {
+    await seedDisputedAndSettled();
+
+    const result = await lint({ checks: ["disputed-page"], minSeverity: "warning" });
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0].type).toBe("disputed-page");
   });
 });

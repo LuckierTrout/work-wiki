@@ -1,11 +1,12 @@
 import Link from "next/link";
 import React, { type ReactNode } from "react";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { slugify } from "@/lib/slugify";
-import { resolveSlugPath, type SlugTenantMap } from "@/lib/links";
+import { urlTransform } from "@/lib/markdown-url";
+import { resolveSlugPath, slugPath, type SlugTenantMap } from "@/lib/links";
 import { Mermaid } from "@/components/Mermaid";
 
 /**
@@ -45,8 +46,9 @@ interface MarkdownRendererProps {
   /**
    * The linking page's tenant — the fallback for in-content `[x](slug.md)`
    * links whose target isn't in {@link slugTenants} (a dangling/new page). When
-   * omitted, internal links fall back to the flat `/wiki/<slug>` route (which
-   * 308-redirects to canonical) — used by client callers without a resolver.
+   * omitted, internal links fall back to the default tenant's `/u/` route
+   * (which 308-redirects to canonical) — used by client callers without a
+   * resolver.
    */
   tenant?: string;
   /**
@@ -55,13 +57,6 @@ interface MarkdownRendererProps {
    * slugs are globally unique). Computed server-side and passed as plain data.
    */
   slugTenants?: SlugTenantMap;
-  /**
-   * The set of PUBLIC commons slugs. When a target slug is in this set, the link
-   * resolves to the global `/wiki/<slug>` instead of `/u/<tenant>/<slug>`.
-   * Optional so existing callers stay correct (without it, every target resolves
-   * to the owner-scoped form).
-   */
-  commonsSlugs?: ReadonlySet<string>;
 }
 
 /** Flatten ReactMarkdown heading children to plain text for anchor IDs. */
@@ -101,17 +96,13 @@ function stripFrontmatter(content: string): string {
  * untouched so images that weren't downloaded still render.
  */
 /**
- * react-markdown's default `urlTransform` strips `data:` URIs (an XSS guard),
- * which would blank out our baked yoyo-illustration images (stored inline as
- * `data:image/jpeg;base64,…`). Allow **raster** image data URIs through —
- * jpeg/png/gif/webp can't carry script — while still deferring everything else
- * (including the dangerous `data:image/svg+xml` and `data:text/html`) to the
- * default sanitizer.
+ * The data-URI policy now lives in `@/lib/markdown-url` so the Workbench
+ * Preview can share it without dragging KaTeX and the Mermaid client boundary
+ * into its chunk. Re-exported from here UNCHANGED because
+ * `src/components/__tests__/markdown-url-transform.test.ts` imports it from
+ * this path and is frozen.
  */
-export function urlTransform(url: string): string {
-  if (/^data:image\/(?:png|jpe?g|gif|webp)[;,]/i.test(url)) return url;
-  return defaultUrlTransform(url);
-}
+export { urlTransform };
 
 function resolveImageSrc(src: string): string {
   if (
@@ -135,7 +126,6 @@ export function MarkdownRenderer({
   headingIds,
   tenant,
   slugTenants,
-  commonsSlugs,
 }: MarkdownRendererProps) {
   const body = stripFrontmatter(content);
   // Headings render in document order; pull the next pre-computed id (which
@@ -199,14 +189,14 @@ export function MarkdownRenderer({
             // `[x](slug.md)` is tenant-local in storage; we resolve the target's
             // real owner via slugTenants (cross-owner links stay correct), and
             // fall back to the linking page's tenant for dangling targets. When
-            // no resolver/tenant is supplied (client callers), use the flat
-            // /wiki/<slug> route, which 308-redirects to canonical.
+            // no resolver/tenant is supplied (client callers), address it
+            // through the default tenant, which 308-redirects to canonical.
             if (href && href.endsWith(".md") && !href.startsWith("http")) {
               const slug = href.replace(/\.md$/, "");
               const dest =
                 tenant || slugTenants
-                  ? resolveSlugPath(slug, slugTenants, tenant ?? "", commonsSlugs)
-                  : `/wiki/${slug}`;
+                  ? resolveSlugPath(slug, slugTenants, tenant ?? "")
+                  : slugPath(slug);
               return (
                 <Link href={dest} {...props}>
                   {children}

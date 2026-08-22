@@ -172,7 +172,7 @@ export function NamesTermsSettings() {
             Names &amp; Terms
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-foreground/60">
-            Teach WorkWiki the preferred names, aliases, acronyms, and terms it should use
+            Teach work-wiki the preferred names, aliases, acronyms, and terms it should use
             across new pages, chat, search, tasks, the Atlas, and digests.
           </p>
         </div>

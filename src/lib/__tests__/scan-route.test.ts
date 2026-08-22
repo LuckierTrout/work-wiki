@@ -5,6 +5,8 @@ vi.mock("@/lib/maintenance", () => ({
   scanForMaintenance: vi.fn(),
   rebuildDerivedIndexes: vi.fn(),
   purgeStaleJobs: vi.fn(),
+  sweepOrphanWikiDirs: vi.fn(),
+  backfillWorkspaceProfiles: vi.fn(),
   DEFAULT_MAINTENANCE_CAP: 10,
 }));
 vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn() }));
@@ -17,7 +19,13 @@ vi.mock("@/lib/monitor-digests", () => ({
 }));
 
 import { getServicePrincipal } from "@/lib/auth";
-import { scanForMaintenance, rebuildDerivedIndexes, purgeStaleJobs } from "@/lib/maintenance";
+import {
+  scanForMaintenance,
+  rebuildDerivedIndexes,
+  purgeStaleJobs,
+  sweepOrphanWikiDirs,
+  backfillWorkspaceProfiles,
+} from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
 import { isOwnerBackupDue } from "@/lib/backups";
 import {
@@ -26,11 +34,14 @@ import {
   listPendingMonitorDigestDeliveries,
   markMonitorDigestQueued,
 } from "@/lib/monitor-digests";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 
 const mockedGetService = vi.mocked(getServicePrincipal);
 const mockedScan = vi.mocked(scanForMaintenance);
 const mockedRebuild = vi.mocked(rebuildDerivedIndexes);
 const mockedPurge = vi.mocked(purgeStaleJobs);
+const mockedSweepOrphanWikiDirs = vi.mocked(sweepOrphanWikiDirs);
+const mockedBackfillProfiles = vi.mocked(backfillWorkspaceProfiles);
 const mockedEnqueue = vi.mocked(enqueueTask);
 const mockedBackupDue = vi.mocked(isOwnerBackupDue);
 const mockedCreateDigest = vi.mocked(createMonitorDigest);
@@ -40,7 +51,6 @@ const mockedMarkDigestQueued = vi.mocked(markMonitorDigestQueued);
 
 const SAMPLE = [
   { kind: "maintain" as const, op: "staleness" as const, slug: "stale" },
-  { kind: "maintain" as const, op: "reconcile" as const, slug: "disp", threadIndex: 0 },
   { kind: "maintain" as const, op: "fix" as const, slug: "page-a", lintType: "broken-link" as const, targetSlug: "dead-link" },
   { kind: "maintain" as const, op: "fix" as const, slug: "page-b", lintType: "orphan-page" as const },
 ];
@@ -54,16 +64,23 @@ async function scan(query = "") {
 
 let savedFlag: string | undefined;
 let savedOwnerHandle: string | undefined;
+let savedReadOnly: string | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
   savedFlag = process.env.AUTONOMOUS_MAINTENANCE;
   savedOwnerHandle = process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  savedReadOnly = process.env.YOPEDIA_READONLY;
   delete process.env.AUTONOMOUS_MAINTENANCE;
   delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  // Cleared rather than inherited: a value exported in a developer's shell
+  // would otherwise turn every case below into a 403.
+  delete process.env.YOPEDIA_READONLY;
   mockedGetService.mockReturnValue({ id: "service:yopedia", handle: "yopedia" });
   mockedScan.mockResolvedValue(SAMPLE);
   mockedRebuild.mockResolvedValue({});
   mockedPurge.mockResolvedValue(0);
+  mockedSweepOrphanWikiDirs.mockResolvedValue(0);
+  mockedBackfillProfiles.mockResolvedValue(0);
   mockedEnqueue.mockResolvedValue(true);
   mockedBackupDue.mockResolvedValue(false);
   mockedDueDigestOwners.mockResolvedValue([]);
@@ -72,6 +89,8 @@ beforeEach(() => {
   mockedMarkDigestQueued.mockResolvedValue(null);
 });
 afterEach(() => {
+  if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+  else process.env.YOPEDIA_READONLY = savedReadOnly;
   if (savedFlag === undefined) delete process.env.AUTONOMOUS_MAINTENANCE;
   else process.env.AUTONOMOUS_MAINTENANCE = savedFlag;
   if (savedOwnerHandle === undefined) delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
@@ -88,18 +107,18 @@ describe("POST /api/tasks/scan", () => {
   it("dry-runs maintenance tasks when AUTONOMOUS_MAINTENANCE is off", async () => {
     const res = await scan();
     const body = await res.json();
-    expect(body).toMatchObject({ enabled: false, dry: true, found: 4, enqueued: 0 });
+    expect(body).toMatchObject({ enabled: false, dry: true, found: 3, enqueued: 0 });
     expect(mockedEnqueue).not.toHaveBeenCalled();
     // Still reports what it WOULD enqueue.
-    expect(body.tasks).toHaveLength(4);
+    expect(body.tasks).toHaveLength(3);
   });
 
   it("enqueues when AUTONOMOUS_MAINTENANCE=on", async () => {
     process.env.AUTONOMOUS_MAINTENANCE = "on";
     const res = await scan();
     const body = await res.json();
-    expect(body).toMatchObject({ enabled: true, dry: false, found: 4, enqueued: 4 });
-    expect(mockedEnqueue).toHaveBeenCalledTimes(4);
+    expect(body).toMatchObject({ enabled: true, dry: false, found: 3, enqueued: 3 });
+    expect(mockedEnqueue).toHaveBeenCalledTimes(3);
   });
 
   it("?dry=1 forces a dry-run even when enabled", async () => {
@@ -144,6 +163,90 @@ describe("POST /api/tasks/scan", () => {
       backupDue: true,
       backupEnqueued: false,
     });
+  });
+
+  it("sweeps orphaned wiki directories on a normal scan and reports the count", async () => {
+    // The sweep's ONLY scheduled trigger. It removes bytes nothing references
+    // rather than editing pages, so — like the scheduled-agent, monitor and
+    // backup blocks — it runs with AUTONOMOUS_MAINTENANCE off; a tenant that
+    // never deletes a wiki would otherwise never reclaim a single directory.
+    mockedSweepOrphanWikiDirs.mockResolvedValue(2);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedSweepOrphanWikiDirs).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({ enabled: false, dry: true, orphanWikiDirsRemoved: 2 });
+  });
+
+  it("sweeps orphaned wiki directories in the enabled production configuration", async () => {
+    // The row the cron actually runs: AUTONOMOUS_MAINTENANCE=on, no ?dry. The
+    // two cases either side of this one both hold the sweep's gate in its
+    // non-production position, so without this nothing pins the configuration
+    // the feature exists for.
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedSweepOrphanWikiDirs.mockResolvedValue(3);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedSweepOrphanWikiDirs).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({ enabled: true, dry: false, orphanWikiDirsRemoved: 3 });
+  });
+
+  it("?dry=1 suppresses the orphan-directory sweep", async () => {
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedSweepOrphanWikiDirs.mockResolvedValue(2);
+
+    const res = await scan("?dry=1");
+    const body = await res.json();
+
+    expect(mockedSweepOrphanWikiDirs).not.toHaveBeenCalled();
+    expect(body.orphanWikiDirsRemoved).toBe(0);
+  });
+
+  it("backfills workspace profiles on a normal scan and reports the count", async () => {
+    // The DW-137 migration's ONLY trigger of any kind. It writes bytes rather
+    // than editing page content, so it runs with AUTONOMOUS_MAINTENANCE off
+    // exactly like the orphan sweep — a deployment that leaves that flag at its
+    // default would otherwise never finish migrating.
+    mockedBackfillProfiles.mockResolvedValue(2);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedBackfillProfiles).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({
+      enabled: false,
+      dry: true,
+      workspaceProfilesBackfilled: 2,
+    });
+  });
+
+  it("backfills workspace profiles in the enabled production configuration", async () => {
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedBackfillProfiles.mockResolvedValue(3);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedBackfillProfiles).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({
+      enabled: true,
+      dry: false,
+      workspaceProfilesBackfilled: 3,
+    });
+  });
+
+  it("?dry=1 suppresses the workspace-profile backfill", async () => {
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedBackfillProfiles.mockResolvedValue(2);
+
+    const res = await scan("?dry=1");
+    const body = await res.json();
+
+    expect(mockedBackfillProfiles).not.toHaveBeenCalled();
+    expect(body.workspaceProfilesBackfilled).toBe(0);
   });
 
   it("honors a ?cap override", async () => {
@@ -192,21 +295,79 @@ describe("POST /api/tasks/scan", () => {
     const res = await scan();
     const body = await res.json();
     // broken-link fix includes both lintType and targetSlug
-    expect(body.tasks[2]).toEqual({
+    expect(body.tasks[1]).toEqual({
       op: "fix",
       slug: "page-a",
       lintType: "broken-link",
       targetSlug: "dead-link",
     });
     // orphan-page fix includes lintType but omits targetSlug
-    expect(body.tasks[3]).toEqual({
+    expect(body.tasks[2]).toEqual({
       op: "fix",
       slug: "page-b",
       lintType: "orphan-page",
     });
     // staleness op omits lintType and targetSlug
     expect(body.tasks[0]).toEqual({ op: "staleness", slug: "stale" });
-    // reconcile op includes threadIndex but not lintType/targetSlug
-    expect(body.tasks[1]).toEqual({ op: "reconcile", slug: "disp", threadIndex: 0 });
+  });
+});
+
+/**
+ * The scan on a read-only deployment (DW-314).
+ *
+ * This route wrote bytes ON A TIMER with no gate at all: the index rebuild and
+ * the ingest-job GC run every pass, the orphan sweep DELETES `wikis/<uuid>/`
+ * directories, and the DW-137 backfill relocates workspace profiles. None of
+ * them reaches a kernel writer, so nothing behind the handler would have
+ * refused — a cron against a read-only deployment simply kept working.
+ */
+describe("POST /api/tasks/scan on a read-only deployment", () => {
+  beforeEach(() => {
+    process.env.YOPEDIA_READONLY = "1";
+  });
+
+  it("403s without scanning, sweeping, backfilling or enqueuing", async () => {
+    const res = await scan();
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: READ_ONLY_REFUSAL.maintenanceScan });
+    expect(mockedScan).not.toHaveBeenCalled();
+    expect(mockedRebuild).not.toHaveBeenCalled();
+    expect(mockedPurge).not.toHaveBeenCalled();
+    expect(mockedSweepOrphanWikiDirs).not.toHaveBeenCalled();
+    expect(mockedBackfillProfiles).not.toHaveBeenCalled();
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("refuses WHOLE — `?dry=1` does not buy an inspection 200", async () => {
+    // The decision this case exists to pin. `dry` is documented as the one true
+    // inspection switch and its 200 says "here is what a scan would do"; a
+    // read-only deployment answering that shape would be reporting a scan that
+    // never ran. So the refusal wins, and the consumer treats the 4xx as
+    // terminal exactly as it does for `POST /api/tasks/run`.
+    const res = await scan("?dry=1");
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: READ_ONLY_REFUSAL.maintenanceScan });
+    expect(mockedScan).not.toHaveBeenCalled();
+  });
+
+  it("refuses with AUTONOMOUS_MAINTENANCE=on too", async () => {
+    // The two flags are independent: `AUTONOMOUS_MAINTENANCE` gates page
+    // auto-EDITS, and read-only gates every byte. Turning the first on must not
+    // reach past the second.
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+
+    expect((await scan()).status).toBe(403);
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("still 401s without the service token, so the gate stays behind auth", async () => {
+    mockedGetService.mockReturnValue(null);
+
+    const res = await scan();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "Unauthorized" });
   });
 });

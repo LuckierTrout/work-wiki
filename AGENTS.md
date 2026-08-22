@@ -9,7 +9,7 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 
 - `llm-wiki.md` is the immutable founding prompt — never edit it.
 - Treat `.github/` and `.yoyo/yoyo.toml` as protected (declared in `.yoyo/yoyo.toml`); change only when explicitly asked.
-- The rebrand is display-only: runtime identifiers stay `yopedia` — `DEFAULT_TENANT` (src/lib/links.ts), `BASE_AGENT_OWNER` (src/lib/agents.ts), `AUTOMATION_ACTORS`, the MCP server name, localStorage keys, `YOPEDIA_*` env/secret names, and every resource name in both wrangler.jsonc files. Renaming any of them orphans production data — new work uses work-wiki in copy, `yopedia` in identifiers.
+- The rebrand is display-only: a fixed set of runtime identifiers is frozen and must never be renamed — see **Frozen identifiers** below the closing `bmad:context` marker for the list and its enforcing test.
 
 ## Where things are
 
@@ -29,6 +29,22 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 
 <!-- /bmad:context -->
 
+## Frozen identifiers
+
+This section is deliberately outside the `bmad:context` markers: that block is
+replaced on refresh, and this list must survive the refresh.
+
+- The rebrand is display-only: runtime identifiers stay `yopedia` — `DEFAULT_TENANT` (src/lib/links.ts), `BASE_AGENT_OWNER` (src/lib/agents.ts), `AUTOMATION_ACTORS`, the MCP server name, localStorage keys, `YOPEDIA_*` env/secret names, and every resource name in both wrangler.jsonc files. Renaming any of them orphans production data — new work uses work-wiki in copy, `yopedia` in identifiers. `IDENTIFIER_ALLOWLIST` in `src/lib/__tests__/brand-copy.test.ts` is the enforcing half of this bullet.
+- The same freeze covers the operator-facing `WORKWIKI_*` family: the env/secret names (`WORKWIKI_URL`, `WORKWIKI_API_TOKEN`, `WORKWIKI_SYNC_*`, `WORKWIKI_SOURCE_*`), the `workwiki.app` origin, the `.workwiki-source-sync.json` state file, the `workwiki-backups` directory, the `workwiki-*.zip` archive prefix together with the prune regex that matches it, and the `workwiki-portable-archive` manifest `format` string (src/lib/portable-archive.ts), which is written into every exported archive and validated on import — renaming it breaks re-import of archives already on operators' disks.
+- The same family also covers these, each verified at its call site:
+  - `workwiki-actions.ics` — the `Content-Disposition` filename of the iCalendar action feed (src/app/api/integrations/calendar/route.ts). Subscribed calendar clients hold that name.
+  - the `workwiki-*.zip` export filename minted by the archive export route (src/app/api/archive/export/route.ts) — a second producer of the one archive-prefix contract, alongside the archive namer and the prune regex that matches it in tools/work-wiki-sync.mjs. Renaming either producer alone splits the prefix.
+  - `workwikiDefaultTags`, the browser clipper's `chrome.storage.local` key, and `save-to-workwiki`, its context-menu id (integrations/browser-clipper/) — both persist inside already-installed extensions, so a rename silently drops saved state.
+  - the `www.workwiki.app` custom-domain route (wrangler.jsonc) — a separate route entry from the apex `workwiki.app` beside it, and just as live.
+- One more spelling is waived without being frozen: the webhook placeholder `https://hooks.example.com/workwiki` rendered by IntegrationDesk (src/components/IntegrationDesk.tsx). It is example copy, not a production identifier — it is listed here only so a reader diffing this prose against the allowlist does not read the extra waiver as drift.
+- `WORKWIKI_IDENTIFIER_ALLOWLIST` in `src/lib/__tests__/brand-copy.test.ts` is the enforcing half of the three bullets above; the prose above is the explaining half. Prose alone does not stop a rename — any spelling frozen here must also be waived there, and anything not waived there fails the brand scan.
+- A sweep that "fixes" any of these breaks existing operator setups and strands local backups.
+
 ## Learned User Preferences
 
 - Keep UI and LLM generation English-only; do not add Chinese or i18n.
@@ -36,6 +52,10 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 - Reshape the existing Next.js web app toward nashsu/llm_wiki UX parity; do not start a desktop or Tauri rewrite.
 - Match nashsu Workbench density and layout from the captured screenshots; do not invent a restyle of the shell. Type is locked: system sans (SF) for chrome and Chat; Georgia for Preview page body and headings.
 - Prefer BMAD Fast path (draft with assumption tags) over Coaching when a working mode is offered.
+- Prefer Claude Opus 5 at high effort for bmad-loop adapter (dev and triage). Independent review is off during deferred-work culls; do not re-arm a finished bundle just because the ledger was dirty. When review is on, use Codex (`gpt-5.6-terra`), one cycle, and enforce the session budget (2.5M weighted tokens, 60-minute timeout). ChatGPT-auth Codex cannot use `gpt-5-codex`.
+- Prefer bmad-loop sweep commit/finalize to proceed automatically so remaining deferred-work items can be culled.
+- Sweep triage must put every open `severity: low` deferred-work entry in `skip` (project excludes low-priority residue until after Epic 8). Do not put low items in bundles, even when they share a file with a medium item. Leave low entries open; do not close them as resolved.
+- Do not use Cursor IDE chat as a bmad-loop adapter; there is no shipped cursor profile.
 
 ## Learned Workspace Facts
 
@@ -49,4 +69,5 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 - Active UX run: `_bmad-output/planning-artifacts/ux-designs/ux-work-wiki-2026-08-12/` — `DESIGN.md` + `EXPERIENCE.md` are `status: final`. Nashsu screenshots in `imports/` are layout/density reference. Type: SF chrome, Georgia Preview. Color: nashsu light gray, black primary.
 - Active architecture run: `_bmad-output/planning-artifacts/architecture/architecture-work-wiki-2026-08-12/` — `ARCHITECTURE-SPINE.md` is `status: final`. Wiki kernel (OpenNext + R2) is the system of record; local sidecar owns Chat/extract/shell/` :19828`.
 - Final spec: `_bmad-output/specs/spec-work-wiki/` (`SPEC.md`, `glossary.md`, `success-metrics.md`); companions are the final PRD, UX, and architecture spine.
-- Epic breakdown complete in `_bmad-output/planning-artifacts/epics.md` (8 epics, 68 stories; `stepsCompleted` through step-04). P0: Private Workbench, Sources compile, Ask the wiki, Meeting Todos; P1: See the wiki's shape, Deep Research, Any document in, Agents at the door. Office/email extract stays in Epic 7, not Epic 2. Next planning gate is sprint planning.
+- Epic breakdown complete in `_bmad-output/planning-artifacts/epics.md` (8 epics, 68 stories; `stepsCompleted` through step-04). P0: Private Workbench, Sources compile, Ask the wiki, Meeting Todos; P1: See the wiki's shape, Deep Research, Any document in, Agents at the door. Office/email extract stays in Epic 7, not Epic 2. Implementation is underway in `_bmad-output/implementation-artifacts/` (`sprint-status.yaml`, `deferred-work.md`).
+- `.bmad-loop/policy.toml` is gitignored and machine-local; adapter and sweep settings apply on the next local `bmad-loop` start, not via git push. Review finalize must not HALT blocked on orchestrator-owned dirty `deferred-work.md`; the orchestrator squashes that ledger into the story commit.

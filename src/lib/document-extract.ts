@@ -1,28 +1,30 @@
 import { unzipSync, zlibSync } from "fflate";
 import { MAX_CONTENT_LENGTH, MAX_DOCUMENT_SIZE } from "./constants";
+import { detectDocumentFormat, ownLookup } from "./document-formats";
+import type { DocumentFormat } from "./document-formats";
 import { ClientInputError } from "./errors";
 import { extractTitle, htmlToMarkdown } from "./html-parse";
 import { describeImage } from "./vision";
 
-export const DOCUMENT_FORMATS = [
-  "docx",
-  "pptx",
-  "xlsx",
-  "csv",
-  "md",
-  "txt",
-  "html",
-  "pdf",
-  "zip",
-  "odt",
-  "ods",
-  "odp",
-  "epub",
-  "org",
-  "rtf",
-  "mobi",
-] as const;
-export type DocumentFormat = (typeof DOCUMENT_FORMATS)[number];
+/**
+ * The format tables moved to `./document-formats` (a leaf module with no
+ * imports) so the bulk-import client could stop hand-copying them (DW-246).
+ * They are re-exported here, under the same names, because this module has been
+ * their public address since the extractor was written — `@/app/api/ingest/…`,
+ * `./vault-explorer`, `email-ingest-allowlist-parity.test.ts` and
+ * `prose-inventory-parity.test.ts` all import them from here and none had to
+ * change.
+ */
+export {
+  DOCUMENT_FORMATS,
+  DOCUMENT_FORMAT_LABELS,
+  SUPPORTED_DOCUMENT_EXTENSIONS,
+  SUPPORTED_DOCUMENT_MIME_TYPES,
+  detectDocumentFormat,
+  isSupportedDocument,
+} from "./document-formats";
+export type { DocumentFormat } from "./document-formats";
+
 type OfficeFormat = "docx" | "pptx" | "xlsx";
 
 const MAX_ARCHIVE_TEXT_BYTES = 12 * 1024 * 1024;
@@ -38,30 +40,6 @@ const MAX_ZIP_ENTRY_BYTES = 10 * 1024 * 1024;
 const MAX_ZIP_TOTAL_BYTES = 30 * 1024 * 1024;
 const MAX_PDF_IMAGES = 8;
 const MAX_PDF_IMAGE_PIXELS = 12_000_000;
-
-const MIME_FORMATS: Record<string, DocumentFormat> = {
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
-  "text/csv": "csv",
-  "application/csv": "csv",
-  "text/markdown": "md",
-  "text/x-markdown": "md",
-  "text/plain": "txt",
-  "text/html": "html",
-  "application/xhtml+xml": "html",
-  "application/pdf": "pdf",
-  "application/zip": "zip",
-  "application/x-zip-compressed": "zip",
-  "application/vnd.oasis.opendocument.text": "odt",
-  "application/vnd.oasis.opendocument.spreadsheet": "ods",
-  "application/vnd.oasis.opendocument.presentation": "odp",
-  "application/epub+zip": "epub",
-  "text/org": "org",
-  "application/rtf": "rtf",
-  "text/rtf": "rtf",
-  "application/x-mobipocket-ebook": "mobi",
-};
 
 export interface ExtractedDocument {
   format: DocumentFormat;
@@ -94,29 +72,6 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
   bmp: "image/bmp",
   ico: "image/x-icon",
 };
-
-function extension(filename: string): string {
-  const match = filename.trim().toLowerCase().match(/\.([a-z0-9]+)$/);
-  return match?.[1] ?? "";
-}
-
-export function detectDocumentFormat(
-  filename: string,
-  contentType?: string,
-): DocumentFormat | null {
-  const ext = extension(filename);
-  if (ext === "markdown") return "md";
-  if (ext === "htm") return "html";
-  if (DOCUMENT_FORMATS.includes(ext as DocumentFormat)) {
-    return ext as DocumentFormat;
-  }
-  const mime = contentType?.split(";", 1)[0]?.trim().toLowerCase();
-  return mime ? MIME_FORMATS[mime] ?? null : null;
-}
-
-export function isSupportedDocument(filename: string, contentType?: string): boolean {
-  return detectDocumentFormat(filename, contentType) !== null;
-}
 
 function decodeXml(value: string): string {
   return value.replace(
@@ -491,7 +446,7 @@ function openOfficeArchive(
 
 function mediaTypeFor(filename: string): string | null {
   const ext = filename.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
-  return IMAGE_MEDIA_TYPES[ext] ?? null;
+  return ownLookup(IMAGE_MEDIA_TYPES, ext);
 }
 
 function assetFromArchive(

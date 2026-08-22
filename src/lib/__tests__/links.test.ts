@@ -5,13 +5,11 @@ import {
   hasLinkTo,
   DEFAULT_TENANT,
   ownerToTenant,
-  commonsPath,
   pagePath,
+  slugPath,
   editPath,
   rawPath,
-  sharePath,
   resolveSlugPath,
-  profileHref,
 } from "../links";
 
 describe("escapeRegex", () => {
@@ -148,27 +146,16 @@ describe("canonical URL builders", () => {
     );
   });
 
-  it("builds the global commons path /wiki/<slug>", () => {
-    expect(commonsPath("transformers")).toBe("/wiki/transformers");
-    expect(commonsPath("retrieval-augmented-generation")).toBe(
-      "/wiki/retrieval-augmented-generation",
-    );
-  });
-
-  it("builds the full-screen share path /share/<tenant>/<slug>", () => {
-    expect(sharePath("yuanhao", "billionaire-math")).toBe(
-      "/share/yuanhao/billionaire-math",
+  // The retired commons form `/wiki/<slug>`, the retired `/share/` form, and
+  // the retired public-profile builder are all gone: an owner-less call site
+  // addresses a page through the default tenant, which 308s to canonical.
+  it("builds a slug-only page path through the default tenant", () => {
+    expect(slugPath("transformers")).toBe("/u/yopedia/transformers");
+    expect(slugPath("retrieval-augmented-generation")).toBe(
+      "/u/yopedia/retrieval-augmented-generation",
     );
     // Raw slug (incl. Unicode), like pagePath — the route + browser encode it.
-    expect(sharePath("yuanhao", "math-解释")).toBe("/share/yuanhao/math-解释");
-  });
-
-  it("builds the profile URL /u/<handle>, percent-encoding unsafe handles", () => {
-    expect(profileHref("yuanhao")).toBe("/u/yuanhao");
-    expect(profileHref("alice--yoyo")).toBe("/u/alice--yoyo");
-    // Spaces / slashes are encoded so the URL stays routable.
-    expect(profileHref("Jean Luc")).toBe("/u/Jean%20Luc");
-    expect(profileHref("a/b")).toBe("/u/a%2Fb");
+    expect(slugPath("math-解释")).toBe("/u/yopedia/math-解释");
   });
 });
 
@@ -187,25 +174,73 @@ describe("resolveSlugPath", () => {
     );
   });
 
-  it("resolves a PUBLIC commons target to the global /wiki/<slug>", () => {
-    const commons = new Set(["foo"]);
-    // `foo` is in the commons set → global URL, regardless of its tenant in the map.
-    expect(resolveSlugPath("foo", map, "yuanhao", commons)).toBe("/wiki/foo");
-    // `bar` is NOT in the commons set → still owner-scoped.
-    expect(resolveSlugPath("bar", map, "yuanhao", commons)).toBe("/u/bob/bar");
+  it("never emits an empty tenant segment", () => {
+    // `/u//<slug>` matches no route — a call site that lost its tenant must
+    // still produce a link the owner route can 308 onto the real handle.
+    expect(resolveSlugPath("ghost", map, "")).toBe("/u/yopedia/ghost");
+    expect(resolveSlugPath("ghost", undefined, "   ")).toBe("/u/yopedia/ghost");
+    expect(pagePath("", "ghost")).toBe("/u/yopedia/ghost");
+    // The edit and raw URLs live at the same route family and are built from
+    // the same caller-supplied tenant, so they get the same floor.
+    expect(editPath("", "ghost")).toBe("/u/yopedia/ghost/edit");
+    expect(rawPath("   ", "ghost")).toBe("/u/yopedia/raw/ghost");
   });
 
-  it("keeps non-commons targets owner-scoped even with a commons set provided", () => {
-    const commons = new Set<string>();
-    expect(resolveSlugPath("foo", map, "yuanhao", commons)).toBe("/u/alice/foo");
-    // A dangling commons target still resolves global (existence in the set wins
-    // over the slug→tenant lookup).
-    expect(resolveSlugPath("ghost", map, "yopedia", new Set(["ghost"]))).toBe(
-      "/wiki/ghost",
+  it("never emits the retired global /wiki/<slug> form", () => {
+    for (const slug of ["foo", "bar", "ghost"]) {
+      expect(resolveSlugPath(slug, map, "yuanhao")).not.toContain("/wiki/");
+    }
+  });
+
+  // A slug is user-controlled text: a page titled "Constructor" slugifies to
+  // `constructor`, "To String" to `to-string`, and so on. An inherited-member
+  // lookup (`map[slug]`) answers those from `Object.prototype` — with a
+  // FUNCTION, which `tenantSegment`'s `.trim()` then throws a TypeError on,
+  // in the middle of rendering the page. The map only ever holds OWN string
+  // entries (parsed response JSON / a server-built plain object), so anything
+  // else must fall back rather than be treated as a tenant.
+  it.each([
+    ["constructor", "Object.prototype.constructor (a function)"],
+    ["toString", "Object.prototype.toString (a function)"],
+    ["hasOwnProperty", "Object.prototype.hasOwnProperty (a function)"],
+    ["valueOf", "Object.prototype.valueOf (a function)"],
+    ["__proto__", "the prototype accessor (an object)"],
+  ])(
+    "falls back for the prototype-collision slug %s instead of resolving %s",
+    (slug) => {
+      expect(() => resolveSlugPath(slug, map, "yuanhao")).not.toThrow();
+      expect(resolveSlugPath(slug, map, "yuanhao")).toBe(`/u/yuanhao/${slug}`);
+      // Also with no map at all, and with the empty fallback the hook passes.
+      expect(resolveSlugPath(slug, undefined, "yuanhao")).toBe(
+        `/u/yuanhao/${slug}`,
+      );
+      expect(resolveSlugPath(slug, {}, "")).toBe(`/u/yopedia/${slug}`);
+    },
+  );
+
+  it("still honours an OWN entry whose key collides with a prototype member", () => {
+    // The guard is own-property-only, not a blocklist: a real page whose slug
+    // happens to be `constructor` still resolves to its owner.
+    expect(resolveSlugPath("constructor", { constructor: "alice" }, "yuanhao")).toBe(
+      "/u/alice/constructor",
     );
   });
 
-  it("ignores the commons set when undefined (prior behavior preserved)", () => {
-    expect(resolveSlugPath("foo", map, "yuanhao", undefined)).toBe("/u/alice/foo");
+  it("falls back for an own value that is not a string", () => {
+    // A malformed/hostile `/api/wiki/routes` body is parsed JSON, not a typed
+    // map — a number, null, or nested object must degrade to the fallback
+    // href, never reach `tenantSegment` and throw.
+    const malformed = {
+      num: 7,
+      nul: null,
+      obj: { handle: "alice" },
+      arr: ["alice"],
+    } as unknown as Record<string, string>;
+    for (const slug of ["num", "nul", "obj", "arr"]) {
+      expect(() => resolveSlugPath(slug, malformed, "yuanhao")).not.toThrow();
+      expect(resolveSlugPath(slug, malformed, "yuanhao")).toBe(
+        `/u/yuanhao/${slug}`,
+      );
+    }
   });
 });

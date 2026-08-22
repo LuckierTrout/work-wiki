@@ -7,10 +7,8 @@ import { SiteChrome } from "@/components/SiteChrome";
 import { ClientProviders } from "@/components/ClientProviders";
 import { EnsureYoyo } from "@/components/EnsureYoyo";
 import { RegisterSW } from "@/components/RegisterSW";
-import { LocaleProvider } from "@/components/LocaleProvider";
-import { cookies } from "next/headers";
-import { INTERFACE_LOCALE_COOKIE, normalizeInterfaceLocale } from "@/lib/i18n";
 import { APP_NAME, APP_ORIGIN, APP_TITLE } from "@/lib/brand";
+import { isE2eIdentityArmed } from "@/lib/e2e-identity";
 import "katex/dist/katex.min.css";
 import "./globals.css";
 
@@ -70,15 +68,34 @@ const themeScript = `
 })();
 `;
 
-export default async function RootLayout({
+/**
+ * Clerk wraps every live request. The local Playwright harness is the one
+ * exception: dummy keys make `<ClerkProvider>` throw before the Workbench
+ * can paint, and `useUser()` in EnsureYoyo / NavHeader would throw without
+ * it. The E2E cookie is the identity there — see `e2e-identity.ts`.
+ */
+function AppProviders({ children }: { children: React.ReactNode }) {
+  const e2e = isE2eIdentityArmed();
+  const shell = (
+    <ClientProviders>
+      {e2e ? null : <EnsureYoyo />}
+      <RegisterSW />
+      <SiteChrome nav={e2e ? null : <NavHeader />} footer={e2e ? null : <Footer />}>
+        {children}
+      </SiteChrome>
+    </ClientProviders>
+  );
+  return e2e ? shell : <ClerkProvider>{shell}</ClerkProvider>;
+}
+
+export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const locale = normalizeInterfaceLocale((await cookies()).get(INTERFACE_LOCALE_COOKIE)?.value);
   return (
     <html
-      lang={locale}
+      lang="en"
       suppressHydrationWarning
       className={`${fontSans.variable} ${fontSerif.variable} ${fontMono.variable}`}
     >
@@ -86,20 +103,10 @@ export default async function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body className="min-h-screen antialiased flex flex-col">
-        {/* `waitlistUrl` makes Clerk's sign-in modal route new sign-ups to our
-            /waitlist page while the app is in waitlist (invite-only) sign-up
-            mode — gating registration only; reading the commons stays public. */}
-        <LocaleProvider initialLocale={locale}>
-          <ClerkProvider waitlistUrl="/waitlist">
-            <ClientProviders>
-              <EnsureYoyo />
-              <RegisterSW />
-              <SiteChrome nav={<NavHeader />} footer={<Footer />}>
-                {children}
-              </SiteChrome>
-            </ClientProviders>
-          </ClerkProvider>
-        </LocaleProvider>
+        {/* No `waitlistUrl`: /waitlist is retired. This deployment is
+            owner-only — there is no self-serve sign-up to route anywhere, and
+            no public read path behind it. */}
+        <AppProviders>{children}</AppProviders>
       </body>
     </html>
   );

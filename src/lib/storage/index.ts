@@ -174,6 +174,10 @@ export type {
   EmbeddingEntry,
   EmbeddingMatch,
 } from "./types";
+export {
+  ATOMIC_COUNTER_INDEX_KEYS,
+  isAtomicCounterIndexKey,
+} from "./types";
 
 export type { CloudflareEnv } from "./cloudflare-types";
 export { R2StorageProvider } from "./r2";

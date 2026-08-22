@@ -18,10 +18,28 @@ import type {
   EmbeddingEntry,
   EmbeddingMatch,
 } from "./types";
+import { narrowIndexInteger } from "./index-integer";
+import { withFileLock } from "../lock";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Scratch files written by {@link FilesystemStorageProvider.atomicWrite}.
+ *
+ * The shape (`.tmp-<uuid>.tmp`) is chosen so that no path the app itself
+ * constructs can collide with it: those come from slugs, ids, and fixed names,
+ * none of which is both dot-prefixed and `.tmp`-suffixed. That is a convention,
+ * NOT an invariant this layer enforces — nothing validates a path against this
+ * pattern on the way in. `src/lib/portable-archive.ts` writes a caller-supplied
+ * `entry.path` through `writeAsset` verbatim (only `safeRelativePath` stands in
+ * the way, and it is a traversal check, not a name-shape one), so a crafted
+ * archive entry named `.tmp-<uuid>.tmp` WOULD be stored and would then be
+ * permanently invisible to {@link FilesystemStorageProvider.listFiles}. Callers
+ * that accept externally-supplied paths own that check.
+ */
+const TMP_ARTIFACT = /^\.tmp-[0-9a-f-]+\.tmp$/i;
 
 /** Cosine similarity between two equal-length vectors. */
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -67,6 +85,101 @@ export class FilesystemStorageProvider implements StorageProvider {
     await fs.mkdir(path.dirname(absPath), { recursive: true });
   }
 
+  /**
+   * Replace a whole file by rename, so a reader never sees a partial one.
+   *
+   * Every whole-file write in this provider goes through here — `writeFile`,
+   * `writeAsset`, `writeFileIfMatch`, `putIndex` and `saveEmbeddings` — which is
+   * the point of it being one helper: a bare `fs.writeFile` truncates the
+   * destination in place, so a fault mid-write (ENOSPC, process death) leaves a
+   * TRUNCATED file, and a truncated `wikis.json` degrades to an empty registry
+   * that no compensation can tell from a legitimately empty one.
+   *
+   * The tmp file is created in the destination's OWN directory so the rename
+   * stays within one filesystem and is therefore atomic, and it is fsynced and
+   * closed before the rename so the bytes are on disk before any name points at
+   * them. On any failure the tmp file is removed, leaving neither an artifact
+   * nor a changed destination.
+   *
+   * What this is NOT: crash-durability for the rename itself. That would need
+   * an fsync of the parent directory, which is not portable, so a power loss
+   * can still lose the newest bytes. Losing the newest bytes leaves a WHOLE
+   * older file, which callers already reason about correctly; a torn one they
+   * could not.
+   *
+   * `appendFile` is deliberately excluded — an append cannot be tmp-and-renamed
+   * without reading the whole file back.
+   *
+   * SIDE EFFECTS OF REPLACING RATHER THAN TRUNCATING. Each of these is a real
+   * difference from the bare `fs.writeFile` this replaced, none of which the
+   * app's own callers depend on today:
+   *
+   *   - The destination gets a NEW inode. Hard links to the old file detach and
+   *     keep the old bytes, and a destination that is a SYMLINK is replaced by
+   *     a regular file rather than written through to its target.
+   *   - Only `mode & 0o777` is carried over. Ownership (uid/gid), the setuid,
+   *     setgid and sticky bits, and ACLs/xattrs are not — the replacement gets
+   *     whatever the creating process and filesystem give it.
+   *   - The write now needs write permission on the destination's DIRECTORY (to
+   *     create and rename the tmp file), not just on the destination, and it
+   *     needs transient free space for BOTH copies at once.
+   */
+  private async atomicWrite(
+    absPath: string,
+    data: string | Buffer,
+  ): Promise<void> {
+    await this.ensureParent(absPath);
+    const tmp = path.join(
+      path.dirname(absPath),
+      `.tmp-${crypto.randomUUID()}.tmp`,
+    );
+    try {
+      const handle = await fs.open(tmp, "wx");
+      // Boxed rather than a bare `unknown`, so a thrown `undefined` is still
+      // distinguishable from "nothing failed".
+      let failure: { error: unknown } | null = null;
+      try {
+        // Carry the destination's mode over when it already exists; a brand-new
+        // file keeps the default `fs.writeFile` would have given it.
+        const mode = await fs.stat(absPath).then(
+          (st) => st.mode & 0o777,
+          () => null,
+        );
+        if (mode !== null) await handle.chmod(mode);
+        await handle.writeFile(data);
+        await handle.sync();
+      } catch (error) {
+        failure = { error };
+      }
+      // A `finally { await handle.close() }` would let a close rejection
+      // REPLACE the write or sync error already in flight — the caller would
+      // then see EBADF instead of the ENOSPC that actually stopped the write.
+      // The first error wins; a close failure on the otherwise-clean path still
+      // surfaces, and still throws BEFORE the rename, so a handle that could
+      // not be closed never gets published.
+      try {
+        await handle.close();
+      } catch (error) {
+        failure ??= { error };
+      }
+      if (failure) throw failure.error;
+      await fs.rename(tmp, absPath);
+    } catch (error) {
+      // Cleanup must never change what propagates. `force` only suppresses
+      // ENOENT, so an EPERM/EACCES/EBUSY unlink would otherwise replace the
+      // original ENOSPC/EISDIR with an unrelated one — and callers branch on
+      // error IDENTITY (`wikis.ts`'s compensation re-throws the original; the
+      // research-registry suite asserts the very object). A leaked tmp file is
+      // the lesser harm: `listFiles` already hides it.
+      try {
+        await fs.rm(tmp, { force: true });
+      } catch {
+        // Deliberately swallowed — see above.
+      }
+      throw error;
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Text files
   // -------------------------------------------------------------------------
@@ -76,9 +189,7 @@ export class FilesystemStorageProvider implements StorageProvider {
   }
 
   async writeFile(filePath: string, content: string): Promise<void> {
-    const abs = this.resolve(filePath);
-    await this.ensureParent(abs);
-    await fs.writeFile(abs, content, "utf-8");
+    await this.atomicWrite(this.resolve(filePath), content);
   }
 
   async deleteFile(filePath: string): Promise<void> {
@@ -89,10 +200,15 @@ export class FilesystemStorageProvider implements StorageProvider {
     const abs = this.resolve(prefix);
     try {
       const entries = await fs.readdir(abs, { withFileTypes: true });
-      return entries.map((entry) => ({
-        name: entry.name,
-        isDirectory: entry.isDirectory(),
-      }));
+      return entries
+        // In-flight and crash-leftover `atomicWrite` scratch files are not
+        // content and must never surface. Every OTHER dot-prefixed entry still
+        // does — `.discarded` is a real marker `sweepOrphans` depends on.
+        .filter((entry) => !TMP_ARTIFACT.test(entry.name))
+        .map((entry) => ({
+          name: entry.name,
+          isDirectory: entry.isDirectory(),
+        }));
     } catch (err: unknown) {
       // If the directory doesn't exist, return empty list
       if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -134,9 +250,7 @@ export class FilesystemStorageProvider implements StorageProvider {
   // -------------------------------------------------------------------------
 
   async writeAsset(filePath: string, data: ArrayBuffer): Promise<void> {
-    const abs = this.resolve(filePath);
-    await this.ensureParent(abs);
-    await fs.writeFile(abs, Buffer.from(data));
+    await this.atomicWrite(this.resolve(filePath), Buffer.from(data));
   }
 
   async readAsset(filePath: string): Promise<ArrayBuffer> {
@@ -183,8 +297,7 @@ export class FilesystemStorageProvider implements StorageProvider {
       throw err;
     }
 
-    await this.ensureParent(abs);
-    await fs.writeFile(abs, content, "utf-8");
+    await this.atomicWrite(abs, content);
     return true;
   }
 
@@ -209,9 +322,19 @@ export class FilesystemStorageProvider implements StorageProvider {
   }
 
   async putIndex<T = unknown>(key: string, value: T): Promise<void> {
-    const abs = this.indexPath(key);
-    await this.ensureParent(abs);
-    await fs.writeFile(abs, JSON.stringify(value), "utf-8");
+    await this.atomicWrite(this.indexPath(key), JSON.stringify(value));
+  }
+
+  async incrementIndex(key: string): Promise<number> {
+    // A different key from the app-level `DATA_VERSION_LOCK` so a caller that
+    // still holds that lock (none should) cannot deadlock on a reentrant
+    // acquire. Two processes on one DATA_DIR still serialize here via the
+    // in-process chain; local next-dev is one process.
+    return withFileLock(`index:${key}`, async () => {
+      const next = narrowIndexInteger(await this.getIndex(key)) + 1;
+      await this.putIndex(key, next);
+      return next;
+    });
   }
 
   async listIndexKeys(prefix: string): Promise<string[]> {
@@ -255,9 +378,7 @@ export class FilesystemStorageProvider implements StorageProvider {
   }
 
   private async saveEmbeddings(entries: EmbeddingEntry[]): Promise<void> {
-    const abs = this.embeddingsPath();
-    await this.ensureParent(abs);
-    await fs.writeFile(abs, JSON.stringify(entries), "utf-8");
+    await this.atomicWrite(this.embeddingsPath(), JSON.stringify(entries));
   }
 
   async upsertEmbedding(

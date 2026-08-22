@@ -67,7 +67,7 @@ export interface QueryResult {
 
 /** A single issue found by the lint operation. */
 export interface LintIssue {
-  type: "orphan-page" | "stale-index" | "missing-crossref" | "empty-page" | "contradiction" | "missing-concept-page" | "broken-link" | "stale-page" | "low-confidence" | "unmigrated-page" | "duplicate-entity" | "uncited-claims" | "unresolved-discussions" | "disputed-page" | "supersedes-dangling" | "incomplete-coverage";
+  type: "orphan-page" | "stale-index" | "missing-crossref" | "empty-page" | "contradiction" | "missing-concept-page" | "broken-link" | "stale-page" | "low-confidence" | "unmigrated-page" | "duplicate-entity" | "uncited-claims" | "supersedes-dangling" | "incomplete-coverage" | "disputed-page";
   slug: string;
   /** Structured target slug for cross-ref, contradiction, broken-link, and duplicate-entity fixes.
    * Eliminates the need to parse human-readable messages to extract targets. */
@@ -257,4 +257,20 @@ export interface ProviderInfo {
   model: string | null;
   /** true if the active provider supports embeddings */
   embeddingSupport: boolean;
+  /**
+   * Why `OLLAMA_BASE_URL` was thrown away, or `null` when it was not (DW-402).
+   *
+   * THE ENV LEG ONLY, matching everything else on this object: `ProviderInfo`
+   * reports what the ENVIRONMENT selects, and `detectEnvProvider` does not
+   * consult the stored config by DW-370's own design. A stored endpoint the
+   * resolver refused is reported on `EffectiveSettings.ollamaBaseUrlIssue`
+   * instead, which is the full ladder's answer.
+   *
+   * It exists because refusing the variable is otherwise INVISIBLE to every
+   * consumer of `/api/status`: `configured: false` and `provider: null` are the
+   * same reading for "nothing was set" and for "what you set was rejected", and
+   * only the second has a fix. `StatusBadge`'s help panel advertises this very
+   * variable, so without the sentence it recommends the step already taken.
+   */
+  ollamaBaseUrlIssue: string | null;
 }

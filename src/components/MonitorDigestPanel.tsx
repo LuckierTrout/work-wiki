@@ -137,7 +137,7 @@ export function MonitorDigestPanel() {
           </div>
           <h2 className="display" style={{ fontSize: 26, margin: "10px 0 5px" }}>The meaningful changes, in one place.</h2>
           <p style={{ color: "var(--ink-2)", margin: 0, maxWidth: "62ch", fontSize: 14 }}>
-            WorkWiki groups source checks, proposed revisions, failures, and recoveries. The in-app history is private to your account.
+            work-wiki groups source checks, proposed revisions, failures, and recoveries. The in-app history is private to your account.
           </p>
         </div>
         <button className="btn ghost" type="button" onClick={() => void generateNow()} disabled={generating}>

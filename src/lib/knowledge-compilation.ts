@@ -203,7 +203,12 @@ export async function compileKnowledgePage(
     const selected = (await selectPagesForQuery(query, ownerEntries))
       .filter((candidate) => candidate !== slug)
       .slice(0, 6);
-    const relatedPages = (await Promise.all(selected.map(readWikiPageWithFrontmatter)))
+    const relatedPages = (await Promise.all(
+      // Wrapped rather than passed point-free: `readWikiPageWithFrontmatter`
+      // now takes an options object as its second parameter, and `map` would
+      // hand it the array INDEX.
+      selected.map((candidate) => readWikiPageWithFrontmatter(candidate)),
+    ))
       .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
     const inputHash = contentHash([
       page.content,

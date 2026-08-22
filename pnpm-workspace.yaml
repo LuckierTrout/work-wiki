@@ -1,0 +1,25 @@
+# This file exists to stop pnpm's upward search for a workspace root, NOT to
+# declare a multi-package workspace. Without it pnpm walks past the checkout,
+# adopts the first `pnpm-workspace.yaml` it finds above (on the maintainer's
+# machine, `~/pnpm-workspace.yaml`, which declares only `allowBuilds:` and no
+# `packages:` key), and every `pnpm <cmd>` run inside this repo aborts with
+# `ERROR packages field missing or empty` before doing any work — including
+# `pnpm install`, `pnpm lint` and `pnpm test`, the entry points README.md and
+# .github/workflows/ci.yml document. Deleting this file re-opens that failure.
+#
+# `.` is this repo's single package (the root project). The list must stay
+# non-empty: an empty `packages:` is exactly the state pnpm rejects.
+#
+# It deliberately does NOT list `workers/sandbox-runner`. That directory is a
+# separate pnpm package with its own pnpm-lock.yaml, installed on its own by
+# `pnpm --dir workers/sandbox-runner install --frozen-lockfile`; the root
+# lockfile has no importer for it, so listing it here would make
+# `--frozen-lockfile` fail at the root. It is shielded from this file by its
+# own pnpm-workspace.yaml instead.
+#
+# `onlyBuiltDependencies` is deliberately absent: the pinned pnpm@9.15.9 reads
+# build approval from `package.json#pnpm`, not from this file, so a key here
+# would be inert while implying the per-machine `pnpm approve-builds` step
+# documented in AGENTS.md no longer applies.
+packages:
+  - "."

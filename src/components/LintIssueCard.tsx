@@ -1,4 +1,8 @@
 import Link from "next/link";
+import {
+  AUTO_FIXABLE_CHECK_TYPES,
+  type AutoFixableCheckType,
+} from "@/lib/lint-types";
 import type { LintIssue } from "@/lib/types";
 
 const severityClasses: Record<
@@ -22,19 +26,25 @@ const severityClasses: Record<
   },
 };
 
-const fixableTypes = new Set([
-  "missing-crossref",
-  "orphan-page",
-  "stale-index",
-  "empty-page",
-  "contradiction",
-  "missing-concept-page",
-  "broken-link",
-  "stale-page",
-  "unmigrated-page",
-]);
+/**
+ * Whether `fixLintIssue` has a handler for this type.
+ *
+ * Read off `AUTO_FIXABLE_CHECK_TYPES` rather than a set declared here: this
+ * component used to keep its own nine-entry copy, which never learned that
+ * `supersedes-dangling` became auto-fixable, so that card shipped with no Fix
+ * button at all (DW-229). `@/lib/lint-fix` — the actual dispatcher — imports
+ * `./wiki`, `./lifecycle` and `./llm` and can never enter a client bundle,
+ * which is why the shared const lives in the type-only `@/lib/lint-types`.
+ *
+ * A type predicate, not a bare `Set.has`, so `fixLabel` below can be a total
+ * `Record<AutoFixableCheckType, string>`: a fixable type with no label stops
+ * the build instead of silently falling back to the generic "Fix".
+ */
+function isAutoFixable(type: LintIssue["type"]): type is AutoFixableCheckType {
+  return (AUTO_FIXABLE_CHECK_TYPES as readonly string[]).includes(type);
+}
 
-const fixLabel: Record<string, string> = {
+const fixLabel: Record<AutoFixableCheckType, string> = {
   "missing-crossref": "Fix",
   "orphan-page": "Add to index",
   "stale-index": "Remove from index",
@@ -44,6 +54,7 @@ const fixLabel: Record<string, string> = {
   "broken-link": "Remove link",
   "stale-page": "Extend expiry",
   "unmigrated-page": "Add defaults",
+  "supersedes-dangling": "Clear reference",
 };
 
 export interface LintIssueCardProps {
@@ -66,7 +77,7 @@ export function LintIssueCard({
   const targetSlug = issue.target ?? null;
 
   const isFixable =
-    fixableTypes.has(issue.type) &&
+    isAutoFixable(issue.type) &&
     (issue.type !== "missing-crossref" || targetSlug !== null) &&
     (issue.type !== "contradiction" || targetSlug !== null) &&
     (issue.type !== "missing-concept-page" ||
@@ -107,7 +118,11 @@ export function LintIssueCard({
               : "border-foreground/20 bg-transparent text-foreground/60 hover:bg-foreground/5 hover:text-foreground"
           }`}
         >
-          {isFixing ? "Fixing…" : fixLabel[issue.type] ?? "Fix"}
+          {isFixing
+            ? "Fixing…"
+            : isAutoFixable(issue.type)
+              ? fixLabel[issue.type]
+              : "Fix"}
         </button>
       )}
       {fixMessage && (

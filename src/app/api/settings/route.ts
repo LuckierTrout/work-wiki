@@ -1,13 +1,33 @@
 import {
-  loadConfig,
+  readConfig,
   saveConfig,
   getEffectiveSettings,
+  getWorkbenchSettings,
+  applyWorkbenchSettings,
+  workbenchSettingsStored,
   isValidProvider,
   isReadOnly,
-  _resetConfigCache,
+  CONFIG_UNREADABLE_COPY,
   type AppConfig,
 } from "@/lib/config";
 import { getEffectiveProvider } from "@/lib/config";
+import {
+  SETTINGS_INVALID_URL_COPY,
+  embeddingProviderChanged,
+  flatMovableVectorLegs,
+  isAbsoluteHttpUrl,
+  validateWorkbenchSettingsPatch,
+} from "@/lib/workbench-settings";
+/**
+ * The ONE place the Cloudflare `AI` binding is read for the settings surface
+ * (DW-225).
+ *
+ * Server-only, so importing `embeddings.ts` here is fine — `workbench-settings.ts`
+ * must stay client-safe and `config.ts` must not deepen its edge into the embed
+ * path, which is why the fact travels as DATA from this route into both halves
+ * of the vector rule rather than being called from either.
+ */
+import { getWorkersAiBinding } from "@/lib/embeddings";
 import {
   PROVIDER_INFO,
   EMBEDDING_PROVIDERS,
@@ -16,10 +36,29 @@ import {
 import { getErrorMessage } from "@/lib/errors";
 import { getPrincipal } from "@/lib/auth";
 import { isOwnerHandle } from "@/lib/owner";
+import {
+  IF_MATCH_HEADER,
+  WRITE_CONFLICT_COPY,
+  WRITE_CONFLICT_STATUS,
+  checkWritePrecondition,
+} from "@/lib/write-precondition";
 
 async function requireOwner() {
   const principal = await getPrincipal();
   return principal && isOwnerHandle(principal.handle) ? principal : null;
+}
+
+/**
+ * The store could not be read — 503, the same sentence, on BOTH verbs.
+ *
+ * Same status and same wording deliberately: a `GET` that answered defaults and
+ * a `PUT` that merged into `{}` would each be a different lie about the same
+ * one fact. 503 rather than 500 because the condition is a store that is
+ * temporarily unavailable, which is what the copy tells the owner to do about
+ * it.
+ */
+function configUnreadable(): Response {
+  return Response.json({ error: CONFIG_UNREADABLE_COPY }, { status: 503 });
 }
 
 // ---------------------------------------------------------------------------
@@ -30,9 +69,50 @@ export async function GET() {
   if (!(await requireOwner())) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
-  await loadConfig();
+  // The HONEST read (DW-192): an absent config is `{}` and a BROKEN one is a
+  // refusal, where `loadConfig()` answers `{}` for both. A `GET` that served
+  // defaults for an unreadable store would seed a draft from settings the owner
+  // never chose, and the save that followed would write them in.
+  const read = await readConfig();
+  if (read.status === "unreadable") return configUnreadable();
   const settings = getEffectiveSettings();
-  return Response.json(settings);
+  // ONE precondition, served twice (DW-63). Both Settings surfaces write the
+  // same `AppConfig` through the same `PUT`, so both need the same one —
+  // `/settings` reads the top-level field through `useSettings`, the Workbench
+  // canvas reads it off the `workbench` object it already seeds its draft from.
+  // Two derivations here would be two expressions that agree today.
+  //
+  // IT IS AN OPAQUE STAMP, NOT A HASH OF THE CONFIG (DW-198). `saveConfig`
+  // generates it from randomness and stores it under a reserved key inside
+  // `.llm-wiki-config.json`; nothing else in that file contributes to it. That
+  // is what keeps the sentence below true: this response carries no secret
+  // material and no function of any, where a content-derived version was a value
+  // computed over `firecrawlApiKey`, `customApiKey` and `embeddingApiKey`. It
+  // also means a hand-edited config re-serialized in another key order is not a
+  // conflict with itself — nothing about the bytes is read at all.
+  //
+  // `read.etag` is deliberately NOT here and never is: R2's etag IS a hash of
+  // those bytes, secrets included, so it stays an internal input to the
+  // compare-and-set on `PUT` (DW-272).
+  const version = read.version;
+  // Read ONCE and handed to the resolver: `workers-ai` is self-transporting
+  // through this binding, so off Workers the vector switch must refuse rather
+  // than turn on for a deployment that would embed nothing (DW-225). The browser
+  // has no way to ask, so the answer rides on the payload.
+  const hasWorkersAiBinding = getWorkersAiBinding() !== null;
+  // ONE settings API. Story 1.9's fields ride under ONE nested `workbench` key
+  // beside the frozen legacy object — widening `EffectiveSettings` would force
+  // edits to `settings-route.test.ts`'s whole-object fixture and to
+  // `useSettings.ts`'s hand-duplicated type for fields neither of them uses.
+  //
+  // `getWorkbenchSettings()` builds that object, and it is the only thing that
+  // may: no field it returns carries a stored API key — the three secrets become
+  // `has*ApiKey` booleans (AD-23).
+  return Response.json({
+    ...settings,
+    version,
+    workbench: { ...getWorkbenchSettings(hasWorkersAiBinding), version },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -53,8 +133,15 @@ export async function PUT(request: Request) {
     );
   }
 
+  // ONE read per request, shared by the state the patch is VALIDATED against and
+  // the payload the response re-seeds the draft from — two reads could differ
+  // and would make the refusal and the redraw disagree (DW-225).
+  const hasWorkersAiBinding = getWorkersAiBinding() !== null;
+
   try {
-    const body = (await request.json()) as Partial<AppConfig>;
+    const body = (await request.json()) as Partial<AppConfig> & {
+      workbench?: unknown;
+    };
 
     // Validate provider if provided
     if (body.provider !== undefined && body.provider !== null) {
@@ -136,10 +223,87 @@ export async function PUT(request: Request) {
           { status: 400 },
         );
       }
+      // THE SAME URL RULE EVERY WORKBENCH ENDPOINT PASSES (DW-304). Without it
+      // this was the one endpoint stored on a bare `typeof` check, so
+      // `"not-a-url"`, `"/api"` or `file:///etc/passwd` landed in the config.
+      //
+      // `getOllamaBaseUrl()` now checks it on the way OUT too (DW-326), so this
+      // is no longer what stands between a junk value and the provider SDK. It
+      // is still the door that has to refuse: the read side can only DISCARD an
+      // unusable endpoint, silently falling back to the SDK's default, whereas
+      // refusing here tells the owner their value was rejected and why — and
+      // keeps the store from holding a setting nothing will ever honour. One
+      // rule, said at the only place it can be said to a person.
+      //
+      // The same PREDICATE as `validateWorkbenchSettingsPatch`'s URL loop
+      // (`isAbsoluteHttpUrl` over the trimmed value, refused with the same
+      // sentence), but not byte-identical handling of whitespace: that loop skips
+      // the literal `""` only, so a whitespace-only endpoint is refused there.
+      // Here every blank form — `null`, `""` and whitespace — is a CLEAR, which
+      // is what the merge branch below already does with it, so the rule applies
+      // only to a value that is going to be stored.
+      const trimmed = body.ollamaBaseUrl.trim();
+      if (trimmed.length > 0 && !isAbsoluteHttpUrl(trimmed)) {
+        return Response.json({ error: SETTINGS_INVALID_URL_COPY }, { status: 400 });
+      }
     }
 
-    // Load existing config and merge with provided fields
-    const existing = await loadConfig();
+    // Validate embeddingModel if provided — TYPE only, like `ollamaBaseUrl`:
+    // `null`, `""` and whitespace all still mean DELETE below.
+    //
+    // Without this, a non-string reaches the trimming branch, resolves to `""`
+    // through the `typeof` ternary, and DELETES the owner's stored model while
+    // answering 200. Every sibling flat field refuses a non-string outright, and
+    // a silent delete is the worst possible reading of a malformed body.
+    if (body.embeddingModel !== undefined && body.embeddingModel !== null) {
+      if (typeof body.embeddingModel !== "string") {
+        return Response.json(
+          { error: "embeddingModel must be a string" },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Load existing config and merge with provided fields.
+    //
+    // THE HONEST READ, BEFORE ANY MERGE (DW-192). `loadConfig()` answers `{}`
+    // for a config that is absent AND for one that failed to open, so a
+    // transient storage error used to make `{}` the merge base — and a patch
+    // merged into `{}` and written back deletes every stored field, the three
+    // API keys included. Refusing costs the owner one retry; merging costs them
+    // their credentials.
+    const read = await readConfig();
+    if (read.status === "unreadable") return configUnreadable();
+    const existing = read.config;
+
+    // THE WRITE PRECONDITION (DW-63), against the store state this request is
+    // about to merge into — no second read, and no lock. Two surfaces write this
+    // one file (`SettingsCanvas` and `/settings` through `useSettings`), so a
+    // draft seeded on either before the other saved would otherwise silently put
+    // back every field the other just changed.
+    //
+    // The version is the STORED STAMP read out of the config object, not a hash
+    // of it (DW-198): `saveConfig` rotates it on every landed write, so a draft
+    // seeded before someone else's save holds a token the store no longer has.
+    //
+    // This is the FIRST of two guards, and it is the owner-facing one. The
+    // second is the compare-and-set at the write below, which covers the window
+    // this check cannot see.
+    //
+    // Checked HERE rather than at the top of the handler because this is the
+    // merge base: every branch above it refuses without writing, and moving the
+    // check earlier would only mean reading a config the request never used.
+    const precondition = checkWritePrecondition(
+      request.headers.get(IF_MATCH_HEADER),
+      read.version,
+    );
+    if (!precondition.ok) {
+      return Response.json(
+        { error: precondition.error },
+        { status: precondition.status },
+      );
+    }
+
     const updated: AppConfig = { ...existing };
 
     if (body.provider !== undefined) {
@@ -151,10 +315,17 @@ export async function PUT(request: Request) {
     }
 
     if (body.model !== undefined) {
-      if (body.model === null || body.model === "") {
+      // TRIMMED, like every neighbouring text field (DW-275). `getEffectiveProvider`
+      // and the LLM call sites read `cfg.model` back LITERALLY, so a padded id
+      // stored here is one the provider never recognises. The whitespace-only
+      // case cannot reach this branch — the non-empty check above already
+      // answered 400 — but the shape stays `embeddingModel`'s so the delete is
+      // decided identically wherever it does become reachable.
+      const trimmed = typeof body.model === "string" ? body.model.trim() : "";
+      if (body.model === null || trimmed.length === 0) {
         delete updated.model;
       } else {
-        updated.model = body.model;
+        updated.model = trimmed;
       }
     }
 
@@ -167,34 +338,102 @@ export async function PUT(request: Request) {
     }
 
     if (body.structuredKnowledgeModel !== undefined) {
-      if (
-        body.structuredKnowledgeModel === null ||
-        body.structuredKnowledgeModel === ""
-      ) {
+      // The delete decided on `trimmed`, like `model`, `ollamaBaseUrl` and
+      // `embeddingModel` (DW-305). The literal `=== ""` arm this replaces was
+      // the one field out of four that asked a different question — and an
+      // unreachable one at that, since the non-empty check above already answers
+      // 400 for `""` and for whitespace. Uniform now, so the day the check above
+      // changes shape this branch does not become the odd behaviour out.
+      //
+      // The `typeof` ternary is belt-and-braces: a non-string was refused above
+      // and must never be what turns a malformed body into a delete.
+      const trimmed =
+        typeof body.structuredKnowledgeModel === "string"
+          ? body.structuredKnowledgeModel.trim()
+          : "";
+      if (body.structuredKnowledgeModel === null || trimmed.length === 0) {
         delete updated.structuredKnowledgeModel;
       } else {
-        updated.structuredKnowledgeModel =
-          body.structuredKnowledgeModel.trim();
+        updated.structuredKnowledgeModel = trimmed;
       }
     }
 
     if (body.ollamaBaseUrl !== undefined) {
-      if (body.ollamaBaseUrl === null || body.ollamaBaseUrl === "") {
+      // TRIMMED, exactly as `applyWorkbenchSettings`'s `setText` trims the other
+      // endpoints (DW-275). The reader trims too since DW-326, so a padded value
+      // no longer reaches `fetch` verbatim — but the store should not hold one
+      // either: a stored `" http://x "` and a stored `"http://x"` are the same
+      // endpoint, and only one of them is what the owner typed. Whitespace-only
+      // deletes the key, matching what `""` and `null` already do — the type
+      // check above refused a non-string, so the `typeof` ternary is
+      // belt-and-braces and must never be what turns a malformed body into a
+      // delete.
+      const trimmed =
+        typeof body.ollamaBaseUrl === "string" ? body.ollamaBaseUrl.trim() : "";
+      if (body.ollamaBaseUrl === null || trimmed.length === 0) {
         delete updated.ollamaBaseUrl;
       } else {
-        updated.ollamaBaseUrl = body.ollamaBaseUrl;
+        updated.ollamaBaseUrl = trimmed;
       }
     }
 
     if (body.embeddingModel !== undefined) {
-      if (body.embeddingModel === null || body.embeddingModel === "") {
+      // TRIMMED, exactly as `applyWorkbenchSettings`'s `setText` already trims
+      // for the Workbench path (DW-221). This is the last writer that could
+      // still store a padded id — one the vector gate accepts (it reads the
+      // value trimmed) and the embed resolver then drops for the provider
+      // default. Whitespace-only deletes the key rather than storing blanks.
+      //
+      // A non-string was refused with 400 above, so the `typeof` ternary is
+      // belt-and-braces: it must never be the thing that turns a malformed body
+      // into a delete.
+      const trimmed =
+        typeof body.embeddingModel === "string" ? body.embeddingModel.trim() : "";
+      if (body.embeddingModel === null || trimmed.length === 0) {
         delete updated.embeddingModel;
       } else {
-        updated.embeddingModel = body.embeddingModel;
+        updated.embeddingModel = trimmed;
       }
     }
 
     if (body.embeddingProvider !== undefined) {
+      // CLEAR ON SWITCH, through the SHARED predicate (DW-69/DW-72). This flat
+      // branch is the SECOND writer of `embeddingProvider` — `applyWorkbenchSettings`
+      // is the first — and leaving it out would mean the API path went on
+      // handing the new vendor the old vendor's secret and endpoint.
+      //
+      // Measured against `existing`, the store as it was BEFORE this request,
+      // and applied to `updated` BEFORE `workbenchSettingsStored(updated, …)` is
+      // computed below, so the vector gate judges the CLEARED state: with the
+      // switch stored ON and no new key, this refuses 400 rather than silently
+      // switching effective vector search off.
+      //
+      // A body carrying BOTH halves clears once and then no-ops, PROVIDED the
+      // two halves name the same provider — which is the only shape any shipped
+      // surface produces, since no surface sends the flat field and the
+      // `workbench` field with different values. `applyWorkbenchSettings`
+      // receives this already-flat-merged `updated`, so by the time it runs
+      // `existing.embeddingProvider` — which it reads from its own first
+      // argument — is the value this branch just wrote, and its own switch test
+      // is correctly `false`.
+      //
+      // A hand-written body whose two halves DISAGREE
+      // (`{embeddingProvider: "google", workbench: {embeddingProvider: "openai"}}`
+      // against a store on `openai`) clears here and clears AGAIN in the merge,
+      // because each half really is a move. Such a body nets back to `openai`
+      // and still ends with the pair gone, which is over-eager rather than
+      // wrong: it errs toward deleting a credential rather than toward handing
+      // one to a vendor it was not entered for, and that is the safe direction
+      // for the only bodies that can reach it.
+      if (
+        embeddingProviderChanged(
+          existing.embeddingProvider ?? null,
+          body.embeddingProvider ?? null,
+        )
+      ) {
+        delete updated.embeddingApiKey;
+        delete updated.embeddingBaseUrl;
+      }
       if (body.embeddingProvider === null) {
         delete updated.embeddingProvider;
       } else {
@@ -202,18 +441,125 @@ export async function PUT(request: Request) {
       }
     }
 
-    await saveConfig(updated);
+    // Story 1.9's fields, applied AFTER every legacy branch and only when the
+    // key is present — a body with no `workbench` produces byte-identically the
+    // same saved object it did before this story.
+    //
+    // The client already disabled the vector control with
+    // `canEnableVectorSearch`; re-running the same predicate here, over the
+    // config this request is about to write, is what makes FR-56 a RULE rather
+    // than a disabled button. `workbenchSettingsStored(updated)` is deliberately
+    // the post-legacy-merge object: an `embeddingModel` set by the flat field in
+    // this same request counts toward the gate.
+    //
+    // …which is precisely why the THIRD argument is `existing` rather than
+    // `updated` (DW-219). The gate now re-runs only when the request MOVES
+    // something the rule reads, and that question has to be asked against what
+    // the store held BEFORE this request. Handed `updated` for both, a flat
+    // `embeddingModel` would already be baked into the "before" picture, compare
+    // equal to itself, and skip the gate — silently undoing the promise the
+    // paragraph above makes. `updated` stays the MERGE TARGET; `existing` is the
+    // BASELINE the move is measured from.
+    //
+    // ONE rule, BOTH branches (DW-217). The gate used to live inside
+    // `if (body.workbench !== undefined)`, so a flat-only body could move
+    // `embeddingModel` or `embeddingProvider` into a state
+    // `canEnableVectorSearch` rejects, answer 200, and switch effective vector
+    // search off without ever saying so — `getVectorSearchSettings()` intersects
+    // the stored flag with the same predicate, so the owner's switch simply
+    // stopped meaning anything.
+    //
+    // An EMPTY patch is the reuse point: every field check in
+    // `validateWorkbenchSettingsPatch` `continue`s on `undefined`, so `{}` falls
+    // straight through to the vector rule with `enabled = stored.vectorSearchEnabled`
+    // (the flat branch cannot move that flag, so `turningOn` is always `false`
+    // here) and fires purely on `!vectorInputsEqual(current, merged)` — exactly
+    // "this flat request moved something the rule reads". No second copy of the
+    // rule, and no second copy of the refusal sentence.
+    //
+    // ONE question, asked ONCE: the same fact decides which patch is validated
+    // and whether the patch is APPLIED, and the two readings are inverses of
+    // each other. Written twice they could drift into validating `{}` and then
+    // applying it, or validating a patch and then dropping it.
+    //
+    // …and the FOURTH argument is decided by that same one fact, for the same
+    // reason (DW-303). A body carrying a `workbench` key came from a surface
+    // that renders every embedding control, so any leg it is refused over is one
+    // the owner can go and fix — `undefined` is "scope nothing". A flat-only
+    // body came from `/settings`, which renders no embedding provider, endpoint
+    // or key at all, so being refused over those legs leaves the owner nothing
+    // to do; `flatMovableVectorLegs` narrows WHETHER the gate refuses at all —
+    // to requests naming a leg this body could have moved, while a
+    // configuration this request BROKE still refuses over any leg at all.
+    //
+    // …and its PRESENCE, separately, picks the switched-on FRAME (DW-329). The
+    // same fact, read a fourth time: a scoped argument means the flat page
+    // asked, and that page renders no vector switch, so the sentence ends by
+    // naming where the switch lives rather than telling the owner to turn off
+    // something they cannot see. WHICH sentence, never whether — and only for a
+    // switch already stored ON, since the THIRD argument's stored flag still
+    // decides that: a request turning the switch on reads "…before it can be
+    // turned on" on both surfaces, one against a switch already stored ON reads
+    // the switched-on frame (DW-308) in this surface's wording.
+    //
+    // Four readings of one fact, all written from the same expression so they
+    // cannot drift into scoping a patch that was never applied, or into
+    // pointing a sentence at the surface that did not send the request.
+    const hasWorkbenchKey = body.workbench !== undefined;
+    const validation = validateWorkbenchSettingsPatch(
+      hasWorkbenchKey ? body.workbench : {},
+      workbenchSettingsStored(updated, hasWorkersAiBinding),
+      workbenchSettingsStored(existing, hasWorkersAiBinding),
+      hasWorkbenchKey ? undefined : flatMovableVectorLegs(body),
+    );
+    if (!validation.ok) {
+      // Nothing is written: the refusal happens before `saveConfig`, so a
+      // rejected vector switch leaves the store exactly as it was.
+      return Response.json({ error: validation.error }, { status: 400 });
+    }
+    // `applyWorkbenchSettings` stays conditional on the KEY: a body with no
+    // `workbench` that passes the gate saves the byte-identical object it did
+    // before, so validating everything changed no legacy save's outcome.
+    const merged = hasWorkbenchKey
+      ? applyWorkbenchSettings(updated, validation.patch)
+      : updated;
 
-    // Re-prime the sync cache so the response and any immediate LLM request use
-    // the newly selected provider rather than falling back to env detection.
-    _resetConfigCache();
-    await loadConfig();
+    // The version of what the store now HOLDS, from the one place that decides
+    // it. `saveConfig` stamps the token inside the object it writes and returns
+    // what it stamped — so there is nothing to predict and nothing to read back.
+    // It also re-primes the sync cache with what it wrote, so the response below
+    // and any immediate LLM request use the newly selected provider rather than
+    // falling back to env detection.
+    //
+    // THE ETAG READ ABOVE GOES WITH IT (DW-272). The `If-Match` check upstream
+    // compares the OWNER'S draft token against the store and catches a draft
+    // seeded before someone else's save. It cannot catch a save that lands
+    // between this request's read and this write — the read-modify-write window
+    // inside one request — and that save would be silently overwritten by the
+    // merge base read a moment before it. `writeFileIfMatch` refuses instead,
+    // and a refused write leaves the other writer's value standing.
+    //
+    // The SAME sentence and the SAME status as the upstream check: to the owner
+    // it is one fact — something else changed this while you were editing — and
+    // two wordings for it would be two sentences to keep in step.
+    const save = await saveConfig(merged, read.etag);
+    if (save.status === "conflict") {
+      return Response.json(
+        { error: WRITE_CONFLICT_COPY },
+        { status: WRITE_CONFLICT_STATUS },
+      );
+    }
+    const version = save.version;
 
     // Return updated effective settings
     const effective = getEffectiveProvider();
     return Response.json({
       saved: true,
       effective,
+      version,
+      // The fresh stored values, so a landed save re-seeds the surface's draft
+      // from what the kernel actually holds rather than from what was sent.
+      workbench: { ...getWorkbenchSettings(hasWorkersAiBinding), version },
     });
   } catch (err) {
     const message = getErrorMessage(err);

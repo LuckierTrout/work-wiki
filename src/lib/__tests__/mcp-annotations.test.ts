@@ -1,4 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../../mcp";
 
 // ---------------------------------------------------------------------------
@@ -26,8 +28,52 @@ describe("MCP tool annotations", () => {
   const server = createMcpServer();
   const tools = getRegisteredTools(server);
 
-  it("registers exactly 49 tools", () => {
-    expect(Object.keys(tools)).toHaveLength(49);
+  // 40 after publish_to_commons, the five discussion tools (retired with the
+  // commons and with talk, AD-21), reconcile_page (reconcile-from-talk
+  // retired), and the two contributor tools (every contributor page and REST
+  // route now 404s) were removed.
+  it("registers exactly 40 tools", () => {
+    expect(Object.keys(tools)).toHaveLength(40);
+  });
+
+  // The tool retirements left the count hand-written in three places, where it
+  // silently went stale. All three are read by integrators and designers —
+  // `public/agent-api.md` is served at `/agent-api`, and `DESIGN-triggers.md`
+  // is the MCP capability assessment — so pin them to the real registration
+  // count rather than to another hand-written number.
+  it.each([
+    ["public/agent-api.md", "public/agent-api.md"],
+    ["src/lib/mcp-http.ts", "src/lib/mcp-http.ts"],
+    ["DESIGN-triggers.md", "DESIGN-triggers.md"],
+  ])("%s documents the real tool count", async (_label, relative) => {
+    const { readFile } = await import("fs/promises");
+    const path = await import("path");
+    const text = await readFile(
+      path.resolve(__dirname, "../../..", relative),
+      "utf8",
+    );
+    // Strip JSDoc gutters and collapse wrapping so a count that wraps onto the
+    // next comment line ("All 43\n * tools are exposed") is still seen.
+    const flat = text.replace(/^\s*\*\s?/gm, "").replace(/\s+/g, " ");
+    const documented = [...flat.matchAll(/\b(\d+) tools\b/g)].map((m) => m[1]);
+    expect(documented.length).toBeGreaterThan(0);
+    for (const count of documented) {
+      expect(Number(count)).toBe(Object.keys(tools).length);
+    }
+  });
+
+  it.each([
+    "publish_to_commons",
+    "list_discussions",
+    "read_discussion",
+    "create_discussion",
+    "add_comment",
+    "resolve_discussion",
+    "reconcile_page",
+    "list_contributors",
+    "get_contributor",
+  ])("no longer exposes %s", (retired) => {
+    expect(Object.keys(tools)).not.toContain(retired);
   });
 
   it("every tool has explicit destructiveHint and idempotentHint", () => {
@@ -78,10 +124,6 @@ describe("MCP tool annotations", () => {
     "seed_agent",
     "update_agent",
     "fix_lint_issue",
-    "create_discussion",
-    "resolve_discussion",
-    "add_comment",
-    "reconcile_page",
     "reingest",
     "revert_revision",
   ];
@@ -102,13 +144,9 @@ describe("MCP tool annotations", () => {
     "agent_context",
     "list_agents",
     "lint_wiki",
-    "list_discussions",
-    "read_discussion",
     "dataview_query",
     "list_revisions",
     "read_revision",
-    "list_contributors",
-    "get_contributor",
   ];
 
   it.each(readOnlyTools)(
@@ -129,4 +167,59 @@ describe("MCP tool annotations", () => {
   it("ingest_url retains openWorldHint: true", () => {
     expect(tools["ingest_url"].annotations!.openWorldHint).toBe(true);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Retirement over the real stdio transport
+// ---------------------------------------------------------------------------
+// The checks above read the private `_registeredTools` map. That proves the
+// registration is gone but not what a client actually sees, so pin the retired
+// tools where the spec states the expectation: a `tools/list` / `tools/call`
+// round trip over the MCP transport, against the SDK's own unknown-tool path.
+describe("retired tools over the stdio transport", () => {
+  let client: Client;
+  let cleanup: () => Promise<void>;
+
+  beforeAll(async () => {
+    const server = createMcpServer();
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    client = new Client({ name: "test-client", version: "0.0.1" });
+    await client.connect(clientTransport);
+    cleanup = async () => {
+      await client.close();
+      await server.close();
+    };
+  });
+
+  afterAll(async () => {
+    await cleanup();
+  });
+
+  it.each(["list_contributors", "get_contributor"])(
+    "%s is absent from tools/list",
+    async (retired) => {
+      const { tools: listed } = await client.listTools();
+      expect(listed.map((t) => t.name)).not.toContain(retired);
+    },
+  );
+
+  // The SDK's unknown-tool rejection is surfaced as an `isError` result rather
+  // than a thrown error — the server wraps tool failures (see
+  // `mcp-error-wrap.test.ts`), so a retired name reads to the client the same
+  // way a failing tool does, carrying the SDK's own -32602 text.
+  it.each(["list_contributors", "get_contributor"])(
+    "calling %s comes back as an unknown-tool error",
+    async (retired) => {
+      const result = await client.callTool({
+        name: retired,
+        arguments: { handle: "alice" },
+      });
+      expect(result.isError).toBe(true);
+      const text = (result.content as { type: string; text: string }[])[0].text;
+      expect(text).toContain("-32602");
+      expect(text).toContain(retired);
+    },
+  );
 });

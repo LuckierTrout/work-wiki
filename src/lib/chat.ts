@@ -19,7 +19,7 @@ import {
   type RawSourceChunk,
 } from "./raw-source-search";
 import { UNTRUSTED_CONTENT_RULE } from "./untrusted";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 import {
   isAgentScopedType,
   isArtifactType,
@@ -427,7 +427,7 @@ async function generateChatAnswer(
       buildNamesTermsGuidance(principal.handle),
     ]);
     system = [
-      "You are WorkWiki's source-grounded conversation assistant.",
+      "You are work-wiki's source-grounded conversation assistant.",
       "Answer using ONLY the ORIGINAL SOURCE EXCERPTS supplied below. The generated wiki pages were used only to locate these originals and are not evidence.",
       "Every factual claim must be followed by the exact markdown citation printed as Required citation for the supporting excerpt. Preserve its label, line range, path, and source query parameter exactly.",
       "Never cite a generated wiki page in this mode. Do not use outside knowledge to fill gaps. If the excerpts do not answer the question, say what is missing and stop.",

@@ -1,23 +1,18 @@
 import type { LintIssue } from "@/lib/types";
+import { ALL_CHECK_TYPES } from "@/lib/lint-types";
 
 export type SeverityFilter = "all" | "warning" | "error";
 
-export const ALL_CHECK_TYPES: LintIssue["type"][] = [
-  "orphan-page",
-  "stale-index",
-  "empty-page",
-  "missing-crossref",
-  "broken-link",
-  "contradiction",
-  "missing-concept-page",
-  "stale-page",
-  "low-confidence",
-  "unmigrated-page",
-  "duplicate-entity",
-  "unresolved-discussions",
-];
-
-const checkTypeLabels: Record<LintIssue["type"], string> = {
+/**
+ * One label per check type.
+ *
+ * `Record<LintIssue["type"], string>` is load-bearing: adding a member to the
+ * union without adding a label here is a compile error, which is what keeps the
+ * toggle row complete now that `ALL_CHECK_TYPES` is imported rather than
+ * hand-copied. Exported so `src/components/__tests__/lint-check-parity.test.tsx`
+ * can assert one rendered toggle per entry by its accessible name.
+ */
+export const checkTypeLabels: Record<LintIssue["type"], string> = {
   "orphan-page": "Orphan pages",
   "stale-index": "Stale index",
   "empty-page": "Empty pages",
@@ -30,10 +25,9 @@ const checkTypeLabels: Record<LintIssue["type"], string> = {
   "unmigrated-page": "Unmigrated pages",
   "duplicate-entity": "Duplicate entities",
   "uncited-claims": "Uncited claims",
-  "unresolved-discussions": "Unresolved discussions",
-  "disputed-page": "Disputed pages",
   "supersedes-dangling": "Dangling supersedes",
   "incomplete-coverage": "Incomplete coverage",
+  "disputed-page": "Disputed pages",
 };
 
 const severityFilterLabels: Record<SeverityFilter, string> = {

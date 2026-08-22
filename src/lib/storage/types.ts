@@ -8,7 +8,7 @@
  *  1. Text files   — readFile, writeFile, deleteFile, listFiles, appendFile
  *  2. Assets       — writeAsset, readAsset (binary data like downloaded images)
  *  3. Concurrency  — readFileWithEtag, writeFileIfMatch (optimistic locking)
- *  4. Indexes      — getIndex, putIndex (derived JSON blobs: config, history, etc.)
+ *  4. Indexes      — getIndex, putIndex, incrementIndex (derived JSON blobs: config, history, counters)
  *  5. Embeddings   — upsertEmbedding, queryEmbeddings (vector search)
  *
  * **Design rationale:**
@@ -18,9 +18,14 @@
  *   provider decides how to map that to a real location (local fs directory,
  *   R2 key prefix, KV namespace, etc.).
  *
- * - `writeFile` must be atomic from the caller's perspective — partial writes
- *   should never be visible. The filesystem provider uses write-to-tmp + rename;
- *   R2 uses single-object PUT.
+ * - Every WHOLE-FILE write must be atomic from the caller's perspective —
+ *   partial writes should never be visible. That covers `writeFile`,
+ *   `writeAsset`, `writeFileIfMatch`, `putIndex` and `upsertEmbedding`, and it
+ *   deliberately excludes `appendFile`. The filesystem provider uses
+ *   write-to-tmp + rename; R2 uses single-object PUT. See the `writeFile`
+ *   docblock below for exactly what that guarantee does and does not cover —
+ *   the other four carry the same one, and `storage-fs.test.ts` pins it for all
+ *   five, so a new provider that satisfied only `writeFile` would fail them.
  *
  * - `listFiles` returns **file names only** (not full paths), filtered by a
  *   prefix directory. This matches the `readdir()` usage across the codebase.
@@ -28,10 +33,12 @@
  * - `appendFile` exists specifically for `log.md`, which is the only file
  *   appended to rather than overwritten.
  *
- * - Index operations (`getIndex`/`putIndex`) are for small derived JSON
- *   objects like config, query history, and contributor profiles. They bypass
- *   the text-file layer so providers can use faster stores (KV, D1) when
- *   available.
+ * - Index operations (`getIndex`/`putIndex`/`incrementIndex`) are for small
+ *   derived JSON objects like config, query history, and contributor profiles.
+ *   They bypass the text-file layer so providers can use faster stores (KV, D1,
+ *   R2 compare-and-swap) when available. `incrementIndex` is the one that must
+ *   be isolate-safe: two concurrent callers both observing `n` cannot both
+ *   store `n + 1`, and a stale read cannot move the stored integer backwards.
  *
  * - Embedding operations are separated because vector search has fundamentally
  *   different access patterns (nearest-neighbor queries). A filesystem provider
@@ -95,6 +102,23 @@ export interface EmbeddingMatch {
   metadata: Record<string, string>;
 }
 
+/**
+ * Logical index keys whose Worker store is an R2 compare-and-swap object, not
+ * KV. `getIndex` / `putIndex` / `incrementIndex` must share that object so a
+ * seed, a read and a bump cannot disagree about the integer.
+ *
+ * KV (`YOPEDIA_CONFIG`) is eventually consistent and has no increment. R2's
+ * `onlyIf.etagMatches` / `etagDoesNotMatch` is the isolate-safe primitive this
+ * repo already uses for files.
+ */
+export const ATOMIC_COUNTER_INDEX_KEYS = ["data-version"] as const;
+
+export function isAtomicCounterIndexKey(
+  key: string,
+): key is (typeof ATOMIC_COUNTER_INDEX_KEYS)[number] {
+  return (ATOMIC_COUNTER_INDEX_KEYS as readonly string[]).includes(key);
+}
+
 // ---------------------------------------------------------------------------
 // StorageProvider interface
 // ---------------------------------------------------------------------------
@@ -115,6 +139,25 @@ export interface StorageProvider {
   /**
    * Write a text file atomically.
    * Creates parent directories as needed.
+   *
+   * **What atomic means here.** A reader of `path` sees either the previous
+   * whole file or the new whole file, never a blend and never a truncated one:
+   * the filesystem provider writes a sibling tmp file and `rename`s it over the
+   * destination, R2 does a single-object PUT. A rejected write therefore leaves
+   * the destination exactly as it was — callers may treat a throw as "these
+   * bytes never landed".
+   *
+   * **What it does not mean.** It is not crash-durability of the write itself.
+   * The filesystem provider fsyncs the tmp file's contents but not the parent
+   * directory (an fsync of a directory is not portable), so a power loss can
+   * still lose the newest bytes and leave the PREVIOUS whole file in place.
+   * Losing the newest bytes is a state callers can reason about; reading a torn
+   * file is not, and that is the one this rules out.
+   *
+   * It is also not a lock. Two concurrent writes to one path both succeed and
+   * the last rename wins — use `writeFileIfMatch` when the previous content
+   * matters.
+   *
    * @param path — relative path
    * @param content — UTF-8 string content
    */
@@ -129,6 +172,15 @@ export interface StorageProvider {
 
   /**
    * List files in a directory.
+   *
+   * A provider MUST NOT surface its own internal scratch artifacts here — the
+   * tmp files a write-to-tmp + rename implementation creates are the provider's
+   * business, and a caller that sees one treats it as content (`sweepOrphans`
+   * would read it as a stray page). The filesystem provider filters its
+   * `.tmp-<uuid>.tmp` files for exactly this reason. Everything the caller
+   * actually stored must be returned, dot-prefixed names included: `.discarded`
+   * is a real marker the orphan sweep depends on.
+   *
    * @param prefix — directory path, e.g. "wiki/" or "raw/"
    * @returns array of entries with name and type info
    */
@@ -143,6 +195,13 @@ export interface StorageProvider {
   /**
    * Append content to a file. Creates the file if it doesn't exist.
    * Used specifically for `log.md` (append-only activity log).
+   *
+   * DELIBERATELY OUTSIDE the whole-file atomicity contract that `writeFile` and
+   * the four writes below carry: an append cannot be tmp-and-renamed without
+   * reading the entire file back, which defeats the point of appending. A torn
+   * append can therefore leave a partial final line, and readers of `log.md`
+   * must tolerate one.
+   *
    * @param path — relative path
    * @param content — text to append
    */
@@ -171,6 +230,10 @@ export interface StorageProvider {
   /**
    * Write binary data (e.g. a downloaded image).
    * Creates parent directories as needed.
+   *
+   * Atomic on the same terms as `writeFile` — see that docblock for what the
+   * guarantee does and does not cover.
+   *
    * @param path — relative path, e.g. "wiki/assets/img.png"
    * @param data — binary content
    */
@@ -200,6 +263,12 @@ export interface StorageProvider {
    * Write a file only if the current version matches the given etag.
    * Returns `true` if the write succeeded, `false` if the etag didn't match
    * (meaning someone else wrote to the file since you read it).
+   *
+   * When it does write, the write is atomic on the same terms as `writeFile` —
+   * see that docblock. (The compare-and-swap itself is not atomic against a
+   * concurrent writer on every provider; the atomicity here is about the file's
+   * bytes, not about the check-then-write pair.)
+   *
    * @param path — relative path
    * @param content — new content
    * @param etag — etag from a prior `readFileWithEtag` call
@@ -219,10 +288,31 @@ export interface StorageProvider {
 
   /**
    * Store a derived index.
+   *
+   * Atomic on the same terms as `writeFile` — see that docblock. A half-written
+   * index is unparseable JSON, so this matters even though the value is derived.
+   *
    * @param key — logical key
    * @param value — JSON-serializable value
    */
   putIndex<T = unknown>(key: string, value: T): Promise<void>;
+
+  /**
+   * Raise a stored integer by exactly one and return what was stored.
+   *
+   * The increment is provider-atomic: two callers that both observe `n` cannot
+   * both store `n + 1`, and a stale read cannot write a value lower than what
+   * is already there. Absent, non-integer, negative or non-finite stored values
+   * count as `0`, so the first successful increment stores `1`.
+   *
+   * This is a stronger guarantee than `getIndex` + `putIndex` under an
+   * in-process lock. The filesystem provider serializes the read-modify-write
+   * on the index file; the Cloudflare provider compare-and-swaps an R2 object
+   * (KV is eventually consistent and has no increment).
+   *
+   * @param key — logical key of the counter
+   */
+  incrementIndex(key: string): Promise<number>;
 
   /**
    * List index keys that start with a given prefix.
@@ -240,6 +330,11 @@ export interface StorageProvider {
 
   /**
    * Insert or update an embedding vector with associated metadata.
+   *
+   * However the provider stores the vectors, the update must be atomic on the
+   * same terms as `writeFile` — a provider that keeps them in one blob (as the
+   * filesystem one does) must not leave that blob torn by a failed upsert.
+   *
    * @param id — unique identifier (typically a wiki page slug)
    * @param vector — the embedding vector
    * @param metadata — key-value metadata (e.g. `{ contentHash: "abc123" }`)

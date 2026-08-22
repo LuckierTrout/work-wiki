@@ -16,7 +16,7 @@ function cleanTitle(t?: string): string {
 
 /**
  * The capture target for all three surfaces (bookmarklet popup, PWA share, iOS
- * Shortcut). It runs on yopedia's own origin, so the user's session cookie
+ * Shortcut). It runs on work-wiki's own origin, so the user's session cookie
  * authenticates the save. When signed in it shows a CONFIRM step — the captured
  * URL, an editable title (the raw page <title> is often noisy), and a vault
  * picker — and nothing is ingested until the user clicks Save. Signed-out → a
@@ -107,7 +107,7 @@ export function SaveCapture({ url, title, initialTags }: { url: string; title?: 
   return (
     <div className="shell" style={{ maxWidth: 460, margin: "0 auto", padding: "8px 0" }}>
       <h1 className="display" style={{ fontSize: 22, margin: "0 0 4px" }}>
-        Save to WorkWiki
+        Save to work-wiki
       </h1>
       <p
         className="receipt"
@@ -134,7 +134,7 @@ export function SaveCapture({ url, title, initialTags }: { url: string; title?: 
             </p>
           )}
           <p style={{ fontSize: 13.5, marginBottom: 12 }}>
-            Sign in to save this page to WorkWiki.
+            Sign in to save this page to work-wiki.
           </p>
           <button
             type="button"
@@ -241,8 +241,8 @@ export function SaveCapture({ url, title, initialTags }: { url: string; title?: 
       {status === "saved" && (
         <div>
           <p style={{ fontSize: 14, marginBottom: 16 }}>
-            <span style={{ color: "var(--accent)" }}>✓ Saved.</span> WorkWiki is reading{" "}
-            <strong>{host}</strong> now — it’ll appear in the commons shortly.
+            <span style={{ color: "var(--accent)" }}>✓ Saved.</span> work-wiki is reading{" "}
+            <strong>{host}</strong> now — it’ll appear in your wiki shortly.
           </p>
 
           <div style={{ marginTop: 22, display: "flex", gap: 10 }}>

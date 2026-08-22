@@ -27,6 +27,40 @@ export function isInputElement(target: EventTarget | null): boolean {
   return false;
 }
 
+/**
+ * Is the event target inside an open MODAL dialog (DW-413)?
+ *
+ * A global navigation key must not walk the owner out of one. `g s` typed with
+ * an unsaved Create Wiki dialog on screen used to change the surface underneath
+ * it, leaving a modal open over Settings with its Tab trap still armed — the
+ * dialog is `aria-modal="true"`, which is a promise that the rest of the page
+ * is inert, and a shortcut that acted anyway broke exactly that promise.
+ *
+ * Suppression, not dismissal: the dialog owns Esc and nothing else may decide
+ * that a draft is finished with.
+ *
+ * MODAL is the whole of what the selector claims, and it is claimed by the
+ * markup rather than inferred: `ConfirmDialog`, `CreateWikiDialog` and the
+ * Vault lightbox each render `aria-modal="true"`, and modals never stack
+ * (UX-DR17), so one query answers for all of them.
+ *
+ * `ShortcutsHelp` is deliberately OUTSIDE it. That overlay is a `role="dialog"`
+ * with no `aria-modal`, because `?` has to go on toggling it from inside — a
+ * help sheet you cannot dismiss with the key that opened it would be the bug
+ * this suppression would have introduced. Matching on the pair rather than on
+ * the role alone is what keeps it working.
+ *
+ * Duck-typed on `closest` rather than `instanceof Element`, the convention
+ * {@link isInputElement} above already follows: the node suite drives these
+ * with object literals, and an `instanceof` check would answer `false` for
+ * every one of them whatever they said.
+ */
+export function isInModalDialog(target: EventTarget | null): boolean {
+  const el = target as Element | null;
+  if (!el || typeof el.closest !== "function") return false;
+  return el.closest('[role="dialog"][aria-modal="true"]') !== null;
+}
+
 /** Shortcut definition */
 export interface ShortcutDef {
   /** Key sequence, e.g. ["g", "i"] or ["?"] */
@@ -35,16 +69,59 @@ export interface ShortcutDef {
   description: string;
   /** Route to navigate to (if navigation shortcut) */
   route?: string;
+  /**
+   * An IN-PAGE action this shortcut prefers over its route (DW-62).
+   *
+   * A mounted component claims the id with {@link useShortcutAction}; while one
+   * is registered the keydown runs the handler and does not navigate. With none
+   * registered the `route` below is still taken, so the same key works on every
+   * page — which is the whole reason both fields coexist rather than the route
+   * being replaced.
+   */
+  action?: ShortcutActionId;
 }
+
+/**
+ * Every in-page action a shortcut may claim.
+ *
+ * A union rather than a bare string so a registration and a `SHORTCUTS` entry
+ * cannot disagree by a typo — the one failure mode that would silently leave
+ * `g s` navigating away from the shell again.
+ */
+export type ShortcutActionId = "open-settings";
 
 /** Built-in shortcut definitions */
 export const SHORTCUTS: ShortcutDef[] = [
   { keys: ["g", "i"], description: "Go to Ingest", route: "/ingest" },
   { keys: ["g", "q"], description: "Go to Query", route: "/query" },
   { keys: ["g", "l"], description: "Go to Lint", route: "/lint" },
-  { keys: ["g", "b"], description: "Go to Browse (Wiki)", route: "/wiki" },
   { keys: ["g", "g"], description: "Go to Graph", route: "/wiki/graph" },
-  { keys: ["g", "s"], description: "Go to Settings", route: "/settings" },
+  // Settings is a SURFACE on the mounted Workbench shell, not a page, whenever
+  // that shell is on screen. What the in-page action avoids is the ROUTE
+  // CHANGE: `router.push("/settings")` unmounts the entire shell — the rail,
+  // the left column, both trees, the Preview, the canvas — and lands the owner
+  // on a flat page carrying none of them, to reach a surface the rail control
+  // opens in place. Pressing the key becomes exactly what pressing the rail
+  // control does, which is the whole claim.
+  //
+  // It preserves the mode canvas too (DW-373). `Workbench.tsx` used to swap
+  // `ModeCanvas` out for `SettingsCanvas` while Settings was open, so opening
+  // Settings unmounted the Wiki subtree — an open Create Wiki dialog and the
+  // name typed into it included. The shell now renders the mode canvas
+  // unconditionally and passes `hidden={settingsOpen}`, which keeps the subtree
+  // mounted and withdraws it from the pixels, the accessibility tree and the
+  // tab order. That is the RENDER's doing, so it is identical for this key and
+  // for the rail control — neither one is where the preservation lives.
+  //
+  // So the shell claims `open-settings` and this route is the fallback for the
+  // pages that have no shell to open it on. `/settings` itself stays a real
+  // route (DW-61); nothing here retires it.
+  {
+    keys: ["g", "s"],
+    description: "Go to Settings",
+    route: "/settings",
+    action: "open-settings",
+  },
   { keys: ["?"], description: "Toggle keyboard shortcuts help" },
 ];
 
@@ -110,6 +187,29 @@ const ShortcutsHelpContext = createContext<ShortcutsHelpContextValue | null>(
   null,
 );
 
+/**
+ * Where a mounted component leaves the handler for an action id.
+ *
+ * A REGISTRY rather than a second provider prop, because the claim is made from
+ * deep inside the tree (`Workbench`, which the page renders as a child of
+ * `ClientProviders`) and released on unmount — the shortcut has to fall back to
+ * its route the moment the shell that claimed it is gone.
+ */
+interface ShortcutActionRegistry {
+  /** Claim `id`; the returned function releases it. */
+  register: (id: ShortcutActionId, run: () => void) => () => void;
+  /** The handler for `id`, or `undefined` when nothing has claimed it. */
+  handler: (id: ShortcutActionId) => (() => void) | undefined;
+}
+
+/**
+ * `null` outside a provider, and {@link useShortcutAction} treats that as "no
+ * registry to claim" rather than throwing: the Workbench shell is mounted bare
+ * by several suites and by nothing that needs a keyboard dispatcher, and a hook
+ * that threw there would make the provider a hard dependency of the shell.
+ */
+const ShortcutActionsContext = createContext<ShortcutActionRegistry | null>(null);
+
 export function KeyboardShortcutsProvider({
   children,
 }: {
@@ -119,6 +219,30 @@ export function KeyboardShortcutsProvider({
   const [showHelp, setShowHelp] = useState(false);
   const bufferRef = useRef<string[]>([]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * The claimed actions. A REF, not state: the keydown listener below reads it
+   * at dispatch time, so a registration must not re-render the whole app — and
+   * must not rebuild the listener either, which would drop a half-typed `g`.
+   */
+  const actionsRef = useRef(new Map<ShortcutActionId, () => void>());
+  // Stable for the lifetime of the provider, so `useShortcutAction`'s effect
+  // does not re-run — and therefore does not release and re-claim the id — on
+  // every render of the component that claimed it.
+  const registry = useRef<ShortcutActionRegistry>({
+    register(id, run) {
+      actionsRef.current.set(id, run);
+      return () => {
+        // Only if it is still OURS. Two shells overlapping for one commit (a
+        // remount renders the new tree before the old one's cleanup runs) would
+        // otherwise have the departing instance delete the arriving one's
+        // claim, leaving `g s` navigating away from a shell that is on screen.
+        if (actionsRef.current.get(id) === run) actionsRef.current.delete(id);
+      };
+    },
+    handler(id) {
+      return actionsRef.current.get(id);
+    },
+  }).current;
 
   const clearBuffer = useCallback(() => {
     bufferRef.current = [];
@@ -132,6 +256,11 @@ export function KeyboardShortcutsProvider({
     function handleKeyDown(e: KeyboardEvent) {
       // Ignore when typing in form elements
       if (isInputElement(e.target)) return;
+
+      // …and anywhere inside a modal dialog (DW-413). Nothing dispatches: no
+      // surface change, no navigation, and the buffer is left untouched because
+      // a sequence the owner never meant to start has nothing to reset.
+      if (isInModalDialog(e.target)) return;
 
       // Ignore when modifier keys are held (except shift for ?)
       if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -166,7 +295,15 @@ export function KeyboardShortcutsProvider({
 
       if (match) {
         e.preventDefault();
-        if (match.route) {
+        // An in-page action OUTRANKS the route (DW-62). `g s` on a mounted
+        // Workbench must open the Settings surface on that shell rather than
+        // navigate to `/settings`, which would unmount the shell itself; on
+        // every other page nothing has claimed the id and the route below still
+        // runs.
+        const action = match.action ? registry.handler(match.action) : undefined;
+        if (action) {
+          action();
+        } else if (match.route) {
           router.push(match.route);
         } else if (match.keys.length === 1 && match.keys[0] === "?") {
           setShowHelp((prev) => !prev);
@@ -181,13 +318,37 @@ export function KeyboardShortcutsProvider({
         clearTimeout(timerRef.current);
       }
     };
-  }, [router, clearBuffer]);
+  }, [router, clearBuffer, registry]);
 
   return createElement(
-    ShortcutsHelpContext.Provider,
-    { value: { showHelp, setShowHelp } },
-    children,
+    ShortcutActionsContext.Provider,
+    { value: registry },
+    createElement(
+      ShortcutsHelpContext.Provider,
+      { value: { showHelp, setShowHelp } },
+      children,
+    ),
   );
+}
+
+/**
+ * Claim a shortcut's in-page action for as long as this component is mounted.
+ *
+ * The handler is read through a ref, so a caller may pass a fresh closure on
+ * every render without releasing and re-claiming the id between keystrokes.
+ *
+ * A no-op outside {@link KeyboardShortcutsProvider}: the shortcut then has no
+ * dispatcher at all, so there is nothing to claim and nothing to fall back
+ * from.
+ */
+export function useShortcutAction(id: ShortcutActionId, handler: () => void): void {
+  const registry = useContext(ShortcutActionsContext);
+  const handlerRef = useRef(handler);
+  handlerRef.current = handler;
+  useEffect(() => {
+    if (!registry) return;
+    return registry.register(id, () => handlerRef.current());
+  }, [registry, id]);
 }
 
 export function useShortcutsHelp(): ShortcutsHelpContextValue {

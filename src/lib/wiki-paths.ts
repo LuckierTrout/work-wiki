@@ -1,0 +1,148 @@
+/**
+ * Where one Wiki's files live, and the single lock key that owns them.
+ *
+ * This module is a LEAF on purpose. `wikis.ts` imports `workspace-profile.ts`
+ * (the seeder writes the profile), so the profile store cannot import `wikis.ts`
+ * back to learn the Wiki's directory or its lock key without closing a cycle.
+ * Both modules import these helpers instead, which keeps the layering strict:
+ *
+ *   wiki-paths → workspace-profile → workspace-guidance
+ *              ↘ wikis ↗
+ *
+ * Nothing here reads or writes storage, and nothing here imports a module that
+ * does — keep it that way, or the cycle comes back through the side door.
+ */
+
+import { ClientInputError } from "./errors";
+import { tenantForOwner, validateTenant } from "./wiki";
+import type { WikiArtifactFile } from "./wiki-scenarios";
+
+function tenantFor(owner: string | null | undefined): string {
+  const tenant = tenantForOwner(owner);
+  validateTenant(tenant);
+  return tenant;
+}
+
+/**
+ * Guard a Wiki id before it becomes a storage key. Ids are generated with
+ * `crypto.randomUUID()`, but the id also arrives from a URL segment, so the
+ * shape is enforced rather than assumed.
+ */
+export const WIKI_ID_RE =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+export function validateWikiId(id: unknown): string {
+  if (typeof id !== "string" || !WIKI_ID_RE.test(id)) {
+    throw new ClientInputError("Invalid wiki id.");
+  }
+  return id;
+}
+
+/**
+ * `tenants/<tenant>/wikis` — the directory each Wiki's own directory sits in.
+ *
+ * Lives here rather than in `wikis.ts` for the same reason everything else in
+ * this module does: `tenants/<t>/wikis/…` has ONE expression in the repo, and a
+ * second copy is how the sweep's listing prefix and `wikiDirPath`'s delete
+ * target drift onto different directories.
+ *
+ * Only the orphan sweep addresses this level — it is the one operation that
+ * enumerates what is on disk instead of following an id, so it is also the one
+ * path that carries no {@link validateWikiId} of its own. Every name it finds
+ * there goes back through {@link wikiDirPath} before it becomes a delete.
+ */
+export function wikisRootPath(owner: string): string {
+  return `tenants/${tenantFor(owner)}/wikis`;
+}
+
+/**
+ * `tenants/<tenant>/wikis/<wikiId>` — everything that belongs to ONE Wiki.
+ *
+ * `purpose.md`, `schema.md` and `workspace-profile.json` are all siblings in
+ * here, which is what makes {@link wikiLockKey} sufficient to serialize them.
+ */
+export function wikiDirPath(owner: string, wikiId: string): string {
+  return `tenants/${tenantFor(owner)}/wikis/${validateWikiId(wikiId)}`;
+}
+
+/** `tenants/<tenant>/wikis/<wikiId>/<file>` — a seeded Wiki artifact. */
+export function wikiArtifactPath(
+  owner: string,
+  wikiId: string,
+  file: WikiArtifactFile,
+): string {
+  return `${wikiDirPath(owner, wikiId)}/${file}`;
+}
+
+/**
+ * `tenants/<tenant>/wikis/<wikiId>/revisions/<file>` — one artifact's history.
+ *
+ * THE NAMESPACE IS SPELLED ONCE, HERE. Everything an artifact revision needs to
+ * address hangs off {@link wikiDirPath}, which is what makes the whole feature
+ * free of new cleanup and new lock order: `deleteWiki`, the half-create discard
+ * and the orphan sweep all `deleteDirectory(wikiDirPath(...))`, so history is
+ * reclaimed with the Wiki it belongs to, and `wikis:<tenant>` — the key that
+ * already serializes artifact writes — serializes their snapshots too.
+ *
+ * NOT dot-prefixed like the page silo's `.revisions`: the dotfile filter in
+ * `workbench-files.ts` guards only the `raw/`/`wiki/` walk, while the
+ * Wiki-artifact branch intersects the listing with `WIKI_ARTIFACT_FILES` and
+ * skips directories outright — so this directory is already invisible to the
+ * Files tab without a naming trick.
+ *
+ * The `<file>` segment is a {@link WikiArtifactFile}, i.e. a compile-time
+ * constant from a two-entry union, never a caller-supplied name — the same
+ * property that lets {@link wikiArtifactPath} skip a traversal guard.
+ */
+export function wikiArtifactRevisionsDir(
+  owner: string,
+  wikiId: string,
+  file: WikiArtifactFile,
+): string {
+  return `${wikiDirPath(owner, wikiId)}/revisions/${file}`;
+}
+
+/**
+ * `tenants/<tenant>/wikis/<wikiId>/revisions/<file>/<name>` — one revision file.
+ *
+ * `name` is the caller's `<timestamp>.md` or `<timestamp>.meta.json` stem, built
+ * from a NUMBER in `wiki-artifact-revisions.ts` (the writer mints it, the
+ * readers parse the query parameter through `Number()` first), so no string a
+ * caller typed reaches this segment.
+ */
+export function wikiArtifactRevisionPath(
+  owner: string,
+  wikiId: string,
+  file: WikiArtifactFile,
+  name: string,
+): string {
+  return `${wikiArtifactRevisionsDir(owner, wikiId, file)}/${name}`;
+}
+
+/**
+ * `tenants/<tenant>/wikis/<wikiId>/workspace-profile.json` — the third sibling
+ * {@link wikiLockKey} covers, beside `purpose.md` and `schema.md`.
+ *
+ * It is deliberately NOT a {@link WikiArtifactFile}: that list drives the
+ * Files-tab tree and the dialog copy, and a JSON store is not one of the
+ * owner's editable markdown artifacts. It lives here anyway because TWO
+ * modules address it — `workspace-profile.ts` reads and writes it, and
+ * `wikis.ts` snapshots and restores it when a re-template fails — and a second
+ * copy of the literal is how those two drift onto different files.
+ */
+export function wikiProfilePath(owner: string, wikiId: string): string {
+  return `${wikiDirPath(owner, wikiId)}/workspace-profile.json`;
+}
+
+/**
+ * `wikis:<tenant>` — the ONE lock key for Wiki state.
+ *
+ * It covers `tenants/<t>/wikis.json` AND everything under
+ * `tenants/<t>/wikis/<id>/`, including each Wiki's `workspace-profile.json`.
+ * `withFileLock` is not reentrant, so code that already holds this key must
+ * write through an unlocked internal putter rather than taking it again; see
+ * the header of `src/lib/lock.ts` for the full ordering rule.
+ */
+export function wikiLockKey(owner: string): string {
+  return `wikis:${tenantFor(owner)}`;
+}

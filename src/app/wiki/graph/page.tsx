@@ -1,7 +1,6 @@
 "use client";
 
 import { useRef, useState, useEffect } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { useGraphSimulation } from "@/hooks/useGraphSimulation";
@@ -76,19 +75,16 @@ export default function GraphPage() {
     >
       <span style={{ color: "var(--muted)" }}>
         Graphing{" "}
-        <Link
-          href={`/u/${scopedHandle}`}
-          style={{ color: "var(--ink)", fontWeight: 600, textDecoration: "none" }}
-        >
+        <span style={{ color: "var(--ink)", fontWeight: 600 }}>
           @{scopedHandle}
-        </Link>
+        </span>
         ’s pages
       </span>
       <button
         type="button"
         onClick={() => setScope("mine")}
         style={{ color: "var(--muted)", background: "transparent", border: 0, cursor: "pointer" }}
-        aria-label="Clear scope and show the full commons graph"
+        aria-label="Clear scope and show the full wiki graph"
       >
         ✕
       </button>
@@ -130,7 +126,7 @@ export default function GraphPage() {
   );
 
   return (
-    <main className="mx-auto max-w-5xl px-6 py-12">
+    <div className="mx-auto max-w-5xl px-6 py-12">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-3xl font-bold tracking-tight">Wiki Graph</h1>
         {lens}
@@ -174,6 +170,6 @@ export default function GraphPage() {
           </p>
         </>
       )}
-    </main>
+    </div>
   );
 }

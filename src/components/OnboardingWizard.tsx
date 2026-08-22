@@ -37,7 +37,7 @@ export function OnboardingWizard({ pageCount }: OnboardingWizardProps) {
       title: "Ingest your first source",
       completed: hasPages,
       description: hasPages
-        ? `The commons has ${pageCount} ${pageCount === 1 ? "page" : "pages"}.`
+        ? `Your wiki has ${pageCount} ${pageCount === 1 ? "page" : "pages"}.`
         : "Paste a URL or text — it's synthesized into a cited wiki page with summaries and cross-references.",
       href: "/ingest",
       linkText: "Ingest a source →",
@@ -47,7 +47,7 @@ export function OnboardingWizard({ pageCount }: OnboardingWizardProps) {
       title: "Ask your first question",
       completed: false,
       description:
-        "Query the commons and get cited answers drawn from the pages.",
+        "Query your wiki and get cited answers drawn from the pages.",
       href: "/query",
       linkText: "Ask a question →",
     },

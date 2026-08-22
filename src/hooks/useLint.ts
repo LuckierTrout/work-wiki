@@ -2,10 +2,8 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import type { LintIssue } from "@/lib/types";
-import {
-  ALL_CHECK_TYPES,
-  type SeverityFilter,
-} from "@/components/LintFilterControls";
+import { ALL_CHECK_TYPES } from "@/lib/lint-types";
+import { type SeverityFilter } from "@/components/LintFilterControls";
 
 interface LintResponse {
   issues: LintIssue[];

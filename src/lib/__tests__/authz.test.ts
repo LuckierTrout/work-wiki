@@ -92,22 +92,35 @@ describe("canSetPrivate", () => {
   it("denies anonymous principals without touching Clerk", async () => {
     expect(await canSetPrivate(null)).toBe(false);
   });
-  it("denies service/token principals", async () => {
-    expect(await canSetPrivate({ id: "service:ci", handle: "ci" })).toBe(false);
+  // Billing retired with the commons: private is the default posture, so any
+  // authenticated principal — service/token principals included — qualifies,
+  // and no Clerk plan lookup happens.
+  it("allows service/token principals (no plan gate)", async () => {
+    expect(await canSetPrivate({ id: "service:ci", handle: "ci" })).toBe(true);
+  });
+  it("allows a human principal", async () => {
+    expect(await canSetPrivate({ id: "u_alice", handle: "alice" })).toBe(true);
   });
 });
 
 describe("canWritePage", () => {
-  it("public commons pages are collectively editable by any signed-in user", () => {
+  it("public KNOWLEDGE pages are service/admin-only for every write kind (DW-121)", () => {
+    // The realm reserves a public, non-agent-scoped, non-artifact page for
+    // agents and admins — including its frontmatter. The default writeKind is
+    // `"metadata"`, which used to slip past this branch; it no longer does.
     const pub = { owner: "alice", visibility: "public" };
-    expect(canWritePage(pub, aliceP)).toBe(true);
-    expect(canWritePage(pub, bobP)).toBe(true); // collective
+    expect(canWritePage(pub, aliceP)).toBe(false); // the page owner, too
+    expect(canWritePage(pub, bobP)).toBe(false);
+    expect(canWritePage(pub, service)).toBe(true);
   });
 
-  it("public pages: the per-page ACL doesn't restrict (auth is the middleware's job)", () => {
+  it("public pages OUTSIDE the realm: the per-page ACL doesn't restrict", () => {
     // The write-gate middleware already rejected anon mutations; the per-page
-    // ACL only guards PRIVATE pages, so a public page passes here.
-    expect(canWritePage({ owner: "alice", visibility: "public" }, null)).toBe(true);
+    // ACL only guards PRIVATE pages and the commons realm, so a public artifact
+    // passes here even for an anonymous principal.
+    const artifact = { owner: "alice", visibility: "public", type: "html" };
+    expect(canWritePage(artifact, null)).toBe(true);
+    expect(canWritePage(artifact, bobP)).toBe(true);
   });
 
   it("private pages fail closed for an anonymous principal", () => {
@@ -195,8 +208,10 @@ describe("canWriteFrontmatter", () => {
     expect(
       canWriteFrontmatter({ owner: "alice", visibility: "private" }, bobP),
     ).toBe(false);
-    // Non-string fields → treated as public → collectively editable.
-    expect(canWriteFrontmatter({ owner: 123, visibility: 1 }, bobP)).toBe(true);
+    // Non-string fields → treated as public and untyped → inside the realm, so
+    // the same service/admin-only answer a well-formed public page gets.
+    expect(canWriteFrontmatter({ owner: 123, visibility: 1 }, bobP)).toBe(false);
+    expect(canWriteFrontmatter({ owner: 123, visibility: 1 }, service)).toBe(true);
   });
 });
 
@@ -242,11 +257,23 @@ describe("realm-aware write gate (WriteKind)", () => {
     expect(canWritePage(commonsPage, aliceP, "delete")).toBe(true);
   });
 
-  it("allows metadata writes (default writeKind) by a human on a commons page — backward compat", () => {
-    // Explicit "metadata"
-    expect(canWritePage(commonsPage, bobP, "metadata")).toBe(true);
-    // No writeKind (default) — identical behavior to before the realm gate
-    expect(canWritePage(commonsPage, bobP)).toBe(true);
+  it("blocks metadata writes by a human principal on a commons page (DW-121)", () => {
+    // The realm is kind-INDEPENDENT now. It used to admit `"metadata"` while
+    // refusing `"body"` and `"delete"`, which put this module in conflict with
+    // the only UI that reaches a metadata patch: the edit page refuses the whole
+    // screen on `"body"`, so the collective metadata loop had no surface.
+    expect(canWritePage(commonsPage, bobP, "metadata")).toBe(false);
+    expect(canWritePage(commonsPage, aliceP, "metadata")).toBe(false);
+    // No writeKind → defaults to "metadata" → the same answer, so a caller that
+    // omits the argument cannot land on the permissive side by accident.
+    expect(canWritePage(commonsPage, bobP)).toBe(false);
+  });
+
+  it("still admits metadata writes by a service principal and an admin", () => {
+    // The realm reserves the page; it does not freeze it.
+    expect(canWritePage(commonsPage, service, "metadata")).toBe(true);
+    process.env.ADMIN_HANDLES = "alice";
+    expect(canWritePage(commonsPage, aliceP, "metadata")).toBe(true);
   });
 
   it("allows body writes by a human on a private page they own (private is owner-gated, not commons-gated)", () => {
@@ -260,25 +287,28 @@ describe("realm-aware write gate (WriteKind)", () => {
   });
 
   it("canWriteFrontmatter passes writeKind through to canWritePage", () => {
-    // body write on commons → blocked
-    expect(
-      canWriteFrontmatter({ owner: "alice", visibility: "public" }, bobP, "body"),
-    ).toBe(false);
-    // metadata write on commons → allowed
-    expect(
-      canWriteFrontmatter({ owner: "alice", visibility: "public" }, bobP, "metadata"),
-    ).toBe(true);
-    // default (no writeKind) → metadata → allowed
-    expect(
-      canWriteFrontmatter({ owner: "alice", visibility: "public" }, bobP),
-    ).toBe(true);
+    const commonsFm = { owner: "alice", visibility: "public" };
+    const artifactFm = { owner: "alice", visibility: "public", type: "html" };
+    // Every kind on a commons page → blocked …
+    expect(canWriteFrontmatter(commonsFm, bobP, "body")).toBe(false);
+    expect(canWriteFrontmatter(commonsFm, bobP, "metadata")).toBe(false);
+    expect(canWriteFrontmatter(commonsFm, bobP, "delete")).toBe(false);
+    // … default (no writeKind) → "metadata" → blocked too.
+    expect(canWriteFrontmatter(commonsFm, bobP)).toBe(false);
+    // …and the kind still reaches the gate: an artifact is outside the realm,
+    // so the same principal and kinds are admitted. Without this pair the
+    // assertions above would also pass for a gate that ignored `writeKind`
+    // AND the page.
+    expect(canWriteFrontmatter(artifactFm, bobP, "body")).toBe(true);
+    expect(canWriteFrontmatter(artifactFm, bobP, "metadata")).toBe(true);
+    expect(canWriteFrontmatter(artifactFm, bobP, "delete")).toBe(true);
   });
 
-  it("blocks body/delete on an untyped public page (untyped public = commons)", () => {
+  it("blocks every kind on an untyped public page (untyped public = commons)", () => {
     const untypedPublic = { owner: "bob" }; // no visibility, no type
     expect(canWritePage(untypedPublic, aliceP, "body")).toBe(false);
     expect(canWritePage(untypedPublic, aliceP, "delete")).toBe(false);
-    expect(canWritePage(untypedPublic, aliceP, "metadata")).toBe(true);
+    expect(canWritePage(untypedPublic, aliceP, "metadata")).toBe(false);
   });
 });
 

@@ -19,10 +19,12 @@ import {
   enrichEntry,
 } from "./wiki";
 import { syncPageIndexForPage, removePageIndexForSlug } from "./page-index";
+import { bumpDataVersion } from "./data-version";
 import { getStorage } from "./storage";
 import { withFileLock } from "./lock";
 import { escapeRegex } from "./links";
 import { getErrorMessage } from "./errors";
+import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 import { mapWithConcurrency } from "./concurrency";
 import { removeAliasForPage, updateAliasIndexForPage } from "./alias-index";
 import { removeSourceForPage } from "./source-index";
@@ -646,6 +648,28 @@ async function runPageLifecycleOp(
   const details = logDetails?.({ crossRefedSlugs, strippedBacklinksFrom });
   await appendToLog(logOp, op.title, details);
 
+  // 6. Bump the Workbench's refresh signal (Story 1.7).
+  //
+  //    This is the pipeline's single tail, and it is also where "the op
+  //    succeeded" actually becomes true — every step above can throw, and a
+  //    throw means nothing bumped. Both `writeWikiPageWithSideEffects` and
+  //    `deleteWikiPage` are thin wrappers over this function, so one line here
+  //    covers both verbs, all ~40 call sites (routes, `mcp.ts`, `cli.ts`,
+  //    `ingest.ts`, `lint-fix.ts`, …) and every future caller — without one of
+  //    them knowing the counter exists. It is NOT in `writeWikiPage`, which this
+  //    pipeline itself calls 2–4× per op.
+  //
+  //    Fail-soft, in the shape every other side effect here uses: a config-store
+  //    hiccup must not reject a write that already landed. A stale tree is
+  //    recoverable by the next poll or reload; a lost save is not.
+  //    `bumpDataVersion` already swallows its own failures — this is the guard
+  //    that stays correct if that ever stops being true.
+  try {
+    await bumpDataVersion();
+  } catch (err) {
+    logger.warn("data-version", `bump skipped for "${slug}":`, err);
+  }
+
   return { slug, crossRefedSlugs, strippedBacklinksFrom, removedFromIndex };
 }
 
@@ -665,6 +689,14 @@ export async function deleteWikiPage(
   slug: string,
   author?: string,
 ): Promise<DeletePageResult> {
+  // Deployment read-only (DW-188), answered BEFORE `validateSlug` and before
+  // the read below. This is the ENFORCEMENT POINT, not a convenience: REST,
+  // the stdio MCP handlers, the CLI, the agent runtime and the bulk ingest
+  // delete all arrive here, and none of them can be reached by an HTTP gate.
+  // Refusing ahead of the slug check keeps the answer identical for every
+  // slug, so it leaks nothing about what is stored.
+  assertWritable(READ_ONLY_REFUSAL.pageDelete);
+
   validateSlug(slug);
 
   // Capture the title BEFORE unlinking so the log entry is human-readable.
@@ -708,6 +740,13 @@ export async function deleteWikiPage(
 export async function writeWikiPageWithSideEffects(
   opts: WritePageOptions,
 ): Promise<WritePageResult> {
+  // Deployment read-only (DW-188), answered before anything is read, validated
+  // or written. Every page create, edit, revert, re-ingest, lint-fix and merge
+  // in the codebase funnels through here, so this one line is what makes the
+  // refusal deployment-wide instead of door-by-door. See `read-only.ts` for why
+  // it throws rather than returning.
+  assertWritable(READ_ONLY_REFUSAL.pageWrite);
+
   const { slug, title, content, summary, logOp, logDetails } = opts;
 
   const result = await runPageLifecycleOp(

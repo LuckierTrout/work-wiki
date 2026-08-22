@@ -18,9 +18,8 @@ import {
   checkUnmigratedPages,
   checkDuplicateEntities,
   checkUncitedClaims,
-  checkUnresolvedDiscussions,
-  checkDisputedPages,
   checkSupersededDangling,
+  checkDisputedPages,
   buildSummary,
   parseLLMJsonArray,
   extractCrossRefSlugs,
@@ -56,9 +55,8 @@ export {
   checkUnmigratedPages,
   checkDuplicateEntities,
   checkUncitedClaims,
-  checkUnresolvedDiscussions,
-  checkDisputedPages,
   checkSupersededDangling,
+  checkDisputedPages,
   ALL_CHECK_TYPES,
 };
 
@@ -92,7 +90,7 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
     const indexSlugs = new Set(indexPages.map((p) => p.slug));
 
     // Run lightweight checks in parallel
-    const [orphans, stale, empty, crossRefs, brokenLinks, stalePages, lowConfidence, unmigratedPages, duplicateEntities, uncitedClaims, unresolvedDiscussions, disputedPages, supersedesDangling] = await Promise.all([
+    const [orphans, stale, empty, crossRefs, brokenLinks, stalePages, lowConfidence, unmigratedPages, duplicateEntities, uncitedClaims, supersedesDangling, disputedPages] = await Promise.all([
       enabledChecks.has("orphan-page")
         ? checkOrphanPages(diskSlugs, indexSlugs)
         : [],
@@ -123,14 +121,11 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
       enabledChecks.has("uncited-claims")
         ? checkUncitedClaims()
         : [],
-      enabledChecks.has("unresolved-discussions")
-        ? checkUnresolvedDiscussions(diskSlugs)
+      enabledChecks.has("supersedes-dangling")
+        ? checkSupersededDangling(diskSlugs)
         : [],
       enabledChecks.has("disputed-page")
         ? checkDisputedPages()
-        : [],
-      enabledChecks.has("supersedes-dangling")
-        ? checkSupersededDangling(diskSlugs)
         : [],
     ]);
 
@@ -148,7 +143,7 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
         : [],
     ]);
 
-    let issues = [...orphans, ...stale, ...empty, ...crossRefs, ...brokenLinks, ...stalePages, ...lowConfidence, ...unmigratedPages, ...duplicateEntities, ...uncitedClaims, ...unresolvedDiscussions, ...disputedPages, ...supersedesDangling, ...contradictions, ...missingConcepts, ...incompleteCoverage];
+    let issues = [...orphans, ...stale, ...empty, ...crossRefs, ...brokenLinks, ...stalePages, ...lowConfidence, ...unmigratedPages, ...duplicateEntities, ...uncitedClaims, ...supersedesDangling, ...disputedPages, ...contradictions, ...missingConcepts, ...incompleteCoverage];
 
     // Filter by minimum severity
     if (minSeverityRank > 0) {

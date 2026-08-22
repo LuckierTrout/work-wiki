@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useCallback } from "react";
+import { useId, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { getErrorMessage } from "@/lib/errors";
 import { Alert } from "@/components/Alert";
+import { IF_MATCH_HEADER, formatIfMatch } from "@/lib/write-precondition";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,12 +21,52 @@ export interface MetadataValues {
   supersedes: string;
 }
 
+/**
+ * Why Save refuses. One owner for the wording, phrased like every other
+ * read-only sentence in the app, and stated ABOVE the fields rather than only
+ * beside the button: the harm DW-149 names is retyping a whole page before
+ * finding out, so the owner has to meet this before they start typing.
+ */
+export const EDIT_PAGE_READ_ONLY_COPY =
+  "This page cannot be saved while this deployment is read-only. Your edits here will not be stored.";
+
 interface WikiEditorProps {
   slug: string;
   /** The page's tenant — where to navigate after a successful save. */
   tenant: string;
   initialContent: string;
+  /**
+   * The WRITE PRECONDITION for the page this form was seeded from (DW-38,
+   * DW-51) — `contentVersion` of the WHOLE stored file, computed on the server
+   * by the edit page and sent back as `If-Match` on the body `PUT`.
+   *
+   * Captured WITH the seed and never re-derived: this form can sit open for as
+   * long as it takes to rewrite a page, and an unconditional save would replace
+   * whatever another actor stored in the meantime.
+   *
+   * REQUIRED, so a call site that forgets it is a compile error rather than a
+   * form whose Save can only ever be answered 428. It is the SEED of the
+   * version state below, not the value that is sent: a landed `PUT` answers a
+   * new one, and the form adopts it.
+   */
+  initialVersion: string;
   initialMetadata?: MetadataValues;
+  /**
+   * `YOPEDIA_READONLY=1`, read on the server by the edit page and threaded down.
+   *
+   * `PUT` and `PATCH /api/wiki/[slug]` both answer 403 on such a deployment
+   * (DW-37), and this form's Save fires both. Left ungated the owner rewrites an
+   * entire page and meets the refusal only at Save. The convention is the one
+   * the rest of DW-37 uses: `aria-disabled` rather than `disabled` (the button
+   * stays focusable, so the sentence explaining it can be announced), a handler
+   * that returns before either request, and the sentence on screen from the
+   * moment the form renders.
+   *
+   * The fields stay editable on purpose — read-only means the SERVER refuses a
+   * write, and a reader who wants to draft, copy out, or diff text in the box
+   * loses nothing the deployment was protecting.
+   */
+  readOnly?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +199,9 @@ export function WikiEditor({
   slug,
   tenant,
   initialContent,
+  initialVersion,
   initialMetadata,
+  readOnly = false,
 }: WikiEditorProps) {
   const router = useRouter();
 
@@ -175,6 +218,20 @@ export function WikiEditor({
 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /**
+   * The precondition the NEXT `PUT` is conditional on. Seeded from the prop and
+   * re-stamped from every landed save — the same move `PreviewColumn` makes
+   * with `result.version`.
+   *
+   * State rather than the prop directly, because this form does TWO writes and
+   * the second can fail on its own: a `PUT` that lands followed by a `PATCH`
+   * that does not leaves the form open with `bodyDirty` still true, and a retry
+   * holding the ORIGINAL version would be refused 412 — "changed somewhere
+   * else while you were editing", about a change the owner made themselves a
+   * second earlier, with no way out but a reload.
+   */
+  const [version, setVersion] = useState(initialVersion);
+  const readOnlyNoteId = useId();
 
   const updateField = useCallback(
     <K extends keyof MetadataValues>(key: K, value: MetadataValues[K]) => {
@@ -187,6 +244,9 @@ export function WikiEditor({
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    // The guard lives HERE, not only on the button: a form with a text field
+    // submits on Enter, which would reach past an `aria-disabled` Save.
+    if (readOnly) return;
     if (!content.trim()) {
       setError("Content cannot be empty");
       return;
@@ -200,7 +260,12 @@ export function WikiEditor({
       if (bodyDirty) {
         const res = await fetch(`/api/wiki/${slug}`, {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            // The PUT leg only. `PATCH` is metadata, which this story
+            // deliberately does not gate — see `route.ts`.
+            ...(version ? { [IF_MATCH_HEADER]: formatIfMatch(version) } : {}),
+          },
           body: JSON.stringify({ content }),
         });
         if (!res.ok) {
@@ -208,6 +273,17 @@ export function WikiEditor({
             error?: string;
           };
           throw new Error(body.error ?? `body save failed (${res.status})`);
+        }
+        // The version of what LANDED, adopted before the PATCH leg can fail —
+        // otherwise a retry after a failed PATCH re-sends a version this very
+        // request superseded. Parsed with the same guard the error branch
+        // above uses: a body that will not parse leaves the old version in
+        // place, and the next save is refused rather than blind.
+        const landed = (await res.json().catch(() => null)) as {
+          version?: unknown;
+        } | null;
+        if (typeof landed?.version === "string" && landed.version.length > 0) {
+          setVersion(landed.version);
         }
       }
 
@@ -244,6 +320,20 @@ export function WikiEditor({
 
   return (
     <form onSubmit={handleSave} className="mt-6 space-y-6">
+      {/* FIRST, above every field: the harm this prevents is a whole page
+          retyped before the refusal arrives, so the sentence has to be met
+          before the typing starts — not discovered beside a dimmed Save. Not
+          `role="alert"`: nothing failed, this is the deployment's standing
+          state, and announcing it on every mount would interrupt. */}
+      {readOnly && (
+        <p
+          id={readOnlyNoteId}
+          className="rounded-lg border border-foreground/20 bg-foreground/5 p-3 text-sm text-foreground/70"
+        >
+          {EDIT_PAGE_READ_ONLY_COPY}
+        </p>
+      )}
+
       {/* ── Metadata section ── */}
       {initialMetadata && (
         <details className="rounded-lg border border-foreground/20 p-4" open>
@@ -429,8 +519,20 @@ export function WikiEditor({
       <div className="flex items-center gap-4">
         <button
           type="submit"
-          disabled={busy || !dirty}
-          className="inline-block rounded-lg bg-foreground px-6 py-3 text-sm font-medium text-background hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+          // `disabled` stays for the transient states it already covered, but
+          // NOT on a read-only deployment: `!dirty` is the state an owner who
+          // never types stays in, so leaving it on would take the button out
+          // of the tab order in exactly the case the refusal exists for, and
+          // the `aria-disabled` and `aria-describedby` below would never be
+          // reached. The standing refusal is `aria-disabled`, which keeps the
+          // button focusable so the sentence above is announced with it; the
+          // submit it lets through is caught by the guard in `handleSave`.
+          disabled={!readOnly && (busy || !dirty)}
+          aria-disabled={readOnly || undefined}
+          aria-describedby={readOnly ? readOnlyNoteId : undefined}
+          className={`inline-block rounded-lg bg-foreground px-6 py-3 text-sm font-medium text-background transition-opacity disabled:opacity-50 disabled:cursor-not-allowed ${
+            readOnly ? "opacity-50 cursor-default" : "hover:opacity-90"
+          }`}
         >
           {busy ? "Saving…" : "Save"}
         </button>

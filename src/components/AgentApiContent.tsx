@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
+import { useSlugTenants } from "@/hooks/useSlugTenants";
 
 /**
  * Renders the agent-API guide by fetching the static `public/agent-api.md`
@@ -11,6 +12,9 @@ import { MarkdownRenderer } from "@/components/MarkdownRenderer";
  * Workers-safe (the .md is also directly fetchable at /agent-api.md).
  */
 export function AgentApiContent() {
+  // The guide links to wiki pages as `[x](slug.md)`; without the map those
+  // resolve through DEFAULT_TENANT and take a wrong-handle 308 hop.
+  const { slugTenants } = useSlugTenants();
   const [content, setContent] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -42,5 +46,5 @@ export function AgentApiContent() {
   if (content === null) {
     return <p className="text-foreground/60">Loading…</p>;
   }
-  return <MarkdownRenderer content={content} />;
+  return <MarkdownRenderer content={content} slugTenants={slugTenants} />;
 }

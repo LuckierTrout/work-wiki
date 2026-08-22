@@ -110,7 +110,7 @@ fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  🐙 yopedia — Cloudflare Infrastructure Setup"
+echo "  🐙 work-wiki — Cloudflare Infrastructure Setup"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 

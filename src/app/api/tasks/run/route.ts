@@ -1,19 +1,19 @@
 import { NextResponse } from "next/server";
 import { getServicePrincipal } from "@/lib/auth";
 import { enqueueTask, parseTask } from "@/lib/tasks";
-import { reconcileFromTalk } from "@/lib/reconcile";
 import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest } from "@/lib/ingest";
 import { extractDocumentTextAsync } from "@/lib/document-extract";
 import { fixLintIssue } from "@/lib/lint-fix";
 import { getIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
 import { readStagedBytes, readStagedText, deleteStaged } from "@/lib/ingest-staging";
 import {
-  agentIdFor,
   addAgentLearningPage,
   DEFAULT_AGENT_NAME,
   listAgentsForOwner,
 } from "@/lib/agents";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { logger } from "@/lib/logger";
 import { addToVault } from "@/lib/vault";
 import {
@@ -50,14 +50,36 @@ import { runResearchProject } from "@/lib/research-runtime";
  *   - 5xx → transient failure → the consumer retries (CF redelivers; DLQ after
  *           max_retries).
  *
- * Handlers are idempotent/retry-safe: reconcile re-reconciles harmlessly, ingest
- * dedups.
+ * Handlers are idempotent/retry-safe: ingest dedups.
  */
 export async function POST(req: Request) {
   // Service-token only.
   const principal = getServicePrincipal(req);
   if (!principal) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Deployment read-only (DW-187). Answered here, after the 401 and before the
+  // body is parsed, because this door meets BOTH halves of the rule: the ingest
+  // handler stages/creates job records and writes `raw/<slug>.md`, and the
+  // source fetch plus two LLM calls (or a whole `fixLintIssue` rewrite) run
+  // ahead of the page write. Without it the catch below marks the tracked job
+  // `failed` and records a failed operation for a refusal the deployment could
+  // have stated for free.
+  //
+  // THIS CHANGES QUEUE SEMANTICS, and the status contract above is why it has
+  // to be said out loud: 4xx means the consumer ACKS AND DROPS the message,
+  // where the un-gated 500 would have been retried and eventually parked in the
+  // DLQ. On a read-only deployment retrying cannot succeed — the refusal is
+  // deployment-wide, not transient to this message — so failing fast is the
+  // honest answer, but it does mean work queued against a read-only deployment
+  // is discarded rather than replayable. Drain or pause the queue before
+  // setting `YOPEDIA_READONLY`.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.queuedWork },
+      { status: 403 },
+    );
   }
 
   let body: unknown;
@@ -124,30 +146,8 @@ export async function POST(req: Request) {
       }
     }
 
-    if (task.kind === "reconcile") {
-      // Attribute the edit to the requester's yoyo (the human who asked), else a
-      // generic yoyo for autonomous/unknown triggers.
-      const author = task.requestedBy
-        ? agentIdFor(task.requestedBy, DEFAULT_AGENT_NAME)
-        : undefined;
-      const result = await reconcileFromTalk(task.slug, task.threadIndex, {
-        author,
-      });
-      return NextResponse.json({ ok: true, ...result });
-    }
-
     if (task.kind === "maintain") {
       // Autonomous maintenance (Q2). Attributed to a generic yoyo (no requester).
-      if (task.op === "reconcile") {
-        if (typeof task.threadIndex !== "number") {
-          return NextResponse.json(
-            { error: "maintain:reconcile requires threadIndex" },
-            { status: 400 },
-          );
-        }
-        const result = await reconcileFromTalk(task.slug, task.threadIndex);
-        return NextResponse.json({ ok: true, ...result });
-      }
       if (task.op === "fix") {
         // Deterministic, no-LLM lint auto-fix (backfill defaults, drop dead refs).
         if (!task.lintType) {
@@ -454,6 +454,13 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ ok: true, slug: result.primarySlug });
   } catch (err) {
+    // Mid-request flag flip: the gate above already answered for a deployment
+    // that was read-only on arrival. Answered BEFORE the job-failure recording
+    // below, so a refusal never writes `status: "failed"` onto the caller's
+    // tracked job — the work was not attempted, it was declined.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     const message = getErrorMessage(err);
     // Record the failure on a tracked async job so the user sees the reason
     // (a later retry that succeeds will overwrite this back to "done"). Guarded:
