@@ -10,11 +10,12 @@ import { enqueueOrInline } from "@/lib/ingest-async";
 import { createIngestJob } from "@/lib/ingest-jobs";
 import { stageText } from "@/lib/ingest-staging";
 import { logger } from "@/lib/logger";
-import { saveRawSourceFor } from "@/lib/raw";
+import { saveRawSourceFor, saveRawSourceTree } from "@/lib/raw";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { type Task } from "@/lib/tasks";
 import {
   INTAKE_ALLOWED_CONTENT_TYPES,
+  INTAKE_BAD_PATH_COPY,
   INTAKE_EMPTY_SOURCE_COPY,
   INTAKE_FILE_REQUIRED_COPY,
   INTAKE_SIGN_IN_COPY,
@@ -25,6 +26,7 @@ import {
   intakeTooLargeCopy,
   intakeUrlSlug,
   isIntakeUrl,
+  sanitizeIntakeRelativePath,
 } from "@/lib/workbench-intake";
 
 /**
@@ -45,13 +47,14 @@ import {
  * extractor door.
  *
  * WHAT IT DOES, in order: refuse (401 → 403 → shape → type), store the immutable
- * bytes under `raw/sources/` through `saveRawSourceFor` — the only raw-source
- * writer, which also mirrors them into the owner's silo and bumps `dataVersion`
- * — then enqueue Ingest. The store happens BEFORE the enqueue so a queue that
- * rejects still leaves the Source on disk (the epic's "Sources persist even when
- * compile fails"), and the queued payload is the STORED text rather than the URL,
- * so compile reads exactly the bytes that were kept instead of re-fetching a page
- * that may have changed.
+ * bytes under `raw/sources/` through `saveRawSourceFor` (loose files) or
+ * `saveRawSourceTree` (folder-expanded `relativePath`) — the same
+ * `storeRawSource` helper, which also mirrors them into the owner's silo and
+ * bumps `dataVersion` — then enqueue Ingest. The store happens BEFORE the
+ * enqueue so a queue that rejects still leaves the Source on disk (the epic's
+ * "Sources persist even when compile fails"), and the queued payload is the
+ * STORED text rather than the URL, so compile reads exactly the bytes that
+ * were kept instead of re-fetching a page that may have changed.
  *
  * Which makes the STATUS CODE a claim about the Source, not about the job: once
  * the bytes are stored the answer is 2xx even if the queue then rejects, because
@@ -124,12 +127,28 @@ async function intakeFile(
     return NextResponse.json({ error: INTAKE_EMPTY_SOURCE_COPY }, { status: 400 });
   }
 
+  const relativeRaw = form.get("relativePath");
+  if (relativeRaw !== null && typeof relativeRaw !== "string") {
+    return NextResponse.json({ error: INTAKE_BAD_PATH_COPY }, { status: 400 });
+  }
+  const relativeInput =
+    typeof relativeRaw === "string" && relativeRaw.trim() ? relativeRaw.trim() : "";
+  let relativePath: string | undefined;
+  if (relativeInput) {
+    const sanitized = sanitizeIntakeRelativePath(relativeInput);
+    if (!sanitized.ok) {
+      return NextResponse.json({ error: sanitized.reason }, { status: 400 });
+    }
+    relativePath = sanitized.path;
+  }
+
   return await storeAndQueue({
     owner,
     slug: intakeSourceSlug(file.name),
     text,
     title: intakeFileTitle(file.name),
     sourceType: "text",
+    ...(relativePath ? { relativePath } : {}),
   });
 }
 
@@ -198,14 +217,25 @@ async function storeAndQueue(input: {
   title: string;
   sourceType: "text" | "url";
   sourceUrl?: string;
+  relativePath?: string;
 }): Promise<NextResponse> {
-  const { owner, slug, text, title, sourceType, sourceUrl } = input;
+  const { owner, slug, text, title, sourceType, sourceUrl, relativePath } = input;
 
-  // The ONE raw-source writer (AD-3). It also mirrors into
-  // `tenants/<tenant>/raw/sources/…` so the Files tree can see the arrival, and
-  // bumps `dataVersion` so the trees refresh without a reload.
-  const rawId = contentHash(text);
-  const path = await saveRawSourceFor(slug, rawId, text, { owner });
+  // Loose files keep the 2.1 hash key so a second `notes.md` does not collide.
+  // Folder identity is the sanitized relative path (FR-40); both writers share
+  // `storeRawSource` — silo mirror, immutability, `dataVersion` bump.
+  let path: string;
+  if (relativePath) {
+    const stored = await saveRawSourceTree(relativePath, text, { owner });
+    path = stored.path;
+    // Path identity: a declined write left the first bytes on disk. Queuing
+    // the NEW body would compile text the Source does not hold.
+    if (!stored.created) {
+      return NextResponse.json({ queued: false, path }, { status: 200 });
+    }
+  } else {
+    path = await saveRawSourceFor(slug, contentHash(text), text, { owner });
+  }
 
   const options: IngestOptions = {
     owner,
@@ -213,6 +243,7 @@ async function storeAndQueue(input: {
     triggeredBy: owner,
     sourceType,
     ...(sourceUrl ? { sourceUrl } : {}),
+    ...(relativePath ? { relativePath } : {}),
   };
 
   const jobId = crypto.randomUUID();
@@ -241,14 +272,23 @@ async function storeAndQueue(input: {
       triggeredBy: owner,
       sourceType,
       ...(sourceUrl ? { sourceUrl } : {}),
+      ...(relativePath ? { relativePath } : {}),
       jobId,
     };
     // Small enough to ride inline in the queue message; otherwise staged to R2,
-    // exactly as `/api/ingest` does for a large paste.
+    // exactly as `/api/ingest` does for a large paste. Folder context rides
+    // top-level for inline text; staged already has `relativePath`.
     const task: Task =
       text.length <= MAX_INLINE_CONTENT_CHARS
         ? { ...base, content: text }
-        : { ...base, staged: { key: await stageText(jobId, text), kind: "text" } };
+        : {
+            ...base,
+            staged: {
+              key: await stageText(jobId, text),
+              kind: "text",
+              ...(relativePath ? { relativePath } : {}),
+            },
+          };
 
     response = await enqueueOrInline(jobId, task, () => ingest(title, text, options));
   } catch (error) {

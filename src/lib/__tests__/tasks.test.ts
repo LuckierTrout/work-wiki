@@ -175,6 +175,17 @@ describe("parseTask", () => {
       kind: "ingest",
       content: "some text",
     });
+    expect(
+      parseTask({
+        kind: "ingest",
+        content: "folder note",
+        relativePath: "papers/energy/note.md",
+      }),
+    ).toMatchObject({
+      kind: "ingest",
+      content: "folder note",
+      relativePath: "papers/energy/note.md",
+    });
     expect(parseTask({ kind: "ingest" })).toBeNull();
   });
 

@@ -47,7 +47,7 @@ import {
 import { wikiArtifactPath } from "../wikis";
 import { tenantForOwner, tenantRawRelPath, tenantWikiRelPath } from "../wiki";
 import { getDataDir } from "../paths";
-import { saveRawSource, saveRawSourceFor } from "../raw";
+import { saveRawSource, saveRawSourceFor, saveRawSourceTree } from "../raw";
 import type { IndexEntry } from "../types";
 
 function entry(partial: Partial<IndexEntry> & { slug: string }): IndexEntry {
@@ -742,6 +742,30 @@ describe("listWorkbenchFilePaths", () => {
     expect(slugDir?.children.map((n) => n.path)).toEqual([display]);
   });
 
+  it("lists a mirrored folder tree under raw/sources/ (Story 2.2)", async () => {
+    const stored = await saveRawSourceTree(
+      "papers/energy/note.md",
+      "# nested\n",
+      { owner: OWNER },
+    );
+    expect(stored.path).toContain("sources/papers/energy/note.md");
+
+    const display = "raw/sources/papers/energy/note.md";
+    const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
+    expect(paths).toContain("raw/sources/");
+    expect(paths).toContain("raw/sources/papers/");
+    expect(paths).toContain("raw/sources/papers/energy/");
+    expect(paths).toContain(display);
+    expect(truncated).toBe(false);
+    await expect(readWorkbenchFile(OWNER, null, display, gate())).resolves.toEqual({
+      content: "# nested\n",
+    });
+
+    const energy = findFileNode(buildFileTree(paths), "raw/sources/papers/energy");
+    expect(energy?.isDirectory).toBe(true);
+    expect(energy?.children.map((n) => n.path)).toEqual([display]);
+  });
+
   it("keeps an un-mirrored source out of an empty silo (DW-40)", async () => {
     // The same saver WITHOUT an owner: the flat key is still the system of
     // record, and the tab still refuses to read from it. This is the half of
@@ -856,14 +880,14 @@ describe("listWorkbenchFilePaths", () => {
     // The truncation rule is unchanged: a directory that would have been SHOWN
     // still counts, an all-filtered leaf set does not. Under the wiki root every
     // leaf past level 1 is filtered, so this subtree omits nothing showable.
-    // The directory sits AT the cap (level 4), which is one deeper than it was
-    // before Story 2.1 raised it — the case is about the boundary, so it has to
+    // The directory sits AT the cap (level 5), which is one deeper than it was
+    // before Story 2.2 raised it — the case is about the boundary, so it has to
     // follow the boundary.
-    await fs.mkdir(path.join(tmpDir, "wiki", "a", "b", "c"), { recursive: true });
-    await fs.writeFile(path.join(tmpDir, "wiki", "a", "b", "c", "deep.md"), "x", "utf-8");
+    await fs.mkdir(path.join(tmpDir, "wiki", "a", "b", "c", "d"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, "wiki", "a", "b", "c", "d", "deep.md"), "x", "utf-8");
 
     const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate("deep"));
-    expect(paths).toContain("wiki/a/b/c/");
+    expect(paths).toContain("wiki/a/b/c/d/");
     expect(truncated).toBe(false);
   });
 
@@ -873,11 +897,11 @@ describe("listWorkbenchFilePaths", () => {
     // truncation trigger for this root, so without this case the term could be
     // deleted and the suite would stay green while the owner stopped being told
     // the tree is incomplete.
-    await fs.mkdir(path.join(tmpDir, "wiki", "a", "b", "c", "d"), { recursive: true });
+    await fs.mkdir(path.join(tmpDir, "wiki", "a", "b", "c", "d", "e"), { recursive: true });
 
     const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
-    expect(paths).toContain("wiki/a/b/c/");
-    expect(paths).not.toContain("wiki/a/b/c/d/");
+    expect(paths).toContain("wiki/a/b/c/d/");
+    expect(paths).not.toContain("wiki/a/b/c/d/e/");
     expect(truncated).toBe(true);
   });
 
@@ -962,20 +986,19 @@ describe("listWorkbenchFilePaths", () => {
   });
 
   it("omits anything past the depth cap and reports the truncation", async () => {
-    // raw/ (1) → a/ (2) → b/ (3) → c/ (4) → deep.md (5): one level too far.
-    // The cap is 4 because `raw/sources/<slug>/<hash>.md` — every Intake
-    // arrival — is exactly that deep; a fifth level is beyond anything the
-    // kernel writes.
-    await writeSilo("raw", "a/b/c/deep.md");
+    // raw/ (1) → a/ (2) → b/ (3) → c/ (4) → d/ (5) → deep.md (6): one level too far.
+    // The cap is 5 because `raw/sources/<seg>/<seg>/file.md` — a mirrored
+    // folder arrival — is exactly that deep; a sixth level is beyond it.
+    await writeSilo("raw", "a/b/c/d/deep.md");
 
     const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
-    expect(paths).toContain("raw/a/b/c/");
-    expect(paths).not.toContain("raw/a/b/c/deep.md");
+    expect(paths).toContain("raw/a/b/c/d/");
+    expect(paths).not.toContain("raw/a/b/c/d/deep.md");
     expect(truncated).toBe(true);
   });
 
   it("does not cry truncation over an empty directory at the depth cap", async () => {
-    const rel = tenantRawRelPath(tenantForOwner(OWNER), "a/b/c");
+    const rel = tenantRawRelPath(tenantForOwner(OWNER), "a/b/c/d");
     await fs.mkdir(path.join(getDataDir(), rel), { recursive: true });
     const { truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
     expect(truncated).toBe(false);
@@ -1037,10 +1060,10 @@ describe("listWorkbenchFilePaths", () => {
 
   it("ships the caps the truncation sentence advertises", () => {
     expect(WORKBENCH_FILE_LIMIT).toBe(2000);
-    // 4, not 3: `raw/sources/<slug>/<hash>.md` is the deepest key the kernel
-    // writes, and a cap of 3 stranded every Intake arrival one level below the
-    // listing (Story 2.1).
-    expect(WORKBENCH_FILE_MAX_DEPTH).toBe(4);
+    // 5, not 4: `raw/sources/<seg>/<seg>/file.md` is the deepest key a folder
+    // import writes, and a cap of 4 stranded every nested arrival one level
+    // below the listing (Story 2.2).
+    expect(WORKBENCH_FILE_MAX_DEPTH).toBe(5);
     // Derived, not typed: the numeral cannot outlive the cap.
     expect(FILES_TRUNCATED_COPY).toBe("File list truncated at 2,000 entries.");
   });

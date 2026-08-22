@@ -669,16 +669,31 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
     // identical are two definitions however close together they sit.
     expect(controls).toContain("INTAKE_IMPORT_LABEL");
     expect(controls).not.toMatch(/["'`]Import \/ Upload["'`]/);
+    expect(controls).toContain("INTAKE_FOLDER_LABEL");
+    expect(controls).not.toMatch(/["'`]Folder["'`]/);
     // A real file input, with the accept attribute DERIVED from the allowlist.
     expect(controls).toContain('type="file"');
     expect(controls).toContain("accept={INTAKE_ACCEPT_ATTR}");
-    // …and no directory picker: recursive folder import is Story 2.2, and
-    // either attribute on this input would ship half of it. Matched as
-    // ATTRIBUTES rather than as bare words, so a docblock explaining their
-    // absence is not what fails.
-    expect(controls).not.toMatch(/\bwebkitdirectory\b\s*[={]/);
-    expect(controls).not.toMatch(/\bdirectory\s*[={]/);
+    // `webkitdirectory` is allowed only on the Folder input, and only via
+    // setAttribute — never as a JSX attribute on Import / Upload. Matched as
+    // ATTRIBUTES rather than as bare words, so a docblock is not what fails.
+    const importBlock = controls.slice(
+      controls.indexOf("{busy ? INTAKE_BUSY_COPY : INTAKE_IMPORT_LABEL}"),
+      controls.indexOf("{busy ? INTAKE_BUSY_COPY : INTAKE_FOLDER_LABEL}"),
+    );
+    expect(importBlock).not.toMatch(/\bwebkitdirectory\b/);
+    expect(importBlock).not.toMatch(/\bdirectory\s*[={]/);
+    expect(controls).toContain('setAttribute("webkitdirectory"');
+    expect(controls).toContain("bindFolderInput");
+    expect(controls).toContain("folderInputRef");
+    expect(controls).not.toContain('inputRef.current?.setAttribute("webkitdirectory"');
     expect(controls).not.toContain("mozdirectory");
+    // `accept` stays on Import / Upload only. Putting it on the directory
+    // picker hid office files so they never reached the 2.1 refusal sentence.
+    const folderBlock = controls.slice(
+      controls.indexOf("{busy ? INTAKE_BUSY_COPY : INTAKE_FOLDER_LABEL}"),
+    );
+    expect(folderBlock).not.toContain("accept=");
   });
 
   it("dims the hidden picker with its button, and names the control once", async () => {
@@ -787,6 +802,10 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
     expect(source).toContain("if (!readOnly && !intakeBusyRef.current) setDropActive(true);");
     // A Files-typed drop with an empty list is said, not swallowed.
     expect(source).toContain("INTAKE_FILE_REQUIRED_COPY");
+    // An empty Folder pick is said on the Folder action, not swallowed by
+    // `submitIntakeFiles([])` — the shell reports it before that helper runs.
+    expect(source).toContain("INTAKE_FOLDER_COPY");
+    expect(source).toContain("if (picked.length === 0)");
   });
 
   it("refreshes through the watcher's nudge and nothing else", async () => {

@@ -77,6 +77,12 @@ export type Task =
        *  SUBSET of `IngestOptions["sourceType"]` — image/pdf/youtube are set
        *  internally by the ingest functions, never carried over the queue. */
       sourceType?: "x-mention" | "url" | "text" | "email";
+      /**
+       * Folder-import relative path for an inline text ingest (Story 2.2).
+       * Staged uploads already carry this on `staged.relativePath`; a small
+       * folder file must not be forced through staging just to keep the path.
+       */
+      relativePath?: string;
       /** Inbound-email metadata used for owner-only activity and completion
        *  notifications. Attachment bytes are referenced through staged keys. */
       email?: EmailIngestMetadata;
@@ -422,6 +428,9 @@ export function parseTask(body: unknown): Task | null {
           : {}),
         ...(typeof t.sourceUrl === "string" && t.sourceUrl.trim() !== ""
           ? { sourceUrl: t.sourceUrl }
+          : {}),
+        ...(typeof t.relativePath === "string" && t.relativePath.trim()
+          ? { relativePath: t.relativePath.slice(0, 1_000) }
           : {}),
         ...(sourceType ? { sourceType } : {}),
         ...(email ? { email } : {}),

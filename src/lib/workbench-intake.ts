@@ -26,6 +26,7 @@ import {
   ownLookup,
 } from "./document-formats";
 import { slugify } from "./slugify";
+import { WORKBENCH_FILE_MAX_DEPTH } from "./workbench-tree";
 
 // ---------------------------------------------------------------------------
 // What may come in
@@ -93,10 +94,16 @@ export const INTAKE_ALLOWED_CONTENT_TYPES: readonly string[] = [
  * The retired folder-opening affordance is not merely absent: its exact wording
  * is banned from every source under `src/` by `workbench-left-column.test.ts`,
  * which is why this docblock names neither the phrase nor a paraphrase close
- * enough to be copied back into a button. Nothing here opens a directory, and
- * recursive folder import is Story 2.2.
+ * enough to be copied back into a button. Folder pick is a second control
+ * ({@link INTAKE_FOLDER_LABEL}); nothing here opens a project directory.
  */
 export const INTAKE_IMPORT_LABEL = "Import / Upload";
+
+/**
+ * The directory picker beside Import / Upload. Never the retired project-folder
+ * phrasing — that exact wording is banned from every source under `src/`.
+ */
+export const INTAKE_FOLDER_LABEL = "Folder";
 
 /** The in-app URL field's real label — never placeholder-only (a11y floor). */
 export const INTAKE_URL_FIELD_LABEL = "Source URL";
@@ -130,22 +137,34 @@ export const INTAKE_IN_FLIGHT_COPY =
  * over a window is a state no keyboard or screen-reader user can be in. Their
  * path is the picker, and both paths report through the batch sentence.
  */
-export const INTAKE_DROP_COPY = "Drop Markdown, text, or HTML files to store them.";
+export const INTAKE_DROP_COPY =
+  "Drop Markdown, text, or HTML files or folders to store them.";
 
 /** Nothing was attached to the picker or the drop. */
 export const INTAKE_FILE_REQUIRED_COPY = "Attach a Markdown, text, or HTML file.";
 
 /**
- * A folder was dropped and the browser expanded it into its contents.
+ * A directory picker or folder drop expanded to no files.
  *
- * Recursive folder import is Story 2.2, and a drop of a directory is not a
- * partial version of it: the shape of the tree, what is skipped inside it and
- * how the arrivals are grouped are all decisions that story owns. Storing the
- * expanded leaves anyway would ship an unnamed half of it, so the drop is
- * refused with this sentence instead of silently taking the files it can read.
+ * Browsers omit empty directories, so this is the whole of what the Folder
+ * action can say when nothing storable arrived — no Source is invented for it.
  */
 export const INTAKE_FOLDER_COPY =
-  "Folders cannot be added yet. Drop individual Markdown, text, or HTML files.";
+  "That folder has no Markdown, text, or HTML files.";
+
+/**
+ * A client-supplied relative path was absolute, traversed, empty, or otherwise
+ * not a folder location this door will store.
+ */
+export const INTAKE_BAD_PATH_COPY = "That folder path is not allowed.";
+
+/**
+ * The sanitized tree path would sit past {@link WORKBENCH_FILE_MAX_DEPTH}, so
+ * Files could not list it. Named so a mixed folder can refuse the deep file
+ * and still store its shallower siblings.
+ */
+export const INTAKE_TOO_DEEP_COPY =
+  "That file is nested too deeply to store.";
 
 /** An empty field, or something that is not an absolute http(s) URL. */
 export const INTAKE_URL_REQUIRED_COPY = "Enter an http:// or https:// URL.";
@@ -356,4 +375,90 @@ export function intakeUrlSlug(url: string): string {
 export function intakeFileTitle(filename: string): string {
   const base = filename.split(/[\\/]/).pop() ?? "";
   return base.replace(/\.[^.]+$/, "").trim() || base.trim();
+}
+
+// ---------------------------------------------------------------------------
+// Folder-tree relative paths (Story 2.2)
+// ---------------------------------------------------------------------------
+
+/** Accepted, with the sanitized relative path the tree writer will store. */
+export interface IntakePathAccepted {
+  ok: true;
+  path: string;
+}
+
+/** Refused, with the one sentence to put in front of the owner. */
+export interface IntakePathRejected {
+  ok: false;
+  reason: string;
+}
+
+export type IntakePathVerdict = IntakePathAccepted | IntakePathRejected;
+
+/**
+ * Files-tab display path for a sanitized relative tree key.
+ *
+ * `papers/energy/note.md` → `raw/sources/papers/energy/note.md`.
+ */
+export function intakeTreeDisplayPath(relativePath: string): string {
+  return `raw/sources/${relativePath}`;
+}
+
+/**
+ * Would Files list this sanitized relative path at the current depth cap?
+ *
+ * Same numbering as `isListablePath`: `raw/sources/papers/energy/note.md` is
+ * five segments. A path past the cap is refused at the door so an arrival
+ * cannot land where the walk will never show it.
+ */
+export function isIntakeTreeListable(relativePath: string): boolean {
+  return (
+    intakeTreeDisplayPath(relativePath).split("/").length <= WORKBENCH_FILE_MAX_DEPTH
+  );
+}
+
+/**
+ * Sanitize a client-supplied `webkitRelativePath` into the stored tree key.
+ *
+ * Mirrors the platform field (root folder name included). Rejects `..`,
+ * absolute, empty, and null-byte segments rather than normalizing them.
+ * Slugifies each directory segment; keeps an allowlisted extension on the
+ * leaf. Does not reuse {@link intakeSourceSlug} as the stored key — that
+ * helper strips directories on purpose for the 2.1 hash writer.
+ */
+export function sanitizeIntakeRelativePath(value: string): IntakePathVerdict {
+  const refused: IntakePathVerdict = { ok: false, reason: INTAKE_BAD_PATH_COPY };
+  if (typeof value !== "string") return refused;
+  const trimmed = value.trim();
+  if (!trimmed) return refused;
+  if (trimmed.includes("\0")) return refused;
+  if (trimmed.startsWith("/") || /^[a-zA-Z]:/.test(trimmed)) return refused;
+
+  const segments = trimmed.replace(/\\/g, "/").split("/");
+  // A folder location includes the root folder name plus a leaf
+  // (`papers/note.md`). A single segment is a loose filename, not a tree.
+  if (segments.length < 2) return refused;
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    return refused;
+  }
+
+  const leaf = segments[segments.length - 1];
+  const dirs = segments.slice(0, -1);
+  const ext = extension(leaf);
+  if (!ext || !ownLookup(INTAKE_EXTENSIONS, ext)) return refused;
+
+  const slugDirs: string[] = [];
+  for (const dir of dirs) {
+    const slug = boundedSlug(dir);
+    if (!slug) return refused;
+    slugDirs.push(slug);
+  }
+
+  const leafBase = leaf.replace(/\.[^.]+$/, "");
+  const slugLeaf = boundedSlug(leafBase) || INTAKE_FALLBACK_SLUG;
+  const path = `${slugDirs.join("/")}/${slugLeaf}.${ext}`;
+  if (!isIntakeTreeListable(path)) {
+    return { ok: false, reason: INTAKE_TOO_DEEP_COPY };
+  }
+  return { ok: true, path };
 }

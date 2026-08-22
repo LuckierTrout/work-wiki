@@ -256,6 +256,9 @@ export async function POST(req: Request) {
       ...(task.pageType ? { pageType: task.pageType } : {}),
       ...(task.sourceUrl ? { sourceUrl: task.sourceUrl } : {}),
       ...(task.sourceType ? { sourceType: task.sourceType } : {}),
+      ...((task.relativePath ?? task.staged?.relativePath)
+        ? { relativePath: task.relativePath ?? task.staged?.relativePath }
+        : {}),
       ...(task.tags && task.tags.length > 0 ? { tags: task.tags } : {}),
       // A user-supplied title must survive the queue hop — ingestPdf/ingestImage
       // use it to override the derived title (and, for images, the slug). The

@@ -4,6 +4,7 @@ import { useId, useRef, useState } from "react";
 import {
   INTAKE_ACCEPT_ATTR,
   INTAKE_BUSY_COPY,
+  INTAKE_FOLDER_LABEL,
   INTAKE_IMPORT_LABEL,
   INTAKE_READ_ONLY_COPY,
   INTAKE_URL_FIELD_LABEL,
@@ -15,11 +16,11 @@ import {
  * Intake's controls: the file picker, and — on the Sources column — the in-app
  * URL field (UX-DR5).
  *
- * `INTAKE_IMPORT_LABEL` is the only label offered, and the retired
- * folder-opening affordance's wording is banned from every source under `src/`
- * by `workbench-left-column.test.ts` — so it is named nowhere here either. There
- * is no directory picker: recursive folder import is Story 2.2, and
- * `webkitdirectory` on this input would ship half of it.
+ * `INTAKE_IMPORT_LABEL` and `INTAKE_FOLDER_LABEL` are the labels offered. The
+ * retired folder-opening affordance's wording is banned from every source
+ * under `src/` by `workbench-left-column.test.ts` — so it is named nowhere
+ * here either. `webkitdirectory` lives only on the Folder input, never on
+ * Import / Upload.
  *
  * NO STATE ABOUT THE ARRIVAL LIVES HERE. The shell owns the in-flight flag, the
  * outcomes and the status sentence, because the SAME submit path is reached from
@@ -57,49 +58,89 @@ export function IntakeControls({
 }: IntakeControlsProps) {
   const fieldId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState("");
 
   const disabled = busy || readOnly;
 
+  // Bound at attach time, not in an effect: a click before the effect ran
+  // would open a normal multi-file picker and lose `webkitRelativePath`.
+  const bindFolderInput = (node: HTMLInputElement | null) => {
+    folderInputRef.current = node;
+    if (!node) return;
+    node.setAttribute("webkitdirectory", "");
+    node.setAttribute("directory", "");
+  };
+
   return (
     <div className="wb-intake">
-      <button
-        type="button"
-        className="wb-intake-pick"
-        disabled={disabled}
-        onClick={() => inputRef.current?.click()}
-      >
-        {busy ? INTAKE_BUSY_COPY : INTAKE_IMPORT_LABEL}
-      </button>
-      {/* The picker itself is never the visible control: a bare file input
-          cannot be labelled or styled with the rest of the chrome, and the
-          button above is what carries the accessible name.
+      <div className="wb-intake-picks">
+        <button
+          type="button"
+          className="wb-intake-pick"
+          disabled={disabled}
+          onClick={() => inputRef.current?.click()}
+        >
+          {busy ? INTAKE_BUSY_COPY : INTAKE_IMPORT_LABEL}
+        </button>
+        {/* The picker itself is never the visible control: a bare file input
+            cannot be labelled or styled with the rest of the chrome, and the
+            button above is what carries the accessible name.
 
-          `aria-hidden` and NOT labelled, for that reason: an `aria-label` here
-          put a second node with the same name in the accessibility tree, so the
-          one control read as two. It is also `disabled` in the same states as
-          the button — the button's `disabled` stops the click that opens this
-          dialog, but not a `.click()` from anywhere else, and an input that
-          could still open its dialog while a batch was in flight would offer a
-          pick the shell then silently drops. */}
-      <input
-        ref={inputRef}
-        type="file"
-        className="wb-sr-only"
-        multiple
-        accept={INTAKE_ACCEPT_ATTR}
-        disabled={disabled}
-        aria-hidden="true"
-        tabIndex={-1}
-        onChange={(event) => {
-          const picked = Array.from(event.target.files ?? []);
-          // Cleared FIRST, so picking the same file twice fires `change` again:
-          // the input compares against its own value, and re-adding a Source
-          // whose bytes changed on disk is a real thing to want.
-          event.target.value = "";
-          if (picked.length > 0) onFiles(picked);
-        }}
-      />
+            `aria-hidden` and NOT labelled, for that reason: an `aria-label` here
+            put a second node with the same name in the accessibility tree, so the
+            one control read as two. It is also `disabled` in the same states as
+            the button — the button's `disabled` stops the click that opens this
+            dialog, but not a `.click()` from anywhere else, and an input that
+            could still open its dialog while a batch was in flight would offer a
+            pick the shell then silently drops. */}
+        <input
+          ref={inputRef}
+          type="file"
+          className="wb-sr-only"
+          multiple
+          accept={INTAKE_ACCEPT_ATTR}
+          disabled={disabled}
+          aria-hidden="true"
+          tabIndex={-1}
+          onChange={(event) => {
+            const picked = Array.from(event.target.files ?? []);
+            // Cleared FIRST, so picking the same file twice fires `change` again:
+            // the input compares against its own value, and re-adding a Source
+            // whose bytes changed on disk is a real thing to want.
+            event.target.value = "";
+            if (picked.length > 0) onFiles(picked);
+          }}
+        />
+        <button
+          type="button"
+          className="wb-intake-pick"
+          disabled={disabled}
+          onClick={() => folderInputRef.current?.click()}
+        >
+          {busy ? INTAKE_BUSY_COPY : INTAKE_FOLDER_LABEL}
+        </button>
+        {/* Directory picker for Story 2.2. `webkitdirectory` is set in the
+            ref callback above — not as an attribute on the Import input, which
+            the left-column suite still bans. No `accept` here: a directory
+            picker that honours it would hide office files so they never get
+            the 2.1 visible refusal. An empty expansion still calls `onFiles`
+            so the Folder action can say so instead of going silent. */}
+        <input
+          ref={bindFolderInput}
+          type="file"
+          className="wb-sr-only"
+          multiple
+          disabled={disabled}
+          aria-hidden="true"
+          tabIndex={-1}
+          onChange={(event) => {
+            const picked = Array.from(event.target.files ?? []);
+            event.target.value = "";
+            onFiles(picked);
+          }}
+        />
+      </div>
 
       {url && (
         <form

@@ -3038,14 +3038,19 @@ body:has(.wb-shell) {
   margin-top: var(--wb-space-1);
 }
 
-/* ---- Intake (Story 2.1) ----------------------------------------------- */
-/* Import / Upload and the in-app URL field. Two homes, one face: the tree
-   panel's header in Wiki mode, and the Sources column's own block otherwise —
-   the shell renders the same node into both, so there is nothing here that can
-   apply to one and not the other. */
+/* ---- Intake (Story 2.1 / 2.2) ----------------------------------------- */
+/* Import / Upload, Folder, and the in-app URL field. Two homes, one face: the
+   tree panel's header in Wiki mode, and the Sources column's own block
+   otherwise — the shell renders the same node into both, so there is nothing
+   here that can apply to one and not the other. */
 .wb-intake {
   display: flex;
   flex-direction: column;
+  gap: var(--wb-space-1);
+}
+.wb-intake-picks {
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--wb-space-1);
 }
 /* The same face as `New Wiki` and the switcher's actions, deliberately: this is

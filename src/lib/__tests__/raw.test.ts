@@ -5,6 +5,7 @@ import path from "path";
 import {
   saveRawSource,
   saveRawSourceFor,
+  saveRawSourceTree,
   listRawSources,
   readRawSource,
   readRawSourceById,
@@ -350,6 +351,44 @@ describe("per-source raw snapshots", () => {
 });
 
 // ---------------------------------------------------------------------------
+// saveRawSourceTree (Story 2.2)
+// ---------------------------------------------------------------------------
+
+describe("saveRawSourceTree", () => {
+  it("writes the sanitized relative path under raw/sources/", async () => {
+    await ensureDirectories();
+    const returned = await saveRawSourceTree("papers/energy/note.md", "# Note\n");
+    expect(returned.created).toBe(true);
+    expect(returned.path).toBe(
+      path.join(tmpDir, "raw", "sources", "papers", "energy", "note.md"),
+    );
+    expect(await fs.readFile(returned.path, "utf-8")).toBe("# Note\n");
+  });
+
+  it("leaves an occupied tree key exactly as it is (FR-2)", async () => {
+    await ensureDirectories();
+    await saveRawSourceTree("papers/energy/note.md", "first arrival");
+    const second = await saveRawSourceTree("papers/energy/note.md", "second arrival");
+    expect(second.created).toBe(false);
+    expect(
+      await fs.readFile(
+        path.join(tmpDir, "raw", "sources", "papers", "energy", "note.md"),
+        "utf-8",
+      ),
+    ).toBe("first arrival");
+  });
+
+  it("throws on a traversal or extension-less path", async () => {
+    await expect(saveRawSourceTree("../../etc/passwd", "x")).rejects.toThrow(
+      /Invalid raw tree path/,
+    );
+    await expect(saveRawSourceTree("papers/energy", "x")).rejects.toThrow(
+      /Invalid raw tree path/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Story 2.1 — the three things Intake hangs on: the silo mirror, the
 // `dataVersion` bump, and the legacy read path.
 // ---------------------------------------------------------------------------
@@ -445,5 +484,32 @@ describe("intake writes (owner option)", () => {
       owner: OWNER,
     });
     expect(await fs.readFile(returned, "utf-8")).toBe("kept");
+  });
+
+  it("mirrors a tree path into the owner's silo and bumps dataVersion", async () => {
+    const before = await readDataVersion();
+    const returned = await saveRawSourceTree("papers/energy/note.md", "tree bytes", {
+      owner: OWNER,
+    });
+    expect(await fs.readFile(returned.path, "utf-8")).toBe("tree bytes");
+    expect(await fs.readFile(siloAbs("papers/energy/note.md"), "utf-8")).toBe(
+      "tree bytes",
+    );
+    expect(await readDataVersion()).toBeGreaterThan(before);
+
+    const afterWrite = await readDataVersion();
+    await saveRawSourceTree("papers/energy/note.md", "mutant", { owner: OWNER });
+    expect(await fs.readFile(siloAbs("papers/energy/note.md"), "utf-8")).toBe(
+      "tree bytes",
+    );
+    expect(await readDataVersion()).toBe(afterWrite);
+  });
+
+  it("repairs a missing tree silo from the stored bytes, not the request", async () => {
+    await saveRawSourceTree("papers/energy/note.md", "first arrival");
+    await saveRawSourceTree("papers/energy/note.md", "mutant", { owner: OWNER });
+    expect(await fs.readFile(siloAbs("papers/energy/note.md"), "utf-8")).toBe(
+      "first arrival",
+    );
   });
 });

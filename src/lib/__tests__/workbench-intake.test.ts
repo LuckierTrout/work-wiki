@@ -32,11 +32,14 @@ import {
   INTAKE_ACCEPT_ATTR,
   INTAKE_ALLOWED_CONTENT_TYPES,
   INTAKE_DROP_COPY,
+  INTAKE_BAD_PATH_COPY,
   INTAKE_EMPTY_SOURCE_COPY,
   INTAKE_EXTENSIONS,
   INTAKE_FALLBACK_SLUG,
   INTAKE_FOLDER_COPY,
+  INTAKE_FOLDER_LABEL,
   INTAKE_IMPORT_LABEL,
+  INTAKE_TOO_DEEP_COPY,
   INTAKE_IN_FLIGHT_COPY,
   INTAKE_MIME_TYPES,
   INTAKE_READ_ONLY_COPY,
@@ -49,6 +52,7 @@ import {
   intakeUnsupportedCopy,
   intakeUrlSlug,
   isIntakeUrl,
+  sanitizeIntakeRelativePath,
 } from "../workbench-intake";
 
 const SRC = path.resolve(__dirname, "../..");
@@ -222,6 +226,72 @@ describe("naming the stored key", () => {
   });
 });
 
+describe("sanitizing a folder relative path", () => {
+  it("keeps the root folder and slugifies each directory segment", () => {
+    expect(sanitizeIntakeRelativePath("papers/energy/note.md")).toEqual({
+      ok: true,
+      path: "papers/energy/note.md",
+    });
+    expect(sanitizeIntakeRelativePath("Papers/Energy Notes/Q3 Review.md")).toEqual({
+      ok: true,
+      path: "papers/energy-notes/q3-review.md",
+    });
+  });
+
+  it("keeps an allowlisted extension on the leaf", () => {
+    expect(sanitizeIntakeRelativePath("notes/clip.HTML")).toEqual({
+      ok: true,
+      path: "notes/clip.html",
+    });
+    expect(sanitizeIntakeRelativePath("notes/log.markdown")).toEqual({
+      ok: true,
+      path: "notes/log.markdown",
+    });
+  });
+
+  it("refuses traversal, absolute, empty, and null-byte segments", () => {
+    for (const value of [
+      "../../etc/passwd",
+      "/etc/passwd",
+      "C:\\docs\\note.md",
+      "papers//note.md",
+      "papers/../note.md",
+      "papers/\0/note.md",
+      "note.md",
+      "",
+    ]) {
+      expect(sanitizeIntakeRelativePath(value), value).toEqual({
+        ok: false,
+        reason: INTAKE_BAD_PATH_COPY,
+      });
+    }
+  });
+
+  it("refuses a path that would sit past the listable Files depth", () => {
+    // First unlistable shape: raw/sources/a/b/c/file.md is 6 segments; cap is 5.
+    expect(sanitizeIntakeRelativePath("a/b/c/file.md")).toEqual({
+      ok: false,
+      reason: INTAKE_TOO_DEEP_COPY,
+    });
+    expect(sanitizeIntakeRelativePath("a/b/c/d/file.md")).toEqual({
+      ok: false,
+      reason: INTAKE_TOO_DEEP_COPY,
+    });
+    expect(sanitizeIntakeRelativePath("papers/energy/note.md").ok).toBe(true);
+  });
+
+  it("normalizes Windows separators and refuses a non-allowlisted leaf", () => {
+    expect(sanitizeIntakeRelativePath("papers\\energy\\note.md")).toEqual({
+      ok: true,
+      path: "papers/energy/note.md",
+    });
+    expect(sanitizeIntakeRelativePath("papers/note.exe")).toEqual({
+      ok: false,
+      reason: INTAKE_BAD_PATH_COPY,
+    });
+  });
+});
+
 describe("the drag test", () => {
   it("claims file drags only", () => {
     // The drop target is the whole shell, so a selection dragged out of the
@@ -267,6 +337,8 @@ describe("the copy", () => {
       // Both refusals a DROP can hit, which the controls' disabled state cannot
       // express: the platform delivers a drop whatever the shell renders.
       INTAKE_FOLDER_COPY,
+      INTAKE_BAD_PATH_COPY,
+      INTAKE_TOO_DEEP_COPY,
       INTAKE_IN_FLIGHT_COPY,
       intakeUnsupportedCopy("PDF"),
       intakeStoredCopy(2),
@@ -277,6 +349,7 @@ describe("the copy", () => {
       expect(sentence).toMatch(/^[\x20-\x7E…—]+$/);
     }
     expect(INTAKE_IMPORT_LABEL).toBe("Import / Upload");
+    expect(INTAKE_FOLDER_LABEL).toBe("Folder");
   });
 });
 
@@ -291,6 +364,10 @@ vi.mock("@/lib/auth", () => ({
 vi.mock("@/lib/config", () => ({ isReadOnly: vi.fn(() => false) }));
 vi.mock("@/lib/raw", () => ({
   saveRawSourceFor: vi.fn(async (slug: string, rawId: string) => `raw/sources/${slug}/${rawId}.md`),
+  saveRawSourceTree: vi.fn(async (relativePath: string) => ({
+    path: `raw/sources/${relativePath}`,
+    created: true,
+  })),
 }));
 vi.mock("@/lib/fetch", async (importOriginal) => ({
   // The real module for `ALLOWED_CONTENT_TYPES`, which the narrowing case above
@@ -316,21 +393,25 @@ import { fetchUrlContent } from "@/lib/fetch";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { createIngestJob } from "@/lib/ingest-jobs";
 import { stageText } from "@/lib/ingest-staging";
-import { saveRawSourceFor } from "@/lib/raw";
+import { ingest } from "@/lib/ingest";
+import { saveRawSourceFor, saveRawSourceTree } from "@/lib/raw";
 import { POST } from "@/app/api/workbench/intake/route";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedReadOnly = vi.mocked(isReadOnly);
 const mockedFetchUrl = vi.mocked(fetchUrlContent);
 const mockedSave = vi.mocked(saveRawSourceFor);
+const mockedSaveTree = vi.mocked(saveRawSourceTree);
+const mockedIngest = vi.mocked(ingest);
 const mockedJob = vi.mocked(createIngestJob);
 const mockedStage = vi.mocked(stageText);
 const mockedEnqueue = vi.mocked(enqueueOrInline);
 
 /** A multipart request carrying one file, as the picker and the drop both send. */
-function fileRequest(file?: File): Request {
+function fileRequest(file?: File, relativePath?: string): Request {
   const form = new FormData();
   if (file) form.append("file", file);
+  if (relativePath) form.append("relativePath", relativePath);
   return new Request("http://localhost/api/workbench/intake", {
     method: "POST",
     body: form,
@@ -357,6 +438,7 @@ async function post(request: Request): Promise<{ status: number; body: Record<st
 /** Nothing was committed: no Source, no job record, no queue item. */
 function expectNothingCommitted(): void {
   expect(mockedSave).not.toHaveBeenCalled();
+  expect(mockedSaveTree).not.toHaveBeenCalled();
   expect(mockedJob).not.toHaveBeenCalled();
   expect(mockedEnqueue).not.toHaveBeenCalled();
 }
@@ -517,6 +599,86 @@ describe("POST /api/workbench/intake — files", () => {
     expect(new Set(jobIds).size).toBe(3);
   });
 
+  it("stores a folder file at its sanitized relative path and carries it on the task", async () => {
+    mockedEnqueue.mockImplementation(async (jobId, _task, inline) => {
+      await inline();
+      return NextResponse.json({ queued: true, jobId }, { status: 202 });
+    });
+    const { status, body } = await post(
+      fileRequest(new File(["# Note"], "note.md"), "papers/energy/note.md"),
+    );
+    expect(status).toBe(202);
+    expect(mockedSave).not.toHaveBeenCalled();
+    expect(mockedSaveTree).toHaveBeenCalledTimes(1);
+    const [relative, text, options] = mockedSaveTree.mock.calls[0];
+    expect(relative).toBe("papers/energy/note.md");
+    expect(text).toBe("# Note");
+    expect(options).toEqual({ owner: "alice" });
+    expect(body.path).toBe("raw/sources/papers/energy/note.md");
+    const task = mockedEnqueue.mock.calls[0][1] as { relativePath?: string; content?: string };
+    expect(task.relativePath).toBe("papers/energy/note.md");
+    expect(task.content).toBe("# Note");
+    expect(mockedIngest).toHaveBeenCalledWith(
+      "note",
+      "# Note",
+      expect.objectContaining({ relativePath: "papers/energy/note.md", owner: "alice" }),
+    );
+  });
+
+  it("does not queue Ingest when the tree key is already occupied", async () => {
+    mockedSaveTree.mockResolvedValueOnce({
+      path: "raw/sources/papers/energy/note.md",
+      created: false,
+    });
+    const { status, body } = await post(
+      fileRequest(new File(["new bytes"], "note.md"), "papers/energy/note.md"),
+    );
+    expect(status).toBe(200);
+    expect(body.queued).toBe(false);
+    expect(body.path).toBe("raw/sources/papers/energy/note.md");
+    expect(mockedJob).not.toHaveBeenCalled();
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+    expect(mockedIngest).not.toHaveBeenCalled();
+  });
+
+  it("keeps the 2.1 hash writer when relativePath is absent", async () => {
+    await post(fileRequest(new File(["loose"], "a.md")));
+    expect(mockedSave).toHaveBeenCalledTimes(1);
+    expect(mockedSaveTree).not.toHaveBeenCalled();
+    const task = mockedEnqueue.mock.calls[0][1] as { relativePath?: string };
+    expect(task.relativePath).toBeUndefined();
+  });
+
+  it("answers 400 and writes nothing for a traversal relativePath", async () => {
+    const { status, body } = await post(
+      fileRequest(new File(["x"], "passwd.md"), "../../etc/passwd"),
+    );
+    expect(status).toBe(400);
+    expect(body.error).toBe(INTAKE_BAD_PATH_COPY);
+    expectNothingCommitted();
+  });
+
+  it("answers 400 and writes nothing for a path past the listable depth", async () => {
+    const { status, body } = await post(
+      fileRequest(new File(["x"], "file.md"), "a/b/c/file.md"),
+    );
+    expect(status).toBe(400);
+    expect(body.error).toBe(INTAKE_TOO_DEEP_COPY);
+    expectNothingCommitted();
+  });
+
+  it("answers 400 when relativePath is not a string, rather than hashing", async () => {
+    const form = new FormData();
+    form.append("file", new File(["# Note"], "note.md"));
+    form.append("relativePath", new File(["not a path"], "path.txt"));
+    const { status, body } = await post(
+      new Request("http://localhost/api/workbench/intake", { method: "POST", body: form }),
+    );
+    expect(status).toBe(400);
+    expect(body.error).toBe(INTAKE_BAD_PATH_COPY);
+    expectNothingCommitted();
+  });
+
   it("refuses a file over the byte cap", async () => {
     // A REAL oversized body, not a `size` property redefined on the instance:
     // the multipart round trip reconstructs the `File` from the encoded bytes,
@@ -622,6 +784,7 @@ describe("the route's shape", () => {
       "utf8",
     );
     expect(source).toContain("saveRawSourceFor");
+    expect(source).toContain("saveRawSourceTree");
     // No second raw-source writer, and no direct storage call that would
     // bypass the immutability, silo-mirror and `dataVersion` tail those
     // helpers own.
@@ -645,7 +808,7 @@ describe("the route's shape", () => {
 
 import {
   INTAKE_ROUTE,
-  folderRefusedOutcome,
+  emptyFolderOutcome,
   intakeReport,
   intakeShouldRefresh,
   intakeStoredCount,
@@ -755,10 +918,10 @@ describe("the client's per-item submit", () => {
   });
 });
 
-describe("a folder drop is refused, not half-imported", () => {
+describe("a folder drop stores each leaf and queues it", () => {
   /** As a browser reports a file it expanded out of a dropped directory. */
-  function fromFolder(name: string, relative: string): File {
-    const file = new File(["x"], name);
+  function fromFolder(name: string, relative: string, body = "x"): File {
+    const file = new File([body], name);
     Object.defineProperty(file, "webkitRelativePath", {
       value: relative,
       configurable: true,
@@ -775,54 +938,115 @@ describe("a folder drop is refused, not half-imported", () => {
     expect(isFolderExpandedFile(fromFolder("plan.md", ""))).toBe(false);
   });
 
-  it("keeps the loose files and counts the expanded ones", () => {
+  it("keeps every file, including the expanded ones", () => {
     const loose = new File(["a"], "a.md");
+    const nested = fromFolder("b.md", "notes/b.md");
     const { files, skippedFolderFiles } = partitionIntakeFiles([
       loose,
-      fromFolder("b.md", "notes/b.md"),
+      nested,
       fromFolder("c.md", "notes/deep/c.md"),
     ]);
-    // A folder dragged ALONGSIDE two loose files is the case that decides this:
-    // the loose ones are stored and the refusal is still said.
-    expect(files).toEqual([loose]);
-    expect(skippedFolderFiles).toBe(2);
+    expect(files).toHaveLength(3);
+    expect(files[0]).toBe(loose);
+    expect(files[1]).toBe(nested);
+    expect(skippedFolderFiles).toBe(0);
   });
 
-  it("uploads none of an expanded folder, and says why once", async () => {
-    // Recursive folder import is Story 2.2. Storing the leaves a browser
-    // happened to expand would ship an unnamed half of it — and silently, which
-    // is the one thing this door must never be.
+  it("posts each expanded file with its sanitized relativePath", async () => {
     const spy = stubFetch(ok);
     const outcomes = await submitIntakeFiles([
-      fromFolder("a.md", "notes/a.md"),
-      fromFolder("b.md", "notes/b.md"),
+      fromFolder("note.md", "papers/energy/note.md"),
+      fromFolder("clip.html", "papers/clip.html"),
     ]);
-    expect(spy).not.toHaveBeenCalled();
-    // ONE sentence for the whole folder, not one per leaf: a directory of forty
-    // files is one thing the owner did.
-    expect(outcomes).toEqual([folderRefusedOutcome()]);
-    expect(outcomes[0].error).toBe(INTAKE_FOLDER_COPY);
-    expect(intakeStoredCount(outcomes)).toBe(0);
-    // Nothing landed and nothing is unknown, so there is nothing to re-poll for.
-    expect(intakeShouldRefresh(outcomes)).toBe(false);
-    // Reported without a filename in front of it: the sentence is about the
-    // ACTION, and naming one of the expanded leaves would mislead.
-    expect(intakeReport(outcomes)).toBe(INTAKE_FOLDER_COPY);
+    expect(spy).toHaveBeenCalledTimes(2);
+    const paths = (spy.mock.calls as Array<[string, RequestInit]>).map(([, init]) =>
+      (init.body as FormData).get("relativePath"),
+    );
+    expect(paths).toEqual(["papers/energy/note.md", "papers/clip.html"]);
+    expect(outcomes.map((o) => o.error)).toEqual([null, null]);
+    expect(intakeStoredCount(outcomes)).toBe(2);
+    expect(intakeShouldRefresh(outcomes)).toBe(true);
     vi.unstubAllGlobals();
   });
 
-  it("still stores the loose files dropped beside a folder", async () => {
+  it("refuses an office file in the tree without uploading it, and still queues siblings", async () => {
+    const spy = stubFetch(ok);
+    const outcomes = await submitIntakeFiles([
+      fromFolder("note.md", "papers/energy/note.md"),
+      fromFolder("deck.pptx", "papers/energy/deck.pptx"),
+      fromFolder("log.txt", "papers/log.txt"),
+    ]);
+    expect(spy).toHaveBeenCalledTimes(2);
+    const uploaded = (spy.mock.calls as Array<[string, RequestInit]>).map(([, init]) =>
+      ((init.body as FormData).get("file") as File).name,
+    );
+    expect(uploaded).toEqual(["note.md", "log.txt"]);
+    expect(outcomes.map((o) => o.error)).toEqual([
+      null,
+      intakeUnsupportedCopy(DOCUMENT_FORMAT_LABELS.pptx),
+      null,
+    ]);
+    expect(intakeStoredCount(outcomes)).toBe(2);
+    vi.unstubAllGlobals();
+  });
+
+  it("stores a loose file without relativePath and a folder file with one", async () => {
     const spy = stubFetch(ok);
     const outcomes = await submitIntakeFiles([
       new File(["a"], "a.md"),
       fromFolder("b.md", "notes/b.md"),
     ]);
+    expect(spy).toHaveBeenCalledTimes(2);
+    const bodies = (spy.mock.calls as Array<[string, RequestInit]>).map(([, init]) => {
+      const form = init.body as FormData;
+      return {
+        name: (form.get("file") as File).name,
+        relativePath: form.get("relativePath"),
+      };
+    });
+    expect(bodies).toEqual([
+      { name: "a.md", relativePath: null },
+      { name: "b.md", relativePath: "notes/b.md" },
+    ]);
+    expect(intakeStoredCount(outcomes)).toBe(2);
+    expect(intakeReport(outcomes)).toBe(intakeStoredCopy(2));
+    expect(intakeReport(outcomes)).not.toContain(INTAKE_FOLDER_COPY);
+    vi.unstubAllGlobals();
+  });
+
+  it("refuses a traversal relativePath without uploading", async () => {
+    const spy = stubFetch(ok);
+    const outcome = await submitIntakeFile(fromFolder("passwd.md", "../../etc/passwd"));
+    expect(spy).not.toHaveBeenCalled();
+    expect(outcome.error).toBe(INTAKE_BAD_PATH_COPY);
+    vi.unstubAllGlobals();
+  });
+
+  it("refuses a path past the listable depth without uploading", async () => {
+    const spy = stubFetch(ok);
+    const outcomes = await submitIntakeFiles([
+      fromFolder("note.md", "papers/energy/note.md"),
+      fromFolder("file.md", "a/b/c/d/file.md"),
+    ]);
     expect(spy).toHaveBeenCalledTimes(1);
+    expect((spy.mock.calls[0][1] as RequestInit).body).toBeInstanceOf(FormData);
+    expect(((spy.mock.calls[0][1] as RequestInit).body as FormData).get("relativePath")).toBe(
+      "papers/energy/note.md",
+    );
+    expect(outcomes.map((o) => o.error)).toEqual([null, INTAKE_TOO_DEEP_COPY]);
     expect(intakeStoredCount(outcomes)).toBe(1);
-    expect(intakeReport(outcomes)).toBe(`${intakeStoredCopy(1)} ${INTAKE_FOLDER_COPY}`);
-    // Something landed, so the trees are re-polled even though the batch also
-    // carried a refusal.
-    expect(intakeShouldRefresh(outcomes)).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it("says so on the Folder action when the picker yields no files", async () => {
+    const spy = stubFetch(ok);
+    const outcomes = await submitIntakeFiles([]);
+    expect(spy).not.toHaveBeenCalled();
+    expect(outcomes).toEqual([emptyFolderOutcome()]);
+    expect(outcomes[0].error).toBe(INTAKE_FOLDER_COPY);
+    expect(intakeStoredCount(outcomes)).toBe(0);
+    expect(intakeShouldRefresh(outcomes)).toBe(false);
+    expect(intakeReport(outcomes)).toBe(INTAKE_FOLDER_COPY);
     vi.unstubAllGlobals();
   });
 });

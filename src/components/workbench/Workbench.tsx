@@ -75,6 +75,7 @@ import {
 import {
   INTAKE_DROP_COPY,
   INTAKE_FILE_REQUIRED_COPY,
+  INTAKE_FOLDER_COPY,
   INTAKE_IN_FLIGHT_COPY,
   INTAKE_READ_ONLY_COPY,
   intakeDragHasFiles,
@@ -895,9 +896,15 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
    */
   const runIntakeFiles = useCallback(
     (picked: readonly File[]) => {
-      // Nothing attached, or a deployment that will refuse before staging: no
-      // request, and no sentence about an arrival that was never attempted.
-      if (readOnly || picked.length === 0) return;
+      // A deployment that will refuse before staging: no request.
+      if (readOnly) return;
+      // The Folder action expanded to nothing. A silent return here is
+      // indistinguishable from losing the pick; the drop of an empty file list
+      // still uses `INTAKE_FILE_REQUIRED_COPY` above this helper.
+      if (picked.length === 0) {
+        reportIntake([{ name: "", error: INTAKE_FOLDER_COPY, unconfirmed: false }]);
+        return;
+      }
       // A batch is already in flight. The controls are disabled, but a DROP has
       // no disabled state and the platform delivers it anyway — and two batches
       // sharing one flag race their own `finally` if that flag is only React

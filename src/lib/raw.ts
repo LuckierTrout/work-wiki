@@ -122,7 +122,17 @@ async function storeRawSource(
     // received them would leave the Source invisible forever. The first write
     // already bumped; without a second bump here the watcher is forward-only
     // and Files stays empty after a fail-then-repair.
-    const repaired = await mirrorSourceToSilo(rest, content, options?.owner);
+    //
+    // Mirror the STORED bytes, not the request body. A tree key can be
+    // re-offered with different text (FR-40 path identity); copying the new
+    // body into the silo would show Files a Source the flat key does not hold.
+    let stored = content;
+    try {
+      stored = await getStorage().readFile(rel);
+    } catch (err) {
+      logger.warn("raw", `could not re-read "${rel}" for silo repair`, err);
+    }
+    const repaired = await mirrorSourceToSilo(rest, stored, options?.owner);
     if (repaired) await bumpDataVersion();
     return false;
   }
@@ -173,6 +183,47 @@ export async function saveRawSourceFor(
   }
   await storeRawSource(`${slug}/${rawId}.md`, content, options);
   return `${getRawDir()}/${RAW_SOURCES_DIR}/${slug}/${rawId}.md`;
+}
+
+/**
+ * Save a folder-import Source at `raw/sources/<relative>`, where `relative`
+ * is already a sanitized tree path with an extension (`papers/energy/note.md`).
+ *
+ * Same helper as {@link saveRawSourceFor}: no overwrite, optional `{ owner }`
+ * silo mirror, `dataVersion` bump. Folder identity is the relative path
+ * (FR-40); a re-import of the same tree hits `alreadyStored` and must not
+ * rewrite.
+ */
+export async function saveRawSourceTree(
+  relativePath: string,
+  content: string,
+  options?: SaveRawSourceOptions,
+): Promise<{ path: string; created: boolean }> {
+  const segments = relativePath.split("/");
+  if (
+    relativePath.length === 0 ||
+    relativePath.includes("\\") ||
+    relativePath.includes("\0") ||
+    relativePath.startsWith("/") ||
+    segments.length < 2 ||
+    segments.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    throw new Error("Invalid raw tree path");
+  }
+  const leaf = segments[segments.length - 1];
+  const dot = leaf.lastIndexOf(".");
+  if (dot <= 0) {
+    throw new Error("Invalid raw tree path");
+  }
+  for (const dir of segments.slice(0, -1)) {
+    validateSlug(dir);
+  }
+  validateSlug(leaf.slice(0, dot));
+  const created = await storeRawSource(relativePath, content, options);
+  return {
+    path: `${getRawDir()}/${RAW_SOURCES_DIR}/${relativePath}`,
+    created,
+  };
 }
 
 /**

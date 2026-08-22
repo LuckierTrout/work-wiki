@@ -1326,6 +1326,12 @@ export interface IngestOptions {
    * must resolve guidance fresh.
    */
   guidanceCache?: GuidanceCache;
+  /**
+   * Folder-import relative path (Story 2.2). Persisted on the options object so
+   * Analysis can later treat `papers > energy` as classification context.
+   * Unused by Generation in this story — do not interpolate it into prompts.
+   */
+  relativePath?: string;
 }
 
 /**

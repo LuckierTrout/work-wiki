@@ -22,6 +22,7 @@ import {
   classifyIntakeFile,
   intakeStoredCopy,
   isIntakeUrl,
+  sanitizeIntakeRelativePath,
 } from "./workbench-intake";
 import { send, sendForm, writeFailure } from "./workbench-request";
 
@@ -58,13 +59,12 @@ function stored(name: string): IntakeOutcome {
  * Did the browser hand us this file because a FOLDER was dropped or picked?
  *
  * `webkitRelativePath` is the platform's own marker: it is `""` for a file the
- * owner dropped directly, and `"notes/plan.md"` for one the engine expanded out
- * of a directory. Recursive folder import is Story 2.2 (see
- * {@link INTAKE_FOLDER_COPY}), so those arrivals are skipped rather than stored.
+ * owner dropped directly, and `"papers/energy/note.md"` for one the engine
+ * expanded out of a directory. Folder-expanded files take the tree writer;
+ * loose files keep the 2.1 hash key.
  *
  * Typed defensively — the property is non-standard, so a browser that does not
- * implement it leaves it `undefined` and every file reads as a direct one, which
- * is the pre-existing behaviour rather than a refusal of everything.
+ * implement it leaves it `undefined` and every file reads as a direct one.
  */
 export function isFolderExpandedFile(file: File): boolean {
   const relative = (file as File & { webkitRelativePath?: unknown })
@@ -72,28 +72,26 @@ export function isFolderExpandedFile(file: File): boolean {
   return typeof relative === "string" && relative.length > 0;
 }
 
+/** The platform relative path, or `undefined` for a loose file. */
+export function intakeFileRelativePath(file: File): string | undefined {
+  const relative = (file as File & { webkitRelativePath?: unknown })
+    .webkitRelativePath;
+  return typeof relative === "string" && relative.length > 0 ? relative : undefined;
+}
+
 /**
- * Split a pick or a drop into the files this door will take and the count it is
- * skipping because they came out of a folder.
- *
- * A PURE function in the lib module for the reason the module note gives: this
- * is the rule that decides whether an owner's drop is refused, and inside a drop
- * handler it could only be grepped for. It also has to answer the mixed case —
- * two loose files dragged along with a folder — where the loose two are stored
- * and the refusal is still said.
+ * Every file in the pick or drop is a candidate. Folder-expanded leaves are
+ * no longer skipped — each is its own Source (Story 2.2).
  */
 export function partitionIntakeFiles(files: readonly File[]): {
   readonly files: readonly File[];
   readonly skippedFolderFiles: number;
 } {
-  const direct = files.filter((file) => !isFolderExpandedFile(file));
-  return { files: direct, skippedFolderFiles: files.length - direct.length };
+  return { files, skippedFolderFiles: 0 };
 }
 
-/** The refusal for a folder drop, as one outcome the batch report can carry. */
-export function folderRefusedOutcome(): IntakeOutcome {
-  // Unnamed: the sentence is about the ACTION, not about one of the leaves the
-  // browser happened to expand, and naming one of a hundred would mislead.
+/** The Folder action expanded to nothing. No Source is invented for it. */
+export function emptyFolderOutcome(): IntakeOutcome {
   return { name: "", error: INTAKE_FOLDER_COPY, unconfirmed: false };
 }
 
@@ -113,6 +111,14 @@ export async function submitIntakeFile(file: File): Promise<IntakeOutcome> {
   }
   const form = new FormData();
   form.append("file", file);
+  const relative = intakeFileRelativePath(file);
+  if (relative) {
+    const path = sanitizeIntakeRelativePath(relative);
+    if (!path.ok) {
+      return { name: file.name, error: path.reason, unconfirmed: false };
+    }
+    form.append("relativePath", path.path);
+  }
   try {
     await sendForm(INTAKE_ROUTE, form);
     return stored(file.name);
@@ -142,23 +148,18 @@ export async function submitIntakeUrl(url: string): Promise<IntakeOutcome> {
 /**
  * Store and queue each file in turn. N files → N Sources → N queue items.
  *
- * The folder partition happens HERE rather than in the caller, so the pick and
- * the drop cannot disagree about it: both reach this function, and a shell that
- * forgot the filter would upload an expanded directory through one of its two
- * entry points. A skipped folder still produces its own outcome, so a drop of
- * nothing but a directory reports a refusal instead of a silent no-op.
+ * Folder-expanded files are posted with `relativePath` (the vault's multipart
+ * field name — this door does not mount that component). An empty pick or drop
+ * is the Folder action's visible sentence, not a silent no-op.
  */
 export async function submitIntakeFiles(
   files: readonly File[],
 ): Promise<IntakeOutcome[]> {
-  const { files: direct, skippedFolderFiles } = partitionIntakeFiles(files);
+  if (files.length === 0) return [emptyFolderOutcome()];
   const outcomes: IntakeOutcome[] = [];
-  for (const file of direct) {
+  for (const file of files) {
     outcomes.push(await submitIntakeFile(file));
   }
-  // ONE sentence however many leaves the browser expanded: a folder of forty
-  // files is one thing the owner did, not forty failures to read.
-  if (skippedFolderFiles > 0) outcomes.push(folderRefusedOutcome());
   return outcomes;
 }
 

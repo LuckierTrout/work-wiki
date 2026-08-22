@@ -30,17 +30,16 @@ export const WORKBENCH_FILE_LIMIT = 2000;
 
 /**
  * Deepest level the walk descends to, counting the root directory as level 1:
- * `wiki/` is 1, `wiki/a.md` is 2, `raw/sources/` is 2, and the deepest shape the
- * kernel writes — `raw/sources/<slug>/<hash>.md`, the per-source snapshot every
- * Workbench Intake arrival lands on (Story 2.1) — is 4.
+ * `wiki/` is 1, `wiki/a.md` is 2, `raw/sources/` is 2, a hashed Intake key
+ * (`raw/sources/<slug>/<hash>.md`, Story 2.1) is 4, and a mirrored folder
+ * arrival (`raw/sources/<seg>/<seg>/file.md`, Story 2.2) is 5.
  *
- * It was 3 while Sources lived at flat `raw/<slug>/<hash>.md`. Moving them under
- * `raw/sources/` added a segment, so a cap of 3 would list the `<slug>/`
- * directory and then stop one level above the file itself: the Files tab would
- * show an empty folder for every Source that arrived, and `isListablePath`
- * would refuse to open the leaf even when it was named directly.
+ * It was 4 while folder import stored nothing. A cap of 4 lists
+ * `raw/sources/papers/energy/` and then stops one level above `note.md`: the
+ * Files tab would show an empty folder for every nested Source, and
+ * `isListablePath` would refuse the leaf even when it was named directly.
  */
-export const WORKBENCH_FILE_MAX_DEPTH = 4;
+export const WORKBENCH_FILE_MAX_DEPTH = 5;
 
 // ---------------------------------------------------------------------------
 // Tabs
