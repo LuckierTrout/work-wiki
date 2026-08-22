@@ -89,6 +89,27 @@ export async function buildPortableArchive(owner: string): Promise<{
     archiveFiles[`files/${path}`] = bytes;
     manifest.files.push({ path, size: bytes.byteLength, sha256: await sha256(data) });
   }
+  const obsidianStubs: Record<string, string> = {
+    ".obsidian/app.json": JSON.stringify({ legacyEditor: false, livePreview: true }, null, 2),
+    ".obsidian/appearance.json": JSON.stringify({ baseFontSize: 16 }, null, 2),
+    ".obsidian/core-plugins.json": JSON.stringify({
+      "file-explorer": true,
+      "global-search": true,
+      "backlink": true,
+      "graph": true,
+      "outline": true,
+    }, null, 2),
+  };
+  for (const [path, text] of Object.entries(obsidianStubs)) {
+    if (archiveFiles[`files/${path}`]) continue;
+    const bytes = strToU8(text);
+    archiveFiles[`files/${path}`] = bytes;
+    manifest.files.push({
+      path,
+      size: bytes.byteLength,
+      sha256: await sha256(bytesBuffer(bytes)),
+    });
+  }
   archiveFiles["manifest.json"] = strToU8(JSON.stringify(manifest, null, 2));
   return { manifest, bytes: zipSync(archiveFiles, { level: 6 }) };
 }

@@ -100,8 +100,18 @@ import {
   type TreeTabId,
 } from "@/lib/workbench-tree";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { send } from "@/lib/workbench-request";
+import {
+  SOURCE_DELETE_BODY,
+  SOURCE_DELETE_CANCEL,
+  SOURCE_DELETE_CONFIRM,
+  SOURCE_DELETE_TITLE,
+  SOURCE_ROUTE,
+} from "@/lib/source-cascade";
 import { IconRail } from "./IconRail";
+import { ActivityDock } from "./ActivityDock";
 import { IntakeControls } from "./IntakeControls";
+import { SourcesTree } from "./SourcesTree";
 import { CANVAS_ID, ModeCanvas } from "./ModeCanvas";
 import { PreviewColumn } from "./PreviewColumn";
 import { SettingsCanvas } from "./SettingsCanvas";
@@ -225,6 +235,9 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // is still posting. The ref is set synchronously before either request.
   const intakeBusyRef = useRef(false);
   const [intakeStatus, setIntakeStatus] = useState("");
+  const [sourceDeletePath, setSourceDeletePath] = useState<string | null>(null);
+  const [sourceDeleteBusy, setSourceDeleteBusy] = useState(false);
+  const [sourceDeleteError, setSourceDeleteError] = useState<string | null>(null);
   // Is a file drag currently over the shell? The visible affordance only.
   const [dropActive, setDropActive] = useState(false);
   // `dragenter`/`dragleave` fire for every DESCENDANT the pointer crosses, so a
@@ -895,7 +908,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
    * controls would be to clear the flag on the success path alone.
    */
   const runIntakeFiles = useCallback(
-    (picked: readonly File[]) => {
+    (picked: readonly File[], origin?: "plaud") => {
       // A deployment that will refuse before staging: no request.
       if (readOnly) return;
       // The Folder action expanded to nothing. A silent return here is
@@ -918,7 +931,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       // The previous batch's sentence goes as this one starts. Leaving it up
       // would put a stale "Stored 3 sources" beside a control reading "Storing…".
       setIntakeStatus("");
-      void submitIntakeFiles(picked)
+      void submitIntakeFiles(picked, origin ? { origin } : undefined)
         .then(reportIntake)
         .finally(() => {
           intakeBusyRef.current = false;
@@ -1458,7 +1471,28 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
                 1.3. Putting the URL field under, say, Lint would offer an
                 arrival on a surface that has nothing to do with one. */}
             {mode === "sources" && intakePanel}
+            {mode === "sources" && (
+              <SourcesTree
+                files={files}
+                truncated={filesTruncated}
+                filesUnavailable={filesUnavailable}
+                hasWiki={currentWikiId !== null}
+                selection={selection}
+                onSelect={selectRow}
+                onDelete={
+                  readOnly
+                    ? undefined
+                    : (path) => {
+                        setSourceDeleteError(null);
+                        setSourceDeletePath(path);
+                      }
+                }
+              />
+            )}
           </div>
+        )}
+        {(mode === "wiki" || mode === "sources" || mode === "files") && !settingsOpen && (
+          <ActivityDock readOnly={readOnly} />
         )}
         {/* Settings' own nav takes the column the trees usually have (UX-DR14).
             AFTER the withdrawn panel, so the reading and tab order of the
@@ -1604,6 +1638,38 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
         cancelLabel={PREVIEW_KEEP_EDITING_COPY}
         onConfirm={confirmDiscard}
         onCancel={cancelDiscard}
+      />
+
+      <ConfirmDialog
+        open={sourceDeletePath !== null}
+        title={SOURCE_DELETE_TITLE}
+        body={SOURCE_DELETE_BODY}
+        confirmLabel={SOURCE_DELETE_CONFIRM}
+        cancelLabel={SOURCE_DELETE_CANCEL}
+        busy={sourceDeleteBusy}
+        error={sourceDeleteError}
+        onCancel={() => {
+          if (!sourceDeleteBusy) setSourceDeletePath(null);
+        }}
+        onConfirm={() => {
+          if (!sourceDeletePath || sourceDeleteBusy) return;
+          setSourceDeleteBusy(true);
+          setSourceDeleteError(null);
+          void send(SOURCE_ROUTE, {
+            method: "DELETE",
+            body: JSON.stringify({ path: sourceDeletePath }),
+          })
+            .then(() => {
+              setSourceDeletePath(null);
+              requestDataVersionCheck();
+            })
+            .catch((cause: unknown) => {
+              setSourceDeleteError(
+                cause instanceof Error ? cause.message : "Delete failed.",
+              );
+            })
+            .finally(() => setSourceDeleteBusy(false));
+        }}
       />
 
       {/* Announces the surface the rail just switched to (accessibility floor).

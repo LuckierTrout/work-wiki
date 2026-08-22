@@ -9,6 +9,7 @@ import {
   resetSourceIndex,
   resolveSourceUrl,
   resolveContentHash,
+  resolveContentSha256,
   updateSourceIndexForPage,
   removeSourceForPage,
   normalizeUrl,
@@ -52,7 +53,7 @@ afterEach(async () => {
 async function createPage(
   slug: string,
   title: string,
-  opts: { source_url?: string; content_hash?: string } = {},
+  opts: { source_url?: string; content_hash?: string; content_sha256?: string } = {},
 ): Promise<void> {
   const fm: Record<string, string> = {
     created: "2026-01-01",
@@ -60,6 +61,7 @@ async function createPage(
   };
   if (opts.source_url !== undefined) fm.source_url = opts.source_url;
   if (opts.content_hash !== undefined) fm.content_hash = opts.content_hash;
+  if (opts.content_sha256 !== undefined) fm.content_sha256 = opts.content_sha256;
 
   const content = serializeFrontmatter(fm, `# ${title}\n\nContent about ${title}.`);
   await writeWikiPage(slug, content);
@@ -345,6 +347,16 @@ describe("resolveSourceUrl variant dedup", () => {
 // ---------------------------------------------------------------------------
 // resolveContentHash
 // ---------------------------------------------------------------------------
+describe("resolveContentSha256", () => {
+  it("finds a slug after resetSourceIndex for a page with content_sha256", async () => {
+    await createPage("standup", "Standup", {
+      content_sha256: "ab".repeat(32),
+    });
+    resetSourceIndex();
+    expect(await resolveContentSha256("ab".repeat(32))).toBe("standup");
+  });
+});
+
 describe("resolveContentHash", () => {
   it("finds existing slug by hash", async () => {
     await createPage("notes", "Notes", { content_hash: "sha256-abc" });

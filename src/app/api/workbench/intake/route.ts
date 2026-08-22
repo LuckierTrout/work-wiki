@@ -5,9 +5,11 @@ import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
 import { contentHash } from "@/lib/embeddings";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { fetchUrlContent } from "@/lib/fetch";
-import { ingest, type IngestOptions } from "@/lib/ingest";
+import { ingest, recordSourceResee, type IngestOptions } from "@/lib/ingest";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { createIngestJob } from "@/lib/ingest-jobs";
+import { resolveContentSha256, resolveStoredSourcePath } from "@/lib/source-index";
+import { sourceSha256 } from "@/lib/source-sha256";
 import { stageText } from "@/lib/ingest-staging";
 import { logger } from "@/lib/logger";
 import { saveRawSourceFor, saveRawSourceTree } from "@/lib/raw";
@@ -142,6 +144,9 @@ async function intakeFile(
     relativePath = sanitized.path;
   }
 
+  const originRaw = form.get("origin");
+  const origin = originRaw === "plaud" ? "plaud" as const : undefined;
+
   return await storeAndQueue({
     owner,
     slug: intakeSourceSlug(file.name),
@@ -149,6 +154,7 @@ async function intakeFile(
     title: intakeFileTitle(file.name),
     sourceType: "text",
     ...(relativePath ? { relativePath } : {}),
+    ...(origin ? { origin } : {}),
   });
 }
 
@@ -241,8 +247,48 @@ async function storeAndQueue(input: {
   sourceType: "text" | "url";
   sourceUrl?: string;
   relativePath?: string;
+  origin?: "plaud";
 }): Promise<NextResponse> {
-  const { owner, slug, text, title, sourceType, sourceUrl, relativePath } = input;
+  const { owner, slug, text, title, sourceType, sourceUrl, relativePath, origin } = input;
+
+  const digest = await sourceSha256(text);
+  const existing = await resolveContentSha256(digest);
+  if (existing) {
+    const existingPath = await resolveStoredSourcePath(existing);
+    const resee = await recordSourceResee(existing, {
+      url: sourceUrl ?? existingPath ?? "text-paste",
+      type: sourceType,
+      triggeredBy: owner,
+      actorOwner: owner,
+    });
+    const jobId = crypto.randomUUID();
+    try {
+      await createIngestJob({
+        jobId,
+        owner,
+        title,
+        status: "skipped",
+        ...(sourceUrl ? { url: sourceUrl } : {}),
+        ...(origin ? { origin } : {}),
+        ...(existingPath ? { sourceRel: existingPath } : {}),
+        ...(relativePath ? { relativePath } : {}),
+        sourceType,
+        contentSha256: digest,
+      });
+    } catch (error) {
+      logger.error("intake", `could not record skipped job for "${existing}"`, error);
+    }
+    return NextResponse.json(
+      {
+        queued: false,
+        skipped: true,
+        ...(existingPath ? { path: existingPath } : {}),
+        jobId,
+        slug: resee?.primarySlug ?? existing,
+      },
+      { status: 200 },
+    );
+  }
 
   // Loose files keep the 2.1 hash key so a second `notes.md` does not collide.
   // Folder identity is the sanitized relative path (FR-40); both writers share
@@ -267,6 +313,9 @@ async function storeAndQueue(input: {
     sourceType,
     ...(sourceUrl ? { sourceUrl } : {}),
     ...(relativePath ? { relativePath } : {}),
+    ...(origin ? { origin } : {}),
+    contentSha256: digest,
+    sourcePath: path,
   };
 
   const jobId = crypto.randomUUID();
@@ -285,7 +334,19 @@ async function storeAndQueue(input: {
   // that exists.
   let response: Response;
   try {
-    await createIngestJob({ jobId, owner, title, ...(sourceUrl ? { url: sourceUrl } : {}) });
+    await createIngestJob({
+      jobId,
+      owner,
+      title,
+      ...(sourceUrl ? { url: sourceUrl } : {}),
+      ...(origin ? { origin } : {}),
+      sourceRel: path,
+      ...(relativePath ? { relativePath } : {}),
+      sourceType,
+      contentSha256: digest,
+    });
+
+    options.jobId = jobId;
 
     const base = {
       kind: "ingest" as const,
@@ -296,6 +357,9 @@ async function storeAndQueue(input: {
       sourceType,
       ...(sourceUrl ? { sourceUrl } : {}),
       ...(relativePath ? { relativePath } : {}),
+      ...(origin ? { origin } : {}),
+      contentSha256: digest,
+      sourcePath: path,
       jobId,
     };
     // Small enough to ride inline in the queue message; otherwise staged to R2,

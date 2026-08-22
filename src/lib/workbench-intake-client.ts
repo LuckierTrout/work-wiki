@@ -104,13 +104,19 @@ export function emptyFolderOutcome(): IntakeOutcome {
  * carry a dozen files of which only some are text. The route refuses
  * independently, because a client check is not a gate.
  */
-export async function submitIntakeFile(file: File): Promise<IntakeOutcome> {
+export async function submitIntakeFile(
+  file: File,
+  options?: { origin?: "plaud" },
+): Promise<IntakeOutcome> {
   const verdict = classifyIntakeFile(file.name, file.type);
   if (!verdict.ok) {
     return { name: file.name, error: verdict.reason, unconfirmed: false };
   }
   const form = new FormData();
   form.append("file", file);
+  if (options?.origin === "plaud") {
+    form.append("origin", "plaud");
+  }
   const relative = intakeFileRelativePath(file);
   if (relative) {
     const path = sanitizeIntakeRelativePath(relative);
@@ -162,11 +168,12 @@ export async function submitIntakeUrl(
  */
 export async function submitIntakeFiles(
   files: readonly File[],
+  options?: { origin?: "plaud" },
 ): Promise<IntakeOutcome[]> {
   if (files.length === 0) return [emptyFolderOutcome()];
   const outcomes: IntakeOutcome[] = [];
   for (const file of files) {
-    outcomes.push(await submitIntakeFile(file));
+    outcomes.push(await submitIntakeFile(file, options));
   }
   return outcomes;
 }

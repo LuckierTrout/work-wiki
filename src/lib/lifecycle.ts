@@ -24,6 +24,7 @@ import { getStorage } from "./storage";
 import { withFileLock } from "./lock";
 import { escapeRegex } from "./links";
 import { getErrorMessage } from "./errors";
+import { getVectorSearchSettings } from "./config";
 import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 import { mapWithConcurrency } from "./concurrency";
 import { removeAliasForPage, updateAliasIndexForPage } from "./alias-index";
@@ -295,7 +296,7 @@ async function runPageLifecycleOp(
         getErrorMessage(err, String(err)),
       );
     }
-    if (!isArtifact) {
+    if (!isArtifact && getVectorSearchSettings().enabled) {
       try {
         await upsertEmbedding(slug, op.content);
       } catch (err) {

@@ -22,6 +22,8 @@ export interface ActionItem {
   sourceSlug?: string;
   sourceExcerpt?: string;
   confidence?: number;
+  /** The cited Source was cascade-deleted. The todo itself is kept. */
+  sourceMissing?: boolean;
   status: ActionItemStatus;
   createdAt: string;
   updatedAt: string;
@@ -140,6 +142,26 @@ export async function proposeActionItems(
 
     if (created.length > 0) await writeItems(owner, items);
     return created;
+  });
+}
+
+export async function markActionItemsSourceMissing(
+  owner: string,
+  sourceSlug: string,
+): Promise<number> {
+  if (!sourceSlug.trim()) return 0;
+  return withFileLock(lockKey(owner), async () => {
+    const items = await readItems(owner);
+    let n = 0;
+    for (const item of items) {
+      if (item.sourceSlug === sourceSlug && !item.sourceMissing) {
+        item.sourceMissing = true;
+        item.updatedAt = new Date().toISOString();
+        n += 1;
+      }
+    }
+    if (n > 0) await writeItems(owner, items);
+    return n;
   });
 }
 

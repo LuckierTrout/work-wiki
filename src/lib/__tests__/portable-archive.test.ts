@@ -29,16 +29,38 @@ describe("portable owner archive", () => {
     await getStorage().writeFile("tenants/alice/wiki/atlas.md", page);
     await getStorage().writeAsset("tenants/alice/raw/atlas/source.bin", new Uint8Array([1, 2, 3]).buffer);
     const archive = await buildPortableArchive("alice");
-    expect(archive.manifest.files).toHaveLength(2);
+    expect(archive.manifest.format).toBe("workwiki-portable-archive");
+    const tenantFiles = archive.manifest.files.filter((entry) => !entry.path.startsWith(".obsidian/"));
+    expect(tenantFiles).toHaveLength(2);
+    expect(archive.manifest.files.some((entry) => entry.path === ".obsidian/app.json")).toBe(true);
     expect((await inspectPortableArchive("alice", buffer(archive.bytes))).collisions).toHaveLength(2);
 
     await getStorage().deleteDirectory("tenants/alice");
     const preview = await inspectPortableArchive("alice", buffer(archive.bytes));
-    expect(preview.newFiles).toHaveLength(2);
+    expect(preview.newFiles.length).toBeGreaterThanOrEqual(2);
     const result = await importPortableArchive("alice", buffer(archive.bytes), "skip");
-    expect(result).toMatchObject({ imported: 2, skipped: 0 });
+    expect(result.imported).toBe(archive.manifest.files.length);
+    expect(result.skipped).toBe(0);
     expect(await getStorage().readFile("tenants/alice/wiki/atlas.md")).toBe(page);
     expect(await getStorage().readFile("wiki/atlas.md")).toBe(page);
+  });
+
+  it("generates .obsidian/ and keeps the frozen format string", async () => {
+    const page = serializeFrontmatter(
+      { owner: "alice", visibility: "private", authors: ["alice"] },
+      "# Atlas\n\nPrivate knowledge.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/atlas.md", page);
+    await getStorage().writeFile("tenants/alice/action-items.json", "[]");
+    await getStorage().writeFile("tenants/alice/chat-conversations.json", "[]");
+    const archive = await buildPortableArchive("alice");
+    expect(archive.manifest.format).toBe("workwiki-portable-archive");
+    const names = archive.manifest.files.map((entry) => entry.path);
+    expect(names).toContain(".obsidian/app.json");
+    expect(names).toContain(".obsidian/appearance.json");
+    expect(names).toContain(".obsidian/core-plugins.json");
+    expect(names).toContain("action-items.json");
+    expect(names).toContain("chat-conversations.json");
   });
 
   it("refuses to restore an archive into another owner tenant", async () => {

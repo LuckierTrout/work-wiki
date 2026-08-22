@@ -120,7 +120,8 @@ export async function GET() {
 // ---------------------------------------------------------------------------
 
 export async function PUT(request: Request) {
-  if (!(await requireOwner())) {
+  const principal = await requireOwner();
+  if (!principal) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
 
@@ -550,6 +551,13 @@ export async function PUT(request: Request) {
       );
     }
     const version = save.version;
+
+    const wasOff = workbenchSettingsStored(existing, hasWorkersAiBinding).vectorSearchEnabled !== true;
+    const nowOn = workbenchSettingsStored(merged, hasWorkersAiBinding).vectorSearchEnabled === true;
+    if (wasOff && nowOn) {
+      const { enqueueEmbeddingBackfill } = await import("@/lib/ingest-embed");
+      await enqueueEmbeddingBackfill(principal.handle);
+    }
 
     // Return updated effective settings
     const effective = getEffectiveProvider();

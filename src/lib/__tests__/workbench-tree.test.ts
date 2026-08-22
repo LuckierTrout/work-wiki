@@ -1179,3 +1179,15 @@ describe("tree tab persistence", () => {
     });
   });
 });
+
+describe("nextSourceWindowLimit", () => {
+  it("grows when the painted list does not overflow", async () => {
+    const { nextSourceWindowLimit, SOURCES_WINDOW_STEP } = await import(
+      "../workbench-tree"
+    );
+    expect(nextSourceWindowLimit(80, 200, false)).toBe(80 + SOURCES_WINDOW_STEP);
+    expect(nextSourceWindowLimit(80, 200, true)).toBe(80);
+    expect(nextSourceWindowLimit(200, 200, false)).toBe(200);
+    expect(nextSourceWindowLimit(160, 200, false)).toBe(200);
+  });
+});

@@ -1,13 +1,39 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getServicePrincipal: vi.fn() }));
-vi.mock("@/lib/ingest", () => ({
-  ingest: vi.fn(),
-  ingestUrl: vi.fn(),
-  ingestPdf: vi.fn(),
-  ingestImage: vi.fn(),
-  ingestDocument: vi.fn(),
-  reingest: vi.fn(),
+vi.mock("@/lib/ingest", () => {
+  class IngestCancelledError extends Error {
+    constructor(message = "Cancelled — no pages were written.") {
+      super(message);
+      this.name = "IngestCancelledError";
+    }
+  }
+  return {
+    ingest: vi.fn(),
+    ingestUrl: vi.fn(),
+    ingestPdf: vi.fn(),
+    ingestImage: vi.fn(),
+    ingestDocument: vi.fn(),
+    reingest: vi.fn(),
+    IngestCancelledError,
+  };
+});
+vi.mock("@/lib/tasks", async (orig) => ({
+  ...(await orig<typeof import("@/lib/tasks")>()),
+  enqueueTask: vi.fn(async () => false),
+}));
+vi.mock("@/lib/embeddings", () => ({
+  rebuildVectorStore: vi.fn(async () => ({ total: 0, embedded: 0, skipped: 0, model: "none" })),
+}));
+vi.mock("@/lib/config", async (orig) => ({
+  ...(await orig<typeof import("@/lib/config")>()),
+  getVectorSearchSettings: vi.fn(() => ({
+    enabled: true,
+    provider: null,
+    baseUrl: null,
+    model: null,
+    hasKey: false,
+  })),
 }));
 vi.mock("@/lib/lint-fix", () => ({ fixLintIssue: vi.fn() }));
 // Keep DEFAULT_AGENT_NAME real (the staleness path uses it); only stub
@@ -16,7 +42,8 @@ vi.mock("@/lib/agents", async (orig) => ({
   ...(await orig<typeof import("@/lib/agents")>()),
   addAgentLearningPage: vi.fn(async () => {}),
 }));
-vi.mock("@/lib/ingest-jobs", () => ({
+vi.mock("@/lib/ingest-jobs", async (orig) => ({
+  ...(await orig<typeof import("@/lib/ingest-jobs")>()),
   getIngestJob: vi.fn(async () => null),
   updateIngestJob: vi.fn(async () => ({})),
 }));
@@ -44,7 +71,10 @@ vi.mock("@/lib/monitor-digests", () => ({
 }));
 
 import { getServicePrincipal } from "@/lib/auth";
-import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest } from "@/lib/ingest";
+import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest, IngestCancelledError } from "@/lib/ingest";
+import { enqueueTask } from "@/lib/tasks";
+import { rebuildVectorStore } from "@/lib/embeddings";
+import { getVectorSearchSettings } from "@/lib/config";
 import { fixLintIssue } from "@/lib/lint-fix";
 import { getIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
 import { readStagedBytes, readStagedText, deleteStaged } from "@/lib/ingest-staging";
@@ -58,6 +88,9 @@ import {
 import { deliverMonitorDigest } from "@/lib/monitor-digests";
 
 const mockedGetService = vi.mocked(getServicePrincipal);
+const mockedEnqueueTask = vi.mocked(enqueueTask);
+const mockedRebuild = vi.mocked(rebuildVectorStore);
+const mockedVector = vi.mocked(getVectorSearchSettings);
 const mockedIngest = vi.mocked(ingest);
 const mockedIngestUrl = vi.mocked(ingestUrl);
 const mockedIngestPdf = vi.mocked(ingestPdf);
@@ -96,6 +129,13 @@ async function run(body: unknown, headers?: Record<string, string>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedVector.mockReturnValue({
+    enabled: true,
+    provider: null,
+    baseUrl: null,
+    model: null,
+    hasKey: false,
+  });
   mockedGetJob.mockResolvedValue(null);
   mockedExtractKnowledge.mockReset();
   mockedStartGraphify.mockReset();
@@ -647,5 +687,139 @@ describe("POST /api/tasks/run", () => {
     });
     expect(res.status).toBe(200);
     expect(mockedAddToVault).not.toHaveBeenCalled();
+  });
+
+  it("enqueues extract-actions for a non-Plaud ingest", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngest.mockResolvedValue({ primarySlug: "notes" } as any);
+    const res = await run({
+      kind: "ingest",
+      content: "body",
+      title: "Notes",
+      owner: "alice",
+    });
+    expect(res.status).toBe(200);
+    expect(mockedEnqueueTask).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "extract-actions", slug: "notes" }),
+    );
+  });
+
+  it("marks a skipped ingest skipped and does not enqueue extract-actions", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngest.mockResolvedValue({ primarySlug: "existing", skipped: true } as any);
+    const res = await run({
+      kind: "ingest",
+      content: "same bytes",
+      owner: "alice",
+      jobId: "job-skip",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, skipped: true, slug: "existing" });
+    expect(mockedUpdateJob).toHaveBeenCalledWith("job-skip", {
+      status: "skipped",
+      stage: "complete",
+      slug: "existing",
+    });
+    expect(mockedEnqueueTask).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "extract-actions" }),
+    );
+  });
+
+  it("skips extract-actions for Plaud-origin ingest and still extracts knowledge", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngest.mockResolvedValue({ primarySlug: "meet" } as any);
+    const res = await run({
+      kind: "ingest",
+      content: "transcript",
+      title: "Standup",
+      owner: "alice",
+      origin: "plaud",
+    });
+    expect(res.status).toBe(200);
+    expect(mockedEnqueueTask).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "extract-actions" }),
+    );
+    expect(mockedEnqueueTask).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "extract-knowledge", slug: "meet" }),
+    );
+  });
+
+  it("acks a cancelled ingest with 200 and does not write pages", async () => {
+    mockedGetJob.mockResolvedValue({
+      jobId: "job-cancel",
+      owner: "alice",
+      status: "processing",
+      cancelled: true,
+      createdAt: "2026-08-02T00:00:00.000Z",
+      updatedAt: "2026-08-02T00:01:00.000Z",
+    } as never);
+    const res = await run({
+      kind: "ingest",
+      content: "note",
+      owner: "alice",
+      jobId: "job-cancel",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, cancelled: true });
+    expect(mockedIngest).not.toHaveBeenCalled();
+  });
+
+  it("maps mid-write cancel to 200 rather than a retryable 500", async () => {
+    mockedIngest.mockRejectedValueOnce(new IngestCancelledError());
+    const res = await run({
+      kind: "ingest",
+      content: "note",
+      owner: "alice",
+      jobId: "job-mid",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, cancelled: true });
+  });
+
+  it("stops auto-retrying ingest after three queue attempts", async () => {
+    mockedIngestUrl.mockRejectedValueOnce(new Error("LLM timeout"));
+    const res = await run(
+      { kind: "ingest", url: "https://example.com", owner: "alice" },
+      { "X-Yopedia-Queue-Attempt": "3" },
+    );
+    expect(res.status).toBe(422);
+  });
+
+  it("rebuilds embeddings for a tracked embed-backfill task", async () => {
+    const res = await run({
+      kind: "ingest",
+      owner: "alice",
+      jobId: "job-embed",
+      rebuildEmbeddings: true,
+    });
+    expect(res.status).toBe(200);
+    expect(mockedRebuild).toHaveBeenCalled();
+    expect(mockedIngest).not.toHaveBeenCalled();
+    expect(mockedUpdateJob).toHaveBeenCalledWith("job-embed", {
+      status: "done",
+      stage: "complete",
+    });
+  });
+
+  it("poison-acks embed-backfill when vector search is off", async () => {
+    mockedVector.mockReturnValue({
+      enabled: false,
+      provider: null,
+      baseUrl: null,
+      model: null,
+      hasKey: false,
+    });
+    const res = await run({
+      kind: "ingest",
+      owner: "alice",
+      jobId: "job-embed-off",
+      rebuildEmbeddings: true,
+    });
+    expect(res.status).toBe(422);
+    expect(mockedRebuild).not.toHaveBeenCalled();
+    expect(mockedUpdateJob).toHaveBeenCalledWith("job-embed-off", {
+      status: "failed",
+      error: "Vector search is off.",
+    });
   });
 });

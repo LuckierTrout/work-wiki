@@ -105,6 +105,12 @@ export const INTAKE_IMPORT_LABEL = "Import / Upload";
  */
 export const INTAKE_FOLDER_LABEL = "Folder";
 
+/**
+ * The third pick beside Import / Folder. Same allowlist, not a directory
+ * picker, and not an OAuth connect — upload is the only Plaud path.
+ */
+export const INTAKE_PLAUD_LABEL = "Plaud";
+
 /** The in-app URL field's real label — never placeholder-only (a11y floor). */
 export const INTAKE_URL_FIELD_LABEL = "Source URL";
 

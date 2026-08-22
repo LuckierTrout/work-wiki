@@ -138,13 +138,28 @@ import { loadPageConventions } from "./schema";
 import { resolveAlias } from "./alias-index";
 import {
   resolveSourceUrl,
-  resolveContentHash,
+  resolveContentSha256,
   updateSourceIndexForPage,
 } from "./source-index";
 import { contentHash, searchByVector, hasEmbeddingSupport } from "./embeddings";
 import { getStorage } from "./storage";
 import { logger } from "./logger";
 import { preserveDocumentSources } from "./document-sources";
+import { sourceSha256 } from "./source-sha256";
+import {
+  emptyIngestAnalysis,
+  loadIngestAnalysis,
+  parseIngestAnalysis,
+  saveIngestAnalysis,
+  type IngestAnalysis,
+} from "./ingest-analysis";
+import { runIngestBookkeeping } from "./ingest-bookkeeping";
+import {
+  getIngestJob,
+  INGEST_CANCELLED_COPY,
+  updateIngestJob,
+} from "./ingest-jobs";
+import { withFileLock } from "./lock";
 
 // ---------------------------------------------------------------------------
 // Ingest ledger — append-only JSONL record of each ingest operation
@@ -1332,6 +1347,29 @@ export interface IngestOptions {
    * Unused by Generation in this story — do not interpolate it into prompts.
    */
   relativePath?: string;
+  /** Plaud-origin Intake. */
+  origin?: "plaud";
+  /** Durable job — Analysis persist, cancel checks, Activity stages. */
+  jobId?: string;
+  /** Generation-only retry: reuse persisted Analysis JSON. */
+  reuseAnalysis?: boolean;
+  /** SHA-256 of stored Source bytes when the door already computed it. */
+  contentSha256?: string;
+  /** Stored Source path (`raw/sources/…`) for bookkeeping citations. */
+  sourcePath?: string;
+}
+
+export class IngestCancelledError extends Error {
+  constructor() {
+    super(INGEST_CANCELLED_COPY);
+    this.name = "IngestCancelledError";
+  }
+}
+
+async function assertNotCancelled(jobId?: string): Promise<void> {
+  if (!jobId) return;
+  const job = await getIngestJob(jobId);
+  if (job?.cancelled) throw new IngestCancelledError();
 }
 
 /**
@@ -1473,6 +1511,112 @@ async function attachIngestTrigger(
 }
 
 /**
+ * Attach a re-see to an already-ingested page (SHA-256 skip). Same write path
+ * as URL/content dedup — no Analysis, no Generation.
+ */
+export async function recordSourceResee(
+  slug: string,
+  source: {
+    url: string;
+    type: SourceEntry["type"];
+    triggeredBy?: string;
+    actorOwner?: string;
+  },
+): Promise<IngestResult | null> {
+  const result = await attachIngestTrigger(slug, source);
+  return result ? { ...result, skipped: true, deduped: true } : null;
+}
+
+function classificationContext(relativePath?: string): string | undefined {
+  if (!relativePath) return undefined;
+  const dirs = relativePath.split("/").slice(0, -1).filter(Boolean);
+  return dirs.length > 0 ? dirs.join(" > ") : undefined;
+}
+
+const ANALYSIS_SYSTEM_PROMPT = `You analyze a source document for a wiki ingest. Reply with ONLY a JSON object, no markdown fences, with these keys:
+- entities: string[] (people, orgs, tools)
+- concepts: string[]
+- arguments: string[] (claims the source makes)
+- existingLinks: string[] (likely wiki titles or slugs this should link)
+- tensions: string[] (contradictions or open questions)
+- recommendedStructure: string (short note on how to organize the page)
+- classificationContext: string (echo any folder location you were given, or "")
+Write all string values in English.`;
+
+async function analyzeSource(
+  title: string,
+  content: string,
+  relativePath?: string,
+): Promise<IngestAnalysis> {
+  const context = classificationContext(relativePath);
+  if (!hasLLMKey()) {
+    return emptyIngestAnalysis(context);
+  }
+  const user = [
+    `Title: ${title}`,
+    context ? `Folder location (classification context): ${context}` : "",
+    "",
+    content.slice(0, MAX_LLM_INPUT_CHARS),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  try {
+    const raw = await callLLM(ANALYSIS_SYSTEM_PROMPT, user, {
+      maxOutputTokens: 2_000,
+    });
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    const parsed =
+      start >= 0 && end > start
+        ? parseIngestAnalysis(JSON.parse(raw.slice(start, end + 1)))
+        : null;
+    const analysis = parsed ?? emptyIngestAnalysis(context);
+    if (context && !analysis.classificationContext) {
+      analysis.classificationContext = context;
+    }
+    return analysis;
+  } catch (error) {
+    logger.warn("ingest", "analysis JSON failed; using empty analysis", error);
+    return emptyIngestAnalysis(context);
+  }
+}
+
+async function runTwoStepSynthesis(input: {
+  title: string;
+  content: string;
+  owner: string;
+  cache?: GuidanceCache;
+  jobId?: string;
+  reuseAnalysis?: boolean;
+  relativePath?: string;
+}): Promise<string> {
+  return withFileLock(`ingest-llm:${input.owner}`, async () => {
+    let analysis: IngestAnalysis | null = null;
+    if (input.reuseAnalysis && input.jobId) {
+      analysis = await loadIngestAnalysis(input.jobId);
+    }
+    if (!analysis) {
+      if (input.jobId) {
+        await updateIngestJob(input.jobId, { stage: "analysis" });
+      }
+      analysis = await analyzeSource(input.title, input.content, input.relativePath);
+      if (input.jobId) await saveIngestAnalysis(input.jobId, analysis);
+    }
+    await assertNotCancelled(input.jobId);
+    if (input.jobId) {
+      await updateIngestJob(input.jobId, { stage: "generation" });
+    }
+    return synthesizeBody(
+      input.title,
+      input.content,
+      input.owner,
+      input.cache,
+      analysis,
+    );
+  });
+}
+
+/**
  * Synthesize the wiki body from IMAGE-FREE source text: a single LLM call for
  * short content, MAP/REDUCE for long content (parallel map in bounded-concurrency
  * batches → merge), or a deterministic fallback page when there's no LLM key.
@@ -1484,12 +1628,17 @@ async function synthesizeBody(
   content: string,
   owner?: string,
   cache?: GuidanceCache,
+  analysis?: IngestAnalysis,
 ): Promise<string> {
   if (!hasLLMKey()) {
     // Derived title so a title-less paste doesn't emit an empty `# ` H1.
     return generateFallbackPage(title, content);
   }
-  const systemPrompt = await buildIngestSystemPrompt(owner, cache);
+  let systemPrompt = await buildIngestSystemPrompt(owner, cache);
+  systemPrompt += `\n\nWrite the wiki page in English only.`;
+  if (analysis) {
+    systemPrompt += `\n\nConsume this Analysis JSON when writing the page. Do not ignore it:\n${JSON.stringify(analysis)}`;
+  }
   const chunks = chunkText(content, MAX_LLM_INPUT_CHARS);
   // Larger output budget so the ## Details section can preserve substantive
   // source content instead of being truncated.
@@ -1615,13 +1764,14 @@ export async function ingest(
   // by the next one.
   const guidanceCache = options?.guidanceCache ?? createGuidanceCache();
 
-  // Dedup by content: if identical content was already ingested (any slug),
-  // attach the triggerer and skip the LLM + embedding.
+  // Dedup by SHA-256 of stored Source bytes — not FNV-1a. FNV `contentHash`
+  // stays on the page for embedding stale-check only.
   const hash = contentHash(content);
+  const sha256 = options?.contentSha256 ?? (await sourceSha256(content));
   if (!prebuiltContent) {
-    const dupSlug = await resolveContentHash(hash);
+    const dupSlug = await resolveContentSha256(sha256);
     if (dupSlug) {
-      const result = await attachIngestTrigger(dupSlug, {
+      const result = await recordSourceResee(dupSlug, {
         url:
           options?.sourceUrl ??
           (options?.sourceType === "email" ? "email" : "text-paste"),
@@ -1643,12 +1793,15 @@ export async function ingest(
     // text and the body is clean prose (no inline images, no `## Figures`
     // gallery, no re-hosting).
     const cleanContent = stripImageMarkdown(content);
-    wikiContent = await synthesizeBody(
-      effectiveTitle,
-      cleanContent,
+    wikiContent = await runTwoStepSynthesis({
+      title: effectiveTitle,
+      content: cleanContent,
       owner,
-      guidanceCache,
-    );
+      cache: guidanceCache,
+      jobId: options?.jobId,
+      reuseAnalysis: options?.reuseAnalysis,
+      relativePath: options?.relativePath,
+    });
   }
 
   // Pull the leading `CONCEPT:` / `ALIASES:` header lines the synthesis prompt
@@ -1772,6 +1925,7 @@ export async function ingest(
     supersedes: "",
     aliases: [],
     content_hash: hash,
+    content_sha256: sha256,
   };
 
   // Agent-scoped pages carry a `type` (e.g. "agent-knowledge") so they're
@@ -1998,6 +2152,8 @@ export async function ingest(
 
   const contentWithFm = serializeFrontmatter(frontmatter, wikiContent);
 
+  await assertNotCancelled(options?.jobId);
+
   // 5. Hand off to the unified write pipeline. We pass the raw `content` as
   // `crossRefSource` so the LLM sees the full document when picking related
   // pages, matching the previous behaviour.
@@ -2017,10 +2173,27 @@ export async function ingest(
   //    (writeWikiPageWithSideEffects → runPageLifecycleOp) — no caller-side
   //    call needed. The source index (URL/content-hash → slug) is caller-owned,
   //    so refresh it here for future dedup hits.
+  const sourcePath = options?.sourcePath
+    || (options?.relativePath
+      ? `raw/sources/${options.relativePath}`
+      : `raw/sources/${slug}/${rawId}.md`);
+  await runIngestBookkeeping({
+    owner,
+    actor,
+    sourceTitle: effectiveTitle,
+    sourceText: content,
+    sourcePath,
+    sourceUrl: options?.sourceUrl,
+    sourceType,
+    rawId,
+  });
+
+  // Bookkeeping first: a throw here can retry without SHA-skipping this write.
   updateSourceIndexForPage(
     slug,
     typeof frontmatter.source_url === "string" ? frontmatter.source_url : undefined,
     hash,
+    sha256,
   );
 
   // An ingest that leaves the page disputed used to auto-open a talk

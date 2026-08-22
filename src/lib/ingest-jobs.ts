@@ -14,14 +14,21 @@ import type { EmailIngestMetadata } from "./email-ingest";
 /** Default TTL for terminal ingest jobs before GC deletes the file (7 days). */
 export const INGEST_JOB_GC_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-export type IngestJobStatus = "queued" | "processing" | "done" | "failed";
+export type IngestJobStatus = "queued" | "processing" | "done" | "failed" | "skipped";
 export type IngestJobStage =
   | "queued"
   | "extracting"
+  | "analysis"
+  | "generation"
   | "synthesizing"
   | "indexing"
   | "deriving-knowledge"
   | "complete";
+
+export const INGEST_CANCELLED_COPY = "Cancelled — no pages were written.";
+
+export type IngestJobKind = "ingest" | "embed";
+export type IngestJobOrigin = "plaud";
 
 /**
  * A job that's been `queued`/`processing` longer than this is treated as
@@ -71,6 +78,18 @@ export interface IngestJob {
   source?: "email";
   /** Owner-only inbound-email details shown in Recent ingests. */
   email?: EmailIngestMetadata;
+  /** Plaud-origin Intake. Absent on other doors. */
+  origin?: IngestJobOrigin;
+  /** Stored Source path (`raw/sources/…`) so retry does not store again. */
+  sourceRel?: string;
+  relativePath?: string;
+  sourceType?: string;
+  contentSha256?: string;
+  kind?: IngestJobKind;
+  cancelled?: boolean;
+  reuseAnalysis?: boolean;
+  progressDone?: number;
+  progressTotal?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -92,8 +111,16 @@ export async function createIngestJob(input: {
   title?: string;
   source?: "email";
   email?: EmailIngestMetadata;
+  origin?: IngestJobOrigin;
+  sourceRel?: string;
+  relativePath?: string;
+  sourceType?: string;
+  contentSha256?: string;
+  kind?: IngestJobKind;
+  status?: IngestJobStatus;
 }): Promise<IngestJob> {
   const now = new Date().toISOString();
+  const status = input.status ?? "queued";
   const job: IngestJob = {
     jobId: input.jobId,
     ...(input.url ? { url: input.url } : {}),
@@ -101,8 +128,14 @@ export async function createIngestJob(input: {
     title: input.title,
     ...(input.source ? { source: input.source } : {}),
     ...(input.email ? { email: input.email } : {}),
-    status: "queued",
-    stage: "queued",
+    ...(input.origin ? { origin: input.origin } : {}),
+    ...(input.sourceRel ? { sourceRel: input.sourceRel } : {}),
+    ...(input.relativePath ? { relativePath: input.relativePath } : {}),
+    ...(input.sourceType ? { sourceType: input.sourceType } : {}),
+    ...(input.contentSha256 ? { contentSha256: input.contentSha256 } : {}),
+    ...(input.kind ? { kind: input.kind } : {}),
+    status,
+    stage: status === "skipped" ? "complete" : "queued",
     createdAt: now,
     updatedAt: now,
   };
@@ -157,9 +190,28 @@ export async function getIngestJob(jobId: string): Promise<IngestJob | null> {
  * `null`) if the job is gone — a status update must never resurrect or partially
  * write a record.
  */
+export type IngestJobPatch = Partial<
+  Pick<
+    IngestJob,
+    | "status"
+    | "stage"
+    | "slug"
+    | "error"
+    | "title"
+    | "cancelled"
+    | "reuseAnalysis"
+    | "progressDone"
+    | "progressTotal"
+    | "contentSha256"
+    | "sourceRel"
+    | "origin"
+    | "kind"
+  >
+>;
+
 export async function updateIngestJob(
   jobId: string,
-  patch: Partial<Pick<IngestJob, "status" | "stage" | "slug" | "error" | "title">>,
+  patch: IngestJobPatch,
 ): Promise<IngestJob | null> {
   const existing = await getIngestJob(jobId);
   if (!existing) {
@@ -179,7 +231,57 @@ export async function updateIngestJob(
 // Garbage collection — purge terminal jobs older than a TTL
 // ---------------------------------------------------------------------------
 
-const TERMINAL_STATUSES: Set<IngestJobStatus> = new Set(["done", "failed"]);
+const TERMINAL_STATUSES: Set<IngestJobStatus> = new Set(["done", "failed", "skipped"]);
+
+/**
+ * Ask a queued or in-flight job to stop before Page writes. Terminal jobs are
+ * left as they are. A queued job becomes failed immediately so Activity can
+ * offer Retry; an in-flight job sets `cancelled` and ingest observes it
+ * immediately before `writeWikiPageWithSideEffects`.
+ */
+export async function cancelIngestJob(
+  jobId: string,
+  owner: string,
+): Promise<IngestJob | null> {
+  const job = await getIngestJob(jobId);
+  if (!job || job.owner !== owner) return null;
+  if (job.status === "done" || job.status === "skipped") return job;
+  if (job.status === "failed") {
+    // Do not overwrite an existing failed error with cancelled copy.
+    if (job.cancelled) return job;
+    return updateIngestJob(jobId, { cancelled: true });
+  }
+  if (job.status === "processing") {
+    // Keep processing so Retry cannot start a second compile mid-write.
+    return updateIngestJob(jobId, { cancelled: true });
+  }
+  return updateIngestJob(jobId, {
+    cancelled: true,
+    status: "failed",
+    error: INGEST_CANCELLED_COPY,
+  });
+}
+
+/**
+ * Reset a failed job so the same Source can be compiled again. Does not store
+ * bytes. Caller re-enqueues the existing `sourceRel`.
+ */
+export async function retryIngestJob(
+  jobId: string,
+  owner: string,
+): Promise<IngestJob | null> {
+  const job = await getIngestJob(jobId);
+  if (!job || job.owner !== owner) return null;
+  if (job.status === "processing") return null;
+  if (job.status !== "failed") return null;
+  return updateIngestJob(jobId, {
+    status: "queued",
+    stage: "queued",
+    error: "",
+    cancelled: false,
+    reuseAnalysis: true,
+  });
+}
 const JOBS_PREFIX = "ingest-jobs";
 
 /**

@@ -55,6 +55,11 @@ export interface IngestResult {
    * rather than "created".
    */
   deduped?: boolean;
+  /**
+   * True when SHA-256 of the stored Source bytes already had a page — Activity
+   * shows `skipped` and Analysis/Generation did not run.
+   */
+  skipped?: boolean;
 }
 
 /** Result from a query against the wiki. */

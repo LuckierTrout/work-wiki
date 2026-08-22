@@ -21,8 +21,10 @@ import { listWikiPages, readWikiPageWithFrontmatter } from "./wiki";
 export interface SourceIndex {
   /** Maps `source_url` → canonical slug */
   byUrl: Map<string, string>;
-  /** Maps `content_hash` → canonical slug */
+  /** Maps FNV `content_hash` → canonical slug (embedding stale-check only) */
   byHash: Map<string, string>;
+  /** Maps SHA-256 of stored Source bytes → canonical slug (ingest skip) */
+  bySha256: Map<string, string>;
 }
 
 let cachedIndex: SourceIndex | null = null;
@@ -117,11 +119,11 @@ export function normalizeUrl(url: string): string {
  * page) and small, like the alias index.
  */
 export async function buildSourceIndex(): Promise<SourceIndex> {
-  const index: SourceIndex = { byUrl: new Map(), byHash: new Map() };
+  const index: SourceIndex = { byUrl: new Map(), byHash: new Map(), bySha256: new Map() };
   const pages = await listWikiPages();
 
   for (const entry of pages) {
-    if (entry.slug === "index" || entry.slug === "log") continue;
+    if (entry.slug === "index" || entry.slug === "log" || entry.slug === "overview") continue;
     const page = await readWikiPageWithFrontmatter(entry.slug);
     if (!page) continue;
 
@@ -132,6 +134,10 @@ export async function buildSourceIndex(): Promise<SourceIndex> {
     const hash = page.frontmatter.content_hash;
     if (typeof hash === "string" && hash.trim() !== "") {
       index.byHash.set(hash, entry.slug);
+    }
+    const sha = page.frontmatter.content_sha256;
+    if (typeof sha === "string" && sha.trim() !== "") {
+      index.bySha256.set(sha, entry.slug);
     }
   }
 
@@ -163,6 +169,45 @@ export async function resolveContentHash(hash: string): Promise<string | null> {
   return index.byHash.get(hash) ?? null;
 }
 
+/** Resolve a SHA-256 of stored Source bytes to an existing canonical slug. */
+export async function resolveContentSha256(digest: string): Promise<string | null> {
+  if (!digest || digest.trim() === "") return null;
+  const index = await getSourceIndex();
+  return index.bySha256.get(digest) ?? null;
+}
+
+/**
+ * The already-stored `raw/sources/…` path on a page, if frontmatter recorded one.
+ * Used by Intake skip so a SHA hit does not write a second Source object.
+ */
+export async function resolveStoredSourcePath(slug: string): Promise<string | undefined> {
+  const page = await readWikiPageWithFrontmatter(slug);
+  if (!page) return undefined;
+  const raw = page.frontmatter.sources;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (
+            item &&
+            typeof item === "object" &&
+            typeof (item as { url?: unknown }).url === "string" &&
+            (item as { url: string }).url.startsWith("raw/sources/")
+          ) {
+            return (item as { url: string }).url;
+          }
+        }
+      }
+    } catch {
+      // malformed sources[] — fall through to source_url
+    }
+  }
+  const url = page.frontmatter.source_url;
+  if (typeof url === "string" && url.startsWith("raw/sources/")) return url;
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Incremental update / removal
 // ---------------------------------------------------------------------------
@@ -175,6 +220,7 @@ export function updateSourceIndexForPage(
   slug: string,
   sourceUrl: string | undefined,
   contentHash: string | undefined,
+  contentSha256?: string,
 ): void {
   if (!cachedIndex) return;
   if (
@@ -187,6 +233,9 @@ export function updateSourceIndexForPage(
   if (typeof contentHash === "string" && contentHash.trim() !== "") {
     cachedIndex.byHash.set(contentHash, slug);
   }
+  if (typeof contentSha256 === "string" && contentSha256.trim() !== "") {
+    cachedIndex.bySha256.set(contentSha256, slug);
+  }
 }
 
 /** Remove all source-index entries pointing to a slug (called on delete). */
@@ -197,5 +246,8 @@ export function removeSourceForPage(slug: string): void {
   }
   for (const [key, value] of cachedIndex.byHash) {
     if (value === slug) cachedIndex.byHash.delete(key);
+  }
+  for (const [key, value] of cachedIndex.bySha256) {
+    if (value === slug) cachedIndex.bySha256.delete(key);
   }
 }

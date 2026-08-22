@@ -370,7 +370,7 @@ export function TreePanel({
   );
 }
 
-interface FileRowsProps {
+export interface FileRowsProps {
   nodes: readonly FileNode[];
   depth: number;
   /** Set on the `<ul>` so the disclosure above it can `aria-controls` it. */
@@ -381,6 +381,7 @@ interface FileRowsProps {
   onToggle: (key: string) => void;
   selection: TreeSelection | null;
   onSelect: (selection: TreeSelection) => void;
+  onDelete?: (path: string) => void;
 }
 
 /**
@@ -389,7 +390,7 @@ interface FileRowsProps {
  * nothing in it — and an EMPTY directory gets no control at all, because a
  * disclosure that expands to nothing is a button with no effect to observe.
  */
-function FileRows({
+export function FileRows({
   nodes,
   depth,
   id,
@@ -398,6 +399,7 @@ function FileRows({
   onToggle,
   selection,
   onSelect,
+  onDelete,
 }: FileRowsProps) {
   // Ids are positional and chained through the parent list's id, never built
   // from `node.path`: a directory or file name may contain a space, and a space
@@ -422,6 +424,16 @@ function FileRows({
                   {node.name}
                 </span>
               </button>
+              {onDelete && (
+                <button
+                  type="button"
+                  className="wb-tree-delete"
+                  aria-label={`Delete ${node.name}`}
+                  onClick={() => onDelete(node.path)}
+                >
+                  Delete
+                </button>
+              )}
             </li>
           );
         }
@@ -467,6 +479,7 @@ function FileRows({
                 onToggle={onToggle}
                 selection={selection}
                 onSelect={onSelect}
+                onDelete={onDelete}
               />
             )}
           </li>

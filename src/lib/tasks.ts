@@ -83,6 +83,19 @@ export type Task =
        * folder file must not be forced through staging just to keep the path.
        */
       relativePath?: string;
+      /** Plaud-origin Intake — skip `extract-actions` (Todos are Epic 4). */
+      origin?: "plaud";
+      /** Generation-only retry: reuse persisted Analysis JSON. */
+      reuseAnalysis?: boolean;
+      /** Stored Source path for retry without a second store. */
+      sourcePath?: string;
+      /** SHA-256 of stored Source bytes (ingest skip identity). */
+      contentSha256?: string;
+      /**
+       * Vector-on backfill. Not a second queue kind — the same ingest Task
+       * rebuilds embeddings and reports progress on the job record.
+       */
+      rebuildEmbeddings?: boolean;
       /** Inbound-email metadata used for owner-only activity and completion
        *  notifications. Attachment bytes are referenced through staged keys. */
       email?: EmailIngestMetadata;
@@ -364,7 +377,13 @@ export function parseTask(body: unknown): Task | null {
         }
         if (attachments.length === 0) attachments = undefined;
       }
-      if (!hasUrl && !hasContent && !staged && !attachments) return null; // need a source
+      const rebuildEmbeddings = t.rebuildEmbeddings === true;
+      if (!hasUrl && !hasContent && !staged && !attachments && !rebuildEmbeddings) {
+        return null; // need a source
+      }
+      if (rebuildEmbeddings && (hasUrl || hasContent || staged || attachments)) {
+        return null;
+      }
       // Reject incoherent combinations so the consumer's branch-order precedence
       // is an ENFORCED invariant, not a silent "first match wins". `staged` is
       // exclusive (it's its own source); `source` only qualifies a `url`.
@@ -402,9 +421,12 @@ export function parseTask(body: unknown): Task | null {
         t.sourceType === "email"
           ? t.sourceType
           : undefined;
-      if ((sourceType === "email") !== Boolean(email)) return null;
-      if (attachments && sourceType !== "email") return null;
-      if (attachments && staged && staged.kind !== "text") return null;
+      if (!rebuildEmbeddings) {
+        if ((sourceType === "email") !== Boolean(email)) return null;
+        if (attachments && sourceType !== "email") return null;
+        if (attachments && staged && staged.kind !== "text") return null;
+      }
+      const origin = t.origin === "plaud" ? "plaud" : undefined;
       return {
         kind: "ingest",
         ...(hasUrl ? { url: t.url as string } : {}),
@@ -437,6 +459,15 @@ export function parseTask(body: unknown): Task | null {
         ...(typeof t.learningFor === "string" && t.learningFor.trim() !== ""
           ? { learningFor: t.learningFor }
           : {}),
+        ...(origin ? { origin } : {}),
+        ...(t.reuseAnalysis === true ? { reuseAnalysis: true } : {}),
+        ...(typeof t.sourcePath === "string" && t.sourcePath.trim()
+          ? { sourcePath: t.sourcePath.slice(0, 1_000) }
+          : {}),
+        ...(typeof t.contentSha256 === "string" && t.contentSha256.trim()
+          ? { contentSha256: t.contentSha256 }
+          : {}),
+        ...(rebuildEmbeddings ? { rebuildEmbeddings: true } : {}),
       };
     }
     case "maintain": {

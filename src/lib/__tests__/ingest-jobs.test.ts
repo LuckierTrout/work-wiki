@@ -10,6 +10,9 @@ import {
   purgeStaleIngestJobs,
   listIngestJobs,
   deleteIngestJob,
+  cancelIngestJob,
+  retryIngestJob,
+  INGEST_CANCELLED_COPY,
   INGEST_JOB_STALE_MS,
   INGEST_JOB_GC_TTL_MS,
 } from "../ingest-jobs";
@@ -127,6 +130,34 @@ describe("ingest-jobs", () => {
 
     expect(await deleteIngestJob("private", "bob")).toBe(false);
     expect(await getIngestJob("private")).not.toBeNull();
+  });
+
+  it("cancel of queued becomes failed; cancel of processing stays processing", async () => {
+    await createIngestJob({ jobId: "queued-1", owner: "alice", title: "Q" });
+    const queued = await cancelIngestJob("queued-1", "alice");
+    expect(queued).toMatchObject({
+      status: "failed",
+      cancelled: true,
+      error: INGEST_CANCELLED_COPY,
+    });
+
+    await createIngestJob({ jobId: "proc-1", owner: "alice", title: "P" });
+    await updateIngestJob("proc-1", { status: "processing" });
+    const processing = await cancelIngestJob("proc-1", "alice");
+    expect(processing).toMatchObject({ status: "processing", cancelled: true });
+    expect(await retryIngestJob("proc-1", "alice")).toBeNull();
+    expect((await getIngestJob("proc-1"))?.status).toBe("processing");
+  });
+
+  it("does not overwrite an existing failed error with cancelled copy", async () => {
+    await createIngestJob({ jobId: "fail-1", owner: "alice", title: "F" });
+    await updateIngestJob("fail-1", { status: "failed", error: "LLM timeout" });
+    const cancelled = await cancelIngestJob("fail-1", "alice");
+    expect(cancelled).toMatchObject({
+      status: "failed",
+      cancelled: true,
+      error: "LLM timeout",
+    });
   });
 
   it("protects queued and processing jobs from deletion", async () => {

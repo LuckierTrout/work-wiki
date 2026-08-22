@@ -34,6 +34,25 @@ describe("enqueueOrInline", () => {
     expect(mockedUpdate).toHaveBeenCalledWith("j1", { status: "done", slug: "page-a" });
   });
 
+  it("queue absent + skipped inline → marks the job skipped", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    const res = await enqueueOrInline("j1", task, async () => ({
+      primarySlug: "page-a",
+      skipped: true,
+    }));
+    expect(await res.json()).toEqual({
+      queued: false,
+      skipped: true,
+      jobId: "j1",
+      slug: "page-a",
+    });
+    expect(mockedUpdate).toHaveBeenCalledWith("j1", {
+      status: "skipped",
+      stage: "complete",
+      slug: "page-a",
+    });
+  });
+
   it("enqueue THROWS → marks job failed and rethrows (no stuck 'queued')", async () => {
     mockedEnqueue.mockRejectedValue(new Error("queue down"));
     await expect(enqueueOrInline("j1", task, vi.fn())).rejects.toThrow("queue down");

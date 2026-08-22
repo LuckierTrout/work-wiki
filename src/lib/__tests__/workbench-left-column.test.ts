@@ -32,6 +32,8 @@ import {
   WIKILINK_MISSING_COPY,
 } from "../workbench-preview";
 import { WORKBENCH_MODES } from "../workbench-modes";
+import { activityDisplayStatus } from "../workbench-activity";
+import { nextSourceWindowLimit, SOURCES_WINDOW_STEP } from "../workbench-tree";
 
 const SRC = path.resolve(__dirname, "../..");
 const WORKBENCH = path.join(SRC, "components/workbench");
@@ -672,6 +674,8 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
     expect(controls).not.toMatch(/["'`]Import \/ Upload["'`]/);
     expect(controls).toContain("INTAKE_FOLDER_LABEL");
     expect(controls).not.toMatch(/["'`]Folder["'`]/);
+    expect(controls).toContain("INTAKE_PLAUD_LABEL");
+    expect(controls).not.toMatch(/["'`]Plaud["'`]/);
     // A real file input, with the accept attribute DERIVED from the allowlist.
     expect(controls).toContain('type="file"');
     expect(controls).toContain("accept={INTAKE_ACCEPT_ATTR}");
@@ -693,8 +697,14 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
     // picker hid office files so they never reached the 2.1 refusal sentence.
     const folderBlock = controls.slice(
       controls.indexOf("{busy ? INTAKE_BUSY_COPY : INTAKE_FOLDER_LABEL}"),
+      controls.indexOf("{busy ? INTAKE_BUSY_COPY : INTAKE_PLAUD_LABEL}"),
     );
     expect(folderBlock).not.toContain("accept=");
+    const plaudBlock = controls.slice(
+      controls.indexOf("{busy ? INTAKE_BUSY_COPY : INTAKE_PLAUD_LABEL}"),
+    );
+    expect(plaudBlock).toContain("accept={INTAKE_ACCEPT_ATTR}");
+    expect(plaudBlock).not.toMatch(/\bwebkitdirectory\b/);
   });
 
   it("dims the hidden picker with its button, and names the control once", async () => {
@@ -719,6 +729,63 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
     const submit = controls.slice(controls.indexOf("onSubmit="));
     expect(submit).toContain("onUrl(draft)");
     expect(submit.slice(0, submit.indexOf("</form>"))).not.toContain('setDraft("")');
+  });
+
+  it("docks Activity under the left column on Wiki, Sources, and Files", async () => {
+    const source = await read("Workbench.tsx");
+    expect(source).toContain("<ActivityDock");
+    expect(source).toMatch(
+      /\(mode === "wiki" \|\| mode === "sources" \|\| mode === "files"\) && !settingsOpen && \(/,
+    );
+    expect(source).toContain("<SourcesTree");
+    expect(source).toContain("ConfirmDialog");
+    expect(source).toContain("SOURCE_DELETE_TITLE");
+    expect(source).toContain("if (!sourceDeletePath || sourceDeleteBusy) return;");
+    const activity = await read("ActivityDock.tsx");
+    expect(activity).toContain("ACTIVITY_TITLE");
+    expect(activity).toContain("ACTIVITY_ROUTE");
+    expect(activity).not.toContain("extract-actions");
+    const sources = await read("SourcesTree.tsx");
+    expect(sources).toContain("workbenchMode(\"sources\").emptyState");
+    expect(sources).toContain("SOURCES_WINDOW_INITIAL");
+    expect(sources).not.toContain("window.confirm");
+    expect(sources).toContain("nextSourceWindowLimit");
+    expect(activity).toContain("readStoredActivityOpen");
+    expect(activity).toContain("retryingId");
+    expect(activity).toContain("cancel");
+    expect(activity).toContain("retry");
+  });
+
+  it("has no Plaud connect or OAuth path", async () => {
+    const controls = await read("IntakeControls.tsx");
+    expect(controls).not.toMatch(/OAuth|list\/pull|Plaud connect/i);
+    const settings = await read("SettingsCanvas.tsx");
+    expect(settings).not.toMatch(/Plaud connect|Plaud OAuth/i);
+    const ingest = await readFile(path.join(SRC, "lib/ingest.ts"), "utf8");
+    expect(ingest).toContain("withFileLock(`ingest-llm:${input.owner}`");
+    expect(ingest).toContain('stage: "analysis"');
+    expect(ingest).toContain('stage: "generation"');
+    expect(ingest).toMatch(/Write all string values in English|English-only/);
+    const activity = await readFile(
+      path.join(SRC, "app/api/workbench/activity/route.ts"),
+      "utf8",
+    );
+    expect(activity).toContain("retryIngestJob");
+    expect(activity).toContain('job.kind === "embed"');
+    expect(activity).toContain("rebuildEmbeddings");
+    expect(activity).toContain("job.cancelled");
+    expect(activity).not.toContain("saveRawSource");
+    expect(activity).not.toContain("saveRawSourceFor");
+  });
+
+  it("maps cancelled processing to failed and deriving-knowledge to Generation", () => {
+    expect(activityDisplayStatus("processing", "analysis", "ingest", true)).toBe(
+      "failed",
+    );
+    expect(activityDisplayStatus("processing", "deriving-knowledge")).toBe(
+      "Generation",
+    );
+    expect(nextSourceWindowLimit(80, 240, false)).toBe(80 + SOURCES_WINDOW_STEP);
   });
 
   it("offers the same control in Wiki mode and on the Sources column", async () => {

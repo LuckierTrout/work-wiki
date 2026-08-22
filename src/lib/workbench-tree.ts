@@ -28,6 +28,10 @@ import type { WorkbenchModeId } from "./workbench-modes";
 /** Hard cap on nodes in one file listing. Reaching it sets `truncated`. */
 export const WORKBENCH_FILE_LIMIT = 2000;
 
+/** First-paint window for the Sources tree — grow on scroll, do not remount. */
+export const SOURCES_WINDOW_INITIAL = 80;
+export const SOURCES_WINDOW_STEP = 80;
+
 /**
  * Deepest level the walk descends to, counting the root directory as level 1:
  * `wiki/` is 1, `wiki/a.md` is 2, `raw/sources/` is 2, a hashed Intake key
@@ -620,6 +624,63 @@ function sortNodes(nodes: FileNode[]): void {
     return collator.compare(a.name, b.name);
   });
   for (const node of nodes) sortNodes(node.children);
+}
+
+/** Children of `raw/sources/` — the Sources-mode tree. */
+export function sourcesTreeFromFiles(files: readonly FileNode[]): FileNode[] {
+  const raw = files.find((node) => node.name === "raw" && node.isDirectory);
+  const sources = raw?.children.find(
+    (node) => node.name === "sources" && node.isDirectory,
+  );
+  return sources?.children ?? [];
+}
+
+export function countSourceLeaves(nodes: readonly FileNode[]): number {
+  let n = 0;
+  for (const node of nodes) {
+    if (node.isDirectory) n += countSourceLeaves(node.children);
+    else n += 1;
+  }
+  return n;
+}
+
+/**
+ * Keep the first `limit` leaves, preserving ancestor directories so a window
+ * increase only appends rows — the tree root is not remounted.
+ */
+/** Grow the Sources window when first paint does not overflow. */
+export function nextSourceWindowLimit(
+  current: number,
+  leafCount: number,
+  overflows: boolean,
+  step: number = SOURCES_WINDOW_STEP,
+): number {
+  if (overflows || current >= leafCount) return current;
+  return Math.min(leafCount, current + step);
+}
+
+export function windowSourceTree(
+  nodes: readonly FileNode[],
+  limit: number,
+): FileNode[] {
+  let remaining = limit;
+  function take(list: readonly FileNode[]): FileNode[] {
+    const out: FileNode[] = [];
+    for (const node of list) {
+      if (remaining <= 0) break;
+      if (!node.isDirectory) {
+        remaining -= 1;
+        out.push(node);
+        continue;
+      }
+      const children = take(node.children);
+      if (children.length > 0 || node.children.length === 0) {
+        out.push({ ...node, children });
+      }
+    }
+    return out;
+  }
+  return take(nodes);
 }
 
 /** Depth-first lookup by path — the Preview column's only read of the tree. */

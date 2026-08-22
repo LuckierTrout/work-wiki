@@ -39,6 +39,7 @@ import {
   INTAKE_FOLDER_COPY,
   INTAKE_FOLDER_LABEL,
   INTAKE_IMPORT_LABEL,
+  INTAKE_PLAUD_LABEL,
   INTAKE_TOO_DEEP_COPY,
   INTAKE_IN_FLIGHT_COPY,
   INTAKE_MIME_TYPES,
@@ -350,6 +351,7 @@ describe("the copy", () => {
     }
     expect(INTAKE_IMPORT_LABEL).toBe("Import / Upload");
     expect(INTAKE_FOLDER_LABEL).toBe("Folder");
+    expect(INTAKE_PLAUD_LABEL).toBe("Plaud");
   });
 });
 
@@ -375,8 +377,18 @@ vi.mock("@/lib/fetch", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../fetch")>()),
   fetchUrlContent: vi.fn(),
 }));
-vi.mock("@/lib/ingest", () => ({ ingest: vi.fn(async () => ({ slug: "stored" })) }));
+vi.mock("@/lib/ingest", () => ({
+  ingest: vi.fn(async () => ({ slug: "stored" })),
+  recordSourceResee: vi.fn(async () => ({ primarySlug: "existing", skipped: true })),
+}));
 vi.mock("@/lib/ingest-jobs", () => ({ createIngestJob: vi.fn(async () => ({})) }));
+vi.mock("@/lib/source-index", () => ({
+  resolveContentSha256: vi.fn(async () => null),
+  resolveStoredSourcePath: vi.fn(async () => "raw/sources/existing/abc.md"),
+}));
+vi.mock("@/lib/source-sha256", () => ({
+  sourceSha256: vi.fn(async () => "ab".repeat(32)),
+}));
 vi.mock("@/lib/ingest-staging", () => ({
   stageText: vi.fn(async () => "raw/uploads/job/source.md"),
 }));
@@ -393,7 +405,8 @@ import { fetchUrlContent } from "@/lib/fetch";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { createIngestJob } from "@/lib/ingest-jobs";
 import { stageText } from "@/lib/ingest-staging";
-import { ingest } from "@/lib/ingest";
+import { ingest, recordSourceResee } from "@/lib/ingest";
+import { resolveContentSha256 } from "@/lib/source-index";
 import { saveRawSourceFor, saveRawSourceTree } from "@/lib/raw";
 import { POST } from "@/app/api/workbench/intake/route";
 
@@ -403,15 +416,18 @@ const mockedFetchUrl = vi.mocked(fetchUrlContent);
 const mockedSave = vi.mocked(saveRawSourceFor);
 const mockedSaveTree = vi.mocked(saveRawSourceTree);
 const mockedIngest = vi.mocked(ingest);
+const mockedResee = vi.mocked(recordSourceResee);
+const mockedSha = vi.mocked(resolveContentSha256);
 const mockedJob = vi.mocked(createIngestJob);
 const mockedStage = vi.mocked(stageText);
 const mockedEnqueue = vi.mocked(enqueueOrInline);
 
 /** A multipart request carrying one file, as the picker and the drop both send. */
-function fileRequest(file?: File, relativePath?: string): Request {
+function fileRequest(file?: File, relativePath?: string, origin?: "plaud"): Request {
   const form = new FormData();
   if (file) form.append("file", file);
   if (relativePath) form.append("relativePath", relativePath);
+  if (origin) form.append("origin", origin);
   return new Request("http://localhost/api/workbench/intake", {
     method: "POST",
     body: form,
@@ -453,6 +469,7 @@ beforeEach(() => {
   mockedEnqueue.mockImplementation(async (jobId: string) =>
     NextResponse.json({ queued: true, jobId }, { status: 202 }),
   );
+  mockedSha.mockResolvedValue(null);
 });
 
 describe("POST /api/workbench/intake — who may write", () => {
@@ -677,6 +694,43 @@ describe("POST /api/workbench/intake — files", () => {
     expect(status).toBe(400);
     expect(body.error).toBe(INTAKE_BAD_PATH_COPY);
     expectNothingCommitted();
+  });
+
+  it("stamps Plaud-origin on the job and the queued task", async () => {
+    await post(fileRequest(new File(["# Meet"], "meet.md"), undefined, "plaud"));
+    expect(mockedJob.mock.calls[0][0]).toMatchObject({ origin: "plaud" });
+    const task = mockedEnqueue.mock.calls[0][1] as { origin?: string };
+    expect(task.origin).toBe("plaud");
+    expect(mockedIngest).not.toHaveBeenCalled();
+  });
+
+  it("skips Analysis/Generation when SHA256 already ingested", async () => {
+    mockedSha.mockResolvedValueOnce("existing-page");
+    const { status, body } = await post(fileRequest(new File(["# Same"], "same.md")));
+    expect(status).toBe(200);
+    expect(body.skipped).toBe(true);
+    expect(body.queued).toBe(false);
+    expect(body.path).toBe("raw/sources/existing/abc.md");
+    expect(mockedResee).toHaveBeenCalled();
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+    expect(mockedIngest).not.toHaveBeenCalled();
+    expect(mockedSave).not.toHaveBeenCalled();
+    expect(mockedSaveTree).not.toHaveBeenCalled();
+    expect(mockedJob.mock.calls[0][0]).toMatchObject({
+      status: "skipped",
+      sourceRel: "raw/sources/existing/abc.md",
+    });
+  });
+
+  it("does not write a second Source on a folder SHA256 hit", async () => {
+    mockedSha.mockResolvedValueOnce("existing-page");
+    const { status } = await post(
+      fileRequest(new File(["# Same"], "note.md"), "papers/energy/note.md"),
+    );
+    expect(status).toBe(200);
+    expect(mockedSave).not.toHaveBeenCalled();
+    expect(mockedSaveTree).not.toHaveBeenCalled();
+    expect(mockedEnqueue).not.toHaveBeenCalled();
   });
 
   it("refuses a file over the byte cap", async () => {
@@ -963,6 +1017,20 @@ describe("the client's per-item submit", () => {
     expect(outcome.unconfirmed).toBe(true);
     expect(outcome.error).toContain("the outcome is unknown");
     expect(intakeShouldRefresh([outcome])).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it("posts origin=plaud only when the Plaud pick asked", async () => {
+    const spy = stubFetch(ok);
+    await submitIntakeFile(new File(["a"], "a.md"), { origin: "plaud" });
+    expect((spy.mock.calls[0][1] as RequestInit).body).toBeInstanceOf(FormData);
+    expect(((spy.mock.calls[0][1] as RequestInit).body as FormData).get("origin")).toBe(
+      "plaud",
+    );
+
+    spy.mockClear();
+    await submitIntakeFile(new File(["b"], "b.md"));
+    expect(((spy.mock.calls[0][1] as RequestInit).body as FormData).get("origin")).toBeNull();
     vi.unstubAllGlobals();
   });
 

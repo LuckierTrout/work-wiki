@@ -48,6 +48,7 @@ export const WORKBENCH_TREE_TAB_KEY = "yopedia_workbench_tree_tab";
 export const WORKBENCH_SPLIT_KEY = "yopedia_workbench_split";
 export const WORKBENCH_SELECTION_KEY = "yopedia_workbench_selection";
 export const WORKBENCH_TREE_SCROLL_KEY = "yopedia_workbench_tree_scroll";
+export const WORKBENCH_SOURCES_SCROLL_KEY = "yopedia_workbench_sources_scroll";
 
 /** The only stored value that means "collapsed"; everything else is expanded. */
 const COLLAPSED_TRUE = "1";
@@ -275,4 +276,27 @@ export function writeStoredTreeScroll(tab: TreeTabId, offset: number): void {
     ...readStoredTreeScroll(),
     [tab]: storedOffset(Math.round(offset)),
   });
+}
+
+export function readStoredSourcesScroll(): number {
+  if (typeof window === "undefined") return 0;
+  try {
+    const raw = window.localStorage.getItem(WORKBENCH_SOURCES_SCROLL_KEY);
+    const value = raw ? Number.parseInt(raw, 10) : 0;
+    return Number.isInteger(value) && value >= 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function writeStoredSourcesScroll(offset: number): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      WORKBENCH_SOURCES_SCROLL_KEY,
+      String(storedOffset(Math.round(offset))),
+    );
+  } catch {
+    // private mode / quota
+  }
 }

@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-22-2026 17:00
+last_updated: 08-22-2026 18:02
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
@@ -47,19 +47,19 @@ development_status:
   1-9-settings-for-models-and-embeddings: done
   epic-1-retrospective: done
 
-  epic-2: backlog
+  epic-2: done
   2-1-upload-drag-drop-and-url-intake: done
   2-2-recursive-folder-import: done
   2-3-capture-url-or-clip: done
-  2-4-plaud-transcript-and-summary-upload: backlog
-  2-5-serial-durable-queue-and-activity: backlog
-  2-6-two-step-analysis-then-generation: backlog
-  2-7-sha256-skip-cache: backlog
-  2-8-index-log-overview-source-summary: backlog
-  2-9-embed-after-ingest-only-when-vector-is-on: backlog
-  2-10-confirm-gated-cascade-source-delete: backlog
-  2-11-progressive-sources-view: backlog
-  2-12-zip-export-and-import: backlog
+  2-4-plaud-transcript-and-summary-upload: done
+  2-5-serial-durable-queue-and-activity: done
+  2-6-two-step-analysis-then-generation: done
+  2-7-sha256-skip-cache: done
+  2-8-index-log-overview-source-summary: done
+  2-9-embed-after-ingest-only-when-vector-is-on: done
+  2-10-confirm-gated-cascade-source-delete: done
+  2-11-progressive-sources-view: done
+  2-12-zip-export-and-import: done
   epic-2-retrospective: optional
 
   epic-3: backlog

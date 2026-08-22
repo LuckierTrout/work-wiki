@@ -1,7 +1,17 @@
 import { NextResponse } from "next/server";
 import { getServicePrincipal } from "@/lib/auth";
 import { enqueueTask, parseTask } from "@/lib/tasks";
-import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest } from "@/lib/ingest";
+import {
+  ingest,
+  ingestUrl,
+  ingestPdf,
+  ingestImage,
+  ingestDocument,
+  reingest,
+  IngestCancelledError,
+} from "@/lib/ingest";
+import { rebuildVectorStore } from "@/lib/embeddings";
+import { INGEST_CANCELLED_COPY } from "@/lib/ingest-jobs";
 import { extractDocumentTextAsync } from "@/lib/document-extract";
 import { fixLintIssue } from "@/lib/lint-fix";
 import { getIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
@@ -12,7 +22,7 @@ import {
   listAgentsForOwner,
 } from "@/lib/agents";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
-import { isReadOnly } from "@/lib/config";
+import { getVectorSearchSettings, isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { logger } from "@/lib/logger";
 import { addToVault } from "@/lib/vault";
@@ -245,6 +255,59 @@ export async function POST(req: Request) {
     }
 
     // kind === "ingest"
+    if (task.rebuildEmbeddings) {
+      if (task.jobId) {
+        const current = await getIngestJob(task.jobId);
+        if (current?.cancelled) {
+          if (current.status !== "failed") {
+            await updateIngestJob(task.jobId, {
+              status: "failed",
+              error: current.error || INGEST_CANCELLED_COPY,
+            });
+          }
+          return NextResponse.json({ ok: true, cancelled: true });
+        }
+      }
+      if (!getVectorSearchSettings().enabled) {
+        if (task.jobId) {
+          await updateIngestJob(task.jobId, {
+            status: "failed",
+            error: "Vector search is off.",
+          });
+        }
+        return NextResponse.json({ error: "Vector search is off." }, { status: 422 });
+      }
+      if (task.jobId) {
+        await updateIngestJob(task.jobId, { status: "processing", stage: "indexing" });
+      }
+      await rebuildVectorStore(async (done, total) => {
+        if (task.jobId) {
+          await updateIngestJob(task.jobId, {
+            progressDone: done,
+            progressTotal: total,
+            stage: "indexing",
+          });
+        }
+      });
+      if (task.jobId) {
+        await updateIngestJob(task.jobId, { status: "done", stage: "complete" });
+      }
+      return NextResponse.json({ ok: true, rebuilt: true });
+    }
+
+    if (task.jobId) {
+      const current = await getIngestJob(task.jobId);
+      if (current?.cancelled) {
+        if (current.status === "queued") {
+          await updateIngestJob(task.jobId, {
+            status: "failed",
+            error: current.error || INGEST_CANCELLED_COPY,
+          });
+        }
+        return NextResponse.json({ ok: true, cancelled: true });
+      }
+    }
+
     // triggeredBy defaults to author (the common case); agent ingests pass it
     // explicitly so author=agent while triggeredBy=human owner.
     const triggeredBy = task.triggeredBy ?? task.author;
@@ -264,6 +327,11 @@ export async function POST(req: Request) {
       // use it to override the derived title (and, for images, the slug). The
       // text path passes title positionally below; for it `opts.title` is unused.
       ...(task.title && task.title.trim() ? { title: task.title.trim() } : {}),
+      ...(task.origin ? { origin: task.origin } : {}),
+      ...(task.jobId ? { jobId: task.jobId } : {}),
+      ...(task.reuseAnalysis ? { reuseAnalysis: true } : {}),
+      ...(task.contentSha256 ? { contentSha256: task.contentSha256 } : {}),
+      ...(task.sourcePath ? { sourcePath: task.sourcePath } : {}),
     };
     // For a tracked async job, record progress so the UI can poll the outcome.
     if (task.jobId) {
@@ -346,6 +414,22 @@ export async function POST(req: Request) {
       result = await ingest(task.title?.trim() || "Untitled", task.content ?? "", opts);
     }
 
+    if (result.skipped) {
+      if (task.jobId) {
+        await updateIngestJob(task.jobId, {
+          status: "skipped",
+          stage: "complete",
+          slug: result.primarySlug,
+        });
+      }
+      await Promise.all(stagedKeys.map((key) => deleteStaged(key)));
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        slug: result.primarySlug,
+      });
+    }
+
     if (documentSources.length > 0) {
       await preserveDocumentSources(
         result.primarySlug,
@@ -388,11 +472,13 @@ export async function POST(req: Request) {
     if (actionOwner) {
       if (task.jobId) await updateIngestJob(task.jobId, { stage: "deriving-knowledge" });
       try {
-        await enqueueTask({
-          kind: "extract-actions",
-          slug: result.primarySlug,
-          owner: actionOwner,
-        });
+        if (task.origin !== "plaud") {
+          await enqueueTask({
+            kind: "extract-actions",
+            slug: result.primarySlug,
+            owner: actionOwner,
+          });
+        }
       } catch (err) {
         logger.warn(
           "tasks",
@@ -464,6 +550,17 @@ export async function POST(req: Request) {
     if (isReadOnlyError(err)) {
       return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
     }
+    if (err instanceof IngestCancelledError) {
+      if (task.kind === "ingest" && task.jobId) {
+        await updateIngestJob(task.jobId, {
+          status: "failed",
+          error: INGEST_CANCELLED_COPY,
+        }).catch((writeErr) =>
+          logger.error("tasks", `failed to record cancel for ${task.jobId}`, writeErr),
+        );
+      }
+      return NextResponse.json({ ok: true, cancelled: true });
+    }
     const message = getErrorMessage(err);
     // Record the failure on a tracked async job so the user sees the reason
     // (a later retry that succeeds will overwrite this back to "done"). Guarded:
@@ -526,6 +623,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: message }, { status: 422 });
     }
     // Otherwise transient (LLM hiccup, lock contention) → retry.
+    // Ingest auto-retries at most 3 times, then stays failed for manual retry.
+    if (task.kind === "ingest" && Number.isFinite(queueAttempt) && queueAttempt >= 3) {
+      logger.warn("tasks", `ingest exhausted auto-retry (${queueAttempt}): ${message}`);
+      return NextResponse.json({ error: message }, { status: 422 });
+    }
     logger.error("tasks", `task "${task.kind}" failed`, err);
     return NextResponse.json({ error: message }, { status: 500 });
   }

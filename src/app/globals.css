@@ -2642,6 +2642,11 @@ body:has(.wb-shell) {
   padding: var(--wb-space-3) var(--wb-space-4);
   color: var(--wb-muted);
   font-weight: var(--wb-weight-strong);
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 /* The surface name inside that block. It was the block itself until Story 2.1
    gave Sources an Intake control underneath it, and `margin: 0` has to travel
@@ -3276,6 +3281,103 @@ body:has(.wb-shell) {
 .wb-tree-note {
   margin: 0;
   color: var(--wb-muted);
+}
+.wb-tree-list > li:has(.wb-tree-delete) {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-1);
+}
+.wb-tree-list > li:has(.wb-tree-delete) .wb-tree-row {
+  width: auto;
+  flex: 1 1 auto;
+}
+.wb-tree-delete {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 var(--wb-space-1);
+  border: 0;
+  background: transparent;
+  color: var(--wb-muted);
+  font-size: var(--wb-font-size);
+  cursor: pointer;
+}
+.wb-sources-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin-top: var(--wb-space-2);
+}
+.wb-activity {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--wb-border);
+  background: var(--wb-surface-subtle);
+}
+.wb-activity-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: var(--wb-space-2) var(--wb-space-4);
+  border: 0;
+  background: transparent;
+  color: var(--wb-foreground);
+  font-size: var(--wb-font-size);
+  font-weight: var(--wb-weight-strong);
+  cursor: pointer;
+}
+.wb-activity-count {
+  color: var(--wb-muted);
+  font-weight: normal;
+}
+.wb-activity-body {
+  padding: 0 var(--wb-space-4) var(--wb-space-3);
+  max-height: 40vh;
+  overflow: auto;
+}
+.wb-activity-bar {
+  width: 100%;
+  height: 6px;
+}
+.wb-activity-empty,
+.wb-activity-error {
+  margin: var(--wb-space-1) 0 0;
+  color: var(--wb-muted);
+}
+.wb-activity-list {
+  list-style: none;
+  margin: var(--wb-space-2) 0 0;
+  padding: 0;
+}
+.wb-activity-row {
+  padding: var(--wb-space-1) 0;
+  border-top: 1px solid var(--wb-border);
+}
+.wb-activity-main {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--wb-space-2);
+}
+.wb-activity-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-activity-status {
+  flex: 0 0 auto;
+  color: var(--wb-muted);
+}
+.wb-activity-actions {
+  display: flex;
+  gap: var(--wb-space-2);
+  margin-top: 2px;
+}
+.wb-activity-action {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--wb-foreground);
+  font-size: var(--wb-font-size);
+  cursor: pointer;
 }
 .wb-tree-note {
   margin-top: var(--wb-space-2);

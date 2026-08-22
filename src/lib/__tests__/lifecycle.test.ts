@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as embeddings from "../embeddings";
+import * as config from "../config";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -132,6 +133,13 @@ describe("writeWikiPageWithSideEffects", () => {
 
   // Embedding: skipped for saved html artifacts, run for normal pages.
   it("embeds a normal page but SKIPS embedding for an html artifact", async () => {
+    vi.spyOn(config, "getVectorSearchSettings").mockReturnValue({
+      enabled: true,
+      provider: null,
+      baseUrl: null,
+      model: null,
+      hasKey: false,
+    });
     const spy = vi.spyOn(embeddings, "upsertEmbedding").mockResolvedValue();
 
     await writeWikiPageWithSideEffects(makeOpts({ slug: "normal-page" }));
@@ -149,6 +157,20 @@ describe("writeWikiPageWithSideEffects", () => {
     );
     expect(spy).not.toHaveBeenCalled();
 
+    spy.mockRestore();
+  });
+
+  it("does not embed when vector search is off", async () => {
+    vi.spyOn(config, "getVectorSearchSettings").mockReturnValue({
+      enabled: false,
+      provider: null,
+      baseUrl: null,
+      model: null,
+      hasKey: false,
+    });
+    const spy = vi.spyOn(embeddings, "upsertEmbedding").mockResolvedValue();
+    await writeWikiPageWithSideEffects(makeOpts({ slug: "no-embed" }));
+    expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
 
@@ -1034,5 +1056,207 @@ describe("agent page cleanup on delete", () => {
 
     const agentB = await getAgent("agent-b");
     expect(agentB!.socialPages).not.toContain(slug);
+  });
+});
+
+describe("Stories 2.4–2.12 compile remnants", () => {
+  it("regenerates overview.md and writes a Source summary that cites the Source", async () => {
+    const { runIngestBookkeeping } = await import("../ingest-bookkeeping");
+    await writeWikiPageWithSideEffects(
+      makeOpts({ slug: "alpha", title: "Alpha", summary: "First concept" }),
+    );
+    await runIngestBookkeeping({
+      owner: "alice",
+      actor: "alice",
+      sourceTitle: "Standup",
+      sourceText: "We agreed to ship the digest on Friday.",
+      sourcePath: "raw/sources/standup/abc.md",
+      sourceType: "text",
+    });
+    const overview = await readWikiPage("overview");
+    expect(overview?.content).toContain("# Overview");
+    expect(overview?.content).toContain("[[alpha]]");
+    expect(overview?.content).not.toMatch(/^sources:/m);
+    const pages = await listWikiPages();
+    const summary = pages.find((entry) => entry.title.includes("source summary"));
+    expect(summary).toBeTruthy();
+    const body = await readWikiPage(summary!.slug);
+    expect(body?.content).toContain("raw/sources/standup/abc.md");
+    expect(body?.content).toContain("We agreed to ship the digest on Friday.");
+  });
+
+  it("keeps disputed true when rewriting an existing source summary", async () => {
+    const { runIngestBookkeeping } = await import("../ingest-bookkeeping");
+    await runIngestBookkeeping({
+      owner: "alice",
+      actor: "alice",
+      sourceTitle: "Standup",
+      sourceText: "first",
+      sourcePath: "raw/sources/standup/abc.md",
+      sourceType: "text",
+      rawId: "abc",
+    });
+    const pages = await listWikiPages();
+    const summary = pages.find((entry) => entry.title.includes("source summary"));
+    expect(summary).toBeTruthy();
+    const existing = await readWikiPage(summary!.slug);
+    const { serializeFrontmatter } = await import("../frontmatter");
+    const { parseFrontmatter } = await import("../frontmatter");
+    const parsed = parseFrontmatter(existing!.content);
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: summary!.slug,
+        title: summary!.title,
+        content: serializeFrontmatter(
+          { ...parsed.data, disputed: true, type: "summary" },
+          parsed.content,
+        ),
+      }),
+    );
+    await runIngestBookkeeping({
+      owner: "alice",
+      actor: "alice",
+      sourceTitle: "Standup",
+      sourceText: "second",
+      sourcePath: "raw/sources/standup/abc.md",
+      sourceType: "text",
+      rawId: "abc",
+    });
+    const rewritten = await readWikiPage(summary!.slug);
+    expect(rewritten?.content).toContain("disputed: true");
+    expect(rewritten?.content).toContain("second");
+  });
+
+  it("bookkeeping cites options.sourcePath when ingest is given one", async () => {
+    const { ingest } = await import("../ingest");
+    await ingest("Hello notes", "# Hello\n\nBody of the note.", {
+      owner: "alice",
+      author: "alice",
+      sourceType: "text",
+      sourcePath: "raw/sources/custom/real.md",
+    });
+    const pages = await listWikiPages();
+    const summary = pages.find((entry) => entry.title.includes("source summary"));
+    expect(summary).toBeTruthy();
+    const body = await readWikiPage(summary!.slug);
+    expect(body?.content).toContain("raw/sources/custom/real.md");
+    expect(body?.content).not.toMatch(/raw\/sources\/hello-notes\//);
+  });
+
+  it("loadIngestAnalysis returns null on invalid JSON", async () => {
+    const { loadIngestAnalysis } = await import("../ingest-analysis");
+    await getStorage().writeFile("ingest-analysis/job-bad.json", "{not-json");
+    expect(await loadIngestAnalysis("job-bad")).toBeNull();
+  });
+
+  it("cascades Source delete: summary first, sole page gone, shared page kept, prose ignored", async () => {
+    const { cascadeDeleteSource } = await import("../source-cascade");
+    const { serializeSources, buildSourceEntry } = await import("../sources");
+    const { rawSourceRelPath } = await import("../raw");
+    const { proposeActionItems, listActionItems } = await import("../action-items");
+    const path = "raw/sources/meet/deadbeef.md";
+    await getStorage().writeFile(rawSourceRelPath("meet/deadbeef.md"), "# Meet\n");
+    const cited = serializeSources([
+      buildSourceEntry(path, "text", "alice", "deadbeef"),
+    ]);
+    const shared = serializeSources([
+      buildSourceEntry(path, "text", "alice", "deadbeef"),
+      buildSourceEntry("raw/sources/other/keep.md", "text", "alice", "keep"),
+    ]);
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: "meet-summary",
+        title: "Meet — source summary",
+        content: serializeFrontmatter(
+          { type: "summary", sources: cited, owner: "alice" },
+          "# Meet — source summary\n",
+        ),
+      }),
+    );
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: "sole",
+        title: "Sole",
+        content: serializeFrontmatter(
+          { sources: cited, owner: "alice" },
+          "# Sole\n",
+        ),
+      }),
+    );
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: "shared",
+        title: "Shared",
+        content: serializeFrontmatter(
+          { sources: shared, disputed: true, owner: "alice" },
+          "# Shared\n",
+        ),
+      }),
+    );
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: "prose-only",
+        title: "Prose Only",
+        content: serializeFrontmatter(
+          { owner: "alice" },
+          `# Prose\n\nSee ${path} in the body.\n`,
+        ),
+      }),
+    );
+    await proposeActionItems("alice", [
+      { title: "Follow up", sourceSlug: "deadbeef" },
+    ]);
+
+    const result = await cascadeDeleteSource({ owner: "alice", path });
+    expect(result.deletedPages[0]).toBe("meet-summary");
+    expect(result.deletedPages).toContain("sole");
+    expect(result.updatedPages).toContain("shared");
+    expect(await readWikiPage("meet-summary")).toBeNull();
+    expect(await readWikiPage("sole")).toBeNull();
+    expect(await readWikiPage("prose-only")).toMatchObject({
+      content: expect.stringContaining("raw/sources/meet/deadbeef.md"),
+    });
+    const kept = await readWikiPage("shared");
+    expect(kept?.content).toContain("keep.md");
+    expect(kept?.content).toContain("disputed: true");
+    expect(kept?.content).not.toContain("deadbeef");
+    const todos = await listActionItems("alice");
+    expect(todos[0]?.sourceMissing).toBe(true);
+    await expect(
+      getStorage().readFile(rawSourceRelPath("meet/deadbeef.md")),
+    ).rejects.toThrow();
+  });
+
+  it("retries a failed job without storing Source bytes again", async () => {
+    const { createIngestJob, retryIngestJob } = await import("../ingest-jobs");
+    const { saveIngestAnalysis, loadIngestAnalysis } = await import(
+      "../ingest-analysis"
+    );
+    const { sourceSha256 } = await import("../source-sha256");
+    const { contentHash } = await import("../embeddings");
+    const digest = await sourceSha256("same bytes");
+    expect(digest).toHaveLength(64);
+    expect(digest).not.toBe(contentHash("same bytes"));
+    await createIngestJob({
+      jobId: "job-retry-1",
+      owner: "alice",
+      title: "Meet",
+      sourceRel: "raw/sources/meet/abc.md",
+    });
+    const { updateIngestJob } = await import("../ingest-jobs");
+    await updateIngestJob("job-retry-1", { status: "failed", error: "LLM timeout" });
+    await saveIngestAnalysis("job-retry-1", {
+      entities: ["Ada"],
+      concepts: [],
+      arguments: [],
+      existingLinks: [],
+      tensions: [],
+      recommendedStructure: "one page",
+    });
+    const retried = await retryIngestJob("job-retry-1", "alice");
+    expect(retried?.status).toBe("queued");
+    expect(retried?.sourceRel).toBe("raw/sources/meet/abc.md");
+    expect(retried?.reuseAnalysis).toBe(true);
+    expect((await loadIngestAnalysis("job-retry-1"))?.entities).toEqual(["Ada"]);
   });
 });

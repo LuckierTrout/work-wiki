@@ -8,6 +8,7 @@ import {
 } from "./wiki";
 import { getStorage } from "./storage";
 import { bumpDataVersion } from "./data-version";
+import { isEnoent } from "./errors";
 import { logger } from "./logger";
 
 // ---------------------------------------------------------------------------
@@ -404,4 +405,29 @@ export async function readRawSource(
   }
 
   return { ...match, content: found.content };
+}
+
+/**
+ * Remove stored Source bytes at `raw/sources/<rest>` and the owner's silo copy.
+ * Used by cascade delete for hashed `raw/sources/<slug>/<id>.md` keys that
+ * {@link removeSiloForPage} does not know about.
+ */
+export async function deleteRawSourceBytes(
+  rest: string,
+  owner?: string,
+): Promise<void> {
+  const storage = getStorage();
+  try {
+    await storage.deleteFile(rawSourceRelPath(rest));
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+  }
+  if (owner) {
+    try {
+      await storage.deleteFile(tenantRawSourceRelPath(tenantForOwner(owner), rest));
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+    }
+  }
+  await bumpDataVersion();
 }

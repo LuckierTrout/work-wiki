@@ -6,6 +6,7 @@ import {
   INTAKE_BUSY_COPY,
   INTAKE_FOLDER_LABEL,
   INTAKE_IMPORT_LABEL,
+  INTAKE_PLAUD_LABEL,
   INTAKE_READ_ONLY_COPY,
   INTAKE_URL_FIELD_LABEL,
   INTAKE_URL_PLACEHOLDER,
@@ -35,7 +36,7 @@ import {
 
 export interface IntakeControlsProps {
   /** Store and queue these files. The shell decides what to say about them. */
-  onFiles: (files: readonly File[]) => void;
+  onFiles: (files: readonly File[], origin?: "plaud") => void;
   /** Store and queue this URL. Only called from the `url` variant. */
   onUrl: (url: string) => void;
   /** An arrival is in flight; the controls stand down rather than queue behind it. */
@@ -59,6 +60,7 @@ export function IntakeControls({
   const fieldId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const plaudInputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState("");
 
   const disabled = busy || readOnly;
@@ -138,6 +140,29 @@ export function IntakeControls({
             const picked = Array.from(event.target.files ?? []);
             event.target.value = "";
             onFiles(picked);
+          }}
+        />
+        <button
+          type="button"
+          className="wb-intake-pick"
+          disabled={disabled}
+          onClick={() => plaudInputRef.current?.click()}
+        >
+          {busy ? INTAKE_BUSY_COPY : INTAKE_PLAUD_LABEL}
+        </button>
+        <input
+          ref={plaudInputRef}
+          type="file"
+          className="wb-sr-only"
+          multiple
+          accept={INTAKE_ACCEPT_ATTR}
+          disabled={disabled}
+          aria-hidden="true"
+          tabIndex={-1}
+          onChange={(event) => {
+            const picked = Array.from(event.target.files ?? []);
+            event.target.value = "";
+            if (picked.length > 0) onFiles(picked, "plaud");
           }}
         />
       </div>

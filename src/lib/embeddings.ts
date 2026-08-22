@@ -12,6 +12,7 @@ import {
   getEmbeddingModelOverride,
   getOllamaBaseUrl,
   envOllamaBaseUrl,
+  getVectorSearchSettings,
 } from "./config";
 import {
   EMBEDDING_PROVIDERS,
@@ -743,6 +744,8 @@ export async function upsertEmbedding(
   content: string,
 ): Promise<void> {
   return withFileLock("vectors", async () => {
+    // The provider check alone must not bypass the vector switch.
+    if (!getVectorSearchSettings().enabled) return;
     const modelName = getEmbeddingModelName();
     if (!modelName) return; // No embedding support
 
@@ -955,6 +958,9 @@ export interface RebuildResult {
 export async function rebuildVectorStore(
   onProgress?: (done: number, total: number) => void,
 ): Promise<RebuildResult> {
+  if (!getVectorSearchSettings().enabled) {
+    throw new Error("Vector search is off.");
+  }
   const modelName = getEmbeddingModelName();
   if (!modelName) {
     throw new Error(
