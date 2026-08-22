@@ -197,6 +197,15 @@
     "label": "Bounded per-page read fallback",
     "resolution": ""
   },
+  "DW-447": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Keep `\"lint-fix\"` as `author` on all three doors and add a `triggeredBy` field carrying the principal's handle, the shape `handleReingest` already uses at src/mcp.ts:1243-1245. Drops `author: p!.handle` from mcp-http.ts:527 so the doors agree, without touching the contributor contract.",
+    "key": "1",
+    "label": "Record the trigger separately",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

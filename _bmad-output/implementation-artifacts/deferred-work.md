@@ -3928,6 +3928,7 @@ location: src/app/api/lint/fix/route.ts:157
 severity: medium
 reason: `route.ts` calls `getPrincipal()` for `isOwnerHandle`, then invokes `fixLintIssue(type, slug ?? "", targetSlug, message)` with no fifth argument, defaulting `author` to `"lint-fix"` (`src/lib/lint-fix.ts`). `handleFixLintIssue` receives `author: p!.handle` on both MCP doors, so the same fix is attributed differently depending on which door ran it. Pre-existing; unchanged by this story.
 status: open
+decision: 2026-08-22 Record the trigger separately — Keep `"lint-fix"` as `author` on all three doors and add a `triggeredBy` field carrying the principal's handle, the shape `handleReingest` already uses at src/mcp.ts:1243-1245. Drops `author: p!.handle` from mcp-http.ts:527 so the doors agree, without touching the contributor contract.
 
 ### DW-448: The 504 deadline sentence never reaches the owner: the client falls back to POST /api/query on any non-ok answer, and that route still relays the raw transport message.
 origin: spec-deferred 77f0be51cb37
