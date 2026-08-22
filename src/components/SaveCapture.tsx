@@ -2,78 +2,72 @@
 
 import { useEffect, useState, type CSSProperties } from "react";
 import { useUser, useClerk } from "@clerk/nextjs";
-import { IngestVaultPicker } from "./IngestVaultPicker";
 import { hostOf } from "@/lib/share-target";
-import { rememberRecentJob } from "@/lib/recent-ingests";
+import {
+  INTAKE_SIGN_IN_COPY,
+  INTAKE_URL_REQUIRED_COPY,
+  isIntakeUrl,
+} from "@/lib/workbench-intake";
+import { submitIntakeUrl } from "@/lib/workbench-intake-client";
 
 type Status = "loading" | "signin" | "confirm" | "saving" | "saved" | "error";
-
-/** Strip the "(3)"/"(99+)" unread-count prefix browsers prepend to a page
- *  <title>, and trim surrounding whitespace. */
-function cleanTitle(t?: string): string {
-  return (t ?? "").replace(/^\(\d+\+?\)\s*/, "").trim();
-}
 
 /**
  * The capture target for all three surfaces (bookmarklet popup, PWA share, iOS
  * Shortcut). It runs on work-wiki's own origin, so the user's session cookie
  * authenticates the save. When signed in it shows a CONFIRM step — the captured
- * URL, an editable title (the raw page <title> is often noisy), and a vault
- * picker — and nothing is ingested until the user clicks Save. Signed-out → a
- * sign-in prompt, then the confirm step once the session lands.
+ * URL and an optional clip — and nothing is stored until the user clicks Save.
+ * Signed-out → a sign-in prompt, then the confirm step once the session lands.
+ *
+ * Files through Workbench Intake (`submitIntakeUrl`). A clip without a URL is
+ * refused on this action; empty or blocked arrivals invent no Source.
  */
-export function SaveCapture({ url, title, initialTags }: { url: string; title?: string; initialTags?: string }) {
+export function SaveCapture({
+  url,
+  clip,
+}: {
+  url: string;
+  clip?: string;
+}) {
   const { isSignedIn, isLoaded } = useUser();
   const { openSignIn } = useClerk();
   const [status, setStatus] = useState<Status>("loading");
-  const [editTitle, setEditTitle] = useState(cleanTitle(title));
-  const [vaultId, setVaultId] = useState<string | null>(null);
-  const [tags, setTags] = useState(initialTags ?? "");
-  const [error, setError] = useState<string | null>(null);
+  const missingUrl = !isIntakeUrl(url);
+  const [unconfirmed, setUnconfirmed] = useState(false);
+  const [error, setError] = useState<string | null>(
+    missingUrl ? INTAKE_URL_REQUIRED_COPY : null,
+  );
 
   async function save() {
     if (status === "saving") return; // guard against double-submit / Enter-mash
+    if (missingUrl) {
+      setError(INTAKE_URL_REQUIRED_COPY);
+      setStatus("confirm");
+      return;
+    }
     setStatus("saving");
     setError(null);
+    setUnconfirmed(false);
     try {
-      const trimmed = editTitle.trim();
-      const selectedTags = tags.split(",").map((tag) => tag.trim()).filter(Boolean).slice(0, 20);
-      const res = await fetch("/api/ingest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url,
-          ...(trimmed ? { title: trimmed } : {}),
-          ...(vaultId ? { vaultId } : {}),
-          ...(selectedTags.length ? { tags: selectedTags } : {}),
-        }),
-      });
-      if (res.status === 401) {
-        // Session expired between landing here and clicking Save. editTitle +
-        // vaultId are component state, so they survive the re-auth — but tell the
-        // user WHY they're back at sign-in so the dropped save isn't silent.
+      const outcome = await submitIntakeUrl(url, clip);
+      if (outcome.error === INTAKE_SIGN_IN_COPY) {
         setError("Your session expired — sign in to finish saving.");
         setStatus("signin");
         return;
       }
-      const data = (await res.json().catch(() => ({}))) as {
-        error?: string;
-        jobId?: string;
-      };
-      if (!res.ok) {
-        setError(data.error ?? `Save failed (${res.status})`);
+      if (outcome.unconfirmed) {
+        // The attempt may already have landed. Do not offer Retry as if it
+        // failed — that would store a second Source.
+        setError(outcome.error);
+        setUnconfirmed(true);
         setStatus("error");
         return;
       }
-      // Record the queued job so the /ingest "Recent ingests" strip shows this
-      // save IN FLIGHT. localStorage is shared across same-origin tabs and that
-      // page refreshes on focus, so a popup/bookmarklet save surfaces as a live
-      // "working…" row instead of only appearing once it lands in the ledger.
-      if (data.jobId) rememberRecentJob(data.jobId);
-      // The URL path always returns a jobId; a 200 without one means a malformed
-      // (e.g. edge-proxied) response — the save shows "saved" but won't appear in
-      // Recent ingests, so leave a breadcrumb rather than failing silently.
-      else console.warn("[SaveCapture] ingest returned 200 without a jobId — not tracked in Recent ingests");
+      if (outcome.error) {
+        setError(outcome.error);
+        setStatus("error");
+        return;
+      }
       setStatus("saved");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Network error");
@@ -103,6 +97,7 @@ export function SaveCapture({ url, title, initialTags }: { url: string; title?: 
   }, [isLoaded, isSignedIn]);
 
   const host = hostOf(url);
+  const clipText = (clip ?? "").trim();
 
   return (
     <div className="shell" style={{ maxWidth: 460, margin: "0 auto", padding: "8px 0" }}>
@@ -117,9 +112,9 @@ export function SaveCapture({ url, title, initialTags }: { url: string; title?: 
           margin: "0 0 18px",
           wordBreak: "break-all",
         }}
-        title={url}
+        title={url || undefined}
       >
-        {url}
+        {url || INTAKE_URL_REQUIRED_COPY}
       </p>
 
       {status === "loading" && (
@@ -156,59 +151,34 @@ export function SaveCapture({ url, title, initialTags }: { url: string; title?: 
             void save();
           }}
         >
-          <label
-            className="receipt"
-            style={labelStyle}
-          >
-            Title
-          </label>
-          <input
-            type="text"
-            value={editTitle}
-            onChange={(e) => setEditTitle(e.target.value)}
-            autoFocus
-            placeholder={host}
-            style={{
-              width: "100%",
-              fontSize: 14,
-              padding: "8px 10px",
-              borderRadius: 8,
-              border: "1px solid var(--rule)",
-              background: "var(--paper)",
-              color: "var(--ink)",
-              marginBottom: 14,
-              boxSizing: "border-box",
-            }}
-          />
+          {error && (
+            <p style={{ fontSize: 13.5, color: "var(--danger, #dc2626)", marginBottom: 12 }}>
+              {error}
+            </p>
+          )}
 
-          <div style={{ marginBottom: 14 }}>
-            <IngestVaultPicker value={vaultId} onChange={setVaultId} />
-          </div>
-
-          <label className="receipt" style={labelStyle} htmlFor="capture-tags">
-            Tags <span style={{ color: "var(--faint)" }}>(optional, comma separated)</span>
-          </label>
-          <input
-            id="capture-tags"
-            type="text"
-            value={tags}
-            onChange={(event) => setTags(event.target.value)}
-            placeholder="research, client, follow-up"
-            style={{
-              width: "100%",
-              fontSize: 14,
-              padding: "8px 10px",
-              borderRadius: 8,
-              border: "1px solid var(--rule)",
-              background: "var(--paper)",
-              color: "var(--ink)",
-              marginBottom: 22,
-              boxSizing: "border-box",
-            }}
-          />
+          {clipText ? (
+            <p
+              className="receipt"
+              style={{
+                fontSize: 12.5,
+                color: "var(--muted)",
+                margin: "0 0 22px",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {clipText}
+            </p>
+          ) : null}
 
           <div style={{ display: "flex", gap: 10 }}>
-            <button type="submit" className="receipt" style={btnPrimary}>
+            <button
+              type="submit"
+              className="receipt"
+              style={btnPrimary}
+              disabled={missingUrl}
+            >
               Save
             </button>
             <button type="button" className="receipt" onClick={() => dismiss("/")} style={btnSecondary}>
@@ -219,7 +189,7 @@ export function SaveCapture({ url, title, initialTags }: { url: string; title?: 
       )}
 
       {status === "saving" && (
-        <p style={{ fontSize: 13.5, color: "var(--muted)" }}>Saving {host}…</p>
+        <p style={{ fontSize: 13.5, color: "var(--muted)" }}>Saving {host || "this capture"}…</p>
       )}
 
       {status === "error" && (
@@ -228,9 +198,11 @@ export function SaveCapture({ url, title, initialTags }: { url: string; title?: 
             {error}
           </p>
           <div style={{ display: "flex", gap: 10 }}>
-            <button type="button" className="receipt" onClick={() => save()} style={btnPrimary}>
-              Retry
-            </button>
+            {!unconfirmed && (
+              <button type="button" className="receipt" onClick={() => save()} style={btnPrimary}>
+                Retry
+              </button>
+            )}
             <button type="button" className="receipt" onClick={() => setStatus("confirm")} style={btnSecondary}>
               Edit
             </button>
@@ -242,14 +214,14 @@ export function SaveCapture({ url, title, initialTags }: { url: string; title?: 
         <div>
           <p style={{ fontSize: 14, marginBottom: 16 }}>
             <span style={{ color: "var(--accent)" }}>✓ Saved.</span> work-wiki is reading{" "}
-            <strong>{host}</strong> now — it’ll appear in your wiki shortly.
+            <strong>{host || "this capture"}</strong> now — it’ll appear in your wiki shortly.
           </p>
 
           <div style={{ marginTop: 22, display: "flex", gap: 10 }}>
             {/* Post-save, the only action is to dismiss. (No in-popup "View
                 activity" nav — re-mounting drops back to the confirm step, which
                 is confusing right after a save; dismissing is the right action.) */}
-            <button type="button" className="receipt" onClick={() => dismiss("/ingest")} style={btnPrimary}>
+            <button type="button" className="receipt" onClick={() => dismiss("/")} style={btnPrimary}>
               Close
             </button>
           </div>
@@ -267,13 +239,6 @@ const btnPrimary: CSSProperties = {
   background: "var(--accent-soft)",
   color: "var(--accent)",
   cursor: "pointer",
-};
-
-const labelStyle: CSSProperties = {
-  display: "block",
-  fontSize: 11.5,
-  color: "var(--muted)",
-  marginBottom: 6,
 };
 
 const btnSecondary: CSSProperties = {

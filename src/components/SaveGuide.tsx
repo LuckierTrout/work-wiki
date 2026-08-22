@@ -42,9 +42,9 @@ export function SaveGuide() {
         <p className="fmark">Capture · no extension</p>
         <h1 className="display sg-title">Save to work-wiki</h1>
         <p className="sg-lede">
-          Send any page you’re reading to work-wiki in one click — it fetches the
-          link and ingests it into your wiki. No extension to install; pick the
-          method for your device.
+          Send any page you’re reading — or a text selection on it — to
+          work-wiki in one click. A URL is fetched; a selection is stored as
+          the clip. No extension to install; pick the method for your device.
         </p>
       </header>
 

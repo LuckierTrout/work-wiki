@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { SaveCapture } from "@/components/SaveCapture";
 import { SaveGuide } from "@/components/SaveGuide";
-import { resolveSharedUrl } from "@/lib/share-target";
+import { captureFromQuery } from "@/lib/share-target";
 
 export const metadata: Metadata = {
   title: "Save to work-wiki",
@@ -17,6 +17,9 @@ const first = (v: string | string[] | undefined): string | undefined =>
  * Dual-mode capture route:
  *  - `/save?url=…`  → the capture action (bookmarklet popup / PWA share / Shortcut)
  *  - `/save`        → the how-to guide for setting up those surfaces
+ *
+ * A `text` query that is not a URL is still a capture attempt: show Capture
+ * with the empty sentence rather than silently opening only the guide.
  */
 export default async function SavePage({
   searchParams,
@@ -24,13 +27,11 @@ export default async function SavePage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const sp = await searchParams;
-  const url = resolveSharedUrl(first(sp.url), first(sp.text));
-  const title = first(sp.title);
-  const tags = first(sp.tags);
+  const { url, clip, attempted } = captureFromQuery(first(sp.url), first(sp.text));
 
   return (
     <div style={{ maxWidth: 720, margin: "0 auto", padding: "56px 24px 88px" }}>
-      {url ? <SaveCapture url={url} title={title} initialTags={tags} /> : <SaveGuide />}
+      {attempted ? <SaveCapture url={url} clip={clip} /> : <SaveGuide />}
     </div>
   );
 }

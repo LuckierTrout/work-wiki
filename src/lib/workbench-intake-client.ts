@@ -128,16 +128,24 @@ export async function submitIntakeFile(file: File): Promise<IntakeOutcome> {
   }
 }
 
-/** Store and queue one in-app URL. */
-export async function submitIntakeUrl(url: string): Promise<IntakeOutcome> {
+/** Store and queue one in-app URL, or a clip that still carries that URL. */
+export async function submitIntakeUrl(
+  url: string,
+  clip?: string,
+): Promise<IntakeOutcome> {
   const trimmed = url.trim();
   if (!isIntakeUrl(trimmed)) {
     // An empty field or a non-http(s) string invents no Source and makes no
-    // request — the failure belongs to the action the owner took.
+    // request — the failure belongs to the action the owner took. A clip
+    // without a URL cannot satisfy provenance either.
     return { name: trimmed, error: INTAKE_URL_REQUIRED_COPY, unconfirmed: false };
   }
+  const clipText = typeof clip === "string" ? clip.trim() : "";
+  const body = clipText
+    ? { url: trimmed, clip: clipText }
+    : { url: trimmed };
   try {
-    await send(INTAKE_ROUTE, { method: "POST", body: JSON.stringify({ url: trimmed }) });
+    await send(INTAKE_ROUTE, { method: "POST", body: JSON.stringify(body) });
     return stored(trimmed);
   } catch (cause) {
     const failure = writeFailure(cause, INTAKE_URL_ACTION);

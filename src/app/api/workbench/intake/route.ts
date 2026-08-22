@@ -169,6 +169,29 @@ async function intakeUrl(
     return NextResponse.json({ error: INTAKE_URL_REQUIRED_COPY }, { status: 400 });
   }
 
+  // A non-empty string clip is the body — store it and skip the fetch. Missing
+  // or non-string clip is absent, not hashed; empty clip keeps the 2.1 fetch.
+  const clipRaw = (body as { clip?: unknown }).clip;
+  const clip = typeof clipRaw === "string" ? clipRaw.trim() : "";
+  if (clip) {
+    const bytes = new TextEncoder().encode(clip).byteLength;
+    if (bytes > MAX_DOCUMENT_SIZE) {
+      return NextResponse.json(
+        { error: intakeTooLargeCopy(MAX_DOCUMENT_SIZE / 1024 / 1024) },
+        { status: 400 },
+      );
+    }
+    const firstLine = clip.split(/\r?\n/, 1)[0]?.trim() ?? "";
+    return await storeAndQueue({
+      owner,
+      slug: intakeUrlSlug(url),
+      text: clip,
+      title: (firstLine || url).slice(0, 200),
+      sourceType: "url",
+      sourceUrl: url,
+    });
+  }
+
   let fetched: { title: string; content: string };
   try {
     // Readability + `htmlToMarkdown` for HTML, the body verbatim for

@@ -31,6 +31,7 @@ import {
   PREVIEW_UNSUPPORTED_COPY,
   WIKILINK_MISSING_COPY,
 } from "../workbench-preview";
+import { WORKBENCH_MODES } from "../workbench-modes";
 
 const SRC = path.resolve(__dirname, "../..");
 const WORKBENCH = path.join(SRC, "components/workbench");
@@ -830,6 +831,13 @@ describe("the retired affordance stays retired", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it("has no Capture rail icon", async () => {
+    expect(WORKBENCH_MODES.map((mode) => mode.id)).not.toContain("capture");
+    expect(WORKBENCH_MODES.map((mode) => mode.label)).not.toContain("Capture");
+    const rail = await read("IconRail.tsx");
+    expect(rail).not.toMatch(/\bCapture\b/);
   });
 });
 

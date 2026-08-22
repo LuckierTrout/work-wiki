@@ -775,6 +775,51 @@ describe("POST /api/workbench/intake — the in-app URL", () => {
     expect(body.error).toBe(INTAKE_EMPTY_SOURCE_COPY);
     expectNothingCommitted();
   });
+
+  it("stores a non-empty clip without fetching, and keeps the captured URL as provenance", async () => {
+    const clip = "Selected paragraph from the page.";
+    const { status } = await post(
+      urlRequest({ url: "https://example.com/posts/why-wikis.html", clip }),
+    );
+    expect(status).toBe(202);
+    expect(mockedFetchUrl).not.toHaveBeenCalled();
+    const [slug, , text, options] = mockedSave.mock.calls[0];
+    expect(slug).toBe("example-com-why-wikis");
+    expect(text).toBe(clip);
+    expect(options).toEqual({ owner: "alice" });
+    const task = mockedEnqueue.mock.calls[0][1] as { sourceUrl?: string };
+    expect(task.sourceUrl).toBe("https://example.com/posts/why-wikis.html");
+    expect(mockedJob.mock.calls[0][0]).toMatchObject({
+      url: "https://example.com/posts/why-wikis.html",
+      title: "Selected paragraph from the page.",
+    });
+  });
+
+  it("still fetches when clip is missing, empty, or not a string", async () => {
+    // Missing/non-string clip is absent — not hashed, not stored. Empty clip
+    // is the 2.1 URL door: fetch, then store whatever the page yielded.
+    for (const extra of [{}, { clip: "" }, { clip: "   " }, { clip: 12 }, { clip: null }]) {
+      vi.clearAllMocks();
+      mockedFetchUrl.mockResolvedValue({ title: "Why Wikis", content: "# Why Wikis\n\nClip." });
+      const { status } = await post(
+        urlRequest({ url: "https://example.com/posts/why-wikis", ...extra }),
+      );
+      expect(status, JSON.stringify(extra)).toBe(202);
+      expect(mockedFetchUrl, JSON.stringify(extra)).toHaveBeenCalledTimes(1);
+      expect(mockedSave.mock.calls[0][2]).toBe("# Why Wikis\n\nClip.");
+    }
+  });
+
+  it("invents no Source when a clip is over the byte cap", async () => {
+    const clip = "x".repeat(MAX_DOCUMENT_SIZE + 1);
+    const { status, body } = await post(
+      urlRequest({ url: "https://example.com/a", clip }),
+    );
+    expect(status).toBe(400);
+    expect(String(body.error)).toContain("too large");
+    expect(mockedFetchUrl).not.toHaveBeenCalled();
+    expectNothingCommitted();
+  });
 });
 
 describe("the route's shape", () => {
@@ -799,6 +844,28 @@ describe("the route's shape", () => {
     // rather than tidying up bytes FR-2 declares immutable, and there is no
     // deleting call in the file for a later "cleanup" to reach for.
     expect(source).not.toMatch(/delete(File|Object)?\(|unlink|\brm\(/);
+  });
+
+  it("files Capture through Intake and nowhere else", async () => {
+    const source = await readFile(path.join(SRC, "components/SaveCapture.tsx"), "utf8");
+    expect(source).toContain("submitIntakeUrl(url, clip)");
+    expect(source).not.toContain("submitIntakeUrl(url)");
+    expect(source).not.toContain("/api/ingest");
+    expect(source).not.toContain("IngestVaultPicker");
+    expect(source).not.toContain("rememberRecentJob");
+    expect(source).toContain('dismiss("/")');
+    expect(source).not.toContain('dismiss("/ingest")');
+    // Unsigned Capture is fail-closed on this action: sign-in, no submit.
+    expect(source).toContain('return isSignedIn ? "confirm" : "signin"');
+    expect(source).toContain("openSignIn()");
+    expect(source).toContain("Sign in to save this page to work-wiki.");
+    // Empty/blocked sentences stay on the Capture action, not a silent return.
+    expect(source).toContain("INTAKE_URL_REQUIRED_COPY");
+    expect(source).toContain("setError(outcome.error)");
+    expect(source).toContain("disabled={missingUrl}");
+    expect(source).toContain("if (missingUrl)");
+    expect(source).toContain("outcome.unconfirmed");
+    expect(source).not.toContain("editTitle");
   });
 });
 
@@ -914,6 +981,28 @@ describe("the client's per-item submit", () => {
     const refused = await submitIntakeUrl("example.com");
     expect(spy).not.toHaveBeenCalled();
     expect(refused.error).toBe(INTAKE_URL_REQUIRED_COPY);
+    vi.unstubAllGlobals();
+  });
+
+  it("posts a non-empty clip with the URL, and omits an empty one", async () => {
+    const spy = stubFetch(ok);
+    await submitIntakeUrl("https://example.com/a", "  selected paragraph  ");
+    expect(JSON.parse(String(spy.mock.calls[0][1].body))).toEqual({
+      url: "https://example.com/a",
+      clip: "selected paragraph",
+    });
+
+    spy.mockClear();
+    await submitIntakeUrl("https://example.com/a", "   ");
+    expect(JSON.parse(String(spy.mock.calls[0][1].body))).toEqual({
+      url: "https://example.com/a",
+    });
+
+    spy.mockClear();
+    await submitIntakeUrl("https://example.com/a");
+    expect(JSON.parse(String(spy.mock.calls[0][1].body))).toEqual({
+      url: "https://example.com/a",
+    });
     vi.unstubAllGlobals();
   });
 });
