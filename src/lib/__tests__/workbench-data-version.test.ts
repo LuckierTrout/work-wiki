@@ -140,16 +140,20 @@ describe("the counter in the config store", () => {
   });
 
   it("never lets concurrent bumps collapse into one", async () => {
-    // The lock is the whole reason two ops that both read `n` cannot both store
-    // `n + 1` — which would make the second write invisible to a client that
-    // already refreshed for the first.
-    //
-    // This proves the property at the SINGLE-PROCESS filesystem provider, which
-    // is what `withFileLock` covers (`lock.ts`: in-process only). It is not
-    // proof for KV across Workers isolates, where a collapse is still possible;
-    // `DATA_VERSION_LOCK`'s docblock says what that costs.
+    // `incrementIndex` is the serializer. The filesystem provider proves the
+    // property here; `storage-r2.test.ts` proves the Worker compare-and-swap
+    // (two isolates cannot both store `n + 1`, and a stale read cannot regress).
     await Promise.all(Array.from({ length: 8 }, () => bumpDataVersion()));
     await expect(readDataVersion()).resolves.toBe(8);
+  });
+
+  it("bumps through incrementIndex rather than a locked get-then-put", async () => {
+    const source = await readSource("lib/data-version.ts");
+    const bump = source.slice(source.indexOf("export async function bumpDataVersion"));
+    expect(bump).toContain("incrementIndex(DATA_VERSION_KEY)");
+    expect(bump).not.toContain("putIndex");
+    expect(bump).not.toContain("withFileLock");
+    expect(bump).not.toContain("getIndex");
   });
 
   it("narrows a corrupt stored value to 0 rather than propagating it", async () => {
@@ -176,7 +180,9 @@ describe("the counter in the config store", () => {
     await expect(bumpDataVersion()).resolves.toBe(0);
     read.mockRestore();
 
-    const write = vi.spyOn(storage, "putIndex").mockRejectedValue(new Error("kv down"));
+    const write = vi
+      .spyOn(storage, "incrementIndex")
+      .mockRejectedValue(new Error("kv down"));
     await expect(bumpDataVersion()).resolves.toBe(0);
     write.mockRestore();
     // Nothing was written, so the counter is still where it was.
@@ -225,13 +231,9 @@ describe("the counter in the config store", () => {
 
   it("still returns the write's result when the bump itself fails", async () => {
     const storage = getStorage();
-    const realPut = storage.putIndex.bind(storage);
     const spy = vi
-      .spyOn(storage, "putIndex")
-      .mockImplementation(async (key: string, value: unknown) => {
-        if (key === DATA_VERSION_KEY) throw new Error("kv down");
-        return realPut(key, value);
-      });
+      .spyOn(storage, "incrementIndex")
+      .mockRejectedValue(new Error("kv down"));
     // A config-store hiccup must not turn a write that already landed into a
     // failed one: the owner's text is gone either way, and only one of those
     // two outcomes is recoverable.

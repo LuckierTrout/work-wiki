@@ -5,6 +5,7 @@
  * Maps the abstract storage operations to Cloudflare's services:
  *   - Text files + assets → R2 Bucket
  *   - Derived indexes → KV Namespace
+ *   - Atomic counters (`ATOMIC_COUNTER_INDEX_KEYS`) → R2 compare-and-swap
  *   - Embeddings → Vectorize Index (optional, falls back to KV)
  *
  * R2 is a flat key-value store, so "directories" are simulated using
@@ -19,6 +20,8 @@ import type {
   EmbeddingMatch,
   EmbeddingEntry,
 } from "./types";
+import { ATOMIC_COUNTER_INDEX_KEYS, isAtomicCounterIndexKey } from "./types";
+import { narrowIndexInteger } from "./index-integer";
 
 import type {
   CloudflareEnv,
@@ -37,6 +40,20 @@ const R2_LIST_PAGE_SIZE = 1000;
 
 /** KV key prefix for index entries. */
 const INDEX_PREFIX = "_idx:";
+
+/**
+ * R2 object prefix for counters that must increment across Worker isolates.
+ * Distinct from the KV `_idx:` prefix so a leftover KV value can seed the
+ * first compare-and-swap without the two stores writing the same key space.
+ */
+const ATOMIC_INDEX_R2_PREFIX = "_idx/";
+
+/** Give up rather than livelock a request if every compare-and-swap loses. */
+const INCREMENT_INDEX_MAX_ATTEMPTS = 32;
+
+function atomicIndexR2Key(key: string): string {
+  return `${ATOMIC_INDEX_R2_PREFIX}${key}`;
+}
 
 /** KV key for fallback embedding store when Vectorize is unavailable. */
 const EMBEDDINGS_KV_KEY = "_idx:embeddings";
@@ -222,12 +239,65 @@ export class R2StorageProvider implements StorageProvider {
   // -------------------------------------------------------------------------
 
   async getIndex<T = unknown>(key: string): Promise<T | null> {
+    if (isAtomicCounterIndexKey(key)) {
+      const obj = await this.bucket.get(atomicIndexR2Key(key));
+      if (obj) {
+        try {
+          return JSON.parse(await obj.text()) as T;
+        } catch {
+          return null;
+        }
+      }
+    }
     const value = await this.kv.get(`${INDEX_PREFIX}${key}`, "json");
     return (value as T) ?? null;
   }
 
   async putIndex<T = unknown>(key: string, value: T): Promise<void> {
+    if (isAtomicCounterIndexKey(key)) {
+      await this.bucket.put(atomicIndexR2Key(key), JSON.stringify(value));
+      return;
+    }
     await this.kv.put(`${INDEX_PREFIX}${key}`, JSON.stringify(value));
+  }
+
+  async incrementIndex(key: string): Promise<number> {
+    if (!isAtomicCounterIndexKey(key)) {
+      throw new Error(
+        `incrementIndex is only defined for atomic counter keys (${ATOMIC_COUNTER_INDEX_KEYS.join(", ")}); got ${JSON.stringify(key)}`,
+      );
+    }
+
+    const r2Key = atomicIndexR2Key(key);
+    const kvKey = `${INDEX_PREFIX}${key}`;
+
+    for (let attempt = 0; attempt < INCREMENT_INDEX_MAX_ATTEMPTS; attempt++) {
+      const obj = await this.bucket.get(r2Key);
+      let current: number;
+      let result: Awaited<ReturnType<R2Bucket["put"]>>;
+
+      if (obj) {
+        try {
+          current = narrowIndexInteger(JSON.parse(await obj.text()));
+        } catch {
+          current = 0;
+        }
+        result = await this.bucket.put(r2Key, JSON.stringify(current + 1), {
+          onlyIf: { etagMatches: obj.etag },
+        });
+      } else {
+        current = narrowIndexInteger(await this.kv.get(kvKey, "json"));
+        result = await this.bucket.put(r2Key, JSON.stringify(current + 1), {
+          onlyIf: { etagDoesNotMatch: "*" },
+        });
+      }
+
+      if (result) return current + 1;
+    }
+
+    throw new Error(
+      `incrementIndex(${key}) exhausted ${INCREMENT_INDEX_MAX_ATTEMPTS} compare-and-swap attempts`,
+    );
   }
 
   async listIndexKeys(prefix: string): Promise<string[]> {
@@ -247,6 +317,13 @@ export class R2StorageProvider implements StorageProvider {
       }
       cursor = result.list_complete ? undefined : result.cursor;
     } while (cursor);
+
+    for (const atomic of ATOMIC_COUNTER_INDEX_KEYS) {
+      if (!atomic.startsWith(prefix) || keys.includes(atomic)) continue;
+      if (await this.bucket.head(atomicIndexR2Key(atomic))) {
+        keys.push(atomic);
+      }
+    }
 
     return keys;
   }

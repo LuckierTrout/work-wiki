@@ -8,7 +8,7 @@
  *  1. Text files   — readFile, writeFile, deleteFile, listFiles, appendFile
  *  2. Assets       — writeAsset, readAsset (binary data like downloaded images)
  *  3. Concurrency  — readFileWithEtag, writeFileIfMatch (optimistic locking)
- *  4. Indexes      — getIndex, putIndex (derived JSON blobs: config, history, etc.)
+ *  4. Indexes      — getIndex, putIndex, incrementIndex (derived JSON blobs: config, history, counters)
  *  5. Embeddings   — upsertEmbedding, queryEmbeddings (vector search)
  *
  * **Design rationale:**
@@ -33,10 +33,12 @@
  * - `appendFile` exists specifically for `log.md`, which is the only file
  *   appended to rather than overwritten.
  *
- * - Index operations (`getIndex`/`putIndex`) are for small derived JSON
- *   objects like config, query history, and contributor profiles. They bypass
- *   the text-file layer so providers can use faster stores (KV, D1) when
- *   available.
+ * - Index operations (`getIndex`/`putIndex`/`incrementIndex`) are for small
+ *   derived JSON objects like config, query history, and contributor profiles.
+ *   They bypass the text-file layer so providers can use faster stores (KV, D1,
+ *   R2 compare-and-swap) when available. `incrementIndex` is the one that must
+ *   be isolate-safe: two concurrent callers both observing `n` cannot both
+ *   store `n + 1`, and a stale read cannot move the stored integer backwards.
  *
  * - Embedding operations are separated because vector search has fundamentally
  *   different access patterns (nearest-neighbor queries). A filesystem provider
@@ -98,6 +100,23 @@ export interface EmbeddingMatch {
   id: string;
   score: number;
   metadata: Record<string, string>;
+}
+
+/**
+ * Logical index keys whose Worker store is an R2 compare-and-swap object, not
+ * KV. `getIndex` / `putIndex` / `incrementIndex` must share that object so a
+ * seed, a read and a bump cannot disagree about the integer.
+ *
+ * KV (`YOPEDIA_CONFIG`) is eventually consistent and has no increment. R2's
+ * `onlyIf.etagMatches` / `etagDoesNotMatch` is the isolate-safe primitive this
+ * repo already uses for files.
+ */
+export const ATOMIC_COUNTER_INDEX_KEYS = ["data-version"] as const;
+
+export function isAtomicCounterIndexKey(
+  key: string,
+): key is (typeof ATOMIC_COUNTER_INDEX_KEYS)[number] {
+  return (ATOMIC_COUNTER_INDEX_KEYS as readonly string[]).includes(key);
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +296,23 @@ export interface StorageProvider {
    * @param value — JSON-serializable value
    */
   putIndex<T = unknown>(key: string, value: T): Promise<void>;
+
+  /**
+   * Raise a stored integer by exactly one and return what was stored.
+   *
+   * The increment is provider-atomic: two callers that both observe `n` cannot
+   * both store `n + 1`, and a stale read cannot write a value lower than what
+   * is already there. Absent, non-integer, negative or non-finite stored values
+   * count as `0`, so the first successful increment stores `1`.
+   *
+   * This is a stronger guarantee than `getIndex` + `putIndex` under an
+   * in-process lock. The filesystem provider serializes the read-modify-write
+   * on the index file; the Cloudflare provider compare-and-swaps an R2 object
+   * (KV is eventually consistent and has no increment).
+   *
+   * @param key — logical key of the counter
+   */
+  incrementIndex(key: string): Promise<number>;
 
   /**
    * List index keys that start with a given prefix.

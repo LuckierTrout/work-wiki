@@ -1348,23 +1348,27 @@ describe("readWorkbenchFile", () => {
   });
 
   it("reads a source under raw/, including one nesting level", async () => {
-    await fs.writeFile(path.join(tmpDir, "raw", "a.md"), "flat source", "utf-8");
-    await fs.mkdir(path.join(tmpDir, "raw", "alpha"), { recursive: true });
-    await fs.writeFile(path.join(tmpDir, "raw", "alpha", "h1.md"), "snapshot", "utf-8");
+    await writeSilo("raw", "a.md", "silo source");
+    await writeSilo("raw", "alpha/h1.md", "snapshot");
 
     // `raw/` holds sources, not pages, so the page gate does not apply to it —
-    // exactly as the listing walk treats it.
+    // exactly as the listing walk treats it. Bytes come from the owner silo
+    // (DW-40); the shared flat tree is not a fallback.
     await expect(readWorkbenchFile(OWNER, null, "raw/a.md", gate())).resolves.toEqual({
-      content: "flat source",
+      content: "silo source",
     });
     await expect(
       readWorkbenchFile(OWNER, null, "raw/alpha/h1.md", gate()),
     ).resolves.toEqual({ content: "snapshot" });
   });
 
+  it("does not read shared flat raw bytes when the tenant silo is empty", async () => {
+    await fs.writeFile(path.join(tmpDir, "raw", "legacy.md"), "shared legacy bytes", "utf-8");
+    expect(await readWorkbenchFile(OWNER, null, "raw/legacy.md", gate())).toBeNull();
+  });
+
   it("refuses a path deeper than the walk can list", async () => {
-    await fs.mkdir(path.join(tmpDir, "raw", "a", "b"), { recursive: true });
-    await fs.writeFile(path.join(tmpDir, "raw", "a", "b", "c.md"), "deep", "utf-8");
+    await writeSilo("raw", "a/b/c.md", "deep");
     expect(await readWorkbenchFile(OWNER, null, "raw/a/b/c.md", gate())).toBeNull();
   });
 
@@ -1465,6 +1469,13 @@ describe("GET /api/workbench/preview", () => {
     delete process.env.YOPEDIA_READONLY;
   });
 
+  async function writeSiloRaw(name: string, body: string) {
+    const rel = tenantRawRelPath(tenantForOwner(OWNER), name);
+    const abs = path.join(getDataDir(), rel);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, body, "utf-8");
+  }
+
   /**
    * A page as the kernel stores it: the file, plus a line in `wiki/index.md` —
    * which is what `listWikiPages` reads, and therefore what the route's gate is
@@ -1564,15 +1575,20 @@ describe("GET /api/workbench/preview", () => {
     });
   });
 
+  it("does not serve shared flat raw bytes when the tenant silo is empty", async () => {
+    await fs.writeFile(path.join(root, "raw", "legacy.md"), "shared legacy bytes", "utf-8");
+    expect((await get("kind=file&path=raw%2Flegacy.md")).status).toBe(404);
+  });
+
   it("serves a source under raw/ read-only, and refuses to edit it", async () => {
-    await fs.writeFile(path.join(root, "raw", "note.md"), "# Note\n", "utf-8");
+    await writeSiloRaw("note.md", "# Note\n");
     const payload = await (await get("kind=file&path=raw%2Fnote.md")).json();
     expect(payload).toMatchObject({ format: "markdown", editable: false });
     expect(payload.slug).toBeUndefined();
   });
 
   it("names a format it cannot render and never reads its bytes", async () => {
-    await fs.writeFile(path.join(root, "raw", "scan.pdf"), "%PDF-1.4 binary", "utf-8");
+    await writeSiloRaw("scan.pdf", "%PDF-1.4 binary");
     const payload = await (await get("kind=file&path=raw%2Fscan.pdf")).json();
     expect(payload).toMatchObject({ format: "unsupported", body: "", editable: false });
     // Not merely discarded after the fact: the name decides the format, so an
@@ -1642,14 +1658,14 @@ describe("GET /api/workbench/preview", () => {
   });
 
   it("serves a version for a raw source too, and NONE for bytes it never read", async () => {
-    await fs.writeFile(path.join(root, "raw", "versioned.md"), "# Raw\n", "utf-8");
+    await writeSiloRaw("versioned.md", "# Raw\n");
     const source = await (await get("kind=file&path=raw%2Fversioned.md")).json();
     expect(source.version).toBe(contentVersion("# Raw\n"));
 
     // An `unsupported` format is answered from an existence check alone — no
     // bytes were read, so there is nothing to have a version OF, and there is no
     // editor for it either way.
-    await fs.writeFile(path.join(root, "raw", "unread.pdf"), "%PDF-1.4", "utf-8");
+    await writeSiloRaw("unread.pdf", "%PDF-1.4");
     const blob = await (await get("kind=file&path=raw%2Funread.pdf")).json();
     expect(blob.format).toBe("unsupported");
     expect("version" in blob).toBe(false);

@@ -1,6 +1,11 @@
 import { clerkMiddleware } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import {
+  E2E_COOKIE_NAME,
+  isE2eIdentityArmed,
+  principalFromCookieValue,
+} from "@/lib/e2e-identity";
 
 // HTTP methods that mutate state.
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -167,7 +172,29 @@ function jsonError(message: string, status: number): NextResponse {
   return privateResponse(NextResponse.json({ error: message }, { status }));
 }
 
-export default clerkMiddleware(async (auth, req) => {
+type MiddlewareAuth = (() => Promise<{
+  userId: string | null;
+  redirectToSignIn: (opts: { returnBackUrl: string }) => Response;
+}>) & {
+  redirectToSignIn?: (opts: { returnBackUrl: string }) => Response;
+};
+
+function unsignedInResponse(req: NextRequest, isApi: boolean): Response {
+  if (isApi) return jsonError("Authentication required.", 401);
+  const signIn = new URL("/sign-in", req.url);
+  signIn.searchParams.set("redirect_url", req.url);
+  return privateResponse(NextResponse.redirect(signIn));
+}
+
+/**
+ * The private-app gate. Exported so the write-gate suite can call it without
+ * constructing Clerk's wrapper, and so the E2E identity can share the same
+ * owner check the live Clerk path uses.
+ */
+export async function handlePrivateRequest(
+  auth: MiddlewareAuth,
+  req: NextRequest,
+): Promise<Response> {
   const { pathname } = req.nextUrl;
 
   // The authentication surface and Clerk proxy are the only public app paths.
@@ -183,6 +210,28 @@ export default clerkMiddleware(async (auth, req) => {
   }
 
   const isApi = pathname.startsWith("/api/");
+
+  // Local Playwright identity: same owner gate, no Clerk session. Never armed
+  // on the production origin — see `isE2eIdentityArmed`.
+  if (isE2eIdentityArmed()) {
+    const ownerUserId = process.env.YOPEDIA_OWNER_USER_ID?.trim();
+    const identity = await principalFromCookieValue(
+      req.cookies.get(E2E_COOKIE_NAME)?.value,
+    );
+    if (!identity) return unsignedInResponse(req, isApi);
+    if (!ownerUserId) {
+      return isApi
+        ? jsonError("Private deployment is not configured.", 503)
+        : privateResponse(new NextResponse("Service unavailable", { status: 503 }));
+    }
+    if (identity.id !== ownerUserId) {
+      return isApi
+        ? jsonError("Owner access required.", 403)
+        : privateResponse(new NextResponse("Not Found", { status: 404 }));
+    }
+    return privateResponse(NextResponse.next());
+  }
+
   const { userId, redirectToSignIn } = await auth();
 
   if (!userId) {
@@ -210,7 +259,31 @@ export default clerkMiddleware(async (auth, req) => {
   }
 
   return privateResponse(NextResponse.next());
-}, { signInUrl: "/sign-in" });
+}
+
+const e2eUnusedAuth = Object.assign(
+  async () => {
+    throw new Error("e2e identity must not call Clerk");
+  },
+  {
+    redirectToSignIn() {
+      throw new Error("e2e identity must not call Clerk");
+    },
+  },
+) as MiddlewareAuth;
+
+function e2eMiddleware(req: NextRequest): Promise<Response> {
+  return handlePrivateRequest(e2eUnusedAuth, req);
+}
+
+// When the Playwright harness is armed, skip Clerk's wrapper entirely — dummy
+// keys make `clerkMiddleware` refuse every request before the owner cookie
+// can be read. Production never sets `YOPEDIA_E2E`, so the live export stays
+// the Clerk gate. Evaluated at module load so `next dev` (runtime env) and
+// the write-gate suite (e2e off at import) each see the right function.
+export default isE2eIdentityArmed()
+  ? e2eMiddleware
+  : clerkMiddleware(handlePrivateRequest, { signInUrl: "/sign-in" });
 
 export const config = {
   matcher: [

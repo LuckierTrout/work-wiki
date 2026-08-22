@@ -267,6 +267,8 @@ deferred:
 
 ## Spec Change Log
 
+- 2026-08-22: Worker `dataVersion` increment is provider-atomic. `bumpDataVersion` calls `StorageProvider.incrementIndex` (filesystem: serialized read-modify-write; Cloudflare: R2 `onlyIf` compare-and-swap on `_idx/data-version`). KV `_idx:data-version` seeds the first R2 write only. The fail-soft wrap is unchanged: a store that rejects still answers `0` and does not fail the kernel write.
+
 ## Review Triage Log
 
 ### 2026-08-16 — Review pass

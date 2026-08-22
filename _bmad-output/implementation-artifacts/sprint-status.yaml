@@ -29,13 +29,13 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-13-2026 14:53
+last_updated: 08-22-2026 13:37
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
 story_location: /workspace/_bmad-output/implementation-artifacts
 development_status:
-  epic-1: backlog
+  epic-1: done
   1-1-sign-in-privately-and-retire-commons: done
   1-2-create-a-wiki-from-a-scenario-template: done
   1-3-nashsu-icon-rail-and-workbench-chrome: done
@@ -45,7 +45,7 @@ development_status:
   1-7-dataversion-workbench-refresh: done
   1-8-edit-schema: done
   1-9-settings-for-models-and-embeddings: done
-  epic-1-retrospective: optional
+  epic-1-retrospective: done
 
   epic-2: backlog
   2-1-upload-drag-drop-and-url-intake: backlog
@@ -126,3 +126,34 @@ development_status:
   8-8-agent-workspace-outputs: backlog
   8-9-safer-shell-approve-deny: backlog
   epic-8-retrospective: optional
+action_items:
+  - id: "epic-1-retro-data-version-contract"
+    epic: 1
+    action: "Resolve the Story 1.7 dataVersion contract: implement and prove provider-atomic
+      monotonic Worker increments, or obtain explicit approval to revise the exact-once
+      monotonic criterion."
+    owner: "Architecture / data plane"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md"
+  - id: "epic-1-retro-raw-root-isolation"
+    epic: 1
+    action: "Apply the approved DW-40 raw-root isolation decision before Epic 2 Source
+      intake and prove an empty tenant raw silo cannot list or read shared legacy
+      bytes."
+    owner: "Wiki kernel"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md"
+  - id: "epic-1-retro-authenticated-e2e"
+    epic: 1
+    action: "Add an authenticated browser E2E fixture covering the private Workbench
+      owner journey and signed-in retired-route 404s."
+    owner: "QA / Workbench"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md"
+  - id: "epic-1-retro-rollup-reconciliation"
+    epic: 1
+    action: "After acceptance blockers close, reconcile the Epic 1 roll-up with its
+      done story states using BMAD state tooling."
+    owner: "BMAD workflow"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md"

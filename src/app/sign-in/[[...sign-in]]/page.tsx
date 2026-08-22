@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { SignIn } from "@clerk/nextjs";
+import { isE2eIdentityArmed } from "@/lib/e2e-identity";
 
 export const metadata: Metadata = {
   title: "Owner sign in",
@@ -29,7 +30,7 @@ export default function SignInPage() {
             Owner access only.
           </p>
         </div>
-        <SignIn />
+        {isE2eIdentityArmed() ? null : <SignIn />}
       </div>
     </section>
   );

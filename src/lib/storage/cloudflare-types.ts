@@ -45,6 +45,11 @@ export interface R2ObjectBody extends R2Object {
 export interface R2PutOptions {
   onlyIf?: {
     etagMatches?: string;
+    /**
+     * Fail the put when the live object has this raw etag. `"*"` means the
+     * object must not exist — R2's create-if-absent form.
+     */
+    etagDoesNotMatch?: string;
   };
 }
 

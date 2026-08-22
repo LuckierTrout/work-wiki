@@ -145,25 +145,41 @@ function visible(entries: Listing[]): Listing[] {
 }
 
 /**
+ * Prefix used only when the owner has no resolvable tenant. It must never be
+ * the shared flat `raw/` tree: a guessed `raw/…` path would otherwise still
+ * read legacy shared bytes even though the listing showed an empty silo.
+ */
+const UNRESOLVED_RAW_PREFIX = "tenants/_unresolved/raw";
+
+/**
  * Pick which physical root backs a display root.
  *
- * `src/lib/silo.ts` documents `tenants/<tenant>/…` as the PRIMARY location for
- * an owner's pages, with the flat tree a transitional redundant copy. So the
- * silo is tried first and the flat root is used only when the silo has nothing
- * — which is what a pre-migration workspace looks like. The first listing is
- * kept and reused as the walk's level-1 seed, so preferring the silo costs no
- * extra round trip in the common case.
+ * DW-40: the two roots no longer share one fallback rule. `wiki/` stays
+ * silo-first with a fallback to the shared flat tree so a pre-migration
+ * workspace still lists pages. `raw/` is silo-only — an empty or unreadable
+ * tenant raw silo never inherits filenames or bytes from the shared `raw/`
+ * tree, which is what an owner whose silo has not been written yet would
+ * otherwise leak. The first listing is kept and reused as the walk's level-1
+ * seed, so preferring the silo costs no extra round trip in the common case.
  *
  * A FAILED silo listing is not an empty one. Both providers answer a missing
- * prefix with an empty list, so a rejection here means unreadable — and falling
- * back on it would answer a transient error by widening what the tab shows to
- * the shared transitional tree, which is the opposite of degrading. The silo
- * stays selected and renders as the empty branch the I/O matrix asks for.
+ * prefix with an empty list, so a rejection here means unreadable — and
+ * falling back on it would answer a transient error by widening what the tab
+ * shows to the shared transitional tree. The silo stays selected and renders
+ * as the empty branch the I/O matrix asks for.
  */
 async function resolveRoot(
+  kind: "wiki" | "raw",
   siloPrefix: string | null,
   flatPrefix: string,
 ): Promise<{ prefix: string; entries: Listing[] }> {
+  if (kind === "raw") {
+    if (!siloPrefix) return { prefix: UNRESOLVED_RAW_PREFIX, entries: [] };
+    const silo = await listSafely(siloPrefix);
+    if (silo.failed) return { prefix: siloPrefix, entries: [] };
+    return { prefix: siloPrefix, entries: visible(silo.entries) };
+  }
+
   if (siloPrefix) {
     const silo = await listSafely(siloPrefix);
     if (silo.failed) return { prefix: siloPrefix, entries: [] };
@@ -321,9 +337,10 @@ export async function listWorkbenchFilePaths(
     }
   }
 
-  // The tenant silo is primary; the flat roots — the same ones
-  // `listRawSources()` and `listWikiPages()` read — are the transitional
-  // fallback, so the tab cannot drift from what the kernel addresses either way.
+  // The tenant silo is primary. `wiki/` still falls back to the flat tree
+  // `listWikiPages()` reads, for pre-migration workspaces. `raw/` does not:
+  // DW-40 retired that fallback so an empty owner silo cannot list shared
+  // legacy sources.
   let siloRaw: string | null = null;
   let siloWiki: string | null = null;
   try {
@@ -347,7 +364,7 @@ export async function listWorkbenchFilePaths(
     maxDepth: budget.maxDepth,
   };
   await walkRoot(
-    await resolveRoot(siloRaw, rawRelPath("")),
+    await resolveRoot("raw", siloRaw, rawRelPath("")),
     "raw",
     paths,
     rawBudget,
@@ -357,7 +374,7 @@ export async function listWorkbenchFilePaths(
   budget.truncated = budget.truncated || rawBudget.truncated;
 
   await walkRoot(
-    await resolveRoot(siloWiki, wikiRelPath("")),
+    await resolveRoot("wiki", siloWiki, wikiRelPath("")),
     "wiki",
     paths,
     budget,
@@ -377,10 +394,10 @@ export async function listWorkbenchFilePaths(
  * The narrow one: a `.md` leaf (case-insensitively, because a filesystem may
  * not be) whose slug is in the readable set. Everything else under the root is
  * refused, including the generated `index.md`, which has no slug and so never
- * survives this test either. `resolveRoot` falls back to the SHARED flat
- * `wiki/` root when the caller's silo is empty, so `wiki/scratch.txt`,
+ * survives this test either. `resolveRoot` still falls back to the SHARED
+ * flat `wiki/` root when the caller's silo is empty, so `wiki/scratch.txt`,
  * `wiki/dump.json` or `wiki/notes.markdown` would otherwise hand back bytes
- * that need not be the caller's.
+ * that need not be the caller's. `raw/` has no such fallback (DW-40).
  *
  * {@link wikiLeafFilter} — the LISTING filter — now DERIVES its admissible set
  * from this predicate (DW-41), so the Files tab can no longer show a `wiki/`
@@ -473,8 +490,9 @@ type ResolvedWorkbenchFile =
  *     admissible set from, for the reason that function documents. The
  *     `rest.length !== 1` half is why that filter is depth-sensitive too.
  *   - `raw/…` and `wiki/…` both resolve their root through {@link resolveRoot},
- *     so silo-first has exactly one definition — including that a FAILED silo
- *     listing keeps the silo selected instead of widening to the flat tree.
+ *     so each root has exactly one definition — including that a FAILED silo
+ *     listing keeps the silo selected instead of widening to the flat tree,
+ *     and that `raw/` never falls back when the silo is merely empty.
  *
  * Every rejection is the same `null`. Callers answer one indistinguishable 404
  * for all of them, so "gated out" and "absent" must not be tellable apart from
@@ -513,7 +531,8 @@ async function resolveWorkbenchFile(
     logger.error("workbench-files", "could not resolve the owner's silo", error);
   }
   const flat = root === "wiki" ? wikiRelPath("") : rawRelPath("");
-  const { prefix } = await resolveRoot(silo, flat);
+  const { prefix } = await resolveRoot(root, silo, flat);
+  if (root === "raw" && (prefix === UNRESOLVED_RAW_PREFIX || !silo)) return null;
   return { kind: "key", key: `${prefix}/${rest.join("/")}` };
 }
 

@@ -11,12 +11,24 @@ import middleware, {
   authenticatesInRoute,
   isBearerMachineWrite,
 } from "@/middleware";
+import { mintE2eCookie } from "@/lib/e2e-identity";
 
-const savedOwnerUserId = process.env.YOPEDIA_OWNER_USER_ID;
+const E2E_KEYS = [
+  "YOPEDIA_OWNER_USER_ID",
+  "YOPEDIA_E2E",
+  "YOPEDIA_E2E_SECRET",
+  "YOPEDIA_SITE_URL",
+  "NEXT_PUBLIC_OWNER_HANDLE",
+] as const;
+const originalEnv = Object.fromEntries(
+  E2E_KEYS.map((key) => [key, process.env[key]]),
+);
 
 afterEach(() => {
-  if (savedOwnerUserId === undefined) delete process.env.YOPEDIA_OWNER_USER_ID;
-  else process.env.YOPEDIA_OWNER_USER_ID = savedOwnerUserId;
+  for (const key of E2E_KEYS) {
+    if (originalEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = originalEnv[key];
+  }
 });
 
 describe("write-gate in-route auth exemptions", () => {
@@ -110,11 +122,15 @@ describe("private single-owner middleware gate", () => {
       method?: string;
       userId?: string | null;
       authorization?: string;
+      cookie?: string;
     } = {},
   ) {
     const headers = new Headers();
     if (options.authorization) {
       headers.set("authorization", options.authorization);
+    }
+    if (options.cookie) {
+      headers.set("cookie", options.cookie);
     }
     const req = new NextRequest(`https://workwiki.app${pathname}`, {
       method: options.method ?? "GET",
@@ -192,5 +208,31 @@ describe("private single-owner middleware gate", () => {
     const { auth, response } = await run("/sign-in");
     expect(response?.status).toBe(200);
     expect(auth).not.toHaveBeenCalled();
+  });
+
+  it("admits the local E2E owner cookie without calling Clerk", async () => {
+    process.env.YOPEDIA_E2E = "1";
+    process.env.YOPEDIA_E2E_SECRET = "e2e-local-secret-do-not-use-in-prod-32";
+    process.env.YOPEDIA_OWNER_USER_ID = "user_e2e_owner";
+    delete process.env.YOPEDIA_SITE_URL;
+    const value = await mintE2eCookie(
+      "user_e2e_owner",
+      "e2e-local-secret-do-not-use-in-prod-32",
+    );
+    const { auth, response } = await run("/", { cookie: `yopedia_e2e=${value}` });
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-middleware-next")).toBe("1");
+    expect(auth).not.toHaveBeenCalled();
+  });
+
+  it("redirects an E2E-armed browser with no cookie, still without Clerk", async () => {
+    process.env.YOPEDIA_E2E = "1";
+    process.env.YOPEDIA_E2E_SECRET = "e2e-local-secret-do-not-use-in-prod-32";
+    process.env.YOPEDIA_OWNER_USER_ID = "user_e2e_owner";
+    delete process.env.YOPEDIA_SITE_URL;
+    const { auth, response } = await run("/wiki/graph");
+    expect(auth).not.toHaveBeenCalled();
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).toContain("/sign-in");
   });
 });

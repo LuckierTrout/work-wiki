@@ -18,6 +18,8 @@ import type {
   EmbeddingEntry,
   EmbeddingMatch,
 } from "./types";
+import { narrowIndexInteger } from "./index-integer";
+import { withFileLock } from "../lock";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -321,6 +323,18 @@ export class FilesystemStorageProvider implements StorageProvider {
 
   async putIndex<T = unknown>(key: string, value: T): Promise<void> {
     await this.atomicWrite(this.indexPath(key), JSON.stringify(value));
+  }
+
+  async incrementIndex(key: string): Promise<number> {
+    // A different key from the app-level `DATA_VERSION_LOCK` so a caller that
+    // still holds that lock (none should) cannot deadlock on a reentrant
+    // acquire. Two processes on one DATA_DIR still serialize here via the
+    // in-process chain; local next-dev is one process.
+    return withFileLock(`index:${key}`, async () => {
+      const next = narrowIndexInteger(await this.getIndex(key)) + 1;
+      await this.putIndex(key, next);
+      return next;
+    });
   }
 
   async listIndexKeys(prefix: string): Promise<string[]> {

@@ -33,6 +33,11 @@ _bmad/render/
 .DS_Store
 **/__pycache__/
 .cursor/hooks/state/
+/e2e/.data/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
 
 # clerk configuration (can include secrets)
 /.clerk/

@@ -233,6 +233,23 @@ describe("FilesystemStorageProvider", () => {
     });
   });
 
+  describe("incrementIndex", () => {
+    it("stores 1 on the first bump and keeps counting from there", async () => {
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(1);
+      await expect(provider.getIndex("data-version")).resolves.toBe(1);
+      await expect(provider.incrementIndex("any-counter")).resolves.toBe(1);
+    });
+
+    it("never lets concurrent increments collapse", async () => {
+      const n = 16;
+      const values = await Promise.all(
+        Array.from({ length: n }, () => provider.incrementIndex("data-version")),
+      );
+      expect(new Set(values).size).toBe(n);
+      await expect(provider.getIndex("data-version")).resolves.toBe(n);
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Embeddings
   // -------------------------------------------------------------------------

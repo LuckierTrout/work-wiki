@@ -87,11 +87,19 @@ function createMockR2Bucket(): R2Bucket {
       options?: R2PutOptions,
     ): Promise<R2Object | null> {
       // Handle conditional put
+      const existing = store.get(key);
       if (options?.onlyIf?.etagMatches) {
-        const existing = store.get(key);
         // Against the RAW etag, as R2 does. A provider that fed back `httpEtag`
         // fails here, which is the whole point of keeping the two apart.
         if (!existing || existing.etag !== options.onlyIf.etagMatches) {
+          return null;
+        }
+      }
+      if (options?.onlyIf?.etagDoesNotMatch) {
+        const token = options.onlyIf.etagDoesNotMatch;
+        if (token === "*") {
+          if (existing) return null;
+        } else if (existing && existing.etag === token) {
           return null;
         }
       }
@@ -535,6 +543,74 @@ describe("R2StorageProvider", () => {
       const arr = [1, 2, 3];
       await provider.putIndex("arr", arr);
       expect(await provider.getIndex("arr")).toEqual([1, 2, 3]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Atomic counters (R2 compare-and-swap, not KV)
+  // -------------------------------------------------------------------------
+
+  describe("incrementIndex", () => {
+    it("stores 1 on the first bump and keeps counting from there", async () => {
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(1);
+      await expect(provider.getIndex("data-version")).resolves.toBe(1);
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(2);
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(3);
+    });
+
+    it("never lets concurrent increments collapse or regress", async () => {
+      const n = 20;
+      const values = await Promise.all(
+        Array.from({ length: n }, () => provider.incrementIndex("data-version")),
+      );
+      expect(new Set(values).size).toBe(n);
+      expect(values.sort((a, b) => a - b)).toEqual(
+        Array.from({ length: n }, (_, i) => i + 1),
+      );
+      await expect(provider.getIndex("data-version")).resolves.toBe(n);
+    });
+
+    it("seeds the first R2 write from a leftover KV value", async () => {
+      await env.YOPEDIA_CONFIG.put("_idx:data-version", "40");
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(41);
+      await expect(provider.getIndex("data-version")).resolves.toBe(41);
+    });
+
+    it("prefers the R2 object over a stale leftover KV value", async () => {
+      await provider.incrementIndex("data-version");
+      await env.YOPEDIA_CONFIG.put("_idx:data-version", "99");
+      await expect(provider.getIndex("data-version")).resolves.toBe(1);
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(2);
+    });
+
+    it("does not store a lower value when a read is stale", async () => {
+      await provider.putIndex("data-version", 5);
+      const live = await env.YOPEDIA_BUCKET.get("_idx/data-version");
+      expect(live).not.toBeNull();
+
+      const realGet = env.YOPEDIA_BUCKET.get.bind(env.YOPEDIA_BUCKET);
+      let staleOnce = true;
+      env.YOPEDIA_BUCKET.get = async (key: string) => {
+        const current = await realGet(key);
+        if (staleOnce && key === "_idx/data-version" && current) {
+          staleOnce = false;
+          return {
+            ...current,
+            etag: "stale-etag",
+            text: async () => "1",
+          };
+        }
+        return current;
+      };
+
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(6);
+      await expect(provider.getIndex("data-version")).resolves.toBe(6);
+    });
+
+    it("refuses keys that are not atomic counters", async () => {
+      await expect(provider.incrementIndex("config")).rejects.toThrow(
+        /atomic counter keys/,
+      );
     });
   });
 

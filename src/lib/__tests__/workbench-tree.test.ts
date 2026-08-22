@@ -671,13 +671,31 @@ describe("listWorkbenchFilePaths", () => {
     expect(paths).not.toContain("raw/flat-source.md");
   });
 
-  it("falls back to the flat roots when the silo is empty", async () => {
+  it("falls back to the flat wiki root when the silo is empty, but not raw/", async () => {
     await fs.writeFile(path.join(tmpDir, "wiki", "flat-page.md"), "x", "utf-8");
-    await fs.writeFile(path.join(tmpDir, "raw", "flat-source.md"), "x", "utf-8");
+    await fs.writeFile(path.join(tmpDir, "raw", "flat-source.md"), "legacy shared bytes", "utf-8");
 
     const { paths } = await listWorkbenchFilePaths(OWNER, null, gate("flat-page"));
     expect(paths).toContain("wiki/flat-page.md");
-    expect(paths).toContain("raw/flat-source.md");
+    expect(paths).toEqual(expect.arrayContaining(["raw/", "wiki/", "wiki/flat-page.md"]));
+    expect(paths).not.toContain("raw/flat-source.md");
+    expect(await readWorkbenchFile(OWNER, null, "raw/flat-source.md", gate())).toBeNull();
+    expect(await workbenchFileExists(OWNER, null, "raw/flat-source.md", gate())).toBe(
+      false,
+    );
+  });
+
+  it("lists and reads a raw source only from the owner's silo (DW-40)", async () => {
+    await writeSilo("raw", "mine.md");
+    await fs.writeFile(path.join(tmpDir, "raw", "theirs.md"), "not yours", "utf-8");
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, gate());
+    expect(paths).toContain("raw/mine.md");
+    expect(paths).not.toContain("raw/theirs.md");
+    await expect(readWorkbenchFile(OWNER, null, "raw/mine.md", gate())).resolves.toEqual({
+      content: "x",
+    });
+    expect(await readWorkbenchFile(OWNER, null, "raw/theirs.md", gate())).toBeNull();
   });
 
   it("does not fall back to the flat roots when the silo read FAILED", async () => {
@@ -851,8 +869,8 @@ describe("listWorkbenchFilePaths", () => {
 
   it("skips dotfiles, so storage bookkeeping stays out of the tree", async () => {
     await fs.mkdir(path.join(tmpDir, "wiki", ".revisions"), { recursive: true });
-    await fs.writeFile(path.join(tmpDir, "raw", ".hidden"), "x", "utf-8");
-    await fs.writeFile(path.join(tmpDir, "raw", "shown.md"), "x", "utf-8");
+    await writeSilo("raw", ".hidden");
+    await writeSilo("raw", "shown.md");
 
     const { paths } = await listWorkbenchFilePaths(OWNER, null, gate());
     expect(paths).toContain("raw/shown.md");
@@ -861,9 +879,8 @@ describe("listWorkbenchFilePaths", () => {
   });
 
   it("nests a per-source raw subdirectory", async () => {
-    await fs.mkdir(path.join(tmpDir, "raw", "topic"), { recursive: true });
-    await fs.writeFile(path.join(tmpDir, "raw", "topic", "abc.md"), "x", "utf-8");
-    await fs.writeFile(path.join(tmpDir, "raw", "scan.pdf"), "x", "utf-8");
+    await writeSilo("raw", "topic/abc.md");
+    await writeSilo("raw", "scan.pdf");
 
     const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
     expect(paths).toContain("raw/topic/");
@@ -881,8 +898,7 @@ describe("listWorkbenchFilePaths", () => {
 
   it("omits anything past the depth cap and reports the truncation", async () => {
     // raw/ (1) → a/ (2) → b/ (3) → deep.md (4): the file is one level too far.
-    await fs.mkdir(path.join(tmpDir, "raw", "a", "b"), { recursive: true });
-    await fs.writeFile(path.join(tmpDir, "raw", "a", "b", "deep.md"), "x", "utf-8");
+    await writeSilo("raw", "a/b/deep.md");
 
     const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
     expect(paths).toContain("raw/a/b/");
@@ -891,14 +907,15 @@ describe("listWorkbenchFilePaths", () => {
   });
 
   it("does not cry truncation over an empty directory at the depth cap", async () => {
-    await fs.mkdir(path.join(tmpDir, "raw", "a", "b"), { recursive: true });
+    const rel = tenantRawRelPath(tenantForOwner(OWNER), "a/b");
+    await fs.mkdir(path.join(getDataDir(), rel), { recursive: true });
     const { truncated } = await listWorkbenchFilePaths(OWNER, null, gate());
     expect(truncated).toBe(false);
   });
 
   it("stops at the node cap and reports it", async () => {
     for (const name of ["a.md", "b.md", "c.md", "d.md"]) {
-      await fs.writeFile(path.join(tmpDir, "raw", name), "x", "utf-8");
+      await writeSilo("raw", name);
     }
     const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, {
       ...gate(),
@@ -919,7 +936,7 @@ describe("listWorkbenchFilePaths", () => {
     // `wiki/` renders as an empty directory — indistinguishable from a missing
     // silo rather than from a truncated one.
     for (let i = 0; i < 12; i += 1) {
-      await fs.writeFile(path.join(tmpDir, "raw", `s${i}.md`), "x", "utf-8");
+      await writeSilo("raw", `s${i}.md`);
     }
     await fs.writeFile(path.join(tmpDir, "wiki", "kept.md"), "x", "utf-8");
 
@@ -934,9 +951,15 @@ describe("listWorkbenchFilePaths", () => {
 
   it("degrades one unreadable root to an empty branch, keeping the other", async () => {
     // A regular file where a directory is expected: `readdir` rejects with
-    // ENOTDIR, which is exactly the "listing failed" case.
-    await fs.rm(path.join(tmpDir, "raw"), { recursive: true, force: true });
-    await fs.writeFile(path.join(tmpDir, "raw"), "not a directory", "utf-8");
+    // ENOTDIR, which is exactly the "listing failed" case. After DW-40 the
+    // raw walk never touches the flat tree, so the failure has to be the
+    // owner's silo, not `RAW_DIR`.
+    const siloRaw = path.join(
+      getDataDir(),
+      tenantRawRelPath(tenantForOwner(OWNER), ""),
+    );
+    await fs.mkdir(path.dirname(siloRaw), { recursive: true });
+    await fs.writeFile(siloRaw, "not a directory", "utf-8");
     await fs.writeFile(path.join(tmpDir, "wiki", "a.md"), "a", "utf-8");
 
     const { paths } = await listWorkbenchFilePaths(OWNER, null, gate("a"));

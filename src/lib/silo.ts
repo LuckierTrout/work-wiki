@@ -8,6 +8,12 @@
  * path during the transition (#869). A redundant flat copy is still written
  * during the transition but will be removed once flat retirement completes.
  *
+ * Workbench Files/Preview isolation (DW-40): the flat tree is now wiki-only
+ * for listing and reads. `raw/` resolves strictly inside the owner's silo and
+ * never falls back to the shared flat `raw/` root — an empty tenant raw silo
+ * is empty, not a window onto legacy shared sources. Ingest may still write a
+ * transitional flat raw copy for older callers; the Workbench will not show it.
+ *
  * Artifacts stored per page: wiki md, raw source, revision history, discussion
  * threads, and binary assets. The embedding vector store is internal (not part
  * of the vault) and stays global.
