@@ -125,6 +125,15 @@
     "label": "Widen the content padding to match",
     "resolution": ""
   },
+  "DW-40": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give `resolveRoot` a per-root arm so `raw/` resolves strictly inside the owner's silo and never falls back to the shared flat root, while `wiki/` keeps the fallback for pre-migration workspaces. Update src/lib/workbench-files.ts and its tests, and record in src/lib/silo.ts that the flat tree is now wiki-only.",
+    "key": "1",
+    "label": "Drop the fallback for raw/ only",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
