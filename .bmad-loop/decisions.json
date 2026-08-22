@@ -125,6 +125,15 @@
     "label": "Widen the content padding to match",
     "resolution": ""
   },
+  "DW-398": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Disable the embedding-provider select in SettingsCanvas.tsx:580-586 whenever `EMBEDDING_PROVIDER` is set, with the existing env-override hint copy, so the newly reachable consequence disappears without touching the frozen clear rule.",
+    "key": "1",
+    "label": "Disable the select under an env pin",
+    "resolution": ""
+  },
   "DW-40": {
     "answered_at": "2026-08-22",
     "bundle_name": "",
