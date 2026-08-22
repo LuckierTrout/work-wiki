@@ -6,48 +6,16 @@
 // containing an array of TalkThread objects. JSON rather than markdown because
 // talk pages are structured data (threading, status, IDs) that would be painful
 // to round-trip through frontmatter.
+//
+// This module no longer WRITES that file — see the retirement note below. It
+// reads it (for discussion stats) and deletes it (for page teardown).
 // ---------------------------------------------------------------------------
 
 import { getStorage } from "./storage";
 import { getDataDir } from "./paths";
-import { withFileLock } from "./lock";
 import { isEnoent } from "./errors";
 import { logger } from "./logger";
-import type { TalkThread, TalkComment } from "./types";
-
-// ---------------------------------------------------------------------------
-// Derived-index hooks (Phase 2 precomputed indexes) — fail-soft. Talk mutations
-// bypass the page lifecycle op, so the discuss-stats index AND the contributor
-// index are maintained directly here. Dynamic-imported to avoid a circular
-// dependency (discuss-stats-index imports talk for the rebuild scan). A failed
-// index update must NEVER break the thread/comment write.
-// ---------------------------------------------------------------------------
-
-/** Upsert this slug's discussion stats from the in-memory threads array. */
-async function syncDiscussStatsHook(
-  pageSlug: string,
-  threads: TalkThread[],
-): Promise<void> {
-  try {
-    const { syncDiscussStatsForSlug } = await import("./discuss-stats-index");
-    await syncDiscussStatsForSlug(pageSlug, threads);
-  } catch (err) {
-    logger.warn("discuss-stats", `stats sync skipped for "${pageSlug}":`, err);
-  }
-}
-
-/** Bump the contributor index for a talk comment (and optionally a new thread). */
-async function recordTalkContributorHook(
-  author: string,
-  opts: { comment?: boolean; thread?: boolean; date?: string },
-): Promise<void> {
-  try {
-    const { recordTalkForAuthor } = await import("./contributor-index");
-    await recordTalkForAuthor(author, opts);
-  } catch (err) {
-    logger.warn("contributor-index", `talk contributor bump skipped for "${author}":`, err);
-  }
-}
+import type { TalkThread } from "./types";
 
 // ---------------------------------------------------------------------------
 // Directory helpers
@@ -76,23 +44,6 @@ export function getDiscussRelPrefix(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Monotonic timestamp — ensures unique IDs even within the same millisecond
-// ---------------------------------------------------------------------------
-
-let lastTimestamp = 0;
-
-function uniqueTimestamp(): string {
-  const now = Date.now();
-  lastTimestamp = now > lastTimestamp ? now : lastTimestamp + 1;
-  return String(lastTimestamp);
-}
-
-/** Reset monotonic timestamp state. **Test-only.** */
-export function _resetTimestamp(): void {
-  lastTimestamp = 0;
-}
-
-// ---------------------------------------------------------------------------
 // Internal file I/O helpers
 // ---------------------------------------------------------------------------
 
@@ -107,203 +58,41 @@ async function readDiscussFile(pageSlug: string): Promise<TalkThread[]> {
   }
 }
 
-/** Serialize and write the discuss JSON file for a page. */
-async function writeDiscussFile(
-  pageSlug: string,
-  threads: TalkThread[],
-): Promise<void> {
-  await getStorage().writeFile(discussRelPath(pageSlug), JSON.stringify(threads, null, 2));
-}
-
 // ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/** List all threads for a wiki page. Returns empty array if no discussions. */
-export async function listThreads(pageSlug: string): Promise<TalkThread[]> {
-  return readDiscussFile(pageSlug);
-}
-
-/** Get a single thread by index. Returns null if not found. */
-export async function getThread(
-  pageSlug: string,
-  threadIndex: number,
-): Promise<TalkThread | null> {
-  const threads = await readDiscussFile(pageSlug);
-  return threads[threadIndex] ?? null;
-}
-
-/**
- * Create a new thread with the first comment.
- * Returns the newly created TalkThread.
- * Throws if title, author, or body are empty or whitespace-only.
- */
-export async function createThread(
-  pageSlug: string,
-  title: string,
-  author: string,
-  body: string,
-): Promise<TalkThread> {
-  if (!title || !title.trim()) {
-    throw new Error("title must be a non-empty string");
-  }
-  if (!author || !author.trim()) {
-    throw new Error("author must be a non-empty string");
-  }
-  if (!body || !body.trim()) {
-    throw new Error("body must be a non-empty string");
-  }
-  return withFileLock(`discuss:${pageSlug}`, async () => {
-    const threads = await readDiscussFile(pageSlug);
-    const now = new Date().toISOString();
-    const commentId = uniqueTimestamp();
-
-    const firstComment: TalkComment = {
-      id: commentId,
-      author,
-      created: now,
-      body,
-      parentId: null,
-    };
-
-    const thread: TalkThread = {
-      pageSlug,
-      title,
-      status: "open",
-      created: now,
-      updated: now,
-      comments: [firstComment],
-    };
-
-    threads.push(thread);
-    await writeDiscussFile(pageSlug, threads);
-    // Maintain derived indexes (fail-soft, inside the discuss:<slug> lock):
-    // a new thread bumps this slug's stats and the creator's contributor counts.
-    await syncDiscussStatsHook(pageSlug, threads);
-    await recordTalkContributorHook(author, { comment: true, thread: true, date: now });
-    return thread;
-  });
-}
-
-// ---------------------------------------------------------------------------
-// RETIRED (DW-230): the auto-opened reconciliation-thread writer, and the title
-// constant that was its idempotency key, both lived here.
+// RETIRED (DW-230, then DW-390): the thread-writing API that used to live here.
 //
-// A `disputed: false → true` transition on the ingest, merge and metadata-patch
-// paths used to open a talk thread through them. The talk HTTP surfaces are
-// gone, so no surface could ever read that thread: the writer produced a
-// discuss file nobody would see, on a page whose `disputed` flag already says
-// the same thing where a reader can find it. The three call sites and the
-// writer were deleted together.
+// DW-230 deleted the auto-opened reconciliation-thread writer and the title
+// constant that was its idempotency key. A `disputed: false -> true` transition
+// on the ingest, merge and metadata-patch paths used to open a talk thread
+// through it. The talk HTTP surfaces are gone, so no surface could ever read
+// that thread: the writer produced a discuss file nobody would see, on a page
+// whose `disputed` flag already says the same thing where a reader can find it.
+// The three call sites and the writer were deleted together.
 //
-// WHAT IS LEFT, HONESTLY. Only three exports still have non-test callers:
+// That left the rest of the thread API READERLESS outside this module's own
+// tests — the six exports that listed threads, fetched one by index, opened a
+// thread, appended a comment, changed a thread's status, and asked whether any
+// thread was still open. DW-390 deleted all six, and with them the private
+// machinery that existed only to serve them: the monotonic comment-ID source
+// and its test-only reset hook, the discuss-file writer, and the two fail-soft
+// derived-index hooks (discuss-stats and contributor-index) whose only callers
+// those writers were. Nothing in this module writes `discuss/<slug>.json` any
+// more; the seeding those tests needed now comes from
+// `src/lib/__tests__/discuss-fixture.ts`, which writes the on-disk shape
+// directly.
+//
+// WHAT IS LEFT, HONESTLY. Three exports have non-test callers:
 // `deleteDiscussions` (the page-lifecycle teardown in `lifecycle.ts`),
 // `getDiscussRelPrefix` (`discuss-stats-index.ts`, `contributors.ts`) and
-// `getDiscussionStatsForSlugs` (`browse.ts`). The rest of the thread API —
-// `listThreads`, `createThread`, `getThread`, `addComment`, `resolveThread`,
-// `hasOpenThread` — is now READERLESS outside this module's own tests: the talk
-// HTTP surfaces that drove it are retired, and removing this writer took the
-// last programmatic caller with it. They are deliberately NOT deleted here.
-// Retiring that surface is a wider question than DW-230 asked, so it is
-// recorded as deferred work rather than resolved in passing — but nothing
-// below should be read as evidence that it is still in use.
+// `getDiscussionStatsForSlugs` (`browse.ts`). The `getDiscussDir` /
+// `ensureDiscussDir` path helpers are exercised only by this module's tests;
+// they describe where the store lives and were out of DW-390's scope, so they
+// stay — but nothing below should be read as evidence that they are in use.
+//
+// The derived indexes are NOT retired: `discuss-stats-index.ts` and
+// `contributor-index.ts` rebuild themselves by scanning storage directly, so
+// losing the incremental hooks costs them nothing while no writer exists.
 // ---------------------------------------------------------------------------
-
-/**
- * True iff `pageSlug` has at least one OPEN discussion thread. Fail-soft: a
- * discuss-read error (corrupt file, storage hiccup) logs and returns `false`,
- * so a page render that calls this only to word a banner never crashes.
- */
-export async function hasOpenThread(pageSlug: string): Promise<boolean> {
-  try {
-    return (await listThreads(pageSlug)).some((t) => t.status === "open");
-  } catch (err) {
-    logger.warn("talk", `open-thread check failed for "${pageSlug}"`, err);
-    return false;
-  }
-}
-
-/**
- * Add a comment to an existing thread.
- * Returns the newly created TalkComment.
- * Throws if author or body are empty or whitespace-only.
- * Throws if thread index is out of bounds.
- */
-export async function addComment(
-  pageSlug: string,
-  threadIndex: number,
-  author: string,
-  body: string,
-  parentId?: string,
-): Promise<TalkComment> {
-  if (!author || !author.trim()) {
-    throw new Error("author must be a non-empty string");
-  }
-  if (!body || !body.trim()) {
-    throw new Error("body must be a non-empty string");
-  }
-  return withFileLock(`discuss:${pageSlug}`, async () => {
-    const threads = await readDiscussFile(pageSlug);
-    const thread = threads[threadIndex];
-    if (!thread) {
-      throw new Error(
-        `thread index ${threadIndex} not found for page "${pageSlug}"`,
-      );
-    }
-
-    if (thread.status === "resolved" || thread.status === "wontfix") {
-      throw new Error(
-        `Cannot comment on a ${thread.status} thread — reopen it first.`,
-      );
-    }
-
-    const now = new Date().toISOString();
-    const comment: TalkComment = {
-      id: uniqueTimestamp(),
-      author,
-      created: now,
-      body,
-      parentId: parentId ?? null,
-    };
-
-    thread.comments.push(comment);
-    thread.updated = now;
-    await writeDiscussFile(pageSlug, threads);
-    // Maintain derived indexes (fail-soft): open/total are unchanged by a
-    // comment, but re-syncing keeps the index self-healing; bump the commenter.
-    await syncDiscussStatsHook(pageSlug, threads);
-    await recordTalkContributorHook(author, { comment: true, date: now });
-    return comment;
-  });
-}
-
-/**
- * Change a thread's status to "resolved", "wontfix", or "open" (reopen).
- * Returns the updated TalkThread.
- * Throws if thread index is out of bounds.
- */
-export async function resolveThread(
-  pageSlug: string,
-  threadIndex: number,
-  status: "open" | "resolved" | "wontfix",
-): Promise<TalkThread> {
-  return withFileLock(`discuss:${pageSlug}`, async () => {
-    const threads = await readDiscussFile(pageSlug);
-    const thread = threads[threadIndex];
-    if (!thread) {
-      throw new Error(
-        `thread index ${threadIndex} not found for page "${pageSlug}"`,
-      );
-    }
-
-    thread.status = status;
-    thread.updated = new Date().toISOString();
-    await writeDiscussFile(pageSlug, threads);
-    // Status change moves the open count → re-sync this slug's stats (fail-soft).
-    await syncDiscussStatsHook(pageSlug, threads);
-    return thread;
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Discussion stats — lightweight counts for badges and index views

@@ -3455,7 +3455,8 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/lib/talk.ts, src/lib/browse.ts:184
 severity: medium
 reason: `listThreads`, `createThread`, `getThread`, `addComment`, `resolveThread` and `hasOpenThread` now have no non-test callers; only `deleteDiscussions` (lifecycle.ts), `getDiscussRelPrefix` (discuss-stats-index.ts, contributors.ts) and `getDiscussionStatsForSlugs` (browse.ts) are still read, and the talk HTTP surfaces that drove the rest are retired. A knock-on: `browse.ts:184` still renders a per-page discussion count that nothing can increase any more, and pre-existing reconciliation threads stay on disk feeding it. Retiring that surface — and the discuss-stats/contributor indexes hanging off it — is wider than DW-230 asked, and the spec's Never list forbids touching talk.ts's remaining readers, so it is recorded rather than resolved. The retirement banner in talk.ts says the same thing so the dead surface is not mistaken for live API.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw2-decision-dw-390
 decision: 2026-08-21 Retire the dead writers only — Delete listThreads, createThread, getThread, addComment, resolveThread and hasOpenThread from src/lib/talk.ts along with their now-orphaned tests, leaving deleteDiscussions, getDiscussRelPrefix and getDiscussionStatsForSlugs (and therefore browse's count and the discuss-stats/contributor indexes) exactly as they are.
 
 ### DW-391: A non-admin page owner can no longer take their own public knowledge page private — the realm became a one-way door for them.
@@ -4046,4 +4047,20 @@ source_spec: `spec-dw-362-email-raw-cap-aggregate-budget.md`
 location: workers/email-ingest/index.ts (MAX_RAW_EMAIL_MB)
 severity: low
 reason: `(MAX_RAW_EMAIL_BYTES / 1024 / 1024)` floored to one decimal yields 62.4 and is written as "larger than 62.4 MB"; 65,496,679 bytes is 65.5 decimal MB. Pre-existing and shared with `MAX_EMAIL_DOCUMENT_MB` and the route's own "10 MB" copy, so correcting it is a copy decision across both surfaces, not a local fix -- but the absolute gap is now large enough for a sender to act on it, and this is the same figure DW-457 says may be unachievable.
+status: open
+
+### DW-464: Deleting talk.ts's derived-index hooks left `syncDiscussStatsForSlug` and `recordTalkForAuthor` with no non-test caller — the same readerless-export condition DW-390 was raised to fix, one module over
+origin: spec-deferred adb8e7b5bfa5
+source_spec: `spec-dw-390-retire-dead-talk-thread-writers.md`
+location: src/lib/discuss-stats-index.ts:69, src/lib/contributor-index.ts:218
+severity: medium
+reason: `grep -rn "syncDiscussStatsForSlug|recordTalkForAuthor" src/ --include=*.ts` outside `__tests__` now returns only the two definitions. Their only production callers were `syncDiscussStatsHook` and `recordTalkContributorHook` in `talk.ts`, both deleted here. Neither index is broken: `rebuildDiscussStatsIndex` / `rebuildContributorIndex` still scan storage, and `removeDiscussStatsForSlug` still runs from `deleteDiscussions`. Not resolved in this story because the DW-390 decision explicitly kept the discuss-stats and contributor indexes "exactly as they are"; both doc comments were corrected to record the state.
+status: open
+
+### DW-465: `getDiscussDir` and `ensureDiscussDir` now have no non-test caller either, and `ensureDiscussDir` is an explicit no-op.
+origin: spec-deferred 057152ba3b6d
+source_spec: `spec-dw-390-retire-dead-talk-thread-writers.md`
+location: src/lib/talk.ts:47-52
+severity: low
+reason: Neither appears in the DW-390 delete list nor the keep list, so they were out of scope. After this change the only importers are `talk.test.ts` (which uses `getDiscussDir` to locate the file it seeds) and `SCHEMA.md` prose. `ensureDiscussDir` has had an empty body since the storage-provider migration — the provider creates parent directories on write.
 status: open

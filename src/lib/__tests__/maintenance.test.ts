@@ -9,7 +9,7 @@ import {
   getWikiDir,
   type Frontmatter,
 } from "../wiki";
-import { createThread } from "../talk";
+import { discussThread, seedDiscussFile } from "./discuss-fixture";
 import {
   scanForMaintenance,
   rebuildDerivedIndexes,
@@ -93,7 +93,9 @@ describe("scanForMaintenance", () => {
 
   it("produces no task for a disputed page (reconcile-from-talk retired)", async () => {
     await seed("disputed", { disputed: true });
-    await createThread("disputed", "Issue", "bob", "This claim looks wrong.");
+    await seedDiscussFile("disputed", [
+      discussThread("disputed", { title: "Issue", authors: ["bob"] }),
+    ]);
     expect(await scanForMaintenance()).toHaveLength(0);
   });
 
@@ -215,7 +217,9 @@ describe("scanForMaintenance", () => {
       source_url: "https://example.com/s",
     });
     await seed("priv-disputed", { visibility: "private", disputed: true });
-    await createThread("priv-disputed", "Issue", "bob", "Wrong.");
+    await seedDiscussFile("priv-disputed", [
+      discussThread("priv-disputed", { title: "Issue", authors: ["bob"] }),
+    ]);
     expect(await scanForMaintenance()).toHaveLength(0);
   });
 

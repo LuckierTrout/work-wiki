@@ -131,9 +131,11 @@ and the Discussion UI are retired (see **Retired surfaces** below); the storage
 format and the library that reads it are still live, which is why the shape is
 documented here.
 
-**Location:** `discuss/<slug>.json` — created on demand by `ensureDiscussDir()`
-in `src/lib/talk.ts`. The `discuss/` directory is gitignored (like `wiki/` and
-`raw/`).
+**Location:** `discuss/<slug>.json`, written on demand by whatever created the
+thread. Nothing in `src/lib/talk.ts` creates the file any more (see **Retired
+library API** below); `ensureDiscussDir()` survives there as an explicit no-op,
+because the storage provider creates parent directories on write. The
+`discuss/` directory is gitignored (like `wiki/` and `raw/`).
 
 **Schema:** Each file contains a JSON array of `TalkThread` objects:
 
@@ -174,11 +176,20 @@ discussion badge counts on index cards and page headers, went with the surfaces
 that carried them: `/wiki` and `/wiki/[slug]` are `RETIRED_SURFACES` entries
 too, and their page bodies are `retiredPage()`, which is Next's `notFound()`.
 
-**Still live:** the storage and the library underneath. `src/lib/talk.ts` still
-creates `discuss/` on demand and reads and writes `discuss/<slug>.json` in
-exactly the shape documented above, and `src/lib/contributors.ts` still scans
-those files for the comment counts and threads-created figures that feed a
-contributor profile. No product surface renders them today.
+**Still live:** the storage and the readers underneath. `src/lib/talk.ts` reads
+`discuss/<slug>.json` in exactly the shape documented above for the per-page
+discussion counts, and deletes it when a page is deleted; `src/lib/contributors.ts`
+scans those files for the comment counts and threads-created figures that feed a
+contributor profile, and `src/lib/discuss-stats-index.ts` scans them to rebuild
+the precomputed counts. No product surface renders them today.
+
+**Retired library API:** nothing writes a thread or a comment any more. The
+thread-writing half of `src/lib/talk.ts` — `listThreads`, `getThread`,
+`createThread`, `addComment`, `resolveThread` and `hasOpenThread` — was deleted
+(DW-390) once the retirement of the HTTP surfaces above, and of the auto-opened
+reconciliation-thread writer (DW-230), left it with no caller outside its own
+tests. The on-disk shape stays documented because the readers still consume any
+file an earlier build left behind.
 
 ## Contributor profiles (Phase 2)
 

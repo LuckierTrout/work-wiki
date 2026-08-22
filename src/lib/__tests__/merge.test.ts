@@ -24,7 +24,7 @@ import { extractSummary } from "../ingest";
 import { resetSourceIndex } from "../source-index";
 import { resetAliasIndex, resolveAlias } from "../alias-index";
 import { rebuildBacklinkIndex } from "../backlink-index";
-import { listThreads } from "../talk";
+import { readDiscussThreads } from "./discuss-fixture";
 import { _resetStorage } from "../storage";
 import { hasLLMKey, callLLM } from "../llm";
 import type { SourceEntry } from "../types";
@@ -227,7 +227,7 @@ describe("mergePages", () => {
     // retired, so no surface could read it. `disputed` on the survivor — and in
     // the returned result above — is the whole record, and the write must stay
     // gone.
-    expect(await listThreads("agent-harness")).toEqual([]);
+    expect(await readDiscussThreads("agent-harness")).toEqual([]);
   });
 
   it("appends both bodies (no reconcile) when there's no LLM key", async () => {

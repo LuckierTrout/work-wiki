@@ -5,7 +5,7 @@ import path from "path";
 import { buildContributorProfile, buildContributorProfiles, listContributors, computeScanData, reduceReverts } from "../contributors";
 import { ensureDirectories, writeWikiPage } from "../wiki";
 import { saveRevision, type Revision } from "../revisions";
-import { createThread, addComment, _resetTimestamp } from "../talk";
+import { discussThread, seedDiscussFile } from "./discuss-fixture";
 import { _resetLocks } from "../lock";
 import { _resetStorage } from "../storage";
 
@@ -22,7 +22,6 @@ beforeEach(async () => {
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
-  _resetTimestamp();
   _resetLocks();
   _resetStorage();
 });
@@ -121,8 +120,9 @@ describe("contributors data layer", () => {
       await saveRevision("page-a", "# Page A\n\nv2", "system");
       await saveRevision("page-a", "# Page A\n\nv3", "lint-fix");
       // ...and a talk comment by an automation actor (the mergeTalkActivity path).
-      await createThread("page-a", "T", "alice", "post");
-      await addComment("page-a", 0, "lint-fix", "auto comment");
+      await seedDiscussFile("page-a", [
+        discussThread("page-a", { title: "T", authors: ["alice", "lint-fix"] }),
+      ]);
 
       // Live-scan path: system/lint-fix are credited to the agent (yoyo), never
       // shown as their own contributors.
@@ -226,14 +226,15 @@ describe("contributors data layer", () => {
     it("counts talk comments and threads", async () => {
       await ensureDirectories();
 
-      // Create a thread (alice creates it — 1 thread, 1 comment)
-      await createThread("some-page", "Discussion", "alice", "Initial post");
-
-      // Bob adds a comment (1 comment, 0 threads)
-      await addComment("some-page", 0, "bob", "Reply to alice");
-
-      // Alice adds another comment (now 2 comments total)
-      await addComment("some-page", 0, "alice", "Follow-up");
+      // One thread: alice opens it (1 thread, 1 comment), bob replies (1
+      // comment, 0 threads), alice follows up (alice now at 2 comments).
+      // Comment ORDER is what carries that — index 0 is the thread creator.
+      await seedDiscussFile("some-page", [
+        discussThread("some-page", {
+          title: "Discussion",
+          authors: ["alice", "bob", "alice"],
+        }),
+      ]);
 
       const aliceProfile = await buildContributorProfile("alice");
       expect(aliceProfile.commentCount).toBe(2);
@@ -295,11 +296,12 @@ describe("contributors data layer", () => {
       await ensureDirectories();
 
       // 5 comments, 0 edits → trust = min(1, 5/50) = 0.1
-      await createThread("discuss-page", "Thread 1", "commenter", "post 1");
-      await addComment("discuss-page", 0, "commenter", "post 2");
-      await addComment("discuss-page", 0, "commenter", "post 3");
-      await addComment("discuss-page", 0, "commenter", "post 4");
-      await addComment("discuss-page", 0, "commenter", "post 5");
+      await seedDiscussFile("discuss-page", [
+        discussThread("discuss-page", {
+          title: "Thread 1",
+          authors: ["commenter", "commenter", "commenter", "commenter", "commenter"],
+        }),
+      ]);
 
       const profile = await buildContributorProfile("commenter");
       expect(profile.commentCount).toBe(5);
@@ -509,8 +511,9 @@ describe("contributors data layer", () => {
 
     it("shared scan data includes talk activity", async () => {
       await ensureDirectories();
-      await createThread("discuss-page", "Thread", "alice", "Post");
-      await addComment("discuss-page", 0, "bob", "Reply");
+      await seedDiscussFile("discuss-page", [
+        discussThread("discuss-page", { title: "Thread", authors: ["alice", "bob"] }),
+      ]);
 
       const scanData = await computeScanData();
       const aliceProfile = await buildContributorProfile("alice", scanData);

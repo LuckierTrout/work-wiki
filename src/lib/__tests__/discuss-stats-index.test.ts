@@ -9,14 +9,8 @@ import {
   rebuildDiscussStatsIndex,
   statsFromThreads,
 } from "../discuss-stats-index";
-import {
-  createThread,
-  addComment,
-  resolveThread,
-  deleteDiscussions,
-  getDiscussionStatsForSlugs,
-  _resetTimestamp,
-} from "../talk";
+import { deleteDiscussions, getDiscussionStatsForSlugs } from "../talk";
+import { discussThread, seedDiscussFile } from "./discuss-fixture";
 import { _resetLocks } from "../lock";
 import { _resetStorage } from "../storage";
 import type { TalkThread } from "../types";
@@ -30,7 +24,6 @@ beforeEach(async () => {
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
-  _resetTimestamp();
   _resetLocks();
   _resetStorage();
 });
@@ -97,22 +90,17 @@ describe("syncDiscussStatsForSlug / removeDiscussStatsForSlug (after seeding)", 
   });
 });
 
-describe("talk mutations maintain the index (after seeding)", () => {
+describe("deleteDiscussions maintains the index (after seeding)", () => {
   beforeEach(seedEmptyIndex);
 
-  it("createThread / addComment / resolveThread keep stats fresh", async () => {
-    await createThread("p", "Title", "alice", "first");
-    expect((await getDiscussStatsIndex())?.p).toEqual({ total: 1, open: 1 });
-
-    await addComment("p", 0, "bob", "reply");
-    expect((await getDiscussStatsIndex())?.p).toEqual({ total: 1, open: 1 });
-
-    await resolveThread("p", 0, "resolved");
-    expect((await getDiscussStatsIndex())?.p).toEqual({ total: 1, open: 0 });
-  });
-
   it("deleteDiscussions removes the slug entry", async () => {
-    await createThread("p", "Title", "alice", "first");
+    // A discuss file on disk plus the matching index entry — the state a live
+    // page with discussions leaves behind.
+    const threads = [discussThread("p", { title: "Title", authors: ["alice"] })];
+    await seedDiscussFile("p", threads);
+    await syncDiscussStatsForSlug("p", threads);
+    expect((await getDiscussStatsIndex())?.p).toEqual({ total: 1, open: 1 });
+
     await deleteDiscussions("p");
     expect((await getDiscussStatsIndex())?.p).toBeUndefined();
   });
@@ -120,9 +108,12 @@ describe("talk mutations maintain the index (after seeding)", () => {
 
 describe("rebuildDiscussStatsIndex", () => {
   it("scans the discuss dir and rebuilds all entries", async () => {
-    await createThread("a", "A", "alice", "x");
-    await createThread("b", "B", "bob", "y");
-    await resolveThread("b", 0, "resolved");
+    await seedDiscussFile("a", [
+      discussThread("a", { title: "A", authors: ["alice"] }),
+    ]);
+    await seedDiscussFile("b", [
+      discussThread("b", { title: "B", status: "resolved", authors: ["bob"] }),
+    ]);
     await rebuildDiscussStatsIndex();
     const idx = await getDiscussStatsIndex();
     expect(idx?.a).toEqual({ total: 1, open: 1 });

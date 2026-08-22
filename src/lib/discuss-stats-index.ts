@@ -62,9 +62,12 @@ export function statsFromThreads(threads: TalkThread[]): DiscussStat {
 }
 
 /**
- * Upsert one slug's stats. Called from `talk.ts` mutations with the in-memory
- * threads array already held under the `discuss:<slug>` lock. Fail-soft is the
+ * Upsert one slug's stats from an in-memory threads array. Fail-soft is the
  * caller's responsibility.
+ *
+ * `talk.ts`'s thread mutations used to call this under the `discuss:<slug>`
+ * lock; DW-390 deleted those writers, so there is no incremental caller left
+ * outside tests and `rebuildDiscussStatsIndex` is the live maintenance path.
  */
 export async function syncDiscussStatsForSlug(
   slug: string,

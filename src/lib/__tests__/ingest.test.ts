@@ -673,8 +673,8 @@ describe("ingest — Phase 1 frontmatter fields", () => {
     // surfaces are retired, so nothing could ever read it. The write must not
     // come back — a discuss file no surface serves is storage churn that reads
     // like a working feature.
-    const { listThreads } = await import("../talk");
-    expect(await listThreads("phase1-reingest")).toEqual([]);
+    const { readDiscussThreads } = await import("./discuss-fixture");
+    expect(await readDiscussThreads("phase1-reingest")).toEqual([]);
 
     // expiry reset to ~90 days from now (not the old 2024-09-01)
     const expiry = page!.frontmatter.expiry as string;

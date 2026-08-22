@@ -5,7 +5,7 @@ import path from "path";
 import { migrateToTenants, getRedirectMap } from "../migrate-to-tenants";
 import { getCommonsIndex } from "../commons";
 import { ensureDirectories, writeWikiPage, rawRelPath } from "../wiki";
-import { createThread } from "../talk";
+import { discussThread, seedDiscussFile } from "./discuss-fixture";
 import { getStorage, _resetStorage } from "../storage";
 
 let tmpDir: string;
@@ -138,7 +138,9 @@ describe("migrateToTenants — live", () => {
     // Second write snapshots the first as a revision.
     await writeWikiPage("doc", "---\nowner: alice\nvisibility: public\n---\n\n# Doc\n\nv2.");
     // A discussion thread + a binary asset.
-    await createThread("doc", "Re: Doc", "alice", "first comment");
+    await seedDiscussFile("doc", [
+      discussThread("doc", { title: "Re: Doc", authors: ["alice"] }),
+    ]);
     await getStorage().writeAsset(
       rawRelPath("assets/doc/img.png"),
       new Uint8Array([1, 2, 3, 4]).buffer,
