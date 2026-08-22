@@ -10,6 +10,7 @@ import {
   type Ref,
 } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { SurfaceVisibilityProvider } from "@/hooks/useSurfaceVisibility";
 import {
   previewFetchPlan,
   requestDataVersionCheck,
@@ -162,6 +163,22 @@ export interface PreviewColumnProps {
    */
   id: string;
   /**
+   * Another surface — Settings — is showing in this column's place (DW-412).
+   *
+   * The column stays MOUNTED and goes off screen, exactly as the mode canvas
+   * does under DW-373, because it can be holding an unsaved markdown draft:
+   * unmounting it for the visit discards that draft with no confirm and no way
+   * back. Hiding is not closing — nothing here flips `editing`, clears the
+   * payload or resets the selection.
+   *
+   * It is published through `SurfaceVisibilityProvider` as well as spelled on
+   * the `<aside>`, because this column owns two `ConfirmDialog`s: `hidden`
+   * withdraws their pixels, their accessibility-tree entries and their tab
+   * order, and nothing they did to the DOCUMENT — the body scroll lock, the
+   * capture-phase Tab trap — which is what `useDialogA11y` needs told.
+   */
+  hidden?: boolean;
+  /**
    * Forwarded onto the `<aside>` so the SHELL can scroll the docked column into
    * view below the stacking breakpoint (DW-34), where it is a stacked fourth row
    * rather than a column beside the canvas. The shell owns the dock, so it owns
@@ -187,6 +204,7 @@ export function PreviewColumn({
   onDirtyChange,
   readOnly = false,
   id,
+  hidden = false,
   ref,
 }: PreviewColumnProps) {
   // No selection, no column — the shell already decides this with
@@ -194,17 +212,26 @@ export function PreviewColumn({
   // hooks all live in `PreviewPane` so none of them sits behind this branch.
   if (!selection) return null;
   return (
-    <PreviewPane
-      selection={selection}
-      knowledge={knowledge}
-      files={files}
-      onOpenPage={onOpenPage}
-      dataVersion={dataVersion}
-      onDirtyChange={onDirtyChange}
-      readOnly={readOnly}
-      id={id}
-      ref={ref}
-    />
+    // The withdrawal's second half (DW-412). `hidden` takes the pixels, the
+    // accessibility tree and the tab order; the two `ConfirmDialog`s below can
+    // still be holding a `document.body` scroll lock and a capture-phase Tab
+    // trap, and only this tells `useDialogA11y` to stand those down. Wrapped
+    // around the pane rather than declared inside it, so the provider cannot be
+    // separated from the attribute by an early return.
+    <SurfaceVisibilityProvider visible={!hidden}>
+      <PreviewPane
+        selection={selection}
+        knowledge={knowledge}
+        files={files}
+        onOpenPage={onOpenPage}
+        dataVersion={dataVersion}
+        onDirtyChange={onDirtyChange}
+        readOnly={readOnly}
+        id={id}
+        hidden={hidden}
+        ref={ref}
+      />
+    </SurfaceVisibilityProvider>
   );
 }
 
@@ -217,6 +244,7 @@ function PreviewPane({
   onDirtyChange,
   readOnly = false,
   id,
+  hidden = false,
   ref,
 }: PreviewColumnProps & { selection: TreeSelection }) {
   const [payload, setPayload] = useState<PreviewPayload | null>(null);
@@ -1058,7 +1086,7 @@ function PreviewPane({
   }
 
   return (
-    <aside id={id} className="wb-preview" aria-label="Preview" ref={ref}>
+    <aside id={id} className="wb-preview" hidden={hidden} aria-label="Preview" ref={ref}>
       <header className="wb-preview-head">
         <strong className="wb-preview-title">Preview</strong>
         <span className="wb-preview-name">{name}</span>

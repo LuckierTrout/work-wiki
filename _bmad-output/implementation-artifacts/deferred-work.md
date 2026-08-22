@@ -3614,7 +3614,8 @@ source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
 location: src/components/workbench/Workbench.tsx:295
 severity: medium
 reason: `Workbench.tsx:295` computes `previewOpen = shouldDockPreview(mode, selection) && !settingsOpen`, so `PreviewColumn` (which owns `draft`/`draftSeed`) leaves the tree whenever the Settings surface opens. `selectRow`'s own comment at `Workbench.tsx:719` already records it: "A mode switch, a Wiki switch, a tab switch and Settings all still discard silently." Pre-existing: the `&& !settingsOpen` undock predates DW-373 and the intent named the mode canvas only.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw3-settings-transition-focus-and-state
 
 ### DW-413: Opening Settings moves focus nowhere, so in a real browser a keyboard user inside the canvas is dropped on <body> when it goes `display: none`.
 origin: spec-deferred 019e0d5eb098
@@ -3622,7 +3623,8 @@ source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
 location: src/components/workbench/Workbench.tsx (openSettings / toggleSettings)
 severity: medium
 reason: `g s` fires from the document and the rail control focuses itself; neither focuses the Settings section, which carries `tabIndex={-1}` precisely to be a landing place. A real engine blurs focus out of a subtree that becomes `display: none`; jsdom does not, which is why `settings-canvas-persistence.test.tsx`'s "does not move focus when it hides the canvas" can assert the keystroke leaves focus put. Not a DW-373 regression — the previous unmount dropped focus the same way — but the mounted canvas makes it observable and testable.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw3-settings-transition-focus-and-state
 
 ### DW-414: `useDialogA11y`'s close path can restore focus into a hidden canvas while Settings is showing.
 origin: spec-deferred 7ceac9bfb832
@@ -3630,7 +3632,8 @@ source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
 location: src/hooks/useDialogA11y.ts (teardown / close branch)
 severity: medium
 reason: Its teardown early-returns only when the dialog is still open AND hidden (`if (openRef.current && !visibleRef.current) return;`). `WikiWorkbench.tsx:131` resets `createOpen` to false whenever `currentWikiId`/`currentId` moves, which a `DataVersionWatcher`-driven `router.refresh()` can do while the canvas is withdrawn — the close branch then focuses `openerRef.current`, a connected but `display: none` node, which is a silent no-op that leaves the keyboard on `<body>` mid-Settings. Pre-existing hook behaviour; keeping the canvas permanently mounted widens the window.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw3-settings-transition-focus-and-state
 
 ### DW-415: The `[hidden]` withdrawal rules have no specificity floor, so a later shell-scoped `display` rule beats them.
 origin: spec-deferred 6ddef8b35447
@@ -3678,4 +3681,52 @@ source_spec: `spec-dw-400-provider-endpoint-note-a11y.md`
 location: src/components/ProviderForm.tsx:197
 severity: medium
 reason: `ProviderForm.tsx:197-205` renders "✓ API key configured on server", "⚠ No API key — set via server environment variables", or "Save this selection to check its server credential" directly under `#provider`. It has no `id` and the picker does not reference it, so the credential state of the selected provider is invisible to a screen reader — the same harm class DW-400 fixed for the custom-endpoint pointer. Pre-existing and outside DW-400's stated scope.
+status: open
+
+### DW-421: `useDialogA11y`'s new `withdrawn()` guard knows only the `hidden` attribute, so an opener hidden by CSS alone still takes a focus() that a browser silently drops.
+origin: spec-deferred 515a14088b1b
+source_spec: `spec-dw-412-413-414-settings-transition-focus-and-state.md`
+location: src/hooks/useDialogA11y.ts (withdrawn)
+severity: medium
+reason: `withdrawn()` (`src/hooks/useDialogA11y.ts`) answers `closest("[hidden]")`, which is this shell's withdrawal convention — but `globals.css` also hides with shell-scoped rules, e.g. `.wb-shell[data-collapsed="true"] .wb-left { display: none }`. An opener or `fallbackFocusRef` inside a collapsed left column is `isConnected`, has no `[hidden]` ancestor, and gets focused into a `display: none` subtree — the exact failure DW-414 is about, reached by the other route. `offsetParent` would catch it but is always `null` in jsdom, so it would disable every restore this suite pins; a fix needs a mechanism the node suites can execute. Pre-existing for the CSS route; this change narrowed the attribute route only.
+status: open
+
+### DW-422: A withdrawn Preview column keeps its whole data lifecycle running, so a refresh during a Settings visit can refetch and announce into a live region nobody can hear.
+origin: spec-deferred db251d594798
+source_spec: `spec-dw-412-413-414-settings-transition-focus-and-state.md`
+location: src/components/workbench/PreviewColumn.tsx (fetch effect / refresh announcements)
+severity: medium
+reason: Keeping `PreviewColumn` mounted (DW-412) keeps its fetch effect, `requestDataVersionCheck()` and its polite live region live while the column is `hidden`. A `DataVersionWatcher` bump mid-visit can therefore refetch the row, flip to the stale note, or report a removal into a region that is out of the accessibility tree — the announcement is spent with nobody to hear it, and the column the owner comes back to has changed under them with no report. The spec's Never clause held the fetch/edit lifecycle out of scope, but the mount change is what makes it run off screen at all. `ModeCanvas` has the same shape and the same unanswered question.
+status: open
+
+### DW-423: Back or a popstate that closes Settings unmounts `SettingsCanvas` under the keyboard, and DW-413 makes focus-in-Settings the normal case rather than the rare one.
+origin: spec-deferred e21c6087e070
+source_spec: `spec-dw-412-413-414-settings-transition-focus-and-state.md`
+location: src/components/workbench/Workbench.tsx (applyMode / popstate)
+severity: medium
+reason: `applyMode` (`src/components/workbench/Workbench.tsx`) sets `settingsOpen` false from the `popstate` listener as well as from a rail pick. The rail pick is safe — the control the owner pressed holds focus — but a Back press moves focus nowhere, so if the owner is inside the Settings surface its section unmounts under them and the keyboard lands on `<body>`. The new focus effect deliberately runs in one direction only, and this is the case that argues for a second: pre-existing, but widened by the fact that opening Settings now always puts the keyboard inside it.
+status: open
+
+### DW-424: `ShortcutsHelp` renders `role="dialog"` without `aria-modal`, so a global `g <key>` still fires from inside the open help overlay.
+origin: spec-deferred 84f95020424e
+source_spec: `spec-dw-412-413-414-settings-transition-focus-and-state.md`
+location: src/components/ShortcutsHelp.tsx:39
+severity: medium
+reason: `src/components/ShortcutsHelp.tsx:39` renders the overlay as `role="dialog"` with only an `aria-label`. `isInModalDialog`'s selector requires `aria-modal="true"` — correctly, because `?` has to keep toggling the overlay from inside it — so the new guard does not cover this surface: `g i` typed over the help overlay still navigates out from under it, and the overlay itself is not announced as modal to a screen reader. Fixing it means deciding whether that overlay is modal at all (it locks no scroll and traps no Tab), which is a surface decision this change did not make.
+status: open
+
+### DW-425: A second `g s` while Settings is already open announces Settings but moves no focus, so the key cannot be used to recover a lost keyboard.
+origin: spec-deferred 01eefb117c1c
+source_spec: `spec-dw-412-413-414-settings-transition-focus-and-state.md`
+location: src/components/workbench/Workbench.tsx (the settings focus effect)
+severity: low
+reason: `g s` OPENS rather than toggles (DW-62), so a second press leaves `settingsOpen` true and the new focus effect — keyed on the state transition — does not re-run. The announcement is still made (`settings-shortcut.test.tsx` pins the repeat), so the owner is told they arrived somewhere the keyboard did not go. Making the key idempotent about focus needs a nonce or a move inside the callbacks, which the effect deliberately avoided so that both openers share exactly one landing site.
+status: open
+
+### DW-426: The `g s`-over-an-open-dialog rows of the DW-373 suite now pin a path a real keyboard user can no longer take.
+origin: spec-deferred ba989ecca8af
+source_spec: `spec-dw-412-413-414-settings-transition-focus-and-state.md`
+location: src/components/workbench/__tests__/settings-canvas-persistence.test.tsx (the `g s` opener)
+severity: low
+reason: The new modal guard suppresses dispatch from inside `[role="dialog"][aria-modal="true"]`, and `useDialogA11y` traps focus there — so with a Create Wiki dialog on screen a browser keyboard user cannot reach `g s` at all; only the rail control can open Settings over an open dialog. The suite's `press()` fires at `document.body` (deliberately, so `isInputElement` does not swallow it), which keeps those rows green while making them unreachable in a browser. The preservation they check is real and still reached by the rail control; what is stale is the claim that both openers reach that state identically.
 status: open

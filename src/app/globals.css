@@ -2708,6 +2708,44 @@ body:has(.wb-shell) {
 .wb-canvas[hidden] {
   display: none;
 }
+/* …and so does the docked Preview while Settings is showing (DW-412). Opening
+   Settings used to gate the column off with `previewOpen && …`, which unmounted
+   it and destroyed whatever unsaved markdown its editor was holding — the same
+   loss the two rules above exist to prevent, one column over. It stays mounted
+   and goes behind `hidden` for the visit instead.
+
+   The attribute is in the selector for the same reason it is above, and here
+   the hazard is not hypothetical at all: the `.wb-preview` block below already
+   declares `display: flex`, which beats the user-agent sheet's `hidden` default
+   outright — without this rule the withdrawn column simply stays on screen.
+
+   Deliberately outside every media query. The stacking block further down
+   re-points `.wb-preview` to `grid-column: 1`, so a withdrawal stated inside a
+   width query would hold at some widths and not others — and wherever it
+   missed, a Preview nobody asked for would sit under the Settings surface.
+   (Spelled without the query literal on purpose: `workbench-split.test.ts`
+   counts the responsive blocks by that exact text, and a mention in prose would
+   be indistinguishable from a third block.) */
+.wb-preview[hidden] {
+  display: none;
+}
+/* …and so does the tree panel, for the disclosure state it owns. The SIBLING of
+   the rule above — same bundle, same mechanism, a different column — and NOT
+   DW-412 itself: that entry is about the Preview's markdown draft and says
+   nothing about this panel. What was lost here is that the left column used to
+   render `SettingsNav` INSTEAD of the panel, which unmounted it — and which
+   groups and directories the owner has collapsed is `TreePanel`'s own `closed`
+   state, so every Settings visit silently re-opened the whole tree.
+
+   Same reason for the attribute: the `.wb-tree-panel` block below declares
+   `display: flex` so it can be the left column's growing flex child, and that
+   author declaration beats the `hidden` default. Outside every media query,
+   because the panel is withdrawn at all three widths whenever Settings has the
+   column — including below 900px, where the stylesheet force-shows a collapsed
+   column and would otherwise put the tree back beside the settings nav. */
+.wb-tree-panel[hidden] {
+  display: none;
+}
 .wb-surface-title {
   margin: 0 0 var(--wb-space-3);
   font-size: var(--wb-title-size);
@@ -2731,8 +2769,11 @@ body:has(.wb-shell) {
    see. Same shape as `.wb-title-fallback` above — a shell data attribute
    withdrawing a canvas element — NOT the Graph pair, which swaps on width.
    Deliberately outside every media query: `data-preview="true"` means a
-   `PreviewColumn` is mounted at all three widths, so a wrapper here would put
-   both surfaces back on screen wherever it did not apply. */
+   `PreviewColumn` is ON SCREEN at all three widths, so a wrapper here would put
+   both surfaces back on screen wherever it did not apply. (On screen rather
+   than merely mounted since DW-412 — the column outlives its own visibility
+   through a Settings visit, and the note it silences is inside the mode canvas,
+   which is withdrawn for exactly that visit.) */
 .wb-shell[data-preview="true"] .wb-canvas-preview-note {
   display: none;
 }

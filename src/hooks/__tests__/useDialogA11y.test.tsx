@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { WikiWorkbench } from "@/components/WikiWorkbench";
@@ -8,6 +8,7 @@ import {
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
 import { useDialogA11y } from "@/hooks/useDialogA11y";
+import { SurfaceVisibilityProvider } from "@/hooks/useSurfaceVisibility";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -149,6 +150,58 @@ function BareHost({ busy = false }: { busy?: boolean }) {
 }
 
 /**
+ * A dialog on a surface that can go OFF SCREEN (DW-414).
+ *
+ * The shape every withdrawn surface in this shell has: the `hidden` attribute
+ * on the surface element, and the same boolean published through
+ * {@link SurfaceVisibilityProvider} so the hook knows to stand its document
+ * work down. The dialog and its opener stay MOUNTED inside it — that is the
+ * whole point of the withdrawal — which is precisely what makes an opener
+ * "still connected but unreachable" possible at all.
+ *
+ * Two openers, because the case this exists for is only observable across two
+ * open/close cycles: a capture leaked by the first aims the second's close at
+ * the wrong control.
+ */
+function WithdrawnHost({
+  hidden = false,
+  open = false,
+  withFallback = false,
+}: {
+  hidden?: boolean;
+  open?: boolean;
+  /**
+   * Give the dialog a `fallbackFocusRef` aimed at a landmark INSIDE the
+   * withdrawn surface — the shape every real caller has, since a fallback is by
+   * definition a place near the opener.
+   */
+  withFallback?: boolean;
+}) {
+  const fallbackRef = useRef<HTMLElement | null>(null);
+  return (
+    <section hidden={hidden} data-testid="surface">
+      <h2 ref={fallbackRef as React.RefObject<HTMLHeadingElement>} tabIndex={-1}>
+        Surface heading
+      </h2>
+      <button type="button">First opener</button>
+      <button type="button">Second opener</button>
+      <SurfaceVisibilityProvider visible={!hidden}>
+        <ConfirmDialog
+          open={open}
+          title="Withdrawn"
+          body="Nothing here is reachable while the surface is off screen."
+          confirmLabel="Confirm"
+          cancelLabel="Cancel"
+          onConfirm={() => {}}
+          onCancel={() => {}}
+          fallbackFocusRef={withFallback ? fallbackRef : undefined}
+        />
+      </SurfaceVisibilityProvider>
+    </section>
+  );
+}
+
+/**
  * Open the host dialog from a button that a keyboard user is actually ON.
  *
  * `fireEvent.click` does not focus in jsdom, and the hook restores focus to
@@ -266,6 +319,90 @@ describe("opening and closing", () => {
     // focus that never lands on the heading still fails here.
     await waitFor(() => expect(document.activeElement).toBe(heading));
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a surface that goes off screen (DW-414)", () => {
+  it("refuses a restore whose target is inside a withdrawn subtree", async () => {
+    // The commit where the close and the withdrawal land together. `openRef`
+    // already reads `false` by teardown time, so the hook does NOT take its
+    // "hidden, not closed" early return — it reaches the restore, with an
+    // opener that is still connected and inside `[hidden]`.
+    //
+    // In a browser focusing that node is a silent no-op that drops the keyboard
+    // on `<body>`; jsdom has no layout engine, so the move really happens —
+    // which is exactly what makes the refusal observable here at all.
+    const view = render(<WithdrawnHost />);
+    const opener = screen.getByRole("button", { name: "First opener" });
+    opener.focus();
+    view.rerender(<WithdrawnHost open />);
+    expect(document.activeElement).toBe(screen.getByRole("dialog", { name: "Withdrawn" }));
+
+    view.rerender(<WithdrawnHost hidden />);
+
+    expect(screen.queryByRole("dialog", { name: "Withdrawn" })).toBeNull();
+    expect(opener.isConnected).toBe(true);
+    // Not pulled into the hidden subtree, and not sent anywhere else either:
+    // the owner is standing on whatever surface replaced this one, and a dialog
+    // they cannot see closing is not a reason to move them.
+    expect(screen.getByTestId("surface").contains(document.activeElement)).toBe(false);
+  });
+
+  it("refuses the FALLBACK too when it is inside the withdrawn subtree", async () => {
+    // The other arm of the same branch. A fallback is by definition a landmark
+    // near the opener, so a withdrawn surface withdraws both — and "the opener
+    // is unreachable, use the fallback" would send the keyboard into exactly
+    // the content the first check just refused.
+    //
+    // The opener is detached on purpose, which is what makes the fallback the
+    // only candidate left: with the opener still connected the first arm would
+    // answer and this branch would never be reached.
+    const view = render(<WithdrawnHost withFallback />);
+    const opener = screen.getByRole("button", { name: "First opener" });
+    opener.focus();
+    view.rerender(<WithdrawnHost withFallback open />);
+    // Detach the opener the way a landed action does — the `WikiWorkbench` case
+    // above, where confirming replaces the empty state that held the button.
+    opener.remove();
+    expect(opener.isConnected).toBe(false);
+
+    view.rerender(<WithdrawnHost withFallback hidden />);
+
+    expect(screen.queryByRole("dialog", { name: "Withdrawn" })).toBeNull();
+    const heading = screen.getByTestId("surface").querySelector("h2");
+    expect(heading?.isConnected).toBe(true);
+    expect(document.activeElement).not.toBe(heading);
+    expect(screen.getByTestId("surface").contains(document.activeElement)).toBe(false);
+  });
+
+  it("releases the opener capture when the dialog closes off screen", async () => {
+    // The leak the ledger's DW-414 is really about. While the surface is
+    // withdrawn `armed` is already false, so a close in that window re-runs no
+    // effect at all and the teardown never fires — `openerRecordedRef` stays
+    // set, the NEXT open skips recording its own opener, and the close after
+    // that aims the keyboard at the previous dialog's control.
+    const view = render(<WithdrawnHost />);
+    const first = screen.getByRole("button", { name: "First opener" });
+    first.focus();
+    view.rerender(<WithdrawnHost open />);
+    // Hidden while still OPEN: the capture is deliberately kept here, so that
+    // coming back on screen and closing normally still returns focus to the
+    // control that opened it.
+    view.rerender(<WithdrawnHost open hidden />);
+    // …and now it closes, out of sight. This is the window the effect never
+    // re-runs in.
+    view.rerender(<WithdrawnHost hidden />);
+
+    // A second cycle, from a DIFFERENT control, back on screen.
+    view.rerender(<WithdrawnHost />);
+    const second = screen.getByRole("button", { name: "Second opener" });
+    second.focus();
+    view.rerender(<WithdrawnHost open />);
+    view.rerender(<WithdrawnHost />);
+
+    // Its own opener, not the one the leaked capture was still holding.
+    expect(document.activeElement).toBe(second);
+    expect(document.activeElement).not.toBe(first);
   });
 });
 

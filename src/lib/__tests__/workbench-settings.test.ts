@@ -4691,11 +4691,14 @@ describe("the Settings components stay inside the shell", () => {
     // `<ModeCanvas` with no `hidden` prop would put a second `#wb-canvas` on the
     // page, and a `SettingsCanvas` rendered unconditionally would do the same.
     // (The old spelling here was `{settingsOpen ? (`, which the left column's
-    // own `SettingsNav`/`TreePanel` ternary also matches — it would have gone on
-    // passing against a shell that had lost the canvas ternary entirely.)
+    // own `SettingsNav`/`TreePanel` ternary also matched — it would have gone on
+    // passing against a shell that had lost the canvas ternary entirely. A bare
+    // `{settingsOpen && (` has since become the same trap for the same reason:
+    // the left column now renders `SettingsNav` under that exact literal, so the
+    // gate has to be pinned to the thing it gates.)
     const shell = await readComponent("Workbench.tsx");
     expect(shell).toMatch(/<ModeCanvas[^>]*hidden=\{settingsOpen\}/);
-    expect(shell).toContain("{settingsOpen && (");
+    expect(shell).toMatch(/\{settingsOpen && \(\s*<SettingsCanvas/);
     expect(shell).toContain("<SettingsCanvas category={settingsCategoryId}");
   });
 
@@ -4717,8 +4720,21 @@ describe("the Settings components stay inside the shell", () => {
     expect(shell).toContain('data-settings={settingsOpen ? "true" : "false"}');
     expect(shell).not.toContain("setCollapsed(false)");
     // A docked Preview beside a Settings detail column would describe a tree row
-    // that is not on screen.
-    expect(shell).toContain("shouldDockPreview(mode, selection) && !settingsOpen");
+    // that is not on screen — so it goes OFF SCREEN, and only off screen.
+    //
+    // Two booleans since DW-412, because the old single
+    // `shouldDockPreview(mode, selection) && !settingsOpen` moved the mount and
+    // the visibility together: the column unmounted for the visit and took the
+    // editor's unsaved markdown with it. MOUNTED is the dock rule alone; ON
+    // SCREEN is what every layout consumer still reads. Both halves are pinned,
+    // because a fix that kept only the first would leave the Preview showing
+    // beside the settings nav, and one that kept only the second would be the
+    // discard this replaced.
+    expect(shell).toContain("const previewDocked = shouldDockPreview(mode, selection);");
+    expect(shell).toContain("const previewOpen = previewDocked && !settingsOpen;");
+    // …and the mount is gated on the first while the withdrawal is the second.
+    expect(shell).toMatch(/\{previewDocked && \(\s*<PreviewColumn/);
+    expect(shell).toContain("hidden={!previewOpen}");
     // Still `useState` on ONE shell, exactly as a mode switch is.
     expect(shell).not.toMatch(/\buseRouter\(/);
     expect(shell).not.toMatch(/from "next\/link"/);

@@ -9,10 +9,17 @@ import {
   WorkbenchDataProvider,
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
+import { CANVAS_ID } from "@/components/workbench/ModeCanvas";
 import { SETTINGS_LABEL } from "@/lib/workbench-settings";
+import {
+  PREVIEW_EDIT_CONFIRM_LABEL,
+  PREVIEW_EDIT_COPY,
+} from "@/lib/workbench-preview";
+import type { WikiRecord } from "@/lib/wikis";
 
 /**
- * The mode canvas SURVIVES opening Settings (DW-373), MOUNTED.
+ * The mode canvas SURVIVES opening Settings (DW-373), MOUNTED — and so, since
+ * DW-412, do both columns beside it.
  *
  * `Workbench` used to render `SettingsCanvas` INSTEAD of `ModeCanvas`, so
  * reaching Settings — from the rail control or from `g s` — unmounted the whole
@@ -29,6 +36,18 @@ import { SETTINGS_LABEL } from "@/lib/workbench-settings";
  *
  * `SettingsCanvas` is the one that still comes and goes: it mounts on open and
  * UNMOUNTS on close, because that unmount IS its own draft's discard.
+ *
+ * THE SAME MOVE, TWO COLUMNS OVER (DW-412). Opening Settings also gated
+ * `PreviewColumn` off — destroying whatever unsaved markdown its editor was
+ * holding — and rendered `SettingsNav` INSTEAD of `TreePanel`, which unmounted
+ * the panel and with it the group and directory disclosures the owner had
+ * collapsed (`closed` is that component's own state). Both are withdrawn with
+ * `hidden` now instead, and the shell keeps exactly one `#wb-canvas` through it.
+ *
+ * AND THE TRANSITION HAS A FOCUS CONTRACT (DW-413). Opening Settings used to
+ * move focus nowhere at all, so a keyboard user standing in the canvas that had
+ * just gone `display: none` was dropped on `<body>` with the whole shell to Tab
+ * back through. It lands on the Settings section now, from both openers.
  *
  * COVERAGE LIMIT, inherited from `wiki-canvas-persistence.test.tsx`: jsdom has
  * no layout engine and applies no user-agent stylesheet, so `hidden` here is an
@@ -64,6 +83,50 @@ const DATA: WorkbenchData = {
 
 const CREATE_CONFLICT = "A wiki with that name already exists.";
 
+const WIKI: WikiRecord = {
+  id: "wiki-1",
+  name: "Acme",
+  scenario: "business",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+};
+
+/**
+ * A working set with a TREE in it, for the two columns beside the canvas.
+ *
+ * {@link DATA} is deliberately empty — that is what puts `WikiWorkbench`'s
+ * empty state and its `Create Wiki` opener on screen, which every DW-373 case
+ * above is built on. A Preview cannot dock against it and a Knowledge group
+ * cannot be collapsed in it, so the DW-412 cases take this one instead.
+ */
+const TREE_DATA: WorkbenchData = {
+  ...DATA,
+  wikis: [WIKI],
+  currentWikiId: WIKI.id,
+  knowledge: [
+    {
+      id: "note",
+      label: "Note",
+      count: 2,
+      pages: [
+        { slug: "alpha", title: "Alpha", type: "note" },
+        { slug: "beta", title: "Beta", type: "note" },
+      ],
+    },
+  ],
+};
+
+/** What `/api/workbench/preview` answers for the row these cases pick. */
+const PREVIEW_PAYLOAD = {
+  name: "Alpha",
+  path: "wiki/alpha.md",
+  slug: "alpha",
+  format: "markdown" as const,
+  body: "# Alpha",
+  truncated: false,
+  editable: true,
+};
+
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
@@ -76,10 +139,18 @@ beforeEach(() => {
   window.history.pushState(null, "", "/");
   window.history.replaceState(null, "", "/");
   // `useSidecarStatus` probes the loopback port at mount, the card's create
-  // POSTs, and the Settings surface reads its payload. One stub answers all
-  // three; only the create's answer is ever asserted on.
-  fetchMock = vi.fn(
-    async () => ({ ok: true, status: 200, json: async () => ({}) }) as unknown as Response,
+  // POSTs, the Settings surface reads its payload, and a docked Preview reads
+  // the picked row's bytes. One stub answers all four; only the create's answer
+  // and the Preview's are ever asserted on, and the Preview's is routed by URL
+  // because its body is what the editor is seeded from.
+  fetchMock = vi.fn(async (url: unknown) =>
+    String(url).includes("/api/workbench/preview")
+      ? ({
+          ok: true,
+          status: 200,
+          json: async () => PREVIEW_PAYLOAD,
+        } as unknown as Response)
+      : ({ ok: true, status: 200, json: async () => ({}) } as unknown as Response),
   );
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -111,6 +182,23 @@ async function renderShell(data: WorkbenchData = DATA) {
   // Flush the sidecar probe's promise chain before any assertion runs.
   await act(async () => {});
   return view;
+}
+
+/** A refreshed server render — the same tree with a new provider payload. */
+async function refreshShell(
+  view: Awaited<ReturnType<typeof renderShell>>,
+  data: WorkbenchData,
+) {
+  view.rerender(
+    <KeyboardShortcutsProvider>
+      <WorkbenchDataProvider value={data}>
+        <Workbench>
+          <WikiWorkbench />
+        </Workbench>
+      </WorkbenchDataProvider>
+    </KeyboardShortcutsProvider>,
+  );
+  await act(async () => {});
 }
 
 /** A rail control, by its accessible name. */
@@ -158,8 +246,6 @@ const OPENERS = [
       await act(async () => {});
       expect(router.push).not.toHaveBeenCalled();
     },
-    /** A click focuses the control it lands on; that is the click, not the hide. */
-    focusAfterOpen: () => rail(SETTINGS_LABEL) as Element,
   },
   {
     name: "g s",
@@ -172,8 +258,6 @@ const OPENERS = [
       // only path that could navigate, so this is where the spy earns its place.
       expect(router.push).not.toHaveBeenCalled();
     },
-    /** A keystroke aimed at the document moves focus nowhere at all. */
-    focusAfterOpen: (before: Element) => before,
   },
 ] as const;
 
@@ -227,6 +311,50 @@ function modeCanvas(): HTMLElement | null {
 }
 
 /**
+ * The two columns beside the canvas, read from the DOM rather than the a11y
+ * tree — for the same reason {@link nameFieldNode} is: a query that respected
+ * `hidden` could not tell "withdrawn" apart from "unmounted", which is the one
+ * distinction these cases exist for.
+ */
+function previewColumn(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(".wb-preview");
+}
+
+function treePanel(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(".wb-tree-panel");
+}
+
+/** The Preview editor's `<textarea>`, by node, so its IDENTITY can be compared. */
+function editorNode(): HTMLTextAreaElement | null {
+  return document.querySelector<HTMLTextAreaElement>(".wb-preview-textarea");
+}
+
+/**
+ * Dock the Preview on a row and get its editor open, holding typed markdown.
+ *
+ * The editor is opened through its real confirm gate rather than by seeding
+ * state, because what is being preserved is the gate's outcome: `editing`,
+ * `draft` and the dirty report all live in `PreviewColumn` and are exactly what
+ * an unmount discards.
+ */
+async function openPreviewEditorWith(text: string): Promise<HTMLTextAreaElement> {
+  fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+  await act(async () => {});
+  fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_COPY }));
+  fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_CONFIRM_LABEL }));
+  await act(async () => {});
+  const editor = screen.getByRole("textbox") as HTMLTextAreaElement;
+  fireEvent.change(editor, { target: { value: text } });
+  expect(editor.value).toBe(text);
+  return editor;
+}
+
+/** The Knowledge group's disclosure button. Its accessible name carries the count. */
+function knowledgeGroup(): HTMLButtonElement {
+  return screen.getByRole("button", { name: /^Note/ }) as HTMLButtonElement;
+}
+
+/**
  * Open Create Wiki from the empty state and type a name into it.
  *
  * The opener is FOCUSED before it is clicked, which is what a pointer or
@@ -274,7 +402,7 @@ async function openCreateWithRefusedName(name: string): Promise<HTMLButtonElemen
 
 describe.each(OPENERS)(
   "an open Create Wiki dialog survives Settings, opened via $name (DW-373)",
-  ({ open, focusAfterOpen }) => {
+  ({ open }) => {
     it("keeps the typed name and the shown error across Settings and back", async () => {
       await renderShell();
       await openCreateWithRefusedName("Quarterly review");
@@ -383,10 +511,13 @@ describe.each(OPENERS)(
       ).toBe(true);
     });
 
-    it("does not move focus when it hides the canvas", async () => {
-      // HIDING must not move focus. Only the control the owner used may move it,
-      // and only to itself — nothing here may "restore" focus to the recorded
-      // opener, which is inside the subtree that just went off screen.
+    it("takes the keyboard to the Settings section (DW-413)", async () => {
+      // Opening Settings used to move focus NOWHERE. The canvas the owner was
+      // standing in goes `display: none` in the same commit, so a real browser
+      // blurs whatever held focus inside it and the keyboard user lands on
+      // `<body>` — with the rail and the settings nav to Tab through before
+      // reaching the surface they just asked for. Both openers move it now, and
+      // to the same place: the destination is the shell's, not either control's.
       await renderShell();
       openCreateWith("Quarterly review");
       const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
@@ -394,11 +525,216 @@ describe.each(OPENERS)(
 
       await open();
 
-      // Exactly what each path itself does and nothing more: clicking the rail
-      // control focuses that button, `g s` touches focus not at all. (jsdom does
-      // not blur through an ancestor `hidden` the way a browser does, which is
-      // what leaves the keystroke case observable at all.)
-      expect(document.activeElement).toBe(focusAfterOpen(dialog));
+      // The SETTINGS section, identified the way the skip link identifies it —
+      // `ModeCanvas` gives `CANVAS_ID` and the landing tab index up while
+      // hidden, which is exactly what makes this node able to receive focus.
+      const landed = document.activeElement as HTMLElement;
+      expect(landed).toBe(document.getElementById(CANVAS_ID));
+      expect(landed.querySelector(".wb-set-pad")).not.toBeNull();
+      expect(landed.getAttribute("tabindex")).toBe("-1");
+      // Not into the subtree that just went off screen, which is the other
+      // failure this replaces: jsdom does not blur through an ancestor `hidden`
+      // the way a browser does, so a restore aimed at the dialog's opener would
+      // land here rather than being the silent no-op it is in a browser.
+      expect(modeCanvas()?.contains(landed)).toBe(false);
+    });
+
+    it("does not move focus when Settings CLOSES", async () => {
+      // One direction only. The rail control the owner pressed is what closed
+      // Settings and already holds the keyboard; moving it again would take
+      // them off the control they are standing on. (`g s` cannot close Settings
+      // at all — DW-62 — which is why one closer serves both rows.)
+      await renderShell();
+      await open();
+
+      const closer = clickRail(SETTINGS_LABEL);
+      await act(async () => {});
+
+      expect(settingsShowing()).toBe(false);
+      expect(document.activeElement).toBe(closer);
+    });
+
+    it("keeps the Preview editor's unsaved markdown across Settings and back", async () => {
+      // The DW-412 headline. `previewOpen` was `shouldDockPreview(…) &&
+      // !settingsOpen` and gated the MOUNT, so a Settings visit unmounted the
+      // column and took the draft with it — no confirm, no announcement, no way
+      // back. The dock rule alone decides the mount now.
+      await renderShell(TREE_DATA);
+      const editor = await openPreviewEditorWith("# Alpha, half rewritten");
+
+      await open();
+      expect(settingsShowing()).toBe(true);
+      // Withdrawn, not unmounted: out of the accessibility tree while the node
+      // and its text are still in the document.
+      expect(previewColumn()?.hasAttribute("hidden")).toBe(true);
+      expect(screen.queryByRole("textbox")).toBeNull();
+      expect(editorNode()?.value).toBe("# Alpha, half rewritten");
+
+      await closeSettings();
+
+      // The SAME node, which is what tells "kept" apart from "rebuilt with the
+      // same bytes": a remounted column would refetch and render `# Alpha`, the
+      // body the route answers with, and the owner's edits would be gone.
+      expect(editorNode()).toBe(editor);
+      expect(editor.value).toBe("# Alpha, half rewritten");
+      expect(screen.getByRole("textbox")).toBe(editor);
+      expect(previewColumn()?.hasAttribute("hidden")).toBe(false);
+    });
+
+    it("stands the Preview's open confirm down while the column is withdrawn", async () => {
+      // The second half of the withdrawal, and the half `hidden` cannot do on
+      // its own: the attribute takes the pixels, the accessibility tree and the
+      // tab order, and nothing the dialog did to the DOCUMENT. The column
+      // publishes `visible={false}` through `SurfaceVisibilityProvider` for
+      // exactly this, the way the mode canvas already does.
+      await renderShell(TREE_DATA);
+      fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_COPY }));
+      // A positive control, so the negative below cannot pass because the lock
+      // was never taken at all.
+      expect(document.body.style.overflow).toBe("hidden");
+
+      await open();
+
+      expect(document.body.style.overflow).toBe("");
+      // Stood down, NOT closed: `ConfirmDialog` renders nothing when `open` goes
+      // false, so a node still in the document is what tells the two apart.
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(previewColumn()?.querySelector('[role="dialog"][aria-modal="true"]')).not.toBeNull();
+
+      // …and coming back re-arms it.
+      await closeSettings();
+      expect(document.body.style.overflow).toBe("hidden");
+      expect(screen.getByRole("dialog")).toBeTruthy();
+    });
+
+    it("keeps a collapsed Knowledge group collapsed across Settings and back", async () => {
+      // Which groups and directories are closed is `TreePanel`'s own `closed`
+      // state, and the left column used to render `SettingsNav` INSTEAD of the
+      // panel — so every Settings visit re-opened the whole tree.
+      await renderShell(TREE_DATA);
+      const panel = treePanel();
+      fireEvent.click(knowledgeGroup());
+      await act(async () => {});
+      expect(knowledgeGroup().getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByRole("button", { name: "Alpha" })).toBeNull();
+
+      await open();
+      expect(treePanel()?.hasAttribute("hidden")).toBe(true);
+      await closeSettings();
+
+      // Same panel node, same disclosure. A remount would restore the default,
+      // which is every group OPEN — so "Alpha is back on screen" is exactly the
+      // defect, not the fix.
+      expect(treePanel()).toBe(panel);
+      expect(knowledgeGroup().getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByRole("button", { name: "Alpha" })).toBeNull();
+    });
+
+    it("drops the non-Wiki stub label from the left column too", async () => {
+      // The matrix row is "ANY mode, Settings open", and the case below can only
+      // speak for Wiki: `.wb-left-surface` renders solely in the OTHER modes, so
+      // asserting its absence there passes whatever the guard says. Verified —
+      // deleting the `settingsOpen ? null :` branch leaves that case green.
+      await renderShell(TREE_DATA);
+      clickRail("Chat");
+      await act(async () => {});
+      // The positive control: the stub is genuinely on screen before Settings.
+      expect(document.querySelector(".wb-left-surface")?.textContent).toBe("Chat");
+
+      await open();
+
+      // Dropped rather than hidden — one label with nothing behind it holds no
+      // state to lose, and a second surface name under the settings nav would
+      // describe a column that is not on screen.
+      expect(document.querySelector(".wb-left-surface")).toBeNull();
+      expect(screen.getByRole("navigation", { name: "Settings categories" })).toBeTruthy();
+      expect(
+        document.getElementById("wb-left-column")?.getAttribute("aria-label"),
+      ).toBe(`${SETTINGS_LABEL} panel`);
+
+      // …and it comes back on close, which is the other half of dropping it:
+      // a guard that removed it for good would leave Chat's column unlabelled.
+      await closeSettings();
+      expect(document.querySelector(".wb-left-surface")?.textContent).toBe("Chat");
+    });
+
+    it("leaves the settings nav as the only reachable content of the left column", async () => {
+      await renderShell(TREE_DATA);
+
+      await open();
+
+      // The nav is what a reader and a Tab press find in the column…
+      expect(screen.getByRole("navigation", { name: "Settings categories" })).toBeTruthy();
+      // …and the tree is not, by role or by label, while both of its tabs and
+      // every row are still in the document under the withdrawn panel.
+      expect(screen.queryByRole("tab", { name: "Knowledge" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Alpha" })).toBeNull();
+      expect(treePanel()?.querySelectorAll('[role="tab"]')).toHaveLength(2);
+      // No stub label either — it holds nothing, so it is dropped rather than
+      // hidden, and a second sentence under the settings nav would be a label
+      // for a surface that is not on screen.
+      expect(document.querySelector(".wb-left-surface")).toBeNull();
+      // And the column says which surface it is.
+      expect(
+        document.getElementById("wb-left-column")?.getAttribute("aria-label"),
+      ).toBe(`${SETTINGS_LABEL} panel`);
+    });
+
+    it("does not pull focus into the hidden canvas when the dialog closes there", async () => {
+      // DW-414's real trigger, driven through the shell rather than the hook.
+      //
+      // `WikiWorkbench` resets `createOpen` whenever the ACTIVE WIKI moves
+      // (`[currentWikiId, currentId]`), and a refreshed server render can land
+      // that while Settings is showing — so the dialog closes inside a canvas
+      // that is behind `hidden`, with its recorded opener withdrawn along with
+      // it. The restore has to refuse: focusing a `display: none` node is a
+      // silent no-op in a browser that leaves the keyboard on `<body>`, and in
+      // jsdom it really does move focus into content nobody can reach, which is
+      // what makes the refusal observable at all.
+      const view = await renderShell({ ...DATA, wikis: [WIKI] });
+      openCreateWith("Quarterly review");
+      const canvas = modeCanvas();
+      expect(canvas?.contains(nameFieldNode())).toBe(true);
+
+      await open();
+      const landed = document.activeElement;
+      expect(landed).toBe(document.getElementById(CANVAS_ID));
+
+      // The refreshed render that moves the active Wiki under the withdrawn
+      // canvas. Nothing about it touches Settings.
+      await refreshShell(view, { ...DATA, wikis: [WIKI], currentWikiId: WIKI.id });
+
+      // The dialog really did close — otherwise there is nothing to refuse and
+      // nothing to release.
+      expect(nameFieldNode()).toBeNull();
+      expect(modeCanvas()?.querySelector('[role="dialog"]')).toBeNull();
+      // …and focus never left the surface the owner is actually on.
+      expect(document.activeElement).toBe(landed);
+      expect(settingsShowing()).toBe(true);
+      expect(modeCanvas()?.contains(document.activeElement)).toBe(false);
+
+      // WHAT ACTUALLY LEAKED, and the half that is only visible one cycle
+      // later. `armed` was already false when the dialog closed, so no effect
+      // re-ran and no restore was attempted at all — what the close left behind
+      // is the OPENER CAPTURE. Held, the next open records nothing, and the
+      // close after that aims at the button the first dialog was opened from,
+      // which the intervening renders detached: focus would land on
+      // `WikiWorkbench`'s fallback heading instead of on the control the owner
+      // is standing on.
+      await refreshShell(view, { ...DATA, wikis: [WIKI] });
+      await closeSettings();
+      const reopened = openCreateWith("Second draft");
+      expect(reopened.isConnected).toBe(true);
+
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await act(async () => {});
+
+      expect(document.activeElement).toBe(reopened);
+      expect(document.activeElement).not.toBe(
+        screen.getByRole("heading", { name: "Wiki" }),
+      );
     });
 
     it("keeps exactly one #wb-canvas, on the Settings section", async () => {
@@ -484,6 +820,38 @@ describe.each(OPENERS)(
   },
 );
 
+describe("a global shortcut does not fire from inside a modal (DW-413)", () => {
+  it("ignores g s typed in the Create Wiki dialog", async () => {
+    // `aria-modal="true"` is a promise that the rest of the page is inert. A
+    // navigation key that changed the surface underneath would break exactly
+    // that promise — and would leave a modal holding an unsaved name open over
+    // Settings, with its Tab trap still armed.
+    await renderShell();
+    openCreateWith("Quarterly review");
+    const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
+    // Aimed at the dialog CONTAINER, not the name field: `isInputElement`
+    // already suppresses the shortcut inside a `<input>`, so a press typed there
+    // would pass whichever way this went. The container is focusable, is where
+    // `useDialogA11y` puts focus on open, and is not a form control.
+    expect(document.activeElement).toBe(dialog);
+
+    fireEvent.keyDown(dialog, { key: "g" });
+    fireEvent.keyDown(dialog, { key: "s" });
+    await act(async () => {});
+
+    // Nothing dispatched: no surface change on this shell, and no navigation
+    // off it either.
+    expect(settingsShowing()).toBe(false);
+    expect(router.push).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Create Wiki" })).toBe(dialog);
+
+    // …and the suppression is about WHERE the press came from, not about the
+    // dialog being open: the same sequence at the document still works.
+    await press("g", "s");
+    expect(settingsShowing()).toBe(true);
+  });
+});
+
 describe("the stylesheet backs the attribute (DW-373)", () => {
   it("hides the canvas section with a rule the layout cannot defeat", async () => {
     // jsdom loads no stylesheet and applies no user-agent sheet, so nothing
@@ -511,5 +879,36 @@ describe("the stylesheet backs the attribute (DW-373)", () => {
     const depth =
       (before.match(/\{/g) ?? []).length - (before.match(/\}/g) ?? []).length;
     expect(depth).toBe(0);
+  });
+
+  it("hides the two columns the same way (DW-412)", async () => {
+    // Both blocks already declare `display: flex` — `.wb-preview` so it can
+    // stack a header over a scrolling body, `.wb-tree-panel` so it can be the
+    // left column's growing child — and an author `display` beats the
+    // user-agent sheet's `hidden` default outright. Without a rule naming the
+    // attribute, each withdrawn column would simply stay on screen: the Preview
+    // in an implicit fourth grid track beside Settings, the tree above the
+    // settings nav. So the same read-back the canvas gets, for the same reason.
+    const css = await readFile(
+      path.resolve(__dirname, "../../../app/globals.css"),
+      "utf8",
+    );
+    for (const selector of [".wb-preview[hidden]", ".wb-tree-panel[hidden]"]) {
+      const rule = new RegExp(
+        `${selector.replace(/[.[\]]/g, "\\$&")} \\{\\s*display: none;\\s*\\}`,
+      );
+      expect(css).toMatch(rule);
+
+      // Outside every media query, and this one is not hypothetical either:
+      // the stacking block re-points `.wb-preview` to `grid-column: 1`, so a
+      // withdrawal stated inside a width query would hold at some widths and
+      // not others.
+      const before = css
+        .slice(0, css.indexOf(`${selector} {`))
+        .replace(/\/\*[\s\S]*?\*\//g, "");
+      const depth =
+        (before.match(/\{/g) ?? []).length - (before.match(/\}/g) ?? []).length;
+      expect(depth).toBe(0);
+    }
   });
 });

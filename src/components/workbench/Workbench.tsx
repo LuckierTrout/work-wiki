@@ -84,7 +84,7 @@ import {
 } from "@/lib/workbench-tree";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { IconRail } from "./IconRail";
-import { ModeCanvas } from "./ModeCanvas";
+import { CANVAS_ID, ModeCanvas } from "./ModeCanvas";
 import { PreviewColumn } from "./PreviewColumn";
 import { SettingsCanvas } from "./SettingsCanvas";
 import { SettingsNav } from "./SettingsNav";
@@ -142,10 +142,19 @@ const RAIL_ID = "wb-mode-rail";
 const LEFT_ID = "wb-left-column";
 
 /**
- * Stable so the Preview divider can name the column it resizes (DW-45). The
- * `<aside>` is rendered only while `previewOpen`, and `shouldDockPreview` makes
- * that the same condition `showSplitHandle("preview", …)` reports — so the id
- * this separator points at exists for exactly as long as the separator does.
+ * Stable so the Preview divider can name the column it resizes (DW-45).
+ *
+ * The `<aside>` is rendered while `previewDocked`, which is `shouldDockPreview`
+ * on its own — so the id this separator points at exists for at least as long
+ * as the separator does, and `aria-controls` never dangles.
+ *
+ * It can now outlive the separator by one condition, and only one: while
+ * Settings is showing the column stays MOUNTED behind `hidden` (DW-412) so its
+ * unsaved markdown survives the visit, and `showSplitHandle("preview", …)`
+ * reads `previewOpen` — the on-screen boolean — so the divider is gone. An id
+ * on a withdrawn element with no separator pointing at it is nothing; a
+ * separator pointing at an id that had been unmounted would be the broken
+ * direction, and that one cannot happen.
  */
 const PREVIEW_ID = "wb-preview-column";
 
@@ -292,7 +301,15 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // reveal, and the reconciliation — which must not speak about a column that
   // is not on screen. Settings holds a live selection with this false for as
   // long as it is open.
-  const previewOpen = shouldDockPreview(mode, selection) && !settingsOpen;
+  //
+  // TWO booleans, because a Settings visit must stop moving them together
+  // (DW-412). MOUNTED is the dock rule alone: the Preview editor can be holding
+  // unsaved markdown, and unmounting the column for the visit discarded it with
+  // no confirm and no way back — the same loss DW-373 removed one column over.
+  const previewDocked = shouldDockPreview(mode, selection);
+  // ON SCREEN, which is what the layout reads. Mounting is the line above:
+  // Settings withdraws this column, it does not take the draft down with it.
+  const previewOpen = previewDocked && !settingsOpen;
   liveRef.current = { selection, docked: previewOpen };
 
   useEffect(() => {
@@ -628,22 +645,27 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
    * bans that literal from this file, and a ban worth having must not be
    * defeated by a paragraph explaining it.)
    *
-   * WHAT IT ALSO SAVES is the mode canvas (DW-373). `settingsOpen` used to swap
-   * `ModeCanvas` out for `SettingsCanvas` below, so opening Settings unmounted
-   * the Wiki subtree — an open Create Wiki dialog, the name typed into it and
-   * the error it was showing — and closing Settings rebuilt an empty card. The
-   * shell now renders both and passes `hidden={settingsOpen}` to the mode
-   * canvas, which keeps the subtree mounted and withdraws it from the pixels,
-   * the accessibility tree and the tab order in one attribute. Nothing about
-   * that is this callback's doing: it is the render below, so the rail control
-   * and this key preserve exactly the same thing.
+   * WHAT IT ALSO SAVES is every column the visit used to take down (DW-373,
+   * DW-412). `settingsOpen` used to swap `ModeCanvas` out for `SettingsCanvas`
+   * below, so opening Settings unmounted the Wiki subtree — an open Create Wiki
+   * dialog, the name typed into it and the error it was showing — and closing
+   * Settings rebuilt an empty card; it also gated `PreviewColumn` off, taking
+   * the editor's unsaved markdown with it (DW-412 proper), and swapped
+   * `TreePanel` out for `SettingsNav`, taking the group and directory
+   * disclosures the owner had collapsed (that entry's sibling, from the same
+   * bundle). All three now render with `hidden` instead, which keeps the
+   * subtree mounted and withdraws it from the pixels, the accessibility tree
+   * and the tab order in one attribute. Nothing about that is this callback's
+   * doing: it is the render below, so the rail control and this key preserve
+   * exactly the same thing.
+   *
+   * WHAT IT DOES OWN, together with `toggleSettings`, is the announcement — and
+   * the focus move is the effect further down rather than a `.focus()` here,
+   * for the same reason: two spellings of "open Settings" would be two places
+   * for the keyboard to land.
    *
    * The SETTINGS draft is still discarded on leave, and that discard is exactly
-   * this surface's unmount when `settingsOpen` goes false. It is not the only
-   * thing opening Settings takes down: `previewOpen` above is `&& !settingsOpen`,
-   * so `PreviewColumn` unmounts too and its markdown draft goes with it —
-   * `selectRow` records that below, and the ledger holds it for whichever story
-   * gives that editor a lifecycle.
+   * this surface's unmount when `settingsOpen` goes false.
    */
   const openSettings = useCallback(() => {
     setSettingsOpen(true);
@@ -720,10 +742,12 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // editor — the same loss by a different route, and the one case a guard
   // written as "is this a different row?" would let through.
   //
-  // Only the tree-selection path is gated. A mode switch, a Wiki switch, a tab
-  // switch and Settings all still discard silently: the ledger defers those to
-  // whichever story gives the editor a lifecycle, and gating them here would put
-  // this dialog in front of navigation it was not designed for.
+  // Only the tree-selection path is gated. A mode switch, a Wiki switch and a
+  // tab switch all still discard silently: the ledger defers those to whichever
+  // story gives the editor a lifecycle, and gating them here would put this
+  // dialog in front of navigation it was not designed for. Settings is no
+  // longer on that list — it withdraws the column rather than unmounting it
+  // (DW-412), so there is nothing to discard and nothing to gate.
   const selectRow = useCallback(
     (next: TreeSelection) => {
       if (previewDirtyRef.current) {
@@ -872,6 +896,43 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       if (trigger?.offsetParent) trigger.focus();
     }
   }, [sheetOpen]);
+
+  /**
+   * Opening Settings takes the keyboard to it (DW-413).
+   *
+   * Before this, opening Settings moved focus NOWHERE: the mode canvas the
+   * owner was standing in goes `display: none` in the same commit, so a browser
+   * blurs whatever held focus inside it and drops the keyboard on `<body>` —
+   * with the whole shell to Tab back through, past a rail and a nav, to reach
+   * the surface they just asked for. `#wb-canvas` is the Settings section: it
+   * already carries `CANVAS_ID` and `tabIndex={-1}` because `ModeCanvas` gives
+   * both up while hidden, which is exactly what makes it able to receive this.
+   *
+   * Read from the DOCUMENT rather than through a ref, because the two sections
+   * hand that id back and forth — a ref would have to be threaded into
+   * `SettingsCanvas` and would then name the node whether or not it is the one
+   * currently answering to `#wb-canvas`.
+   *
+   * ONE direction only. Closing Settings does not move focus from here: the
+   * rail control the owner pressed is the thing that closed it and already
+   * holds the keyboard, and `g s` cannot close it at all (DW-62).
+   *
+   * That is a statement about THIS effect, not about the commit. If the
+   * revealed surface has a dialog open on it, `useDialogA11y` re-arms as the
+   * canvas comes back and focuses the dialog container — DW-26's designed
+   * behaviour, and the reason a Create Wiki draft survives a Settings visit
+   * with the keyboard back inside it. Nothing here competes with that: this
+   * effect returns before touching focus whenever `settingsOpen` is false.
+   *
+   * Declared AFTER the sheet's restore above, so that below the breakpoint —
+   * where picking Settings from the sheet closes the sheet in the same commit —
+   * the keyboard lands on the surface the owner asked for rather than back on
+   * the trigger they used to ask for it.
+   */
+  useEffect(() => {
+    if (!settingsOpen) return;
+    document.getElementById(CANVAS_ID)?.focus();
+  }, [settingsOpen]);
 
   // Where inside the grab strip the press landed, in width space (DW-44).
   // Measured ONCE on `pointerdown` and replayed into every `pointermove`, so the
@@ -1036,13 +1097,19 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
             readOnly={readOnly}
           />
         </div>
-        {settingsOpen ? (
-          // Settings' own nav takes the column the trees usually have (UX-DR14).
-          <SettingsNav
-            category={settingsCategoryId}
-            onSelect={selectSettingsCategory}
-          />
-        ) : mode === "wiki" ? (
+        {/* The tree panel stays MOUNTED while Settings is open and goes behind
+            `hidden`, exactly as the mode canvas does one column over: which
+            groups and directories the owner has collapsed lives in
+            `TreePanel`'s own `closed` state, so rendering `SettingsNav`
+            INSTEAD of this panel re-opened the whole tree on every visit.
+
+            The SIBLING of DW-412's loss rather than that entry itself — same
+            bundle, same mechanism, a different column. DW-412 is about the
+            Preview's unsaved markdown, which is the gate further down.
+
+            The non-Wiki stub IS dropped rather than hidden — it is one label
+            with nothing behind it, and it holds no state to lose. */}
+        {mode === "wiki" ? (
           <TreePanel
             tab={treeTab}
             onTabChange={selectTreeTab}
@@ -1056,11 +1123,21 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
             selection={selection}
             onSelect={selectRow}
             collapsed={collapsed}
+            hidden={settingsOpen}
           />
-        ) : (
+        ) : settingsOpen ? null : (
           <p className="wb-left-surface">
             {surface.label}
           </p>
+        )}
+        {/* Settings' own nav takes the column the trees usually have (UX-DR14).
+            AFTER the withdrawn panel, so the reading and tab order of the
+            column is head → whatever is on screen, with nothing to step over. */}
+        {settingsOpen && (
+          <SettingsNav
+            category={settingsCategoryId}
+            onSelect={selectSettingsCategory}
+          />
         )}
       </aside>
 
@@ -1137,8 +1214,15 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       )}
 
       {/* After the canvas in the DOM, so the tab order stays rail → left column
-          → canvas → Preview without a single `tabindex` (EXPERIENCE.md:165). */}
-      {previewOpen && (
+          → canvas → Preview without a single `tabindex` (EXPERIENCE.md:165).
+
+          MOUNTED on the dock rule alone and withdrawn with `hidden` while
+          Settings shows (DW-412) — the same move the mode canvas makes, for the
+          same reason: this column's editor can be holding unsaved markdown, and
+          the gate that used to read `previewOpen` here destroyed it on the way
+          into Settings. `previewOpen` still decides what is ON SCREEN, which is
+          all the layout, the divider and `data-preview` ever meant by it. */}
+      {previewDocked && (
         <PreviewColumn
           // The id the Preview separator's `aria-controls` names (DW-45).
           id={PREVIEW_ID}
@@ -1162,6 +1246,10 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
           // withhold Revert BEFORE its confirm (DW-149), not after the route's
           // 403.
           readOnly={readOnly}
+          // Off screen, not closed. `previewOpen` is the on-screen boolean, so
+          // the column is withdrawn for exactly as long as Settings is showing
+          // and comes back holding whatever it held.
+          hidden={!previewOpen}
           // …and the shell keeps the geometry. Below 900px the column is a
           // stacked row the shell has to scroll to; the column itself never
           // reads the viewport.

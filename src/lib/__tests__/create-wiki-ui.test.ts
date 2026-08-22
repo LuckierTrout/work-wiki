@@ -130,7 +130,14 @@ describe("both dialogs share one accessibility implementation", () => {
     // button, so `opener.focus()` on the detached node drops the keyboard user
     // on <body>. The caller's fallback landmark takes over.
     expect(hook).toContain("opener?.isConnected");
-    expect(hook).toContain("fallbackRef.current?.current?.focus()");
+    // The fallback is read into a local and checked the same way the opener is,
+    // because a node can also be attached-but-WITHDRAWN (DW-414) — inside a
+    // surface that has gone behind `hidden`, where focus is just as lost. The
+    // old `fallbackRef.current?.current?.focus()` spelling could not carry that
+    // check, so it is not what this pins any more.
+    expect(hook).toContain("const fallback = fallbackRef.current?.current ?? null;");
+    expect(hook).toContain("fallback?.isConnected && !withdrawn(fallback)");
+    expect(hook).toContain("fallback.focus()");
 
     const workbench = await read("WikiWorkbench.tsx");
     expect(workbench.match(/fallbackFocusRef=\{headingRef\}/g) ?? []).toHaveLength(2);

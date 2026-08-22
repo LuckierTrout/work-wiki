@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  isInModalDialog,
   isInputElement,
   matchShortcut,
   SHORTCUTS,
@@ -47,6 +48,89 @@ describe("isInputElement", () => {
   it("returns false for BUTTON", () => {
     const el = { tagName: "BUTTON", isContentEditable: false } as HTMLElement;
     expect(isInputElement(el)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isInModalDialog
+// ---------------------------------------------------------------------------
+
+/**
+ * A minimal DOM, hand-built, because this project is `environment: "node"` —
+ * the same reason `isInputElement` above is duck-typed and driven with object
+ * literals. `closest` is the only method the function calls, so the stand-in
+ * implements exactly that: walk up `parentElement`, answer the first ancestor
+ * (self included) whose recorded attributes match.
+ */
+interface FakeElement {
+  attrs: Record<string, string>;
+  parentElement: FakeElement | null;
+  closest(selector: string): FakeElement | null;
+}
+
+function node(
+  attrs: Record<string, string>,
+  parent: FakeElement | null = null,
+): FakeElement {
+  const self: FakeElement = {
+    attrs,
+    parentElement: parent,
+    closest(selector: string): FakeElement | null {
+      const wants: Record<string, string> =
+        selector === '[role="dialog"][aria-modal="true"]'
+          ? { role: "dialog", "aria-modal": "true" }
+          : {};
+      let current: FakeElement | null = self;
+      while (current) {
+        const at = current.attrs;
+        if (Object.entries(wants).every(([key, value]) => at[key] === value)) {
+          return current;
+        }
+        current = current.parentElement;
+      }
+      return null;
+    },
+  };
+  return self;
+}
+
+describe("isInModalDialog", () => {
+  it("returns false for null target", () => {
+    expect(isInModalDialog(null)).toBe(false);
+  });
+
+  it("returns false for a target with no closest()", () => {
+    // `document` and `window` are both legitimate keydown targets and neither
+    // implements `closest`. A bare property call would throw and take the whole
+    // dispatcher down with it.
+    expect(isInModalDialog({} as EventTarget)).toBe(false);
+  });
+
+  it("returns true for a node inside a modal dialog", () => {
+    const dialog = node({ role: "dialog", "aria-modal": "true" });
+    const button = node({}, node({}, dialog));
+    expect(isInModalDialog(button as unknown as EventTarget)).toBe(true);
+  });
+
+  it("returns true for the dialog container itself", () => {
+    // Where `useDialogA11y` puts focus on open, so this is the target of the
+    // very first key an owner presses inside an overlay.
+    const dialog = node({ role: "dialog", "aria-modal": "true" });
+    expect(isInModalDialog(dialog as unknown as EventTarget)).toBe(true);
+  });
+
+  it("returns false for a role=dialog that is NOT aria-modal", () => {
+    // `ShortcutsHelp` renders exactly this, on purpose: `?` has to go on
+    // toggling the help overlay from inside it. Matching the role alone would
+    // suppress the key that closes the sheet it is showing.
+    const help = node({ role: "dialog" });
+    const inside = node({}, help);
+    expect(isInModalDialog(help as unknown as EventTarget)).toBe(false);
+    expect(isInModalDialog(inside as unknown as EventTarget)).toBe(false);
+  });
+
+  it("returns false outside any dialog", () => {
+    expect(isInModalDialog(node({}) as unknown as EventTarget)).toBe(false);
   });
 });
 

@@ -1338,10 +1338,17 @@ describe("the shell wires the split without spelling any of it", () => {
     expect(source).toContain("controls={LEFT_ID}");
     expect(source).toContain("controls={PREVIEW_ID}");
     // …and the id the Preview separator points at is on an element that exists
-    // whenever that separator does: `previewOpen` gates both.
+    // whenever that separator does. Since DW-412 the two gates are no longer
+    // the same boolean: the column is MOUNTED on `previewDocked` and the
+    // separator renders on `previewOpen`, which is `previewDocked` narrowed by
+    // `!settingsOpen`. So the id can outlive the separator by a Settings visit
+    // and never the other way round — an `aria-controls` pointing at nothing is
+    // the direction that would break, and it stays unreachable.
     expect(source).toContain("id={PREVIEW_ID}");
+    expect(source).toContain("const previewOpen = previewDocked && !settingsOpen;");
+    expect(source).toMatch(/\{previewDocked && \(\s*<PreviewColumn/);
     const preview = await component("PreviewColumn.tsx");
-    expect(preview).toContain('<aside id={id} className="wb-preview"');
+    expect(preview).toContain('<aside id={id} className="wb-preview" hidden={hidden}');
   });
 });
 
@@ -1432,7 +1439,20 @@ describe("TreePanel remembers where each tree was left", () => {
     expect(source).toContain("writeStoredTreeScroll(tab, panel.scrollTop)");
     // Both effects are keyed on the tab AND on the collapse, because showing a
     // hidden column is the moment the browser has just reset `scrollTop`.
-    expect(source.match(/\}, \[tab, collapsed, narrow\]\);/g) ?? []).toHaveLength(2);
+    //
+    // …and on `hidden`, the Settings visit's withdrawal, which the panel now
+    // survives MOUNTED. Both effects take it, for the two halves of one
+    // symptom: the restore has to re-apply the offset the browser dropped when
+    // the panel came back, and the persist has to re-attach a listener it
+    // declined to attach if a tab, collapse or width change happened to re-run
+    // it while the panel was off screen — without the key that effect never
+    // runs again, and the tree stops remembering its offset for the rest of the
+    // session with every other assertion here still green.
+    expect(source.match(/\}, \[tab, collapsed, narrow, hidden\]\);/g) ?? []).toHaveLength(
+      2,
+    );
+    // The old key is gone from BOTH, or one of them silently kept it.
+    expect(source.match(/\}, \[tab, collapsed, narrow\]\);/g) ?? []).toHaveLength(0);
   });
 
   it("asks the element whether it is showing, not the collapse flag", async () => {

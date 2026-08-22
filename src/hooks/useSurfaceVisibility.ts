@@ -24,9 +24,14 @@ import { createContext, createElement, useContext, type ReactNode } from "react"
  * `ModeCanvas` down to a dialog nested inside it, and adding one would mean
  * threading a boolean through every component in between.
  *
- * The default is `true`, which is what makes every OTHER dialog in the app
- * (`/settings`, the Preview column, the Vault explorer — none of which sit
- * under a provider) behave exactly as it did before this existed.
+ * The default is `true`, which is what makes every dialog with no provider
+ * above it (`/settings`, the Vault explorer) behave exactly as it did before
+ * this existed.
+ *
+ * The Preview column publishes one too now. It stays MOUNTED behind `hidden`
+ * for a Settings visit so its editor's unsaved markdown survives (DW-412), and
+ * it owns two `ConfirmDialog`s — so it needs exactly what the mode canvas
+ * needs, and for exactly the same reason.
  */
 const SurfaceVisibilityContext = createContext(true);
 

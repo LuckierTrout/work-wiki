@@ -7,6 +7,7 @@ import {
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
 import { SPLIT_NARROW_QUERY } from "@/lib/workbench-split";
+import { SETTINGS_LABEL } from "@/lib/workbench-settings";
 import { buildFileTree } from "@/lib/workbench-tree";
 import {
   readStoredTreeScroll,
@@ -227,6 +228,67 @@ describe("crossing the stacking breakpoint re-runs the tree's scroll memory (DW-
 
     // A scroll on the force-shown tree is remembered, coalesced through one
     // animation frame.
+    panel.scrollTop = 240;
+    await act(async () => {
+      panel.dispatchEvent(new Event("scroll"));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    });
+    expect(readStoredTreeScroll().knowledge).toBe(240);
+  });
+});
+
+describe("a Settings visit gives the tree's scroll memory back too", () => {
+  /**
+   * The same shape as the DW-47 pair above, reached a third way.
+   *
+   * The panel survives a Settings visit MOUNTED now, behind `hidden` — which
+   * means nothing unmounts and remounts to re-run the restore, and a browser
+   * has meanwhile reset `scrollTop` to 0 on the way back in. So `hidden` has to
+   * be in the effect's key. Without it the mounted suite stays entirely green
+   * and the only thing left pinning the dependency is a dep-array regex in
+   * `workbench-split.test.ts` — a scan that matches the shape of the fix rather
+   * than its effect.
+   */
+  it("re-applies the stored offset when Settings hands the column back", async () => {
+    writeStoredTreeScroll("knowledge", 120);
+    await renderShell();
+    const panel = treeBody();
+    expect(panel.scrollTop).toBe(120);
+
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_LABEL }));
+    await act(async () => {});
+    // Withdrawn, not unmounted — the premise. A remount would restore the
+    // offset by accident, and this case would pass with the dependency gone.
+    expect(document.querySelector(".wb-tree-panel")?.hasAttribute("hidden")).toBe(true);
+    expect(treeBody()).toBe(panel);
+
+    // Standing in for the `scrollTop = 0` a browser hands back when it shows an
+    // element it had been hiding, exactly as the DW-47 case above does: jsdom
+    // has no layout engine, so nothing here resets it on its own.
+    panel.scrollTop = 0;
+
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_LABEL }));
+    await act(async () => {});
+
+    expect(document.querySelector(".wb-tree-panel")?.hasAttribute("hidden")).toBe(false);
+    expect(panel.scrollTop).toBe(120);
+  });
+
+  it("leaves the persist side live on the panel Settings gave back", async () => {
+    // The other half, and the reason the persist effect takes the same key: any
+    // tab, collapse or width change DURING the visit re-runs it against a panel
+    // with no client rects, so it attaches nothing — and without `hidden` it
+    // never runs again, leaving the tree unable to remember its offset for the
+    // rest of the session.
+    writeStoredTreeScroll("knowledge", 120);
+    await renderShell();
+    const panel = treeBody();
+
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_LABEL }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_LABEL }));
+    await act(async () => {});
+
     panel.scrollTop = 240;
     await act(async () => {
       panel.dispatchEvent(new Event("scroll"));

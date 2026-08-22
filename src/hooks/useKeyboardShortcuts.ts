@@ -27,6 +27,40 @@ export function isInputElement(target: EventTarget | null): boolean {
   return false;
 }
 
+/**
+ * Is the event target inside an open MODAL dialog (DW-413)?
+ *
+ * A global navigation key must not walk the owner out of one. `g s` typed with
+ * an unsaved Create Wiki dialog on screen used to change the surface underneath
+ * it, leaving a modal open over Settings with its Tab trap still armed — the
+ * dialog is `aria-modal="true"`, which is a promise that the rest of the page
+ * is inert, and a shortcut that acted anyway broke exactly that promise.
+ *
+ * Suppression, not dismissal: the dialog owns Esc and nothing else may decide
+ * that a draft is finished with.
+ *
+ * MODAL is the whole of what the selector claims, and it is claimed by the
+ * markup rather than inferred: `ConfirmDialog`, `CreateWikiDialog` and the
+ * Vault lightbox each render `aria-modal="true"`, and modals never stack
+ * (UX-DR17), so one query answers for all of them.
+ *
+ * `ShortcutsHelp` is deliberately OUTSIDE it. That overlay is a `role="dialog"`
+ * with no `aria-modal`, because `?` has to go on toggling it from inside — a
+ * help sheet you cannot dismiss with the key that opened it would be the bug
+ * this suppression would have introduced. Matching on the pair rather than on
+ * the role alone is what keeps it working.
+ *
+ * Duck-typed on `closest` rather than `instanceof Element`, the convention
+ * {@link isInputElement} above already follows: the node suite drives these
+ * with object literals, and an `instanceof` check would answer `false` for
+ * every one of them whatever they said.
+ */
+export function isInModalDialog(target: EventTarget | null): boolean {
+  const el = target as Element | null;
+  if (!el || typeof el.closest !== "function") return false;
+  return el.closest('[role="dialog"][aria-modal="true"]') !== null;
+}
+
 /** Shortcut definition */
 export interface ShortcutDef {
   /** Key sequence, e.g. ["g", "i"] or ["?"] */
@@ -222,6 +256,11 @@ export function KeyboardShortcutsProvider({
     function handleKeyDown(e: KeyboardEvent) {
       // Ignore when typing in form elements
       if (isInputElement(e.target)) return;
+
+      // …and anywhere inside a modal dialog (DW-413). Nothing dispatches: no
+      // surface change, no navigation, and the buffer is left untouched because
+      // a sequence the owner never meant to start has nothing to reset.
+      if (isInModalDialog(e.target)) return;
 
       // Ignore when modifier keys are held (except shift for ?)
       if (e.ctrlKey || e.metaKey || e.altKey) return;

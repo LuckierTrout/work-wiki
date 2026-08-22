@@ -70,6 +70,27 @@ export interface TreePanelProps {
    * effects below.
    */
   collapsed?: boolean;
+  /**
+   * Settings' nav is showing in this panel's place.
+   *
+   * The SIBLING of DW-412's loss — same bundle, same mechanism, a different
+   * column. That ledger entry is about the Preview column's unsaved markdown
+   * and says nothing about this panel, so grepping the id will not lead here:
+   * what a Settings visit destroyed HERE is disclosure state. Every group and
+   * directory the owner has collapsed lives in this component's own `closed`
+   * state, and the left column used to render `SettingsNav` INSTEAD of this
+   * panel — which unmounted it, so the visit silently re-opened the whole tree.
+   *
+   * The panel stays MOUNTED and goes off screen instead, the same withdrawal
+   * the mode canvas performs under DW-373. Nothing here is a "close" — no tab
+   * changes, no selection clears.
+   *
+   * Distinct from {@link TreePanelProps.collapsed}, which is the owner's
+   * durable preference about the COLUMN. Both end in `display: none`, and both
+   * scroll effects below have to key on each of them for the same reason: they
+   * are the moments the panel stops and starts being a thing that can scroll.
+   */
+  hidden?: boolean;
 }
 
 /**
@@ -107,6 +128,7 @@ export function TreePanel({
   selection,
   onSelect,
   collapsed = false,
+  hidden = false,
 }: TreePanelProps) {
   const baseId = useId();
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -151,17 +173,27 @@ export function TreePanel({
   // again is the moment the browser has just reset `scrollTop` to 0. And on
   // `narrow`, because the stylesheet force-shows a collapsed column below the
   // breakpoint — the same moment, reached by resizing rather than by clicking.
+  // And on `hidden`: a Settings visit withdraws this panel and closing Settings
+  // brings it back, which is that same moment reached a third way.
   useEffect(() => {
     const panel = bodyRef.current;
     if (!panel || !treeBodyShowing(panel, collapsed)) return;
     panel.scrollTop = readStoredTreeScroll()[tab];
-  }, [tab, collapsed, narrow]);
+  }, [tab, collapsed, narrow, hidden]);
 
   // …and remembering it. Coalesced through `requestAnimationFrame` because a
   // scroll fires far faster than localStorage writes synchronously, and skipped
   // while the panel is not rendered: a `display: none` column reports
   // `scrollTop === 0` by the browser's own rules, so a persist that ran there
   // would overwrite the offset the owner is about to come back to.
+  //
+  // Keyed on `hidden` as well, and NOT because a withdrawn panel might scroll —
+  // it cannot. Because this effect can RE-RUN while the panel is withdrawn: any
+  // `tab`, `collapsed` or `narrow` change during a Settings visit runs the guard
+  // against a panel with no client rects, attaches no listener, and — with no
+  // `hidden` in the key — never runs again when Settings closes. The tree would
+  // then stop remembering its offset for the rest of the session, with every
+  // other assertion about it still green.
   useEffect(() => {
     const panel = bodyRef.current;
     if (!panel || !treeBodyShowing(panel, collapsed)) return;
@@ -178,7 +210,7 @@ export function TreePanel({
       panel.removeEventListener("scroll", onScroll);
       if (frame !== 0) cancelAnimationFrame(frame);
     };
-  }, [tab, collapsed, narrow]);
+  }, [tab, collapsed, narrow, hidden]);
 
   function body() {
     if (unavailable) {
@@ -285,7 +317,7 @@ export function TreePanel({
   }
 
   return (
-    <div className="wb-tree-panel">
+    <div className="wb-tree-panel" hidden={hidden}>
       <div className="wb-tabs" role="tablist" aria-label="Left column trees">
         {TREE_TABS.map((entry) => (
           <button

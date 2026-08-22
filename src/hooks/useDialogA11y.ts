@@ -30,7 +30,9 @@ import { useSurfaceVisible } from "@/hooks/useSurfaceVisibility";
  *   being dropped on `<body>` — and when the opener has been unmounted by the
  *   very action the dialog performed (creating the first Wiki replaces the
  *   empty state that held the opening button), focus lands on the caller's
- *   `fallbackFocusRef` instead of nowhere.
+ *   `fallbackFocusRef` instead of nowhere — and when the opener is still in the
+ *   document but inside a WITHDRAWN surface, focus is left alone rather than
+ *   sent into content nobody can see (DW-414).
  */
 
 export interface DialogA11yOptions {
@@ -44,6 +46,24 @@ export interface DialogA11yOptions {
    * Give it a `tabIndex={-1}` landmark heading near the opener's old position.
    */
   fallbackFocusRef?: React.RefObject<HTMLElement | null>;
+}
+
+/**
+ * Is this node inside a subtree that has been WITHDRAWN with `hidden` (DW-414)?
+ *
+ * A surface that goes off screen keeps its nodes in the document, so
+ * `isConnected` still answers `true` for an opener that nobody can see or
+ * reach. Focusing one is a silent no-op in a real browser — `display: none` is
+ * unfocusable — and the keyboard user is left on `<body>` with no report; in
+ * jsdom, which has no layout engine, it is worse than a no-op, because focus
+ * really does land inside content that is out of the accessibility tree.
+ *
+ * `closest`, not a `hidden` check on the node itself: the attribute is spelled
+ * on the SURFACE (`.wb-canvas`, `.wb-preview`, `.wb-tree-panel`), several
+ * levels above whatever button opened the dialog.
+ */
+function withdrawn(node: HTMLElement): boolean {
+  return node.closest("[hidden]") !== null;
 }
 
 /** Every focusable descendant, in tab order. */
@@ -132,14 +152,42 @@ export function useDialogA11y({
       if (openRef.current && !visibleRef.current) return;
       // The opener is frequently gone by now: confirming Create Wiki replaces
       // the empty state that owned the button. Focusing a detached node is a
-      // silent no-op that drops the keyboard user on <body>.
+      // silent no-op that drops the keyboard user on <body> — and so is
+      // focusing one that is still attached inside a `hidden` subtree (DW-414),
+      // which is what an opener on a withdrawn surface is. Neither is refused
+      // in favour of somewhere else: the fallback is checked the same way, and
+      // if it is withdrawn too then focus is left exactly where the owner put
+      // it, which is on the surface that is actually showing.
       const opener = openerRef.current;
-      if (opener?.isConnected) opener.focus();
-      else fallbackRef.current?.current?.focus();
+      const fallback = fallbackRef.current?.current ?? null;
+      if (opener?.isConnected && !withdrawn(opener)) opener.focus();
+      else if (fallback?.isConnected && !withdrawn(fallback)) fallback.focus();
       openerRef.current = null;
       openerRecordedRef.current = false;
     };
   }, [armed]);
+
+  /**
+   * The capture's release for a close that happens OFF SCREEN (DW-414).
+   *
+   * While the surface is withdrawn `armed` is already `false`, so a dialog that
+   * closes in that window re-runs no effect at all and the teardown above never
+   * fires — which is why the leak is the CAPTURE rather than a misfired
+   * restore. `openerRecordedRef` stays `true`, so the next open skips recording
+   * its own opener and the close after that aims the keyboard at whatever
+   * opened the previous dialog, on a surface the owner may have left entirely.
+   *
+   * Keyed on `open` alone, and it moves focus NOWHERE: the owner is standing on
+   * the surface that is showing, and a dialog they cannot see closing is not a
+   * reason to move them. On the ordinary on-screen close the teardown above has
+   * already cleared both refs — cleanups for the whole tree run before any
+   * effect body — so this is idempotent there and load-bearing only here.
+   */
+  useEffect(() => {
+    if (open) return;
+    openerRef.current = null;
+    openerRecordedRef.current = false;
+  }, [open]);
 
   useEffect(() => {
     if (!armed) return;

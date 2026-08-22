@@ -64,7 +64,17 @@ describe("the shell wires the left column without routing", () => {
     expect(source).toContain("<WikiSwitcher");
     // The tabs and trees describe the Wiki surface; every other mode keeps
     // Story 1.3's muted label rather than a tree that names nothing on screen.
+    //
+    // The condition is the MODE and nothing else since DW-412. It used to be
+    // `settingsOpen ? <SettingsNav/> : mode === "wiki" ? …`, which unmounted the
+    // panel for a Settings visit and re-opened every group and directory the
+    // owner had collapsed — `closed` is `TreePanel`'s own state. Settings
+    // withdraws it instead, so both halves are pinned: a scan that only saw the
+    // mode branch would stay green against a shell that had gone back to
+    // rendering the nav in its place.
     expect(source).toMatch(/mode === "wiki" \? \(\s*<TreePanel/);
+    expect(source).toMatch(/<TreePanel[\s\S]*?hidden=\{settingsOpen\}[\s\S]*?\/>/);
+    expect(source).toMatch(/\{settingsOpen && \(\s*<SettingsNav/);
     expect(source).toContain('className="wb-left-surface"');
     // The product title stays exactly where Story 1.3 put it.
     expect(source).toMatch(/<h1 className="wb-title">\{APP_NAME\}<\/h1>/);
