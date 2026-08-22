@@ -3788,6 +3788,7 @@ location: .github/workflows/deploy-cloudflare.yml (paths filter)
 severity: low
 reason: The filter names `pnpm-lock.yaml`, `package.json` and `workers/**`. The root workspace file is now load-bearing for `pnpm --dir workers/sandbox-runner install --frozen-lockfile` at deploy-cloudflare.yml:82, but a commit touching only that file skips the workflow. `.github/` is declared protected in AGENTS.md, so this run could not edit it.
 status: open
+decision: 2026-08-22 Bounded per-page read fallback — For slugs the index misses, fall back to a bounded per-page read (cap at MAX_BULK_DELETE) on this listing path only, so orphan rows list and become deletable while the read cost stays bounded.
 
 ### DW-433: The bundle this story came from is keyed to DW-415, but its Intent prose describes DW-411; the work done resolves DW-411 and leaves DW-415 untouched.
 origin: spec-deferred 0566328f37bb

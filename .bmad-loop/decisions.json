@@ -269,6 +269,15 @@
     "label": "Bump at the kernel tail",
     "resolution": ""
   },
+  "DW-432": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "For slugs the index misses, fall back to a bounded per-page read (cap at MAX_BULK_DELETE) on this listing path only, so orphan rows list and become deletable while the read cost stays bounded.",
+    "key": "1",
+    "label": "Bounded per-page read fallback",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
