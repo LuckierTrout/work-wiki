@@ -26,15 +26,6 @@
     "label": "Drop the contributors step",
     "resolution": ""
   },
-  "DW-131": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Retarget the graph canvas's aria-label and fallback text at the Workbench's Knowledge tree (the live text-based list of the active Wiki's pages), updating the copy to name that surface and linking to it, and pin the new target so it cannot rot into another retired route.",
-    "key": "1",
-    "label": "Point at the Workbench Knowledge tree",
-    "resolution": ""
-  },
   "DW-134": {
     "answered_at": "2026-08-19",
     "bundle_name": "",
@@ -134,78 +125,6 @@
     "label": "Widen the content padding to match",
     "resolution": ""
   },
-  "DW-215": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Add a retention cap with pruning in saveWikiArtifactRevision plus a bounded listing, and make the backup walk truncate-with-a-flag at MAX_BACKUP_FILES/MAX_BACKUP_BYTES instead of throwing.",
-    "key": "1",
-    "label": "Cap revisions and degrade backups",
-    "resolution": ""
-  },
-  "DW-253": {
-    "answered_at": "2026-08-20",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Change the route to skip an attachment over `MAX_DOCUMENT_SIZE` rather than 400 the request, ingest the body and the remaining attachments, and name the dropped file in the acknowledgement alongside the existing skipped-attachment sentence. Add a per-attachment size pre-filter in the Worker so an oversized part is never forwarded, and add the missing end-to-end case for an email whose attachments are all unsupported but which carries a body.",
-    "key": "1",
-    "label": "Drop the oversized attachment",
-    "resolution": ""
-  },
-  "DW-293": {
-    "answered_at": "2026-08-20",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Keep fsync as the default for single writes, and give the loop paths a batched form: a bulk-write door that fsyncs once per batch (or a directory sync at the end) for portable-archive import, backup restore and ingest, plus an accumulate-then-flush shape for `upsertEmbedding` so an embeddings rebuild stops rewriting and syncing the whole index per vector. Add a benchmark that fails if any of those paths regresses past a recorded bound.",
-    "key": "1",
-    "label": "Batch the loop paths",
-    "resolution": ""
-  },
-  "DW-323": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Resolve the accountable owner from into.frontmatter.owner (falling back to the acting principal) and pass it plus a fresh createWorkspaceGuidanceCache() into reconcilePage from merge.ts, with a test pinning which owner's guidance a cross-owner merge uses.",
-    "key": "1",
-    "label": "Guide the merge door",
-    "resolution": ""
-  },
-  "DW-332": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Delete only the drift:<active model> key from warnedMisconfigurations on a successful read where kept.length > 0, leaving every other member of the Never clause intact, and cover rebuild-then-re-drift in the embeddings warning suite.",
-    "key": "1",
-    "label": "Re-arm drift only",
-    "resolution": ""
-  },
-  "DW-358": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Derive MAX_RAW_EMAIL_BYTES from the worst-case transfer encoding (a quoted-printable expansion factor rather than base64's ~1.37), re-pin the parity test, and record the new derivation beside the constant.",
-    "key": "1",
-    "label": "Widen for worst-case encoding",
-    "resolution": ""
-  },
-  "DW-362": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Derive MAX_RAW_EMAIL_BYTES from a stated aggregate budget (up to MAX_EMAIL_ATTACHMENTS documents, or an explicit total) so the advertised attachment count is actually reachable, re-pin the parity test, and add a multi-document aggregate case.",
-    "key": "1",
-    "label": "Derive an aggregate budget",
-    "resolution": ""
-  },
-  "DW-390": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Delete listThreads, createThread, getThread, addComment, resolveThread and hasOpenThread from src/lib/talk.ts along with their now-orphaned tests, leaving deleteDiscussions, getDiscussRelPrefix and getDiscussionStatsForSlugs (and therefore browse's count and the discuss-stats/contributor indexes) exactly as they are.",
-    "key": "1",
-    "label": "Retire the dead writers only",
-    "resolution": ""
-  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
@@ -213,33 +132,6 @@
     "intent": "",
     "key": "2",
     "label": "Wait for DW-14",
-    "resolution": ""
-  },
-  "DW-64": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Leave the whole-stream deadline as the frozen decision has it and only map TimeoutError/AbortError to an owner-facing sentence in src/app/api/query/stream/route.ts, with a test pinning it.",
-    "key": "2",
-    "label": "Keep deadline, fix the copy",
-    "resolution": ""
-  },
-  "DW-69": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Drop the stored embedding key and its has* flag whenever the embedding provider changes, so a switch never reuses another vendor's secret; no stored shape change, and the owner re-enters the key for the new vendor.",
-    "key": "2",
-    "label": "Clear the key on switch",
-    "resolution": ""
-  },
-  "DW-72": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Clear the stored embeddingBaseUrl whenever the embedding provider changes, so an endpoint typed for one vendor is never sent to another; no stored shape change.",
-    "key": "2",
-    "label": "Clear the base URL on switch",
     "resolution": ""
   }
 }
