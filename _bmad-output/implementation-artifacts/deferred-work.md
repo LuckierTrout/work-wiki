@@ -3082,7 +3082,8 @@ source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
 location: src/lib/bulk-document-import.ts:80
 severity: medium
 reason: `validationError` (`src/lib/bulk-document-import.ts`) branches only on `documentExtension(file.name)` and ignores `file.type` entirely, while `ACCEPTED_DOCUMENT_ATTRIBUTE` now derives from extensions AND `SUPPORTED_DOCUMENT_MIME_TYPES`. An extension-less file carrying `application/pdf` therefore passes the picker and is rejected by the manifest, though `detectDocumentFormat` at `/api/ingest/document` accepts it on the MIME arm. This is the residual half of DW-246's class (client narrower than server); the intent named the list, not the MIME arm, so it is out of this story's scope.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-advertised-input-validation-parity
 
 ### DW-348: The two untrusted lint-fix doors accept an unvalidated `type` even though `AUTO_FIXABLE_CHECK_TYPES` now exists as a tuple to validate against.
 origin: spec-deferred ac2df2d3e945
@@ -3090,7 +3091,8 @@ source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
 location: src/app/api/lint/fix/route.ts:54
 severity: medium
 reason: `src/app/api/lint/fix/route.ts:54-56` destructures `type` off a raw `await req.json()` with no schema at all, and `src/lib/mcp-http.ts:490` declares it as free-form `str(...)`. `src/mcp.ts:2465` does validate, but against `z.enum(ALL_CHECK_TYPES)` rather than the fixable subset. The `ownEntry` guard added by this story is currently the only defense; `z.enum(AUTO_FIXABLE_CHECK_TYPES)` at the door would make it a second line rather than the sole one.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-advertised-input-validation-parity
 
 ### DW-349: workers/email-ingest/README.md:20 documents a live app menu path with the retired brand ("the address entered under Yopedia **Settings -> Email ingestion**"), so the exemption freezes wrong operator d
 origin: spec-deferred 8edfd4178f50
@@ -3894,4 +3896,20 @@ source_spec: `spec-dw-341-343-346-352-hand-copied-list-parity-pins.md`
 location: src/app/api/lint/fix/route.ts:19
 severity: low
 reason: The route answers 403 twice (owner gate, read-only refusal), 400 on `FixValidationError`, 404 on `FixNotFoundError`, `PAGE_UNREADABLE_STATUS` on an unreadable page, and 500 otherwise, and returns a `FixResult` (`{ success, slug, message }`) on the happy path. The header comment — rewritten at length in this pass to complete the issue-type inventory — names none of them, so an integrator reading the one door DW-346 was about still cannot tell a refusal from a failure. Pre-existing: the five-entry version documented no statuses either.
+status: open
+
+### DW-446: mcp-http's `fix_lint_issue` gates `type` but still spreads its arguments through a bare cast, so a non-string `slug` or `target` reaches the fix handlers unvalidated.
+origin: spec-deferred 685d20f52094
+source_spec: `spec-dw-347-348-advertised-input-validation-parity.md`
+location: src/lib/mcp-http.ts:521
+severity: medium
+reason: `run` in `src/lib/mcp-http.ts` now calls `autoFixRefusal(a.type, ...)`, then hands the rest through `...(a as { type: string; slug: string; ... })`. `dispatchMcp` validates `tools/call` arguments nowhere, so `{"type":"orphan-page","slug":7}` still reaches `fixOrphanPage(7)` — the same failure `POST /api/lint/fix` now refuses at the door. Out of scope here: DW-348's intent names `type` only.
+status: open
+
+### DW-447: POST /api/lint/fix resolves a principal for its owner gate but never passes it as `author`, so every REST-initiated fix is attributed to the default "lint-fix" while both MCP doors stamp the caller's
+origin: spec-deferred c3bee16b7dd2
+source_spec: `spec-dw-347-348-advertised-input-validation-parity.md`
+location: src/app/api/lint/fix/route.ts:157
+severity: medium
+reason: `route.ts` calls `getPrincipal()` for `isOwnerHandle`, then invokes `fixLintIssue(type, slug ?? "", targetSlug, message)` with no fifth argument, defaulting `author` to `"lint-fix"` (`src/lib/lint-fix.ts`). `handleFixLintIssue` receives `author: p!.handle` on both MCP doors, so the same fix is attributed differently depending on which door ran it. Pre-existing; unchanged by this story.
 status: open

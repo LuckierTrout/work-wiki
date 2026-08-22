@@ -763,11 +763,15 @@ const NOT_AUTO_FIXABLE: Record<
 /**
  * Look `type` up: own properties only, and only if it is really a string.
  *
- * `src/app/api/lint/fix/route.ts` destructures `type` straight off an
- * unvalidated `await req.json()`, so the declared `string` is a claim, not a
- * fact — the value can be any JSON shape the caller sends. Two ways that bites a
- * table lookup, and the `switch (type)` this replaced was immune to both because
- * `case` compares with `===`:
+ * The declared `string` is a claim, not a fact. The three doors each gate `type`
+ * themselves now (DW-348) — this used to be the ONLY gate, back when
+ * `src/app/api/lint/fix/route.ts` destructured `type` straight off an
+ * unvalidated `await req.json()` — but the doors are not the only callers:
+ * `src/cli.ts:513` and `POST /api/tasks/run` (`route.ts:159`) call the
+ * dispatcher in-process, the latter with a `lintType` read back out of stored
+ * task JSON that no schema has ever seen. So the value can still be any shape.
+ * Two ways that bites a table lookup, and the `switch (type)` this replaced was
+ * immune to both because `case` compares with `===`:
  *
  *  1. The PROTOTYPE CHAIN. A bare `FIX_HANDLERS[type]` answers `"constructor"`,
  *     `"toString"` and every other `Object.prototype` member with an inherited
@@ -787,8 +791,50 @@ function ownEntry<T>(table: Record<string, T>, key: string): T | null {
   return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null;
 }
 
+/** The answer for a type no check ever emits — unrecognized, so unexplainable. */
+const AUTO_FIX_UNSUPPORTED = "Auto-fix not supported for this issue type";
+
+/**
+ * Why this `type` cannot be auto-fixed, or `null` when it can be.
+ *
+ * ONE OWNER FOR THE REFUSAL SENTENCES, two callers: `POST /api/lint/fix` and
+ * `mcp-http.ts`'s `fix_lint_issue`. Both need to refuse a bad `type` BEFORE
+ * {@link fixLintIssue} runs — the route parsed an unvalidated body straight into
+ * the dispatcher, and the HTTP MCP transport validates `tools/call` arguments
+ * not at all, so `ownEntry` below was the only thing standing between a
+ * caller's JSON and the handler table (DW-348). A gate at each door that
+ * re-typed "Disputed pages cannot be auto-fixed…" would be two more hand-copied
+ * restatements of prose `lint-types.ts` went to some trouble to give a single
+ * home; the doors call this instead.
+ *
+ * THE STDIO SERVER IS THE EXCEPTION, and does not call this. `src/mcp.ts`
+ * registers `fix_lint_issue` with `z.enum(AUTO_FIXABLE_CHECK_TYPES)`, so the
+ * SDK refuses a bad type before the handler is even entered — there is no point
+ * in the request at which a gate of ours could run. Its tool description points
+ * the agent at the issue `suggestion` instead, which carries the same guidance
+ * with the slug already interpolated.
+ *
+ * `type` is `unknown` on purpose: every caller receives it from the wire, where
+ * the declared `string` is a claim rather than a fact. A non-string is
+ * unrecognized, exactly as `ownEntry`'s `typeof` guard already made it.
+ *
+ * `slug` is interpolated by the `disputed-page` explanation into a
+ * copy-pasteable PATCH, so a door with no usable slug should pass `""` rather
+ * than invent one.
+ */
+export function autoFixRefusal(type: unknown, slug: string): string | null {
+  if (typeof type !== "string") return AUTO_FIX_UNSUPPORTED;
+  if (ownEntry<FixHandler>(FIX_HANDLERS, type)) return null;
+
+  const explain = ownEntry<(slug: string) => string>(NOT_AUTO_FIXABLE, type);
+  return explain ? explain(slug) : AUTO_FIX_UNSUPPORTED;
+}
+
 /**
  * Dispatch a lint-fix request to the appropriate handler based on issue type.
+ *
+ * Keeps `type: string` — the gate belongs at the doors, and this stays the
+ * defense that runs whichever door (or in-process caller) got here.
  *
  * @throws {FixValidationError} for missing fields or unsupported types
  * @throws {FixNotFoundError} when a required page doesn't exist
@@ -805,10 +851,7 @@ export async function fixLintIssue(
     return handler({ slug, targetSlug, message, author });
   }
 
-  const explain = ownEntry<(slug: string) => string>(NOT_AUTO_FIXABLE, type);
-  if (explain) {
-    throw new FixValidationError(explain(slug));
-  }
-
-  throw new FixValidationError("Auto-fix not supported for this issue type");
+  // `autoFixRefusal` answers `null` only when a handler exists, which the branch
+  // above has already ruled out; the `??` is a type narrowing, not a fallback.
+  throw new FixValidationError(autoFixRefusal(type, slug) ?? AUTO_FIX_UNSUPPORTED);
 }

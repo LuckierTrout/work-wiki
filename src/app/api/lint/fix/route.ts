@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import {
+  autoFixRefusal,
   fixLintIssue,
   FixValidationError,
   FixNotFoundError,
 } from "@/lib/lint-fix";
+import { AUTO_FIXABLE_CHECK_TYPES } from "@/lib/lint-types";
 import { getErrorMessage } from "@/lib/errors";
 import { getPrincipal } from "@/lib/auth";
 import { isOwnerHandle } from "@/lib/owner";
@@ -15,6 +18,34 @@ import {
   PAGE_UNREADABLE_STATUS,
   isPageUnreadableError,
 } from "@/lib/page-read-failure";
+
+/**
+ * The request contract. `type` is the fixable set, not `ALL_CHECK_TYPES`: the
+ * five other check types have no handler, and refusing them here is the whole
+ * point of the gate.
+ *
+ * `slug` is OPTIONAL because `missing-concept-page` reads `message` alone (see
+ * the route's own bullet for it below), and every handler that does need a slug already answers
+ * "Missing required field: slug" for an absent one — a message far more useful
+ * than a schema's. `targetSlug`/`message` are optional for the same reason.
+ * Unknown keys are stripped rather than rejected, so an older client sending an
+ * extra field is not broken by this gate.
+ */
+const LINT_FIX_REQUEST = z.object({
+  type: z.enum(AUTO_FIXABLE_CHECK_TYPES),
+  slug: z.string().optional(),
+  targetSlug: z.string().optional(),
+  message: z.string().optional(),
+});
+
+/** Name the field the schema tripped on, so a caller can fix its own request. */
+function fieldMessage(error: z.ZodError): string {
+  const issue = error.issues[0];
+  const field = issue?.path.join(".");
+  return field
+    ? `Invalid request field \`${field}\`: ${issue.message}`
+    : "Invalid request body: expected a JSON object";
+}
 
 /**
  * POST /api/lint/fix — auto-fix a lint issue.
@@ -53,6 +84,15 @@ import {
  * { "type": "…", "slug": "source-page", "targetSlug": "target-page" }
  * { "type": "…", "message": "Concept \"vector search\" is mentioned in ingest, retrieval but has no dedicated page. Both describe it at length." }
  * ```
+ *
+ * The body is SCHEMA-CHECKED before any of it reaches `fixLintIssue` (DW-348).
+ * This door used to destructure `await req.json()` and hand the pieces straight
+ * to the dispatcher, so `type` was whatever JSON the caller sent and
+ * `lint-fix.ts`'s `ownEntry` — an own-property lookup with a `typeof` guard —
+ * was the only thing between a POST and the handler table. It held, but it is a
+ * defense of last resort in a module the door does not own; the door now states
+ * its own contract, and a `type` outside `AUTO_FIXABLE_CHECK_TYPES` never
+ * reaches the dispatcher at all.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -76,10 +116,45 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const body = await req.json();
-    const { type, slug, targetSlug, message } = body;
+    // Parsed AFTER both gates above: a non-owner is told "Forbidden" and a
+    // read-only deployment its refusal, neither of which depends on the body
+    // being well-formed.
+    //
+    // `.catch(() => null)` because `req.json()` throws on a body that is not
+    // JSON at all, and that is a 400 like any other malformed request — the
+    // generic catch below would have logged it and answered 500.
+    const raw: unknown = await req.json().catch(() => null);
+    const parsed = LINT_FIX_REQUEST.safeParse(raw);
+    if (!parsed.success) {
+      // Let the raw `type` explain itself where it can. A recognized-but-not-
+      // fixable type has an explanation written for a human ("Disputed pages
+      // cannot be auto-fixed. Reconcile … PATCH /api/wiki/<slug> …"), and that
+      // sentence is the reason this route existed to answer 400 in the first
+      // place — a schema message naming `type` would be a regression on the
+      // wire. `autoFixRefusal` answers `null` only for a FIXABLE type, i.e.
+      // when some other field is what failed, which is exactly when the
+      // schema's own message is the useful one.
+      const record =
+        typeof raw === "object" && raw !== null
+          ? (raw as Record<string, unknown>)
+          : null;
+      const rawSlug = record?.slug;
+      const refusal =
+        record?.type === undefined
+          ? null
+          : autoFixRefusal(
+              record.type,
+              typeof rawSlug === "string" ? rawSlug : "",
+            );
 
-    const result = await fixLintIssue(type, slug, targetSlug, message);
+      return NextResponse.json(
+        { error: refusal ?? fieldMessage(parsed.error) },
+        { status: 400 },
+      );
+    }
+
+    const { type, slug, targetSlug, message } = parsed.data;
+    const result = await fixLintIssue(type, slug ?? "", targetSlug, message);
     return NextResponse.json(result);
   } catch (error) {
     // Mid-request flag flip. Ordered above the two error-class branches: a

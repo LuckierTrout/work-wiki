@@ -1,7 +1,21 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+
+/**
+ * Spy — NOT stub — on the lint-fix dispatcher: the factory spreads
+ * `importOriginal`, so every tool below still runs the real implementation.
+ * The wrapper exists for the `fix_lint_issue` gate rows (DW-348), which have to
+ * tell "the door refused" from "the dispatcher refused". The two answer with
+ * the SAME sentence — `autoFixRefusal` owns it and both read from it — so the
+ * call record is the only thing that separates them.
+ */
+vi.mock("../lint-fix", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lint-fix")>();
+  return { ...actual, fixLintIssue: vi.fn(actual.fixLintIssue) };
+});
+
 import {
   dispatchMcp,
   MCP_TOOLS,
@@ -18,6 +32,10 @@ import { registerAgent } from "../agents";
 import type { Principal } from "../auth";
 import type { Frontmatter } from "../frontmatter";
 import { WRITE_DENIAL_REALM } from "../write-denial";
+import { fixLintIssue } from "../lint-fix";
+import { AUTO_FIXABLE_CHECK_TYPES } from "../lint-types";
+
+const spiedFixLintIssue = vi.mocked(fixLintIssue);
 
 const ALICE: Principal = { id: "agent:a--yoyo", handle: "alice" };
 const BOB: Principal = { id: "user:bob", handle: "bob" };
@@ -719,6 +737,110 @@ describe("dispatchMcp — fix_lint_issue", () => {
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toMatch(/authentication required/i);
+  });
+
+  /**
+   * The `type` gate this transport has to carry itself (DW-348).
+   *
+   * `tools/call` above hands `params.arguments` to `tool.run` with NO schema
+   * validation — the `inputSchema` on a `ToolDef` is advertising, read by the
+   * agent and by nothing else here. The stdio server gets its gate from the SDK
+   * (`z.enum(AUTO_FIXABLE_CHECK_TYPES)`, pinned in `mcp.test.ts`); this one
+   * lives in the tool's own `run`, so these rows are its only observer.
+   */
+  describe("the type gate", () => {
+    const call = (args: Record<string, unknown>) =>
+      dispatchMcp(
+        {
+          id: 1,
+          method: "tools/call",
+          params: { name: "fix_lint_issue", arguments: args },
+        },
+        ALICE,
+      );
+
+    const errorText = (res: Awaited<ReturnType<typeof dispatchMcp>>) => {
+      const r = res!.result as { isError?: boolean; content: { text: string }[] };
+      expect(r.isError).toBe(true);
+      return r.content[0].text;
+    };
+
+    beforeEach(() => {
+      spiedFixLintIssue.mockClear();
+    });
+
+    it("refuses a recognized-but-not-fixable type, with its own explanation", async () => {
+      // Refused at the door, but NOT with a bare "unsupported": the type is a
+      // real check type whose refusal was written for a human, and dropping
+      // that sentence is how a gate makes an answer worse than the one it
+      // replaced.
+      const text = errorText(await call({ type: "low-confidence", slug: "some-page" }));
+
+      expect(text).toContain("Low-confidence pages cannot be auto-fixed");
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+
+    it("keeps the disputed-page clear path, with the slug interpolated", async () => {
+      // The sentence `lint-types.ts` insists must arrive copy-pasteable. The
+      // door has the sibling `slug`, which is exactly what a schema-level
+      // refusal (the stdio side) could not have reached.
+      const text = errorText(await call({ type: "disputed-page", slug: "contested-page" }));
+
+      expect(text).toContain(
+        "PATCH /api/wiki/contested-page with metadata { disputed: false }",
+      );
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["an unknown type", { type: "made-up-type", slug: "p" }],
+      // `hasOwnProperty.call` runs its key through `ToPropertyKey`, so
+      // `["orphan-page"]` stringifies to a REAL handler key. That coercion is
+      // what `ownEntry`'s `typeof` guard exists to stop; it is now stopped a
+      // layer earlier, before any lookup.
+      ["a non-string type", { type: ["orphan-page"], slug: "p" }],
+      // Inherited `Object.prototype` members — the other half of that guard.
+      ["a prototype-chain type", { type: "constructor", slug: "p" }],
+      ["no type at all", { slug: "p" }],
+    ])("refuses %s without dispatching", async (_label, args) => {
+      const text = errorText(await call(args));
+
+      expect(text).toContain("Auto-fix not supported for this issue type");
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+
+    it("still dispatches a fixable type — the control", async () => {
+      // The gate refuses what it should and nothing else. The page is absent, so
+      // "Page not found" can only have come from `fixOrphanPage`, past the gate.
+      const text = errorText(await call({ type: "orphan-page", slug: "absent-page" }));
+
+      expect(text).toContain("Page not found: absent-page");
+      expect(spiedFixLintIssue).toHaveBeenCalledWith(
+        "orphan-page",
+        "absent-page",
+        undefined,
+        undefined,
+        ALICE.handle,
+      );
+    });
+
+    it("advertises the same set it enforces", async () => {
+      // An `accept` that offers more than the gate admits is the DW-347 failure
+      // in another door; here the two are read from one const.
+      const res = await dispatchMcp({ id: 1, method: "tools/list" }, ALICE);
+      const tools = (res!.result as {
+        tools: { name: string; description: string; inputSchema: unknown }[];
+      }).tools;
+      const tool = tools.find((t) => t.name === "fix_lint_issue")!;
+      const schema = tool.inputSchema as {
+        properties: { type: { enum?: string[] } };
+      };
+
+      expect(schema.properties.type.enum).toEqual([...AUTO_FIXABLE_CHECK_TYPES]);
+      // And the prose must not still promise what the schema now refuses.
+      expect(tool.description).not.toContain("Not all issue types are auto-fixable");
+      expect(tool.description).toContain("suggestion");
+    });
   });
 });
 

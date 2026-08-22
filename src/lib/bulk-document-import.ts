@@ -3,7 +3,9 @@ import {
   DOCUMENT_FORMAT_LABELS,
   SUPPORTED_DOCUMENT_EXTENSIONS,
   SUPPORTED_DOCUMENT_MIME_TYPES,
+  detectDocumentFormat,
   extension,
+  isSupportedDocument,
 } from "./document-formats";
 
 export const MAX_BULK_DOCUMENTS = 200;
@@ -69,8 +71,8 @@ export function documentFileKey(file: File): string {
 }
 
 /**
- * The extension this file will be badged by in the manifest, or `"file"` when
- * the server would not accept it.
+ * The token this file will be badged by in the manifest, or `"file"` when the
+ * server would not accept it.
  *
  * Reads the extension with the extractor's own `extension()` rather than a local
  * `split(".").pop()`. Sharing the format TABLE but not the DETECTION left two
@@ -80,12 +82,24 @@ export function documentFileKey(file: File): string {
  * it does not trim, so `"notes.md "` was refused here though the endpoint trims
  * and accepts it.
  *
- * Still the RAW extension, not the resolved format — `notes.markdown` badges
- * "markdown", not "md".
+ * The RAW extension wins whenever it is itself supported, so the badge shows
+ * what the user actually dropped — `notes.markdown` badges "markdown", not
+ * "md". Only the branch that used to answer `"file"` consults
+ * `detectDocumentFormat`, which is where `contentType` earns its keep: the
+ * picker's `accept` attribute offers 21 MIME types, so a browser hands over
+ * extension-less files whose `type` alone identifies them (a `File` named
+ * `report` with `type: "application/pdf"`), and the server accepts those. Badged
+ * `"file"` they looked unsupported; refused outright they were the same
+ * client-narrower-than-server gap DW-246 fixed one arm of (DW-347).
+ *
+ * `contentType` stays OPTIONAL: name-only callers — the accept-parity test's
+ * `documentExtension("sample.ext")` among them — ask the extension-arm question
+ * and must keep getting the extension-arm answer.
  */
-export function documentExtension(filename: string): string {
+export function documentExtension(filename: string, contentType?: string): string {
   const ext = extension(filename);
-  return SUPPORTED_EXTENSIONS.has(ext) ? ext : "file";
+  if (SUPPORTED_EXTENSIONS.has(ext)) return ext;
+  return detectDocumentFormat(filename, contentType) ?? "file";
 }
 
 export function formatDocumentBytes(bytes: number): string {
@@ -94,9 +108,25 @@ export function formatDocumentBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/**
+ * The client gate, asked the way `/api/ingest/document` asks it.
+ *
+ * `isSupportedDocument(name, type)` — BOTH arguments — is the server's own
+ * question, so the two answers agree in both directions. Branching on the
+ * filename alone (what this did through DW-246) refused a file the picker's own
+ * `accept` attribute had just offered: the attribute advertises
+ * `SUPPORTED_DOCUMENT_MIME_TYPES` as well as the extensions, and a
+ * `type: "application/pdf"` file with no dot in its name sails through that
+ * filter, gets refused here, and would have been accepted by the endpoint
+ * (DW-347).
+ *
+ * The empty-file check stays FIRST: "The file is empty." is the more specific
+ * and more actionable of the two, and a zero-byte PDF is empty before it is
+ * anything else.
+ */
 function validationError(file: File): string | null {
   if (file.size === 0) return "The file is empty.";
-  if (documentExtension(file.name) === "file") {
+  if (!isSupportedDocument(file.name, file.type)) {
     return SUPPORTED_FORMATS_SENTENCE;
   }
   if (file.size > MAX_DOCUMENT_SIZE) {

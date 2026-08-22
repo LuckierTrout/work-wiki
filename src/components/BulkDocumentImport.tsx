@@ -503,7 +503,7 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
                       background: "var(--paper-2)",
                     }}
                   >
-                    {documentExtension(item.file.name)}
+                    {documentExtension(item.file.name, item.file.type)}
                   </span>
                   <div style={{ minWidth: 0 }}>
                     <p

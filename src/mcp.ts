@@ -82,6 +82,7 @@ import type { DeletePageResult } from "./lib/lifecycle";
 import { resolveScope, type ContentSearchResult } from "./lib/search";
 import { lint, ALL_CHECK_TYPES } from "./lib/lint";
 import { fixLintIssue, type FixResult } from "./lib/lint-fix";
+import { AUTO_FIXABLE_CHECK_TYPES } from "./lib/lint-types";
 import { queryByFrontmatter, validateQuery, type DataviewFilter, type DataviewQuery, type DataviewResult } from "./lib/dataview";
 import { listRevisions, readRevision, readRevisionMeta, type Revision } from "./lib/revisions";
 import { vaultIdFor, getVault, findVaultByName, createVault, renameVault, deleteVault, addToVault, removeFromVault, listVaults, vaultSlugs } from "./lib/vault";
@@ -2474,9 +2475,34 @@ export function createMcpServer(): McpServer {
   // fix_lint_issue — Auto-fix a lint issue
   server.registerTool("fix_lint_issue", {
     description:
-      "Auto-fix a lint issue found by lint_wiki. Takes the issue type, slug, and optional target/message. Not all issue types are auto-fixable.",
+      "Auto-fix a lint issue found by lint_wiki. Takes the issue type, slug, and optional target/message. " +
+      "Accepts ONLY the auto-fixable issue types listed on `type` — the remaining check types need human judgement, " +
+      "and for those the issue's own `suggestion` field from lint_wiki carries the action to take.",
     inputSchema: {
-      type: z.enum(ALL_CHECK_TYPES).describe("Lint issue type (e.g. 'orphan-page', 'stale-index', 'empty-page')"),
+      // The FIXABLE subset, not `ALL_CHECK_TYPES`: the SDK validates against
+      // this schema before the handler runs, so a type with no auto-fix is
+      // refused at the transport instead of travelling to `fixLintIssue` and
+      // coming back as an error result (DW-348). Spelled out the way
+      // `lint_wiki` spells its own list, because an agent that only sees
+      // "e.g. 'orphan-page'" has to guess at the other nine.
+      //
+      // THE ACCEPTED COST: refusing at the schema means `NOT_AUTO_FIXABLE`'s
+      // explanation — "Disputed pages cannot be auto-fixed. Reconcile … PATCH
+      // /api/wiki/<slug> …" — no longer reaches this transport; the agent gets
+      // the SDK's validation error instead. That is a fair trade rather than a
+      // loss, because a schema error is raised over the `type` field ALONE and
+      // so could never interpolate the sibling `slug` the sentence has to name
+      // to be copy-pasteable (`lint-types.ts` is explicit that a `<slug>`
+      // placeholder is not good enough). The same guidance is already reachable
+      // at a better surface: every non-fixable check emits it in the issue's
+      // own `suggestion` with the real slug filled in — `checkDisputedPages`
+      // puts `disputedClearInstruction(entry.slug)` there — which is where the
+      // description above points the agent.
+      type: z
+        .enum(AUTO_FIXABLE_CHECK_TYPES)
+        .describe(
+          `Lint issue type. Valid: ${AUTO_FIXABLE_CHECK_TYPES.join(", ")}`,
+        ),
       slug: z.string().describe("Slug of the affected page"),
       target: z
         .string()

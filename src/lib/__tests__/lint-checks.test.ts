@@ -1025,9 +1025,11 @@ describe("checkDisputedPages", () => {
 
 describe("retired discussion checks", () => {
   it("ALL_CHECK_TYPES no longer offers the talk-surface check", () => {
-    // The talk surface is retired. This type drove the lint_wiki /
-    // fix_lint_issue MCP schemas and the API's check-type validation via this
-    // const, so its absence here is what keeps it out of all three.
+    // The talk surface is retired. This type drove `lint_wiki`'s MCP schemas
+    // and the API's check-type validation via this const, so its absence here
+    // is what keeps it out of both. (`fix_lint_issue` and `POST /api/lint/fix`
+    // read the narrower `AUTO_FIXABLE_CHECK_TYPES` since DW-348, so they never
+    // admitted it either way.)
     //
     // Only the talk-shaped check is asserted here. `disputed-page` is NOT part
     // of this retirement — the `disputed` frontmatter flag outlived talk — and
@@ -1056,7 +1058,11 @@ describe("ALL_CHECK_TYPES roster", () => {
     // DW-76: ingest still sets the `disputed` frontmatter flag and ArticleView
     // still renders its banner, so the flag needs a surface that lists the
     // flagged pages for an owner. That surface is this check, and it only
-    // reaches the UI toggles and the MCP enum by being in this list.
+    // reaches the UI toggles and `lint_wiki`'s check enum by being in this
+    // list. NOT `fix_lint_issue`'s enum — that one is
+    // `AUTO_FIXABLE_CHECK_TYPES`, which deliberately excludes this type
+    // (DW-348); the human action reaches the caller through the issue's own
+    // `suggestion` instead.
     expect(ALL_CHECK_TYPES).toContain("disputed-page");
   });
 

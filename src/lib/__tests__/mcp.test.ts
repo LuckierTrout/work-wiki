@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   handleSearchWiki,
   handleReadPage,
@@ -111,6 +113,7 @@ vi.mock("../llm", async (importOriginal) => {
 
 import { fetchUrlContent } from "../fetch";
 import { fetchXPostContent } from "../x-post";
+import { AUTO_FIXABLE_CHECK_TYPES } from "../lint-types";
 // REAL, not mocked: the `../llm` mock above spreads `importOriginal`, so this is
 // the genuine provider probe. The DW-395 block asserts on it to pin its no-LLM
 // premise instead of assuming one deleted env var is enough.
@@ -3030,6 +3033,114 @@ describe("fix_lint_issue", () => {
 
     expect(result.success).toBe(true);
     expect(result.slug).toBe("source-page");
+  });
+});
+
+/**
+ * The stdio door's own `type` gate (DW-348).
+ *
+ * `handleFixLintIssue` keeps `type: string` — it is the handler both transports
+ * share, so the gate belongs at each door. This one is the SDK's: `type` is
+ * `z.enum(AUTO_FIXABLE_CHECK_TYPES)`, and `registerTool` validates the
+ * arguments against that schema before the callback is entered. The HTTP door
+ * has no such layer and carries its own gate; its rows live in
+ * `mcp-http.test.ts`, next to `dispatchMcp`.
+ *
+ * Both rows below are needed and neither implies the other: the enum is the
+ * SHAPE, the transport row is the ANSWER. A schema declared correctly but
+ * registered on the wrong tool, or an SDK that stopped validating, would leave
+ * the first green.
+ */
+describe("fix_lint_issue — the stdio door", () => {
+  it("narrows the registered input schema to the fixable set", () => {
+    // `_registeredTools` is private in TypeScript and readable at runtime — the
+    // same idiom `mcp-annotations.test.ts` and the `mcp.json` sync test use.
+    const server = createMcpServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (server as any)._registeredTools.fix_lint_issue;
+    const shape = entry.inputSchema.shape ?? entry.inputSchema;
+
+    expect([...shape.type.options]).toEqual([...AUTO_FIXABLE_CHECK_TYPES]);
+  });
+
+  describe("over a real client transport", () => {
+    let client: Client;
+    let closeTransport: () => Promise<void>;
+
+    beforeAll(async () => {
+      const server = createMcpServer();
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      client = new Client({ name: "fix-lint-issue-test", version: "0.0.1" });
+      await client.connect(clientTransport);
+      closeTransport = async () => {
+        await client.close();
+        await server.close();
+      };
+    });
+
+    afterAll(async () => {
+      await closeTransport();
+    });
+
+    it("refuses a recognized-but-not-fixable type before the handler runs", async () => {
+      const result = await client.callTool({
+        name: "fix_lint_issue",
+        arguments: { type: "disputed-page", slug: "contested-page" },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = (result.content as { text: string }[])[0].text;
+      // WHICH refusal this is, is the whole assertion. `fixLintIssue` answers a
+      // non-fixable type with "… cannot be auto-fixed …", so that sentence
+      // appearing here would mean the request travelled all the way to the
+      // dispatcher and the schema gate did nothing. The SDK's own validation
+      // message is the proof it was stopped at the transport — and it names the
+      // field, which is what an agent needs to correct its call.
+      expect(text).not.toContain("cannot be auto-fixed");
+      expect(text.toLowerCase()).toContain("type");
+    });
+
+    it("refuses an unknown type the same way", async () => {
+      const result = await client.callTool({
+        name: "fix_lint_issue",
+        arguments: { type: "made-up-type", slug: "p" },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = (result.content as { text: string }[])[0].text;
+      expect(text).not.toContain("Auto-fix not supported for this issue type");
+    });
+
+    it("still lets a fixable type through to the handler — the control", async () => {
+      // The gate refuses what it should and nothing else. The page is absent, so
+      // the dispatcher's own "Page not found" is the proof it ran: that error
+      // can only come from `fixOrphanPage`, past the schema.
+      const result = await client.callTool({
+        name: "fix_lint_issue",
+        arguments: { type: "orphan-page", slug: "absent-from-this-wiki" },
+      });
+
+      expect(result.isError).toBe(true);
+      expect((result.content as { text: string }[])[0].text).toContain(
+        "Page not found: absent-from-this-wiki",
+      );
+    });
+
+    it("advertises the fixable list to a connected client", async () => {
+      // What the agent actually reads before composing a call.
+      const { tools } = await client.listTools();
+      const tool = tools.find((t) => t.name === "fix_lint_issue")!;
+      const type = (tool.inputSchema.properties as {
+        type: { enum?: string[] };
+      }).type;
+
+      expect(type.enum).toEqual([...AUTO_FIXABLE_CHECK_TYPES]);
+      // The description must not still promise types the schema now refuses.
+      expect(tool.description).not.toContain("Not all issue types are auto-fixable");
+      expect(tool.description).toContain("suggestion");
+    });
   });
 });
 
