@@ -310,8 +310,19 @@ describe("WikiSwitcher", () => {
     expect(createDialog).toContain("if (busy || confirmDisabled) return;");
 
     const card = await readFile(path.join(SRC, "components/WikiWorkbench.tsx"), "utf8");
-    // `create` and `applyTemplate` — the card's two writes.
-    expect(card.match(/if \(busy\) return;/g) ?? []).toHaveLength(2);
+    // `create` and `applyTemplate` — the card's two writes, guarded differently
+    // on purpose (DW-407). `create`'s dialog stays OPEN when an outcome is
+    // unknown, with `busy` already back to false and the confirm plus its Enter
+    // path both live over a POST that may have seeded a wiki, so `awaitingCreate`
+    // rides alongside `busy` there exactly as `awaitingWrite` does in the
+    // switcher. `applyTemplate` is idempotent per scenario — a repeat overwrite
+    // writes the same template — so it carries `busy` alone.
+    expect(card.match(/if \(busy \|\| awaitingCreate\) return;/g) ?? []).toHaveLength(1);
+    expect(card.match(/if \(busy\) return;/g) ?? []).toHaveLength(1);
+    // The prop is the reachable half of the pair: the handler's early return is
+    // unreachable behind it, which is the whole reason the line above is pinned
+    // by a scan rather than trusted to a mounted test.
+    expect(card).toContain("confirmDisabled={awaitingCreate}");
   });
 
   it("labels the switcher for assistive tech and names the create control", async () => {

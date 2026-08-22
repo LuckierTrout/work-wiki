@@ -79,15 +79,25 @@ export function WikiWorkbench() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [templateError, setTemplateError] = useState<string | null>(null);
   /**
-   * A create that SUCCEEDED and whose server render has not arrived yet.
+   * A create whose server render has not arrived yet — one that SUCCEEDED, or
+   * one whose OUTCOME IS UNKNOWN (DW-407).
    *
    * The card is not optimistic, so on success the dialog closes and the empty
    * state — `No wiki yet.` and an enabled `Create Wiki` — is still on screen
-   * for the length of `router.refresh()`. Nothing enforces unique wiki names,
-   * so a second press in that window seeds a SECOND wiki and makes it active,
-   * moving every prompt onto its template. The door stays shut until a new
-   * server render lands (the effect below), which is the only thing that can
-   * tell the owner the first one worked.
+   * for the length of `router.refresh()`. On the unconfirmed path the dialog
+   * deliberately stays OPEN — the sentence explaining what happened is inside
+   * it — and `busy` is already back to false, so the confirm button and the
+   * Enter path behind it are two more live routes to a second POST. Nothing
+   * enforces unique wiki names, so a press down any of them seeds a SECOND
+   * wiki and makes it active, moving every prompt onto its template.
+   *
+   * The latch rides `confirmDisabled` and NEVER `busy`: `busy` also kills
+   * Cancel, Esc and the outside-click dismiss, and the sentence the owner has
+   * just read tells them to go and look at the screen. A modal they cannot
+   * dismiss is not a screen they can look at.
+   *
+   * The door stays shut until a new server render lands (the effect below),
+   * which is the only thing that can say what is actually there.
    */
   const [awaitingCreate, setAwaitingCreate] = useState(false);
   // Confirming Create Wiki unmounts the empty state that holds the opening
@@ -166,9 +176,14 @@ export function WikiWorkbench() {
     // refresh need not move. Without this the owner's Create would POST into a
     // 403 the surface has meanwhile started refusing on screen.
     if (readOnly) return;
-    // Behind `CreateWikiDialog`'s own `disabled={busy}` and its `submit`'s
-    // Enter guard, never instead of them — a second POST seeds a second wiki.
-    if (busy) return;
+    // Behind `CreateWikiDialog`'s own `disabled={busy || confirmDisabled}` and
+    // its `submit`'s Enter guard, never instead of them — a second POST seeds a
+    // second wiki. `awaitingCreate` rides ALONGSIDE `busy` because the two shut
+    // the same door for different lengths of time: `busy` for the length of the
+    // request, the latch until a server render lands after one whose outcome
+    // nobody knows — and the dialog is still open then, with `busy` back to
+    // false.
+    if (busy || awaitingCreate) return;
     setBusy(true);
     setCreateError(null);
     try {
@@ -289,11 +304,12 @@ export function WikiWorkbench() {
           <button
             type="button"
             className={`btn primary mt-4${readOnly ? " opacity-60" : ""}`}
-            // The one window this card can seed a duplicate wiki in: the create
-            // has landed, the refresh has not, and `No wiki yet.` is already
-            // false. `disabled`, not `aria-disabled`: this is transient, like
-            // `switching` in the header, not a standing refusal a screen-reader
-            // user needs a sentence for.
+            // The window this card can seed a duplicate wiki in: a create has
+            // gone out — landed, or with nobody able to say — the refresh has
+            // not come back, and `No wiki yet.` may already be false. See
+            // `awaitingCreate` for both halves. `disabled`, not `aria-disabled`:
+            // this is transient, like `switching` in the header, not a standing
+            // refusal a screen-reader user needs a sentence for.
             disabled={awaitingCreate}
             // The deployment's standing refusal, which is the opposite case:
             // `POST /api/wikis` has answered 403 since before this card existed,
@@ -392,6 +408,8 @@ export function WikiWorkbench() {
       <CreateWikiDialog
         open={createOpen}
         busy={busy}
+        // Cancel and Esc stay live behind it — see `awaitingCreate`.
+        confirmDisabled={awaitingCreate}
         error={createError}
         fallbackFocusRef={headingRef}
         onCancel={() => setCreateOpen(false)}

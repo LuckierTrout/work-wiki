@@ -2926,6 +2926,77 @@ describe("the settings client", () => {
     const shapeless = stubFetch(() => ({ ok: true, status: 200, body: { saved: true } })).impl;
     const result = await saveWorkbenchSettings({}, { fetchImpl: shapeless });
     expect(result.status).toBe("error");
+    expect(result.status === "error" && result.unconfirmed).toBe(false);
+  });
+
+  it("treats an UNPARSEABLE 200 the same way — the route answered (DW-408)", async () => {
+    // A bare literal rather than `stubFetch`, whose `json` cannot throw: the
+    // whole case is a 2xx whose body fails to parse — truncated, or an HTML
+    // page from something sitting in front of the route.
+    //
+    // Stated plainly, because it is easy to misread this case as the fix: a
+    // `SyntaxError` is not an `unconfirmedCause`, so it reached this same
+    // verdict before DW-408 too — by falling through the outer catch to
+    // `thrownWriteFailure`'s fallback. What the `.catch` changes is that the
+    // route's arrived answer is now EXPLICIT, decided on the shapeless-200
+    // branch where it belongs, instead of being whatever the thrown fallback
+    // happened to produce. This case pins the verdict; it does not flip it.
+    const unparseable: SettingsFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError("Unexpected token '<', \"<html>\"... is not valid JSON");
+      },
+    });
+    const result = await saveWorkbenchSettings({}, { fetchImpl: unparseable });
+    expect(result).toEqual({
+      status: "error",
+      message: SETTINGS_SAVE_FAILED_COPY,
+      unconfirmed: false,
+    });
+    // Asserted on its own as well as inside the object: the status line came
+    // back, so the patch's outcome is KNOWN and the owner must not be told
+    // otherwise — only the ability to re-seed the draft was lost.
+    expect(result.status === "error" && result.unconfirmed).toBe(false);
+    expect(result.status === "error" && result.message).not.toBe(
+      unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
+    );
+  });
+
+  /**
+   * The half the `SyntaxError` case cannot pin, and the one the `.catch` must
+   * NOT swallow (DW-408).
+   *
+   * These three ARE unconfirmed causes, and thrown from `json()` they arrive
+   * after a 200 status line — so a `.catch(() => null)` written without a guard
+   * would quietly reclassify them as the route's arrived answer. That is a
+   * behaviour flip with a consumer behind it: `SettingsCanvas.save` clears the
+   * held version ONLY on `unconfirmed: true`. Calling a dead body read
+   * "arrived" keeps a version the save may already have superseded, and the
+   * next save is refused as 412 — "somebody else changed this while you were
+   * editing", about an actor that does not exist — where clearing it yields the
+   * truthful 428. Unchanged from before DW-408, deliberately.
+   */
+  it.each([
+    ["TimeoutError", Object.assign(new Error("signal timed out"), { name: "TimeoutError" })],
+    [
+      "AbortError",
+      Object.assign(new Error("This operation was aborted"), { name: "AbortError" }),
+    ],
+    ["TypeError", new TypeError("Failed to fetch")],
+  ])("still calls a 200 whose body read died on a %s unconfirmed", async (_label, cause) => {
+    const impl: SettingsFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw cause;
+      },
+    });
+    await expect(saveWorkbenchSettings({}, { fetchImpl: impl })).resolves.toEqual({
+      status: "error",
+      message: unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
+      unconfirmed: true,
+    });
   });
 
   it("sends the seeded version as `If-Match` (DW-63)", async () => {

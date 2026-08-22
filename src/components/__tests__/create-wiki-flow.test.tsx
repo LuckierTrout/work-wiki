@@ -491,16 +491,91 @@ describe("a request that never settles (DW-175, DW-283)", () => {
         true,
       );
       await waitFor(() => expect(refresh).toHaveBeenCalled());
-      // The dialog is pressable again, so the owner can retry deliberately…
-      await waitFor(() => expect(button("Create").disabled).toBe(false));
-      // …but the empty state behind it does NOT offer a second way in. The POST
-      // may have seeded a wiki; `router.refresh()` is a spy here, so the server
-      // render never lands and the door stays shut exactly as it does for the
-      // length of a real round trip. Nothing enforces unique wiki names, so an
-      // enabled button here is a duplicate wiki and every prompt moved onto its
-      // template.
+      // The POST may already have SEEDED a wiki, and this dialog is still open
+      // over it with `busy` back to false — so the confirm is dead too (DW-407),
+      // not just the opener behind it. Nothing enforces unique wiki names, so a
+      // second press is a duplicate wiki and every prompt moved onto its
+      // template; `router.refresh()` is a spy here, so the server render never
+      // lands and the door stays shut exactly as it does for the length of a
+      // real round trip.
+      await waitFor(() => expect(button("Create").disabled).toBe(true));
+      // What this proves is the thing that matters at the surface: no second
+      // `/api/wikis` leaves it. It cannot say WHICH guard refused — the button
+      // is `disabled`, so jsdom dispatches no activation and `create` is never
+      // entered at all, putting this assertion strictly downstream of the
+      // attribute. The handler's own early return is unreachable from here and
+      // is pinned by a source scan instead; see `workbench-left-column.test.ts`.
+      const before = fetchMock.mock.calls.length;
+      fireEvent.click(button("Create"));
+      expect(fetchMock.mock.calls.length).toBe(before);
+      expect(
+        fetchMock.mock.calls.filter(([url]) => url === "/api/wikis"),
+      ).toHaveLength(1);
+      // The empty state behind the overlay offers no second way in either.
       expect(screen.getByText("No wiki yet.")).toBeTruthy();
       expect(button("Create Wiki").disabled).toBe(true);
+      // Every way OUT stays live — the latch rides `confirmDisabled`, never
+      // `busy`. The sentence just read tells the owner to go and look at the
+      // screen, and a modal they cannot dismiss is not a screen.
+      expect(button("Cancel").disabled).toBe(false);
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    });
+
+    it(`gives the create confirm back once a server render arrives after a ${name}`, async () => {
+      fetchMock.mockRejectedValueOnce(Object.assign(new Error(mechanism), { name }));
+      const view = mount([], null);
+      fireEvent.click(button("Create Wiki"));
+      fireEvent.click(button("Create"));
+      await screen.findByRole("alert");
+      await waitFor(() => expect(button("Create").disabled).toBe(true));
+
+      // A fresh array is what a server render IS — `page.tsx` reads the registry
+      // every time, so its identity is the arrival signal. Deliberately still
+      // EMPTY: a refresh that says nothing was seeded must still give the owner
+      // their confirm back, or the control is dead with no explanation and no
+      // way to revive it. (Answering with a wiki instead would close the dialog
+      // outright, which is the reset effect's job and not this latch's.)
+      view.rerender(
+        <WorkbenchDataProvider value={data([], null)}>
+          <WikiWorkbench />
+        </WorkbenchDataProvider>,
+      );
+
+      await waitFor(() => expect(button("Create").disabled).toBe(false));
+    });
+
+    it(`shuts the create dialog's ENTER path too after a ${name}`, async () => {
+      // The second of the two live routes DW-407 names, and the one no
+      // attribute covers: the field sits in a <form>, so Enter reaches
+      // `CreateWikiDialog.submit` without touching the confirm button at all,
+      // and a `disabled` button cannot refuse a keystroke. So a GUARD is the
+      // only thing between Enter and a second POST — and two carry it,
+      // `submit`'s `if (busy || confirmDisabled) return;` and `create`'s own
+      // early return, each unreachable behind the other. This case can only
+      // observe that the pair refuses; `workbench-left-column.test.ts` pins
+      // each line individually, for the reason it states about unreachable
+      // guards.
+      fetchMock.mockRejectedValueOnce(Object.assign(new Error(mechanism), { name }));
+      mount([], null);
+      fireEvent.click(button("Create Wiki"));
+      fireEvent.click(button("Create"));
+      await screen.findByRole("alert");
+      await waitFor(() => expect(button("Create").disabled).toBe(true));
+
+      // The field stays LIVE behind the latch — a disabled input would drop out
+      // of the tab order — so the keystroke really does arrive.
+      const input = screen.getByLabelText("Wiki name") as HTMLInputElement;
+      expect(input.disabled).toBe(false);
+      fireEvent.change(input, { target: { value: "Acme redux" } });
+      expect(input.value).toBe("Acme redux");
+
+      const before = fetchMock.mock.calls.length;
+      fireEvent.submit(input.closest("form") as HTMLFormElement);
+      expect(fetchMock.mock.calls.length).toBe(before);
+      expect(
+        fetchMock.mock.calls.filter(([url]) => url === "/api/wikis"),
+      ).toHaveLength(1);
     });
   }
 });

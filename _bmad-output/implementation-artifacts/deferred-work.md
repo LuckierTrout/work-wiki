@@ -3574,7 +3574,8 @@ source_spec: `spec-dw-374-375-376-unconfirmed-write-reporting.md`
 location: src/components/WikiWorkbench.tsx (create, and its CreateWikiDialog mount)
 severity: medium
 reason: `awaitingCreate` gates only the empty-state `Create Wiki` opener, which sits BEHIND the open overlay; `WikiWorkbench.create` guards on `readOnly` and `busy` only, and the dialog is passed no `confirmDisabled`. On the unconfirmed path the dialog deliberately stays open with `busy` cleared in `finally`, so both the pointer path and CreateWikiDialog.submit's Enter path are live over a POST that may already have created the wiki — nothing enforces unique names. This is the exact defect DW-375 closed in the header, still open in the card; DW-375's own text asserts the card is already covered, which is why it was scoped to the switcher. The `confirmDisabled` prop this story added to CreateWikiDialog makes it a one-line fix. `create-wiki-flow.test.tsx` currently asserts the opposite (the confirm is enabled after an unconfirmed create), so that assertion has to move too.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw3-unconfirmed-write-reporting-gaps
 
 ### DW-408: saveWorkbenchSettings parses a 2xx body with a bare `await response.json()`, so an unparseable 200 is reported as a failed save over a patch the route accepted.
 origin: spec-deferred 9a20e32ce553
@@ -3582,7 +3583,8 @@ source_spec: `spec-dw-374-375-376-unconfirmed-write-reporting.md`
 location: src/lib/workbench-settings.ts:2074
 severity: medium
 reason: The success path at src/lib/workbench-settings.ts:2074 has no `.catch()`, unlike every refusal-body parse in the same file. A truncated or HTML 200 throws SyntaxError into the outer catch, where the verdict is the fixed fallback with `unconfirmed: false` — the surface tells the owner the save failed while the route answered 2xx, and keeps a version the write superseded, so the next save is refused as a 412 conflict with an actor that does not exist. Pre-existing shape, unchanged by this story: the same throw reached the same fallback before the classifier was widened. The parsed-but- shapeless case beside it is already handled as a KNOWN error deliberately; only the throwing case is inconsistent.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw3-unconfirmed-write-reporting-gaps
 
 ### DW-409: WikiSwitcher.switchWiki starts no latch on an unconfirmed switch, so a second PUT can be issued over a first whose outcome is unknown.
 origin: spec-deferred 53cfbf951e42
@@ -3729,4 +3731,36 @@ source_spec: `spec-dw-412-413-414-settings-transition-focus-and-state.md`
 location: src/components/workbench/__tests__/settings-canvas-persistence.test.tsx (the `g s` opener)
 severity: low
 reason: The new modal guard suppresses dispatch from inside `[role="dialog"][aria-modal="true"]`, and `useDialogA11y` traps focus there — so with a Create Wiki dialog on screen a browser keyboard user cannot reach `g s` at all; only the rail control can open Settings over an open dialog. The suite's `press()` fires at `document.body` (deliberately, so `isInputElement` does not swallow it), which keeps those rows green while making them unreachable in a browser. The preservation they check is real and still reached by the rail control; what is stale is the claim that both openers reach that state identically.
+status: open
+
+### DW-427: DW-408's prescribed fix does not remove the harm its own ledger entry states: an unparseable 200 still answers `unconfirmed: false`, so the owner keeps a version the save superseded and the next save
+origin: spec-deferred a42911c607ff
+source_spec: `spec-dw-407-408-unconfirmed-write-reporting-gaps.md`
+location: src/lib/workbench-settings.ts:2143 and src/components/workbench/SettingsCanvas.tsx:209
+severity: medium
+reason: The intent prescribes landing the throwing parse on the existing shapeless-200 branch, which returns `{ status: "error", message: fallback, unconfirmed: false }`. But `SettingsCanvas.save` clears the held `version` ONLY inside `if (result.unconfirmed)` (src/components/workbench/SettingsCanvas.tsx:209-231), and its own comment there spells out the tie-break: a cleared version yields the truthful 428, a kept one yields 412's "somebody else changed this while you were editing". So the verdict the ledger entry names as the defect is the same verdict its prescribed fix produces. Verified by reverting the change: the whole settings suite, including the new DW-408 cases, passes against the unfixed source, because `SyntaxError` was never an `unconfirmedCause` and already reached the identical fallback through the outer catch. What the change does buy is that the arrived-answer verdict is now DECIDED on the shapeless-200 branch rather than coinciding with it by accident. Closing the stated harm
+status: open
+
+### DW-428: No canvas-level test drives SettingsCanvas with a 2xx whose body read fails, so the DW-408 verdict is pinned only at the client's return value and never at the seam that acts on it.
+origin: spec-deferred 14da776e2f5c
+source_spec: `spec-dw-407-408-unconfirmed-write-reporting-gaps.md`
+location: src/components/workbench/__tests__/settings-read-only.test.tsx:565-600
+severity: medium
+reason: `settings-read-only.test.tsx`'s own docblock says the client-level suite "cannot see the seam this describe exists for: that the canvas ACTS on `unconfirmed` by clearing the version it is holding". Its UNCONFIRMED table carries a 504 (which never reaches a 2xx body parse) and a TypeError thrown from the fetch call itself; there is no `ok: true` case anywhere in the file whose `json` rejects. So what `If-Match` the NEXT save carries after an unparseable or dead-stream 200 is unobserved end to end.
+status: open
+
+### DW-429: When the unconfirmed-write latch lifts with the dialog still open, the confirm comes back live underneath a now-stale "the outcome is unknown" alert, on both the card and the switcher.
+origin: spec-deferred f88ef8ffaa49
+source_spec: `spec-dw-407-408-unconfirmed-write-reporting-gaps.md`
+location: src/components/WikiWorkbench.tsx:147-149
+severity: medium
+reason: Both release effects do only `setAwaitingCreate(false)` / `setAwaitingWrite(false)` keyed on `[wikis, currentWikiId]` (src/components/WikiWorkbench.tsx:147-149, src/components/workbench/WikiSwitcher.tsx:182-184) and neither clears the error. The reset effect that would close the dialog keys on the ACTIVE wiki, which a refresh answering "nothing changed" need not move. WikiSwitcher.tsx:428's comment asserts the opposite — "The release effect drops both together, because a server render is what makes both stale at once" — so the intended behaviour is documented and not implemented. Pre-existing on both surfaces; DW-407 brings the card into the same shape rather than creating it.
+status: open
+
+### DW-430: Dismissing the card's create dialog on the unconfirmed path destroys the only explanation the owner has, and the disabled opener behind it says nothing.
+origin: spec-deferred 4b773b607140
+source_spec: `spec-dw-407-408-unconfirmed-write-reporting-gaps.md`
+location: src/components/WikiWorkbench.tsx:296-318
+severity: low
+reason: The unknown-outcome sentence lives inside the overlay, and the latch deliberately leaves Cancel and Esc live so the owner can go and look at the screen. After that dismissal the empty state offers a `Create Wiki` button that is `disabled`, carries no `aria-describedby`, and cannot be pressed to reopen the dialog and re-read the message — so a screen-reader user gets "dimmed" and nothing else, which is the exact failure mode the neighbouring read-only note exists to avoid. Pre-existing since `awaitingCreate` began covering the unconfirmed path; DW-407 does not widen it.
 status: open

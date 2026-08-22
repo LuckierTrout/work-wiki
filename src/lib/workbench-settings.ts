@@ -33,6 +33,7 @@ import type { EmbeddingProvider, ProviderValue } from "./providers";
 import {
   refusedWriteFailure,
   thrownWriteFailure,
+  unconfirmedCause,
 } from "./workbench-request";
 import { IF_MATCH_HEADER, formatIfMatch } from "./write-precondition";
 
@@ -2119,7 +2120,29 @@ export async function saveWorkbenchSettings(
         ...refusedWriteFailure(response.status, served, action, fallback),
       };
     }
-    const body: unknown = await response.json();
+    // Two different failures hide behind one `response.json()`, and they get
+    // opposite verdicts (DW-408).
+    //
+    // A body that PARSES BADLY — truncated JSON, or an HTML page from something
+    // sitting in front of the route — is still the ROUTE's arrived answer: the
+    // status line came back, so the patch's outcome is known and only the
+    // ability to re-seed the draft is lost. That is precisely the shapeless-200
+    // branch below, and `workbenchSettingsFrom(null)` is already `null`, so
+    // answering `null` lands it there and makes an arrived answer EXPLICIT
+    // rather than something the thrown fallback happened to get right.
+    //
+    // A body read that DIES MID-STREAM — an abort, a `TypeError` off a dropped
+    // socket — is the same missing confirmation as any other unconfirmed cause,
+    // and is rethrown to the outer catch untouched. That distinction is not
+    // cosmetic: `SettingsCanvas.save` clears the held version ONLY on
+    // `unconfirmed: true`, so calling this one "arrived" would keep a version
+    // the save may already have superseded and make the next save a 412 —
+    // "somebody else changed this while you were editing", about an actor that
+    // does not exist — where clearing it yields the truthful 428.
+    const body: unknown = await response.json().catch((cause: unknown) => {
+      if (unconfirmedCause(cause)) throw cause;
+      return null;
+    });
     const payload = workbenchSettingsFrom(body);
     // A shapeless 200 is the ROUTE's own answer, arrived: it ran and it replied,
     // so nothing here is unknown — the draft simply cannot be re-seeded from it.
