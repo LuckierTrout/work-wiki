@@ -20,19 +20,38 @@ import {
  * POST /api/lint/fix — auto-fix a lint issue.
  *
  * Supported issue types:
- * - `missing-crossref`: appends a cross-reference link to the source page.
- * - `orphan-page`: adds the page to the wiki index.
- * - `stale-index`: removes a stale entry from the wiki index.
- * - `empty-page`: deletes an empty page entirely.
- * - `contradiction`: rewrites the source page via LLM to resolve a conflict.
+ * - `orphan-page`: adds the page to the wiki index. Reads `slug`.
+ * - `stale-index`: removes a stale entry from the wiki index. Reads `slug`.
+ * - `empty-page`: deletes an empty page entirely. Reads `slug`.
+ * - `missing-crossref`: appends a cross-reference link to the source page. Reads `slug`, `targetSlug`.
+ * - `broken-link`: removes the dead link to the target from the page, keeping its text. Reads `slug`, `targetSlug`.
+ * - `contradiction`: rewrites the source page via LLM to resolve a conflict with the target. Reads `slug`, `targetSlug`, `message`.
+ * - `missing-concept-page`: creates a stub page for the concept the message names, via LLM when a key is configured. Reads `message` ALONE — no `slug`, no `targetSlug`.
+ * - `stale-page`: bumps the page's `expiry` forward and refreshes `valid_from`. Reads `slug`.
+ * - `unmigrated-page`: fills in the missing work-wiki frontmatter defaults, overwriting nothing. Reads `slug`.
+ * - `supersedes-dangling`: clears a `supersedes` pointer whose target is re-verified missing. Reads `slug`.
  *
- * Request body:
+ * That is the whole of `AUTO_FIXABLE_CHECK_TYPES` (`@/lib/lint-types`), and
+ * `prose-inventory-parity.test.ts` reads this bullet list back and fails when
+ * the two disagree — it was five entries long for a while, and it never named
+ * `supersedes-dangling`, the very type DW-229 was about (DW-346). Every other
+ * type in `ALL_CHECK_TYPES` is refused with an explanation from
+ * `NOT_AUTO_FIXABLE`.
+ *
+ * The per-type arguments live in those bullets on purpose: stated down here
+ * instead, they would be a second hand-copied inventory of the same ten types,
+ * sitting outside the pin — which is the drift DW-346 filed, not a fix for it.
+ *
+ * Request body: `type` plus those fields. `slug` is the page being fixed,
+ * `targetSlug` the page on the other end of the link or conflict, and `message`
+ * the issue's own `message` string from the lint report — `missing-concept-page`
+ * PARSES that string, so it must arrive verbatim in the `Concept "…" is
+ * mentioned in …` form `checkMissingConceptPages` emits, or the fix answers 400.
+ * Fields a type does not read are ignored.
  * ```json
- * { "type": "missing-crossref", "slug": "source-page", "targetSlug": "target-page" }
- * { "type": "orphan-page", "slug": "page-slug" }
- * { "type": "stale-index", "slug": "page-slug" }
- * { "type": "empty-page", "slug": "page-slug" }
- * { "type": "contradiction", "slug": "page-a", "targetSlug": "page-b", "message": "..." }
+ * { "type": "…", "slug": "source-page" }
+ * { "type": "…", "slug": "source-page", "targetSlug": "target-page" }
+ * { "type": "…", "message": "Concept \"vector search\" is mentioned in ingest, retrieval but has no dedicated page. Both describe it at length." }
  * ```
  */
 export async function POST(req: NextRequest) {

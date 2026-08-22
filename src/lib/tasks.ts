@@ -210,7 +210,27 @@ export type MaintainFixType =
   | "missing-crossref"
   | "stale-page";
 
-const MAINTAIN_FIX_TYPES = new Set<MaintainFixType>([
+/**
+ * The `MaintainFixType` union as an ordered list — the machine side the prose
+ * restatements in `src/lib/maintenance.ts` and `workers/task-consumer/README.md`
+ * are read back against (`prose-inventory-parity.test.ts`), and the source of
+ * the membership set `parseTask` uses below.
+ *
+ * The two assertions here pin this list to the union in both directions and are
+ * enforced by CI's `pnpm exec tsc --noEmit` — exactly as {@link TASK_KINDS} is:
+ *   - `satisfies readonly MaintainFixType[]` rejects a fix type the union does
+ *     not have (no extras);
+ *   - `_NoMaintainFixTypeMissingFromList` resolves to `never` only while every
+ *     union arm appears here, and a non-`never` residue fails `AssertNever`
+ *     (no omissions).
+ *
+ * The omission half is the one that used to be missing (DW-343). This was a
+ * `new Set<MaintainFixType>([…])`, which rejects an extra member but is silent
+ * about a forgotten one: a ninth fix type wired into `maintenance.ts` and not
+ * added here made `parseTask` return `null` for it, so the task was poison and
+ * went to the DLQ with `tsc` perfectly happy.
+ */
+export const MAINTAIN_FIX_TYPES = [
   "unmigrated-page",
   "stale-index",
   "supersedes-dangling",
@@ -219,7 +239,17 @@ const MAINTAIN_FIX_TYPES = new Set<MaintainFixType>([
   "empty-page",
   "missing-crossref",
   "stale-page",
-]);
+] as const satisfies readonly MaintainFixType[];
+
+type _NoMaintainFixTypeMissingFromList = AssertNever<
+  Exclude<MaintainFixType, (typeof MAINTAIN_FIX_TYPES)[number]>
+>;
+
+/**
+ * Membership as a `Set`, so the hot parse path below keeps its O(1) lookup —
+ * derived from the tuple, never restated.
+ */
+const MAINTAIN_FIX_TYPE_SET: ReadonlySet<string> = new Set(MAINTAIN_FIX_TYPES);
 
 /**
  * Resolve the `TASK_QUEUE` producer binding (matches `queues.producers[].binding`
@@ -435,9 +465,12 @@ export function parseTask(body: unknown): Task | null {
       if (t.op === "staleness") {
         return { kind: "maintain", op: "staleness", slug: t.slug };
       }
-      // `fix` needs an allowed (deterministic) lint type.
+      // `fix` needs an allowed (deterministic) lint type. The `typeof` half is
+      // load-bearing, not decoration: `t.lintType` is unparsed input, so a cast
+      // here would assert the very proposition the line exists to test.
       if (t.op === "fix") {
-        if (!MAINTAIN_FIX_TYPES.has(t.lintType as MaintainFixType)) return null;
+        if (typeof t.lintType !== "string") return null;
+        if (!MAINTAIN_FIX_TYPE_SET.has(t.lintType)) return null;
         const lintType = t.lintType as MaintainFixType;
         // `broken-link` additionally requires a targetSlug (which dead link to remove).
         // `missing-crossref` additionally requires a targetSlug (which page to link to).

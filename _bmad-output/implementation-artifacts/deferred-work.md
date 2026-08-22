@@ -3030,7 +3030,8 @@ source_spec: `spec-dw-127-309-doc-drift-corrections.md`
 location: src/lib/maintenance.ts:11
 severity: medium
 reason: src/lib/maintenance.ts's module header and workers/task-consumer/README.md:47-49 both re-list the union by hand. `MaintainFixType` (src/lib/tasks.ts:164-172) appears in no test, so adding a ninth member re-stales both silently -- exactly the mechanism DW-127 reported. DW-130 got a pin in this pass (mcp-annotations.test.ts); this list did not, because the intent did not ask for one.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-hand-copied-list-parity-pins
 
 ### DW-342: A fifth supported-format sentence lives in the bulk importer and is already stale, and the private allowlist behind it is narrower than the app's.
 origin: spec-deferred fe13901b98f1
@@ -3047,7 +3048,8 @@ source_spec: `spec-dw-132-249-prose-inventory-parity.md`
 location: src/lib/tasks.ts:213
 severity: medium
 reason: `src/lib/tasks.ts:213` builds `new Set<MaintainFixType>([...])`, which rejects extra members but not omitted ones — the exact half `AssertNever` was added to cover for `TASK_KINDS` one screen above. A ninth fix type wired into `src/lib/maintenance.ts` but forgotten here makes `parseTask` return null at :440, so the enqueued task is treated as poison and goes to the DLQ, with `tsc` silent. `workers/task-consumer/README.md:48-50` restates the eight fix types in prose and nothing reads it — a seventh inventory of the same shape as the six this pass pinned.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-hand-copied-list-parity-pins
 
 ### DW-344: The bulk-import file picker advertises formats the very next step refuses.
 origin: spec-deferred ec1d252f2b80
@@ -3071,7 +3073,8 @@ source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
 location: src/app/api/lint/fix/route.ts:17
 severity: medium
 reason: `src/app/api/lint/fix/route.ts:17-30` lists `missing-crossref`, `orphan-page`, `stale-index`, `empty-page` and `contradiction` under "Supported issue types", omitting `broken-link`, `missing-concept-page`, `stale-page`, `unmigrated-page` and `supersedes-dangling` — the very type DW-229 was about. This story derived every executable copy of the list and left the one an integrator reads. It is a doc comment, so nothing observes it; the repo's own convention for pinning a prose inventory it cannot generate is `prose-inventory-parity.test.ts`.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-hand-copied-list-parity-pins
 
 ### DW-347: Bulk import's `accept` advertises 21 MIME types its validator never consults, so a file the picker admits by content type alone is still refused client-side.
 origin: spec-deferred 4e813d060c28
@@ -3119,7 +3122,8 @@ source_spec: `spec-dw-236-244-brand-scan-coverage.md`
 location: src/lib/__tests__/brand-copy.test.ts:52
 severity: medium
 reason: strayYopedia("the yopedia-first workflow") returns no match, so that prose would pass the scan. The workwiki side guards the identical case with its anchored alternation and a "the workwiki-first approach" slip case. The pattern is pre-existing and narrowing it needs evidence about which real Cloudflare resource names depend on it, so the new yopedia case table pins today's behaviour rather than changing it.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-hand-copied-list-parity-pins
 
 ### DW-353: Named single files and newly walked roots surface as ENOENT rather than a pin failure when renamed or removed.
 origin: spec-deferred 7e47d62e4062
@@ -3866,4 +3870,28 @@ source_spec: `spec-dw-108-131-338-doc-and-comment-drift-corrections.md`
 location: SCHEMA.md:156
 severity: medium
 reason: This change added a second hand-maintained doc/code coupling: SCHEMA.md's new Talk-pages "Retired surfaces" paragraph and the DW-129 contributor paragraph (`SCHEMA.md:207-217`) both restate entries of `RETIRED_SURFACES` (`src/lib/retired.ts`) in prose, and no source or test file references either heading. `retired-surfaces.test.ts` derives the constant from the tree on disk, so retiring or un-retiring a surface stays honest in code and silently stales the docs — the exact mechanism that produced DW-129 and then DW-338. The graph href got a pin in this pass; the prose did not, because the intent named only the marking-retired edit.
+status: open
+
+### DW-443: `SCHEMA.md` restates the same ten auto-fixable check types, their descriptions and two hardcoded counts, and nothing pins it.
+origin: spec-deferred 53a280f96d45
+source_spec: `spec-dw-341-343-346-352-hand-copied-list-parity-pins.md`
+location: SCHEMA.md:667
+severity: medium
+reason: `SCHEMA.md:667-686` says "Lint auto-fix handles ten of fifteen checks" and names all ten, then describes six of them and enumerates "the five exceptions without auto-fix". That is a third restatement of `AUTO_FIXABLE_CHECK_TYPES` and a second of `NOT_AUTO_FIXABLE`, with the cardinalities written out by hand. It is root markdown, already inside `prose-inventory-parity.test.ts`'s reach via `readProse`/`extract`, and `SCHEMA.md` is executable — AGENTS.md records that its page-conventions section is loaded into LLM prompts on every ingest. This pass pinned the route JSDoc and the two `MaintainFixType` sentences and left this one, so the parity header's census ("nine, across eight files") is already one short.
+status: open
+
+### DW-444: Nothing pins `MaintainFixType` against `AUTO_FIXABLE_CHECK_TYPES`, so a new deterministic auto-fix would be unenqueueable and DLQ exactly as DW-343 described.
+origin: spec-deferred 48d6baa5d480
+source_spec: `spec-dw-341-343-346-352-hand-copied-list-parity-pins.md`
+location: src/lib/tasks.ts:202
+severity: medium
+reason: `MaintainFixType` (`src/lib/tasks.ts:202-210`) is exactly `AUTO_FIXABLE_CHECK_TYPES` (`src/lib/lint-types.ts:64-75`) minus `contradiction` and `missing-concept-page` — the two LLM handlers — but the relationship is coincidence, not contract. Add a deterministic fix to `lint-types.ts` and `lint-fix.ts` and `tsc` stays silent while `maintenance.ts` cannot enqueue it and `parseTask` returns null: the DW-343 poison-message failure one list over. This pass imported both consts into the same test file for the first time, which is what made the gap visible; closing it is either `Exclude<AutoFixableCheckType, "contradiction" | "missing-concept-page">` or a parity assertion, and both are decisions beyond this bundle.
+status: open
+
+### DW-445: `POST /api/lint/fix`'s JSDoc documents no response contract — neither the statuses it returns nor the success shape.
+origin: spec-deferred 0a7f5bd105d7
+source_spec: `spec-dw-341-343-346-352-hand-copied-list-parity-pins.md`
+location: src/app/api/lint/fix/route.ts:19
+severity: low
+reason: The route answers 403 twice (owner gate, read-only refusal), 400 on `FixValidationError`, 404 on `FixNotFoundError`, `PAGE_UNREADABLE_STATUS` on an unreadable page, and 500 otherwise, and returns a `FixResult` (`{ success, slug, message }`) on the happy path. The header comment — rewritten at length in this pass to complete the issue-type inventory — names none of them, so an integrator reading the one door DW-346 was about still cannot tell a refusal from a failure. Pre-existing: the five-entry version documented no statuses either.
 status: open
