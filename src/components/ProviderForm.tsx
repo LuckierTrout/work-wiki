@@ -134,6 +134,33 @@ export function ProviderForm({
       .filter((id): id is string => Boolean(id))
       .join(" ") || undefined;
 
+  /**
+   * The PICKER's descriptions, composed the same way (DW-400).
+   *
+   * The `showCustom` note below says where the base URL and the API key are
+   * actually configured, and it sat BESIDE this select with nothing tying the
+   * two together — the exact gap `SettingsCanvas.tsx`'s rows state the
+   * convention against: a hint merely adjacent to a control is invisible to a
+   * screen reader, so an owner who selects `custom` heard the option name and
+   * never the sentence saying the configuration is only half done.
+   *
+   * COMPOSED rather than chosen, for the same reason the endpoint input above
+   * composes: on a read-only deployment BOTH sentences apply, and each answers
+   * a different question — why the control refuses, and what is still
+   * unconfigured. Picking one would silence the other. `describedBy` stays
+   * FIRST so the two controls on this page announce their shared read-only
+   * sentence in the same position.
+   *
+   * The id is contributed only while the note is actually rendered, so the
+   * attribute never points at an absent element; `undefined` when neither
+   * applies, never `""`.
+   */
+  const customEndpointId = showCustom ? "providerCustomEndpoint" : undefined;
+  const providerDescribedBy =
+    [readOnly ? describedBy : undefined, customEndpointId]
+      .filter((id): id is string => Boolean(id))
+      .join(" ") || undefined;
+
   return (
     <>
       {/* Provider */}
@@ -154,7 +181,7 @@ export function ProviderForm({
           // `WorkspacePurposeSettings` scenario picker refuses the same way for
           // the same reason. The handler is what actually refuses.
           aria-disabled={readOnly || undefined}
-          aria-describedby={readOnly ? describedBy : undefined}
+          aria-describedby={providerDescribedBy}
           onChange={(e) => {
             if (readOnly) return;
             setProvider(e.target.value);
@@ -273,7 +300,10 @@ export function ProviderForm({
         configuration, and the other half is finished somewhere else.
       */}
       {showCustom && (
-        <div className="rounded-md border border-foreground/10 bg-foreground/[0.03] px-3 py-3 text-sm text-foreground/60">
+        <div
+          id={customEndpointId}
+          className="rounded-md border border-foreground/10 bg-foreground/[0.03] px-3 py-3 text-sm text-foreground/60"
+        >
           <p className="font-medium text-foreground/80">Custom provider</p>
           <p className="mt-1">{SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY}</p>
         </div>

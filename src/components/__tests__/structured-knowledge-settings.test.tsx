@@ -211,3 +211,92 @@ describe("StructuredKnowledgeSettings — the credential badge", () => {
     expect(screen.queryByText("Credential required")).toBeNull();
   });
 });
+
+describe("StructuredKnowledgeSettings — the picker points at the pointer", () => {
+  /**
+   * The note already had an id; the PICKER never referenced it outside the
+   * read-only case (DW-400). A sentence merely beside a control is invisible to
+   * a screen reader, so an owner selecting `custom` here heard the option name
+   * and nothing about the half of the configuration that lives elsewhere.
+   */
+  function picker(): HTMLElement {
+    return document.getElementById("structuredKnowledgeProvider")!;
+  }
+
+  it("describes the picker with the pointer when `custom` is picked on a writable deployment", () => {
+    render(<StructuredKnowledgeSettings {...props({ provider: "custom" })} />);
+
+    expect(picker().getAttribute("aria-describedby")).toBe(
+      "structuredKnowledgeCustomEndpoint",
+    );
+    // The id resolves to the node carrying the SHARED sentence.
+    expect(customPointer()!.textContent).toContain(
+      SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY,
+    );
+  });
+
+  it("COMPOSES the pointer with the read-only sentence rather than replacing it", () => {
+    // Both apply on a read-only deployment already routing extraction through
+    // `custom`. The read-only sentence stays FIRST, matching `ProviderForm` so
+    // the two pickers on `/settings` announce it in the same position.
+    render(
+      <StructuredKnowledgeSettings
+        {...props({
+          provider: "custom",
+          readOnly: true,
+          describedBy: "readOnlyNote",
+        })}
+      />,
+    );
+
+    expect(picker().getAttribute("aria-describedby")).toBe(
+      "readOnlyNote structuredKnowledgeCustomEndpoint",
+    );
+  });
+
+  it("keeps the read-only sentence alone when the pointer is not showing", () => {
+    render(
+      <StructuredKnowledgeSettings
+        {...props({
+          provider: "anthropic",
+          readOnly: true,
+          describedBy: "readOnlyNote",
+        })}
+      />,
+    );
+
+    expect(picker().getAttribute("aria-describedby")).toBe("readOnlyNote");
+    expect(customPointer()).toBeNull();
+  });
+
+  it("emits no attribute at all when neither applies", () => {
+    // `undefined`, never `""`: an empty `aria-describedby` points at nothing.
+    render(<StructuredKnowledgeSettings {...props({ provider: "anthropic" })} />);
+
+    expect(picker().hasAttribute("aria-describedby")).toBe(false);
+  });
+
+  it("adds no pointer id when the section is INHERITING a custom primary", () => {
+    // The payload this deployment actually serves: an unset extraction provider
+    // resolves to the primary with source `"default"`. The note deliberately
+    // does not render here — the primary picker speaks for that choice — so the
+    // id must not appear on this picker either, or it would reference an
+    // element that is not on the page.
+    render(
+      <StructuredKnowledgeSettings
+        {...props({
+          provider: "",
+          settings: settings({
+            provider: "custom",
+            providerSource: "config",
+            structuredKnowledgeProvider: "custom",
+            structuredKnowledgeProviderSource: "default",
+          }),
+        })}
+      />,
+    );
+
+    expect(customPointer()).toBeNull();
+    expect(picker().hasAttribute("aria-describedby")).toBe(false);
+  });
+});

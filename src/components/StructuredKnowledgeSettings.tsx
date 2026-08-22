@@ -78,6 +78,32 @@ export function StructuredKnowledgeSettings({
    */
   const showCustom = !usesPrimary && effectiveProvider === "custom";
 
+  /**
+   * The picker's descriptions, COMPOSED rather than chosen (DW-400).
+   *
+   * The note below already carried an id, but the select pointed at it only
+   * while `readOnly` — so on a writable deployment the sentence sat beside the
+   * control unreachable, which is the convention `SettingsCanvas.tsx`'s rows
+   * state against: a hint merely adjacent to a control is invisible to a
+   * screen reader. On a read-only deployment BOTH apply — why the control
+   * refuses, and what is still unconfigured — so the ids are joined and
+   * `describedBy` stays FIRST, matching `ProviderForm`'s order so the two
+   * pickers on `/settings` announce the shared read-only sentence in the same
+   * position.
+   *
+   * Gated on `showCustom`, so the attribute never points at an absent element —
+   * including the inherit case, where the note deliberately does not render and
+   * the primary picker speaks for that choice. `undefined` when neither
+   * applies, never `""`.
+   */
+  const customEndpointId = showCustom
+    ? "structuredKnowledgeCustomEndpoint"
+    : undefined;
+  const providerDescribedBy =
+    [readOnly ? describedBy : undefined, customEndpointId]
+      .filter((id): id is string => Boolean(id))
+      .join(" ") || undefined;
+
   return (
     <section className="rounded-lg border border-foreground/15 bg-foreground/[0.025] p-4 sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -137,7 +163,7 @@ export function StructuredKnowledgeSettings({
             // <select> has no `readonly`, and the stored routing choice is
             // state the owner is entitled to read.
             aria-disabled={readOnly || undefined}
-            aria-describedby={readOnly ? describedBy : undefined}
+            aria-describedby={providerDescribedBy}
             onChange={(event) => {
               if (readOnly) return;
               setProvider(event.target.value);
@@ -190,7 +216,7 @@ export function StructuredKnowledgeSettings({
       */}
       {showCustom && (
         <div
-          id="structuredKnowledgeCustomEndpoint"
+          id={customEndpointId}
           className="mt-4 rounded-md border border-foreground/10 bg-foreground/[0.03] px-3 py-3 text-sm text-foreground/60"
         >
           <p className="font-medium text-foreground/80">Custom provider</p>

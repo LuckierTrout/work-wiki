@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { ProviderForm, type ProviderFormProps } from "@/components/ProviderForm";
-import { ollamaBaseUrlRefusedCopy } from "@/lib/workbench-settings";
+import {
+  SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY,
+  ollamaBaseUrlRefusedCopy,
+} from "@/lib/workbench-settings";
 
 /**
  * The Ollama Base URL block, MOUNTED (DW-402).
@@ -207,5 +210,93 @@ describe("ProviderForm says why the Ollama endpoint box is empty", () => {
 
     expect(screen.queryByLabelText(/Ollama Base URL/)).toBeNull();
     expect(document.body.textContent).not.toContain(ENV_REFUSAL);
+  });
+});
+
+describe("ProviderForm points the picker at the custom-endpoint note", () => {
+  /**
+   * The note is a POINTER, not a warning (DW-400).
+   *
+   * It says where the base URL and the API key are actually configured, and it
+   * used to sit beside the picker with nothing associating the two — so an
+   * owner who selected `custom` heard the option name and never the sentence
+   * saying the configuration is only half done. Whether the select POINTS at
+   * the note is not something a source scan can check, so these cases are made
+   * against the rendered DOM.
+   */
+  function picker(): HTMLElement {
+    return document.getElementById("provider")!;
+  }
+
+  it("describes the picker with the note when `custom` is picked on a writable deployment", () => {
+    render(
+      <ProviderForm
+        {...props({
+          provider: "custom",
+          settings: settings({ provider: "custom" }),
+        })}
+      />,
+    );
+
+    expect(picker().getAttribute("aria-describedby")).toBe("providerCustomEndpoint");
+    // The id resolves to a node, and that node carries the SHARED sentence —
+    // an attribute pointing at nothing announces nothing.
+    expect(
+      document.getElementById("providerCustomEndpoint")!.textContent,
+    ).toContain(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY);
+  });
+
+  it("COMPOSES the note with the read-only sentence rather than replacing it", () => {
+    // A read-only deployment already storing `custom`: both apply, and each
+    // answers a different question — why the picker refuses, and what is still
+    // unconfigured. The read-only sentence stays FIRST, matching the Ollama
+    // input's order so one page does not announce it in two positions.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "custom",
+          readOnly: true,
+          describedBy: "readOnlyNote",
+          settings: settings({ provider: "custom" }),
+        })}
+      />,
+    );
+
+    expect(picker().getAttribute("aria-describedby")).toBe(
+      "readOnlyNote providerCustomEndpoint",
+    );
+  });
+
+  it("keeps the read-only sentence alone when the note is not showing", () => {
+    // The note id is contributed only while the note renders; appending it
+    // unconditionally would point the picker at an absent element.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "anthropic",
+          readOnly: true,
+          describedBy: "readOnlyNote",
+          settings: settings({ provider: "anthropic" }),
+        })}
+      />,
+    );
+
+    expect(picker().getAttribute("aria-describedby")).toBe("readOnlyNote");
+    expect(document.getElementById("providerCustomEndpoint")).toBeNull();
+  });
+
+  it("emits no attribute at all when neither applies", () => {
+    // `undefined`, never `""`: an empty `aria-describedby` is an attribute
+    // referencing no element, which is worse than the absent attribute.
+    render(<ProviderForm {...props({ provider: "anthropic" })} />);
+
+    expect(picker().hasAttribute("aria-describedby")).toBe(false);
+  });
+
+  it("DESCRIBES rather than marks: the picker is not flagged invalid", () => {
+    // Selecting `custom` is half a configuration, not a rejected input.
+    render(<ProviderForm {...props({ provider: "custom" })} />);
+
+    expect(picker().getAttribute("aria-invalid")).toBeNull();
   });
 });

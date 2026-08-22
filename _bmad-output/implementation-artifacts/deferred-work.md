@@ -360,6 +360,7 @@ source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
 severity: medium
 reason: `resolveWorkbenchFile` gates only `root === "wiki"`; `raw/…` goes straight to `resolveRoot(silo, flat)`, which falls back to the shared `RAW_DIR` when the caller's silo lists empty. That is not a deviation — the intent ties the file gate to what `listWorkbenchFilePaths` would emit, and the listing walks `raw/` with `allowEveryLeaf` through the same `resolveRoot` — so read and listing agree exactly, as required. What changed is the stakes: Story 1.4 disclosed those FILENAMES, and this story serves their contents. Narrowing it here is not available: the intent requires `resolveRoot` to have "exactly one definition", and a read gate narrower than the listing would show rows that refuse to open (the sibling entry below). The real fix is retiring the flat root, or giving `raw/` a per-owner gate — both belong with whichever story completes the silo migration, since `src/lib/silo.ts` already calls the flat tree transitional.
 status: open
+decision: 2026-08-22 Drop the fallback for raw/ only — Give `resolveRoot` a per-root arm so `raw/` resolves strictly inside the owner's silo and never falls back to the shared flat root, while `wiki/` keeps the fallback for pre-migration workspaces. Update src/lib/workbench-files.ts and its tests, and record in src/lib/silo.ts that the flat tree is now wiki-only.
 
 ### DW-41: The Files tab lists `wiki/` leaves that are not pages, and the Preview now answers every one of them with `This file couldn’t be loaded.`
 origin: spec-deferred 8ab03831be26
@@ -3495,6 +3496,7 @@ location: src/lib/embeddings.ts:170 (resolveEmbeddingProvider); src/components/w
 severity: medium
 reason: `resolveEmbeddingProvider` takes `process.env.EMBEDDING_PROVIDER` ahead of the stored field and falls back to the detected generation provider (`cfg.provider`) when nothing is stored. No save moves either, so `embeddingProviderChanged` never sees a switch: with `EMBEDDING_PROVIDER=google` and a stored OpenAI key, `embeddingApiKeyFor("google", cfg)` still returns it and `_createEmbeddingModel` still passes the stored `embeddingBaseUrl`. Pre-existing, and out of scope for the recorded decisions, whose trigger is literally "whenever `embeddingProvider` changes" — closing it means deciding what a chat-provider change may do to an embedding credential. This pass also makes one NEW consequence reachable on an env-pinned deployment: the stored provider select stays editable there, and moving it now clears the credential the env-selected vendor is using. The surface stays honest (the key hint flips to "No key is stored." and the row's env sentence already says the variable owns the selection),
 status: open
+decision: 2026-08-22 Disable the select under an env pin — Disable the embedding-provider select in SettingsCanvas.tsx:580-586 whenever `EMBEDDING_PROVIDER` is set, with the existing env-override hint copy, so the newly reachable consequence disappears without touching the frozen clear rule.
 
 ### DW-399: `spec-dw-66-72-settings-credential-fidelity.md` still reads `status: 'in-progress'` for DW-69/DW-72 under the superseded per-provider keying approach.
 origin: spec-deferred ce665a977ec1
@@ -3510,7 +3512,8 @@ source_spec: `spec-dw-368-370-provider-selection-truthfulness.md`
 location: src/components/StructuredKnowledgeSettings.tsx:181 and src/components/ProviderForm.tsx:227
 severity: medium
 reason: `StructuredKnowledgeSettings.tsx` renders the note with `id="structuredKnowledgeCustomEndpoint"` and `#structuredKnowledgeProvider` sets `aria-describedby` only in the read-only case; `ProviderForm.tsx`'s DW-61 note carries no id at all. The repo already states the opposite convention at `src/components/workbench/SettingsCanvas.tsx:419-433`, whose comment says a hint sitting beside a control is invisible to a screen reader. Fixing only the new note would leave the two pickers inconsistent, so this covers both.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw3-provider-form-endpoint-a11y
 
 ### DW-401: DW-370's harm class survives on the EXPLICIT ollama selections: an `EMBEDDING_PROVIDER=ollama` override and a stored `cfg.provider === "ollama"` still select ollama regardless of endpoint usability, t
 origin: spec-deferred 68e862a9281d
@@ -3519,6 +3522,7 @@ location: src/lib/embeddings.ts:203-215
 severity: medium
 reason: `resolveEmbeddingProvider` returns the override at `src/lib/embeddings.ts:203` and the saved provider at `:211-215` without consulting `getOllamaBaseUrl`, and `getEmbeddingModel` constructs `createOllama()` with no baseURL when none resolves. So a corpus can still be embedded against the SDK's localhost default while the owner believes it is going to the endpoint they typed. This bundle's intent scopes the fix to auto-DETECTION, so the explicit rungs were deliberately untouched and are neither closed nor documented as exceptions.
 status: open
+decision: 2026-08-22 Warn once, keep selecting — Keep the explicit selection authoritative but emit a warn-once from `resolveEmbeddingProvider` naming the SDK localhost default as the endpoint actually in effect, so the substitution is audible. Smallest change, no behaviour change.
 
 ### DW-402: A refused `OLLAMA_BASE_URL` is now described only in a server log; every owner-facing surface still advertises the variable as the remedy and reports no reason it was ignored.
 origin: spec-deferred 3f538ea33f5f
@@ -3545,6 +3549,7 @@ location: src/lib/embeddings.ts (searchByVector re-arm branch)
 severity: medium
 reason: `queryEmbeddings` sorts and slices to `topK` BEFORE `searchByVector` applies the model filter (src/lib/storage/filesystem.ts queryEmbeddings; contract in src/lib/storage/types.ts). With one stale-tagged and one current-tagged vector and `topK: 1`, eight alternating queries emitted FOUR drift lines instead of one. This is not contrived: `rebuildVectorStore` upserts page by page with no bulk swap, so the store is mixed for the whole duration of the very operation the re-arm exists to detect, and it deliberately leaves stale orphans behind. The tighter gate (`kept.length === matches.length`, or a rebuild-completion epoch) was NOT applied because the recorded 2026-08-21 decision names `kept.length > 0` as the trigger verbatim; narrowing it is a decision this run does not hold.
 status: open
+decision: 2026-08-22 Require a whole-window match — Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.
 
 ### DW-405: A single unlabelled legacy vector satisfies `kept.length > 0` and re-arms `drift:<active model>` on a corpus where every labelled vector is still stale, so a genuinely un-rebuilt corpus can repeat the
 origin: spec-deferred f6e0ffb78ddc
@@ -3553,6 +3558,7 @@ location: src/lib/embeddings.ts (searchByVector re-arm branch, modelMatches)
 severity: medium
 reason: `modelMatches` deliberately returns true when `metadata.model` is absent (pre-migration / KV-fallback vectors must survive the filter — pinned by the existing test "keeps unlabelled (legacy) vectors with no model metadata"). Seeding one unlabelled vector plus stale-tagged ones and alternating three queries produced TWO drift lines where the throttle should give one. A gate of `kept.some((m) => m.metadata.model === currentModel)` would close it, but that also narrows the decided `kept.length > 0` trigger. The inline comment at the re-arm branch was corrected to stop claiming corpus-level proof.
 status: open
+decision: 2026-08-22 Require a positive labelled match — Gate re-arm on `kept.some((m) => m.metadata.model === currentModel)` so only positive proof of a rebuilt vector re-arms, leaving `modelMatches` permissive for results.
 
 ### DW-406: `relatedByVector` runs the same model filter but neither warns nor re-arms, so a deployment whose only vector traffic is page-render related lookups observes neither the drift nor its recovery.
 origin: spec-deferred da6f7511b5fb
@@ -3656,4 +3662,20 @@ source_spec: `spec-dw-402-403-endpoint-refusal-and-readiness.md`
 location: src/cli.ts:554-567
 severity: medium
 reason: `runStatus` (`src/cli.ts:554-567`) reads `getEffectiveSettings()` and prints `LLM provider` and `Embeddings` only. The payload now carries `ollamaBaseUrlIssue` beside those fields, so the sentence is one line away, but nothing prints it. This change touched `src/lib/__tests__/cli.test.ts` only to keep a whole-object fixture compiling. Same harm class as DW-402 on a third surface the bundle's intent did not name.
+status: open
+
+### DW-419: The Ollama Cloud note is the same shape of picker-conditional pointer as the custom-endpoint note and is still unassociated with the provider picker.
+origin: spec-deferred bfa78eb632ac
+source_spec: `spec-dw-400-provider-endpoint-note-a11y.md`
+location: src/components/ProviderForm.tsx:312
+severity: medium
+reason: `ProviderForm.tsx:312-321` renders the `showOllamaCloud` note in the same wrapper as the `showCustom` note four lines above it, saying where the rest of the provider's configuration lives ("The API key stays encrypted as a Cloudflare Worker secret and is never returned to this page"). It carries no `id` and `providerDescribedBy` contributes none for it, so selecting `ollama-cloud` still announces only the option name. Pre-existing: DW-400's intent names only the custom-endpoint pointer, so this was out of scope. No test anywhere renders that note.
+status: open
+
+### DW-420: The primary picker's credential-status line sits beside the control with nothing associating it.
+origin: spec-deferred 35a109f64410
+source_spec: `spec-dw-400-provider-endpoint-note-a11y.md`
+location: src/components/ProviderForm.tsx:197
+severity: medium
+reason: `ProviderForm.tsx:197-205` renders "✓ API key configured on server", "⚠ No API key — set via server environment variables", or "Save this selection to check its server credential" directly under `#provider`. It has no `id` and the picker does not reference it, so the credential state of the selected provider is invisible to a screen reader — the same harm class DW-400 fixed for the custom-endpoint pointer. Pre-existing and outside DW-400's stated scope.
 status: open

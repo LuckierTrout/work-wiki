@@ -400,3 +400,109 @@ describe("/settings tells a Custom selection where the endpoint and key live (DW
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// The two Custom notes, ASSOCIATED with their pickers, on one page (DW-400)
+// ---------------------------------------------------------------------------
+
+/**
+ * The claim that only exists once both components are mounted together.
+ *
+ * `ProviderForm` and `StructuredKnowledgeSettings` each compose their picker's
+ * `aria-describedby` from the page's read-only note id plus their own
+ * custom-endpoint note id, and both source comments justify the ORDER by "the
+ * two pickers on `/settings`". Neither component can pin that: mounted alone
+ * each is handed a synthetic `describedBy` string no page ever passes — the
+ * real one is minted by `useId()` at `page.tsx:60-61` and handed to both
+ * panels — and neither can see the other's note id to know the two are
+ * distinct. `/settings` is the only place where the ids are minted for real,
+ * where both notes are on screen at once, and where "each picker references
+ * only its own note" is a statement about anything.
+ */
+describe("/settings associates each Custom note with its own picker (DW-400)", () => {
+  /**
+   * Both halves stored `custom`, which is what puts BOTH notes on screen.
+   * `structuredKnowledgeProviderSource: "config"` is load-bearing: with
+   * `"default"` the extraction section is INHERITING and deliberately renders
+   * no note of its own, so the page would carry only one.
+   */
+  const BOTH_CUSTOM = {
+    provider: "custom",
+    providerSource: "config",
+    structuredKnowledgeProvider: "custom",
+    structuredKnowledgeProviderSource: "config",
+  };
+
+  function primaryPicker(): HTMLSelectElement {
+    return document.getElementById("provider") as HTMLSelectElement;
+  }
+
+  function extractionPicker(): HTMLSelectElement {
+    return document.getElementById("structuredKnowledgeProvider") as HTMLSelectElement;
+  }
+
+  it("points each picker at its own note, and the two ids differ", async () => {
+    stubFetch(body(BOTH_CUSTOM));
+    render(<SettingsPage />);
+
+    await waitFor(() => expect(primaryPicker()).not.toBeNull());
+    await waitFor(() => expect(extractionPicker()).not.toBeNull());
+
+    expect(primaryPicker().getAttribute("aria-describedby")).toBe(
+      "providerCustomEndpoint",
+    );
+    expect(extractionPicker().getAttribute("aria-describedby")).toBe(
+      "structuredKnowledgeCustomEndpoint",
+    );
+    // Each id RESOLVES, and to a node carrying the shared sentence. Resolved by
+    // id rather than by text: both notes render the same copy here, so
+    // `getByText` would throw on multiple matches — and matching by text would
+    // not prove WHICH node the attribute reaches anyway.
+    const primaryNote = document.getElementById("providerCustomEndpoint");
+    const extractionNote = document.getElementById("structuredKnowledgeCustomEndpoint");
+    expect(primaryNote).not.toBeNull();
+    expect(extractionNote).not.toBeNull();
+    // DISTINCT nodes — one shared id on a page mounting both panels would give
+    // two pickers one description and `getElementById` a coin flip over which
+    // note it resolves to.
+    expect(primaryNote).not.toBe(extractionNote);
+    expect(primaryNote!.textContent).toContain(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY);
+    expect(extractionNote!.textContent).toContain(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY);
+    // The page really is showing two copies of it — the premise of resolving
+    // by id above, and the shape a one-note page would fail.
+    expect(screen.getAllByText(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY)).toHaveLength(2);
+  });
+
+  it("appends the page's real read-only note to BOTH, in the same position", async () => {
+    // The ordering-parity claim the source comments make: the read-only
+    // sentence is FIRST on both pickers, so one page does not announce its one
+    // shared refusal in two different positions.
+    stubFetch(body({ ...BOTH_CUSTOM, readOnly: true }));
+    render(<SettingsPage />);
+
+    await waitFor(() => expect(primaryPicker()).not.toBeNull());
+    await waitFor(() => expect(extractionPicker()).not.toBeNull());
+
+    const primaryIds = primaryPicker().getAttribute("aria-describedby")!.split(" ");
+    const extractionIds = extractionPicker()
+      .getAttribute("aria-describedby")!
+      .split(" ");
+
+    // COMPOSED, not chosen: two ids each, so neither sentence displaced the
+    // other.
+    expect(primaryIds).toHaveLength(2);
+    expect(extractionIds).toHaveLength(2);
+
+    // The shared refusal, FIRST on both. Read off the DOM rather than
+    // hardcoded — the page mints it with `useId()`, so its value is React's to
+    // choose and only its SAMENESS across the two pickers is the page's claim.
+    expect(primaryIds[0]).toBe(extractionIds[0]);
+    const readOnlyNote = document.getElementById(primaryIds[0]);
+    expect(readOnlyNote).not.toBeNull();
+    expect(readOnlyNote!.textContent).toContain("Read-only mode");
+
+    // …and each picker's own note SECOND, still its own.
+    expect(primaryIds[1]).toBe("providerCustomEndpoint");
+    expect(extractionIds[1]).toBe("structuredKnowledgeCustomEndpoint");
+  });
+});
