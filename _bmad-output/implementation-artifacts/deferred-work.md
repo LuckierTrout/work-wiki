@@ -361,6 +361,7 @@ severity: medium
 reason: `resolveWorkbenchFile` gates only `root === "wiki"`; `raw/…` goes straight to `resolveRoot(silo, flat)`, which falls back to the shared `RAW_DIR` when the caller's silo lists empty. That is not a deviation — the intent ties the file gate to what `listWorkbenchFilePaths` would emit, and the listing walks `raw/` with `allowEveryLeaf` through the same `resolveRoot` — so read and listing agree exactly, as required. What changed is the stakes: Story 1.4 disclosed those FILENAMES, and this story serves their contents. Narrowing it here is not available: the intent requires `resolveRoot` to have "exactly one definition", and a read gate narrower than the listing would show rows that refuse to open (the sibling entry below). The real fix is retiring the flat root, or giving `raw/` a per-owner gate — both belong with whichever story completes the silo migration, since `src/lib/silo.ts` already calls the flat tree transitional.
 status: open
 decision: 2026-08-22 Drop the fallback for raw/ only — Give `resolveRoot` a per-root arm so `raw/` resolves strictly inside the owner's silo and never falls back to the shared flat root, while `wiki/` keeps the fallback for pre-migration workspaces. Update src/lib/workbench-files.ts and its tests, and record in src/lib/silo.ts that the flat tree is now wiki-only.
+decision: 2026-08-22 Drop the fallback for raw/ only — Give `resolveRoot` a per-root arm so `raw/` resolves strictly inside the owner's silo and never falls back to the shared flat root, while `wiki/` keeps the fallback for pre-migration workspaces. Update src/lib/workbench-files.ts and its tests, and record in src/lib/silo.ts that the flat tree is now wiki-only.
 
 ### DW-41: The Files tab lists `wiki/` leaves that are not pages, and the Preview now answers every one of them with `This file couldn’t be loaded.`
 origin: spec-deferred 8ab03831be26
@@ -3530,6 +3531,7 @@ severity: medium
 reason: `resolveEmbeddingProvider` takes `process.env.EMBEDDING_PROVIDER` ahead of the stored field and falls back to the detected generation provider (`cfg.provider`) when nothing is stored. No save moves either, so `embeddingProviderChanged` never sees a switch: with `EMBEDDING_PROVIDER=google` and a stored OpenAI key, `embeddingApiKeyFor("google", cfg)` still returns it and `_createEmbeddingModel` still passes the stored `embeddingBaseUrl`. Pre-existing, and out of scope for the recorded decisions, whose trigger is literally "whenever `embeddingProvider` changes" — closing it means deciding what a chat-provider change may do to an embedding credential. This pass also makes one NEW consequence reachable on an env-pinned deployment: the stored provider select stays editable there, and moving it now clears the credential the env-selected vendor is using. The surface stays honest (the key hint flips to "No key is stored." and the row's env sentence already says the variable owns the selection),
 status: open
 decision: 2026-08-22 Disable the select under an env pin — Disable the embedding-provider select in SettingsCanvas.tsx:580-586 whenever `EMBEDDING_PROVIDER` is set, with the existing env-override hint copy, so the newly reachable consequence disappears without touching the frozen clear rule.
+decision: 2026-08-22 Disable the select under an env pin — Disable the embedding-provider select in SettingsCanvas.tsx:580-586 whenever `EMBEDDING_PROVIDER` is set, with the existing env-override hint copy, so the newly reachable consequence disappears without touching the frozen clear rule.
 
 ### DW-399: `spec-dw-66-72-settings-credential-fidelity.md` still reads `status: 'in-progress'` for DW-69/DW-72 under the superseded per-provider keying approach.
 origin: spec-deferred ce665a977ec1
@@ -3554,6 +3556,7 @@ location: src/lib/embeddings.ts:203-215
 severity: medium
 reason: `resolveEmbeddingProvider` returns the override at `src/lib/embeddings.ts:203` and the saved provider at `:211-215` without consulting `getOllamaBaseUrl`, and `getEmbeddingModel` constructs `createOllama()` with no baseURL when none resolves. So a corpus can still be embedded against the SDK's localhost default while the owner believes it is going to the endpoint they typed. This bundle's intent scopes the fix to auto-DETECTION, so the explicit rungs were deliberately untouched and are neither closed nor documented as exceptions.
 status: open
+decision: 2026-08-22 Warn once, keep selecting — Keep the explicit selection authoritative but emit a warn-once from `resolveEmbeddingProvider` naming the SDK localhost default as the endpoint actually in effect, so the substitution is audible. Smallest change, no behaviour change.
 decision: 2026-08-22 Warn once, keep selecting — Keep the explicit selection authoritative but emit a warn-once from `resolveEmbeddingProvider` naming the SDK localhost default as the endpoint actually in effect, so the substitution is audible. Smallest change, no behaviour change.
 
 ### DW-402: A refused `OLLAMA_BASE_URL` is now described only in a server log; every owner-facing surface still advertises the variable as the remedy and reports no reason it was ignored.
@@ -3580,6 +3583,7 @@ severity: medium
 reason: `queryEmbeddings` sorts and slices to `topK` BEFORE `searchByVector` applies the model filter (src/lib/storage/filesystem.ts queryEmbeddings; contract in src/lib/storage/types.ts). With one stale-tagged and one current-tagged vector and `topK: 1`, eight alternating queries emitted FOUR drift lines instead of one. This is not contrived: `rebuildVectorStore` upserts page by page with no bulk swap, so the store is mixed for the whole duration of the very operation the re-arm exists to detect, and it deliberately leaves stale orphans behind. The tighter gate (`kept.length === matches.length`, or a rebuild-completion epoch) was NOT applied because the recorded 2026-08-21 decision names `kept.length > 0` as the trigger verbatim; narrowing it is a decision this run does not hold.
 status: open
 decision: 2026-08-22 Require a whole-window match — Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.
+decision: 2026-08-22 Require a whole-window match — Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.
 
 ### DW-405: A single unlabelled legacy vector satisfies `kept.length > 0` and re-arms `drift:<active model>` on a corpus where every labelled vector is still stale, so a genuinely un-rebuilt corpus can repeat the
 origin: spec-deferred f6e0ffb78ddc
@@ -3588,6 +3592,7 @@ location: src/lib/embeddings.ts (searchByVector re-arm branch, modelMatches)
 severity: medium
 reason: `modelMatches` deliberately returns true when `metadata.model` is absent (pre-migration / KV-fallback vectors must survive the filter — pinned by the existing test "keeps unlabelled (legacy) vectors with no model metadata"). Seeding one unlabelled vector plus stale-tagged ones and alternating three queries produced TWO drift lines where the throttle should give one. A gate of `kept.some((m) => m.metadata.model === currentModel)` would close it, but that also narrows the decided `kept.length > 0` trigger. The inline comment at the re-arm branch was corrected to stop claiming corpus-level proof.
 status: open
+decision: 2026-08-22 Require a positive labelled match — Gate re-arm on `kept.some((m) => m.metadata.model === currentModel)` so only positive proof of a rebuilt vector re-arms, leaving `modelMatches` permissive for results.
 decision: 2026-08-22 Require a positive labelled match — Gate re-arm on `kept.some((m) => m.metadata.model === currentModel)` so only positive proof of a rebuilt vector re-arms, leaving `modelMatches` permissive for results.
 
 ### DW-406: `relatedByVector` runs the same model filter but neither warns nor re-arms, so a deployment whose only vector traffic is page-render related lookups observes neither the drift nor its recovery.
@@ -3774,6 +3779,7 @@ severity: medium
 reason: `src/components/WikiEditor.tsx:259-303` saves the body with `PUT` and then `PATCH`es metadata, relaying the served `{ error }` verbatim into its error banner. With the 503 branch added here, a read blip on the second leg shows `PAGE_UNREADABLE_COPY` — "so nothing was changed" — to an owner whose body write did land. The previous answer (`page not found`) was also wrong, but it did not make a claim about what was written. Not closable inside this bundle: the spec's Never clause forbids new copy, and the alternative is a client change to the save flow (e.g. reporting the legs separately), which the intent does not reach.
 status: open
 decision: 2026-08-22 Per-leg client reporting — Track in WikiEditor that the PUT leg landed and prefix the PATCH failure accordingly — "Your text was saved; the metadata change was not — <served error>" — leaving all server copy and the frozen sentences untouched.
+decision: 2026-08-22 Per-leg client reporting — Track in WikiEditor that the PUT leg landed and prefix the PATCH failure accordingly — "Your text was saved; the metadata change was not — <served error>" — leaving all server copy and the frozen sentences untouched.
 
 ### DW-429: `setCurrentWiki` moves no `dataVersion`, so switching the current Wiki leaves every OTHER open client rendering the previous Wiki's artifacts with nothing to un-stale them.
 origin: spec-deferred 5e52805cf407
@@ -3782,6 +3788,7 @@ location: src/lib/wikis.ts (setCurrentWiki)
 severity: medium
 reason: A Preview and the Files tree both resolve `purpose.md`/`schema.md` through `registry.currentId` read server-side at fetch time (src/app/api/workbench/preview/route.ts:214-222, src/app/page.tsx:98-101 -> src/lib/workbench-files.ts:298-321). A switch is therefore the ONLY operation that changes which bytes those surfaces resolve to — and `WikiSwitcher`'s own `router.refresh()` covers just the acting client. This is a strictly stronger form of the DW-382 argument: DW-382's ledger premise ("a Preview open on those artifacts in a second client keeps rendering bytes whose Wiki is gone") is false for delete, but TRUE for a switch. Raised independently by review layers on all three passes of this story. Pre-existing; `setCurrentWiki`'s no-bump exemption is a recorded decision (src/lib/__tests__/workbench-data-version.test.ts, the bump-site guard's rationale comment), so changing it needs its own story rather than a drive-by.
 status: open
+decision: 2026-08-22 Bump at the kernel tail — Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock, as `renameWiki` does, rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6.
 decision: 2026-08-22 Bump at the kernel tail — Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock, as `renameWiki` does, rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6.
 
 ### DW-430: `renameWiki`'s JSDoc quotes the Preview fetch dep list as `[selection, dataVersion, editing]`; the real deps include `retryNonce`.
@@ -3807,6 +3814,7 @@ location: src/app/api/ingest/history/route.ts:139
 severity: medium
 reason: The GET at `src/app/api/ingest/history/route.ts` builds `readable` from `listReadableWikiPages(principal)` and drops every ledger entry whose `primary_slug` the index does not carry. `RecentIngests.tsx` is the only producer of `ingestIds` and builds them exclusively from that GET's `entries`, so an orphan row can only be deleted by a caller hand-writing ids (CLI/MCP/direct HTTP). The `jobIds` half — the path DW-393's own harm statement describes ("a done job whose page is in that state") — is UI-reachable and is fixed. Left out deliberately: widening the GET would cost up to `MAX_BULK_DELETE` page reads on a hot listing path and change what the list shows, neither of which the intent asked for.
 status: open
+decision: 2026-08-22 Bounded per-page read fallback — For slugs the index misses, fall back to a bounded per-page read (cap at MAX_BULK_DELETE) on this listing path only, so orphan rows list and become deletable while the read cost stays bounded.
 decision: 2026-08-22 Bounded per-page read fallback — For slugs the index misses, fall back to a bounded per-page read (cap at MAX_BULK_DELETE) on this listing path only, so orphan rows list and become deletable while the read cost stays bounded.
 
 ### DW-433: `maintenance_scan`'s tool description in `src/lib/mcp-http.ts` is a third copy of the disputed-clear fact and now disagrees with the shared clause.
@@ -3929,6 +3937,7 @@ severity: medium
 reason: `route.ts` calls `getPrincipal()` for `isOwnerHandle`, then invokes `fixLintIssue(type, slug ?? "", targetSlug, message)` with no fifth argument, defaulting `author` to `"lint-fix"` (`src/lib/lint-fix.ts`). `handleFixLintIssue` receives `author: p!.handle` on both MCP doors, so the same fix is attributed differently depending on which door ran it. Pre-existing; unchanged by this story.
 status: open
 decision: 2026-08-22 Record the trigger separately — Keep `"lint-fix"` as `author` on all three doors and add a `triggeredBy` field carrying the principal's handle, the shape `handleReingest` already uses at src/mcp.ts:1243-1245. Drops `author: p!.handle` from mcp-http.ts:527 so the doors agree, without touching the contributor contract.
+decision: 2026-08-22 Record the trigger separately — Keep `"lint-fix"` as `author` on all three doors and add a `triggeredBy` field carrying the principal's handle, the shape `handleReingest` already uses at src/mcp.ts:1243-1245. Drops `author: p!.handle` from mcp-http.ts:527 so the doors agree, without touching the contributor contract.
 
 ### DW-448: The 504 deadline sentence never reaches the owner: the client falls back to POST /api/query on any non-ok answer, and that route still relays the raw transport message.
 origin: spec-deferred 77f0be51cb37
@@ -3995,6 +4004,7 @@ severity: medium
 reason: MIME_ENVELOPE_HEADROOM_BYTES is still 64 KiB and its comment still frames the body as "an ordinary text body". MAX_EMAIL_CONTENT_CHARS is 100,000, so a non-ASCII body sent quoted-printable reaches the wire at up to ~312 KB -- roughly five times the headroom that is meant to cover part headers, boundaries AND the body. The document half of DW-358 is fixed; the body half is not, and the pair's recorded trade-off ("only has to be simultaneously satisfiable for realistic mail") predates the encoding this change is about. Whether to re-derive the headroom from MAX_EMAIL_CONTENT_CHARS x WORST_CASE_TRANSFER_ENCODING_FACTOR is a cap decision, not a patch.
 status: open
 decision: 2026-08-22 Budget the body inside the cap — Hold `MAX_RAW_EMAIL_BYTES` constant and pay for the worst-case encoded body out of `AGGREGATE_DOCUMENT_AVERAGE_BYTES` (index.ts:74), so the envelope is honest without widening the cap. Update the derivation comment and the allowlist-parity test.
+decision: 2026-08-22 Budget the body inside the cap — Hold `MAX_RAW_EMAIL_BYTES` constant and pay for the worst-case encoded body out of `AGGREGATE_DOCUMENT_AVERAGE_BYTES` (index.ts:74), so the envelope is honest without widening the cap. Update the derivation comment and the allowlist-parity test.
 
 ### DW-456: Widening the raw cap 2.27x roughly doubles the peak decoded-attachment memory the Worker buffers, which is exactly the exposure DW-360 records and nothing bounds it.
 origin: spec-deferred 5c2352e6d293
@@ -4011,6 +4021,7 @@ location: workers/email-ingest/index.ts (MAX_RAW_EMAIL_MB refusal copy)
 severity: medium
 reason: Two independent reviewers flagged that Email Routing enforces a platform inbound ceiling (reported as 25 MiB, unverified offline and recorded nowhere in this repo). If that holds, messages between the platform limit and 32,781,108 bytes are rejected upstream and never reach the Worker, so the refusal copy invites a sender to resend under a ceiling that will also fail -- and the very scenario DW-358 names (a byte-dense 10 MB .csv sent quoted-printable, 32,715,573 bytes on the wire) could still never arrive. Clamping MAX_RAW_EMAIL_MB to a recorded transport bound is a different decision from "widen for worst-case encoding" and needs its own.
 status: open
+decision: 2026-08-22 Clamp conservatively to 25 MiB — Clamp to 25 MiB now with the source recorded as unverified-but-conservative, accepting that DW-362's ten-part worst case becomes unreachable by design, and update the quoted figure and tests.
 decision: 2026-08-22 Clamp conservatively to 25 MiB — Clamp to 25 MiB now with the source recorded as unverified-but-conservative, accepting that DW-362's ten-part worst case becomes unreachable by design, and update the quoted figure and tests.
 
 ### DW-458: Three open ledger entries now carry reasons that are stale or false against the widened cap and will be read as current by the next sweep.
@@ -4068,6 +4079,7 @@ location: src/lib/discuss-stats-index.ts:69, src/lib/contributor-index.ts:218
 severity: medium
 reason: `grep -rn "syncDiscussStatsForSlug|recordTalkForAuthor" src/ --include=*.ts` outside `__tests__` now returns only the two definitions. Their only production callers were `syncDiscussStatsHook` and `recordTalkContributorHook` in `talk.ts`, both deleted here. Neither index is broken: `rebuildDiscussStatsIndex` / `rebuildContributorIndex` still scan storage, and `removeDiscussStatsForSlug` still runs from `deleteDiscussions`. Not resolved in this story because the DW-390 decision explicitly kept the discuss-stats and contributor indexes "exactly as they are"; both doc comments were corrected to record the state.
 status: done 2026-08-22
+decision: 2026-08-22 Keep both, close as recorded — DW-390's decision deliberately carved the two indexes out; the doc comments at discuss-stats-index.ts:63-70 and contributor-index.ts:213-221 already record the readerless state, so nothing further is owed.
 resolution: closed by human decision: DW-390's decision deliberately carved the two indexes out; the doc comments at discuss-stats-index.ts:63-70 and contributor-index.ts:213-221 already record the readerless state, so nothing further is owed.
 decision: 2026-08-22 Keep both, close as recorded — DW-390's decision deliberately carved the two indexes out; the doc comments at discuss-stats-index.ts:63-70 and contributor-index.ts:213-221 already record the readerless state, so nothing further is owed.
 
