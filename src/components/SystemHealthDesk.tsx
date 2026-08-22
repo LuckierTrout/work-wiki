@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { Alert } from "@/components/Alert";
-import type { BackupSummary } from "@/lib/backups";
+import { backupTruncationCopy, type BackupSummary } from "@/lib/backups";
 import type { RetrievalEvalCase, RetrievalEvalRun } from "@/lib/retrieval-evals";
 import type { SystemHealthSnapshot } from "@/lib/system-health";
 
@@ -79,9 +79,14 @@ export function SystemHealthDesk() {
       const completed = data.backup;
       if (completed) {
         setBackups((current) => [completed, ...current.filter((item) => item.id !== completed.id)]);
-        setNotice(completed.verificationStatus === "passed"
-          ? "Backup created and restored successfully in the isolated verification area."
-          : "Backup created, but restore verification needs attention.");
+        // A truncated backup verifies like any other, so the "passed" branch
+        // alone would report a partial snapshot as a whole one at the exact
+        // moment the owner is watching for a receipt.
+        setNotice(completed.verificationStatus !== "passed"
+          ? "Backup created, but restore verification needs attention."
+          : completed.truncated?.length
+            ? `Backup created and verified, but it covered only part of your data — ${backupTruncationCopy(completed.truncated)}.`
+            : "Backup created and restored successfully in the isolated verification area.");
         await load();
       } else {
         setNotice("Backup and isolated restore verification are queued. The receipt will appear here when processing finishes.");
@@ -201,7 +206,11 @@ export function SystemHealthDesk() {
       <section className="grid sm:grid-cols-2 lg:grid-cols-4" style={{ gap: 13, marginTop: 30 }} aria-label="System summary">
         <HealthCard label="source checks" value={health ? String(health.monitors.failed) : "—"} detail={`${health?.monitors.total ?? 0} monitored · ${health?.monitors.active ?? 0} active`} bad={Boolean(health?.monitors.failed)} />
         <HealthCard label="delivery failures" value={health ? String(health.integrations.failed) : "—"} detail={`${health?.integrations.pending ?? 0} in flight · ${health?.integrations.delivered ?? 0} delivered`} bad={Boolean(health?.integrations.failed)} />
-        <HealthCard label="restore check" value={health?.backup.status ?? "—"} detail={health?.backup.latest ? compactDate(health.backup.latest.verifiedAt) : "No backup recorded"} bad={health?.backup.status !== "verified"} />
+        {/* `backup.status` stays "verified" for a truncated backup — verification
+            and coverage are different questions — so truncation has to be folded
+            in here explicitly, or this card reads green while the page banner
+            says attention needed. */}
+        <HealthCard label="restore check" value={health?.backup.status ?? "—"} detail={health?.backup.latest ? (backupTruncationCopy(health.backup.latest.truncated) || compactDate(health.backup.latest.verifiedAt)) : "No backup recorded"} bad={health?.backup.status !== "verified" || Boolean(health?.backup.latest?.truncated?.length)} />
         <HealthCard label="privacy eval" value={health?.evaluation.privacyPass === null || health?.evaluation.privacyPass === undefined ? "not run" : health.evaluation.privacyPass ? "passed" : "failed"} detail={health?.evaluation.latest ? `${health.evaluation.latest.caseCount} cases` : "Add a golden question below"} bad={health?.evaluation.privacyPass === false} />
       </section>
 
@@ -220,7 +229,10 @@ export function SystemHealthDesk() {
                     <span className="receipt" style={{ ...micro, color: backup.verificationStatus === "passed" ? "var(--accent)" : backup.verificationStatus === "failed" ? "var(--rust)" : "var(--muted)" }}>{backup.verificationStatus ?? "unverified"}</span>
                     <strong style={{ fontSize: 13.5 }}>{compactDate(backup.createdAt)}</strong>
                   </div>
-                  <p className="receipt" style={{ ...micro, margin: "6px 0 0" }}>{backup.fileCount} files · {sizeLabel(backup.totalBytes)}</p>
+                  {/* A partial backup verifies exactly like a complete one — it
+                      checks the entries its manifest holds — so without this the
+                      row would read as a clean full snapshot of the tenant. */}
+                  <p className="receipt" style={{ ...micro, margin: "6px 0 0" }}>{backup.fileCount} files · {sizeLabel(backup.totalBytes)}{backup.truncated?.length ? <> · <span style={{ color: "var(--rust)" }}>{backupTruncationCopy(backup.truncated)}</span></> : null}</p>
                   {backup.verificationError && <p style={{ color: "var(--rust)", fontSize: 12, margin: "6px 0 0" }}>{backup.verificationError}</p>}
                 </div>
                 <button className="btn ghost" type="button" onClick={() => void verifyBackup(backup.id)} disabled={busy !== null}>{busy === backup.id ? "Checking…" : "Verify"}</button>

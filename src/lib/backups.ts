@@ -12,6 +12,9 @@ export interface BackupFileEntry {
   sha256: string;
 }
 
+/** Which safety limit stopped a backup short of the whole tenant. */
+export type BackupTruncationReason = "file-count" | "total-bytes";
+
 export interface BackupManifest {
   version: 1;
   id: string;
@@ -20,6 +23,19 @@ export interface BackupManifest {
   createdAt: string;
   files: BackupFileEntry[];
   totalBytes: number;
+  /**
+   * Present only on a PARTIAL backup, naming every limit that stopped it
+   * (`"file-count"` before `"total-bytes"`, so the order is deterministic when
+   * one run hits both).
+   *
+   * OPTIONAL ON PURPOSE, and the reason the manifest `version` does not move: a
+   * complete backup carries no flag at all, so every `version: 1` manifest
+   * already on disk keeps parsing as exactly what it is. A truncated backup is
+   * still a real, verifiable manifest — {@link verifyOwnerBackup} checks the
+   * entries the manifest HOLDS — it just does not hold everything, which is a
+   * thing an operator has to be told rather than a failure.
+   */
+  truncated?: BackupTruncationReason[];
   verifiedAt?: string;
   verificationStatus?: "passed" | "failed";
   verificationError?: string;
@@ -27,8 +43,19 @@ export interface BackupManifest {
 
 export type BackupSummary = Omit<BackupManifest, "files"> & { fileCount: number };
 
+/** The two safety limits a backup stops at. Injectable so tests need no 2 GB. */
+export interface BackupLimits {
+  maxFiles: number;
+  maxBytes: number;
+}
+
 const MAX_BACKUP_FILES = 10_000;
 const MAX_BACKUP_BYTES = 2 * 1024 * 1024 * 1024;
+
+const DEFAULT_BACKUP_LIMITS: BackupLimits = {
+  maxFiles: MAX_BACKUP_FILES,
+  maxBytes: MAX_BACKUP_BYTES,
+};
 
 /**
  * How many files' bytes a backup holds in memory before flushing them.
@@ -66,18 +93,44 @@ async function sha256(data: ArrayBuffer): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function walkFiles(prefix: string): Promise<string[]> {
-  const files: string[] = [];
-  const entries = await getStorage().listFiles(prefix);
-  for (const entry of entries) {
+/**
+ * Every file under `prefix`, stopping at `max`.
+ *
+ * WHAT CHANGED IS THE ENDING, NOT THE BOUND. The walk this replaced counted
+ * globally too — each subtree spread its result into the parent's array, which
+ * was re-checked after every entry — but it OVERSHOT and then THREW: it took the
+ * count to `max + 1` and turned the entire backup into an error, which is the
+ * behaviour DW-215 exists to remove. This one stops AT `max` and reports the
+ * stop as a return value, so the caller keeps every file that fit.
+ *
+ * And "full" is only TRUNCATION when a FILE was actually left out, which is why
+ * the check sits on the push rather than at the top of the loop: a tenant of
+ * exactly `max` files whose listing still has a directory left to descend into
+ * is complete, and flagging it would park a whole backup on "attention" forever
+ * over a directory that held nothing. The walk keeps descending until it meets
+ * that left-out file, so the flag costs at most one listing per remaining level
+ * and never a copy.
+ */
+async function walkInto(prefix: string, files: string[], max: number): Promise<boolean> {
+  for (const entry of await getStorage().listFiles(prefix)) {
     const child = `${prefix}/${entry.name}`;
-    if (entry.isDirectory) files.push(...await walkFiles(child));
-    else files.push(child);
-    if (files.length > MAX_BACKUP_FILES) {
-      throw new Error(`Backup exceeds the ${MAX_BACKUP_FILES}-file safety limit`);
+    if (entry.isDirectory) {
+      if (await walkInto(child, files, max)) return true;
+    } else {
+      if (files.length >= max) return true;
+      files.push(child);
     }
   }
-  return files;
+  return false;
+}
+
+async function walkFiles(
+  prefix: string,
+  max: number,
+): Promise<{ files: string[]; truncated: boolean }> {
+  const files: string[] = [];
+  const truncated = await walkInto(prefix, files, max);
+  return { files, truncated };
 }
 
 async function writeManifest(manifest: BackupManifest): Promise<void> {
@@ -87,15 +140,33 @@ async function writeManifest(manifest: BackupManifest): Promise<void> {
   );
 }
 
+/**
+ * Copy the owner's tenant into a new backup, DEGRADING at the safety limits
+ * rather than failing at them.
+ *
+ * The limits used to throw, which meant the growth a tenant accumulates
+ * eventually turned the owner's only recovery path OFF: no manifest, no
+ * verification, nothing to restore from — the failure mode a backup exists to
+ * prevent. Stopping at the limit and recording {@link BackupManifest.truncated}
+ * keeps a real, verifiable backup of everything that fit, and says out loud that
+ * it is not everything. The operation is still recorded as SUCCEEDED, because it
+ * partially succeeded; the flag, not the status, is how "partial" is said — and
+ * `system-health.ts` reads it as needing attention so the degradation is not
+ * silent.
+ */
 async function createOwnerBackupUnlocked(
   owner: string,
   now: Date = new Date(),
+  limits: BackupLimits = DEFAULT_BACKUP_LIMITS,
 ): Promise<BackupManifest> {
   const tenant = ownerTenant(owner);
   const id = `bak_${now.toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID()}`;
   const sourceRoot = `tenants/${tenant}`;
   const root = backupRoot(owner, id);
-  const files = await walkFiles(sourceRoot);
+  const walked = await walkFiles(sourceRoot, limits.maxFiles);
+  const files = walked.files;
+  const truncated: BackupTruncationReason[] = [];
+  if (walked.truncated) truncated.push("file-count");
   const entries: BackupFileEntry[] = [];
   let totalBytes = 0;
 
@@ -106,7 +177,9 @@ async function createOwnerBackupUnlocked(
   // — before the next window is read.
   //
   // The size cap is unaffected: it is checked as each source is READ, and the
-  // first read that crosses it throws before that window is flushed.
+  // first read that WOULD cross it ends the loop before that file joins the
+  // pending window — so `totalBytes` and `files` describe bytes that were really
+  // copied, and everything already pending is still flushed below.
   const pending = new Map<string, ArrayBuffer>();
   const flush = async (): Promise<void> => {
     if (pending.size === 0) return;
@@ -117,10 +190,14 @@ async function createOwnerBackupUnlocked(
 
   for (const sourcePath of files) {
     const data = await getStorage().readAsset(sourcePath);
-    totalBytes += data.byteLength;
-    if (totalBytes > MAX_BACKUP_BYTES) {
-      throw new Error("Backup exceeds the 2 GB safety limit");
+    // STOP BEFORE, not add-then-check: a manifest whose `totalBytes` already
+    // counted a file it never copied would describe a backup that does not
+    // exist.
+    if (totalBytes + data.byteLength > limits.maxBytes) {
+      truncated.push("total-bytes");
+      break;
     }
+    totalBytes += data.byteLength;
     const relative = sourcePath.slice(sourceRoot.length + 1);
     const destination = `${root}/files/${relative}`;
     // `walkFiles` yields distinct paths, so a repeat here would mean two sources
@@ -147,6 +224,9 @@ async function createOwnerBackupUnlocked(
     createdAt: now.toISOString(),
     files: entries,
     totalBytes,
+    // Spread rather than assigned, so a complete backup's manifest has no
+    // `truncated` KEY at all — not a key holding an empty array.
+    ...(truncated.length > 0 && { truncated }),
   };
   await writeManifest(manifest);
   await recordOperationSafe(owner, {
@@ -154,7 +234,9 @@ async function createOwnerBackupUnlocked(
     operation: "create",
     status: "succeeded",
     subjectId: id,
-    detail: `${entries.length} files; ${totalBytes} bytes`,
+    detail: truncated.length > 0
+      ? `${entries.length} files; ${totalBytes} bytes; truncated at ${truncated.join(", ")}`
+      : `${entries.length} files; ${totalBytes} bytes`,
   });
   return manifest;
 }
@@ -162,9 +244,10 @@ async function createOwnerBackupUnlocked(
 export async function createOwnerBackup(
   owner: string,
   now: Date = new Date(),
+  limits: BackupLimits = DEFAULT_BACKUP_LIMITS,
 ): Promise<BackupManifest> {
   return withFileLock(`owner-backup:${ownerTenant(owner)}`, () =>
-    createOwnerBackupUnlocked(owner, now));
+    createOwnerBackupUnlocked(owner, now, limits));
 }
 
 export async function getBackupManifest(owner: string, id: string): Promise<BackupManifest | null> {
@@ -281,6 +364,36 @@ export async function verifyOwnerBackup(
     await writeManifest(manifest);
   }
   return manifest;
+}
+
+/**
+ * The words a truncation reason is shown in.
+ *
+ * `"file-count"` / `"total-bytes"` are storage discriminants — fine in a
+ * manifest, wrong on a page, where they read as a leaked internal. Falling back
+ * to the raw reason keeps a manifest written by some other version of this file
+ * renderable rather than blank.
+ */
+const BACKUP_TRUNCATION_LABELS: Record<BackupTruncationReason, string> = {
+  "file-count": "file count",
+  "total-bytes": "total size",
+};
+
+/**
+ * One sentence naming why a backup covered only part of the tenant.
+ *
+ * Exported from here, beside the flag it describes, for the same reason
+ * `FILES_TRUNCATED_COPY` and `PREVIEW_TRUNCATED_COPY` live beside their bounds:
+ * the desk shows this in two places (the row receipt and the restore-check
+ * card), and copy assembled inline in JSX drifts between them. Empty in →
+ * empty out, so a caller can render the result unconditionally.
+ */
+export function backupTruncationCopy(
+  reasons: readonly BackupTruncationReason[] | undefined,
+): string {
+  if (!reasons?.length) return "";
+  const labels = reasons.map((reason) => BACKUP_TRUNCATION_LABELS[reason] ?? reason);
+  return `partial — stopped at the ${labels.join(" and ")} limit${labels.length > 1 ? "s" : ""}`;
 }
 
 /** Human-readable size used by API/UI without exposing raw backup contents. */

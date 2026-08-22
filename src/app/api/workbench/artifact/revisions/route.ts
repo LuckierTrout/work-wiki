@@ -64,6 +64,20 @@ import { scopedContentVersion } from "@/lib/write-precondition";
  *     the asymmetry is the reason why: unlike the other two, it can be FALSE for
  *     a legitimately-stored revision, because a snapshot may predate the guard.
  *
+ * THE LISTING IS RETENTION-BOUNDED, NOT PAGINATED (DW-215). `{ revisions }` is
+ * the newest `MAX_ARTIFACT_REVISIONS` snapshots. Usually that IS the whole
+ * history, because `saveWikiArtifactRevision` prunes to the same cap — but not
+ * always, and the difference matters to anyone reading this route: a directory
+ * that predates retention, or one a fail-soft prune could not trim, holds more
+ * than this answers, and the extra entries stay unreachable HERE until the next
+ * save prunes them. Nothing on this path trims anything; a GET is a read.
+ *
+ * That gap is the bound doing its job rather than a defect it hides — the
+ * alternative is stat-ing an unbounded backlog on every GET, which is what this
+ * replaced. And there is deliberately no `?limit=` and no cursor: how deep the
+ * history goes is the silo's decision, and a knob here would only let a caller
+ * ask for revisions retention is in the business of removing.
+ *
  * READ-ONLY REFUSES THE REVERT ONLY. A read-only deployment still answers the
  * listing: history is a read, and hiding it would tell the owner nothing except
  * that they cannot look. Only the POST, which writes, is refused.

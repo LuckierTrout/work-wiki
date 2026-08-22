@@ -1930,7 +1930,8 @@ source_spec: `spec-dw-59-per-wiki-artifact-revisions.md`
 location: src/lib/wiki-artifact-revisions.ts, src/lib/backups.ts:56-85
 severity: medium
 reason: Every `writeWikiArtifact` writes a full copy under `tenants/<t>/wikis/<id>/revisions/<file>/` with no retention policy (deliberate — page revisions have none either), and `listWikiArtifactRevisions` stats every revision on each GET with an unbounded `Promise.all`. `src/lib/backups.ts` walks all of `tenants/<t>` against `MAX_BACKUP_FILES = 10_000` / `MAX_BACKUP_BYTES = 2 GB` and throws "Backup exceeds the safety limit" rather than degrading. Page revisions spread across slugs; these pile into one directory per artifact.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-decision-dw-215
 decision: 2026-08-21 Cap revisions and degrade backups — Add a retention cap with pruning in saveWikiArtifactRevision plus a bounded listing, and make the backup walk truncate-with-a-flag at MAX_BACKUP_FILES/MAX_BACKUP_BYTES instead of throwing.
 decision: 2026-08-20 Cap revisions and degrade backups — Add a retention cap with pruning in saveWikiArtifactRevision plus a bounded listing, and make the backup walk truncate-with-a-flag at MAX_BACKUP_FILES/MAX_BACKUP_BYTES instead of throwing.
 
@@ -3945,4 +3946,12 @@ source_spec: `spec-dw-64-stream-deadline-copy.md`
 location: src/app/api/query/stream/route.ts:255
 severity: low
 reason: The stream carries `finish` with `finishReason: "length"` when QUERY_MAX_OUTPUT_TOKENS is reached; nothing in the route or the client says so, so the answer simply stops mid-sentence. Same defect shape as DW-64's mid-stream half, different cause, and out of scope for a decision about the LLM deadline.
+status: open
+
+### DW-452: The bounded artifact-revision listing hides a legacy over-cap backlog with no signal on the wire, while the backup half says "partial" out loud at four surfaces.
+origin: spec-deferred 23e413821c9f
+source_spec: `spec-dw-215-artifact-revision-retention-and-backup-degradation.md`
+location: src/lib/wiki-artifact-revisions.ts (listWikiArtifactRevisions) and src/app/api/workbench/artifact/revisions/route.ts
+severity: low
+reason: `listWikiArtifactRevisions` returns the newest MAX_ARTIFACT_REVISIONS stems and the route's `{ revisions }` shape carries no `total`/`hasMore`/cap field, so a client cannot distinguish "this artifact has 50 revisions" from "50 of 300". Pruning only fires on a save, so an artifact never edited again keeps a directory the reader silently truncates. The intent forecloses `?limit=`/pagination, so the honest alternative is a marker, not a knob — a decision this run had no authority to make.
 status: open

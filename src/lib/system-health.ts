@@ -46,6 +46,13 @@ export async function getSystemHealth(owner: string): Promise<SystemHealthSnapsh
       : latestBackup.verificationStatus === "failed"
         ? "failed" as const
         : "unverified" as const;
+  // A PARTIAL backup is not a failed one — `createOwnerBackup` degrades at its
+  // safety limits instead of throwing, and the manifest it writes verifies
+  // cleanly because it verifies the entries it holds. So it would read as
+  // `verified` and the desk would call the system healthy while the owner's
+  // recovery path silently covers less than their tenant. The throw this
+  // replaced was the operator's only signal; this is its replacement.
+  const backupTruncated = (latestBackup?.truncated?.length ?? 0) > 0;
   const latestEvaluation = evaluations[0] ?? null;
   const recentFailureCutoff = Date.now() - 24 * 60 * 60 * 1_000;
   const failedOperations = operations.filter(
@@ -63,6 +70,7 @@ export async function getSystemHealth(owner: string): Promise<SystemHealthSnapsh
     || ingestFailures > 0
     || failedOperations > 0
     || backupStatus !== "verified"
+    || backupTruncated
     || privacyPass === false;
 
   return {
