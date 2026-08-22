@@ -3967,7 +3967,8 @@ source_spec: `spec-dw-253-email-oversized-attachment-skip.md`
 location: workers/email-ingest/index.ts:271
 severity: medium
 reason: MAX_RAW_EMAIL_BYTES is ceil(10 MiB x BASE64_EXPANSION_FACTOR) + 64 KiB, checked on message.rawSize before the MIME parse. An attachment of size S reaches the wire at about 1.368 x S, so a document more than roughly 47 KB over the 10 MB ceiling pushes rawSize past that gate and the sender gets the "larger than 13.7 MB" whole-message refusal -- body and every other attachment lost -- without ever reaching the new oversizedAttachments filter. The two "too big" replies also quote two different ceilings (10 MB vs 13.7 MB) depending on which gate catches the message. Pre-existing (the gate is DW-104's), surfaced by DW-253: it materially bounds how often the per-file skip can help, and the acknowledgement copy implies a broader guarantee.
-status: open
+status: done 2026-08-22
+resolution: already resolved: workers/email-ingest/index.ts:228-230 — MAX_RAW_EMAIL_BYTES is now ceil(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES x WORST_CASE_TRANSFER_ENCODING_FACTOR) + MIME_ENVELOPE_HEADROOM_BYTES = 65,496,679, not the 14,414,471 this entry describes. Against the 10 MiB per-document ceiling (index.ts:46) an attachment now survives the raw gate up to ~47.8 MB decoded under base64 and ~20.97 MB under quoted-printable, so the per-file oversize skip at index.ts:508-513 has a 10 MiB-to-~21 MB band, not the ~50 KB band the entry names. DW-358 and DW-362 widened the cap 4.5x after this entry was filed.
 
 ### DW-454: An empty or whitespace-only reconcile response makes `mergePages` replace the survivor's body with the ABSORBED page's body, then hard-delete the absorbed page — silent data loss with no revision to r
 origin: spec-deferred 376999e4dd82
