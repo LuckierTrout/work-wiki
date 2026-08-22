@@ -43,6 +43,7 @@ import { enqueueOrInline } from "@/lib/ingest-async";
 import { stageBytes } from "@/lib/ingest-staging";
 import { createIngestJob, getIngestJob } from "@/lib/ingest-jobs";
 import { loadEmailIngestConfig, MAX_EMAIL_DOCUMENTS } from "@/lib/email-ingest";
+import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
 import { getAgent } from "@/lib/agents";
 import { getVault, vaultOwnedBy } from "@/lib/vault";
 
@@ -285,7 +286,15 @@ describe("POST /api/email/ingest", () => {
       multipartRequest({
         messageId: "<message-both-paths@example.com>",
         file: new File(["name,total\nAlpha,10"], "metrics.csv", { type: "text/csv" }),
-        files: [new File(["binary"], "clip.mov", { type: "video/quicktime" })],
+        files: [
+          new File(["binary"], "clip.mov", { type: "video/quicktime" }),
+          // Oversized, so `oversizedAttachmentNames` is populated and this one
+          // fixture pins the field on BOTH exits. Without it, deleting the
+          // spread from the duplicate response leaves the suite green.
+          new File([new Uint8Array(MAX_DOCUMENT_SIZE + 1)], "huge.pdf", {
+            type: "application/pdf",
+          }),
+        ],
         unforwardedNames: ["scan.tiff"],
         skippedAttachmentCount: "3",
       });
@@ -311,10 +320,12 @@ describe("POST /api/email/ingest", () => {
 
     expect(second.supportedAttachmentCount).toBe(first.supportedAttachmentCount);
     expect(second.skippedAttachmentCount).toBe(first.skippedAttachmentCount);
-    // Both really carried a figure -- otherwise the equality above would hold
-    // vacuously on a pair of `undefined`s.
+    expect(second.oversizedAttachmentNames).toEqual(first.oversizedAttachmentNames);
+    // All three really carried a value -- otherwise the equalities above would
+    // hold vacuously on a pair of `undefined`s.
     expect(typeof first.supportedAttachmentCount).toBe("number");
     expect(typeof first.skippedAttachmentCount).toBe("number");
+    expect(first.oversizedAttachmentNames).toEqual(["huge.pdf"]);
   });
 
   it("accepts an attachment-only email and queues its staged document", async () => {
@@ -571,6 +582,215 @@ describe("POST /api/email/ingest", () => {
   });
 
   /**
+   * A body whose every attachment was refused. The route's own filter drops both
+   * parts, so nothing is staged and the task carries no `attachments` key at
+   * all -- but the body still ingests and both names still reach the job
+   * metadata. Neither suite had this case end to end: every prior
+   * all-unsupported fixture was attachment-ONLY, and so exercised the 400 rather
+   * than the accepting path (DW-253).
+   */
+  it("ingests the body when every attachment is unsupported, recording both names", async () => {
+    const { POST } = await import("@/app/api/email/ingest/route");
+    const response = await POST(multipartRequest({
+      messageId: "<message-body-all-unsupported@example.com>",
+      content: "The notes are in this email body.",
+      files: [
+        new File([SECOND_BYTES], "program.exe", { type: "application/octet-stream" }),
+        new File([SECOND_BYTES], "clip.mov", { type: "video/quicktime" }),
+      ],
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      accepted: true,
+      supportedAttachmentCount: 0,
+      skippedAttachmentCount: 2,
+    });
+    expect(mockedStageBytes).not.toHaveBeenCalled();
+    expect(mockedCreateJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: expect.objectContaining({ attachmentNames: ["program.exe", "clip.mov"] }),
+      }),
+    );
+    const task = mockedEnqueue.mock.calls[0][1];
+    expect(task).toMatchObject({ content: "The notes are in this email body." });
+    // Absent, not an empty array: `...(stagedAttachments.length ? ... : {})`.
+    expect(task).not.toHaveProperty("attachments");
+  });
+
+  /**
+   * Oversize is a per-FILE loss (DW-253). It used to 400 the whole email, so one
+   * document over the ceiling cost the sender their body and every other
+   * attachment as well. The ceiling itself is unchanged -- what changed is who
+   * pays for breaching it.
+   *
+   * The fixture buffer is allocated once and shared by every `File` below: at
+   * `MAX_DOCUMENT_SIZE + 1` bytes a fresh allocation per case would dominate the
+   * suite's runtime for no added coverage.
+   */
+  describe("oversized attachments", () => {
+    const OVERSIZED_BYTES = new Uint8Array(MAX_DOCUMENT_SIZE + 1);
+    /** The ceiling as the refusal and the route's own arithmetic both write it. */
+    const CEILING_MB = MAX_DOCUMENT_SIZE / 1024 / 1024;
+
+    function oversizedFile(name = "big.pdf") {
+      return new File([OVERSIZED_BYTES], name, { type: "application/pdf" });
+    }
+
+    it("keeps the body and the under-ceiling attachment, dropping only the oversized one", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-oversized-among-good@example.com>",
+        content: "Two files attached.",
+        files: [
+          oversizedFile(),
+          new File([FIRST_BYTES], "report.pdf", { type: "application/pdf" }),
+        ],
+      }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        accepted: true,
+        supportedAttachmentCount: 1,
+        skippedAttachmentCount: 1,
+        oversizedAttachmentNames: ["big.pdf"],
+      });
+
+      // Only the small file was staged -- and it is numbered 1, so the dropped
+      // file did not leave a hole in the indexed keys.
+      expect(mockedStageBytes).toHaveBeenCalledTimes(1);
+      expect(mockedStageBytes.mock.calls[0][1]).toBe("1-report.pdf");
+      // The oversized file's NAME still reaches the job: its bytes are lost,
+      // the record that it was sent is not.
+      expect(mockedCreateJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          email: expect.objectContaining({ attachmentNames: ["big.pdf", "report.pdf"] }),
+        }),
+      );
+      expect(mockedEnqueue).toHaveBeenCalledWith(
+        expect.stringMatching(/^email-/),
+        expect.objectContaining({
+          content: "Two files attached.",
+          attachments: [expect.objectContaining({ filename: "report.pdf" })],
+        }),
+        expect.any(Function),
+      );
+    });
+
+    it("accepts an email whose only attachment is oversized, as long as it has a body", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-oversized-with-body@example.com>",
+        content: "The report is attached.",
+        files: [oversizedFile()],
+      }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        accepted: true,
+        supportedAttachmentCount: 0,
+        skippedAttachmentCount: 1,
+        oversizedAttachmentNames: ["big.pdf"],
+      });
+      expect(mockedStageBytes).not.toHaveBeenCalled();
+      const task = mockedEnqueue.mock.calls[0][1];
+      expect(task).toMatchObject({ content: "The report is attached." });
+      expect(task).not.toHaveProperty("attachments");
+    });
+
+    it("still refuses when the oversized file was the only thing to ingest", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-oversized-no-body@example.com>",
+        files: [oversizedFile()],
+      }));
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      // The sender has to learn WHICH file was too big and what the ceiling is;
+      // "no supported document attachment" alone would be a lie about a `.pdf`.
+      expect(body.error).toContain("big.pdf");
+      expect(body.error).toContain(`larger than ${CEILING_MB} MB`);
+      expect(CEILING_MB).toBe(10);
+      expect(body.oversizedAttachmentNames).toEqual(["big.pdf"]);
+      // A supported document DID arrive -- it was too big, not unsupported. The
+      // lead sentence must not contradict the one naming the sender's PDF.
+      expect(body.error).not.toContain("supported document attachment");
+      // Nothing irreversible happened on the way to the refusal.
+      expect(mockedStageBytes).not.toHaveBeenCalled();
+      expect(mockedCreateJob).not.toHaveBeenCalled();
+      expect(mockedEnqueue).not.toHaveBeenCalled();
+    });
+
+    it("adds its own oversize drop to the count the Worker forwarded", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-oversized-plus-forwarded@example.com>",
+        content: "Everything I have.",
+        files: [oversizedFile()],
+        // What the Worker never forwarded. Disjoint from the drop made here, so
+        // the two are summed: 3 + 1.
+        skippedAttachmentCount: "3",
+      }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        supportedAttachmentCount: 0,
+        skippedAttachmentCount: 4,
+        oversizedAttachmentNames: ["big.pdf"],
+      });
+    });
+
+    it("reports the unsupported refusal alongside the oversize one", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-oversized-plus-unsupported@example.com>",
+        files: [
+          oversizedFile(),
+          new File([SECOND_BYTES], "program.exe", { type: "application/octet-stream" }),
+        ],
+      }));
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      // Two independent refusals, so BOTH have to be reported. Swapping one
+      // sentence for the other loses either the oversize explanation or the
+      // list of formats the sender needs in order to resend the `.exe`.
+      expect(body.error).toContain("supported document attachment");
+      expect(body.error).toContain(`big.pdf is larger than ${CEILING_MB} MB`);
+      expect(body.oversizedAttachmentNames).toEqual(["big.pdf"]);
+    });
+
+    it("still names and reports a file whose own name scrubs away to nothing", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-oversized-blank-name@example.com>",
+        // Two of them, so the plural verb is exercised where the noun cannot be
+        // taken for granted: `sanitizeAttachmentNames` drops a name that scrubs
+        // away, and a list built without the fallback would come back EMPTY
+        // while two files were really dropped -- printing "The attachment are
+        // larger than 10 MB" and omitting the field that is supposed to prove
+        // the drop happened.
+        files: [oversizedFile("   "), oversizedFile("\t")],
+      }));
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.oversizedAttachmentNames).toEqual([
+        "unnamed attachment",
+        "unnamed attachment",
+      ]);
+      expect(body.error).toContain(
+        `unnamed attachment, unnamed attachment are larger than ${CEILING_MB} MB`,
+      );
+      // Never the singular verb against a two-item list.
+      expect(body.error).not.toContain("is larger than");
+    });
+
+    it("leaves the field off entirely when nothing was oversized", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(mixedAttachmentRequest());
+      expect(response.status).toBe(200);
+      // Presence alone must mean "a file was dropped for being too big", so an
+      // empty array here would be a false alarm to relay back to the sender.
+      expect(await response.json()).not.toHaveProperty("oversizedAttachmentNames");
+    });
+  });
+
+  /**
    * The per-message document cap. Nothing posted more than three parts before
    * this block, so `attachments.length > MAX_EMAIL_DOCUMENTS` survived both
    * deletion and inversion, and no test in the repo matched the message text
@@ -658,6 +878,32 @@ describe("POST /api/email/ingest", () => {
       });
       // The reported count alone would not notice the `.exe` parts leaking into
       // R2; the staging call count would.
+      expect(mockedStageBytes).toHaveBeenCalledTimes(MAX_EMAIL_DOCUMENTS);
+    });
+
+    it("does not let an oversized file consume a cap slot", async () => {
+      const { POST } = await import("@/app/api/email/ingest/route");
+      const response = await POST(multipartRequest({
+        messageId: "<message-cap-plus-oversized@example.com>",
+        files: [
+          ...csvFiles(MAX_EMAIL_DOCUMENTS),
+          new File([new Uint8Array(MAX_DOCUMENT_SIZE + 1)], "huge.pdf", {
+            type: "application/pdf",
+          }),
+        ],
+      }));
+      // The oversize partition runs BEFORE the cap comparison, so a full email
+      // plus one too-big file is a legal email with one file dropped -- not a
+      // cap refusal. Comparing `supportedFiles.length` instead of
+      // `attachments.length` here would 400 the whole message, and no other
+      // assertion in this suite would notice.
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        accepted: true,
+        supportedAttachmentCount: MAX_EMAIL_DOCUMENTS,
+        skippedAttachmentCount: 1,
+        oversizedAttachmentNames: ["huge.pdf"],
+      });
       expect(mockedStageBytes).toHaveBeenCalledTimes(MAX_EMAIL_DOCUMENTS);
     });
   });

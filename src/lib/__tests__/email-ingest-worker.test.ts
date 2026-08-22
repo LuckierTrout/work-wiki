@@ -343,6 +343,13 @@ function multipartEmail(
   parts: readonly (Pick<MixedPart, "filename" | "mime"> & {
     /** Decoded payload length. Defaults to `partBytes`'s own 96. */
     bytes?: number;
+    /**
+     * A verbatim `Content-Disposition` line, replacing the one derived from
+     * `filename`. The only way to write a name the quoted-string form cannot
+     * hold -- RFC 2231 percent-encoding smuggles bytes (CR/LF included) that a
+     * `filename="..."` parameter could not carry without breaking the header.
+     */
+    disposition?: string;
   })[],
   options: { subject: string; messageId: string; body: string },
 ): string {
@@ -364,9 +371,10 @@ function multipartEmail(
     lines.push(
       "--work-wiki-boundary",
       `Content-Type: ${part.mime}`,
-      part.filename
-        ? `Content-Disposition: attachment; filename="${part.filename}"`
-        : "Content-Disposition: attachment",
+      part.disposition ??
+        (part.filename
+          ? `Content-Disposition: attachment; filename="${part.filename}"`
+          : "Content-Disposition: attachment"),
       "Content-Transfer-Encoding: base64",
       "",
       base64Lines(partBytes(index, part.bytes ?? 96)),
@@ -578,6 +586,293 @@ describe("email-ingest forwarded skipped count", () => {
   it("forwards a zero when nothing was skipped", async () => {
     const { form } = await forwardedForm(ATTACHMENT_EMAIL, "Quarterly report", "quarterly-report");
     expect(form.get("skippedAttachmentCount")).toBe("0");
+  });
+});
+
+/**
+ * The per-document byte ceiling (DW-253). The Worker knows a part's decoded size
+ * only after decoding it, so nothing filtered on it at all: an oversized part
+ * was forwarded, the route 400d the whole message, and the sender lost their
+ * body and every other attachment to one bad file. It also paid for the bounce.
+ *
+ * These fixtures carry a genuinely over-ceiling part rather than a stubbed size:
+ * the filter reads `bytes.byteLength` off the decode the forwarding loop reuses,
+ * and a mocked parser would observe the filter without observing that the decode
+ * it depends on still happens exactly once.
+ */
+describe("email-ingest oversized attachments", () => {
+  /** One byte over -- the gate is `>`, so this is the smallest refused document. */
+  const OVERSIZED_BYTES = MAX_EMAIL_DOCUMENT_BYTES + 1;
+  /** The ceiling as the reply writes it, and as `/api/email/ingest` writes it. */
+  const CEILING_MB = MAX_EMAIL_DOCUMENT_BYTES / 1024 / 1024;
+
+  /**
+   * Built lazily and cached: each of these encodes ~14 MB of base64, which is
+   * worth paying once and not at module load for every other test in the file.
+   */
+  const fixtures = new Map<string, string>();
+  function fixture(key: string, build: () => string): string {
+    const existing = fixtures.get(key);
+    if (existing !== undefined) return existing;
+    const built = build();
+    fixtures.set(key, built);
+    return built;
+  }
+
+  /** One oversized supported part, one small supported part, and a body. */
+  const oversizedAmongGood = () =>
+    fixture("among-good", () =>
+      multipartEmail(
+        [
+          { filename: "huge.pdf", mime: "application/pdf", bytes: OVERSIZED_BYTES },
+          { filename: "solo.pdf", mime: "application/pdf" },
+        ],
+        {
+          subject: "One too big",
+          messageId: "message-oversized-among-good",
+          body: "One of these is enormous.",
+        },
+      ),
+    );
+
+  /**
+   * The oversized part comes FIRST, deliberately: if the byte filter ran after
+   * `.slice(0, MAX_EMAIL_ATTACHMENTS)` it would eat a cap slot and only nine of
+   * the ten small files would be forwarded. With it last, that ordering bug is
+   * invisible.
+   */
+  const oversizedAtCap = () =>
+    fixture("at-cap", () =>
+      multipartEmail(
+        [
+          { filename: "huge.pdf", mime: "application/pdf", bytes: OVERSIZED_BYTES },
+          ...Array.from({ length: MAX_EMAIL_ATTACHMENTS }, (_unused, index) => ({
+            filename: `small-${index + 1}.pdf`,
+            mime: "application/pdf",
+          })),
+        ],
+        {
+          subject: "Ten and a whale",
+          messageId: "message-oversized-at-cap",
+          body: "Ten small files and one enormous one.",
+        },
+      ),
+    );
+
+  it("never forwards an oversized part, and names it in the acknowledgement", async () => {
+    const { form, reply } = await forwardedForm(
+      oversizedAmongGood(),
+      "One too big",
+      "one-too-big",
+    );
+    const parts = form.getAll("attachments");
+    expect(parts).toHaveLength(1);
+    expect((parts[0] as File).name).toBe("solo.pdf");
+    // Index 1 among the parsed parts -- the pairing survives the file dropped
+    // ahead of it.
+    expect(new Uint8Array(await (parts[0] as File).arrayBuffer())).toEqual(partBytes(1));
+
+    // The name is still recorded even though the bytes were not forwarded.
+    expect(form.getAll("attachmentName")).toEqual(["huge.pdf", "solo.pdf"]);
+    expect(form.get("skippedAttachmentCount")).toBe("1");
+    expect(form.get("content")).toBe("One of these is enormous.");
+
+    expect(reply.text).toContain("huge.pdf");
+    expect(reply.text).toContain(`larger than ${CEILING_MB} MB`);
+    expect(CEILING_MB).toBe(10);
+    // The surviving file is still reported as queued -- the message was not
+    // refused wholesale.
+    expect(reply.text).toContain("1 supported attachment was queued for ingestion.");
+    // Nothing was unsupported and nothing hit the cap, so neither of those
+    // sentences fires: an oversized file is its own kind of loss.
+    expect(reply.text).not.toContain("recorded but skipped");
+    expect(reply.text).not.toContain("attachment limit");
+  });
+
+  /**
+   * The no-body early return. `parsed.attachments.length` was the wrong thing to
+   * key the lead sentence on: a sender whose ONLY attachment was a supported PDF
+   * that happened to be too big was told work-wiki "found no ... supported
+   * document attachment", two paragraphs above a sentence naming that same PDF.
+   *
+   * Called directly rather than through `forwardedForm`, which asserts a forward
+   * happened -- this branch deliberately forwards nothing.
+   */
+  it("does not claim nothing supported arrived when the file was merely too big", async () => {
+    const raw = fixture("no-body", () =>
+      multipartEmail(
+        [{ filename: "huge.pdf", mime: "application/pdf", bytes: OVERSIZED_BYTES }],
+        { subject: "Just the whale", messageId: "message-oversized-no-body", body: "" },
+      ),
+    );
+    const msg = message(raw, "Just the whale");
+    const bindings = env(Response.json({ ok: true, slug: "unused" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+
+    // Nothing survived the size filter, so nothing is forwarded -- and the route
+    // never sees a message it could only 400.
+    expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
+    const text = msg.reply.mock.calls[0][0].text;
+    expect(text).toContain("huge.pdf");
+    expect(text).toContain(`larger than ${CEILING_MB} MB`);
+    // The honest lead sentence, and NOT the allowlist one: nothing here failed
+    // the allowlist, so listing supported formats would answer a question the
+    // sender did not ask and deny a fact they can see.
+    expect(text).toContain("work-wiki found no email text to ingest.");
+    expect(text).not.toContain("supported document attachment");
+  });
+
+  /**
+   * All three losses in one acknowledgement. Every other fixture in this file
+   * produces at most two, so the composition the intent actually promises --
+   * the oversize sentence standing ALONGSIDE the existing skipped-attachment
+   * ones -- was only ever asserted negatively, and the plural oversize wording
+   * and the `"unnamed attachment"` fallback were unobserved.
+   *
+   * `rawSize` is overridden because two 10 MB parts cannot coexist under
+   * `MAX_RAW_EMAIL_BYTES`: a message like this really would bounce at the raw
+   * gate first. That gate is pinned on its own below; what is under test here is
+   * the accounting BENEATH it, which must still be right -- and the plural
+   * oversize wording is otherwise unreachable.
+   */
+  it("reports oversized, over-cap and unsupported losses in one acknowledgement", async () => {
+    const raw = fixture("all-three", () =>
+      multipartEmail(
+        [
+          // An RFC 2231 encoded name that really does arrive carrying CR/LF.
+          // This is the whole attack: the filename is attacker-controlled text
+          // that lands in an outbound email body, and interpolated raw it forges
+          // extra lines in the acknowledgement. A tab does NOT test this -- the
+          // parser normalizes tabs to spaces itself, so the reply would look
+          // scrubbed whether or not the worker scrubbed anything.
+          {
+            filename: null,
+            mime: "application/pdf",
+            bytes: OVERSIZED_BYTES,
+            disposition: `Content-Disposition: attachment; filename*=utf-8''huge%0D%0A1.pdf`,
+          },
+          // No filename parameter: `postal-mime` reports `null`, which is what
+          // drives the reply's own name fallback.
+          { filename: null, mime: "application/pdf", bytes: OVERSIZED_BYTES },
+          { filename: "program.exe", mime: "application/octet-stream" },
+          { filename: "clip.mov", mime: "video/quicktime" },
+          ...Array.from({ length: MAX_EMAIL_ATTACHMENTS + 1 }, (_unused, index) => ({
+            filename: `small-${index + 1}.pdf`,
+            mime: "application/pdf",
+          })),
+        ],
+        {
+          subject: "Every loss at once",
+          messageId: "message-every-loss",
+          body: "Two whales, two duds and eleven small ones.",
+        },
+      ),
+    );
+    const msg = { ...message(raw, "Every loss at once"), rawSize: MAX_RAW_EMAIL_BYTES };
+    const bindings = env(Response.json({ ok: true, slug: "every-loss-at-once" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+
+    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
+    const form = await bindings.YOPEDIA.fetch.mock.calls[0][0].formData();
+    // Ten forwarded: the oversized pair never competed for a slot, so the cap
+    // cut exactly one within-size file.
+    expect(form.getAll("attachments")).toHaveLength(MAX_EMAIL_ATTACHMENTS);
+    // 2 oversized + 2 unsupported + 1 over-cap, as one number.
+    expect(form.get("skippedAttachmentCount")).toBe("5");
+
+    const text = msg.reply.mock.calls[0][0].text;
+    expect(text).toContain(
+      `${MAX_EMAIL_ATTACHMENTS} supported attachments were queued for ingestion.`,
+    );
+    // All three loss sentences together, each with its own plural form and its
+    // own reason -- an oversized file is not an over-cap casualty and is not an
+    // unsupported one.
+    expect(text).toContain(
+      `2 attachments were not queued because they are larger than ${CEILING_MB} MB: huge 1.pdf, unnamed attachment.`,
+    );
+    // The CR/LF is gone, not merely rendered harmlessly: the sentence naming the
+    // dropped files must stay ONE line.
+    expect(text).not.toContain("huge\r\n1.pdf");
+    expect(
+      text.split("\n").filter((line) => line.includes("larger than")),
+    ).toHaveLength(1);
+    expect(text).toContain(
+      `1 supported attachment was not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`,
+    );
+    expect(text).toContain("2 unsupported attachments were recorded but skipped.");
+  });
+
+  it("does not let an oversized part consume a cap slot", async () => {
+    const { form, reply } = await forwardedForm(
+      oversizedAtCap(),
+      "Ten and a whale",
+      "ten-and-a-whale",
+    );
+    const parts = form.getAll("attachments");
+    // All ten small files, not nine.
+    expect(parts).toHaveLength(MAX_EMAIL_ATTACHMENTS);
+    expect(parts.map((part) => (part as File).name)).toEqual(
+      Array.from({ length: MAX_EMAIL_ATTACHMENTS }, (_unused, index) => `small-${index + 1}.pdf`),
+    );
+    expect(form.get("skippedAttachmentCount")).toBe("1");
+
+    expect(reply.text).toContain(
+      `${MAX_EMAIL_ATTACHMENTS} supported attachments were queued for ingestion.`,
+    );
+    expect(reply.text).toContain("huge.pdf");
+    expect(reply.text).toContain(`larger than ${CEILING_MB} MB`);
+    // The cap never bit, so the over-cap sentence must not appear -- reporting a
+    // dropped oversized file as an over-cap casualty tells the sender to send
+    // fewer files, which would not have helped.
+    expect(reply.text).not.toContain("attachment limit");
+  });
+});
+
+/**
+ * A body plus attachments the door refuses, end to end: the zero-attachment
+ * form, the absent "queued" sentence, and the skipped total. Every prior
+ * all-unsupported fixture in this suite carried at least one supported file
+ * alongside, so the shape the Worker actually forwards when NOTHING is
+ * forwardable -- a form with no `attachments` parts at all -- was never observed
+ * (DW-253).
+ */
+describe("email-ingest body with only unsupported attachments", () => {
+  const ALL_UNSUPPORTED_EMAIL = multipartEmail(
+    [
+      { filename: "program.exe", mime: "application/octet-stream" },
+      { filename: "clip.mov", mime: "video/quicktime" },
+    ],
+    {
+      subject: "Nothing usable",
+      messageId: "message-all-unsupported",
+      body: "The notes are in this email body.",
+    },
+  );
+
+  it("forwards the body with no attachment parts and reports every skip", async () => {
+    const { form, reply } = await forwardedForm(
+      ALL_UNSUPPORTED_EMAIL,
+      "Nothing usable",
+      "nothing-usable",
+    );
+    expect(form.getAll("attachments")).toHaveLength(0);
+    expect(form.get("content")).toBe("The notes are in this email body.");
+    // Both names travel even though neither file does.
+    expect(form.getAll("attachmentName")).toEqual(["program.exe", "clip.mov"]);
+    expect(form.get("skippedAttachmentCount")).toBe("2");
+
+    // No "queued for ingestion" line at all -- not a "0 supported attachments"
+    // one, which is what a missing `supportedAttachments.length` guard produces.
+    expect(reply.text).not.toContain("queued for ingestion");
+    expect(reply.text).toContain("2 unsupported attachments were recorded but skipped.");
+    expect(reply.text).not.toContain("attachment limit");
+    expect(reply.text).not.toContain("larger than");
   });
 });
 

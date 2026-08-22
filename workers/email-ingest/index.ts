@@ -45,6 +45,12 @@ const CONFIG_KEY = "_idx:email-ingest-config";
  */
 export const MAX_EMAIL_DOCUMENT_BYTES = 10 * 1024 * 1024;
 /**
+ * The figure quoted back to a sender whose attachment was too big. Written the
+ * same way `/api/email/ingest` writes it (`MAX_DOCUMENT_SIZE / 1024 / 1024`), so
+ * the two sides of the same ceiling cannot quote different numbers.
+ */
+const MAX_EMAIL_DOCUMENT_MB = MAX_EMAIL_DOCUMENT_BYTES / 1024 / 1024;
+/**
  * Base64 writes 4 characters for every 3 bytes, and RFC 2045 wraps the result at
  * 76 characters with a CRLF after each line — 78 wire bytes per 76 characters of
  * payload. `message.rawSize` is the on-the-wire RFC 822 byte count, measured
@@ -171,6 +177,42 @@ export function supportedAttachment(filename: string | null, mimeType: string): 
   return mime.length > 0 && SUPPORTED_MIME_TYPES.has(mime);
 }
 
+/**
+ * One attachment's name, safe to interpolate into a reply the sender reads.
+ *
+ * Scrubbed the way `sanitizeAttachmentNames` in `src/lib/email-ingest.ts`
+ * scrubs the names it records — collapse CR/LF/TAB, trim, cap at 200 — because
+ * a MIME `filename` parameter is attacker-controlled text and this string lands
+ * in an outbound email body. An unscrubbed CR/LF would forge extra lines in the
+ * acknowledgement. Never returns empty: a nameless part still has to be
+ * countable in a sentence that lists what was dropped.
+ */
+function replyAttachmentName(filename: string | null): string {
+  return (
+    (filename || "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 200) ||
+    "unnamed attachment"
+  );
+}
+
+/**
+ * Decode one parsed attachment's payload into a standalone byte copy.
+ *
+ * The copy is not incidental: a view handed straight to `Blob` may be backed by
+ * a SharedArrayBuffer, which is not a valid BlobPart. Copying also makes the
+ * result safe to hold across the size filter and reuse in the forwarding loop.
+ */
+function attachmentBytes(content: ArrayBuffer | Uint8Array | string): Uint8Array<ArrayBuffer> {
+  const source =
+    typeof content === "string"
+      ? new TextEncoder().encode(content)
+      : content instanceof ArrayBuffer
+        ? new Uint8Array(content)
+        : new Uint8Array(content.buffer, content.byteOffset, content.byteLength);
+  const bytes = new Uint8Array(new ArrayBuffer(source.byteLength));
+  bytes.set(source);
+  return bytes;
+}
+
 function normalizeAddress(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -289,25 +331,80 @@ export default {
       );
       return;
     }
-    // Both losses are counted from `parsed.attachments`, never from the
+    // Every loss is counted from `parsed.attachments`, never from the
     // 20-capped `attachmentNames` list: the old
     // `attachmentNames.length - supportedAttachments.length` subtraction called a
     // cap-truncated *supported* file "unsupported", and understated the loss
     // entirely once a sender attached more than 20 files (DW-247).
-    const eligibleAttachments = parsed.attachments.filter((attachment) =>
-      supportedAttachment(attachment.filename, attachment.mimeType),
+    //
+    // Bytes are decoded ONCE, here, because that is the only way to know a
+    // part's size: `attachment.content` is a string, an ArrayBuffer or a view,
+    // and `mimeType`/`filename` say nothing about length. The same copies are
+    // reused by the forwarding loop below, so nothing is decoded twice.
+    //
+    // Guarded, because the decode MOVED: the byte copy used to sit inside the
+    // try/catch around the forward, so a degenerate `content` or a failed
+    // allocation still produced the retry reply below. Out here an uncaught
+    // throw would escape `email()` and the sender would hear nothing at all.
+    type DecodedAttachment = {
+      attachment: (typeof parsed.attachments)[number];
+      bytes: Uint8Array<ArrayBuffer>;
+    };
+    let eligibleAttachments: DecodedAttachment[];
+    try {
+      eligibleAttachments = parsed.attachments
+        .filter((attachment) => supportedAttachment(attachment.filename, attachment.mimeType))
+        .map((attachment) => ({ attachment, bytes: attachmentBytes(attachment.content) }));
+    } catch (error) {
+      console.error("email-ingest: attachment decode failed", error);
+      await reply(
+        message,
+        subject,
+        "work-wiki could not queue this email. Please try again in a few minutes.",
+      );
+      return;
+    }
+    // The byte filter runs BEFORE the `MAX_EMAIL_ATTACHMENTS` slice, so an
+    // oversized part never consumes a cap slot that a forwardable file could
+    // have used (DW-253). Forwarding it would only buy a 400 from the route.
+    const oversizedAttachments = eligibleAttachments.filter(
+      ({ bytes }) => bytes.byteLength > MAX_EMAIL_DOCUMENT_BYTES,
     );
-    const supportedAttachments = eligibleAttachments.slice(0, MAX_EMAIL_ATTACHMENTS);
+    const withinSizeAttachments = eligibleAttachments.filter(
+      ({ bytes }) => bytes.byteLength <= MAX_EMAIL_DOCUMENT_BYTES,
+    );
+    const supportedAttachments = withinSizeAttachments.slice(0, MAX_EMAIL_ATTACHMENTS);
     const unsupportedCount = parsed.attachments.length - eligibleAttachments.length;
-    const overCapCount = eligibleAttachments.length - supportedAttachments.length;
-    const skippedAttachmentCount = unsupportedCount + overCapCount;
+    const oversizedCount = oversizedAttachments.length;
+    const overCapCount = withinSizeAttachments.length - supportedAttachments.length;
+    const skippedAttachmentCount = unsupportedCount + oversizedCount + overCapCount;
+    // Built once and used by both exits: the sender has to be told which file
+    // was left behind whether or not anything else survived to be ingested.
+    const oversizedLine = oversizedCount
+      ? `${oversizedCount} attachment${oversizedCount === 1 ? " was" : "s were"} not queued because ${
+          oversizedCount === 1 ? "it is" : "they are"
+        } larger than ${MAX_EMAIL_DOCUMENT_MB} MB: ${oversizedAttachments
+          .map(({ attachment }) => replyAttachmentName(attachment.filename))
+          .join(", ")}.`
+      : "";
     if (!rawContent && supportedAttachments.length === 0) {
       await reply(
         message,
         subject,
-        parsed.attachments.length
-          ? "work-wiki found no email text or supported document attachment. Supported attachments: Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI, Org, and RTF."
-          : "work-wiki found no email text to ingest.",
+        [
+          // Keyed on `unsupportedCount`, NOT on `parsed.attachments.length`: a
+          // sender whose only attachment was a supported-but-oversized PDF has
+          // not "sent no supported document attachment", and telling them so
+          // two paragraphs above a sentence naming that same PDF is a
+          // contradiction. When something really did fail the allowlist the
+          // format list is still the useful answer, so it stays verbatim.
+          unsupportedCount
+            ? "work-wiki found no email text or supported document attachment. Supported attachments: Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI, Org, and RTF."
+            : "work-wiki found no email text to ingest.",
+          oversizedLine,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
       );
       return;
     }
@@ -334,21 +431,12 @@ export default {
       // The true total, so the route reports the real loss instead of
       // re-deriving it from the truncated name list.
       form.append("skippedAttachmentCount", String(skippedAttachmentCount));
-      for (const [index, attachment] of supportedAttachments.entries()) {
+      // `index` numbers by position among the FORWARDED attachments, not among
+      // all parsed parts — an oversized or unsupported part that never reaches
+      // this loop must not shift the `attachment-<n>` fallback of the ones that
+      // do.
+      for (const [index, { attachment, bytes }] of supportedAttachments.entries()) {
         const filename = attachment.filename || `attachment-${index + 1}`;
-        const source = typeof attachment.content === "string"
-          ? new TextEncoder().encode(attachment.content)
-          : attachment.content instanceof ArrayBuffer
-            ? new Uint8Array(attachment.content)
-            : new Uint8Array(
-                attachment.content.buffer,
-                attachment.content.byteOffset,
-                attachment.content.byteLength,
-              );
-        // Copy into a view whose buffer is definitely an ArrayBuffer: a view
-        // over a SharedArrayBuffer is not a valid BlobPart.
-        const bytes = new Uint8Array(source.byteLength);
-        bytes.set(source);
         form.append(
           "attachments",
           new Blob([bytes], { type: attachment.mimeType || "application/octet-stream" }),
@@ -398,6 +486,7 @@ export default {
       supportedAttachments.length
         ? `${supportedAttachments.length} supported attachment${supportedAttachments.length === 1 ? " was" : "s were"} queued for ingestion.`
         : "",
+      oversizedLine,
       overCapCount
         ? `${overCapCount} supported attachment${overCapCount === 1 ? " was" : "s were"} not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`
         : "",

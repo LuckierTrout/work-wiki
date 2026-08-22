@@ -2271,7 +2271,8 @@ source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: src/app/api/email/ingest/route.ts:122
 severity: medium
 reason: (a) An email whose attachments are all unsupported but which has a body: the "queued" line is omitted, the "skipped" line fires, and a zero-attachment form is forwarded — untested end to end. (b) A single attachment over `MAX_DOCUMENT_SIZE` makes the route 400 the *whole* email (`src/app/api/email/ingest/route.ts:122-128`), so the body and every other attachment are lost, and the Worker does no per-attachment size pre-filter before forwarding.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw2-decision-dw-253
 decision: 2026-08-20 Drop the oversized attachment — Change the route to skip an attachment over `MAX_DOCUMENT_SIZE` rather than 400 the request, ingest the body and the remaining attachments, and name the dropped file in the acknowledgement alongside the existing skipped-attachment sentence. Add a per-attachment size pre-filter in the Worker so an oversized part is never forwarded, and add the missing end-to-end case for an email whose attachments are all unsupported but which carries a body.
 
 ### DW-254: The prototype-chain fix applied to `mediaTypeFor` during review is unpinned by any test.
@@ -3954,4 +3955,12 @@ source_spec: `spec-dw-215-artifact-revision-retention-and-backup-degradation.md`
 location: src/lib/wiki-artifact-revisions.ts (listWikiArtifactRevisions) and src/app/api/workbench/artifact/revisions/route.ts
 severity: low
 reason: `listWikiArtifactRevisions` returns the newest MAX_ARTIFACT_REVISIONS stems and the route's `{ revisions }` shape carries no `total`/`hasMore`/cap field, so a client cannot distinguish "this artifact has 50 revisions" from "50 of 300". Pruning only fires on a save, so an artifact never edited again keeps a directory the reader silently truncates. The intent forecloses `?limit=`/pagination, so the honest alternative is a marker, not a knob — a decision this run had no authority to make.
+status: open
+
+### DW-453: The Worker's raw-message gate bounces the whole email for any attachment more than ~50 KB above MAX_EMAIL_DOCUMENT_BYTES, so the new per-file oversize skip only ever fires in a narrow band just above
+origin: spec-deferred 3b1043c2dc89
+source_spec: `spec-dw-253-email-oversized-attachment-skip.md`
+location: workers/email-ingest/index.ts:271
+severity: medium
+reason: MAX_RAW_EMAIL_BYTES is ceil(10 MiB x BASE64_EXPANSION_FACTOR) + 64 KiB, checked on message.rawSize before the MIME parse. An attachment of size S reaches the wire at about 1.368 x S, so a document more than roughly 47 KB over the 10 MB ceiling pushes rawSize past that gate and the sender gets the "larger than 13.7 MB" whole-message refusal -- body and every other attachment lost -- without ever reaching the new oversizedAttachments filter. The two "too big" replies also quote two different ceilings (10 MB vs 13.7 MB) depending on which gate catches the message. Pre-existing (the gate is DW-104's), surfaced by DW-253: it materially bounds how often the per-file skip can help, and the acknowledgement copy implies a broader guarantee.
 status: open
