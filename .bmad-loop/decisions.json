@@ -143,6 +143,15 @@
     "label": "Drop the fallback for raw/ only",
     "resolution": ""
   },
+  "DW-401": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Keep the explicit selection authoritative but emit a warn-once from `resolveEmbeddingProvider` naming the SDK localhost default as the endpoint actually in effect, so the substitution is audible. Smallest change, no behaviour change.",
+    "key": "1",
+    "label": "Warn once, keep selecting",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
