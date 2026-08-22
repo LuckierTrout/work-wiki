@@ -3782,6 +3782,7 @@ location: src/lib/wikis.ts (setCurrentWiki)
 severity: medium
 reason: A Preview and the Files tree both resolve `purpose.md`/`schema.md` through `registry.currentId` read server-side at fetch time (src/app/api/workbench/preview/route.ts:214-222, src/app/page.tsx:98-101 -> src/lib/workbench-files.ts:298-321). A switch is therefore the ONLY operation that changes which bytes those surfaces resolve to — and `WikiSwitcher`'s own `router.refresh()` covers just the acting client. This is a strictly stronger form of the DW-382 argument: DW-382's ledger premise ("a Preview open on those artifacts in a second client keeps rendering bytes whose Wiki is gone") is false for delete, but TRUE for a switch. Raised independently by review layers on all three passes of this story. Pre-existing; `setCurrentWiki`'s no-bump exemption is a recorded decision (src/lib/__tests__/workbench-data-version.test.ts, the bump-site guard's rationale comment), so changing it needs its own story rather than a drive-by.
 status: open
+decision: 2026-08-22 Bump at the kernel tail — Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock, as `renameWiki` does, rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6.
 
 ### DW-430: `renameWiki`'s JSDoc quotes the Preview fetch dep list as `[selection, dataVersion, editing]`; the real deps include `retryNonce`.
 origin: spec-deferred 4c119690dd9a

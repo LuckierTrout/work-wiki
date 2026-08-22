@@ -179,6 +179,15 @@
     "label": "Per-leg client reporting",
     "resolution": ""
   },
+  "DW-429": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock, as `renameWiki` does, rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6.",
+    "key": "1",
+    "label": "Bump at the kernel tail",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
