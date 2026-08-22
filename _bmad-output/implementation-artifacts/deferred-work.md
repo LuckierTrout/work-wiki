@@ -3588,6 +3588,7 @@ location: src/lib/embeddings.ts (searchByVector re-arm branch, modelMatches)
 severity: medium
 reason: `modelMatches` deliberately returns true when `metadata.model` is absent (pre-migration / KV-fallback vectors must survive the filter — pinned by the existing test "keeps unlabelled (legacy) vectors with no model metadata"). Seeding one unlabelled vector plus stale-tagged ones and alternating three queries produced TWO drift lines where the throttle should give one. A gate of `kept.some((m) => m.metadata.model === currentModel)` would close it, but that also narrows the decided `kept.length > 0` trigger. The inline comment at the re-arm branch was corrected to stop claiming corpus-level proof.
 status: open
+decision: 2026-08-22 Require a positive labelled match — Gate re-arm on `kept.some((m) => m.metadata.model === currentModel)` so only positive proof of a rebuilt vector re-arms, leaving `modelMatches` permissive for results.
 
 ### DW-406: `relatedByVector` runs the same model filter but neither warns nor re-arms, so a deployment whose only vector traffic is page-render related lookups observes neither the drift nor its recovery.
 origin: spec-deferred da6f7511b5fb
