@@ -3773,6 +3773,7 @@ location: src/components/WikiEditor.tsx:288
 severity: medium
 reason: `src/components/WikiEditor.tsx:259-303` saves the body with `PUT` and then `PATCH`es metadata, relaying the served `{ error }` verbatim into its error banner. With the 503 branch added here, a read blip on the second leg shows `PAGE_UNREADABLE_COPY` — "so nothing was changed" — to an owner whose body write did land. The previous answer (`page not found`) was also wrong, but it did not make a claim about what was written. Not closable inside this bundle: the spec's Never clause forbids new copy, and the alternative is a client change to the save flow (e.g. reporting the legs separately), which the intent does not reach.
 status: open
+decision: 2026-08-22 Per-leg client reporting — Track in WikiEditor that the PUT leg landed and prefix the PATCH failure accordingly — "Your text was saved; the metadata change was not — <served error>" — leaving all server copy and the frozen sentences untouched.
 
 ### DW-429: `setCurrentWiki` moves no `dataVersion`, so switching the current Wiki leaves every OTHER open client rendering the previous Wiki's artifacts with nothing to un-stale them.
 origin: spec-deferred 5e52805cf407
