@@ -206,6 +206,15 @@
     "label": "Record the trigger separately",
     "resolution": ""
   },
+  "DW-455": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Hold `MAX_RAW_EMAIL_BYTES` constant and pay for the worst-case encoded body out of `AGGREGATE_DOCUMENT_AVERAGE_BYTES` (index.ts:74), so the envelope is honest without widening the cap. Update the derivation comment and the allowlist-parity test.",
+    "key": "1",
+    "label": "Budget the body inside the cap",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

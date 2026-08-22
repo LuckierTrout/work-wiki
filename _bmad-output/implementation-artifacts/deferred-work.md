@@ -3994,6 +3994,7 @@ location: workers/email-ingest/index.ts (MIME_ENVELOPE_HEADROOM_BYTES)
 severity: medium
 reason: MIME_ENVELOPE_HEADROOM_BYTES is still 64 KiB and its comment still frames the body as "an ordinary text body". MAX_EMAIL_CONTENT_CHARS is 100,000, so a non-ASCII body sent quoted-printable reaches the wire at up to ~312 KB -- roughly five times the headroom that is meant to cover part headers, boundaries AND the body. The document half of DW-358 is fixed; the body half is not, and the pair's recorded trade-off ("only has to be simultaneously satisfiable for realistic mail") predates the encoding this change is about. Whether to re-derive the headroom from MAX_EMAIL_CONTENT_CHARS x WORST_CASE_TRANSFER_ENCODING_FACTOR is a cap decision, not a patch.
 status: open
+decision: 2026-08-22 Budget the body inside the cap — Hold `MAX_RAW_EMAIL_BYTES` constant and pay for the worst-case encoded body out of `AGGREGATE_DOCUMENT_AVERAGE_BYTES` (index.ts:74), so the envelope is honest without widening the cap. Update the derivation comment and the allowlist-parity test.
 
 ### DW-456: Widening the raw cap 2.27x roughly doubles the peak decoded-attachment memory the Worker buffers, which is exactly the exposure DW-360 records and nothing bounds it.
 origin: spec-deferred 5c2352e6d293
