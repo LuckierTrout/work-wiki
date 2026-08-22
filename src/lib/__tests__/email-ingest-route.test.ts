@@ -228,8 +228,93 @@ describe("POST /api/email/ingest", () => {
       duplicate: true,
       status: "done",
       slug: "project-notes",
+      // A resend answers with the SAME accounting pair a first delivery does.
+      // `request()` names `deck.pptx` and posts no file, so nothing is
+      // supported and the local floor is 1 -- reporting the count only on the
+      // success path left a resend answering with half the contract.
+      supportedAttachmentCount: 0,
+      skippedAttachmentCount: 1,
     });
     expect(mockedEnqueue).not.toHaveBeenCalled();
+    expect(mockedCreateJob).not.toHaveBeenCalled();
+  });
+
+  it("reports the summed skipped count on the duplicate path too", async () => {
+    mockedGetJob.mockResolvedValueOnce({
+      jobId: "email-existing",
+      owner: "LuckierTrout",
+      status: "queued",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const { POST } = await import("@/app/api/email/ingest/route");
+    // The Worker's own 3 plus the route's own drop of a forwarded file it does
+    // not support: 4. A duplicate that reported only the Worker's figure, or
+    // only the local floor, would understate the loss.
+    const response = await POST(multipartRequest({
+      messageId: "<message-duplicate@example.com>",
+      file: new File(["name,total\nAlpha,10"], "metrics.csv", { type: "text/csv" }),
+      files: [new File(["binary"], "clip.mov", { type: "video/quicktime" })],
+      unforwardedNames: ["scan.tiff"],
+      skippedAttachmentCount: "3",
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      accepted: true,
+      duplicate: true,
+      status: "queued",
+      supportedAttachmentCount: 1,
+      skippedAttachmentCount: 4,
+    });
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+    // The hoist moved the count computation ACROSS this boundary, and this
+    // request posts real `File` parts -- so pin that the duplicate path still
+    // stages nothing and records nothing, not merely that it does not enqueue.
+    expect(mockedStageBytes).not.toHaveBeenCalled();
+    expect(mockedCreateJob).not.toHaveBeenCalled();
+  });
+
+  it("reports the same counts on the duplicate path as on the first delivery", async () => {
+    // The invariant the hoist exists to create, stated as an invariant rather
+    // than as arithmetic: ONE message, answered twice, has to be accounted for
+    // identically both times. The per-path tests above assert hand-computed
+    // figures, so editing one path's expression leaves the other path's
+    // assertion green; comparing the two responses to EACH OTHER is what
+    // catches a divergence no matter which number is the right one.
+    const payload = () =>
+      multipartRequest({
+        messageId: "<message-both-paths@example.com>",
+        file: new File(["name,total\nAlpha,10"], "metrics.csv", { type: "text/csv" }),
+        files: [new File(["binary"], "clip.mov", { type: "video/quicktime" })],
+        unforwardedNames: ["scan.tiff"],
+        skippedAttachmentCount: "3",
+      });
+    const { POST } = await import("@/app/api/email/ingest/route");
+
+    // First delivery: no stored job, so the success path answers and spreads
+    // its own pair over whatever `enqueueOrInline` returned.
+    const first = (await (await POST(payload())).json()) as Record<string, unknown>;
+    expect(first).toMatchObject({ accepted: true, queued: true });
+    expect(mockedEnqueue).toHaveBeenCalledOnce();
+
+    // The same message again, now already recorded: the duplicate path answers.
+    mockedGetJob.mockResolvedValueOnce({
+      jobId: "email-existing",
+      owner: "LuckierTrout",
+      status: "queued",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const second = (await (await POST(payload())).json()) as Record<string, unknown>;
+    expect(second).toMatchObject({ duplicate: true });
+    expect(mockedEnqueue).toHaveBeenCalledOnce();
+
+    expect(second.supportedAttachmentCount).toBe(first.supportedAttachmentCount);
+    expect(second.skippedAttachmentCount).toBe(first.skippedAttachmentCount);
+    // Both really carried a figure -- otherwise the equality above would hold
+    // vacuously on a pair of `undefined`s.
+    expect(typeof first.supportedAttachmentCount).toBe("number");
+    expect(typeof first.skippedAttachmentCount).toBe("number");
   });
 
   it("accepts an attachment-only email and queues its staged document", async () => {

@@ -217,6 +217,25 @@ export async function POST(request: Request) {
     const contentAuthor = validAgent?.id || principal.handle;
     const learningFor = validAgent?.id;
 
+    // Attachment loss accounting (DW-357). Hoisted above the duplicate check so
+    // BOTH exits report the same pair; every input it reads is settled at
+    // payload-parse time and nothing between here and the old site mutates them.
+    //
+    // The Worker's count and the route's own rejections are disjoint losses: the
+    // Worker reports what it never forwarded, and the route can additionally drop
+    // a forwarded file that fails `isSupportedDocument`. Sum them — and never
+    // report below what is locally derivable, so a caller that sends no count (or
+    // an implausibly low one) still gets an honest floor.
+    const localSkipped = Math.max(0, attachmentNames.length - attachments.length);
+    const skippedAttachmentCount =
+      payload.skippedAttachmentCount === undefined
+        ? localSkipped
+        : Math.max(
+            localSkipped,
+            payload.skippedAttachmentCount +
+              Math.max(0, payload.attachments.length - attachments.length),
+          );
+
     const jobId = await emailJobId(messageId);
     const existing = await getIngestJob(jobId);
     if (existing) {
@@ -225,7 +244,14 @@ export async function POST(request: Request) {
         duplicate: true,
         jobId,
         status: existing.status,
+        // Deliberately describing THIS request, not the job being acknowledged:
+        // `status` and `slug` come from the stored job, but the counts are
+        // derived from the payload just parsed. A resend carrying a different
+        // attachment set therefore reports its own figures, not those of the
+        // delivery that was actually ingested -- the accounting answers "what
+        // did you just send me", which is the question a sender is asking.
         supportedAttachmentCount: attachments.length,
+        skippedAttachmentCount,
         ...(existing.slug ? { slug: existing.slug } : {}),
       });
     }
@@ -272,21 +298,6 @@ export async function POST(request: Request) {
       const key = await stageText(jobId, content);
       task.staged = { key, kind: "text" };
     }
-
-    // The Worker's count and the route's own rejections are disjoint losses: the
-    // Worker reports what it never forwarded, and the route can additionally drop
-    // a forwarded file that fails `isSupportedDocument`. Sum them — and never
-    // report below what is locally derivable, so a caller that sends no count (or
-    // an implausibly low one) still gets an honest floor.
-    const localSkipped = Math.max(0, attachmentNames.length - attachments.length);
-    const skippedAttachmentCount =
-      payload.skippedAttachmentCount === undefined
-        ? localSkipped
-        : Math.max(
-            localSkipped,
-            payload.skippedAttachmentCount +
-              Math.max(0, payload.attachments.length - attachments.length),
-          );
 
     const response = await enqueueOrInline(jobId, task, async () => {
       let combined = content;

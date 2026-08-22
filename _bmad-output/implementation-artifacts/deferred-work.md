@@ -3156,7 +3156,8 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: src/app/api/email/ingest/route.ts:202
 severity: medium
 reason: `src/app/api/email/ingest/route.ts` returns `{ accepted, duplicate, ... , supportedAttachmentCount }` on the duplicate path without `skippedAttachmentCount`, while the success path returns both. Pre-dates this change, but it is the same response contract the change corrects. The only test on that path asserts accepted/duplicate/status/slug and nothing about attachment counts.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-email-ingest-accounting-and-worker-tests
 
 ### DW-358: Quoted-printable transfer encoding is unaccounted for in the raw-size cap, which is derived from base64 expansion alone.
 origin: spec-deferred 18e6b2bf1947
@@ -3190,7 +3191,8 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: workers/email-ingest/index.ts:59
 severity: medium
 reason: `MAX_RAW_EMAIL_BYTES` leaves 65,533 bytes of slack above the 14,348,938-byte wire size of a base64-encoded `MAX_DOCUMENT_SIZE` document, while the Worker's own `MAX_EMAIL_CONTENT_CHARS` is 100,000 and the body is truncated only *after* the `rawSize` gate. An email carrying a 10 MB attachment plus a body anywhere near the accepted length is refused with a size bounce although every individual limit is respected. Not a regression -- the old 10 MB cap refused that message too -- and the constant's comment now says so, but no test covers the interaction of the two caps.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-email-ingest-accounting-and-worker-tests
 
 ### DW-362: The raw cap bounds one full-size document, so several mid-size supported documents are refused wholesale even though every per-document and per-count limit is respected.
 origin: spec-deferred 95bfc309fad5
@@ -3216,7 +3218,8 @@ source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
 location: workers/email-ingest/index.ts:255-263
 severity: medium
 reason: `workers/email-ingest/index.ts:255-263` replies "the ingest service is not configured" and returns without forwarding when `YOPEDIA_SERVICE_TOKEN` is absent; :326 throws `YOPEDIA_SITE_URL is missing`, caught by the surrounding try/catch into the "could not queue this email" reply. Neither branch is exercised anywhere, so deleting either -- and forwarding an unauthenticated request, or one to a relative URL -- fails nothing. The new `forwardedRequest(siteUrl)` helper already parameterises the site, so the second is one fixture away.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-email-ingest-accounting-and-worker-tests
 
 ### DW-365: `assetFromArchive` still indexes the unzipped file map with a raw `files[target]`, one line above the `ownLookup` call added to close exactly that pattern.
 origin: spec-deferred d5c3b8bba1b8
@@ -3820,4 +3823,36 @@ source_spec: `spec-dw-158-259-325-test-coverage-and-flake-fixes.md`
 location: src/components/WorkspacePurposeSettings.tsx
 severity: medium
 reason: `standDown` reaches `screenRef` through a PASSIVE effect (the `screenRef` mirror effect in `src/components/WorkspacePurposeSettings.tsx`), while `load("recheck")` reads it as its first early return. Between the commit that clears `loading` and the passive-effect flush, a `visibilitychange` calls `load("recheck")`, reads a stale `standDown: true`, and returns without issuing the GET — so the form goes on naming a wiki that is no longer active until something else triggers a re-read. DW-325's own intent offered "or derive `standDown` during render" as the alternative remedy; this bundle took the test-side reading, which closes the flake but leaves the component's window open and unpinned. Two independent review layers raised it against this diff.
+status: open
+
+### DW-438: The Worker reads its KV config outside any try/catch, so a binding or KV failure throws out of `email()` with no reply and no reject -- the sender gets silence.
+origin: spec-deferred e6d1cfe5d551
+source_spec: `spec-dw-357-361-364-email-ingest-accounting-and-worker-tests.md`
+location: workers/email-ingest/index.ts:224
+severity: medium
+reason: `workers/email-ingest/index.ts:224` calls `await env.YOPEDIA_CONFIG.get(CONFIG_KEY, "json")` as the handler's first statement, ahead of every `reply(...)` and `setReject(...)` path. Every other failure mode in the handler answers the sender; this one cannot, because nothing has been established yet to answer with. Pre-existing and untouched by this change.
+status: open
+
+### DW-439: The Worker's two attachment-filename fallbacks diverge, so a nameless attachment inflates the route's locally derived skipped floor by one though nothing was skipped.
+origin: spec-deferred 4501089e2210
+source_spec: `spec-dw-357-361-364-email-ingest-accounting-and-worker-tests.md`
+location: workers/email-ingest/index.ts:317
+severity: medium
+reason: `workers/email-ingest/index.ts` records names as `attachment.filename || "unnamed attachment"` but forwards the file part as `attachment.filename || `attachment-${index + 1}``. The route unions and deduplicates the two lists, so one nameless PDF yields two names and one file: `localSkipped` is 1 while the Worker honestly forwarded a `skippedAttachmentCount` of 0, and the floor wins. Pre-existing; the accounting expression this change hoisted is unmodified.
+status: open
+
+### DW-440: A missing site URL answers the sender "Please try again in a few minutes", advice that can never work for a permanent misconfiguration.
+origin: spec-deferred 4ec77283601d
+source_spec: `spec-dw-357-361-364-email-ingest-accounting-and-worker-tests.md`
+location: workers/email-ingest/index.ts:326
+severity: low
+reason: `workers/email-ingest/index.ts:326` throws inside the forwarding `try` rather than returning early beside the service-token check, so it inherits the transient-failure copy at :371. The token branch already demonstrates the better shape with its own explicit message. Now pinned as-is by `email-ingest-worker.test.ts`, so correcting the asymmetry later will read as a test regression unless done deliberately.
+status: open
+
+### DW-441: The raw-size refusal never says the body contributed, so a sender who shrinks only the attachment bounces again.
+origin: spec-deferred 35acc26f383d
+source_spec: `spec-dw-357-361-364-email-ingest-accounting-and-worker-tests.md`
+location: workers/email-ingest/index.ts:248
+severity: low
+reason: The reply quotes one figure ("larger than 13.7 MB") against `message.rawSize`, but the bounce this bundle pins is caused by the document and the body together -- exactly the case where shrinking the obvious culprit does not help. DW-361 records the trade-off as accepted; the sender-facing copy was left out of that acceptance. Out of scope here: the intent was to prove the trade-off without moving any cap.
 status: open

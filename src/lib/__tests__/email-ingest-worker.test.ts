@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import worker, {
   MAX_EMAIL_ATTACHMENTS,
   MAX_EMAIL_ATTACHMENT_NAMES_RECORDED,
+  MAX_EMAIL_CONTENT_CHARS,
   MAX_EMAIL_DOCUMENT_BYTES,
   MAX_RAW_EMAIL_BYTES,
 } from "../../../workers/email-ingest/index";
@@ -40,8 +41,13 @@ import { base64PartWireSize } from "./email-ingest-wire";
  *    back to the sender, and the `skippedAttachmentCount` field forwarded to
  *    the route so it need not re-derive the loss from a truncated name list.
  *
- * 6. The raw-message size gate — its exact boundary and the figure the refusal
- *    quotes back.
+ * 6. The two misconfiguration early returns — missing service token and missing
+ *    site URL — whose sender-visible replies no fixture could reach while
+ *    `env()` supplied both bindings (DW-364).
+ *
+ * 7. The raw-message size gate — its exact boundary, the figure the refusal
+ *    quotes back, and the recorded trade-off that a full-size document and a
+ *    maximal body do not fit under it together (DW-361).
  *
  * The `Blob` *type* the worker builds is pinned next door in
  * `email-ingest-worker-normalization.test.ts`, which mocks `postal-mime`: it is
@@ -576,6 +582,72 @@ describe("email-ingest forwarded skipped count", () => {
 });
 
 /**
+ * The two misconfiguration early returns. Both are reachable only by removing a
+ * binding `env()` always supplies, which is why neither was observed: deleting
+ * either branch left the worker forwarding an unauthenticated request, or one
+ * built against a relative URL, with the suite green.
+ */
+describe("email-ingest misconfigured bindings", () => {
+  it("tells the sender it could not queue and never forwards without a service token", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const msg = message();
+      const { YOPEDIA_SERVICE_TOKEN: _token, ...bindings } = env(
+        Response.json({ ok: true, slug: "quarterly-notes" }),
+      );
+      await worker.email(
+        msg as unknown as Parameters<typeof worker.email>[0],
+        bindings as unknown as Parameters<typeof worker.email>[1],
+      );
+      // No forward: an unauthenticated POST would be refused by the route
+      // anyway, but silently -- the sender has to hear about it.
+      expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
+      expect(msg.reply).toHaveBeenCalledOnce();
+      expect(msg.reply.mock.calls[0][0].text).toBe(
+        "work-wiki could not queue this email because the ingest service is not configured.",
+      );
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("falls through to the generic retry reply when the site URL is missing", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const msg = message();
+      const { YOPEDIA_SITE_URL: _site, ...bindings } = env(
+        Response.json({ ok: true, slug: "quarterly-notes" }),
+      );
+      await worker.email(
+        msg as unknown as Parameters<typeof worker.email>[0],
+        bindings as unknown as Parameters<typeof worker.email>[1],
+      );
+      expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
+      expect(msg.reply).toHaveBeenCalledOnce();
+      // The generic text, deliberately: the missing-site-URL `throw` has no
+      // bespoke message of its own -- it is caught by the try/catch around the
+      // forward, and this is the sentence that routing produces.
+      expect(msg.reply.mock.calls[0][0].text).toBe(
+        "work-wiki could not queue this email. Please try again in a few minutes.",
+      );
+      // The diagnostic, not the reply, is the discriminating surface here. The
+      // reply text and the absent forward are produced by ANY throw inside that
+      // try -- including the URL-parse `TypeError` that `new Request()` raises
+      // on the relative "/api/email/ingest" left behind when the guard is
+      // deleted. Both assertions above therefore stay green without the guard;
+      // only the logged error tells the deliberate check apart from an
+      // incidental rejection downstream of it.
+      expect(errors).toHaveBeenCalledWith(
+        "email-ingest: service binding request failed",
+        expect.objectContaining({ message: "YOPEDIA_SITE_URL is missing" }),
+      );
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});
+
+/**
  * `message.rawSize` is counted before any MIME decoding, so the cap it is
  * compared against has to be big enough for an ENCODED full-size document. It
  * was not: 10 MB flat, which put the route's own `MAX_DOCUMENT_SIZE` gate out of
@@ -692,5 +764,42 @@ describe("email-ingest raw message cap", () => {
     const quoted = Number(/larger than ([\d.]+) MB/.exec(text)?.[1]);
     expect(Number.isFinite(quoted)).toBe(true);
     expect(quoted * 1024 * 1024).toBeLessThanOrEqual(MAX_RAW_EMAIL_BYTES);
+  });
+
+  it("bounces a full-size document carried alongside a maximal body", async () => {
+    // The trade-off `MIME_ENVELOPE_HEADROOM_BYTES` records in its comment,
+    // enforced instead of merely stated: the headroom covers part headers,
+    // boundaries and an ORDINARY body, not a body at `MAX_EMAIL_CONTENT_CHARS`.
+    // Both extremes at once do not fit, by design.
+    //
+    // Derived from the exported terms, never hand-typed, so it tracks the
+    // constants rather than a snapshot of them.
+    //
+    // The sum is a conservative LOWER bound on the real wire size, not an
+    // estimate of it: it adds a decoded character count to an encoded byte
+    // count and charges nothing for the MIME envelope. A body of
+    // `MAX_EMAIL_CONTENT_CHARS` characters occupies at least that many bytes on
+    // the wire and usually more (UTF-8 multi-byte runes, quoted-printable
+    // escapes), and headers and boundaries are pure addition on top. So the
+    // real message is always at least this large -- the assertion cannot become
+    // falsely true by the bound being loose.
+    //
+    // This guards the trade-off AS RECORDED TODAY; it is not a veto on widening
+    // the cap. DW-358 (worst-case quoted-printable expansion) and DW-362 (an
+    // aggregate multi-document budget) both carry accepted decisions to
+    // re-derive `MAX_RAW_EMAIL_BYTES` upward, and either one is expected to move
+    // this assertion with it. Re-derive the expectation there; do not read a
+    // failure here as a reason to leave the cap alone.
+    const rawSize = base64PartWireSize(MAX_EMAIL_DOCUMENT_BYTES) + MAX_EMAIL_CONTENT_CHARS;
+    expect(rawSize).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
+
+    const msg = { ...message(ATTACHMENT_EMAIL, "Quarterly report"), rawSize };
+    const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+    expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
+    expect(msg.reply.mock.calls[0][0].text).toContain("larger than");
   });
 });
