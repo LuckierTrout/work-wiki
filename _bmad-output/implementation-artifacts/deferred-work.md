@@ -4067,7 +4067,9 @@ source_spec: `spec-dw-390-retire-dead-talk-thread-writers.md`
 location: src/lib/discuss-stats-index.ts:69, src/lib/contributor-index.ts:218
 severity: medium
 reason: `grep -rn "syncDiscussStatsForSlug|recordTalkForAuthor" src/ --include=*.ts` outside `__tests__` now returns only the two definitions. Their only production callers were `syncDiscussStatsHook` and `recordTalkContributorHook` in `talk.ts`, both deleted here. Neither index is broken: `rebuildDiscussStatsIndex` / `rebuildContributorIndex` still scan storage, and `removeDiscussStatsForSlug` still runs from `deleteDiscussions`. Not resolved in this story because the DW-390 decision explicitly kept the discuss-stats and contributor indexes "exactly as they are"; both doc comments were corrected to record the state.
-status: open
+status: done 2026-08-22
+resolution: closed by human decision: DW-390's decision deliberately carved the two indexes out; the doc comments at discuss-stats-index.ts:63-70 and contributor-index.ts:213-221 already record the readerless state, so nothing further is owed.
+decision: 2026-08-22 Keep both, close as recorded — DW-390's decision deliberately carved the two indexes out; the doc comments at discuss-stats-index.ts:63-70 and contributor-index.ts:213-221 already record the readerless state, so nothing further is owed.
 
 ### DW-465: `getDiscussDir` and `ensureDiscussDir` now have no non-test caller either, and `ensureDiscussDir` is an explicit no-op.
 origin: spec-deferred 057152ba3b6d
