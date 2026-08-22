@@ -361,6 +361,7 @@ severity: medium
 reason: `resolveWorkbenchFile` gates only `root === "wiki"`; `raw/…` goes straight to `resolveRoot(silo, flat)`, which falls back to the shared `RAW_DIR` when the caller's silo lists empty. That is not a deviation — the intent ties the file gate to what `listWorkbenchFilePaths` would emit, and the listing walks `raw/` with `allowEveryLeaf` through the same `resolveRoot` — so read and listing agree exactly, as required. What changed is the stakes: Story 1.4 disclosed those FILENAMES, and this story serves their contents. Narrowing it here is not available: the intent requires `resolveRoot` to have "exactly one definition", and a read gate narrower than the listing would show rows that refuse to open (the sibling entry below). The real fix is retiring the flat root, or giving `raw/` a per-owner gate — both belong with whichever story completes the silo migration, since `src/lib/silo.ts` already calls the flat tree transitional.
 status: open
 decision: 2026-08-22 Drop the fallback for raw/ only — Give `resolveRoot` a per-root arm so `raw/` resolves strictly inside the owner's silo and never falls back to the shared flat root, while `wiki/` keeps the fallback for pre-migration workspaces. Update src/lib/workbench-files.ts and its tests, and record in src/lib/silo.ts that the flat tree is now wiki-only.
+decision: 2026-08-22 Drop the fallback for raw/ only — Give `resolveRoot` a per-root arm so `raw/` resolves strictly inside the owner's silo and never falls back to the shared flat root, while `wiki/` keeps the fallback for pre-migration workspaces. Update src/lib/workbench-files.ts and its tests, and record in src/lib/silo.ts that the flat tree is now wiki-only.
 
 ### DW-41: The Files tab lists `wiki/` leaves that are not pages, and the Preview now answers every one of them with `This file couldn’t be loaded.`
 origin: spec-deferred 8ab03831be26
@@ -3497,6 +3498,7 @@ severity: medium
 reason: `resolveEmbeddingProvider` takes `process.env.EMBEDDING_PROVIDER` ahead of the stored field and falls back to the detected generation provider (`cfg.provider`) when nothing is stored. No save moves either, so `embeddingProviderChanged` never sees a switch: with `EMBEDDING_PROVIDER=google` and a stored OpenAI key, `embeddingApiKeyFor("google", cfg)` still returns it and `_createEmbeddingModel` still passes the stored `embeddingBaseUrl`. Pre-existing, and out of scope for the recorded decisions, whose trigger is literally "whenever `embeddingProvider` changes" — closing it means deciding what a chat-provider change may do to an embedding credential. This pass also makes one NEW consequence reachable on an env-pinned deployment: the stored provider select stays editable there, and moving it now clears the credential the env-selected vendor is using. The surface stays honest (the key hint flips to "No key is stored." and the row's env sentence already says the variable owns the selection),
 status: open
 decision: 2026-08-22 Disable the select under an env pin — Disable the embedding-provider select in SettingsCanvas.tsx:580-586 whenever `EMBEDDING_PROVIDER` is set, with the existing env-override hint copy, so the newly reachable consequence disappears without touching the frozen clear rule.
+decision: 2026-08-22 Disable the select under an env pin — Disable the embedding-provider select in SettingsCanvas.tsx:580-586 whenever `EMBEDDING_PROVIDER` is set, with the existing env-override hint copy, so the newly reachable consequence disappears without touching the frozen clear rule.
 
 ### DW-399: `spec-dw-66-72-settings-credential-fidelity.md` still reads `status: 'in-progress'` for DW-69/DW-72 under the superseded per-provider keying approach.
 origin: spec-deferred ce665a977ec1
@@ -3522,6 +3524,7 @@ location: src/lib/embeddings.ts:203-215
 severity: medium
 reason: `resolveEmbeddingProvider` returns the override at `src/lib/embeddings.ts:203` and the saved provider at `:211-215` without consulting `getOllamaBaseUrl`, and `getEmbeddingModel` constructs `createOllama()` with no baseURL when none resolves. So a corpus can still be embedded against the SDK's localhost default while the owner believes it is going to the endpoint they typed. This bundle's intent scopes the fix to auto-DETECTION, so the explicit rungs were deliberately untouched and are neither closed nor documented as exceptions.
 status: open
+decision: 2026-08-22 Warn once, keep selecting — Keep the explicit selection authoritative but emit a warn-once from `resolveEmbeddingProvider` naming the SDK localhost default as the endpoint actually in effect, so the substitution is audible. Smallest change, no behaviour change.
 decision: 2026-08-22 Warn once, keep selecting — Keep the explicit selection authoritative but emit a warn-once from `resolveEmbeddingProvider` naming the SDK localhost default as the endpoint actually in effect, so the substitution is audible. Smallest change, no behaviour change.
 
 ### DW-402: A refused `OLLAMA_BASE_URL` is now described only in a server log; every owner-facing surface still advertises the variable as the remedy and reports no reason it was ignored.
@@ -3550,6 +3553,7 @@ severity: medium
 reason: `queryEmbeddings` sorts and slices to `topK` BEFORE `searchByVector` applies the model filter (src/lib/storage/filesystem.ts queryEmbeddings; contract in src/lib/storage/types.ts). With one stale-tagged and one current-tagged vector and `topK: 1`, eight alternating queries emitted FOUR drift lines instead of one. This is not contrived: `rebuildVectorStore` upserts page by page with no bulk swap, so the store is mixed for the whole duration of the very operation the re-arm exists to detect, and it deliberately leaves stale orphans behind. The tighter gate (`kept.length === matches.length`, or a rebuild-completion epoch) was NOT applied because the recorded 2026-08-21 decision names `kept.length > 0` as the trigger verbatim; narrowing it is a decision this run does not hold.
 status: open
 decision: 2026-08-22 Require a whole-window match — Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.
+decision: 2026-08-22 Require a whole-window match — Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.
 
 ### DW-405: A single unlabelled legacy vector satisfies `kept.length > 0` and re-arms `drift:<active model>` on a corpus where every labelled vector is still stale, so a genuinely un-rebuilt corpus can repeat the
 origin: spec-deferred f6e0ffb78ddc
@@ -3558,6 +3562,7 @@ location: src/lib/embeddings.ts (searchByVector re-arm branch, modelMatches)
 severity: medium
 reason: `modelMatches` deliberately returns true when `metadata.model` is absent (pre-migration / KV-fallback vectors must survive the filter — pinned by the existing test "keeps unlabelled (legacy) vectors with no model metadata"). Seeding one unlabelled vector plus stale-tagged ones and alternating three queries produced TWO drift lines where the throttle should give one. A gate of `kept.some((m) => m.metadata.model === currentModel)` would close it, but that also narrows the decided `kept.length > 0` trigger. The inline comment at the re-arm branch was corrected to stop claiming corpus-level proof.
 status: open
+decision: 2026-08-22 Require a positive labelled match — Gate re-arm on `kept.some((m) => m.metadata.model === currentModel)` so only positive proof of a rebuilt vector re-arms, leaving `modelMatches` permissive for results.
 decision: 2026-08-22 Require a positive labelled match — Gate re-arm on `kept.some((m) => m.metadata.model === currentModel)` so only positive proof of a rebuilt vector re-arms, leaving `modelMatches` permissive for results.
 
 ### DW-406: `relatedByVector` runs the same model filter but neither warns nor re-arms, so a deployment whose only vector traffic is page-render related lookups observes neither the drift nor its recovery.
@@ -3643,7 +3648,8 @@ source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
 location: src/app/globals.css:2690-2710
 severity: low
 reason: `.wb-canvas[hidden]` and `.wb-canvas-mode[hidden]` are both (0,2,0). `globals.css` already writes (0,3,0) shell-scoped rules that set `display` (e.g. `.wb-shell[data-collapsed="true"] .wb-left { display: none }`), so a future `.wb-shell[data-preview="true"] .wb-canvas { display: flex }` would put the withdrawn canvas back on screen underneath Settings — while both rules' comments claim the attribute "cannot be undone by accident". Nothing asserts that no later rule sets `display` on either selector. Pre-existing pattern inherited from DW-26; a fix belongs to both rules together.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw3-pnpm-workspace-root
 
 ### DW-416: The mode canvas's scroll offset is not preserved across a Settings visit.
 origin: spec-deferred 86882ef5b044
@@ -3748,6 +3754,7 @@ location: src/components/workbench/__tests__/settings-read-only.test.tsx:565-600
 severity: medium
 reason: `settings-read-only.test.tsx`'s own docblock says the client-level suite "cannot see the seam this describe exists for: that the canvas ACTS on `unconfirmed` by clearing the version it is holding". Its UNCONFIRMED table carries a 504 (which never reaches a 2xx body parse) and a TypeError thrown from the fetch call itself; there is no `ok: true` case anywhere in the file whose `json` rejects. So what `If-Match` the NEXT save carries after an unparseable or dead-stream 200 is unobserved end to end.
 status: open
+decision: 2026-08-22 Per-leg client reporting — Track in WikiEditor that the PUT leg landed and prefix the PATCH failure accordingly — "Your text was saved; the metadata change was not — <served error>" — leaving all server copy and the frozen sentences untouched.
 
 ### DW-429: When the unconfirmed-write latch lifts with the dialog still open, the confirm comes back live underneath a now-stale "the outcome is unknown" alert, on both the card and the switcher.
 origin: spec-deferred f88ef8ffaa49
@@ -3756,6 +3763,7 @@ location: src/components/WikiWorkbench.tsx:147-149
 severity: medium
 reason: Both release effects do only `setAwaitingCreate(false)` / `setAwaitingWrite(false)` keyed on `[wikis, currentWikiId]` (src/components/WikiWorkbench.tsx:147-149, src/components/workbench/WikiSwitcher.tsx:182-184) and neither clears the error. The reset effect that would close the dialog keys on the ACTIVE wiki, which a refresh answering "nothing changed" need not move. WikiSwitcher.tsx:428's comment asserts the opposite — "The release effect drops both together, because a server render is what makes both stale at once" — so the intended behaviour is documented and not implemented. Pre-existing on both surfaces; DW-407 brings the card into the same shape rather than creating it.
 status: open
+decision: 2026-08-22 Bump at the kernel tail — Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock, as `renameWiki` does, rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6.
 
 ### DW-430: Dismissing the card's create dialog on the unconfirmed path destroys the only explanation the owner has, and the disabled opener behind it says nothing.
 origin: spec-deferred 4b773b607140
@@ -3763,4 +3771,36 @@ source_spec: `spec-dw-407-408-unconfirmed-write-reporting-gaps.md`
 location: src/components/WikiWorkbench.tsx:296-318
 severity: low
 reason: The unknown-outcome sentence lives inside the overlay, and the latch deliberately leaves Cancel and Esc live so the owner can go and look at the screen. After that dismissal the empty state offers a `Create Wiki` button that is `disabled`, carries no `aria-describedby`, and cannot be pressed to reopen the dialog and re-read the message — so a screen-reader user gets "dimmed" and nothing else, which is the exact failure mode the neighbouring read-only note exists to avoid. Pre-existing since `awaitingCreate` began covering the unconfirmed path; DW-407 does not widen it.
+status: open
+
+### DW-431: The Dockerfile's deps stage does not copy the new root pnpm-workspace.yaml while its build stage's `COPY . .` does, so the two stages disagree about whether /app is a workspace root, and no docker bui
+origin: spec-deferred ef4f6e35a444
+source_spec: `spec-dw-411-pnpm-workspace-root.md`
+location: Dockerfile:5-13
+severity: low
+reason: Dockerfile:5-6 copies only `package.json pnpm-lock.yaml` and then runs `pnpm install --frozen-lockfile`; Dockerfile:13's `COPY . .` brings `pnpm-workspace.yaml` into the build stage before `pnpm build`, and `.dockerignore` does not exclude it. Nothing observably breaks today (the image has no ancestor workspace file to adopt, and the build stage only builds), but the divergence is unverified: `docker build .` was not part of this story's verification.
+status: open
+
+### DW-432: `.github/workflows/deploy-cloudflare.yml`'s `paths:` filter does not list pnpm-workspace.yaml, so changing or deleting that file alone never triggers the workflow it protects.
+origin: spec-deferred 2ff1a73d7250
+source_spec: `spec-dw-411-pnpm-workspace-root.md`
+location: .github/workflows/deploy-cloudflare.yml (paths filter)
+severity: low
+reason: The filter names `pnpm-lock.yaml`, `package.json` and `workers/**`. The root workspace file is now load-bearing for `pnpm --dir workers/sandbox-runner install --frozen-lockfile` at deploy-cloudflare.yml:82, but a commit touching only that file skips the workflow. `.github/` is declared protected in AGENTS.md, so this run could not edit it.
+status: open
+
+### DW-433: The bundle this story came from is keyed to DW-415, but its Intent prose describes DW-411; the work done resolves DW-411 and leaves DW-415 untouched.
+origin: spec-deferred 0566328f37bb
+source_spec: `spec-dw-411-pnpm-workspace-root.md`
+location: _bmad-output/implementation-artifacts/deferred-work.md (DW-411, DW-415)
+severity: medium
+reason: `.bmad-loop/runs/20260820-220331-0f16/bundles/c3-pnpm-workspace-root/intent.md` carries `dw_ids: DW-415` and pastes DW-415 verbatim (a CSS specificity issue at src/app/globals.css:2690-2710), while its `## Intent` section is a near-verbatim restatement of DW-411 (`pnpm vitest` / `pnpm lint` abort; location `package.json / pnpm-workspace.yaml`). This story implemented the Intent, so DW-411 is what is resolved. Recording DW-415 as resolved would close a still-real cascade hazard that nothing in this change touches — `src/app/globals.css` was not modified.
+status: open
+
+### DW-434: The nested-package guard derives its targets from `--dir`/`-C` workflow flags and on-disk lockfiles, so a package reached by `working-directory:` or `cd x && pnpm install` is only caught once it has a
+origin: spec-deferred 6ef21c2d1d6d
+source_spec: `spec-dw-411-pnpm-workspace-root.md`
+location: src/lib/__tests__/pnpm-workspace-root.test.ts (pnpmDirTargets)
+severity: low
+reason: `pnpmDirTargets` in src/lib/__tests__/pnpm-workspace-root.test.ts matches pnpm's two directory flags. A workflow step using GitHub Actions' `working-directory:` key, or a plain `cd`, is not scraped. The on-disk lockfile walk added in review covers every real nested package (a pnpm package installed with --frozen-lockfile necessarily has one), so the residual gap is a directory installed without a committed lockfile.
 status: open

@@ -206,6 +206,69 @@
     "label": "Retire the dead writers only",
     "resolution": ""
   },
+  "DW-398": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Disable the embedding-provider select in SettingsCanvas.tsx:580-586 whenever `EMBEDDING_PROVIDER` is set, with the existing env-override hint copy, so the newly reachable consequence disappears without touching the frozen clear rule.",
+    "key": "1",
+    "label": "Disable the select under an env pin",
+    "resolution": ""
+  },
+  "DW-40": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give `resolveRoot` a per-root arm so `raw/` resolves strictly inside the owner's silo and never falls back to the shared flat root, while `wiki/` keeps the fallback for pre-migration workspaces. Update src/lib/workbench-files.ts and its tests, and record in src/lib/silo.ts that the flat tree is now wiki-only.",
+    "key": "1",
+    "label": "Drop the fallback for raw/ only",
+    "resolution": ""
+  },
+  "DW-401": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Keep the explicit selection authoritative but emit a warn-once from `resolveEmbeddingProvider` naming the SDK localhost default as the endpoint actually in effect, so the substitution is audible. Smallest change, no behaviour change.",
+    "key": "1",
+    "label": "Warn once, keep selecting",
+    "resolution": ""
+  },
+  "DW-404": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.",
+    "key": "1",
+    "label": "Require a whole-window match",
+    "resolution": ""
+  },
+  "DW-405": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Gate re-arm on `kept.some((m) => m.metadata.model === currentModel)` so only positive proof of a rebuilt vector re-arms, leaving `modelMatches` permissive for results.",
+    "key": "1",
+    "label": "Require a positive labelled match",
+    "resolution": ""
+  },
+  "DW-428": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Track in WikiEditor that the PUT leg landed and prefix the PATCH failure accordingly \u2014 \"Your text was saved; the metadata change was not \u2014 <served error>\" \u2014 leaving all server copy and the frozen sentences untouched.",
+    "key": "1",
+    "label": "Per-leg client reporting",
+    "resolution": ""
+  },
+  "DW-429": {
+    "answered_at": "2026-08-22",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock, as `renameWiki` does, rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6.",
+    "key": "1",
+    "label": "Bump at the kernel tail",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
