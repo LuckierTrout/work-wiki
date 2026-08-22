@@ -19,11 +19,13 @@ import {
   MAX_EMAIL_DOCUMENT_BYTES,
   MAX_RAW_EMAIL_BYTES,
   MIME_ENVELOPE_HEADROOM_BYTES,
+  QUOTED_PRINTABLE_EXPANSION_FACTOR,
   SUPPORTED_EXTENSIONS,
   SUPPORTED_MIME_TYPES,
+  WORST_CASE_TRANSFER_ENCODING_FACTOR,
   supportedAttachment,
 } from "../../../workers/email-ingest/index";
-import { base64PartWireSize } from "./email-ingest-wire";
+import { base64PartWireSize, quotedPrintablePartWireSize } from "./email-ingest-wire";
 
 /**
  * The email door and the app extractor keep two copies of the same allowlist.
@@ -149,25 +151,87 @@ describe("email-ingest allowlist parity", () => {
    * message, and `MAX_DOCUMENT_SIZE` bounds a *decoded* file. So the pin is at
    * the message surface — the true wire size of a full-size document, computed
    * the way RFC 2045 actually writes it (and the way this repo's fixtures write
-   * it: `email-ingest-worker.test.ts` calibrates `base64PartWireSize` against a
-   * real `multipartEmail` fixture).
+   * it: `email-ingest-worker.test.ts` calibrates both wire-size formulas against
+   * real `multipartEmail` fixtures).
+   *
+   * Measured as quoted-printable, because the SENDER's client picks the transfer
+   * encoding and that is the worse of the two it may pick (DW-358).
    */
-  it("admits a full-size document once it is base64-encoded on the wire", () => {
-    const wireSize = base64PartWireSize(MAX_DOCUMENT_SIZE);
+  it("admits a full-size document under the worst-case transfer encoding", () => {
+    const wireSize = quotedPrintablePartWireSize(MAX_DOCUMENT_SIZE);
     expect(wireSize).toBeLessThan(MAX_RAW_EMAIL_BYTES);
-    // The naive factor — the one the original "raise it to ~13.4 MB" figure was
-    // built from — is NOT enough: it omits the CRLF after every 76-character
-    // line and bounces the very document this cap exists to admit.
-    expect(wireSize).toBeGreaterThan(Math.ceil(MAX_DOCUMENT_SIZE * (4 / 3)));
+    // Pinned as FIXED, not merely as changed: this is the exact message the
+    // previous base64-only derivation bounced. A byte-dense `.csv` or `.txt`
+    // inside the advertised 10 MB ceiling goes out with every octet escaped,
+    // ~3.12x rather than ~1.37x, and did not fit under the old cap.
+    //
+    // Frozen as a literal on purpose. This is a HISTORICAL figure -- the cap
+    // that actually shipped before DW-358, `ceil(10 MB * BASE64_EXPANSION_FACTOR)
+    // + 64 KiB` as those terms stood on 2026-08-21. Re-deriving it from the live
+    // constants would let it move with them, and the day
+    // `MIME_ENVELOPE_HEADROOM_BYTES` changes this assertion would quietly stop
+    // being about the cap that bounced the message. Never re-derive it.
+    const PREVIOUS_BASE64_ONLY_CAP_BYTES = 14_414_471;
+    expect(wireSize).toBeGreaterThan(PREVIOUS_BASE64_ONLY_CAP_BYTES);
+    // DW-104 regression guard: widening for quoted-printable must not stop
+    // admitting the base64 message the earlier fix was made to admit.
+    const base64WireSize = base64PartWireSize(MAX_DOCUMENT_SIZE);
+    expect(base64WireSize).toBeLessThan(MAX_RAW_EMAIL_BYTES);
+    // And the naive factor — the one the original "raise it to ~13.4 MB" figure
+    // was built from — is still not enough even for base64: it omits the CRLF
+    // after every 76-character line.
+    expect(base64WireSize).toBeGreaterThan(Math.ceil(MAX_DOCUMENT_SIZE * (4 / 3)));
     // Derived from the exported terms, never restated as a literal: a hand-typed
-    // cap would keep the comparison above true only by coincidence, and would
+    // cap would keep the comparisons above true only by coincidence, and would
     // stop tracking `MAX_DOCUMENT_SIZE` the moment it moved.
     expect(MAX_RAW_EMAIL_BYTES).toBe(
-      Math.ceil(MAX_EMAIL_DOCUMENT_BYTES * BASE64_EXPANSION_FACTOR) +
+      Math.ceil(MAX_EMAIL_DOCUMENT_BYTES * WORST_CASE_TRANSFER_ENCODING_FACTOR) +
         MIME_ENVELOPE_HEADROOM_BYTES,
     );
     // Part headers, boundaries and the text body still have to fit.
     expect(MAX_RAW_EMAIL_BYTES - wireSize).toBeGreaterThanOrEqual(1024);
+  });
+
+  /**
+   * `QUOTED_PRINTABLE_EXPANSION_FACTOR` is the worst case only among senders
+   * that fill their lines to the 76-character maximum. Wrapping NARROWER is
+   * conforming and costs more -- `3k + 3` wire bytes per `k` escapes -- so the
+   * factor's comment states how far down the envelope headroom reaches. This is
+   * that claim as a pin rather than as prose.
+   */
+  it("still admits a full-size document from a sender that wraps at 72 columns", () => {
+    // 24 escapes per line: 72 characters of payload plus the `=` soft break, the
+    // narrowest wrap the headroom covers. Computed through the same helper the
+    // cap is measured with, not hand-typed, so it tracks the real formula.
+    expect(quotedPrintablePartWireSize(MAX_DOCUMENT_SIZE, 24)).toBeLessThan(MAX_RAW_EMAIL_BYTES);
+    // And narrower really does cost more, so the direction of the claim is
+    // pinned too: a test that only checked one width could not tell a widening
+    // margin from a shrinking one.
+    expect(quotedPrintablePartWireSize(MAX_DOCUMENT_SIZE, 24)).toBeGreaterThan(
+      quotedPrintablePartWireSize(MAX_DOCUMENT_SIZE),
+    );
+    // 23 escapes (a 70-column wrap) is over the cap and stays over it. Recorded
+    // as the KNOWN, BOUNDED limit the factor's comment names -- if a future
+    // widening admits it, this assertion is the prompt to update that comment
+    // rather than to leave it describing a boundary that has moved.
+    expect(quotedPrintablePartWireSize(MAX_DOCUMENT_SIZE, 23)).toBeGreaterThan(
+      MAX_RAW_EMAIL_BYTES,
+    );
+  });
+
+  it("computes the worst-case factor from the encodings it names", () => {
+    // "Worst case" is a claim the suite checks, not a label on a constant. A
+    // swap to the larger factor would leave the other export dead and this
+    // relationship unobserved; the `Math.max` keeps both live and keeps the cap
+    // tracking whichever is worse if either is ever corrected.
+    expect(WORST_CASE_TRANSFER_ENCODING_FACTOR).toBeGreaterThanOrEqual(BASE64_EXPANSION_FACTOR);
+    expect(WORST_CASE_TRANSFER_ENCODING_FACTOR).toBeGreaterThanOrEqual(
+      QUOTED_PRINTABLE_EXPANSION_FACTOR,
+    );
+    // And today it is the quoted-printable one — so a regression that silently
+    // dropped that term from the max would fail here rather than pass on the
+    // weaker inequalities above.
+    expect(WORST_CASE_TRANSFER_ENCODING_FACTOR).toBe(QUOTED_PRINTABLE_EXPANSION_FACTOR);
   });
 
   it("records the same number of attachment names the route keeps", () => {

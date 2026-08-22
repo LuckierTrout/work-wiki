@@ -59,30 +59,89 @@ const MAX_EMAIL_DOCUMENT_MB = MAX_EMAIL_DOCUMENT_BYTES / 1024 / 1024;
  */
 export const BASE64_EXPANSION_FACTOR = (4 / 3) * (78 / 76);
 /**
+ * The other encoding a sending client may pick — and the worse one. RFC 2045
+ * §6.7 lets any octet be written as `=XX`, 3 characters for 1 byte, and mail
+ * clients escape essentially every octet of a byte-dense `text/*` attachment or
+ * a non-ASCII body. The 76-character line limit costs more here than it does for
+ * base64 because an `=XX` escape may not be split across a line break: a line
+ * holds at most 25 escapes (75 characters) before the `=` soft line break and
+ * its CRLF, so 25 payload bytes reach the wire as 78.
+ *
+ * ASSUMES the sender fills its lines to that 76-character maximum. This is the
+ * worst case among encoders that do; it is NOT the worst case outright. A
+ * conforming encoder may wrap narrower, and narrower costs more: `k` escapes on
+ * a line is `3k + 3` wire bytes, so the per-byte ratio `(3k + 3) / k` RISES as
+ * `k` falls — 3.12 at k=25, 3.125 at k=24 (a 72-column wrap), 3.1304 at k=23.
+ *
+ * The residual, stated rather than left implicit: a maximally-escaped
+ * `MAX_EMAIL_DOCUMENT_BYTES` document reaches 32,715,573 bytes at k=25 and
+ * 32,768,001 at k=24, leaving 65,535 and 13,107 bytes of slack under
+ * `MAX_RAW_EMAIL_BYTES`. So `MIME_ENVELOPE_HEADROOM_BYTES` absorbs wraps down to
+ * 72 columns. At k=23 it reaches 32,824,989 and does not fit: a sender that both
+ * wraps below 72 columns AND escapes every octet of a full-size document is
+ * still refused at the door. That is a bounded, known limit, not an oversight —
+ * widening for it would cost headroom against a shape no mainstream client
+ * emits. Pinned at k=24 by
+ * `src/lib/__tests__/email-ingest-allowlist-parity.test.ts`.
+ */
+export const QUOTED_PRINTABLE_EXPANSION_FACTOR = 3 * (78 / 75);
+/**
+ * The sender's client chooses the transfer encoding, not this Worker, so the
+ * pre-decode cap has to survive the worst of the encodings it may choose.
+ *
+ * Written as a `Math.max` over the named factors rather than as a swap to the
+ * larger one: both terms stay live and readable at the constant, "worst case" is
+ * computed rather than merely asserted in a comment, and the cap keeps tracking
+ * whichever factor is worse if either is ever corrected. Pinned against the two
+ * encodings by `src/lib/__tests__/email-ingest-allowlist-parity.test.ts`.
+ */
+export const WORST_CASE_TRANSFER_ENCODING_FACTOR = Math.max(
+  BASE64_EXPANSION_FACTOR,
+  QUOTED_PRINTABLE_EXPANSION_FACTOR,
+);
+/**
  * Headroom for everything that is not the encoded document: part headers,
  * boundary markers, and an ordinary text body. It is not enough for a maximal body — a
- * document at `MAX_EMAIL_DOCUMENT_BYTES` leaves 65,533 bytes here, well under
+ * document at `MAX_EMAIL_DOCUMENT_BYTES` leaves 65,535 bytes here, well under
  * `MAX_EMAIL_CONTENT_CHARS` — and is not meant to be: the pair only has to be
  * simultaneously satisfiable for realistic mail, not at both extremes at once.
  */
 export const MIME_ENVELOPE_HEADROOM_BYTES = 64 * 1024;
 /**
  * The pre-decode ceiling, derived rather than restated: a message carrying one
- * `MAX_EMAIL_DOCUMENT_BYTES` document has to fit under it once base64 expansion,
- * the RFC 2045 line wrap and the MIME envelope are paid for — otherwise the
- * route's own `MAX_DOCUMENT_SIZE` gate is unreachable over email and a full-size
- * document is refused at the door (DW-104).
+ * `MAX_EMAIL_DOCUMENT_BYTES` document has to fit under it once transfer
+ * encoding, the RFC 2045 line wrap and the MIME envelope are paid for —
+ * otherwise the route's own `MAX_DOCUMENT_SIZE` gate is unreachable over email
+ * and a full-size document is refused at the door (DW-104).
  *
- * This lands at ~13.75 MiB, deliberately above the "about 13.4 MB" recorded in
- * the 2026-08-19 decision. That estimate was a bare `MAX_DOCUMENT_SIZE * 4 / 3`
- * = 13,981,014 bytes, and a full-size document reaches the wire at 14,348,938 —
- * so clamping back to the estimate would re-create the exact bounce the decision
- * was made to stop. The operative clause was "so a `MAX_DOCUMENT_SIZE`
- * attachment survives base64 expansion"; the figure was its arithmetic, not its
- * intent.
+ * Derived from the WORST transfer encoding a client may pick, not from base64
+ * alone (DW-358). `message.rawSize` is counted before anything is decoded, and
+ * clients routinely send `text/*` attachments and non-ASCII bodies as
+ * quoted-printable — ~3.12x on byte-dense content against base64's ~1.37x. A
+ * base64-only derivation therefore still bounced a `.csv` or `.txt` well under
+ * the advertised 10 MB per-document ceiling: the same defect DW-104 fixed for
+ * base64, left unfixed for the other encoding.
+ *
+ * The factor is a per-byte RATIO, not the exact per-message arithmetic, and it
+ * can under-count by a byte or two: at `MAX_EMAIL_DOCUMENT_BYTES` it yields
+ * 32,715,572 against an exact worst-case wire size of 32,715,573, because the
+ * final short line pays for a soft break and a CRLF that no ratio can express.
+ * `MIME_ENVELOPE_HEADROOM_BYTES` absorbs that difference along with everything
+ * else, which is why the cap is derived from the ratio and not from the exact
+ * formula: the exact one lives in the test helper, where it can be calibrated
+ * against a real fixture.
+ *
+ * That lands the cap at 32,781,108 bytes (~31.26 MiB), far above the "about
+ * 13.4 MB" recorded in the 2026-08-19 decision — which was a bare
+ * `MAX_DOCUMENT_SIZE * 4 / 3`, the arithmetic of one encoding rather than its
+ * intent. The operative clause was "so a `MAX_DOCUMENT_SIZE` attachment
+ * survives" expansion, and the 2026-08-21 "Widen for worst-case encoding"
+ * decision restates it as whichever encoding the sender happens to use. Only
+ * this cap moves: the per-document ceiling, the body cap and the
+ * `message.rawSize` gate itself are unchanged.
  */
 export const MAX_RAW_EMAIL_BYTES =
-  Math.ceil(MAX_EMAIL_DOCUMENT_BYTES * BASE64_EXPANSION_FACTOR) +
+  Math.ceil(MAX_EMAIL_DOCUMENT_BYTES * WORST_CASE_TRANSFER_ENCODING_FACTOR) +
   MIME_ENVELOPE_HEADROOM_BYTES;
 /**
  * Rounded DOWN to the displayed precision, so the figure quoted back to the

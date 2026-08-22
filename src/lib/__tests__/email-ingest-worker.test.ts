@@ -6,7 +6,7 @@ import worker, {
   MAX_EMAIL_DOCUMENT_BYTES,
   MAX_RAW_EMAIL_BYTES,
 } from "../../../workers/email-ingest/index";
-import { base64PartWireSize } from "./email-ingest-wire";
+import { base64PartWireSize, quotedPrintablePartWireSize } from "./email-ingest-wire";
 
 /**
  * Worker-level coverage for `workers/email-ingest`, which had none: the sibling
@@ -81,6 +81,35 @@ function base64Lines(bytes: Uint8Array): string {
   const lines: string[] = [];
   for (let i = 0; i < encoded.length; i += 76) {
     lines.push(encoded.slice(i, i + 76));
+  }
+  return lines.join("\r\n");
+}
+
+/**
+ * Worst-case quoted-printable: every octet written as an `=XX` escape, which is
+ * what a mail client really produces for a byte-dense `text/*` attachment.
+ *
+ * An `=XX` escape may not be split across a line break, so 25 of them (75
+ * characters) fill the RFC 2045 76-character budget; the line is then closed
+ * with a `=` soft line break -- the LAST line included. That trailing soft break
+ * is not decoration: the CRLF before the MIME boundary is otherwise a hard line
+ * break, and PostalMime hands the worker back the payload plus a stray `\n`.
+ * The end-to-end test below is what caught that, and is why the part body ends
+ * flush against the boundary with no blank line after it.
+ *
+ * Unlike `base64Lines` this has no real encoder behind it, which is why the
+ * quoted-printable fixture is also run end to end through PostalMime: the
+ * decode back to `partBytes` is the anchor `Buffer.toString("base64")` provides
+ * for free on the other side.
+ */
+function quotedPrintableLines(bytes: Uint8Array): string {
+  const escapes = Array.from(
+    bytes,
+    (byte) => `=${byte.toString(16).toUpperCase().padStart(2, "0")}`,
+  );
+  const lines: string[] = [];
+  for (let i = 0; i < escapes.length; i += 25) {
+    lines.push(`${escapes.slice(i, i + 25).join("")}=`);
   }
   return lines.join("\r\n");
 }
@@ -194,6 +223,47 @@ describe("email-ingest attachment forwarding", () => {
     expect(part.name).toBe("report.pdf");
     expect(part.type).toBe("application/pdf");
     expect(new Uint8Array(await part.arrayBuffer())).toEqual(ATTACHMENT_BYTES);
+  });
+
+  it("forwards a quoted-printable attachment byte-identically", async () => {
+    // The DW-358 scenario itself, observed end to end at the Worker surface: a
+    // `text/csv` part the sender's client wrote as quoted-printable rather than
+    // base64. Every other fixture in this file is base64, so nothing exercised
+    // the encoding the widened raw cap now exists for.
+    //
+    // It is also the anchor for `quotedPrintableLines`, which -- unlike
+    // `base64Lines` -- has no real encoder behind it. PostalMime decoding the
+    // fixture back to the exact source bytes is what says the hand-written
+    // worst-case encoding is well-formed quoted-printable and not merely
+    // self-consistent with the wire-size formula calibrated against it.
+    //
+    // 300 bytes, so the part spans twelve full lines and exercises the `=` soft
+    // line breaks; `partBytes` covers every octet value, CR and LF included,
+    // which only survive the round trip because worst-case QP escapes them.
+    const raw = multipartEmail(
+      [{ filename: "rows.csv", mime: "text/csv", bytes: 300, encoding: "quoted-printable" }],
+      { subject: "Row export", messageId: "message-qp", body: "Rows attached." },
+    );
+    const msg = message(raw, "Row export");
+    const bindings = env(Response.json({ ok: true, slug: "row-export" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+
+    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
+    const forwarded = bindings.YOPEDIA.fetch.mock.calls[0][0];
+    const parts = (await forwarded.formData()).getAll("attachments");
+    expect(parts).toHaveLength(1);
+    const part = parts[0] as File;
+    expect(part.name).toBe("rows.csv");
+    expect(part.type).toBe("text/csv");
+    expect(new Uint8Array(await part.arrayBuffer())).toEqual(partBytes(0, 300));
+    // Sanity only: this ~1 KB fixture cleared the raw gate before DW-358 too, so
+    // it is evidence that nothing else refused the message on the way through --
+    // not evidence for the widened cap. The cap is measured next door, against a
+    // full-size document.
+    expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
   });
 });
 
@@ -350,6 +420,12 @@ function multipartEmail(
      * `filename="..."` parameter could not carry without breaking the header.
      */
     disposition?: string;
+    /**
+     * Transfer encoding for the part body. Defaults to base64, the encoding
+     * every fixture used before DW-358; `quoted-printable` is the worst-case
+     * encoding a sending client may pick instead.
+     */
+    encoding?: "base64" | "quoted-printable";
   })[],
   options: { subject: string; messageId: string; body: string },
 ): string {
@@ -368,6 +444,8 @@ function multipartEmail(
     "",
   ];
   parts.forEach((part, index) => {
+    const encoding = part.encoding ?? "base64";
+    const payload = partBytes(index, part.bytes ?? 96);
     lines.push(
       "--work-wiki-boundary",
       `Content-Type: ${part.mime}`,
@@ -375,11 +453,17 @@ function multipartEmail(
         (part.filename
           ? `Content-Disposition: attachment; filename="${part.filename}"`
           : "Content-Disposition: attachment"),
-      "Content-Transfer-Encoding: base64",
-      "",
-      base64Lines(partBytes(index, part.bytes ?? 96)),
+      `Content-Transfer-Encoding: ${encoding}`,
       "",
     );
+    if (encoding === "base64") {
+      lines.push(base64Lines(payload), "");
+    } else {
+      // No blank line after a quoted-printable body: the CRLF that opens the
+      // boundary delimiter is the last line's terminator, and an extra one
+      // decodes into a literal line break appended to the payload.
+      lines.push(quotedPrintableLines(payload));
+    }
   });
   lines.push("--work-wiki-boundary--", "");
   return lines.join("\r\n");
@@ -732,11 +816,16 @@ describe("email-ingest oversized attachments", () => {
    * ones -- was only ever asserted negatively, and the plural oversize wording
    * and the `"unnamed attachment"` fallback were unobserved.
    *
-   * `rawSize` is overridden because two 10 MB parts cannot coexist under
-   * `MAX_RAW_EMAIL_BYTES`: a message like this really would bounce at the raw
-   * gate first. That gate is pinned on its own below; what is under test here is
-   * the accounting BENEATH it, which must still be right -- and the plural
-   * oversize wording is otherwise unreachable.
+   * `rawSize` is overridden to keep the FIXTURE small: the two oversize parts
+   * carry a handful of bytes each rather than 10 MB each, so the builder does
+   * not have to materialise ~28 MB of base64 to reach the accounting under test.
+   * The override is a stand-in for the size those parts would really have, not a
+   * dodge around the raw gate -- two `MAX_EMAIL_DOCUMENT_BYTES + 1` parts
+   * base64-encode to 28,697,876 bytes, which fits under the widened
+   * `MAX_RAW_EMAIL_BYTES` (DW-358), so a real message of this shape reaches the
+   * per-attachment oversize skip rather than bouncing at the door. That gate is
+   * pinned on its own below; what is under test here is the accounting BENEATH
+   * it -- and the plural oversize wording is otherwise unreachable.
    */
   it("reports oversized, over-cap and unsupported losses in one acknowledgement", async () => {
     const raw = fixture("all-three", () =>
@@ -1008,6 +1097,95 @@ describe("email-ingest raw message cap", () => {
     expect(blocks[2]?.split("\r\n")[1]).toHaveLength(76);
   });
 
+  it("predicts a real quoted-printable fixture's part length at every awkward length", () => {
+    // The same calibration for the formula the parity test now measures a
+    // full-size document with. This side needs it more, not less: `base64Lines`
+    // delegates to a real encoder, while `quotedPrintableLines` is hand-written,
+    // so nothing but a comparison against bytes on the page keeps the pair
+    // honest -- and the end-to-end case above is what keeps the encoding itself
+    // honest by making PostalMime decode it.
+    //
+    // Three lengths, one per branch of the formula:
+    //   96  -- three full lines plus a short remainder line (21 escapes);
+    //   100 -- exactly four filled lines and no short tail, so the remainder
+    //          term drops out entirely: charging for a phantom fifth line, or
+    //          for a soft break the last line supposedly does not need, is the
+    //          off-by-one this length and no other catches;
+    //   1   -- no full line at all, so only the remainder term is exercised.
+    const LENGTHS = [96, 100, 1];
+    const raw = multipartEmail(
+      LENGTHS.map((bytes, index) => ({
+        filename: `part-${index}.csv`,
+        mime: "text/csv",
+        bytes,
+        encoding: "quoted-printable" as const,
+      })),
+      {
+        subject: "QP calibration",
+        messageId: "message-qp-calibration",
+        body: "Three files attached.",
+      },
+    );
+
+    // Read the encoded regions back out of the message rather than rebuilding
+    // them, for the same reason the base64 calibration does.
+    const marker = "Content-Transfer-Encoding: quoted-printable\r\n\r\n";
+    const blocks: string[] = [];
+    for (let cursor = 0; ; ) {
+      const found = raw.indexOf(marker, cursor);
+      if (found < 0) break;
+      const start = found + marker.length;
+      // One CRLF, not two: a quoted-printable body sits flush against the
+      // boundary, so the delimiter's CRLF terminates the last encoded line.
+      const end = raw.indexOf("\r\n--work-wiki-boundary", start);
+      expect(end).toBeGreaterThan(start);
+      // Through that CRLF -- exactly the span the helper counts.
+      blocks.push(raw.slice(start, end + 2));
+      cursor = end;
+    }
+
+    expect(blocks).toHaveLength(LENGTHS.length);
+    expect(blocks.map((block) => new TextEncoder().encode(block).byteLength)).toEqual(
+      LENGTHS.map((bytes) => quotedPrintablePartWireSize(bytes)),
+    );
+    // The awkward lengths really are the awkward ones: a filled line is 76
+    // characters ending in the `=` soft break, the 100-byte part's FINAL line is
+    // filled too (four of them, no short tail), and every line -- last included
+    // -- carries the soft break the round trip depends on.
+    const first = blocks[0]?.split("\r\n") ?? [];
+    expect(first[0]).toHaveLength(76);
+    expect(first[3]).toHaveLength(64);
+    const second = blocks[1]?.split("\r\n") ?? [];
+    expect(second).toHaveLength(5);
+    expect(second.slice(0, 4).map((line) => line.length)).toEqual([76, 76, 76, 76]);
+    for (const block of blocks) {
+      for (const line of block.split("\r\n").slice(0, -1)) {
+        expect(line.endsWith("=")).toBe(true);
+      }
+    }
+    // Worst case means worst case: every octet escaped, no literal payload
+    // characters left in the block.
+    expect(blocks[2]).toMatch(/^=[0-9A-F]{2}=\r\n$/);
+  });
+
+  it("forwards a message the size of a worst-case quoted-printable full-size document", async () => {
+    // The cap's reason for existing, at the surface a sender actually feels: the
+    // encoding `MAX_RAW_EMAIL_BYTES` is now derived from (DW-358). The parity
+    // test pins the same document against the constant; this pins it against the
+    // gate, which is where a sender learns whether their `.csv` was refused.
+    const msg = {
+      ...message(ATTACHMENT_EMAIL, "Quarterly report"),
+      rawSize: quotedPrintablePartWireSize(MAX_EMAIL_DOCUMENT_BYTES),
+    };
+    const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
+    expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
+  });
+
   it("forwards a message the size of a base64-encoded full-size document", async () => {
     const msg = {
       ...message(ATTACHMENT_EMAIL, "Quarterly report"),
@@ -1079,13 +1257,18 @@ describe("email-ingest raw message cap", () => {
     // real message is always at least this large -- the assertion cannot become
     // falsely true by the bound being loose.
     //
+    // Measured on the quoted-printable wire size, because that is what
+    // `MAX_RAW_EMAIL_BYTES` is now derived from (DW-358): against a cap widened
+    // for worst-case expansion, a base64 document plus a maximal body fits
+    // comfortably, so the base64 measurement would no longer be testing the
+    // trade-off at all -- it would just be asserting a true-by-slack inequality.
+    //
     // This guards the trade-off AS RECORDED TODAY; it is not a veto on widening
-    // the cap. DW-358 (worst-case quoted-printable expansion) and DW-362 (an
-    // aggregate multi-document budget) both carry accepted decisions to
-    // re-derive `MAX_RAW_EMAIL_BYTES` upward, and either one is expected to move
-    // this assertion with it. Re-derive the expectation there; do not read a
-    // failure here as a reason to leave the cap alone.
-    const rawSize = base64PartWireSize(MAX_EMAIL_DOCUMENT_BYTES) + MAX_EMAIL_CONTENT_CHARS;
+    // the cap further. DW-362 (an aggregate multi-document budget) carries an
+    // accepted decision to re-derive `MAX_RAW_EMAIL_BYTES` upward again and is
+    // expected to move this assertion with it. Re-derive the expectation there;
+    // do not read a failure here as a reason to leave the cap alone.
+    const rawSize = quotedPrintablePartWireSize(MAX_EMAIL_DOCUMENT_BYTES) + MAX_EMAIL_CONTENT_CHARS;
     expect(rawSize).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
 
     const msg = { ...message(ATTACHMENT_EMAIL, "Quarterly report"), rawSize };

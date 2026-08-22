@@ -3178,7 +3178,8 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: workers/email-ingest/index.ts
 severity: medium
 reason: Many clients send text/* attachments and non-ASCII bodies as quoted-printable, which expands up to roughly 3x for byte-dense content — far beyond base64's 4/3. A large .csv or .txt attachment can therefore still be refused below the advertised per-document ceiling, for the same reason DW-104 described for base64.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw2-decision-dw-358
 decision: 2026-08-21 Widen for worst-case encoding — Derive MAX_RAW_EMAIL_BYTES from the worst-case transfer encoding (a quoted-printable expansion factor rather than base64's ~1.37), re-pin the parity test, and record the new derivation beside the constant.
 decision: 2026-08-20 Widen for worst-case encoding — Derive MAX_RAW_EMAIL_BYTES from the worst-case transfer encoding (a quoted-printable expansion factor rather than base64's ~1.37), re-pin the parity test, and record the new derivation beside the constant.
 
@@ -3972,4 +3973,36 @@ source_spec: `spec-dw-323-merge-door-workspace-guidance.md`
 location: src/lib/merge.ts:302
 severity: medium
 reason: `reconcilePage` fails soft to the NEW body on an empty model response (src/lib/ingest.ts:1176 — `if (!out || out.trim() === "") return { body: newBody, ... }`). At the ingest door `newBody` is the freshly synthesized article, so that fallback is correct. At the merge door `newBody` is `from.body`, so the survivor's existing prose is overwritten wholesale by the page being absorbed, and step 5 then hard-deletes `from` along with its revision history. The `catch` in `mergePages` does not fire — the call RESOLVED. Pre-existing: predates DW-323, which only added the guidance arguments.
+status: open
+
+### DW-455: The MIME envelope headroom was never re-derived for a quoted-printable BODY, only for the attachment, although DW-358's own reason names non-ASCII bodies as a carrier.
+origin: spec-deferred 13bdee0a97ef
+source_spec: `spec-dw-358-raw-email-cap-worst-case-encoding.md`
+location: workers/email-ingest/index.ts (MIME_ENVELOPE_HEADROOM_BYTES)
+severity: medium
+reason: MIME_ENVELOPE_HEADROOM_BYTES is still 64 KiB and its comment still frames the body as "an ordinary text body". MAX_EMAIL_CONTENT_CHARS is 100,000, so a non-ASCII body sent quoted-printable reaches the wire at up to ~312 KB -- roughly five times the headroom that is meant to cover part headers, boundaries AND the body. The document half of DW-358 is fixed; the body half is not, and the pair's recorded trade-off ("only has to be simultaneously satisfiable for realistic mail") predates the encoding this change is about. Whether to re-derive the headroom from MAX_EMAIL_CONTENT_CHARS x WORST_CASE_TRANSFER_ENCODING_FACTOR is a cap decision, not a patch.
+status: open
+
+### DW-456: Widening the raw cap 2.27x roughly doubles the peak decoded-attachment memory the Worker buffers, which is exactly the exposure DW-360 records and nothing bounds it.
+origin: spec-deferred 5c2352e6d293
+source_spec: `spec-dw-358-raw-email-cap-worst-case-encoding.md`
+location: workers/email-ingest/index.ts (attachmentBytes / forwarded FormData)
+severity: medium
+reason: DW-360's own recorded reason is "Nothing bounds the aggregate size of the attachments the Worker copies into the forwarded FormData, and raising the raw cap raises that peak." MAX_RAW_EMAIL_BYTES just moved from 14,414,471 to 32,781,108, so the base64-carried payload a message may deliver rises from ~10.5 MB to ~23.9 MB of decoded bytes, and attachmentBytes copies each part again on top of the parsed MIME tree, inside a Cloudflare Worker isolate. An aggregate budget is DW-362's subject and was out of scope for this bundle, so no guard was added -- but the exposure is measurably larger than when DW-360 was filed.
+status: open
+
+### DW-457: The widened cap (31.2 MB quoted to senders) may now exceed Cloudflare Email Routing's own inbound message-size limit, making the gate unreachable and the quoted figure unachievable.
+origin: spec-deferred a4a9423aaf37
+source_spec: `spec-dw-358-raw-email-cap-worst-case-encoding.md`
+location: workers/email-ingest/index.ts (MAX_RAW_EMAIL_MB refusal copy)
+severity: medium
+reason: Two independent reviewers flagged that Email Routing enforces a platform inbound ceiling (reported as 25 MiB, unverified offline and recorded nowhere in this repo). If that holds, messages between the platform limit and 32,781,108 bytes are rejected upstream and never reach the Worker, so the refusal copy invites a sender to resend under a ceiling that will also fail -- and the very scenario DW-358 names (a byte-dense 10 MB .csv sent quoted-printable, 32,715,573 bytes on the wire) could still never arrive. Clamping MAX_RAW_EMAIL_MB to a recorded transport bound is a different decision from "widen for worst-case encoding" and needs its own.
+status: open
+
+### DW-458: Three open ledger entries now carry reasons that are stale or false against the widened cap and will be read as current by the next sweep.
+origin: spec-deferred e94dd403c72e
+source_spec: `spec-dw-358-raw-email-cap-worst-case-encoding.md`
+location: _bmad-output/implementation-artifacts/deferred-work.md (DW-361, DW-362, DW-453)
+severity: low
+reason: DW-361's trade-off ("a full-size document plus a maximal body is refused") no longer binds for base64: 14,448,938 now fits under 32,781,108, and only the quoted-printable measurement still bounces. DW-362's premise ("ten 2 MB documents encode to roughly 27 MB and are bounced by MAX_RAW_EMAIL_BYTES (14.4 MB)") is now false -- 27 MB fits. DW-453's band ("a document more than roughly 47 KB over the 10 MB ceiling pushes rawSize past that gate") widens by more than two orders of magnitude, and its quoted "larger than 13.7 MB" copy is now "31.2 MB". This session was forbidden to edit the ledger, so the re-verification is recorded here instead.
 status: open
