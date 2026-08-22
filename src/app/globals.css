@@ -2690,20 +2690,21 @@ body:has(.wb-shell) {
 .wb-canvas-mode[hidden] {
   display: none;
 }
-/* The mode canvas itself stays MOUNTED while Settings is showing (DW-373) and
-   goes off screen behind `hidden` too — Settings used to REPLACE it, which
-   unmounted the Wiki subtree the rule above exists to keep, dialog and draft
-   included. Two `.wb-canvas` sections then sit at `grid-column: 3`, and this is
-   what keeps exactly one of them on screen.
+/* And the canvas SECTION goes the same way while Settings is open (DW-373).
+   Settings used to be rendered INSTEAD of the mode canvas, which unmounted the
+   subtree the rule above exists to keep; the shell now renders both and hides
+   this one, so the dialog and its draft are still there on the way back.
 
-   Stated rather than left to the user-agent sheet for the same reason as above,
-   and more sharply: `.wb-canvas` sets no `display` of its own today, so the
-   first author rule that gives it one — a `display: grid` for an inner layout,
-   say — would silently put the hidden canvas back on top of Settings.
+   Same reason the attribute is in the selector: `.wb-canvas` already carries an
+   author `grid-column`, `overflow` and `background`, and one author `display`
+   added to that block — a `flex` for a toolbar, a `grid` for a split — would
+   silently beat the UA sheet's `hidden` default and put the withdrawn canvas
+   back on screen underneath Settings.
 
-   Deliberately outside every media query: the canvas is hidden at all three
-   widths whenever Settings is showing. A rule wrapped in `@media (min-width: …)`
-   would put it back on screen at every width the wrapper missed. */
+   Deliberately outside every media query, and NOT merged into the rule above:
+   the `@media` block further down re-points `.wb-canvas` to `grid-column: 1`,
+   so a withdrawal stated inside a width query would hold at some widths and
+   not others. */
 .wb-canvas[hidden] {
   display: none;
 }

@@ -6,8 +6,7 @@ import {
   listReadableWikiPages,
   readWikiPageWithFrontmatter,
 } from "@/lib/wiki";
-import { canReadFrontmatter, canWriteFrontmatter } from "@/lib/authz";
-import type { Principal } from "@/lib/auth";
+import { canWriteFrontmatter } from "@/lib/authz";
 import { resolveWriteDenial } from "@/lib/write-denial";
 import {
   deleteIngestJob,
@@ -34,81 +33,6 @@ const MAX_BULK_DELETE = 50;
  * cloak is refusing.
  */
 const SELECTION_NOT_FOUND = "One or more selected ingests were not found.";
-
-/** The shape {@link readWikiPageWithFrontmatter} answers, or its miss. */
-type ReadPage = Awaited<ReturnType<typeof readWikiPageWithFrontmatter>>;
-
-/**
- * Read `slug` at most once per request.
- *
- * The `ingestIds` preflight and the ACL loop both need the same pages, and on
- * the fallback path they need them for the same slugs: without a cache an
- * orphaned entry selected by `ingestIds` was opened twice — once by
- * {@link canReadSelectedPage} from the preflight, then again by the loop's own
- * read. `null` (the page is gone) is cached like any other answer, so a miss is
- * not re-read either.
- *
- * Per-REQUEST, deliberately: it is created inside `DELETE` and dies with it, so
- * it can never serve a stale page across requests the way a module-level cache
- * would.
- */
-async function readOnce(
-  slug: string,
-  cache: Map<string, ReadPage>,
-): Promise<ReadPage> {
-  const cached = cache.get(slug);
-  if (cached !== undefined) return cached;
-  const page = await readWikiPageWithFrontmatter(slug);
-  cache.set(slug, page);
-  return page;
-}
-
-/**
- * May `principal` read the page at `slug` — the index first, the page only on a
- * miss.
- *
- * WHY AN INDEX MISS IS NOT A DENIAL (DW-393). `readable` is
- * `listReadableWikiPages(principal)`, i.e. `listWikiPages()` filtered by
- * `canReadEntry`, so it can only speak about slugs the page INDEX carries. An
- * index that has fallen out of step with the disk is not a hypothetical state
- * here — `checkOrphanPages` (`@/lib/lint-checks`) exists precisely to detect it
- * — and an index MISS is exactly what a real, readable, orphaned page looks
- * like from this route. Treating that miss as a denial 404'd the whole DELETE
- * batch, clearing none of the other records selected alongside it: a stale index
- * turned into an unfixable selection.
- *
- * WHAT THIS CHANGES, EXACTLY — AND WHAT IT DOES NOT. An index HIT still
- * short-circuits: `readable.has(slug)` answers `true` without opening the page,
- * so a hit is trusted exactly as it was before DW-393, stale or not. The disk is
- * consulted ONLY on a miss. This therefore narrows nothing and widens only the
- * miss — every slug the index carries gets the identical answer it always got,
- * and the one new `true` is for a slug the index does not carry whose page on
- * disk admits the caller. (The index is not, in general, "the stale copy the
- * disk overrules": in the hit direction it is still the whole answer.)
- *
- * WHY THE FALLBACK CANNOT WIDEN PAST THAT. `canReadEntry` delegates to
- * `canReadPage` over the entry's `owner`/`visibility`/`type`, and
- * `canReadFrontmatter` delegates to the SAME `canReadPage` over the same three
- * fields coerced off the page. The fallback is not a weaker check than the
- * index's — it is that same decision asked of the page instead of the entry, so
- * an orphan the index would have denied is denied identically, and a page that
- * is simply gone reads `null` and is denied too.
- *
- * Reads go through {@link readOnce}, so a slug the preflight had to open is not
- * opened again by the ACL loop: at most one read per slug per request, and none
- * at all for the slugs the index carries.
- */
-async function canReadSelectedPage(
-  slug: string,
-  readable: Set<string>,
-  cache: Map<string, ReadPage>,
-  principal: Principal,
-): Promise<boolean> {
-  if (readable.has(slug)) return true;
-  const page = await readOnce(slug, cache);
-  if (!page) return false;
-  return canReadFrontmatter(page.frontmatter, principal);
-}
 
 function parseIdList(
   value: unknown,
@@ -265,41 +189,13 @@ export async function DELETE(request: NextRequest) {
     const readable = new Set(
       (await listReadableWikiPages(principal)).map((page) => page.slug),
     );
-    // One page read per slug for the whole request, shared by the preflight
-    // below and the ACL loop further down (see `readOnce`).
-    const pageReads = new Map<string, ReadPage>();
     const ledgerById = new Map(ledger.map((entry) => [entry.ingest_id, entry]));
     const selectedEntries = ingestIds.map((id) => ledgerById.get(id));
-    // "The entry exists and names a page" is still a flat check; only
-    // READABILITY consults the page (DW-393). The index answers first, so an
-    // ordinary indexed selection costs no read; an index miss falls back to the
-    // page itself rather than being read as a denial, which is what keeps an
-    // orphaned-but-readable page from 404'ing everything selected with it. A
-    // genuinely missing page reads `null` and still 404s, unchanged.
-    //
-    // Sequential rather than `Promise.all`: the fallback only fires for entries
-    // the index missed, the batch is capped at `MAX_BULK_DELETE`, and stopping
-    // at the first denial is the cheaper shape for the common case. Any page it
-    // does open lands in `pageReads`, so the ACL loop below inherits it.
-    let entriesSelectable = true;
-    for (const entry of selectedEntries) {
-      if (!entry || !entry.primary_slug) {
-        entriesSelectable = false;
-        break;
-      }
-      if (
-        !(await canReadSelectedPage(
-          entry.primary_slug,
-          readable,
-          pageReads,
-          principal,
-        ))
-      ) {
-        entriesSelectable = false;
-        break;
-      }
-    }
-    if (!entriesSelectable) {
+    if (
+      selectedEntries.some(
+        (entry) => !entry || !entry.primary_slug || !readable.has(entry.primary_slug),
+      )
+    ) {
       return NextResponse.json(
         { error: SELECTION_NOT_FOUND },
         { status: 404 },
@@ -332,7 +228,7 @@ export async function DELETE(request: NextRequest) {
 
     const existingSlugs = new Set<string>();
     for (const slug of slugs) {
-      const page = await readOnce(slug, pageReads);
+      const page = await readWikiPageWithFrontmatter(slug);
       if (!page) continue; // Already gone: clear its terminal UI record below.
       // THE READ CLOAK, and it lands HERE for two reasons (DW-270).
       //
@@ -367,17 +263,7 @@ export async function DELETE(request: NextRequest) {
       // exists to perform. The residue is narrow — it leaks "a page still
       // exists at this slug" to someone who already holds a job record naming
       // that slug, and nothing about the page's owner, realm or contents.
-      //
-      // THE INDEX IS ASKED FIRST, THE PAGE SECOND (DW-393). `readable` only
-      // knows the slugs the page index carries, so a readable page missing from
-      // the index — the orphan state `checkOrphanPages` (`@/lib/lint-checks`)
-      // exists to detect — used
-      // to read as a denial and 404 the whole batch. `canReadSelectedPage`
-      // re-asks `canReadFrontmatter` on the page THIS LOOP ALREADY READ — it
-      // comes back off `pageReads`, so the fallback costs no read here — and
-      // reaches the same decision `canReadEntry` would have: both delegate to
-      // `canReadPage` over the same three fields.
-      if (!(await canReadSelectedPage(slug, readable, pageReads, principal))) {
+      if (!readable.has(slug)) {
         return NextResponse.json(
           { error: SELECTION_NOT_FOUND },
           { status: 404 },

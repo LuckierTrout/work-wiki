@@ -22,7 +22,6 @@ import {
   buildSummary,
   ALL_CHECK_TYPES,
 } from "../lint-checks";
-import { disputedClearInstruction } from "../lint-types";
 import type { LintIssue } from "../types";
 
 // We use writeWikiPage / ensureDirectories to set up wiki pages on disk.
@@ -941,31 +940,6 @@ describe("checkDisputedPages", () => {
     expect(issue.suggestion?.toLowerCase()).not.toContain("talk");
   });
 
-  it("reads the clear path from the ONE shared clause, and that clause names who can clear it", async () => {
-    // DW-389. The suggestion and `lint-fix`'s auto-fix refusal used to be two
-    // hand-typed restatements of the same instruction, and both got it wrong
-    // the same way: since DW-121 the realm branch of `canWritePage` refuses the
-    // `"metadata"` PATCH they name on every public knowledge page, so on that
-    // class of page the loop they described cannot be closed by the reader.
-    //
-    // Pinned VERBATIM against `disputedClearInstruction` rather than by
-    // keyword, because the whole repair is that one function owns the sentence:
-    // a substring pin would keep passing while this surface drifted back to a
-    // private copy. `lint-fix.test.ts` makes the identical assertion, which is
-    // what ties the two surfaces together.
-    await createPageWithIndex("contested-page", "Contested Page", {
-      disputed: true,
-      created: "2025-01-01",
-    });
-
-    const [issue] = await checkDisputedPages();
-    expect(issue.suggestion).toContain(disputedClearInstruction("contested-page"));
-    // …and the clause says who can actually do it, not just what to do.
-    expect(disputedClearInstruction("contested-page")).toMatch(
-      /only an agent or a site admin/i,
-    );
-  });
-
   it("does NOT flag a page with disputed: false", async () => {
     await createPageWithIndex("settled-page", "Settled Page", {
       disputed: false,
@@ -1025,11 +999,9 @@ describe("checkDisputedPages", () => {
 
 describe("retired discussion checks", () => {
   it("ALL_CHECK_TYPES no longer offers the talk-surface check", () => {
-    // The talk surface is retired. This type drove `lint_wiki`'s MCP schemas
-    // and the API's check-type validation via this const, so its absence here
-    // is what keeps it out of both. (`fix_lint_issue` and `POST /api/lint/fix`
-    // read the narrower `AUTO_FIXABLE_CHECK_TYPES` since DW-348, so they never
-    // admitted it either way.)
+    // The talk surface is retired. This type drove the lint_wiki /
+    // fix_lint_issue MCP schemas and the API's check-type validation via this
+    // const, so its absence here is what keeps it out of all three.
     //
     // Only the talk-shaped check is asserted here. `disputed-page` is NOT part
     // of this retirement — the `disputed` frontmatter flag outlived talk — and
@@ -1058,11 +1030,7 @@ describe("ALL_CHECK_TYPES roster", () => {
     // DW-76: ingest still sets the `disputed` frontmatter flag and ArticleView
     // still renders its banner, so the flag needs a surface that lists the
     // flagged pages for an owner. That surface is this check, and it only
-    // reaches the UI toggles and `lint_wiki`'s check enum by being in this
-    // list. NOT `fix_lint_issue`'s enum — that one is
-    // `AUTO_FIXABLE_CHECK_TYPES`, which deliberately excludes this type
-    // (DW-348); the human action reaches the caller through the issue's own
-    // `suggestion` instead.
+    // reaches the UI toggles and the MCP enum by being in this list.
     expect(ALL_CHECK_TYPES).toContain("disputed-page");
   });
 

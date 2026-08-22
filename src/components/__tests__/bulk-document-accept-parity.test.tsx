@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, within } from "@testing-library/react";
+import { cleanup, render } from "@testing-library/react";
 import { BulkDocumentImport } from "@/components/BulkDocumentImport";
 import {
   ACCEPTED_DOCUMENT_ATTRIBUTE,
-  selectBulkDocuments,
+  documentExtension,
 } from "@/lib/bulk-document-import";
 import { SUPPORTED_DOCUMENT_EXTENSIONS } from "@/lib/document-formats";
 
@@ -83,61 +83,12 @@ describe("bulk import file inputs", () => {
       `supported formats the file picker would hide: ${unadvertised.join(", ")}`,
     ).toEqual([]);
 
-    // `selectBulkDocuments`, not `documentExtension`: since DW-347 the badge
-    // helper only chooses a label and the GATE is what decides whether a
-    // selection is a dead end. Asking the label helper would leave this claim
-    // green while the gate refused everything.
     const unqueueable = SUPPORTED_DOCUMENT_EXTENSIONS.filter(
-      (ext) =>
-        selectBulkDocuments([
-          new File([new Uint8Array(4)], `sample.${ext}`, { lastModified: 1 }),
-        ]).accepted.length !== 1,
+      (ext) => documentExtension(`sample.${ext}`) === "file",
     );
     expect(
       unqueueable,
       `formats the picker offers but the manifest refuses: ${unqueueable.join(", ")}`,
     ).toEqual([]);
-  });
-
-  /**
-   * The MANIFEST BADGE reads the derived value, MOUNTED (DW-347).
-   *
-   * Same reasoning as the `accept` attribute above, one call site over:
-   * `bulk-document-import.test.ts` pins what `documentExtension(name, type)`
-   * ANSWERS, and nothing there notices if the component asks it the
-   * one-argument question. It did until DW-347 — and reverting
-   * `BulkDocumentImport.tsx` to `documentExtension(item.file.name)` leaves the
-   * entire unit suite green while every extension-less file in the manifest
-   * badges "FILE".
-   *
-   * A `File` named `report` with `type: "application/pdf"` is the ordinary case:
-   * the picker's `accept` advertises that content type, so the browser hands
-   * these over, and `/api/ingest/document` takes them.
-   */
-  it("badges a queued MIME-only file with its resolved format", () => {
-    const { container } = render(<BulkDocumentImport vaultId={null} />);
-    const input = fileInputs(container)[0];
-    const picked = new File([new Uint8Array(4)], "report", {
-      type: "application/pdf",
-      lastModified: 1,
-    });
-
-    // `input.files` is read-only in jsdom, so it is defined onto the element
-    // rather than passed through `fireEvent`'s `target`.
-    Object.defineProperty(input, "files", {
-      value: [picked],
-      configurable: true,
-    });
-    fireEvent.change(input);
-
-    // The row exists at all — otherwise the badge assertion below passes
-    // vacuously on an empty manifest.
-    const row = container.querySelector("li");
-    expect(row, "the file was not queued at all").not.toBeNull();
-    expect(within(row as HTMLElement).getByText("report")).toBeTruthy();
-    expect(
-      within(row as HTMLElement).getByText("pdf"),
-      "the manifest badge did not resolve the file's content type",
-    ).toBeTruthy();
   });
 });

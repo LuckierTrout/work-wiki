@@ -13,7 +13,7 @@ import {
 import { listContributors } from "../contributors";
 import { ensureDirectories, writeWikiPage } from "../wiki";
 import { saveRevision } from "../revisions";
-import { discussThread, seedDiscussFile } from "./discuss-fixture";
+import { createThread, _resetTimestamp } from "../talk";
 import { _resetLocks } from "../lock";
 import { _resetStorage } from "../storage";
 
@@ -26,6 +26,7 @@ beforeEach(async () => {
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
+  _resetTimestamp();
   _resetLocks();
   _resetStorage();
 });
@@ -103,9 +104,7 @@ describe("rebuildContributorIndex + read parity", () => {
     await saveRevision("p1", "# P1\n\nv1", "alice");
     await saveRevision("p1", "# P1\n\nv2 longer content here", "alice");
     await saveRevision("p2", "# P2\n\nv1", "bob");
-    await seedDiscussFile("p1", [
-      discussThread("p1", { title: "Q", authors: ["bob"] }),
-    ]);
+    await createThread("p1", "Q", "bob", "a question");
 
     // Fallback: no index yet → listContributors does the full scan.
     expect(await getContributorIndex()).toBeNull();

@@ -56,29 +56,6 @@ describe("system health", () => {
     expect(health.operations.observed).toBeGreaterThan(0);
   });
 
-  it("treats a verified but TRUNCATED backup as requiring attention", async () => {
-    // A second tenant file, so a one-file budget really leaves something behind.
-    await getStorage().writeFile(
-      tenantWikiRelPath(tenantForOwner("alice"), "notes.md"),
-      serializeFrontmatter({ owner: "alice", visibility: "private" }, "# Notes\n\nPending."),
-    );
-    const backup = await createOwnerBackup("alice", new Date(), {
-      maxFiles: 1,
-      maxBytes: 2 * 1024 * 1024 * 1024,
-    });
-    expect(backup.truncated).toEqual(["file-count"]);
-    await verifyOwnerBackup("alice", backup.id);
-
-    const health = await getSystemHealth("alice");
-    // A partial backup verifies cleanly — it checks the entries its manifest
-    // holds — so `verified` alone would report the recovery path as sound while
-    // it silently covers less than the tenant. The throw this replaced was the
-    // operator's only signal; the flag has to carry it instead.
-    expect(health.backup.status).toBe("verified");
-    expect(health.backup.latest?.truncated).toEqual(["file-count"]);
-    expect(health.status).toBe("attention");
-  });
-
   it("surfaces a failed source check as requiring attention", async () => {
     const backup = await createOwnerBackup("alice");
     await verifyOwnerBackup("alice", backup.id);

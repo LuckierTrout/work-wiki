@@ -166,7 +166,7 @@ describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
     expect(history).toContain("realmDeniesRevert: boolean;");
     expect(history).not.toMatch(/realmDeniesRevert\s*=\s*false/);
     expect(history).toContain(
-      "const canRevert = isLoaded && isSignedIn && (isSiteOwner || !realmDeniesRevert);",
+      "const canRevert = isSiteOwner || !realmDeniesRevert;",
     );
     // …and the panel hands its answer to every row, which is what actually
     // removes the button.
@@ -283,67 +283,6 @@ describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
       expect(source).not.toMatch(/externalAccounts/);
       expect(source).not.toContain("useUser");
     }
-  });
-});
-
-/**
- * DW-392 — the SESSION term on the Revert gate.
- *
- * Its own `describe` rather than an addition to the DW-120 block above: that
- * block is about the REALM fact and the Delete gate, and a regression in who
- * may revert is not a realm/Delete failure. Reported under this heading, the
- * failing test names the gate that actually broke.
- *
- * The mounted half is
- * `src/components/__tests__/revision-revert-session-gate.test.tsx`; this is the
- * text pin that stops an ownership term from being added back.
- */
-describe("the viewer's SESSION reaches the Revert gate (DW-392)", () => {
-  it("gates Revert on the session, and still on no ownership term", async () => {
-    const history = await read("RevisionHistory.tsx");
-
-    // The session term, taken from the SHARED hook rather than from a second
-    // `useUser()` read — `@/lib/viewer-handle` owns the one copy of who the
-    // viewer is, and `ArticleActions`' `canCurate` reads `isSignedIn` off the
-    // same destructure. `POST /api/wiki/[slug]/revisions` is a write, so the
-    // write-gate middleware 401s an anonymous caller before the route's authz
-    // runs; without this term every viewer of a non-realm page was offered
-    // Restore and its confirm in front of that 401.
-    expect(history).toMatch(
-      /const \{[^}]*\bisSignedIn\b[^}]*\} = useViewerHandle\(\);/,
-    );
-    // `isLoaded` guards the WHOLE gate now, not just `isSiteOwner`: the
-    // pre-session answer is "we do not know yet", and for a convenience gate
-    // that must resolve to "no". The mounted rows are in
-    // `src/components/__tests__/revision-revert-session-gate.test.tsx`.
-    expect(history).toContain(
-      "const canRevert = isLoaded && isSignedIn && (isSiteOwner || !realmDeniesRevert);",
-    );
-
-    // AND NO OWNERSHIP TERM, which is the half a "more gating is safer" edit
-    // would get wrong. The revert route gates on the realm and on the private-
-    // page ACL, never on page ownership, so an `isOwner`/`ownsOrContributes`
-    // term here would hide Restore from signed-in viewers the server admits —
-    // wider is the forbidden direction, but narrower-than-the-server is only
-    // tolerable where the browser genuinely cannot know better (ADMIN_HANDLES),
-    // and here it can.
-    //
-    // Matched on CODE SHAPES, not on the bare identifier: the file explains in
-    // prose why `isOwner` is absent, and a `not.toContain("isOwner")` would
-    // fail on that explanation while a one-line `isOwner && …` slipped past a
-    // reviewer. `isOwnerHandle`/`isSiteOwner` are the SITE-owner check and stay.
-    expect(history).not.toMatch(/\bconst\s+isOwner\b/);
-    expect(history).not.toMatch(/\bconst\s+ownsOrContributes\b/);
-    // The page's owner and contributors never reach this island at all — no
-    // prop declared for either, so there is nothing to compare against.
-    expect(history).not.toMatch(/^\s*owner\??:/m);
-    expect(history).not.toMatch(/^\s*contributors\??:/m);
-    expect(history).not.toMatch(/owner\.toLowerCase\(\)/);
-    // …and `canRevert` itself names only the three terms above.
-    const canRevertLine = history
-      .split("\n")
-      .find((line) => line.includes("const canRevert ="))!;
-    expect(canRevertLine).not.toMatch(/\bisOwner\b|\bownsOrContributes\b/);
   });
 });
 

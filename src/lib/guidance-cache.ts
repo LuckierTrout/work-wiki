@@ -24,28 +24,10 @@
  * scope a value the caller creates keeps "how stale may this be?" answerable by
  * reading the caller.
  *
- * Scope today, in four places:
- *
- *   - `ingest()` mints one per DOCUMENT when its caller supplies none.
- *   - `POST /api/ingest/batch` supplies one covering the URLs that request runs
- *     INLINE — and only those. URLs that ENQUEUE never see it: a queued task is
- *     its own later request and resolves guidance fresh, which is both what a
- *     queued task should do and the only option for a non-serializable handle.
- *   - The MCP `batch_ingest_urls` tool (`handleBatchIngest`) supplies one per
- *     TOOL CALL (DW-395). That door has no queue — every URL runs inline — so
- *     its handle covers the whole batch with no such split.
- *   - `mergePages()` mints one per MERGE (DW-323), covering its single
- *     reconcile call. A merge is one operation, so minting the handle STATES
- *     that scope instead of leaving it implied, and it is the seam a second
- *     guidance-consuming call in the same merge would use. It earns its keep
- *     today too: `mergePages` probes the dictionary under this handle before
- *     the fold — a merge cannot afford the rejection `listNamesTerms` can
- *     raise — and the reconcile then reads that memo instead of the store.
- *
- * What the two batch doors share is the unit: one user or agent action, one
- * consistent set of guidance. An edit landing mid-action is deliberately
- * invisible to the rest of it, and the next action mints a fresh handle that
- * sees it.
+ * Scope today: `ingest()` mints one per DOCUMENT when its caller supplies none,
+ * and `POST /api/ingest/batch` supplies one per HTTP REQUEST — one batch is one
+ * user action, so an edit landing mid-batch is deliberately invisible to the
+ * rest of that batch.
  */
 
 import {

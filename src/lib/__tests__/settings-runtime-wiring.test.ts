@@ -253,7 +253,12 @@ describe("the custom provider is visible to the gates every LLM feature asks", (
     // same string to the workload resolvers as an inherited model.
     await store({ provider: "custom", customApiKey: "s", customBaseUrl: "https://a/v1" });
     expect(getEffectiveProvider()).toMatchObject({
-      configured: true,
+      // …and NOT configured, because there is no model to call with (DW-403).
+      // Both credential halves are here, which is all `providerIsConfigured`
+      // asks — but `getConfiguredModel` has nothing to construct from a
+      // `null` model, so reporting readiness here promised a call that cannot
+      // be made. This case used to assert `true`, which is the defect.
+      configured: false,
       provider: "custom",
       model: null,
     });

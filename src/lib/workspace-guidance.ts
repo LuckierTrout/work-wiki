@@ -15,9 +15,8 @@
  *
  * Both reads happen on EVERY call unless the caller opts into a
  * {@link WorkspaceGuidanceCache} — an optional, caller-owned, per-operation memo
- * (DW-141). `ingest.ts` needs it (many documents per operation); `merge.ts`
- * mints one per merge to state that operation's guidance scope (DW-323). Every
- * other prompt site asks once per operation and passes nothing.
+ * (DW-141). Only `ingest.ts` needs it today; every other prompt site asks once
+ * per operation and passes nothing.
  */
 
 import { logger } from "./logger";

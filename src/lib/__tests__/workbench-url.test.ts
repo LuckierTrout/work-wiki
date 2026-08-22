@@ -4,12 +4,11 @@
  * The shell mirrors its active mode into `?mode=` and resolves the mode it
  * mounts in from the URL first and storage second. Every one of those decisions
  * lives in `workbench-url.ts` precisely so this suite can run it: typed into the
- * mount effect instead, "the URL wins" would be source text to a node suite,
- * and an inverted precedence would keep every source scan green while making
- * every deep link resolve to whatever the visitor last used. The `dom`
- * project's `workbench-mode-url.test.tsx` mounts the shell around these rules.
+ * mount effect instead, "the URL wins" could only ever be grepped for, and an
+ * inverted precedence would keep every source scan green while making every
+ * deep link resolve to whatever the visitor last used.
  *
- * This is the `node` project, which is also the SSR check: the module is
+ * Runs on `environment: "node"`, which is also the SSR check: the module is
  * imported here with no `window` in scope at all.
  */
 import { describe, expect, it } from "vitest";

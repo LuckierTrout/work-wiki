@@ -70,17 +70,14 @@ export const SHORTCUTS: ShortcutDef[] = [
   // opens in place. Pressing the key becomes exactly what pressing the rail
   // control does, which is the whole claim.
   //
-  // The mode canvas survives it too (DW-373). `Workbench.tsx` used to swap
-  // `ModeCanvas` out for `SettingsCanvas`, so opening Settings by either route
-  // unmounted the Wiki subtree — an open Create Wiki dialog and its typed name
-  // with it. It now renders both and hides the mode one, so the canvas and
-  // everything mounted inside it come back exactly as they were left.
-  //
-  // THE CANVAS, and not the rest of the shell. `previewOpen` still ANDs in
-  // `!settingsOpen`, so a docked Preview undocks and an unsaved Preview edit
-  // goes with it, and the left column still hands its space to `SettingsNav`.
-  // Both are deliberate, both are out of DW-373's scope, and neither is this
-  // shortcut's doing — the rail control does precisely the same.
+  // It preserves the mode canvas too (DW-373). `Workbench.tsx` used to swap
+  // `ModeCanvas` out for `SettingsCanvas` while Settings was open, so opening
+  // Settings unmounted the Wiki subtree — an open Create Wiki dialog and the
+  // name typed into it included. The shell now renders the mode canvas
+  // unconditionally and passes `hidden={settingsOpen}`, which keeps the subtree
+  // mounted and withdraws it from the pixels, the accessibility tree and the
+  // tab order. That is the RENDER's doing, so it is identical for this key and
+  // for the rail control — neither one is where the preservation lives.
   //
   // So the shell claims `open-settings` and this route is the fallback for the
   // pages that have no shell to open it on. `/settings` itself stays a real

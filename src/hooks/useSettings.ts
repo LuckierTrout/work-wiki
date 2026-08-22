@@ -36,6 +36,16 @@ export interface EffectiveSettings {
   hasApiKey: boolean;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
+  /**
+   * Why the endpoint above is empty when the owner did set one (DW-402).
+   *
+   * The full env→store ladder's refusal, as `GET /api/settings` serves it.
+   * `ProviderForm` renders it inside the Ollama Base URL block — the sentence
+   * belongs beside the box it explains, not on the page's error channel, and
+   * the draft-seeding below deliberately ignores it: it is copy, never a value
+   * a save could write back.
+   */
+  ollamaBaseUrlIssue: string | null;
   structuredKnowledgeProvider: string | null;
   structuredKnowledgeProviderSource: SettingSource;
   structuredKnowledgeModel: string | null;
@@ -74,6 +84,17 @@ export interface ProviderStatus {
   provider: string | null;
   model: string | null;
   embeddingSupport: boolean;
+  /**
+   * The ENV leg's refusal, as `/api/status` serves it (DW-402).
+   *
+   * REQUIRED, like every other field here: both doors that answer this shape
+   * serve a whole `ProviderInfo`. `/api/status` returns `getProviderInfo()`
+   * outright and `POST /api/settings/test` spreads it beside its own `ok`
+   * flag, so there is no response carrying the other four fields and not this
+   * one. Marking it optional would let a reader treat "absent" as a state the
+   * wire can produce, which it cannot.
+   */
+  ollamaBaseUrlIssue: string | null;
 }
 
 // ---------------------------------------------------------------------------

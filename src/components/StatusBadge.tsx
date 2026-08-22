@@ -8,6 +8,15 @@ interface ProviderInfo {
   provider: string | null;
   model: string | null;
   embeddingSupport: boolean;
+  /**
+   * Why `OLLAMA_BASE_URL` was thrown away, as `/api/status` serves it (DW-402).
+   *
+   * The panel below lists that variable as a remedy. On a deployment that SET
+   * it and had it refused, the list was advice the owner had already followed:
+   * "no provider configured" is what the absence and the rejection both look
+   * like from here, and only the rejection has a fix.
+   */
+  ollamaBaseUrlIssue: string | null;
 }
 
 export function StatusBadge() {
@@ -80,6 +89,16 @@ export function StatusBadge() {
             <li>OLLAMA_API_KEY</li>
             <li>OLLAMA_BASE_URL / OLLAMA_MODEL</li>
           </ul>
+          {/*
+            BENEATH THE LIST, so it reads as a correction to the row above it
+            rather than as a separate complaint. Describing copy only — the
+            panel offers no input and blocks nothing.
+          */}
+          {info.ollamaBaseUrlIssue && (
+            <p className="mt-2 text-amber-800 dark:text-amber-300">
+              {info.ollamaBaseUrlIssue}
+            </p>
+          )}
           <p className="mt-2 text-foreground/50">
             Optional: <span className="font-mono">LLM_MODEL</span> to override
             the default model,{" "}

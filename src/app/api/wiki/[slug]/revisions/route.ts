@@ -8,11 +8,6 @@ import { canReadSlug, canWriteFrontmatter, canReadFrontmatter } from "@/lib/auth
 import { resolveWriteDenial } from "@/lib/write-denial";
 import { getErrorMessage } from "@/lib/errors";
 import { isReadOnlyError } from "@/lib/read-only";
-import {
-  PAGE_UNREADABLE_COPY,
-  PAGE_UNREADABLE_STATUS,
-  isPageUnreadableError,
-} from "@/lib/page-read-failure";
 
 type RouteParams = { params: Promise<{ slug: string }> };
 
@@ -136,15 +131,8 @@ export async function POST(req: Request, { params }: RouteParams) {
       );
     }
 
-    // Ensure the page exists. FRESH (DW-379): this read is the revert's MERGE
-    // BASE — its frontmatter is what the reverted content is re-serialized
-    // under, and its title is the fallback when the revision has no H1.
-    // `pageCache` is module-global and ref-counted around bulk scans, so one
-    // can be holding a superseded entry open when this request arrives;
-    // merging into that entry would write back frontmatter that is no longer
-    // stored. (The `GET` existence check above feeds no write and stays
-    // cached.)
-    const existing = await readWikiPageWithFrontmatter(slug, { fresh: true });
+    // Ensure the page exists.
+    const existing = await readWikiPageWithFrontmatter(slug);
     if (!existing) {
       return NextResponse.json(
         { error: `page not found: ${slug}` },
@@ -230,28 +218,6 @@ export async function POST(req: Request, { params }: RouteParams) {
     // change.
     if (isReadOnlyError(err)) {
       return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
-    }
-    // The fresh read above FAILED rather than found nothing (DW-379, inheriting
-    // DW-378/DW-380). Before `fresh` that failure arrived as `null` and was
-    // answered `page not found: <slug>`; unclassified it would now be a 500.
-    // Neither is true: the page may well exist and the fault is transient. Same
-    // status and same sentence `PUT /api/wiki/[slug]` already answers, imported
-    // from the one module that owns them. Above the `invalid slug` ladder
-    // because that classifier string-matches a message and would otherwise
-    // decide this one.
-    //
-    // It lands BELOW the realm-aware ACL cloak above, so an existing-but-
-    // unreadable page answers 503 where a cloaked one answers 404 — the same
-    // residual `PUT`'s branch documents and accepts, for the same reason: the
-    // cloak needs `existing.frontmatter`, which is exactly what the failed read
-    // did not produce, so there is nothing to cloak WITH. No caller can induce
-    // the failure reliably or selectively for a slug they choose, and on a
-    // single-owner private deployment that is accepted deliberately.
-    if (isPageUnreadableError(err)) {
-      return NextResponse.json(
-        { error: PAGE_UNREADABLE_COPY },
-        { status: PAGE_UNREADABLE_STATUS },
-      );
     }
     const message = getErrorMessage(err);
     const status = message.toLowerCase().startsWith("invalid slug") ? 400 : 500;

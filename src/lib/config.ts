@@ -11,6 +11,7 @@ import {
   canEnableVectorSearch,
   embeddingProviderChanged,
   isAbsoluteHttpUrl,
+  ollamaBaseUrlRefusedCopy,
   type VectorSearchInputs,
   type WorkbenchSettingsPatch,
   type WorkbenchSettingsStored,
@@ -116,6 +117,22 @@ export interface EffectiveSettings {
   apiKeySource: SettingSource;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
+  /**
+   * Why the endpoint above is not the one the owner set — the FULL env→store
+   * ladder's refusal, or `null` when nothing was refused (DW-402).
+   *
+   * Scoped to the ladder that produced `ollamaBaseUrl`, which is what makes it
+   * a different field from {@link ProviderInfo.ollamaBaseUrlIssue}: that one is
+   * env-only, because the object it rides on describes what the environment
+   * alone selects. Here a stored endpoint the resolver threw away is reported
+   * as such, naming the STORE rather than the variable.
+   *
+   * `null` on the `ollama-cloud` branch, which never walks the ladder at all.
+   *
+   * It DESCRIBES: the value is a sentence to render, not a validation failure.
+   * Nothing blocks a save on it.
+   */
+  ollamaBaseUrlIssue: string | null;
   structuredKnowledgeProvider: ProviderValue | null;
   structuredKnowledgeProviderSource: SettingSource;
   structuredKnowledgeModel: string | null;
@@ -308,6 +325,75 @@ export function _resetConfigWarnings(): void {
 }
 
 /**
+ * An Ollama endpoint ladder's answer: what it resolved, and why it threw
+ * anything away (DW-402).
+ *
+ * The refusal is a VALUE here rather than a second code path. Before this, a
+ * refused endpoint left nothing behind but a `logger.warn` line, so every
+ * owner-facing surface could only report the ABSENCE — an empty box beside a
+ * `none` badge, and a help panel still advertising the variable the deployment
+ * had already rejected. Returning the sentence beside the URL lets each surface
+ * say what the server already knew.
+ *
+ * `issue` is `null` whenever nothing was refused, which includes "nothing was
+ * set" (blank is unset, not invalid) and "the leg never ran". It is NOT an
+ * error channel: `url` is still the honest resolution and callers that only
+ * want the URL read `.url` and are unaffected.
+ */
+export interface OllamaBaseUrlAnswer {
+  /** The endpoint to use, or `undefined` when the ladder resolved to nothing. */
+  url: string | undefined;
+  /** {@link ollamaBaseUrlRefusedCopy} for the value this ladder discarded. */
+  issue: string | null;
+}
+
+/**
+ * The env leg's answer: `OLLAMA_BASE_URL` if usable, plus why it was not.
+ *
+ * The whole of {@link envOllamaBaseUrl}'s behaviour lives here — same
+ * `nonEmpty` reading, same `isAbsoluteHttpUrl` rule, same warn-once key, same
+ * sentence — and that function is now a `.url` view over this one, so the two
+ * cannot answer differently.
+ */
+export function envOllamaBaseUrlAnswer(): OllamaBaseUrlAnswer {
+  const fromEnv = nonEmpty(process.env.OLLAMA_BASE_URL);
+  if (fromEnv === null) return { url: undefined, issue: null };
+  if (isAbsoluteHttpUrl(fromEnv)) return { url: fromEnv, issue: null };
+  // ONE sentence, warned and REPORTED. Composing a second wording for the
+  // surfaces would be two explanations of one fact, free to drift apart.
+  const issue = ollamaBaseUrlRefusedCopy("env", fromEnv);
+  warnOnceAbout(`ollama-endpoint:env:${fromEnv}`, issue);
+  return { url: undefined, issue };
+}
+
+/**
+ * The full env→store ladder's answer: {@link getOllamaBaseUrl}'s URL, plus the
+ * refusal that produced it.
+ *
+ * A LEG THAT NEVER RAN CONTRIBUTES NO REASON. The env answer is returned
+ * outright when it carries a URL, so a store that was never consulted cannot
+ * complain about a value nothing read. Only when the env leg yields no URL is
+ * the store walked, and then the reported reason is the ENV one if there was a
+ * refusal there — that is the value that would have won — and the store's
+ * otherwise.
+ *
+ * Both refusals are still WARNED independently, under their own keys: the same
+ * bad string in the variable and in the config are two different things to fix,
+ * and reporting only one of them to the screen must not silence the other in
+ * the log.
+ */
+export function resolveOllamaBaseUrl(cfg: AppConfig = loadConfigSync()): OllamaBaseUrlAnswer {
+  const fromEnv = envOllamaBaseUrlAnswer();
+  if (fromEnv.url !== undefined) return fromEnv;
+  const stored = nonEmpty(cfg.ollamaBaseUrl);
+  if (stored === null) return { url: undefined, issue: fromEnv.issue };
+  if (isAbsoluteHttpUrl(stored)) return { url: stored, issue: fromEnv.issue };
+  const issue = ollamaBaseUrlRefusedCopy("config", stored);
+  warnOnceAbout(`ollama-endpoint:config:${stored}`, issue);
+  return { url: undefined, issue: fromEnv.issue ?? issue };
+}
+
+/**
  * `OLLAMA_BASE_URL` when it is USABLE, and `undefined` when it is not.
  *
  * The env leg of {@link getOllamaBaseUrl}, extracted so that "is the
@@ -327,16 +413,14 @@ export function _resetConfigWarnings(): void {
  * ENV ONLY, deliberately: this answers nothing about `cfg.ollamaBaseUrl`. See
  * the note on {@link detectEnvProvider}'s ollama branch for why detection must
  * not widen to the store.
+ *
+ * THE URL HALF of {@link envOllamaBaseUrlAnswer} (DW-402). The rule moved into
+ * that function and this one delegates, so the signature, the answer for every
+ * input and the warn-once key are all exactly what they were; a caller that
+ * also wants to SAY why the value was refused reads the answer instead.
  */
 export function envOllamaBaseUrl(): string | undefined {
-  const fromEnv = nonEmpty(process.env.OLLAMA_BASE_URL);
-  if (fromEnv === null) return undefined;
-  if (isAbsoluteHttpUrl(fromEnv)) return fromEnv;
-  warnOnceAbout(
-    `ollama-endpoint:env:${fromEnv}`,
-    `OLLAMA_BASE_URL is not an absolute http(s) URL (${fromEnv}); ignoring it.`,
-  );
-  return undefined;
+  return envOllamaBaseUrlAnswer().url;
 }
 
 /**
@@ -376,19 +460,15 @@ export function envOllamaBaseUrl(): string | undefined {
  * sites need exactly that half of this ladder and nothing else (DW-370). This
  * function's behaviour is unchanged by the move: the same fall-through, the
  * same warn-once key, the same answer for every input.
+ *
+ * THE URL HALF of {@link resolveOllamaBaseUrl} (DW-402), on the same terms as
+ * the env leg above: the ladder itself moved, this signature and every answer
+ * it gives did not. `getResolvedCredentials` and the embedding resolvers want
+ * only the URL and keep calling this; the two Settings payloads want the reason
+ * too and call the resolver.
  */
 export function getOllamaBaseUrl(cfg: AppConfig = loadConfigSync()): string | undefined {
-  const fromEnv = envOllamaBaseUrl();
-  if (fromEnv !== undefined) return fromEnv;
-  const stored = nonEmpty(cfg.ollamaBaseUrl);
-  if (stored !== null) {
-    if (isAbsoluteHttpUrl(stored)) return stored;
-    warnOnceAbout(
-      `ollama-endpoint:config:${stored}`,
-      `the stored Ollama endpoint is not an absolute http(s) URL (${stored}); ignoring it.`,
-    );
-  }
-  return undefined;
+  return resolveOllamaBaseUrl(cfg).url;
 }
 
 // ---------------------------------------------------------------------------
@@ -630,11 +710,11 @@ export async function readConfig(): Promise<ConfigRead> {
  * stripped before it leaves {@link readStoredConfig}.
  *
  * On R2 that read is also the same single round-trip `readFile` was, since the
- * etag rides on the object. On the filesystem provider it is likewise ONE read:
- * the etag is a hash of the bytes that read returned, not a `stat` alongside
- * them, so these ~50 defaults-only reads pay a hash of a small file for a tag
- * they do not use and no extra syscall at all. (It used to pay a `stat`, and
- * that pair described two different instants — see {@link saveConfig}.)
+ * etag rides on the object. On the filesystem provider `readFileWithEtag` adds a
+ * `stat` beside the `readFile`, so these ~50 defaults-only reads pay one extra
+ * local syscall each for an etag they do not use — cheaper than the second file
+ * open it replaced, and the price of having ONE read door that cannot answer
+ * differently to `loadConfig` and `readConfig`.
  */
 export async function loadConfig(): Promise<AppConfig> {
   const read = await readStoredConfig();
@@ -670,27 +750,15 @@ export type ConfigSave = { status: "ok"; version: string } | { status: "conflict
  * save would be silently overwritten. `writeFileIfMatch` refuses instead, and
  * this answers `conflict` so the route can say so.
  *
- * THE REFUSAL IS EXACT ON BOTH BACKENDS, and what remains open is narrow and
- * different in kind. On R2 the conditional put is evaluated server-side against
- * the object's own etag, so a losing writer cannot win. On the filesystem
- * provider the etag is a HASH OF THE CONTENT (`h1:<sha256>`) read in the same
- * single `readFile` that returned it, and `writeFileIfMatch` compares that hash
- * against the file again after staging its replacement. Neither of the two ways
- * a losing save used to be allowed through survives: an `mtime-size` tag could
- * not tell apart a rewrite of the same byte length in the same millisecond —
- * which is the COMMON shape here, since this writes a fixed-shape JSON object —
- * and the `readFile`/`stat` pair behind the old tag described two different
- * instants, so a write landing between them produced stale content carrying a
- * fresh tag.
- *
- * WHAT IS STILL OPEN on the filesystem is the `rename` that publishes the
- * replacement: the comparison happens immediately before it, with the new bytes
- * already written and flushed, so a writer whose own rename lands inside that
- * gap is overwritten unnoticed. Closing it would need a lock or a storage
- * primitive the interface does not have. It is orders of magnitude narrower than
- * the read-modify-write window this closes, on the deployment shape (one local
- * process) least likely to have two concurrent writers at all; it is bounded and
- * written down, not closed.
+ * HOW EXACT THAT REFUSAL IS DEPENDS ON THE BACKEND. On R2 it is exact: the
+ * conditional put is evaluated server-side against the object's own etag, so a
+ * losing writer cannot win. On the filesystem provider the etag is `mtime-size`
+ * and `readFileWithEtag` pairs a `readFile` with a `stat`, so a concurrent
+ * rewrite landing in the same millisecond at the same byte length produces a
+ * MATCHING etag and the losing save is allowed through — and the check-then-write
+ * is not one atomic step there either. That is a narrower window than the one
+ * this closes, on the deployment shape (one local process) least likely to have
+ * two concurrent writers at all; it is bounded and written down, not closed.
  *
  * WITHOUT an etag it writes unconditionally, and that is the FIRST write only:
  * `readConfig` returns `etag: null` exactly when there was no object to read.
@@ -881,6 +949,48 @@ export function providerIsConfigured(provider: string | null): boolean {
 }
 
 /**
+ * Can this deployment actually MAKE the call — credentials AND a model name
+ * (DW-403)?
+ *
+ * {@link providerIsConfigured} asks the credential question and keeps asking
+ * exactly that; `hasCustomProvider` in `llm.ts` still wants that answer alone.
+ * But a provider is only usable when a model name also resolves, and for
+ * `custom` there is no default to fall back on — so a `custom` selection with
+ * both credential halves set and no model reported itself READY while
+ * `extractStructuredKnowledge` refused it on `!selection.model` and
+ * `getConfiguredModel` had nothing to construct. The extraction section's
+ * badge went green for a configuration extraction will not run.
+ *
+ * KEYED OFF {@link DEFAULT_MODELS}, NOT OFF THE LITERAL `"custom"`: the rule is
+ * "a provider this repo has no default model for must be handed one". Today
+ * `custom` is the only such entry — `providers.ts` withholds it on purpose,
+ * because an owner-supplied endpoint serves whatever model names its operator
+ * chose — but a second default-less provider would otherwise reopen the same
+ * hole at three call sites at once.
+ *
+ * `model` is the one each caller ALREADY resolved, not a fresh derivation: the
+ * three sites run three different ladders (primary, workload, settings payload)
+ * and each must judge readiness against its own answer. It is read through
+ * {@link nonEmpty} because `llm.ts` resolves the model through `.trim()`, so a
+ * whitespace-only stored model is no model at all.
+ *
+ * `Object.hasOwn`, NOT `DEFAULT_MODELS[provider] !== undefined`. That map is a
+ * `Record<string, string>`, so a bare index walks the prototype: `provider`
+ * values of `"constructor"`, `"toString"` or `"valueOf"` all resolve to a
+ * function and would short-circuit this to "has a default model, needs none"
+ * — readiness granted to a provider with no model at all. `cfg.provider` comes
+ * off disk, and this is now the exported rule three sites ask, so the lookup
+ * asks about the map's OWN keys rather than about everything an object
+ * inherits. `providerIsConfigured` happens to reject those names first today;
+ * that is a second gate's behaviour, not this predicate's contract.
+ */
+export function providerIsUsable(provider: string | null, model: string | null): boolean {
+  if (!providerIsConfigured(provider)) return false;
+  if (provider !== null && Object.hasOwn(DEFAULT_MODELS, provider)) return true;
+  return nonEmpty(model) !== null;
+}
+
+/**
  * The `custom` provider's endpoint: env var first, then the store.
  *
  * Truthiness, not nullishness, for the same reason as
@@ -912,6 +1022,11 @@ export function getEffectiveProvider(): ProviderInfo {
       provider: null,
       model: null,
       embeddingSupport: false,
+      // THE case this field exists for (DW-402): a deployment whose only Ollama
+      // signal is an endpoint the resolver refused selects no provider at all,
+      // so "no provider configured" is the whole of what `/api/status` used to
+      // say about a variable the owner had already set.
+      ollamaBaseUrlIssue: envOllamaBaseUrlAnswer().issue,
     };
   }
 
@@ -941,9 +1056,19 @@ export function getEffectiveProvider(): ProviderInfo {
   }
 
   return {
-    configured: providerIsConfigured(provider),
+    // The MODEL is part of the question (DW-403): a `custom` selection with
+    // both credential halves and no model name resolves `model: null` two lines
+    // up, and reporting it configured promised `/api/status` a provider
+    // `getConfiguredModel` cannot construct.
+    configured: providerIsUsable(provider, model),
     provider,
     model,
+    // ENV LEG ONLY, matching what this object describes (DW-402). `ProviderInfo`
+    // is what the ENVIRONMENT selects — `detectEnvProvider` does not consult the
+    // store, by DW-370's own design note — so pairing it with a complaint about
+    // a stored endpoint would answer a question this object does not ask. The
+    // full ladder's reason rides on `EffectiveSettings` instead.
+    ollamaBaseUrlIssue: envOllamaBaseUrlAnswer().issue,
     // The `cfg` read at the top of this function, not a fresh one (DW-313).
     // `loadConfigSync()` is a 5 s-TTL cache, so re-entering it here would let
     // "which provider is active" and "can it embed?" describe two different
@@ -1017,7 +1142,11 @@ function workloadModelSettings(
     providerSource,
     model: resolvedModel,
     modelSource,
-    configured: providerIsConfigured(resolvedProvider),
+    // Against THIS ladder's model (DW-403). `structuredKnowledgeConfigured` is
+    // what the extraction section's badge reads, and `extractStructuredKnowledge`
+    // refuses on `!selection.model` — so a workload that inherits a `custom`
+    // primary with no model must not report itself ready.
+    configured: providerIsUsable(resolvedProvider, resolvedModel),
     usesPrimary: provider === undefined && model === undefined,
   };
 }
@@ -1586,13 +1715,27 @@ export function getEffectiveSettings(): EffectiveSettings {
   // takes the env value only when it is usable, so comparing the answer against
   // the env leg read the same way (`nonEmpty`, so a padded variable matches) is
   // what keeps the badge honest when the env value was the one thrown away.
+  //
+  // AND THE REFUSAL RIDES ALONG (DW-402). A `none` badge beside an empty box is
+  // the same sentence for "nothing was ever set" and for "what you set was
+  // thrown away", and only the second one has an action attached. The resolver
+  // already knows which; `resolveOllamaBaseUrl` is `getOllamaBaseUrl` with that
+  // answer kept rather than dropped, so the URL and the source below are
+  // resolved exactly as they were.
   let ollamaBaseUrl: string | null;
   let ollamaBaseUrlSource: SettingSource;
+  let ollamaBaseUrlIssue: string | null;
   if (provider === "ollama-cloud") {
     ollamaBaseUrl = "https://ollama.com/api";
     ollamaBaseUrlSource = "default";
+    // The ladder is not walked on this branch, so it has refused nothing. A
+    // reason here would describe a variable that had no bearing on the endpoint
+    // reported beside it.
+    ollamaBaseUrlIssue = null;
   } else {
-    ollamaBaseUrl = getOllamaBaseUrl(cfg) ?? null;
+    const ollama = resolveOllamaBaseUrl(cfg);
+    ollamaBaseUrl = ollama.url ?? null;
+    ollamaBaseUrlIssue = ollama.issue;
     if (ollamaBaseUrl === null) {
       ollamaBaseUrlSource = "none";
     } else if (ollamaBaseUrl === nonEmpty(process.env.OLLAMA_BASE_URL)) {
@@ -1616,7 +1759,10 @@ export function getEffectiveSettings(): EffectiveSettings {
     providerSource,
     model,
     modelSource,
-    configured: providerIsConfigured(provider),
+    // Against the model this function just resolved (DW-403), so the flat
+    // `/settings` page and `/api/status` cannot disagree about whether a
+    // default-less provider with no model name is ready.
+    configured: providerIsUsable(provider, model),
     // The SAME `cfg` every other half of this answer is resolved against
     // (DW-313) — "does this deployment embed?" and "with what?" are one
     // question, and a second read of the 5 s-TTL cache could answer them about
@@ -1630,6 +1776,7 @@ export function getEffectiveSettings(): EffectiveSettings {
     apiKeySource,
     ollamaBaseUrl,
     ollamaBaseUrlSource,
+    ollamaBaseUrlIssue,
     structuredKnowledgeProvider: structuredKnowledge.provider,
     structuredKnowledgeProviderSource: structuredKnowledge.providerSource,
     structuredKnowledgeModel: structuredKnowledge.model,

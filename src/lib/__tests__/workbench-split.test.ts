@@ -6,12 +6,12 @@
  * EXECUTED: every geometry decision is a pure function in `workbench-split`, and
  * every storage accessor is a guarded read in `workbench-state`, so both are run
  * here rather than grepped for. That is the whole point of keeping them out of
- * the component: a bound typed into an event handler is source text to this
- * suite, and a rewrite that kept the comment and inverted the comparison would
- * ship with the suite green.
+ * the component — `vitest.config.ts` is `environment: "node"` with
+ * `include: ["src/**\/__tests__/**\/*.test.ts"]`, so a bound typed into an event
+ * handler could only ever be matched as source text, and a rewrite that kept the
+ * comment and inverted the comparison would ship with the suite green.
  *
- * SCANNED: the wiring this `node`-project suite does not mount (the `dom`
- * project's `workbench-split-wiring.test.tsx` does) — that the shell measures
+ * SCANNED: the wiring the node suite cannot execute — that the shell measures
  * itself, applies the clamp, hands each handle the SAME bounds it enforces, and
  * that the stylesheet positions the divider from the same custom properties the
  * grid tracks read. Every previous story in this epic lost a regression exactly
@@ -1289,11 +1289,10 @@ describe("the shell wires the split without spelling any of it", () => {
 
   it("spells no width, floor, step or breakpoint of its own", async () => {
     // Every number in this file is a JSX index, a token name or a comment. A
-    // bound typed here would reach this node-project suite as source text
-    // rather than as a rule it can call.
-    // `min-width` / `max-width` join the list for DW-47: the shell used to
-    // carry its own copy of the stacking query, which is how the stylesheet and
-    // the JavaScript were free to drift apart in the first place.
+    // bound typed here could only ever be grepped for. `min-width` / `max-width`
+    // join the list for DW-47: the shell used to carry its own copy of the
+    // stacking query, which is how the stylesheet and the JavaScript were free
+    // to drift apart in the first place.
     const source = await component("Workbench.tsx");
     const code = stripComments(source);
     for (const literal of [

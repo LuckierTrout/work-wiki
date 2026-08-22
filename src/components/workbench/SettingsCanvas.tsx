@@ -70,23 +70,18 @@ import { CANVAS_ID } from "./ModeCanvas";
  *
  * Every decision it makes is a pure function in `@/lib/workbench-settings`: the
  * category vocabulary, every sentence, the draft/dirty rules, the save-body
- * builder and the vector predicate — each one run by the `node` project rather
- * than restated, because "what does Save actually send" is exactly the kind of
- * rule a rewrite keeps the wording of while changing the behaviour. What is
- * left in the JSX below is wiring, which the `dom` project mounts. This file
- * makes no request of its own at all: both the read and the write live in that
- * module, where a stubbed `fetchImpl` drives them without a socket.
+ * builder and the vector predicate. `vitest.config.ts` is `environment: "node"`,
+ * so a rule typed into the JSX below could only ever be grepped for — and "what
+ * does Save actually send" is exactly the kind of rule a rewrite keeps the
+ * wording of while changing the behaviour. This file makes no request of its
+ * own at all: both the read and the write live in that module, where a stubbed
+ * `fetchImpl` drives them without a socket.
  *
- * It takes {@link CANVAS_ID} and `tabIndex={-1}` from `ModeCanvas` while it is
- * open, so the skip link keeps exactly one target and the id stays unique. The
- * shell renders this surface BESIDE the mode canvas rather than instead of it
- * (DW-373) — that section stays mounted and goes behind `hidden`, so an open
- * Create Wiki dialog and its draft survive a trip through Settings — and the
- * hidden section drops the id and the tab index precisely so this one can carry
- * them. Both are in the document; only this one is showing.
- *
- * None of which touches the discard rule above: THIS component is still
- * unmounted the moment Settings closes, which is what throws the draft away.
+ * It takes {@link CANVAS_ID}, `tabIndex={-1}` and `headingId` from `ModeCanvas`
+ * while it is open, so the skip link keeps exactly one target and both ids stay
+ * unique. The mode canvas is still MOUNTED beside it (DW-373), hidden and
+ * id-less — opening Settings must not destroy an open Create Wiki dialog and
+ * the name typed into it, which is what unmounting that canvas used to do.
  *
  * The surface is owner-gated by the same route that stores the bytes: this
  * component never decides who may save, it relays a 403/404 as copy.
@@ -818,10 +813,11 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
 /**
  * The canvas element itself, shared by all three states.
  *
- * It carries {@link CANVAS_ID} and `tabIndex={-1}` because the Settings surface
- * is the one SHOWING while it is open — the skip link points at one id, and two
- * elements answering to it would be a duplicate id and an ambiguous bypass. The
- * mode canvas is still mounted beside it (DW-373), hidden, carrying neither.
+ * It carries {@link CANVAS_ID} and `tabIndex={-1}` because `ModeCanvas` gives
+ * both up while the Settings surface is showing — the skip link points at one
+ * id, and two elements answering to it would be a duplicate id and an ambiguous
+ * bypass. The mode canvas has not gone anywhere: it is mounted beside this one
+ * behind `hidden`, holding whatever draft was on it (DW-373).
  */
 function Frame({
   headingId,

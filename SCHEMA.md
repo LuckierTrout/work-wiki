@@ -125,17 +125,12 @@ overlap (suggesting they should be merged).
 
 ## Talk pages (Phase 2)
 
-Talk pages were a threaded discussion surface for editorial disputes,
-contradiction resolution, and general commentary on any wiki page. The REST API
-and the Discussion UI are retired (see **Retired surfaces** below); the storage
-format and the library that reads it are still live, which is why the shape is
-documented here.
+Talk pages provide a threaded discussion surface for editorial disputes,
+contradiction resolution, and general commentary on any wiki page.
 
-**Location:** `discuss/<slug>.json`, written on demand by whatever created the
-thread. Nothing in `src/lib/talk.ts` creates the file any more (see **Retired
-library API** below); `ensureDiscussDir()` survives there as an explicit no-op,
-because the storage provider creates parent directories on write. The
-`discuss/` directory is gitignored (like `wiki/` and `raw/`).
+**Location:** `discuss/<slug>.json` — created on demand by `ensureDiscussDir()`
+in `src/lib/talk.ts`. The `discuss/` directory is gitignored (like `wiki/` and
+`raw/`).
 
 **Schema:** Each file contains a JSON array of `TalkThread` objects:
 
@@ -158,38 +153,18 @@ Each `TalkComment` has:
 | `body` | string | Markdown content |
 | `parentId` | `string \| null` | ID of parent comment for threading; `null` for top-level |
 
-**Retired surfaces:** the Talk-pages REST API and the Discussion UI were cut
-with the move to a private, single-owner Workbench. The five method+route pairs
-below each answer a bodiless 404 through `retiredRoute()`, and every route
-carrying them is an entry in `RETIRED_SURFACES` (`src/lib/retired.ts`) — as is
-`/api/wiki/[slug]/discuss/[threadIndex]/ask-yoyo`, which handed a thread to the
-agent:
+**API routes:**
 
-- `GET /api/wiki/:slug/discuss` — listed all threads for a page
-- `POST /api/wiki/:slug/discuss` — created a new thread
-- `GET /api/wiki/:slug/discuss/:threadIndex` — got a single thread
-- `PATCH /api/wiki/:slug/discuss/:threadIndex` — updated thread status (resolve/reopen)
-- `POST /api/wiki/:slug/discuss/:threadIndex/comments` — added a comment (supported `parentId` for replies)
+- `GET /api/wiki/:slug/discuss` — list all threads for a page
+- `POST /api/wiki/:slug/discuss` — create a new thread
+- `GET /api/wiki/:slug/discuss/:threadIndex` — get a single thread
+- `PATCH /api/wiki/:slug/discuss/:threadIndex` — update thread status (resolve/reopen)
+- `POST /api/wiki/:slug/discuss/:threadIndex/comments` — add a comment (supports `parentId` for replies)
 
-The "Discussion" tab that showed threads with nested reply rendering, and the
-discussion badge counts on index cards and page headers, went with the surfaces
-that carried them: `/wiki` and `/wiki/[slug]` are `RETIRED_SURFACES` entries
-too, and their page bodies are `retiredPage()`, which is Next's `notFound()`.
-
-**Still live:** the storage and the readers underneath. `src/lib/talk.ts` reads
-`discuss/<slug>.json` in exactly the shape documented above for the per-page
-discussion counts, and deletes it when a page is deleted; `src/lib/contributors.ts`
-scans those files for the comment counts and threads-created figures that feed a
-contributor profile, and `src/lib/discuss-stats-index.ts` scans them to rebuild
-the precomputed counts. No product surface renders them today.
-
-**Retired library API:** nothing writes a thread or a comment any more. The
-thread-writing half of `src/lib/talk.ts` — `listThreads`, `getThread`,
-`createThread`, `addComment`, `resolveThread` and `hasOpenThread` — was deleted
-(DW-390) once the retirement of the HTTP surfaces above, and of the auto-opened
-reconciliation-thread writer (DW-230), left it with no caller outside its own
-tests. The on-disk shape stays documented because the readers still consume any
-file an earlier build left behind.
+**UI:** The wiki page view includes a "Discussion" tab showing threads with
+nested reply rendering (indented comments up to 3 visual levels). Discussion
+badge counts appear on wiki index page cards and individual page headers to
+surface active disputes at a glance.
 
 ## Contributor profiles (Phase 2)
 

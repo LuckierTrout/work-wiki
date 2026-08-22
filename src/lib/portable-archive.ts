@@ -4,7 +4,6 @@ import { rebuildDerivedIndexes } from "./maintenance";
 import { buildAliasIndex } from "./alias-index";
 import { buildSourceIndex } from "./source-index";
 import { getStorage } from "./storage";
-import type { BatchWrite } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
 import { rawRelPath, wikiRelPath } from "./wiki";
 import { enrichEntry, listWikiPages, updateIndex, validateSlug } from "./wiki";
@@ -166,24 +165,15 @@ export async function importPortableArchive(
   }
   let imported = 0;
   let skipped = 0;
-  // Collected rather than written one at a time: an archive can carry thousands
-  // of entries, and each `writeAsset` is its own fsync round-trip. `writeBatch`
-  // keeps the per-entry whole-file guarantee and collapses the barriers. Keyed
-  // by destination because the manifest is CALLER-SUPPLIED — two entries naming
-  // one path (or a compatibility path that collides with another entry's) used
-  // to mean "the later write wins", and `writeBatch` refuses ambiguity rather
-  // than resolving it, so resolve it here, the same way, before handing it over.
-  const restores = new Map<string, BatchWrite>();
   for (const entry of inspection.manifest.files) {
     if (collision === "skip" && collisionSet.has(entry.path)) {
       skipped += 1;
       continue;
     }
-    const tenantPath = `tenants/${tenant(owner)}/${entry.path}`;
-    restores.set(tenantPath, {
-      path: tenantPath,
-      body: bytesBuffer(files[`files/${entry.path}`]),
-    });
+    await getStorage().writeAsset(
+      `tenants/${tenant(owner)}/${entry.path}`,
+      bytesBuffer(files[`files/${entry.path}`]),
+    );
     // Tenant storage is canonical, but the current transition still rebuilds
     // global indexes from flat compatibility paths. Restore those copies for
     // page, raw, and discussion artifacts before invoking the rebuild.
@@ -195,19 +185,17 @@ export async function importPortableArchive(
           ? entry.path
           : null;
     if (compatibilityPath) {
-      restores.set(compatibilityPath, {
-        path: compatibilityPath,
-        body: bytesBuffer(files[`files/${entry.path}`]),
-      });
+      await getStorage().writeAsset(
+        compatibilityPath,
+        bytesBuffer(files[`files/${entry.path}`]),
+      );
     }
     imported += 1;
   }
-  await getStorage().writeBatch([...restores.values()]);
   // Reconstruct the flat index from every canonical page in this tenant. The
   // current transition still uses wiki/index.md as ordered discovery ground
   // truth, so a restore must seed it before rebuilding the derived indexes.
   const ownerEntries: IndexEntry[] = [];
-  const compatibilityPages = new Map<string, BatchWrite>();
   for (const entry of await getStorage().listFiles(`tenants/${tenant(owner)}/wiki`)) {
     if (entry.isDirectory || !entry.name.endsWith(".md") || entry.name.startsWith(".")) continue;
     const slug = entry.name.slice(0, -3);
@@ -225,22 +213,8 @@ export async function importPortableArchive(
       .map((value) => value.replace(/[#*_`>\[\]]/g, "").trim())
       .find(Boolean)?.slice(0, 500) || "Restored from owner archive";
     ownerEntries.push(enrichEntry({ slug, title, summary }, parsed.data));
-    const compatibilityPath = wikiRelPath(entry.name);
-    compatibilityPages.set(compatibilityPath, {
-      path: compatibilityPath,
-      body: bytesBuffer(new TextEncoder().encode(content)),
-    });
+    await getStorage().writeAsset(wikiRelPath(entry.name), bytesBuffer(new TextEncoder().encode(content)));
   }
-  // Issued after the loop, so an owner mismatch on a later page aborts before
-  // any of THIS pass's copies is published rather than partway through it.
-  //
-  // That is not "before anything is published": the loop above already wrote a
-  // compatibility copy for every `wiki/` manifest entry, and this pass rewrites
-  // the same paths from the canonical tenant copies it just validated. So an
-  // abort here still leaves the first pass's copies in place — which is what the
-  // per-write version did too, and why the throw is a hard failure a re-import
-  // is expected to follow rather than a rollback.
-  await getStorage().writeBatch([...compatibilityPages.values()]);
   await updateIndex([
     ...existingEntries.filter((entry) => tenantForOwner(entry.owner) !== tenant(owner)),
     ...ownerEntries.sort((a, b) => a.title.localeCompare(b.title)),

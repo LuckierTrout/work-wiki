@@ -13,7 +13,6 @@
 
 import type {
   StorageProvider,
-  BatchWrite,
   FileInfo,
   FileWithEtag,
   FileEntry,
@@ -41,54 +40,6 @@ const INDEX_PREFIX = "_idx:";
 
 /** KV key for fallback embedding store when Vectorize is unavailable. */
 const EMBEDDINGS_KV_KEY = "_idx:embeddings";
-
-/**
- * How many of a {@link R2StorageProvider.writeBatch}'s PUTs are in flight at
- * once.
- *
- * R2 HAS NO FSYNC, so the batch door buys something different here than it does
- * on the filesystem: there are no durability barriers to collapse, only network
- * round-trips to overlap. Each entry is the same single-object PUT `writeFile`
- * and `writeAsset` already perform, with the same per-object atomicity — the
- * batch just stops the caller's loop from paying for them one at a time.
- *
- * Bounded rather than "all of them" because a Worker's subrequest budget and
- * its open-connection limit are both finite, and an archive import can carry
- * thousands of entries.
- */
-const BATCH_PUT_CONCURRENCY = 16;
-
-/**
- * The largest batch handed to Vectorize in one `upsert`.
- *
- * Vectorize caps how many vectors a single mutation may carry, so an unbounded
- * flush would fail wholesale on a large rebuild. Splitting here keeps the door's
- * contract (one flush, later entry wins) while staying inside that ceiling.
- */
-const VECTORIZE_UPSERT_LIMIT = 1000;
-
-/**
- * The key two `BatchWrite` paths must agree on to count as the same destination.
- *
- * The filesystem provider compares RESOLVED paths, so `"a/b.md"` and
- * `"./a/b.md"` are one file there and the batch is refused. R2 keys are opaque
- * strings, so without this the same batch would be accepted and silently
- * last-write-win — one interface answering two ways about the same input, which
- * is exactly what the duplicate refusal exists to prevent. Used for the CHECK
- * only: what is stored is still the caller's key verbatim.
- */
-function batchKey(key: string): string {
-  const segments: string[] = [];
-  for (const segment of key.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") {
-      segments.pop();
-      continue;
-    }
-    segments.push(segment);
-  }
-  return segments.join("/");
-}
 
 // ---------------------------------------------------------------------------
 // Provider
@@ -119,55 +70,6 @@ export class R2StorageProvider implements StorageProvider {
 
   async writeFile(path: string, content: string): Promise<void> {
     await this.bucket.put(path, content);
-  }
-
-  /**
-   * See {@link StorageProvider.writeBatch}. On R2 a batch is a bounded-concurrency
-   * fan-out of the PUTs this provider already performs — nothing is staged,
-   * because nothing needs to be: a single-object PUT is already the whole-file
-   * publish that the filesystem provider needs a tmp file and a rename to
-   * achieve.
-   *
-   * Not a transaction, for the same reason as on the filesystem: the PUTs are
-   * independent, so a fault leaves the ones that already landed in place. The
-   * duplicate-path refusal is enforced here too, so shared callers get one
-   * answer from both providers rather than a rejection on one and a silent
-   * last-write-wins on the other.
-   */
-  async writeBatch(entries: readonly BatchWrite[]): Promise<void> {
-    if (entries.length === 0) return;
-
-    const seen = new Set<string>();
-    for (const entry of entries) {
-      const key = batchKey(entry.path);
-      if (seen.has(key)) {
-        throw new Error(`writeBatch: duplicate path in one batch: ${entry.path}`);
-      }
-      seen.add(key);
-    }
-
-    let next = 0;
-    // Once one PUT has rejected, the call is already going to reject with that
-    // error, so every further PUT is a write the caller will never be told
-    // about. Stopping bounds "a fault leaves the ones that already landed in
-    // place" to the ones that were in flight when it happened, instead of
-    // letting the rest of the batch keep landing behind a rejected promise.
-    let faulted = false;
-    const worker = async (): Promise<void> => {
-      for (let index = next++; index < entries.length; index = next++) {
-        if (faulted) return;
-        const entry = entries[index];
-        try {
-          await this.bucket.put(entry.path, entry.body);
-        } catch (error) {
-          faulted = true;
-          throw error;
-        }
-      }
-    };
-    await Promise.all(
-      Array.from({ length: Math.min(BATCH_PUT_CONCURRENCY, entries.length) }, worker),
-    );
   }
 
   async deleteFile(path: string): Promise<void> {
@@ -372,54 +274,6 @@ export class R2StorageProvider implements StorageProvider {
       }
       await this.kv.put(EMBEDDINGS_KV_KEY, JSON.stringify(entries));
     }
-  }
-
-  /**
-   * See {@link StorageProvider.upsertEmbeddings}. Vectorize has a native bulk
-   * door, so the batch goes out as `upsert` calls of at most
-   * {@link VECTORIZE_UPSERT_LIMIT} vectors. The KV fallback keeps every vector in
-   * a single blob, so it loads and puts that blob once per call instead of once
-   * per vector — the same collapse the filesystem provider makes.
-   *
-   * BOTH BRANCHES COLLAPSE A REPEATED ID FIRST. The interface promises the later
-   * entry wins within one flush, and handing Vectorize two mutations for one id
-   * in a single call leaves which of them survives up to the service — so the
-   * batch is reduced to one entry per id, holding the last value, before either
-   * branch sees it. Splitting a reduced batch across `upsert` calls is then safe:
-   * no id spans two of them.
-   */
-  async upsertEmbeddings(entries: readonly EmbeddingEntry[]): Promise<void> {
-    if (entries.length === 0) return;
-
-    const merged = new Map<string, EmbeddingEntry>();
-    for (const { id, vector, metadata } of entries) {
-      merged.set(id, { id, vector, metadata });
-    }
-
-    if (this.vectorize) {
-      const vectors = [...merged.values()].map((entry) => ({
-        id: entry.id,
-        values: entry.vector,
-        metadata: entry.metadata,
-      }));
-      for (let at = 0; at < vectors.length; at += VECTORIZE_UPSERT_LIMIT) {
-        await this.vectorize.upsert(vectors.slice(at, at + VECTORIZE_UPSERT_LIMIT));
-      }
-      return;
-    }
-
-    const stored = await this.loadEmbeddingsFromKV();
-    const positions = new Map(stored.map((entry, index) => [entry.id, index]));
-    for (const entry of merged.values()) {
-      const at = positions.get(entry.id);
-      if (at === undefined) {
-        positions.set(entry.id, stored.length);
-        stored.push(entry);
-      } else {
-        stored[at] = entry;
-      }
-    }
-    await this.kv.put(EMBEDDINGS_KV_KEY, JSON.stringify(stored));
   }
 
   async queryEmbeddings(

@@ -224,11 +224,6 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   const [resizing, setResizing] = useState(false);
   const sidecar = useSidecarStatus();
   const headingId = useId();
-  // A SECOND id, because both canvases are mounted while Settings is open
-  // (DW-373) and each renders its own `<h2 id=…>`: `ModeCanvas`'s stub branch
-  // for every non-Wiki mode, and `SettingsCanvas`'s frame always. Sharing one
-  // was safe only while the two could never be in the document together.
-  const settingsHeadingId = useId();
   const railRef = useRef<HTMLElement>(null);
   const shellRef = useRef<HTMLDivElement>(null);
   const sheetTriggerRef = useRef<HTMLButtonElement>(null);
@@ -287,8 +282,8 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   const surface = workbenchMode(mode);
 
   // The dock rule is a pure function in `workbench-tree`, not a condition typed
-  // here: it is the story's headline behaviour, so the `node` project runs it
-  // over every combination instead of matching a condition in this file.
+  // here: it is the story's headline behaviour, and inlined in JSX it could only
+  // ever be grepped for, never executed by a test.
   // …with one conjunction: a docked Preview beside a Settings detail column
   // would describe a tree row the owner cannot point at, because the trees are
   // not on screen while the settings nav has the left column.
@@ -633,15 +628,22 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
    * bans that literal from this file, and a ban worth having must not be
    * defeated by a paragraph explaining it.)
    *
-   * IT SAVES THE MODE CANVAS TOO (DW-373). `settingsOpen` used to swap
+   * WHAT IT ALSO SAVES is the mode canvas (DW-373). `settingsOpen` used to swap
    * `ModeCanvas` out for `SettingsCanvas` below, so opening Settings unmounted
    * the Wiki subtree — an open Create Wiki dialog, the name typed into it and
-   * the error it was showing included — whichever control opened it. Now the
-   * shell renders both canvases and hides the mode one, the same withdrawal
-   * DW-26 already uses a level down, so the survival that covered MODE SWITCHES
-   * covers this door as well. Nothing in this callback had to change for that:
-   * it sets one boolean, and the JSX below is where the boolean means "hide"
-   * rather than "replace".
+   * the error it was showing — and closing Settings rebuilt an empty card. The
+   * shell now renders both and passes `hidden={settingsOpen}` to the mode
+   * canvas, which keeps the subtree mounted and withdraws it from the pixels,
+   * the accessibility tree and the tab order in one attribute. Nothing about
+   * that is this callback's doing: it is the render below, so the rail control
+   * and this key preserve exactly the same thing.
+   *
+   * The SETTINGS draft is still discarded on leave, and that discard is exactly
+   * this surface's unmount when `settingsOpen` goes false. It is not the only
+   * thing opening Settings takes down: `previewOpen` above is `&& !settingsOpen`,
+   * so `PreviewColumn` unmounts too and its markdown draft goes with it —
+   * `selectRow` records that below, and the ledger holds it for whichever story
+   * gives that editor a lifecycle.
    */
   const openSettings = useCallback(() => {
     setSettingsOpen(true);
@@ -1091,27 +1093,22 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
         />
       )}
 
-      {/* BOTH canvases mount while Settings is open (DW-373); only one is
-          SHOWING. Replacing the mode canvas unmounted the Wiki subtree and with
-          it an open Create Wiki dialog and its draft, so `ModeCanvas` renders
-          unconditionally and goes behind `hidden` instead — the withdrawal DW-26
-          already uses one level down, moved up to the section that holds the
-          subtree.
+      {/* The mode canvas stays MOUNTED while Settings is open (DW-373) and goes
+          behind `hidden`, so an open Create Wiki dialog and the name typed into
+          it survive the visit — the same withdrawal DW-26 already performs one
+          level down, for the same reason. `SettingsCanvas` takes `CANVAS_ID`,
+          `tabIndex={-1}` and `headingId` because the hidden one gives all three
+          up, so the skip link keeps exactly one target and both ids stay unique.
 
-          `SettingsCanvas` FIRST, so that `document.querySelector(".wb-canvas")`
-          — an idiom several suites already use — resolves to the canvas the
-          owner can actually see. It takes `CANVAS_ID` and `tabIndex={-1}` from
-          the hidden section rather than adding a second of each, so the skip
-          link keeps exactly one target and the id stays unique. And it is still
-          CONDITIONAL: unmounting on close is the whole of "unsaved Settings
-          edits are discarded on leave".
+          `SettingsCanvas` still mounts on open and UNMOUNTS on close — that
+          unmount IS the Settings draft's discard, and keeping it mounted would
+          quietly turn "unsaved edits are discarded on leave" into a second
+          durable store.
 
-          Two heading ids for the same reason: both canvases render an `<h2>`,
-          and one `useId` between them would be a duplicate id the moment
-          Settings opened over a non-Wiki mode. */}
-      {settingsOpen && (
-        <SettingsCanvas category={settingsCategoryId} headingId={settingsHeadingId} />
-      )}
+          Order matters for the tab order this shell documents (rail → left
+          column → canvas → Preview): the mode canvas renders first and is
+          `display: none` while hidden, so Settings occupies `grid-column: 3`
+          alone and reads in the same place. */}
       <ModeCanvas
         mode={mode}
         sidecar={sidecar}
@@ -1120,6 +1117,9 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       >
         {children}
       </ModeCanvas>
+      {settingsOpen && (
+        <SettingsCanvas category={settingsCategoryId} headingId={headingId} />
+      )}
 
       {showSplitHandle("preview", mounted, layout) && (
         <SplitHandle

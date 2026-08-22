@@ -168,7 +168,6 @@ export function _getProviderType(): ProviderType | null {
 
 export type {
   StorageProvider,
-  BatchWrite,
   FileInfo,
   FileWithEtag,
   FileEntry,

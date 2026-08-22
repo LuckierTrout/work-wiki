@@ -30,11 +30,11 @@ import { ChevronLeftIcon } from "./RailIcons";
  * The left column's `Knowledge | Files` tabs and the tree under them (UX-DR5).
  *
  * Nested `<ul>` with native `<button>` rows, `aria-expanded` disclosures and
- * `aria-current` on the selection — deliberately not the ARIA tree pattern
- * (DW-24). A real ARIA tree needs roving `tabindex` and arrow-key navigation:
- * focus machinery this panel would own and have to keep correct. The choice
- * here is platform semantics over that machinery — a complete keyboard surface
- * the browser already implements, with nothing of our own to rot.
+ * `aria-current` on the selection — deliberately not the ARIA tree pattern. A
+ * real ARIA tree needs roving `tabindex` and arrow-key navigation, and this
+ * repo has no DOM test environment to verify either (DW-24). What ships here is
+ * a complete keyboard surface built entirely from platform semantics, with no
+ * focus machinery that could silently rot.
  *
  * Both tabs stay in the tab order for the same reason: roving `tabindex` on the
  * tablist without arrow-key handling would leave the second tab unreachable.

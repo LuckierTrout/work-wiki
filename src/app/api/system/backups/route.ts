@@ -29,14 +29,9 @@ export async function POST() {
     );
   } catch (error) {
     const message = getErrorMessage(error);
-    // `invalid` is `validateBackupId`'s "Invalid backup id" — a caller fault, so
-    // 400. `limit` used to sit here for the two "Backup exceeds the … safety
-    // limit" throws; since DW-215 a backup DEGRADES at those limits and returns
-    // 201 with a flagged manifest, so the pattern matched nothing this route can
-    // still raise and only invited a future 500 to be mislabelled a 400.
     return NextResponse.json(
       { error: message },
-      { status: /invalid/i.test(message) ? 400 : 500 },
+      { status: /limit|invalid/i.test(message) ? 400 : 500 },
     );
   }
 }

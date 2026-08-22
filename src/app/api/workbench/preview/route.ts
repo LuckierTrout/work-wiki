@@ -5,11 +5,6 @@ import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { stripFrontmatterBlock } from "@/lib/markdown";
 import { isOwnerHandle } from "@/lib/owner";
-import {
-  PAGE_UNREADABLE_COPY,
-  PAGE_UNREADABLE_STATUS,
-  isPageUnreadableError,
-} from "@/lib/page-read-failure";
 import { listReadableWikiPages, readWikiPage } from "@/lib/wiki";
 import {
   isEditableArtifactFile,
@@ -44,25 +39,11 @@ import {
  * Preview's reach identical to the tree's BY CONSTRUCTION: both surfaces run the
  * same two functions over the same principal.
  *
- * NO EXISTENCE ORACLE. Gated out, traversal-shaped, absent, and not-permitted
- * all answer one 404 with one body — never 403, never a distinguishable
- * message. A caller must not be able to learn that `wiki/hidden.md` exists by
- * comparing this route's answers, which is the rule `api/raw/[slug]/route.ts`
- * already follows.
- *
- * A STORAGE FAILURE IS THE ONE EXCEPTION (DW-378). A page whose bytes could not
- * be READ — an EIO, not an ENOENT — answers 503, not that 404, because "not
- * found" is a claim about existence the failed read did not establish and this
- * read seeds a precondition.
- *
- * That does distinguish an existing-but-unreadable page from an absent one, and
- * the defence is not that the difference is unreachable. Resource-exhaustion
- * classes (EMFILE/ENFILE/ENOMEM, or an R2 5xx surfaced as non-ENOENT) are
- * request-driven, so a determined caller can push a deployment into failing
- * reads — what they cannot do is induce the failure RELIABLY or SELECTIVELY for
- * a slug they choose, which is what an oracle would require. On a single-owner
- * private deployment that residual is accepted deliberately, weighed against a
- * 404 that tells the owner their page is gone whenever storage hiccups.
+ * NO EXISTENCE ORACLE. Gated out, traversal-shaped, absent, and unreadable all
+ * answer one 404 with one body — never 403, never a distinguishable message. A
+ * caller must not be able to learn that `wiki/hidden.md` exists by comparing
+ * this route's answers, which is the rule `api/raw/[slug]/route.ts` already
+ * follows.
  */
 
 /**
@@ -112,33 +93,6 @@ export async function GET(request: Request) {
   try {
     return await handle(request);
   } catch (error) {
-    // The page read FAILED rather than found nothing (DW-378). This route's
-    // fresh read seeds the editor's precondition, so before this branch a
-    // storage blip arrived as `null` and was answered with the shared 404 — the
-    // same body a gated-out or absent slug gets, which tells the owner their
-    // page is gone.
-    //
-    // WHAT THE ONE-ANSWER CLAIM COVERS. Across the two PAGE doors — `PUT
-    // /api/wiki/[slug]` and this route's `kind=page` — an unreadable page now
-    // answers 503 with one sentence instead of two different lies. It does NOT
-    // cover `kind=file`: that branch reaches `wiki/<slug>.md` through
-    // `readWorkbenchFile` → `readSafely` (`src/lib/workbench-files.ts`), which
-    // logs a non-ENOENT failure and then still returns `null` → the shared 404,
-    // and it seeds the same `PUT` precondition. That residual is outside this
-    // bundle's reach on purpose: the refusal is scoped to the `fresh` read, and
-    // `readSafely` has no `fresh` notion to scope it by. Named here so the next
-    // reader does not take the page half for the whole route.
-    //
-    // NOT AN EXISTENCE ORACLE. The 404 body stays undifferentiated for
-    // gated-out, traversal-shaped and absent alike. Reaching this status needs a
-    // real storage failure, which a caller cannot induce RELIABLY or
-    // SELECTIVELY for a slug of their choosing — resource-exhaustion classes
-    // (EMFILE/ENFILE/ENOMEM, or an R2 5xx surfaced as non-ENOENT) are
-    // request-driven, so the argument is that the residual is acceptable on a
-    // single-owner private deployment, not that it is impossible.
-    if (isPageUnreadableError(error)) {
-      return json({ error: PAGE_UNREADABLE_COPY }, PAGE_UNREADABLE_STATUS);
-    }
     // Without this a throw from `getPrincipal`, the index read or a storage read
     // escapes as a framework 500 whose body is not `{ error }` — breaking the
     // shape every other route in this tree answers with, and the one the column

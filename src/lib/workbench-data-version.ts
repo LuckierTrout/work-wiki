@@ -6,11 +6,10 @@
  * Pure and client-safe, the same rule `workbench-preview.ts` follows — the
  * component imports it in the browser and the node suite executes it. That is
  * the whole reason these are functions rather than conditions typed into an
- * effect: the `node` project runs them directly, so "refresh when it moved
- * forward" is executed rather than restated — exactly the kind of rule a
- * rewrite keeps the wording of while changing the behaviour. The `dom` project
- * mounts `DataVersionWatcher` itself; what lives here is the decision, not the
- * wiring.
+ * effect: vitest runs `environment: "node"` and this repo has no DOM test
+ * environment, so a comparison written inside `DataVersionWatcher` could only
+ * ever be grepped for, and "refresh when it moved forward" is exactly the kind
+ * of rule a rewrite keeps the wording of while changing the behaviour.
  *
  * There is no React here, no storage, and `fetch` is a parameter — the suite
  * drives it with a stub and never opens a socket.

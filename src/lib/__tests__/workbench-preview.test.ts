@@ -9,10 +9,9 @@
  * through the filesystem provider, the same fixture convention
  * `workbench-tree.test.ts` uses.
  *
- * This is a `node`-project suite (`vitest.config.ts`), so the renderer is not
- * MOUNTED here — the `dom` project does that. What a node suite can pin, and
- * what this one pins, is the mdast the renderer receives, which is where every
- * wikilink rule lives.
+ * The renderer itself is not exercised: vitest runs `environment: "node"` and
+ * this story is forbidden from adding jsdom. What it CAN pin without a DOM is
+ * the mdast the renderer receives, which is where every wikilink rule lives.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";
@@ -126,11 +125,9 @@ import {
   tenantForOwner,
   tenantRawRelPath,
   tenantWikiRelPath,
-  wikiRelPath,
 } from "../wiki";
 import { getDataDir } from "../paths";
-import { _resetStorage, getStorage } from "../storage";
-import { PAGE_UNREADABLE_COPY } from "../page-read-failure";
+import { _resetStorage } from "../storage";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PreviewBody, previewUrlTransform } from "@/components/workbench/PreviewBody";
@@ -1954,110 +1951,16 @@ describe("GET /api/workbench/preview", () => {
       delete process.env.YOPEDIA_READONLY;
     }
   });
-
-  /**
-   * Fail the EXACT storage keys named, and nothing else.
-   *
-   * Exact keys rather than a `endsWith("<slug>.md")` test: that would also catch
-   * any other slug ending in the same characters and any revision or backup key
-   * sharing the suffix, so a green test would not establish WHICH read failed —
-   * which is precisely the claim the DW-380 case below makes.
-   */
-  function failExactReads(keys: string[]) {
-    const targets = new Set(keys);
-    const storage = getStorage();
-    const real = storage.readFile.bind(storage);
-    return vi.spyOn(storage, "readFile").mockImplementation(async (key: string) => {
-      if (targets.has(key)) {
-        const err = new Error(`EIO: i/o error, read '${key}'`) as NodeJS.ErrnoException;
-        err.code = "EIO";
-        throw err;
-      }
-      return real(key);
-    });
-  }
-
-  it("answers 503, not the shared 404, when the page could not be READ (DW-378)", async () => {
-    // This read SEEDS the editor's precondition. Answering the shared 404 for a
-    // storage failure tells the owner their page is gone — the same body a
-    // gated-out or absent slug gets — when nothing established that. 503 with
-    // the sentence `PUT /api/wiki/[slug]` now answers for the same failure:
-    // across the two PAGE doors, one failure has one answer.
-    await writePage("blip", "# Blip\n\nstill stored\n");
-    const spy = failExactReads([wikiRelPath("blip.md")]);
-    try {
-      const response = await get("kind=page&slug=blip");
-      expect(response.status).toBe(503);
-      await expect(response.json()).resolves.toEqual({ error: PAGE_UNREADABLE_COPY });
-    } finally {
-      spy.mockRestore();
-    }
-
-    // …and the same slug is served normally once the failure clears, so the
-    // 503 was about the read and not about the gate.
-    const ok = await get("kind=page&slug=blip");
-    expect(ok.status).toBe(200);
-    await expect(ok.json()).resolves.toMatchObject({ slug: "blip" });
-  });
-
-  it("refuses rather than serving the FLAT file when the SILO read fails (DW-380)", async () => {
-    // The harm DW-380 names, at the door. The page index resolves this slug to a
-    // tenant, so the silo file is the one a write will target. With only the
-    // silo read failing, the pre-fix code widened to the flat fallback and
-    // answered 200 — handing the editor a body and a `version` computed over a
-    // DIFFERENT file than the save would overwrite. The owner then edits what
-    // they were shown and either clobbers the silo file or is refused 412
-    // against a write nobody made.
-    //
-    // Both existing cases fail the silo path and the flat path together, so they
-    // exercise DW-378 only and are structurally incapable of catching this.
-    const storage = getStorage();
-    await storage.writeFile(
-      `tenants/alice/wiki/split.md`,
-      "---\ntitle: split\ntype: concept\n---\n\n# Split\n\nSILO bytes — what a write would target\n",
-    );
-    // A DIFFERENT, perfectly readable copy at the flat path: if the read widens,
-    // it succeeds, and the 200 it produces is the bug.
-    await writePage("split", "# Split\n\nFLAT bytes — the wrong file\n");
-    await storage.putIndex("pages", {
-      split: { slug: "split", title: "split", summary: "s", owner: "alice" },
-    });
-
-    const spy = failExactReads([tenantWikiRelPath(tenantForOwner("alice"), "split.md")]);
-    try {
-      const response = await get("kind=page&slug=split");
-
-      expect(response.status).toBe(503);
-      const payload = await response.json();
-      expect(payload).toEqual({ error: PAGE_UNREADABLE_COPY });
-      // Never the flat file's body, and never a `version` derived from it.
-      expect(JSON.stringify(payload)).not.toContain("FLAT bytes");
-      expect(payload).not.toHaveProperty("version");
-    } finally {
-      spy.mockRestore();
-      // The pages index is written to a temp root shared by every case in this
-      // describe, and seeding it flips `listWikiPages` onto its enriched fast
-      // path for all of them. Removed here so this case cannot change what any
-      // later one reads.
-      await fs.rm(path.join(root, ".indexes", "pages.json"), { force: true });
-    }
-  });
-
-  it("still answers the shared 404 for a slug with no page at all", async () => {
-    // The 404 this bundle narrows, not removes: absent stays undifferentiated.
-    const response = await get("kind=page&slug=never-written");
-    expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toEqual({ error: "Not found." });
-  });
 });
 
 // ---------------------------------------------------------------------------
 // The two request decisions
 // ---------------------------------------------------------------------------
 //
-// These are the rules that used to live inside the React effect, where this
-// `node`-project suite could only ever match them as source text. Both now run
-// against a stub: no network, no timers, no component.
+// These are the rules that used to live inside the React effect, where — with
+// no DOM environment in this suite and none allowed — they could only ever be
+// matched as source text. Both now run against a stub: no network, no timers,
+// no component.
 
 const PAYLOAD = PAYLOAD_SHAPE;
 
@@ -2563,11 +2466,11 @@ describe("savePreviewBody", () => {
 // The rendered body
 // ---------------------------------------------------------------------------
 //
-// The story's central feature, and until now only grepped for. This file is a
-// `node`-project suite, so it does not MOUNT the component — the `dom` project
-// is where mounting lives. It follows the house precedent for node-side
-// rendering (`src/components/__tests__/markdown-math.test.ts`): render to a
-// static string with `react-dom/server` and assert on the markup.
+// The story's central feature, and until now only grepped for. `environment` is
+// still `"node"` and there is still no jsdom, no `@testing-library` and no
+// `.test.tsx` — the intent's **Never** is untouched. This is the house
+// precedent (`src/components/__tests__/markdown-math.test.ts`): render the
+// component to a static string with `react-dom/server` and assert on the markup.
 //
 // Two regressions this exists to catch, both of which used to keep the whole
 // suite green: making `previewUrlTransform` defer unconditionally (every

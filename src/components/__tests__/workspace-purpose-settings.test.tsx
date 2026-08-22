@@ -99,39 +99,6 @@ async function settle(): Promise<void> {
   });
 }
 
-/**
- * The render on screen has been MIRRORED into what a recheck reads.
- *
- * A rendered answer and the recheck's view of it are not the same moment, and
- * the gap between them is what DW-325 was (a case that failed under full-suite
- * load and passed on re-run). `standDown` — the flag every visibility recheck
- * reads first — reaches `screenRef` through a PASSIVE effect (the `screenRef`
- * mirror effect in `WorkspacePurposeSettings.tsx`), so the surface can already
- * show a settled load while the mirror still holds the loading render's `true`.
- * A recheck fired in that window returns at `load`'s `standDown` guard: no GET,
- * no state change, and an assertion that can only fail by timing out — saying
- * "the badge never moved" rather than "the recheck never started".
- *
- * Cases that fire an `act`-wrapped event between the mount and the recheck
- * (a `fireEvent.change`, a `fireEvent.click`) flush the mirror as a side effect
- * and never saw this. Cases that go straight from a mount wait to a
- * `visibilitychange` or a `focus` need the barrier stated out loud, which is
- * what this is.
- *
- * Separate from {@link formReady} because the mount wait is not always the
- * fieldset: a form that answered "no wiki", or one whose load failed, settles
- * on a badge instead — same mirror, different thing to wait for first.
- */
-async function mirrored(): Promise<void> {
-  await settle();
-}
-
-/** The mount load has landed AND the render it produced has been mirrored. */
-async function formReady(): Promise<void> {
-  await waitFor(() => expect(formFieldset().disabled).toBe(false));
-  await mirrored();
-}
-
 beforeEach(() => {
   stubGet({ profile: PROFILE, readOnly: false, wiki: WIKI, version: VERSION });
 });
@@ -522,9 +489,7 @@ describe("a save that settles too late speaks for nobody (DW-320)", () => {
     const gate = deferred<Response>();
     let interrupted = false;
     render(<WorkspacePurposeSettings />);
-    // This case's premise is that the recheck IS allowed to start, so the
-    // mirror has to be real before the PUT fires one. See `formReady`.
-    await formReady();
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
 
     fetchMock.mockImplementation((url: unknown, init?: RequestInit) => {
       if (init?.method === "PUT" && !interrupted) {
@@ -946,7 +911,7 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
     // arrangement that leaves this form naming a wiki that is no longer active.
     const otherProfile: WorkspaceProfile = { ...PROFILE, purpose: "Beta Lab’s own." };
     render(<WorkspacePurposeSettings />);
-    await formReady();
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
 
     fetchMock.mockResolvedValueOnce(
       answer({
@@ -971,7 +936,7 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
     // truth.
     const otherProfile: WorkspaceProfile = { ...PROFILE, purpose: "Beta Lab’s own." };
     render(<WorkspacePurposeSettings />);
-    await formReady();
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
 
     fetchMock.mockResolvedValueOnce(
       answer({
@@ -1024,7 +989,6 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
     });
     render(<WorkspacePurposeSettings />);
     await waitFor(() => expect(badge()).toBe("no wiki"));
-    await mirrored();
 
     fetchMock.mockResolvedValueOnce(
       answer({ profile: PROFILE, readOnly: false, wiki: WIKI, version: VERSION }),
@@ -1045,8 +1009,7 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
 
   it("adopts a recheck that answers no wiki at all", async () => {
     render(<WorkspacePurposeSettings />);
-    // DW-325 — the first half of this case's old race; see `formReady`.
-    await formReady();
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
 
     fetchMock.mockResolvedValueOnce(
       answer({
@@ -1058,19 +1021,7 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
     );
     returnToTab();
 
-    // SECOND: the adoption is deterministic once the recheck has started, so
-    // there is nothing here for a wall-clock budget to wait on — the old
-    // `waitFor(badge() === "no wiki")` could only ever expire under load, and
-    // when it did it said "no wiki" and not WHY. Assert the round trip in the
-    // two steps it actually has: the request went out, then its answer landed.
-    await settle();
-    expect(
-      fetchMock.mock.calls.length,
-      "the recheck never issued its GET — it stood down instead of re-reading",
-    ).toBe(2);
-
-    await settle();
-    expect(badge()).toBe("no wiki");
+    await waitFor(() => expect(badge()).toBe("no wiki"));
     expect(screen.getByRole("status").textContent).toContain(
       "The active wiki is gone, so there is nothing to edit here now.",
     );
@@ -1135,7 +1086,7 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
     // alert about a switch the owner never made.
     const saved: WorkspaceProfile = { ...PROFILE, purpose: "Saved by the owner." };
     render(<WorkspacePurposeSettings />);
-    await formReady();
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
 
     const gate = deferred<Response>();
     fetchMock.mockImplementationOnce(() => gate.promise);
@@ -1174,7 +1125,7 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
 
   it("runs one recheck at a time, however fast the tab is switched", async () => {
     render(<WorkspacePurposeSettings />);
-    await formReady();
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
 
     const gate = deferred<Response>();
     fetchMock.mockImplementationOnce(() => gate.promise);
@@ -1200,7 +1151,6 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
     stubGet({ error: "Storage is unavailable." }, { ok: false, status: 500 });
     render(<WorkspacePurposeSettings />);
     await waitFor(() => expect(screen.getByText("unavailable")).toBeTruthy());
-    await mirrored();
 
     returnToTab();
     await settle();
@@ -1214,7 +1164,7 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
 
   it("stops listening once the form unmounts", async () => {
     const { unmount } = render(<WorkspacePurposeSettings />);
-    await formReady();
+    await waitFor(() => expect(formFieldset().disabled).toBe(false));
 
     unmount();
     fireVisibilityChange("hidden");

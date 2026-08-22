@@ -6,13 +6,13 @@
  * injectable `fetchImpl`): the route imports it on the server, `SettingsCanvas`
  * imports it in the browser, and the node suite EXECUTES it.
  *
- * That last part is the whole reason the module exists. These are pure
- * functions the `node` project executes directly, so "which categories exist",
- * "may vector search be enabled", "what does Save actually send" and "which
- * sentence does a rejected save show" are each run rather than restated — the
- * rules a rewrite keeps the wording of while changing the behaviour. The `dom`
- * project mounts `SettingsCanvas` itself; what lives here is the decision, not
- * the wiring.
+ * That last part is the whole reason the module exists. `vitest.config.ts` is
+ * `environment: "node"` — there is no DOM and no testing-library — so any rule
+ * that lives inside a React effect can only ever be grepped for. "Which
+ * categories exist", "may vector search be enabled", "what does Save actually
+ * send", and "which sentence does a rejected save show" are exactly the rules a
+ * rewrite keeps the wording of while changing the behaviour, so all four are
+ * functions here rather than branches typed into JSX.
  *
  * It restates no provider list: {@link PROVIDER_INFO} and
  * {@link EMBEDDING_PROVIDERS} come from `providers.ts`, which is already
@@ -358,6 +358,54 @@ export function settingsEnvOverrideCopy(
 ): string {
   const variable = ENV_OVERRIDE_VARIABLES[kind];
   return `The environment sets ${variable}=${value}, and that wins at runtime. What you save here applies only once that variable is unset.`;
+}
+
+/**
+ * Why an Ollama endpoint was thrown away — ONE sentence per source (DW-402).
+ *
+ * `getOllamaBaseUrl` refuses a value that is not an absolute `http(s)` URL and
+ * falls through to nothing, which is the honest resolution but a SILENT one:
+ * the only trace was a `logger.warn` line, so an owner who set
+ * `OLLAMA_BASE_URL=localhost:11434` read "no provider configured" beside a help
+ * panel advertising that very variable, and the settings page showed an empty
+ * endpoint box beside a `none` badge. Nothing on either surface said the value
+ * had been seen and rejected.
+ *
+ * So the sentence is a VALUE, minted here and used THREE ways: as the
+ * `warnOnceAbout` message, as `ProviderInfo.ollamaBaseUrlIssue` (the env leg)
+ * and as `EffectiveSettings.ollamaBaseUrlIssue` (the full ladder). One wording
+ * for the log and for both screens is what stops the server operator's line and
+ * the owner's line from drifting into two different explanations of one fact —
+ * the same reason {@link settingsEnvOverrideCopy} is one function for three
+ * variables.
+ *
+ * It lives HERE, not in `config.ts`, because two of the three readers are
+ * client components: this module is client-safe by its own header comment and
+ * `config.ts` is not, so importing the other way round would drag the config
+ * store into the browser bundle.
+ *
+ * WHAT TO SET INSTEAD is part of the sentence. "Not an absolute http(s) URL" is
+ * the rule, not the remedy, and the value that fails it is nearly always one
+ * scheme short — so the sentence shows the shape that would have been accepted
+ * rather than leaving the owner to infer it.
+ *
+ * THE EXAMPLE TRACKS `ProviderForm`'s PLACEHOLDER, which is the box this
+ * sentence renders directly beneath, and `README.md`'s provider table, which
+ * documents the same variable. Showing `http://localhost:11434` beside a field
+ * prompting `http://localhost:11434/api` would make the remedy and the example
+ * disagree about the path, on one screen, for one setting — so if that
+ * placeholder ever changes, this changes with it.
+ */
+export function ollamaBaseUrlRefusedCopy(
+  source: "env" | "config",
+  value: string,
+): string {
+  // The two sources are two different things to fix and the wording says which:
+  // the env leg names the VARIABLE, the store leg says "stored". Never both —
+  // `config.test.ts` partitions the warn lines on exactly those two tokens.
+  return source === "env"
+    ? `OLLAMA_BASE_URL is not an absolute http(s) URL (${value}), so it is ignored — set it to a full address such as http://localhost:11434/api.`
+    : `The stored Ollama endpoint is not an absolute http(s) URL (${value}), so it is ignored — save a full address such as http://localhost:11434/api.`;
 }
 
 /**

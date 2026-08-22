@@ -26,13 +26,14 @@ import { workbenchMode } from "@/lib/workbench-modes";
  * exactly that: the key reaches the surface, announces it the way the rail
  * does, and navigates nowhere.
  *
- * IT PRESERVES THE MODE CANVAS TOO, though no case here is what proves that.
- * `Workbench` used to swap `ModeCanvas` out for `SettingsCanvas` while Settings
- * was open, which unmounted the Wiki subtree — dialog and draft included —
- * whichever control opened it; it now renders both and hides the mode one
- * (DW-373). `settings-canvas-persistence.test.tsx` drives that survival through
- * BOTH doors, including this key, and `wiki-canvas-persistence.test.tsx` drives
- * DW-26's original mode-switch case.
+ * IT ALSO PRESERVES THE MODE CANVAS (DW-373), but no case here proves it.
+ * `Workbench` used to swap `ModeCanvas` out for `SettingsCanvas`, so opening
+ * Settings unmounted the Wiki subtree — dialog and draft included — whichever
+ * control opened it; the shell now keeps that canvas mounted behind `hidden`.
+ * The preservation is the RENDER's, identical for the key and the rail control,
+ * and it is driven from `settings-canvas-persistence.test.tsx` — through both
+ * controls — rather than restated here, where the subject is the keystroke.
+ * DW-26's mode-switch half lives in `wiki-canvas-persistence.test.tsx`.
  *
  * `keyboard-shortcuts.test.ts` executes the matcher and can see that `g s`
  * carries an action id; only a mounted shell can see the rest.

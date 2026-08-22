@@ -32,23 +32,22 @@ import type { SidecarStatus } from "@/lib/sidecar";
  * every mode and goes behind `hidden` instead, which withdraws it from the
  * pixels, from the accessibility tree and from the tab order in one attribute.
  *
+ * THE WHOLE CANVAS GOES THE SAME WAY WHILE SETTINGS IS OPEN (DW-373). The shell
+ * used to render `SettingsCanvas` INSTEAD of this one, which unmounted the very
+ * subtree the paragraph above exists to keep — opening Settings destroyed the
+ * dialog and its draft exactly as a mode switch once did. So the shell keeps
+ * this canvas mounted and passes {@link ModeCanvasProps.hidden}; the `<section>`
+ * takes the attribute, gives up `CANVAS_ID`, the landing tab index and its
+ * label to the Settings section that is now beside it, and publishes
+ * `visible={false}` so a dialog underneath stands its document work down. The
+ * stub branch is skipped with it: it holds no state to lose, and leaving it
+ * rendered would put a second node on `headingId` — the id `SettingsCanvas`
+ * puts on its own heading.
+ *
  * What `hidden` does NOT withdraw is anything a dialog did to the DOCUMENT — the
  * body scroll lock and the capture-phase Tab trap — so the same boolean is
  * published through {@link SurfaceVisibilityProvider} for `useDialogA11y` to
  * stand down on.
- *
- * SETTINGS HIDES THIS SECTION rather than replacing it (DW-373). The shell used
- * to render `SettingsCanvas` INSTEAD of this component, which unmounted the very
- * subtree the paragraph above exists to keep: opening Settings — by the rail
- * control or by `g s` — destroyed the dialog, the typed name and the error that
- * a mode switch preserves. So the shell renders both canvases and passes
- * `hidden` here, and the withdrawal happens at the `<section>` — one level up
- * from `.wb-canvas-mode`, because a wrapper cannot hide the element that
- * contains it. The a11y contracts move up with it: a hidden section carries
- * neither {@link CANVAS_ID} nor the negative tab index (the SHOWING canvas owns
- * both, and an id must be unique), and `visible` is published `false` for the
- * same reason a mode switch does it — `hidden` withdraws pixels, the a11y tree
- * and the tab order, and nothing a dialog did to the document.
  *
  * ONE `<section>` for both, rather than one per branch: `CANVAS_ID` is the skip
  * link's target, an id must be unique, and the negative tab index that makes it
@@ -62,13 +61,13 @@ export interface ModeCanvasProps {
   sidecar: SidecarStatus;
   headingId: string;
   /**
-   * Is another canvas — Settings — on screen in this one's place (DW-373)?
+   * Another surface — Settings — is showing in this canvas's place (DW-373).
    *
-   * Required rather than defaulted: a caller that forgot it would silently put
-   * a second `#wb-canvas` on the page, which is exactly the failure the
-   * conditional id below exists to prevent.
+   * The subtree stays MOUNTED and goes off screen, so the draft inside it
+   * survives the visit. Everything that must be unique in the document moves to
+   * whatever is showing instead.
    */
-  hidden: boolean;
+  hidden?: boolean;
   children: ReactNode;
 }
 
@@ -83,21 +82,25 @@ export function ModeCanvas({
   mode,
   sidecar,
   headingId,
-  hidden,
+  hidden = false,
   children,
 }: ModeCanvasProps) {
   const surface = workbenchMode(mode);
   const wikiActive = mode === "wiki";
+  // On screen — the mode is Wiki AND no other surface is over the canvas. What
+  // the wrapper's own `hidden` and the published visibility both key on, so the
+  // two can never disagree.
+  const wikiShowing = wikiActive && !hidden;
 
   return (
     <section
       className="wb-canvas"
       hidden={hidden}
-      // The canvas that is SHOWING owns the skip link's target and the negative
-      // tab index that makes it a landing place. While Settings is up, this
-      // section is hidden and `SettingsCanvas` carries both — so the id an
-      // author must keep unique stays unique, and the bypass has exactly one
-      // destination rather than two with the browser left to pick.
+      // All three are GIVEN UP while Settings is showing: `SettingsCanvas`
+      // renders the same id, the same landing tab index and the same
+      // `headingId`, and two live answers to any of them would be a duplicate
+      // id, an ambiguous skip link and a label pointing into hidden content.
+      // `undefined` omits the attribute outright rather than emptying it.
       id={hidden ? undefined : CANVAS_ID}
       tabIndex={hidden ? undefined : -1}
       // Whichever heading is actually on screen. The Wiki canvas already owns
@@ -106,15 +109,17 @@ export function ModeCanvas({
       // than announcing the surface twice; the stub branch renders its own.
       // While Wiki is hidden that heading is hidden with it, so the label moves
       // to the stub's instead of naming a node no reader can reach.
-      aria-labelledby={wikiActive ? "wiki-workbench-heading" : headingId}
+      aria-labelledby={
+        hidden ? undefined : wikiActive ? "wiki-workbench-heading" : headingId
+      }
     >
-      <SurfaceVisibilityProvider visible={wikiActive && !hidden}>
-        <div className="wb-canvas-mode" hidden={!wikiActive}>
+      <SurfaceVisibilityProvider visible={wikiShowing}>
+        <div className="wb-canvas-mode" hidden={!wikiShowing}>
           {children}
         </div>
       </SurfaceVisibilityProvider>
 
-      {!wikiActive && (
+      {!wikiActive && !hidden && (
         <div className="wb-canvas-pad">
           <h2 id={headingId} className="wb-surface-title">
             {surface.label}

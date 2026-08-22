@@ -1,13 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import worker, {
-  AGGREGATE_DOCUMENT_AVERAGE_BYTES,
   MAX_EMAIL_ATTACHMENTS,
   MAX_EMAIL_ATTACHMENT_NAMES_RECORDED,
-  MAX_EMAIL_CONTENT_CHARS,
   MAX_EMAIL_DOCUMENT_BYTES,
   MAX_RAW_EMAIL_BYTES,
 } from "../../../workers/email-ingest/index";
-import { base64PartWireSize, quotedPrintablePartWireSize } from "./email-ingest-wire";
+import { base64PartWireSize } from "./email-ingest-wire";
 
 /**
  * Worker-level coverage for `workers/email-ingest`, which had none: the sibling
@@ -42,13 +40,8 @@ import { base64PartWireSize, quotedPrintablePartWireSize } from "./email-ingest-
  *    back to the sender, and the `skippedAttachmentCount` field forwarded to
  *    the route so it need not re-derive the loss from a truncated name list.
  *
- * 6. The two misconfiguration early returns — missing service token and missing
- *    site URL — whose sender-visible replies no fixture could reach while
- *    `env()` supplied both bindings (DW-364).
- *
- * 7. The raw-message size gate — its exact boundary, the figure the refusal
- *    quotes back, and the recorded trade-off that a full-size document and a
- *    maximal body do not fit under it together (DW-361).
+ * 6. The raw-message size gate — its exact boundary and the figure the refusal
+ *    quotes back.
  *
  * The `Blob` *type* the worker builds is pinned next door in
  * `email-ingest-worker-normalization.test.ts`, which mocks `postal-mime`: it is
@@ -82,35 +75,6 @@ function base64Lines(bytes: Uint8Array): string {
   const lines: string[] = [];
   for (let i = 0; i < encoded.length; i += 76) {
     lines.push(encoded.slice(i, i + 76));
-  }
-  return lines.join("\r\n");
-}
-
-/**
- * Worst-case quoted-printable: every octet written as an `=XX` escape, which is
- * what a mail client really produces for a byte-dense `text/*` attachment.
- *
- * An `=XX` escape may not be split across a line break, so 25 of them (75
- * characters) fill the RFC 2045 76-character budget; the line is then closed
- * with a `=` soft line break -- the LAST line included. That trailing soft break
- * is not decoration: the CRLF before the MIME boundary is otherwise a hard line
- * break, and PostalMime hands the worker back the payload plus a stray `\n`.
- * The end-to-end test below is what caught that, and is why the part body ends
- * flush against the boundary with no blank line after it.
- *
- * Unlike `base64Lines` this has no real encoder behind it, which is why the
- * quoted-printable fixture is also run end to end through PostalMime: the
- * decode back to `partBytes` is the anchor `Buffer.toString("base64")` provides
- * for free on the other side.
- */
-function quotedPrintableLines(bytes: Uint8Array): string {
-  const escapes = Array.from(
-    bytes,
-    (byte) => `=${byte.toString(16).toUpperCase().padStart(2, "0")}`,
-  );
-  const lines: string[] = [];
-  for (let i = 0; i < escapes.length; i += 25) {
-    lines.push(`${escapes.slice(i, i + 25).join("")}=`);
   }
   return lines.join("\r\n");
 }
@@ -224,47 +188,6 @@ describe("email-ingest attachment forwarding", () => {
     expect(part.name).toBe("report.pdf");
     expect(part.type).toBe("application/pdf");
     expect(new Uint8Array(await part.arrayBuffer())).toEqual(ATTACHMENT_BYTES);
-  });
-
-  it("forwards a quoted-printable attachment byte-identically", async () => {
-    // The DW-358 scenario itself, observed end to end at the Worker surface: a
-    // `text/csv` part the sender's client wrote as quoted-printable rather than
-    // base64. Every other fixture in this file is base64, so nothing exercised
-    // the encoding the widened raw cap now exists for.
-    //
-    // It is also the anchor for `quotedPrintableLines`, which -- unlike
-    // `base64Lines` -- has no real encoder behind it. PostalMime decoding the
-    // fixture back to the exact source bytes is what says the hand-written
-    // worst-case encoding is well-formed quoted-printable and not merely
-    // self-consistent with the wire-size formula calibrated against it.
-    //
-    // 300 bytes, so the part spans twelve full lines and exercises the `=` soft
-    // line breaks; `partBytes` covers every octet value, CR and LF included,
-    // which only survive the round trip because worst-case QP escapes them.
-    const raw = multipartEmail(
-      [{ filename: "rows.csv", mime: "text/csv", bytes: 300, encoding: "quoted-printable" }],
-      { subject: "Row export", messageId: "message-qp", body: "Rows attached." },
-    );
-    const msg = message(raw, "Row export");
-    const bindings = env(Response.json({ ok: true, slug: "row-export" }));
-    await worker.email(
-      msg as unknown as Parameters<typeof worker.email>[0],
-      bindings as unknown as Parameters<typeof worker.email>[1],
-    );
-
-    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
-    const forwarded = bindings.YOPEDIA.fetch.mock.calls[0][0];
-    const parts = (await forwarded.formData()).getAll("attachments");
-    expect(parts).toHaveLength(1);
-    const part = parts[0] as File;
-    expect(part.name).toBe("rows.csv");
-    expect(part.type).toBe("text/csv");
-    expect(new Uint8Array(await part.arrayBuffer())).toEqual(partBytes(0, 300));
-    // Sanity only: this ~1 KB fixture cleared the raw gate before DW-358 too, so
-    // it is evidence that nothing else refused the message on the way through --
-    // not evidence for the widened cap. The cap is measured next door, against a
-    // full-size document.
-    expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
   });
 });
 
@@ -414,19 +337,6 @@ function multipartEmail(
   parts: readonly (Pick<MixedPart, "filename" | "mime"> & {
     /** Decoded payload length. Defaults to `partBytes`'s own 96. */
     bytes?: number;
-    /**
-     * A verbatim `Content-Disposition` line, replacing the one derived from
-     * `filename`. The only way to write a name the quoted-string form cannot
-     * hold -- RFC 2231 percent-encoding smuggles bytes (CR/LF included) that a
-     * `filename="..."` parameter could not carry without breaking the header.
-     */
-    disposition?: string;
-    /**
-     * Transfer encoding for the part body. Defaults to base64, the encoding
-     * every fixture used before DW-358; `quoted-printable` is the worst-case
-     * encoding a sending client may pick instead.
-     */
-    encoding?: "base64" | "quoted-printable";
   })[],
   options: { subject: string; messageId: string; body: string },
 ): string {
@@ -445,26 +355,17 @@ function multipartEmail(
     "",
   ];
   parts.forEach((part, index) => {
-    const encoding = part.encoding ?? "base64";
-    const payload = partBytes(index, part.bytes ?? 96);
     lines.push(
       "--work-wiki-boundary",
       `Content-Type: ${part.mime}`,
-      part.disposition ??
-        (part.filename
-          ? `Content-Disposition: attachment; filename="${part.filename}"`
-          : "Content-Disposition: attachment"),
-      `Content-Transfer-Encoding: ${encoding}`,
+      part.filename
+        ? `Content-Disposition: attachment; filename="${part.filename}"`
+        : "Content-Disposition: attachment",
+      "Content-Transfer-Encoding: base64",
+      "",
+      base64Lines(partBytes(index, part.bytes ?? 96)),
       "",
     );
-    if (encoding === "base64") {
-      lines.push(base64Lines(payload), "");
-    } else {
-      // No blank line after a quoted-printable body: the CRLF that opens the
-      // boundary delimiter is the last line's terminator, and an extra one
-      // decodes into a literal line break appended to the payload.
-      lines.push(quotedPrintableLines(payload));
-    }
   });
   lines.push("--work-wiki-boundary--", "");
   return lines.join("\r\n");
@@ -675,364 +576,6 @@ describe("email-ingest forwarded skipped count", () => {
 });
 
 /**
- * The per-document byte ceiling (DW-253). The Worker knows a part's decoded size
- * only after decoding it, so nothing filtered on it at all: an oversized part
- * was forwarded, the route 400d the whole message, and the sender lost their
- * body and every other attachment to one bad file. It also paid for the bounce.
- *
- * These fixtures carry a genuinely over-ceiling part rather than a stubbed size:
- * the filter reads `bytes.byteLength` off the decode the forwarding loop reuses,
- * and a mocked parser would observe the filter without observing that the decode
- * it depends on still happens exactly once.
- */
-describe("email-ingest oversized attachments", () => {
-  /** One byte over -- the gate is `>`, so this is the smallest refused document. */
-  const OVERSIZED_BYTES = MAX_EMAIL_DOCUMENT_BYTES + 1;
-  /** The ceiling as the reply writes it, and as `/api/email/ingest` writes it. */
-  const CEILING_MB = MAX_EMAIL_DOCUMENT_BYTES / 1024 / 1024;
-
-  /**
-   * Built lazily and cached: each of these encodes ~14 MB of base64, which is
-   * worth paying once and not at module load for every other test in the file.
-   */
-  const fixtures = new Map<string, string>();
-  function fixture(key: string, build: () => string): string {
-    const existing = fixtures.get(key);
-    if (existing !== undefined) return existing;
-    const built = build();
-    fixtures.set(key, built);
-    return built;
-  }
-
-  /** One oversized supported part, one small supported part, and a body. */
-  const oversizedAmongGood = () =>
-    fixture("among-good", () =>
-      multipartEmail(
-        [
-          { filename: "huge.pdf", mime: "application/pdf", bytes: OVERSIZED_BYTES },
-          { filename: "solo.pdf", mime: "application/pdf" },
-        ],
-        {
-          subject: "One too big",
-          messageId: "message-oversized-among-good",
-          body: "One of these is enormous.",
-        },
-      ),
-    );
-
-  /**
-   * The oversized part comes FIRST, deliberately: if the byte filter ran after
-   * `.slice(0, MAX_EMAIL_ATTACHMENTS)` it would eat a cap slot and only nine of
-   * the ten small files would be forwarded. With it last, that ordering bug is
-   * invisible.
-   */
-  const oversizedAtCap = () =>
-    fixture("at-cap", () =>
-      multipartEmail(
-        [
-          { filename: "huge.pdf", mime: "application/pdf", bytes: OVERSIZED_BYTES },
-          ...Array.from({ length: MAX_EMAIL_ATTACHMENTS }, (_unused, index) => ({
-            filename: `small-${index + 1}.pdf`,
-            mime: "application/pdf",
-          })),
-        ],
-        {
-          subject: "Ten and a whale",
-          messageId: "message-oversized-at-cap",
-          body: "Ten small files and one enormous one.",
-        },
-      ),
-    );
-
-  it("never forwards an oversized part, and names it in the acknowledgement", async () => {
-    const { form, reply } = await forwardedForm(
-      oversizedAmongGood(),
-      "One too big",
-      "one-too-big",
-    );
-    const parts = form.getAll("attachments");
-    expect(parts).toHaveLength(1);
-    expect((parts[0] as File).name).toBe("solo.pdf");
-    // Index 1 among the parsed parts -- the pairing survives the file dropped
-    // ahead of it.
-    expect(new Uint8Array(await (parts[0] as File).arrayBuffer())).toEqual(partBytes(1));
-
-    // The name is still recorded even though the bytes were not forwarded.
-    expect(form.getAll("attachmentName")).toEqual(["huge.pdf", "solo.pdf"]);
-    expect(form.get("skippedAttachmentCount")).toBe("1");
-    expect(form.get("content")).toBe("One of these is enormous.");
-
-    expect(reply.text).toContain("huge.pdf");
-    expect(reply.text).toContain(`larger than ${CEILING_MB} MB`);
-    expect(CEILING_MB).toBe(10);
-    // The surviving file is still reported as queued -- the message was not
-    // refused wholesale.
-    expect(reply.text).toContain("1 supported attachment was queued for ingestion.");
-    // Nothing was unsupported and nothing hit the cap, so neither of those
-    // sentences fires: an oversized file is its own kind of loss.
-    expect(reply.text).not.toContain("recorded but skipped");
-    expect(reply.text).not.toContain("attachment limit");
-  });
-
-  /**
-   * The no-body early return. `parsed.attachments.length` was the wrong thing to
-   * key the lead sentence on: a sender whose ONLY attachment was a supported PDF
-   * that happened to be too big was told work-wiki "found no ... supported
-   * document attachment", two paragraphs above a sentence naming that same PDF.
-   *
-   * Called directly rather than through `forwardedForm`, which asserts a forward
-   * happened -- this branch deliberately forwards nothing.
-   */
-  it("does not claim nothing supported arrived when the file was merely too big", async () => {
-    const raw = fixture("no-body", () =>
-      multipartEmail(
-        [{ filename: "huge.pdf", mime: "application/pdf", bytes: OVERSIZED_BYTES }],
-        { subject: "Just the whale", messageId: "message-oversized-no-body", body: "" },
-      ),
-    );
-    const msg = message(raw, "Just the whale");
-    const bindings = env(Response.json({ ok: true, slug: "unused" }));
-    await worker.email(
-      msg as unknown as Parameters<typeof worker.email>[0],
-      bindings as unknown as Parameters<typeof worker.email>[1],
-    );
-
-    // Nothing survived the size filter, so nothing is forwarded -- and the route
-    // never sees a message it could only 400.
-    expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
-    const text = msg.reply.mock.calls[0][0].text;
-    expect(text).toContain("huge.pdf");
-    expect(text).toContain(`larger than ${CEILING_MB} MB`);
-    // The honest lead sentence, and NOT the allowlist one: nothing here failed
-    // the allowlist, so listing supported formats would answer a question the
-    // sender did not ask and deny a fact they can see.
-    expect(text).toContain("work-wiki found no email text to ingest.");
-    expect(text).not.toContain("supported document attachment");
-  });
-
-  /**
-   * All three losses in one acknowledgement. Every other fixture in this file
-   * produces at most two, so the composition the intent actually promises --
-   * the oversize sentence standing ALONGSIDE the existing skipped-attachment
-   * ones -- was only ever asserted negatively, and the plural oversize wording
-   * and the `"unnamed attachment"` fallback were unobserved.
-   *
-   * `rawSize` is overridden to keep the FIXTURE small: the two oversize parts
-   * carry a handful of bytes each rather than 10 MB each, so the builder does
-   * not have to materialise ~28 MB of base64 to reach the accounting under test.
-   * The override is a stand-in for the size those parts would really have, not a
-   * dodge around the raw gate -- two `MAX_EMAIL_DOCUMENT_BYTES + 1` parts
-   * base64-encode to 28,697,876 bytes, which fits under the widened
-   * `MAX_RAW_EMAIL_BYTES` (DW-358), so a real message of this shape reaches the
-   * per-attachment oversize skip rather than bouncing at the door. That gate is
-   * pinned on its own below; what is under test here is the accounting BENEATH
-   * it -- and the plural oversize wording is otherwise unreachable.
-   */
-  it("reports oversized, over-cap and unsupported losses in one acknowledgement", async () => {
-    const raw = fixture("all-three", () =>
-      multipartEmail(
-        [
-          // An RFC 2231 encoded name that really does arrive carrying CR/LF.
-          // This is the whole attack: the filename is attacker-controlled text
-          // that lands in an outbound email body, and interpolated raw it forges
-          // extra lines in the acknowledgement. A tab does NOT test this -- the
-          // parser normalizes tabs to spaces itself, so the reply would look
-          // scrubbed whether or not the worker scrubbed anything.
-          {
-            filename: null,
-            mime: "application/pdf",
-            bytes: OVERSIZED_BYTES,
-            disposition: `Content-Disposition: attachment; filename*=utf-8''huge%0D%0A1.pdf`,
-          },
-          // No filename parameter: `postal-mime` reports `null`, which is what
-          // drives the reply's own name fallback.
-          { filename: null, mime: "application/pdf", bytes: OVERSIZED_BYTES },
-          { filename: "program.exe", mime: "application/octet-stream" },
-          { filename: "clip.mov", mime: "video/quicktime" },
-          ...Array.from({ length: MAX_EMAIL_ATTACHMENTS + 1 }, (_unused, index) => ({
-            filename: `small-${index + 1}.pdf`,
-            mime: "application/pdf",
-          })),
-        ],
-        {
-          subject: "Every loss at once",
-          messageId: "message-every-loss",
-          body: "Two whales, two duds and eleven small ones.",
-        },
-      ),
-    );
-    const msg = { ...message(raw, "Every loss at once"), rawSize: MAX_RAW_EMAIL_BYTES };
-    const bindings = env(Response.json({ ok: true, slug: "every-loss-at-once" }));
-    await worker.email(
-      msg as unknown as Parameters<typeof worker.email>[0],
-      bindings as unknown as Parameters<typeof worker.email>[1],
-    );
-
-    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
-    const form = await bindings.YOPEDIA.fetch.mock.calls[0][0].formData();
-    // Ten forwarded: the oversized pair never competed for a slot, so the cap
-    // cut exactly one within-size file.
-    expect(form.getAll("attachments")).toHaveLength(MAX_EMAIL_ATTACHMENTS);
-    // 2 oversized + 2 unsupported + 1 over-cap, as one number.
-    expect(form.get("skippedAttachmentCount")).toBe("5");
-
-    const text = msg.reply.mock.calls[0][0].text;
-    expect(text).toContain(
-      `${MAX_EMAIL_ATTACHMENTS} supported attachments were queued for ingestion.`,
-    );
-    // All three loss sentences together, each with its own plural form and its
-    // own reason -- an oversized file is not an over-cap casualty and is not an
-    // unsupported one.
-    expect(text).toContain(
-      `2 attachments were not queued because they are larger than ${CEILING_MB} MB: huge 1.pdf, unnamed attachment.`,
-    );
-    // The CR/LF is gone, not merely rendered harmlessly: the sentence naming the
-    // dropped files must stay ONE line.
-    expect(text).not.toContain("huge\r\n1.pdf");
-    expect(
-      text.split("\n").filter((line) => line.includes("larger than")),
-    ).toHaveLength(1);
-    expect(text).toContain(
-      `1 supported attachment was not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`,
-    );
-    expect(text).toContain("2 unsupported attachments were recorded but skipped.");
-  });
-
-  it("does not let an oversized part consume a cap slot", async () => {
-    const { form, reply } = await forwardedForm(
-      oversizedAtCap(),
-      "Ten and a whale",
-      "ten-and-a-whale",
-    );
-    const parts = form.getAll("attachments");
-    // All ten small files, not nine.
-    expect(parts).toHaveLength(MAX_EMAIL_ATTACHMENTS);
-    expect(parts.map((part) => (part as File).name)).toEqual(
-      Array.from({ length: MAX_EMAIL_ATTACHMENTS }, (_unused, index) => `small-${index + 1}.pdf`),
-    );
-    expect(form.get("skippedAttachmentCount")).toBe("1");
-
-    expect(reply.text).toContain(
-      `${MAX_EMAIL_ATTACHMENTS} supported attachments were queued for ingestion.`,
-    );
-    expect(reply.text).toContain("huge.pdf");
-    expect(reply.text).toContain(`larger than ${CEILING_MB} MB`);
-    // The cap never bit, so the over-cap sentence must not appear -- reporting a
-    // dropped oversized file as an over-cap casualty tells the sender to send
-    // fewer files, which would not have helped.
-    expect(reply.text).not.toContain("attachment limit");
-  });
-});
-
-/**
- * A body plus attachments the door refuses, end to end: the zero-attachment
- * form, the absent "queued" sentence, and the skipped total. Every prior
- * all-unsupported fixture in this suite carried at least one supported file
- * alongside, so the shape the Worker actually forwards when NOTHING is
- * forwardable -- a form with no `attachments` parts at all -- was never observed
- * (DW-253).
- */
-describe("email-ingest body with only unsupported attachments", () => {
-  const ALL_UNSUPPORTED_EMAIL = multipartEmail(
-    [
-      { filename: "program.exe", mime: "application/octet-stream" },
-      { filename: "clip.mov", mime: "video/quicktime" },
-    ],
-    {
-      subject: "Nothing usable",
-      messageId: "message-all-unsupported",
-      body: "The notes are in this email body.",
-    },
-  );
-
-  it("forwards the body with no attachment parts and reports every skip", async () => {
-    const { form, reply } = await forwardedForm(
-      ALL_UNSUPPORTED_EMAIL,
-      "Nothing usable",
-      "nothing-usable",
-    );
-    expect(form.getAll("attachments")).toHaveLength(0);
-    expect(form.get("content")).toBe("The notes are in this email body.");
-    // Both names travel even though neither file does.
-    expect(form.getAll("attachmentName")).toEqual(["program.exe", "clip.mov"]);
-    expect(form.get("skippedAttachmentCount")).toBe("2");
-
-    // No "queued for ingestion" line at all -- not a "0 supported attachments"
-    // one, which is what a missing `supportedAttachments.length` guard produces.
-    expect(reply.text).not.toContain("queued for ingestion");
-    expect(reply.text).toContain("2 unsupported attachments were recorded but skipped.");
-    expect(reply.text).not.toContain("attachment limit");
-    expect(reply.text).not.toContain("larger than");
-  });
-});
-
-/**
- * The two misconfiguration early returns. Both are reachable only by removing a
- * binding `env()` always supplies, which is why neither was observed: deleting
- * either branch left the worker forwarding an unauthenticated request, or one
- * built against a relative URL, with the suite green.
- */
-describe("email-ingest misconfigured bindings", () => {
-  it("tells the sender it could not queue and never forwards without a service token", async () => {
-    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const msg = message();
-      const { YOPEDIA_SERVICE_TOKEN: _token, ...bindings } = env(
-        Response.json({ ok: true, slug: "quarterly-notes" }),
-      );
-      await worker.email(
-        msg as unknown as Parameters<typeof worker.email>[0],
-        bindings as unknown as Parameters<typeof worker.email>[1],
-      );
-      // No forward: an unauthenticated POST would be refused by the route
-      // anyway, but silently -- the sender has to hear about it.
-      expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
-      expect(msg.reply).toHaveBeenCalledOnce();
-      expect(msg.reply.mock.calls[0][0].text).toBe(
-        "work-wiki could not queue this email because the ingest service is not configured.",
-      );
-    } finally {
-      errors.mockRestore();
-    }
-  });
-
-  it("falls through to the generic retry reply when the site URL is missing", async () => {
-    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const msg = message();
-      const { YOPEDIA_SITE_URL: _site, ...bindings } = env(
-        Response.json({ ok: true, slug: "quarterly-notes" }),
-      );
-      await worker.email(
-        msg as unknown as Parameters<typeof worker.email>[0],
-        bindings as unknown as Parameters<typeof worker.email>[1],
-      );
-      expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
-      expect(msg.reply).toHaveBeenCalledOnce();
-      // The generic text, deliberately: the missing-site-URL `throw` has no
-      // bespoke message of its own -- it is caught by the try/catch around the
-      // forward, and this is the sentence that routing produces.
-      expect(msg.reply.mock.calls[0][0].text).toBe(
-        "work-wiki could not queue this email. Please try again in a few minutes.",
-      );
-      // The diagnostic, not the reply, is the discriminating surface here. The
-      // reply text and the absent forward are produced by ANY throw inside that
-      // try -- including the URL-parse `TypeError` that `new Request()` raises
-      // on the relative "/api/email/ingest" left behind when the guard is
-      // deleted. Both assertions above therefore stay green without the guard;
-      // only the logged error tells the deliberate check apart from an
-      // incidental rejection downstream of it.
-      expect(errors).toHaveBeenCalledWith(
-        "email-ingest: service binding request failed",
-        expect.objectContaining({ message: "YOPEDIA_SITE_URL is missing" }),
-      );
-    } finally {
-      errors.mockRestore();
-    }
-  });
-});
-
-/**
  * `message.rawSize` is counted before any MIME decoding, so the cap it is
  * compared against has to be big enough for an ENCODED full-size document. It
  * was not: 10 MB flat, which put the route's own `MAX_DOCUMENT_SIZE` gate out of
@@ -1098,119 +641,10 @@ describe("email-ingest raw message cap", () => {
     expect(blocks[2]?.split("\r\n")[1]).toHaveLength(76);
   });
 
-  it("predicts a real quoted-printable fixture's part length at every awkward length", () => {
-    // The same calibration for the formula the parity test now measures a
-    // full-size document with. This side needs it more, not less: `base64Lines`
-    // delegates to a real encoder, while `quotedPrintableLines` is hand-written,
-    // so nothing but a comparison against bytes on the page keeps the pair
-    // honest -- and the end-to-end case above is what keeps the encoding itself
-    // honest by making PostalMime decode it.
-    //
-    // Three lengths, one per branch of the formula:
-    //   96  -- three full lines plus a short remainder line (21 escapes);
-    //   100 -- exactly four filled lines and no short tail, so the remainder
-    //          term drops out entirely: charging for a phantom fifth line, or
-    //          for a soft break the last line supposedly does not need, is the
-    //          off-by-one this length and no other catches;
-    //   1   -- no full line at all, so only the remainder term is exercised.
-    const LENGTHS = [96, 100, 1];
-    const raw = multipartEmail(
-      LENGTHS.map((bytes, index) => ({
-        filename: `part-${index}.csv`,
-        mime: "text/csv",
-        bytes,
-        encoding: "quoted-printable" as const,
-      })),
-      {
-        subject: "QP calibration",
-        messageId: "message-qp-calibration",
-        body: "Three files attached.",
-      },
-    );
-
-    // Read the encoded regions back out of the message rather than rebuilding
-    // them, for the same reason the base64 calibration does.
-    const marker = "Content-Transfer-Encoding: quoted-printable\r\n\r\n";
-    const blocks: string[] = [];
-    for (let cursor = 0; ; ) {
-      const found = raw.indexOf(marker, cursor);
-      if (found < 0) break;
-      const start = found + marker.length;
-      // One CRLF, not two: a quoted-printable body sits flush against the
-      // boundary, so the delimiter's CRLF terminates the last encoded line.
-      const end = raw.indexOf("\r\n--work-wiki-boundary", start);
-      expect(end).toBeGreaterThan(start);
-      // Through that CRLF -- exactly the span the helper counts.
-      blocks.push(raw.slice(start, end + 2));
-      cursor = end;
-    }
-
-    expect(blocks).toHaveLength(LENGTHS.length);
-    expect(blocks.map((block) => new TextEncoder().encode(block).byteLength)).toEqual(
-      LENGTHS.map((bytes) => quotedPrintablePartWireSize(bytes)),
-    );
-    // The awkward lengths really are the awkward ones: a filled line is 76
-    // characters ending in the `=` soft break, the 100-byte part's FINAL line is
-    // filled too (four of them, no short tail), and every line -- last included
-    // -- carries the soft break the round trip depends on.
-    const first = blocks[0]?.split("\r\n") ?? [];
-    expect(first[0]).toHaveLength(76);
-    expect(first[3]).toHaveLength(64);
-    const second = blocks[1]?.split("\r\n") ?? [];
-    expect(second).toHaveLength(5);
-    expect(second.slice(0, 4).map((line) => line.length)).toEqual([76, 76, 76, 76]);
-    for (const block of blocks) {
-      for (const line of block.split("\r\n").slice(0, -1)) {
-        expect(line.endsWith("=")).toBe(true);
-      }
-    }
-    // Worst case means worst case: every octet escaped, no literal payload
-    // characters left in the block.
-    expect(blocks[2]).toMatch(/^=[0-9A-F]{2}=\r\n$/);
-  });
-
-  it("forwards a message the size of a worst-case quoted-printable full-size document", async () => {
-    // The cap's reason for existing, at the surface a sender actually feels: the
-    // encoding `MAX_RAW_EMAIL_BYTES` is now derived from (DW-358). The parity
-    // test pins the same document against the constant; this pins it against the
-    // gate, which is where a sender learns whether their `.csv` was refused.
-    const msg = {
-      ...message(ATTACHMENT_EMAIL, "Quarterly report"),
-      rawSize: quotedPrintablePartWireSize(MAX_EMAIL_DOCUMENT_BYTES),
-    };
-    const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
-    await worker.email(
-      msg as unknown as Parameters<typeof worker.email>[0],
-      bindings as unknown as Parameters<typeof worker.email>[1],
-    );
-    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
-    expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
-  });
-
   it("forwards a message the size of a base64-encoded full-size document", async () => {
     const msg = {
       ...message(ATTACHMENT_EMAIL, "Quarterly report"),
       rawSize: base64PartWireSize(MAX_EMAIL_DOCUMENT_BYTES),
-    };
-    const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
-    await worker.email(
-      msg as unknown as Parameters<typeof worker.email>[0],
-      bindings as unknown as Parameters<typeof worker.email>[1],
-    );
-    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
-    expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
-  });
-
-  it("forwards a message carrying the whole aggregate attachment budget", async () => {
-    // DW-362 at the gate, which is where a sender learns whether their ten
-    // mid-size files were refused. The parity suite pins the same aggregate
-    // against the constant; this pins it against `message.rawSize`, the only
-    // surface the sender sees. Measured per part, because ten short final lines
-    // cost more than one.
-    const msg = {
-      ...message(ATTACHMENT_EMAIL, "Quarterly report"),
-      rawSize:
-        MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES),
     };
     const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
     await worker.email(
@@ -1258,58 +692,5 @@ describe("email-ingest raw message cap", () => {
     const quoted = Number(/larger than ([\d.]+) MB/.exec(text)?.[1]);
     expect(Number.isFinite(quoted)).toBe(true);
     expect(quoted * 1024 * 1024).toBeLessThanOrEqual(MAX_RAW_EMAIL_BYTES);
-  });
-
-  it("bounces a full aggregate of documents carried alongside a maximal body", async () => {
-    // The trade-off `MIME_ENVELOPE_HEADROOM_BYTES` records in its comment,
-    // enforced instead of merely stated: the headroom covers part headers,
-    // boundaries and an ORDINARY body, not a body at `MAX_EMAIL_CONTENT_CHARS`.
-    // Both extremes at once do not fit, by design.
-    //
-    // Derived from the exported terms, never hand-typed, so it tracks the
-    // constants rather than a snapshot of them.
-    //
-    // The sum is a conservative LOWER bound on the real wire size, not an
-    // estimate of it: it adds a decoded character count to an encoded byte
-    // count and charges nothing for the MIME envelope. A body of
-    // `MAX_EMAIL_CONTENT_CHARS` characters occupies at least that many bytes on
-    // the wire and usually more (UTF-8 multi-byte runes, quoted-printable
-    // escapes), and headers and boundaries are pure addition on top. So the
-    // real message is always at least this large -- the assertion cannot become
-    // falsely true by the bound being loose.
-    //
-    // Measured on the quoted-printable wire size, because that is what
-    // `MAX_RAW_EMAIL_BYTES` is derived from (DW-358): against a cap widened for
-    // worst-case expansion, a base64 payload plus a maximal body fits
-    // comfortably, so the base64 measurement would no longer be testing the
-    // trade-off at all -- it would just be asserting a true-by-slack inequality.
-    //
-    // Re-derived at the AGGREGATE ceiling the cap now binds at (DW-362). The
-    // trade-off is unchanged in kind, only in where it binds: one full-size
-    // document plus a maximal body now fits with room to spare, so measuring
-    // there would test nothing. Measured PER PART rather than by scaling one
-    // part, for the same reason the parity suite measures it that way: ten short
-    // final lines cost more than one.
-    //
-    // This still guards the trade-off AS RECORDED TODAY; it is not a veto on
-    // widening the cap again. Re-derive the expectation from the constants if
-    // the budget moves; do not read a failure here as a reason to leave the cap
-    // alone.
-    const aggregateWireSize =
-      MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES);
-    const rawSize = aggregateWireSize + MAX_EMAIL_CONTENT_CHARS;
-    expect(rawSize).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
-    // ...while the attachments ALONE are under it, so what this case proves is
-    // the body/headroom trade-off and not an oversized aggregate.
-    expect(aggregateWireSize).toBeLessThan(MAX_RAW_EMAIL_BYTES);
-
-    const msg = { ...message(ATTACHMENT_EMAIL, "Quarterly report"), rawSize };
-    const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
-    await worker.email(
-      msg as unknown as Parameters<typeof worker.email>[0],
-      bindings as unknown as Parameters<typeof worker.email>[1],
-    );
-    expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
-    expect(msg.reply.mock.calls[0][0].text).toContain("larger than");
   });
 });

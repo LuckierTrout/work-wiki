@@ -5,14 +5,13 @@ import path from "path";
 import { patchMetadata, PATCHABLE_KEYS } from "../patch-metadata";
 import type { Principal } from "../auth";
 import {
-  beginPageCache,
   ensureDirectories,
   readWikiPageWithFrontmatter,
   writeWikiPage,
 } from "../wiki";
 import { serializeFrontmatter } from "../frontmatter";
 import { resetAliasIndex } from "../alias-index";
-import { readDiscussThreads } from "./discuss-fixture";
+import { listThreads } from "../talk";
 import {
   WRITE_DENIAL,
   WRITE_DENIAL_REALM,
@@ -368,7 +367,7 @@ describe("patchMetadata — disputed transition", () => {
     const page = await readWikiPageWithFrontmatter("dispute-page");
     expect(page!.frontmatter.disputed).toBe(true);
     // …and nothing was written to the discussion store.
-    expect(await readDiscussThreads("dispute-page")).toEqual([]);
+    expect(await listThreads("dispute-page")).toEqual([]);
   });
 
   it("opens no thread when patching an already-disputed page either", async () => {
@@ -393,61 +392,6 @@ describe("patchMetadata — disputed transition", () => {
       principal: SERVICE,
     });
 
-    expect(await readDiscussThreads("already-disputed")).toEqual([]);
-  });
-});
-
-// ===========================================================================
-// The merge base is the STORED file, not a cached one (DW-379)
-// ===========================================================================
-
-describe("patchMetadata — a stale page cache is open", () => {
-  it("folds the patch into the STORED file, not the cached copy", async () => {
-    // `pageCache` is module-global and ref-counted around bulk scans
-    // (`lint.ts`, `search.ts`, `query.ts`, `dataview.ts`), so one can be
-    // holding a superseded entry open when a PATCH arrives. Merging into that
-    // entry re-serializes a body and a frontmatter that are no longer stored —
-    // silently reverting whatever was saved in between, with the patch riding
-    // on top as if nothing had happened.
-    await seedPage("pm-stale");
-    const cleanup = beginPageCache();
-    try {
-      // A concurrent scan populates the cache.
-      const cached = (await readWikiPageWithFrontmatter("pm-stale"))!;
-      expect(cached.body).toContain("Some content.");
-
-      // Another actor saves. Written DIRECTLY, past `writeWikiPage` — which
-      // invalidates — because a STALE entry is exactly what this row is about.
-      // (In production the same state arises from a scan that re-read the entry
-      // after an invalidation.)
-      const stored = serializeFrontmatter(
-        { ...cached.frontmatter, tags: ["kept-by-the-other-actor"] },
-        "# Test Page\n\nWhat the other actor stored, LATER.\n",
-      );
-      await fs.writeFile(cached.path, stored, "utf-8");
-      // The cache is genuinely stale: a cached read still serves the old bytes.
-      expect((await readWikiPageWithFrontmatter("pm-stale"))!.body).toContain(
-        "Some content.",
-      );
-
-      await patchMetadata({
-        slug: "pm-stale",
-        metadata: { confidence: 0.9 },
-        author: "editor",
-        principal: SERVICE,
-      });
-
-      // The patch landed on the LATER bytes: both the body it re-serialized and
-      // the frontmatter it merged into are the stored ones. Without the fresh
-      // read the cached copy is written back and the other actor's save is gone.
-      const after = (await readWikiPageWithFrontmatter("pm-stale", {
-        fresh: true,
-      }))!;
-      expect(after.body).toContain("What the other actor stored, LATER.");
-      expect(after.frontmatter.tags).toEqual(["kept-by-the-other-actor"]);
-      expect(after.frontmatter.confidence).toBe(0.9);
-    } finally {
-      cleanup();
-    }
+    expect(await listThreads("already-disputed")).toEqual([]);
   });
 });

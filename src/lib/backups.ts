@@ -1,6 +1,5 @@
 import { isEnoent } from "./errors";
 import { getStorage } from "./storage";
-import type { BatchWrite } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
 import { recordOperationSafe } from "./operation-ledger";
 import { withFileLock } from "./lock";
@@ -12,9 +11,6 @@ export interface BackupFileEntry {
   sha256: string;
 }
 
-/** Which safety limit stopped a backup short of the whole tenant. */
-export type BackupTruncationReason = "file-count" | "total-bytes";
-
 export interface BackupManifest {
   version: 1;
   id: string;
@@ -23,19 +19,6 @@ export interface BackupManifest {
   createdAt: string;
   files: BackupFileEntry[];
   totalBytes: number;
-  /**
-   * Present only on a PARTIAL backup, naming every limit that stopped it
-   * (`"file-count"` before `"total-bytes"`, so the order is deterministic when
-   * one run hits both).
-   *
-   * OPTIONAL ON PURPOSE, and the reason the manifest `version` does not move: a
-   * complete backup carries no flag at all, so every `version: 1` manifest
-   * already on disk keeps parsing as exactly what it is. A truncated backup is
-   * still a real, verifiable manifest — {@link verifyOwnerBackup} checks the
-   * entries the manifest HOLDS — it just does not hold everything, which is a
-   * thing an operator has to be told rather than a failure.
-   */
-  truncated?: BackupTruncationReason[];
   verifiedAt?: string;
   verificationStatus?: "passed" | "failed";
   verificationError?: string;
@@ -43,31 +26,8 @@ export interface BackupManifest {
 
 export type BackupSummary = Omit<BackupManifest, "files"> & { fileCount: number };
 
-/** The two safety limits a backup stops at. Injectable so tests need no 2 GB. */
-export interface BackupLimits {
-  maxFiles: number;
-  maxBytes: number;
-}
-
 const MAX_BACKUP_FILES = 10_000;
 const MAX_BACKUP_BYTES = 2 * 1024 * 1024 * 1024;
-
-const DEFAULT_BACKUP_LIMITS: BackupLimits = {
-  maxFiles: MAX_BACKUP_FILES,
-  maxBytes: MAX_BACKUP_BYTES,
-};
-
-/**
- * How many files' bytes a backup holds in memory before flushing them.
- *
- * The batch door exists to bound how many durability barriers a copy loop pays,
- * but accumulating the WHOLE backup first would trade that for an unbounded
- * heap: `MAX_BACKUP_BYTES` is 2 GB, and the loop this replaced held exactly one
- * file's bytes at a time. Flushing in windows keeps both bounds — a window's
- * worth of buffers is released before the next window is read, and the barrier
- * count still falls by a factor of this window rather than to one.
- */
-const BACKUP_BATCH_WINDOW = 32;
 
 function ownerTenant(owner: string): string {
   const value = tenantForOwner(owner);
@@ -93,44 +53,18 @@ async function sha256(data: ArrayBuffer): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/**
- * Every file under `prefix`, stopping at `max`.
- *
- * WHAT CHANGED IS THE ENDING, NOT THE BOUND. The walk this replaced counted
- * globally too — each subtree spread its result into the parent's array, which
- * was re-checked after every entry — but it OVERSHOT and then THREW: it took the
- * count to `max + 1` and turned the entire backup into an error, which is the
- * behaviour DW-215 exists to remove. This one stops AT `max` and reports the
- * stop as a return value, so the caller keeps every file that fit.
- *
- * And "full" is only TRUNCATION when a FILE was actually left out, which is why
- * the check sits on the push rather than at the top of the loop: a tenant of
- * exactly `max` files whose listing still has a directory left to descend into
- * is complete, and flagging it would park a whole backup on "attention" forever
- * over a directory that held nothing. The walk keeps descending until it meets
- * that left-out file, so the flag costs at most one listing per remaining level
- * and never a copy.
- */
-async function walkInto(prefix: string, files: string[], max: number): Promise<boolean> {
-  for (const entry of await getStorage().listFiles(prefix)) {
+async function walkFiles(prefix: string): Promise<string[]> {
+  const files: string[] = [];
+  const entries = await getStorage().listFiles(prefix);
+  for (const entry of entries) {
     const child = `${prefix}/${entry.name}`;
-    if (entry.isDirectory) {
-      if (await walkInto(child, files, max)) return true;
-    } else {
-      if (files.length >= max) return true;
-      files.push(child);
+    if (entry.isDirectory) files.push(...await walkFiles(child));
+    else files.push(child);
+    if (files.length > MAX_BACKUP_FILES) {
+      throw new Error(`Backup exceeds the ${MAX_BACKUP_FILES}-file safety limit`);
     }
   }
-  return false;
-}
-
-async function walkFiles(
-  prefix: string,
-  max: number,
-): Promise<{ files: string[]; truncated: boolean }> {
-  const files: string[] = [];
-  const truncated = await walkInto(prefix, files, max);
-  return { files, truncated };
+  return files;
 }
 
 async function writeManifest(manifest: BackupManifest): Promise<void> {
@@ -140,81 +74,34 @@ async function writeManifest(manifest: BackupManifest): Promise<void> {
   );
 }
 
-/**
- * Copy the owner's tenant into a new backup, DEGRADING at the safety limits
- * rather than failing at them.
- *
- * The limits used to throw, which meant the growth a tenant accumulates
- * eventually turned the owner's only recovery path OFF: no manifest, no
- * verification, nothing to restore from — the failure mode a backup exists to
- * prevent. Stopping at the limit and recording {@link BackupManifest.truncated}
- * keeps a real, verifiable backup of everything that fit, and says out loud that
- * it is not everything. The operation is still recorded as SUCCEEDED, because it
- * partially succeeded; the flag, not the status, is how "partial" is said — and
- * `system-health.ts` reads it as needing attention so the degradation is not
- * silent.
- */
 async function createOwnerBackupUnlocked(
   owner: string,
   now: Date = new Date(),
-  limits: BackupLimits = DEFAULT_BACKUP_LIMITS,
 ): Promise<BackupManifest> {
   const tenant = ownerTenant(owner);
   const id = `bak_${now.toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID()}`;
   const sourceRoot = `tenants/${tenant}`;
   const root = backupRoot(owner, id);
-  const walked = await walkFiles(sourceRoot, limits.maxFiles);
-  const files = walked.files;
-  const truncated: BackupTruncationReason[] = [];
-  if (walked.truncated) truncated.push("file-count");
+  const files = await walkFiles(sourceRoot);
   const entries: BackupFileEntry[] = [];
   let totalBytes = 0;
 
-  // Copies are issued a window at a time (see {@link BACKUP_BATCH_WINDOW}), so
-  // the loop pays a bounded number of durability barriers WITHOUT holding the
-  // whole backup in memory. `pending` is keyed by destination so it carries at
-  // most one buffer per file, and it is cleared — releasing that window's bytes
-  // — before the next window is read.
-  //
-  // The size cap is unaffected: it is checked as each source is READ, and the
-  // first read that WOULD cross it ends the loop before that file joins the
-  // pending window — so `totalBytes` and `files` describe bytes that were really
-  // copied, and everything already pending is still flushed below.
-  const pending = new Map<string, ArrayBuffer>();
-  const flush = async (): Promise<void> => {
-    if (pending.size === 0) return;
-    const window: BatchWrite[] = [...pending].map(([path, body]) => ({ path, body }));
-    pending.clear();
-    await getStorage().writeBatch(window);
-  };
-
   for (const sourcePath of files) {
     const data = await getStorage().readAsset(sourcePath);
-    // STOP BEFORE, not add-then-check: a manifest whose `totalBytes` already
-    // counted a file it never copied would describe a backup that does not
-    // exist.
-    if (totalBytes + data.byteLength > limits.maxBytes) {
-      truncated.push("total-bytes");
-      break;
-    }
     totalBytes += data.byteLength;
+    if (totalBytes > MAX_BACKUP_BYTES) {
+      throw new Error("Backup exceeds the 2 GB safety limit");
+    }
     const relative = sourcePath.slice(sourceRoot.length + 1);
     const destination = `${root}/files/${relative}`;
-    // `walkFiles` yields distinct paths, so a repeat here would mean two sources
-    // collapsing onto one backup path — flush first so the earlier copy is
-    // written before the later one replaces it, which is what the per-file loop
-    // did and what `writeBatch` refuses to guess at.
-    if (pending.has(destination)) await flush();
-    pending.set(destination, data);
+    await getStorage().writeAsset(destination, data);
     entries.push({
       path: sourcePath,
       backupPath: destination,
       size: data.byteLength,
       sha256: await sha256(data),
     });
-    if (pending.size >= BACKUP_BATCH_WINDOW) await flush();
   }
-  await flush();
 
   const manifest: BackupManifest = {
     version: 1,
@@ -224,9 +111,6 @@ async function createOwnerBackupUnlocked(
     createdAt: now.toISOString(),
     files: entries,
     totalBytes,
-    // Spread rather than assigned, so a complete backup's manifest has no
-    // `truncated` KEY at all — not a key holding an empty array.
-    ...(truncated.length > 0 && { truncated }),
   };
   await writeManifest(manifest);
   await recordOperationSafe(owner, {
@@ -234,9 +118,7 @@ async function createOwnerBackupUnlocked(
     operation: "create",
     status: "succeeded",
     subjectId: id,
-    detail: truncated.length > 0
-      ? `${entries.length} files; ${totalBytes} bytes; truncated at ${truncated.join(", ")}`
-      : `${entries.length} files; ${totalBytes} bytes`,
+    detail: `${entries.length} files; ${totalBytes} bytes`,
   });
   return manifest;
 }
@@ -244,10 +126,9 @@ async function createOwnerBackupUnlocked(
 export async function createOwnerBackup(
   owner: string,
   now: Date = new Date(),
-  limits: BackupLimits = DEFAULT_BACKUP_LIMITS,
 ): Promise<BackupManifest> {
   return withFileLock(`owner-backup:${ownerTenant(owner)}`, () =>
-    createOwnerBackupUnlocked(owner, now, limits));
+    createOwnerBackupUnlocked(owner, now));
 }
 
 export async function getBackupManifest(owner: string, id: string): Promise<BackupManifest | null> {
@@ -292,36 +173,6 @@ export async function verifyOwnerBackup(
   if (!manifest) throw new Error("Backup not found");
   const verificationRoot = `restore-verification/${ownerTenant(owner)}/${id}`;
   try {
-    // Restores are written a window at a time and read back within that same
-    // window, so this keeps the per-file "write it, then prove it round-trips"
-    // shape while paying a bounded number of durability barriers — and, as in
-    // the create path, it never holds more than one window of bytes.
-    //
-    // Keyed BY DESTINATION rather than positionally: a manifest is stored data,
-    // not something re-derived here, so two entries can slice to one
-    // verification-relative path. Keying it collapses them the way the
-    // sequential loop did — and flushing before a repeat means the earlier copy
-    // is still written and checked against its OWN digest, rather than the batch
-    // being refused as ambiguous or the later bytes being checked against the
-    // earlier digest.
-    const pending = new Map<string, { data: ArrayBuffer; file: BackupFileEntry }>();
-    const flushAndVerify = async (): Promise<void> => {
-      if (pending.size === 0) return;
-      const window = [...pending];
-      pending.clear();
-      const writes: BatchWrite[] = window.map(([path, entry]) => ({
-        path,
-        body: entry.data,
-      }));
-      await getStorage().writeBatch(writes);
-      for (const [path, entry] of window) {
-        const restored = await getStorage().readAsset(path);
-        if (await sha256(restored) !== entry.file.sha256) {
-          throw new Error(`Restore verification failed for ${entry.file.path}`);
-        }
-      }
-    };
-
     for (const file of manifest.files) {
       const data = await getStorage().readAsset(file.backupPath);
       if (data.byteLength !== file.size || await sha256(data) !== file.sha256) {
@@ -329,12 +180,12 @@ export async function verifyOwnerBackup(
       }
       const relative = file.path.slice(`tenants/${manifest.tenant}/`.length);
       const restoredPath = `${verificationRoot}/${relative}`;
-      if (pending.has(restoredPath)) await flushAndVerify();
-      pending.set(restoredPath, { data, file });
-      if (pending.size >= BACKUP_BATCH_WINDOW) await flushAndVerify();
+      await getStorage().writeAsset(restoredPath, data);
+      const restored = await getStorage().readAsset(restoredPath);
+      if (await sha256(restored) !== file.sha256) {
+        throw new Error(`Restore verification failed for ${file.path}`);
+      }
     }
-    await flushAndVerify();
-
     manifest.verifiedAt = now.toISOString();
     manifest.verificationStatus = "passed";
     delete manifest.verificationError;
@@ -364,36 +215,6 @@ export async function verifyOwnerBackup(
     await writeManifest(manifest);
   }
   return manifest;
-}
-
-/**
- * The words a truncation reason is shown in.
- *
- * `"file-count"` / `"total-bytes"` are storage discriminants — fine in a
- * manifest, wrong on a page, where they read as a leaked internal. Falling back
- * to the raw reason keeps a manifest written by some other version of this file
- * renderable rather than blank.
- */
-const BACKUP_TRUNCATION_LABELS: Record<BackupTruncationReason, string> = {
-  "file-count": "file count",
-  "total-bytes": "total size",
-};
-
-/**
- * One sentence naming why a backup covered only part of the tenant.
- *
- * Exported from here, beside the flag it describes, for the same reason
- * `FILES_TRUNCATED_COPY` and `PREVIEW_TRUNCATED_COPY` live beside their bounds:
- * the desk shows this in two places (the row receipt and the restore-check
- * card), and copy assembled inline in JSX drifts between them. Empty in →
- * empty out, so a caller can render the result unconditionally.
- */
-export function backupTruncationCopy(
-  reasons: readonly BackupTruncationReason[] | undefined,
-): string {
-  if (!reasons?.length) return "";
-  const labels = reasons.map((reason) => BACKUP_TRUNCATION_LABELS[reason] ?? reason);
-  return `partial — stopped at the ${labels.join(" and ")} limit${labels.length > 1 ? "s" : ""}`;
 }
 
 /** Human-readable size used by API/UI without exposing raw backup contents. */

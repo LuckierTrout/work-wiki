@@ -1,13 +1,13 @@
 /**
  * Story 1.3 — the shell's structural invariants, pinned by source scan.
  *
- * A `node`-project suite (`*.test.ts`, `environment: "node"`), so it does not
- * mount anything — that is the `dom` project's half. It follows the
- * `single-ia.test.ts` / `create-wiki-ui.test.ts` convention and reads the
- * components as text. What it really pins is that nobody turns mode switching
- * into routing, drops the rail's accessible names, inlines empty-state copy
- * next to the shared module, leaks the Preview serif into chrome, or
- * reintroduces a device branch under the responsive rules.
+ * Vitest runs `environment: "node"` and only `src/**\/__tests__/**\/*.test.ts`:
+ * there is no jsdom and no testing-library, and adding them is out of scope
+ * here. So this follows the `single-ia.test.ts` / `create-wiki-ui.test.ts`
+ * convention and reads the components as text. What it really pins is that
+ * nobody turns mode switching into routing, drops the rail's accessible names,
+ * inlines empty-state copy next to the shared module, leaks the Preview serif
+ * into chrome, or reintroduces a device branch under the responsive rules.
  */
 import { describe, expect, it } from "vitest";
 import { readFile, readdir } from "node:fs/promises";
@@ -526,26 +526,16 @@ describe("the shell owns the viewport at /", () => {
     // the Wiki subtree mounted in every mode (DW-26) puts both branches inside
     // one section, and one is what an id has to be: a second `#wb-canvas` would
     // give the skip link two targets and leave the browser to pick.
-    //
-    // The patterns allow the attribute VALUE to be conditional, because it now
-    // is: Settings mounts its own canvas beside this one (DW-373) and this
-    // section goes behind `hidden` carrying neither the id nor the tab index,
-    // so the two are never in the document at once. What still has to be one is
-    // the number of PLACES either is spelled — a second `id={…CANVAS_ID}` here
-    // is the duplicate this counts against.
-    expect(canvas.match(/id=\{[^{}]*CANVAS_ID\}/g) ?? []).toHaveLength(1);
-    expect(canvas.match(/tabIndex=\{[^{}]*-1\}/g) ?? []).toHaveLength(1);
-    // …and the withdrawal is conditioned on the prop the shell passes, not on
-    // anything this file decides for itself.
-    //
-    // Matched with the whitespace open, not as exact literals: the counts above
-    // are the invariant, and these three say WHAT the one occurrence of each
-    // spells. A formatter wrapping the ternary across lines changes neither,
-    // and the sibling scan in `workbench-settings.test.ts` gave up exact
-    // literals for the same reason in the same change.
-    expect(canvas).toMatch(/hidden=\{\s*hidden\s*\}/);
-    expect(canvas).toMatch(/id=\{\s*hidden\s*\?\s*undefined\s*:\s*CANVAS_ID\s*\}/);
-    expect(canvas).toMatch(/tabIndex=\{\s*hidden\s*\?\s*undefined\s*:\s*-1\s*\}/);
+    expect(canvas.match(/\bid=\{[^}]*CANVAS_ID\}/g) ?? []).toHaveLength(1);
+    expect(canvas.match(/\btabIndex=\{[^}]*-1\}/g) ?? []).toHaveLength(1);
+    // …and that one section GIVES BOTH UP while Settings is over it (DW-373).
+    // The mode canvas is no longer swapped out for `SettingsCanvas` — it stays
+    // mounted behind `hidden` so an open Create Wiki dialog and its draft
+    // survive the visit — and `SettingsCanvas` renders the same id and the same
+    // landing tab index, so a mode canvas that kept them unconditionally would
+    // put the duplicate back that the assertions above exist to forbid.
+    expect(canvas).toContain("id={hidden ? undefined : CANVAS_ID}");
+    expect(canvas).toContain("tabIndex={hidden ? undefined : -1}");
   });
 
   it("the landing page mounts the Workbench and no metrics dashboard", async () => {

@@ -6,9 +6,7 @@
  *
  *  - {@link reconcilePage} LLM-folds the two bodies into one canonical page
  *    (escalating `disputed` on contradiction), exactly like accumulate-and-
- *    reconcile on re-ingest — and, since DW-323, under the same owner guidance
- *    (Workspace Purpose + Names & Terms) that door carries. Which owner: see
- *    the comment on `guidanceOwner` in {@link mergePages}.
+ *    reconcile on re-ingest.
  *  - sources / contributors / authors / aliases are UNIONed; `from`'s title AND
  *    slug are recorded as aliases of `into` so a later ingest under either name
  *    converges on the survivor. NOTE: the alias URL redirect that used to
@@ -33,37 +31,24 @@ import {
   computeConfidence,
   extractSummary,
 } from "./ingest";
-import { createGuidanceCache } from "./guidance-cache";
-import { listNamesTerms } from "./names-terms";
 import { parseSources, serializeSources } from "./sources";
 import { serializeFrontmatter, type Frontmatter } from "./frontmatter";
 import { writeWikiPageWithSideEffects, deleteWikiPage } from "./lifecycle";
 import { getBacklinkIndex } from "./backlink-index";
 import { escapeRegex } from "./links";
-import { isPageUnreadableError } from "./page-read-failure";
 
 export interface MergePagesArgs {
   /** Slug of the page to absorb — deleted after the merge. */
   from: string;
   /** Slug of the surviving canonical page. */
   into: string;
-  /**
-   * Actor performing the merge (handle) — for the same-owner guard, attribution,
-   * and (DW-323) the fallback guidance principal when the survivor's frontmatter
-   * names no `owner`.
-   */
+  /** Actor performing the merge (handle) — for the same-owner guard + attribution. */
   actor?: string;
   /**
    * Bypass the same-human-owner guard. Set ONLY by deployment-trusted callers
    * (MCP stdio / a service principal). Actor-scoped callers (e.g. a dedup
    * cleanup) should pass `actor` and leave this false, so a cross-owner merge is
    * refused rather than silently allowed.
-   *
-   * Note what a cross-owner merge now implies (DW-323): the fold runs under the
-   * SURVIVOR owner's Workspace Purpose and Names & Terms, so that owner's
-   * profile text — which can name people, projects and roles — reaches a prompt
-   * folding another owner's prose. That is the point of guiding this door, but
-   * it is a real crossing and only trusted callers may open it.
    */
   bypassOwnerCheck?: boolean;
 }
@@ -135,40 +120,12 @@ async function repointBacklinks(
   const re = new RegExp(`\\]\\(${escapeRegex(fromSlug)}\\.md\\)`, "g");
   const repointed: string[] = [];
   for (const src of linkers) {
-    // FRESH (DW-379): these bytes are rewritten and written straight back
-    // below, so they are a merge base. A bulk scan holding `pageCache` open
-    // with a superseded entry would have this re-point revert whatever was
-    // saved in between.
-    let page: Awaited<ReturnType<typeof readWikiPageWithFrontmatter>>;
-    try {
-      page = await readWikiPageWithFrontmatter(src, { fresh: true });
-    } catch (err) {
-      if (!isPageUnreadableError(err)) throw err;
-      // THE REFUSAL IS RE-WORDED, NOT RELAYED. `PAGE_UNREADABLE_COPY` says "so
-      // nothing was changed" — a save-door sentence that is FALSE here: this
-      // loop may already have re-pointed and written earlier linkers before
-      // reaching `src`. The message below is the accurate one this function has
-      // always thrown for an unreadable linker, and it names which page and
-      // which merge. The refusal is kept as `cause` so the EIO underneath is
-      // still reachable from a log line or a debugger.
-      throw new Error(
-        `merge aborted: backlink source "${src}" could not be read while re-pointing links from "${fromSlug}" to "${intoSlug}"`,
-        { cause: err },
-      );
-    }
+    const page = await readWikiPageWithFrontmatter(src);
     if (!page) {
-      // `src` was named as a linker by the index / page list, so `null` is not
-      // the ordinary "no such page" — but it is still the only answer a
-      // NON-throwing read can give for several conditions at once: a page that
-      // genuinely is not there, and a slug `validateSlug` rejects (which
-      // `readWikiPage` logs and answers `null` for). What it no longer covers,
-      // since DW-378/DW-380, is a transient storage fault — that arrives as the
-      // refusal handled just above. Note also that `fresh` bypasses `pageCache`
-      // and ONLY that: a lagging `getPageIndex()` can still route this read at
-      // the flat file while the write targets the silo one, exactly as
-      // `ReadWikiPageOptions.fresh` documents. Abort either way, rather than let
-      // the later hard-delete strip an un-re-pointed link; `from` is left intact
-      // and the merge retries.
+      // `src` was named as a linker by the index / page list, so a null read is
+      // NOT an expected "no such page" — `readWikiPage` also collapses transient
+      // storage faults to null. Abort rather than let the later hard-delete
+      // strip an un-re-pointed link; `from` is left intact and the merge retries.
       throw new Error(
         `merge aborted: backlink source "${src}" could not be read while re-pointing links from "${fromSlug}" to "${intoSlug}"`,
       );
@@ -205,13 +162,9 @@ export async function mergePages({
   if (fromSlug === intoSlug) {
     throw new Error("cannot merge a page into itself");
   }
-  // FRESH on both sides (DW-379). A merge folds two bodies into the survivor
-  // and then HARD-DELETES `from`, so a side served from a stale `pageCache`
-  // entry loses whatever was written to it in between — with no revision of it
-  // anywhere, because the deleted page takes its history with it.
-  const from = await readWikiPageWithFrontmatter(fromSlug, { fresh: true });
+  const from = await readWikiPageWithFrontmatter(fromSlug);
   if (!from) throw new Error(`page not found: ${fromSlug}`);
-  const into = await readWikiPageWithFrontmatter(intoSlug, { fresh: true });
+  const into = await readWikiPageWithFrontmatter(intoSlug);
   if (!into) throw new Error(`page not found: ${intoSlug}`);
 
   // Guard: the survivor must be a normal markdown page — reconciling into an
@@ -246,65 +199,8 @@ export async function mergePages({
   let disputed =
     into.frontmatter.disputed === true || from.frontmatter.disputed === true;
   if (hasLLMKey()) {
-    // DW-323: the merge door folds prose with the SAME reconcile prompt the
-    // ingest door uses, so it must carry the same owner guidance. The
-    // accountable owner is the SURVIVOR's — `into` is the page that keeps
-    // existing, under that owner's Workspace Purpose and Names & Terms —
-    // falling back to the acting principal when the survivor's frontmatter
-    // names none. A cross-owner merge (trusted callers only,
-    // `bypassOwnerCheck`) therefore folds under `into`'s guidance, never the
-    // absorbed page's. Neither resolvable → `undefined`, and the prompt carries
-    // no guidance block, exactly as before.
-    //
-    // Note this is NOT the same key the ingest door uses: `ingest()` keys
-    // guidance on the ACTING principal, because there the actor is the one
-    // writing the page. Re-ingesting into someone else's page therefore folds
-    // under the ingester's Purpose, while merging into it folds under the page
-    // owner's. What DW-323 makes identical across the two doors is that the
-    // fold is GUIDED at all, not which principal guides it.
-    //
-    // The handle is passed RAW, exactly as `ingest()` passes its principal: an
-    // agent handle (`alice--bot`) keys its own silo and so resolves no Wiki and
-    // no guidance. Deliberate parity — the guard above collapses agents to their
-    // human via `sameHumanOwner`, guidance does not, and inventing a collapse
-    // here would make this door the only one that does it.
-    const guidanceOwner = asString(into.frontmatter.owner) ?? actor;
-    // One handle per merge: a merge is ONE operation. It states the merge's
-    // guidance scope rather than leaving it implied, and it is the seam a second
-    // guidance-consuming call would use. It also carries the dictionary probe
-    // below into the reconcile, so that probe costs no extra read.
-    const guidanceCache = createGuidanceCache();
-    if (guidanceOwner) {
-      // The two guidance halves fail DIFFERENTLY, and only one of them is safe
-      // to leave in the fold's critical path. `buildWorkspaceGuidance` swallows
-      // any read error and returns "". `listNamesTerms` RETHROWS a non-ENOENT
-      // storage error — which, reaching the `catch` below, would be read as a
-      // failed reconcile and cost the LLM fold entirely, leaving a crudely
-      // appended survivor. An ingest can be retried against an intact page; a
-      // merge hard-deletes `from`, so there is nothing left to retry against.
-      // So probe the dictionary once here. On success the memo is what the
-      // reconcile reads (one read, not two). On failure, pin an empty
-      // dictionary in THIS handle so the reconcile renders no Names & Terms
-      // block instead of re-reading and rejecting — the Purpose half still
-      // reaches the prompt, and the fold still happens.
-      try {
-        await listNamesTerms(guidanceOwner, guidanceCache.namesTerms);
-      } catch (err) {
-        logger.warn(
-          "merge",
-          `names & terms dictionary unreadable for "${guidanceOwner}"; folding "${fromSlug}"→"${intoSlug}" without it`,
-          err,
-        );
-        guidanceCache.namesTerms.set(guidanceOwner, Promise.resolve([]));
-      }
-    }
     try {
-      const reconciled = await reconcilePage(
-        into.body,
-        from.body,
-        guidanceOwner,
-        guidanceCache,
-      );
+      const reconciled = await reconcilePage(into.body, from.body);
       mergedBody = reconciled.body;
       if (reconciled.disputed) disputed = true;
     } catch (err) {

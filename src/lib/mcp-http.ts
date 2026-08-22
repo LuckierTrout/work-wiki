@@ -61,8 +61,6 @@ import {
   handleIngestXMention,
 } from "@/mcp";
 import { mergePages } from "@/lib/merge";
-import { autoFixRefusal } from "@/lib/lint-fix";
-import { AUTO_FIXABLE_CHECK_TYPES } from "@/lib/lint-types";
 import { readWikiPageWithFrontmatter } from "@/lib/wiki";
 import { canWriteFrontmatter, isRealmRestrictedFrontmatterWrite } from "@/lib/authz";
 import { resolveWriteDenial } from "@/lib/write-denial";
@@ -488,20 +486,10 @@ export const MCP_TOOLS: ToolDef[] = [
     name: "fix_lint_issue",
     description:
       "Auto-fix a lint issue found by lint_wiki. Takes the issue type, slug, and optional target/message. " +
-      "Accepts ONLY the auto-fixable issue types listed on `type` — the remaining check types need human judgement, " +
-      "and for those the issue's own `suggestion` field from lint_wiki carries the action to take.",
+      "Not all issue types are auto-fixable.",
     inputSchema: schema(
       {
-        type: {
-          ...str(
-            `Lint issue type. Valid: ${AUTO_FIXABLE_CHECK_TYPES.join(", ")}`,
-          ),
-          // ADVERTISED, and separately ENFORCED in `run` below. `tools/call`
-          // hands `params.arguments` to `tool.run` with no schema validation at
-          // all on this transport, so an `enum` here is documentation for the
-          // agent, not a gate (DW-348).
-          enum: [...AUTO_FIXABLE_CHECK_TYPES],
-        },
+        type: str("Lint issue type (e.g. 'orphan-page', 'stale-index', 'empty-page')"),
         slug: str("Slug of the affected page"),
         target: str("Target slug for cross-ref, contradiction, broken-link, and duplicate-entity fixes"),
         message: str("Message context for contradiction or missing-concept-page fixes"),
@@ -509,24 +497,11 @@ export const MCP_TOOLS: ToolDef[] = [
       ["type", "slug"],
     ),
     write: true,
-    run: async (a, p) => {
-      // The gate this transport cannot provide generically. Per-tool because
-      // `fix_lint_issue` is the one whose declared `type: string` was load-
-      // bearing: it reached `fixLintIssue`'s dispatch table directly. The
-      // sentence comes from `@/lib/lint-fix` so a recognized-but-not-fixable
-      // type gets its own explanation here, word for word as the HTTP route
-      // answers it, rather than a bare "unsupported".
-      const refusal = autoFixRefusal(
-        a.type,
-        typeof a.slug === "string" ? a.slug : "",
-      );
-      if (refusal) throw new Error(refusal);
-
-      return handleFixLintIssue({
+    run: (a, p) =>
+      handleFixLintIssue({
         ...(a as { type: string; slug: string; target?: string; message?: string }),
         author: p!.handle,
-      });
-    },
+      }),
   },
   {
     name: "merge_pages",

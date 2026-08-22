@@ -26,6 +26,8 @@ interface EffectiveSettings {
   hasApiKey: boolean;
   ollamaBaseUrl: string | null;
   ollamaBaseUrlSource: SettingSource;
+  /** Why the endpoint was thrown away, or `null` when it was not (DW-402). */
+  ollamaBaseUrlIssue: string | null;
 }
 
 export interface ProviderFormProps {
@@ -112,6 +114,25 @@ export function ProviderForm({
   const showCustom = effectiveProvider === "custom";
   const selectedProviderHasKey =
     settings?.provider === effectiveProvider && settings.hasApiKey;
+
+  /**
+   * The endpoint input's descriptions, COMPOSED rather than chosen (DW-402).
+   *
+   * A hint sitting beside a control is invisible to a screen reader — the
+   * convention `SettingsCanvas.tsx`'s rows already state — so the refusal
+   * sentence has to be pointed at, not merely placed nearby. It is also not the
+   * only thing that can describe this box: a read-only deployment already
+   * points every control at the page's one read-only sentence, and BOTH can
+   * apply at once. Picking one would silence the other, so the ids are joined.
+   *
+   * `undefined` when neither applies, never `""`: an empty `aria-describedby`
+   * is an attribute pointing at nothing.
+   */
+  const ollamaIssueId = settings?.ollamaBaseUrlIssue ? "ollamaBaseUrlIssue" : undefined;
+  const ollamaDescribedBy =
+    [readOnly ? describedBy : undefined, ollamaIssueId]
+      .filter((id): id is string => Boolean(id))
+      .join(" ") || undefined;
 
   return (
     <>
@@ -217,10 +238,30 @@ export function ProviderForm({
               value={ollamaBaseUrl}
               onChange={(e) => setOllamaBaseUrl(e.target.value)}
               readOnly={readOnly}
-              aria-describedby={readOnly ? describedBy : undefined}
+              aria-describedby={ollamaDescribedBy}
               placeholder="http://localhost:11434/api"
               className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20 font-mono"
             />
+          )}
+          {/*
+            WHY THE BOX IS EMPTY (DW-402). A refused endpoint resolves to
+            nothing, so without this the owner reads a blank field beside a
+            `none` badge — the same picture as never having set one — while the
+            server has already logged that it saw the value and threw it away.
+
+            INSIDE THIS BLOCK, never outside it: the sentence is about the
+            Ollama endpoint, and the only place that reads as an answer is
+            beside the control that asks. It carries an `id` because beside is
+            not enough — `ollamaDescribedBy` above points the input at it, so a
+            screen reader announces the refusal with the field rather than
+            leaving it to be discovered by browsing. DESCRIBES, does not mark:
+            no `aria-invalid` and the save is not blocked, matching the custom
+            endpoint note below.
+          */}
+          {settings?.ollamaBaseUrlIssue && (
+            <p id="ollamaBaseUrlIssue" className="mt-1.5 text-xs text-foreground/55">
+              {settings.ollamaBaseUrlIssue}
+            </p>
           )}
         </div>
       )}

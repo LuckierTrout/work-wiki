@@ -3,7 +3,6 @@ import { writeWikiPageWithSideEffects, deleteWikiPage } from "./lifecycle";
 import { callLLM, hasLLMKey } from "./llm";
 import { slugify } from "./slugify";
 import { serializeFrontmatter } from "./frontmatter";
-import { disputedClearInstruction } from "./lint-types";
 import type { AutoFixableCheckType } from "./lint-types";
 import type { LintIssue } from "./types";
 
@@ -40,27 +39,6 @@ export class FixNotFoundError extends Error {
 
 // ---------------------------------------------------------------------------
 // Individual fix functions
-//
-// EVERY PAGE READ BELOW IS `{ fresh: true }` (DW-379). Stated once here rather
-// than thirteen times: on this path a read is never just a read. It either
-// supplies the bytes/frontmatter a rewrite is folded into, or it is the guard
-// that decides whether the write happens at all — and both are wrong when the
-// answer comes from `pageCache`.
-//
-// `pageCache` is module-global and ref-counted around bulk scans, and an
-// auto-fix is triggered by a lint scan: `lint.ts`'s own `withPageCache` is
-// exactly the cache that can be holding superseded entries open when the fix
-// runs. A stale POSITIVE entry makes the fix rewrite a file that is no longer
-// stored, reverting whatever was saved in between. A cached NEGATIVE entry is
-// the same staleness pointed the other way — `readWikiPage` caches `null` too —
-// and it makes `fixStaleIndex` drop the index entry of a page that exists, or
-// `fixSupersededDangling` clear a reference that has since become valid.
-//
-// Adopting `fresh` also inherits its refusal (DW-378/DW-380): a NON-ENOENT
-// storage failure throws `PageUnreadableError` instead of answering `null`, so
-// a blip can no longer masquerade as `FixNotFoundError`. `POST /api/lint/fix`
-// classifies that throw as 503. ENOENT is untouched: a genuinely absent page is
-// still `null`, still `FixNotFoundError`, still 404.
 // ---------------------------------------------------------------------------
 
 /**
@@ -74,7 +52,7 @@ export async function fixOrphanPage(slug: string, author = "lint-fix"): Promise<
     throw new FixValidationError("Missing required field: slug");
   }
 
-  const page = await readWikiPage(slug, { fresh: true });
+  const page = await readWikiPage(slug);
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -114,7 +92,7 @@ export async function fixStaleIndex(slug: string, _author = "lint-fix"): Promise
   // Re-verify the page file is genuinely missing before dropping its index
   // entry — never remove a valid entry on a transient read miss or a retry
   // after the page was (re)created.
-  if (await readWikiPage(slug, { fresh: true })) {
+  if (await readWikiPage(slug)) {
     return {
       success: false,
       slug,
@@ -186,14 +164,14 @@ export async function fixMissingCrossRef(
   }
 
   // Read the source page
-  const sourcePage = await readWikiPage(slug, { fresh: true });
+  const sourcePage = await readWikiPage(slug);
   if (!sourcePage) {
     throw new FixNotFoundError(`Source page not found: ${slug}`);
   }
 
   // Never append a markdown "## Related" section to an HTML artifact — its body
   // is a self-contained document and the markdown would render as literal text.
-  const sourceFm = await readWikiPageWithFrontmatter(slug, { fresh: true });
+  const sourceFm = await readWikiPageWithFrontmatter(slug);
   if (
     sourceFm &&
     isArtifactType(
@@ -210,7 +188,7 @@ export async function fixMissingCrossRef(
   }
 
   // Read the target page to get its title
-  const targetPage = await readWikiPage(targetSlug, { fresh: true });
+  const targetPage = await readWikiPage(targetSlug);
   if (!targetPage) {
     throw new FixNotFoundError(`Target page not found: ${targetSlug}`);
   }
@@ -302,12 +280,12 @@ export async function fixContradiction(
     );
   }
 
-  const sourcePage = await readWikiPage(slug, { fresh: true });
+  const sourcePage = await readWikiPage(slug);
   if (!sourcePage) {
     throw new FixNotFoundError(`Source page not found: ${slug}`);
   }
 
-  const otherPage = await readWikiPage(targetSlug, { fresh: true });
+  const otherPage = await readWikiPage(targetSlug);
   if (!otherPage) {
     throw new FixNotFoundError(`Target page not found: ${targetSlug}`);
   }
@@ -374,7 +352,7 @@ export async function fixMissingConceptPage(
   }
 
   // Guard: if the page already exists, there's nothing to do
-  const existing = await readWikiPage(slug, { fresh: true });
+  const existing = await readWikiPage(slug);
   if (existing) {
     return {
       success: true,
@@ -440,7 +418,7 @@ export async function fixBrokenLink(
     throw new FixValidationError("Missing required field: targetSlug");
   }
 
-  const page = await readWikiPage(slug, { fresh: true });
+  const page = await readWikiPage(slug);
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -497,7 +475,7 @@ export async function fixStalePage(slug: string, author = "lint-fix"): Promise<F
     throw new FixValidationError("Missing required field: slug");
   }
 
-  const page = await readWikiPageWithFrontmatter(slug, { fresh: true });
+  const page = await readWikiPageWithFrontmatter(slug);
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -555,7 +533,7 @@ export async function fixUnmigratedPage(slug: string, author = "lint-fix"): Prom
     throw new FixValidationError("Missing required field: slug");
   }
 
-  const page = await readWikiPageWithFrontmatter(slug, { fresh: true });
+  const page = await readWikiPageWithFrontmatter(slug);
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -640,7 +618,7 @@ export async function fixSupersededDangling(slug: string, author = "lint-fix"): 
   if (!slug) {
     throw new FixValidationError("Missing required field: slug");
   }
-  const page = await readWikiPageWithFrontmatter(slug, { fresh: true });
+  const page = await readWikiPageWithFrontmatter(slug);
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -650,7 +628,7 @@ export async function fixSupersededDangling(slug: string, author = "lint-fix"): 
     return { success: false, slug, message: `No supersedes field to fix on "${slug}"` };
   }
   // Don't clear a reference that has since become valid.
-  if (await readWikiPageWithFrontmatter(supersedes, { fresh: true })) {
+  if (await readWikiPageWithFrontmatter(supersedes)) {
     return {
       success: false,
       slug,
@@ -748,30 +726,18 @@ const NOT_AUTO_FIXABLE: Record<
   // asserts that a human read the conflicting claims and decided the page is
   // now correct. An auto-fix would clear the flag without that review, which
   // is exactly the state the flag exists to prevent.
-  //
-  // The clear path itself comes from `disputedClearInstruction` (DW-389) rather
-  // than being spelled out here. It is the same sentence `checkDisputedPages`'s
-  // `suggestion` carries, and it has to say more than "use the toggle": that
-  // toggle is a `PATCH /api/wiki/<slug>` metadata write, and `canWritePage`'s
-  // realm branch refuses it on a public knowledge page for everyone but an
-  // agent or a site admin. Two hand-typed copies is how both surfaces came to
-  // describe a loop most readers cannot close.
   "disputed-page": (slug) =>
-    `Disputed pages cannot be auto-fixed. Reconcile the conflicting claims in "${slug}", then ${disputedClearInstruction(slug)}`,
+    `Disputed pages cannot be auto-fixed. Reconcile the conflicting claims in "${slug}", then clear the Disputed toggle in the page editor (PATCH /api/wiki/${slug} with metadata { disputed: false }).`,
 };
 
 /**
  * Look `type` up: own properties only, and only if it is really a string.
  *
- * The declared `string` is a claim, not a fact. The three doors each gate `type`
- * themselves now (DW-348) — this used to be the ONLY gate, back when
- * `src/app/api/lint/fix/route.ts` destructured `type` straight off an
- * unvalidated `await req.json()` — but the doors are not the only callers:
- * `src/cli.ts:513` and `POST /api/tasks/run` (`route.ts:159`) call the
- * dispatcher in-process, the latter with a `lintType` read back out of stored
- * task JSON that no schema has ever seen. So the value can still be any shape.
- * Two ways that bites a table lookup, and the `switch (type)` this replaced was
- * immune to both because `case` compares with `===`:
+ * `src/app/api/lint/fix/route.ts` destructures `type` straight off an
+ * unvalidated `await req.json()`, so the declared `string` is a claim, not a
+ * fact — the value can be any JSON shape the caller sends. Two ways that bites a
+ * table lookup, and the `switch (type)` this replaced was immune to both because
+ * `case` compares with `===`:
  *
  *  1. The PROTOTYPE CHAIN. A bare `FIX_HANDLERS[type]` answers `"constructor"`,
  *     `"toString"` and every other `Object.prototype` member with an inherited
@@ -791,50 +757,8 @@ function ownEntry<T>(table: Record<string, T>, key: string): T | null {
   return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null;
 }
 
-/** The answer for a type no check ever emits — unrecognized, so unexplainable. */
-const AUTO_FIX_UNSUPPORTED = "Auto-fix not supported for this issue type";
-
-/**
- * Why this `type` cannot be auto-fixed, or `null` when it can be.
- *
- * ONE OWNER FOR THE REFUSAL SENTENCES, two callers: `POST /api/lint/fix` and
- * `mcp-http.ts`'s `fix_lint_issue`. Both need to refuse a bad `type` BEFORE
- * {@link fixLintIssue} runs — the route parsed an unvalidated body straight into
- * the dispatcher, and the HTTP MCP transport validates `tools/call` arguments
- * not at all, so `ownEntry` below was the only thing standing between a
- * caller's JSON and the handler table (DW-348). A gate at each door that
- * re-typed "Disputed pages cannot be auto-fixed…" would be two more hand-copied
- * restatements of prose `lint-types.ts` went to some trouble to give a single
- * home; the doors call this instead.
- *
- * THE STDIO SERVER IS THE EXCEPTION, and does not call this. `src/mcp.ts`
- * registers `fix_lint_issue` with `z.enum(AUTO_FIXABLE_CHECK_TYPES)`, so the
- * SDK refuses a bad type before the handler is even entered — there is no point
- * in the request at which a gate of ours could run. Its tool description points
- * the agent at the issue `suggestion` instead, which carries the same guidance
- * with the slug already interpolated.
- *
- * `type` is `unknown` on purpose: every caller receives it from the wire, where
- * the declared `string` is a claim rather than a fact. A non-string is
- * unrecognized, exactly as `ownEntry`'s `typeof` guard already made it.
- *
- * `slug` is interpolated by the `disputed-page` explanation into a
- * copy-pasteable PATCH, so a door with no usable slug should pass `""` rather
- * than invent one.
- */
-export function autoFixRefusal(type: unknown, slug: string): string | null {
-  if (typeof type !== "string") return AUTO_FIX_UNSUPPORTED;
-  if (ownEntry<FixHandler>(FIX_HANDLERS, type)) return null;
-
-  const explain = ownEntry<(slug: string) => string>(NOT_AUTO_FIXABLE, type);
-  return explain ? explain(slug) : AUTO_FIX_UNSUPPORTED;
-}
-
 /**
  * Dispatch a lint-fix request to the appropriate handler based on issue type.
- *
- * Keeps `type: string` — the gate belongs at the doors, and this stays the
- * defense that runs whichever door (or in-process caller) got here.
  *
  * @throws {FixValidationError} for missing fields or unsupported types
  * @throws {FixNotFoundError} when a required page doesn't exist
@@ -851,7 +775,10 @@ export async function fixLintIssue(
     return handler({ slug, targetSlug, message, author });
   }
 
-  // `autoFixRefusal` answers `null` only when a handler exists, which the branch
-  // above has already ruled out; the `??` is a type narrowing, not a fallback.
-  throw new FixValidationError(autoFixRefusal(type, slug) ?? AUTO_FIX_UNSUPPORTED);
+  const explain = ownEntry<(slug: string) => string>(NOT_AUTO_FIXABLE, type);
+  if (explain) {
+    throw new FixValidationError(explain(slug));
+  }
+
+  throw new FixValidationError("Auto-fix not supported for this issue type");
 }

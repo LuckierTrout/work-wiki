@@ -211,13 +211,9 @@ export async function reverseEditForAuthor(
 }
 
 /**
- * Record talk activity for `author`: one comment, and optionally a new thread.
- * Advances firstSeen/lastSeen. Idempotency is not guaranteed — call exactly once
- * per new comment/thread; the daily rebuild reconciles drift.
- *
- * The `talk.ts` hook that drove this went with the thread writers in DW-390, so
- * there is no incremental caller left outside tests and `rebuildContributorIndex`
- * is the live maintenance path.
+ * Record talk activity for `author` (talk hook): one comment, and optionally a
+ * new thread. Advances firstSeen/lastSeen. Idempotency is not guaranteed — call
+ * exactly once per new comment/thread; the daily rebuild reconciles drift.
  */
 export async function recordTalkForAuthor(
   author: string,

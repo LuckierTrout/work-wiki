@@ -360,8 +360,6 @@ source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
 severity: medium
 reason: `resolveWorkbenchFile` gates only `root === "wiki"`; `raw/…` goes straight to `resolveRoot(silo, flat)`, which falls back to the shared `RAW_DIR` when the caller's silo lists empty. That is not a deviation — the intent ties the file gate to what `listWorkbenchFilePaths` would emit, and the listing walks `raw/` with `allowEveryLeaf` through the same `resolveRoot` — so read and listing agree exactly, as required. What changed is the stakes: Story 1.4 disclosed those FILENAMES, and this story serves their contents. Narrowing it here is not available: the intent requires `resolveRoot` to have "exactly one definition", and a read gate narrower than the listing would show rows that refuse to open (the sibling entry below). The real fix is retiring the flat root, or giving `raw/` a per-owner gate — both belong with whichever story completes the silo migration, since `src/lib/silo.ts` already calls the flat tree transitional.
 status: open
-decision: 2026-08-22 Drop the fallback for raw/ only — Give `resolveRoot` a per-root arm so `raw/` resolves strictly inside the owner's silo and never falls back to the shared flat root, while `wiki/` keeps the fallback for pre-migration workspaces. Update src/lib/workbench-files.ts and its tests, and record in src/lib/silo.ts that the flat tree is now wiki-only.
-decision: 2026-08-22 Drop the fallback for raw/ only — Give `resolveRoot` a per-root arm so `raw/` resolves strictly inside the owner's silo and never falls back to the shared flat root, while `wiki/` keeps the fallback for pre-migration workspaces. Update src/lib/workbench-files.ts and its tests, and record in src/lib/silo.ts that the flat tree is now wiki-only.
 
 ### DW-41: The Files tab lists `wiki/` leaves that are not pages, and the Preview now answers every one of them with `This file couldn’t be loaded.`
 origin: spec-deferred 8ab03831be26
@@ -589,8 +587,7 @@ location: src/lib/llm.ts (callLLMStream, timeoutOption)
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `callLLMStream` is not retry-wrapped, so its single `AbortSignal.timeout` measures total stream duration rather than time-to-first-response: a 30s deadline set to catch hangs would truncate every answer that takes longer than 30s to finish. Separately, `AbortSignal.timeout` raises a `TimeoutError` whose message matches none of `RETRYABLE_MESSAGES`, so it propagates verbatim — "The operation was aborted due to timeout" is exactly the transport vocabulary this repo's copy rules exclude. Both need Chat's streaming semantics (Epic 3) to decide what a deadline means for a stream and which sentence the owner should see.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-decision-dw-64
+status: open
 decision: 2026-08-21 Keep deadline, fix the copy — Leave the whole-stream deadline as the frozen decision has it and only map TimeoutError/AbortError to an owner-facing sentence in src/app/api/query/stream/route.ts, with a test pinning it.
 decision: 2026-08-20 Keep deadline, fix the copy — Leave the whole-stream deadline as the frozen decision has it and only map TimeoutError/AbortError to an owner-facing sentence in src/app/api/query/stream/route.ts, with a test pinning it.
 
@@ -992,8 +989,7 @@ source_spec: `spec-dom-test-environment.md`
 location: src/lib/workbench-data-version.ts:9
 severity: medium
 reason: `src/lib/workbench-data-version.ts:9`, `workbench-split.ts:8`, `workbench-settings.ts:10`, `workbench-preview.ts:243`, four components under `src/components/workbench/`, and nine `__tests__` files say so in prose — e.g. "a rule living inside a React effect could only ever be grepped for". After this pass that premise is false, so a future agent will reproduce the workaround on a reason that no longer holds. The spec's Never forbade touching `src/` in this pass, which is why it was not done here.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-doc-and-comment-drift-corrections
+status: open
 
 ### DW-109: Most of DW-24's own verbatim list is still scan-only — the collapse toggle, badge rendering at 0 vs > 0, the sidecar dot's three states, and the live-region announcement.
 origin: spec-deferred e63cd3a386e5
@@ -1193,8 +1189,7 @@ source_spec: `spec-retire-dead-machinery-round-2.md`
 location: src/app/wiki/graph/page.tsx:161
 severity: medium
 reason: `src/app/wiki/graph/page.tsx:161` sets `aria-label="Wiki page relationship graph. Visit the wiki index for a text-based list of all pages."` and the canvas fallback text (`:164`) repeats it, but `/wiki` is listed in `RETIRED_SURFACES` (`src/lib/retired.ts:23`) and 404s. Deleting `HomeGraph.tsx` in this pass made this the only remaining graph canvas, so it is now the sole accessibility escape hatch for the visualization and it leads nowhere. The file was not touched by this pass and fixing it means choosing a live replacement target, which is a product call.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-doc-and-comment-drift-corrections
+status: open
 decision: 2026-08-19 Point at the Workbench Knowledge tree — Retarget the graph canvas's aria-label and fallback text at the Workbench's Knowledge tree (the live text-based list of the active Wiki's pages), updating the copy to name that surface and linking to it, and pin the new target so it cannot rot into another retired route.
 
 ### DW-132: Two more hand-maintained tool/task inventories have no test pinning them against their source of truth.
@@ -1430,8 +1425,7 @@ source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
 location: src/lib/lint-checks.ts:414 and src/lib/lint-checks.ts:570
 severity: medium
 reason: `checkContradictions()` and `checkMissingConceptPages()` call the no-argument `loadPageConventions()`. The only lint-side conventions test, `src/lib/__tests__/lint.test.ts:670`, writes a bare `SCHEMA.md` into its tmpdir and never sets `NEXT_PUBLIC_OWNER_HANDLE` or calls `createWiki`, so it exercises only the repo-root fallback branch. Replacing both detector calls with `loadPageConventions(`${process.cwd()}/SCHEMA.md`)` — lint permanently ignoring the active Wiki's seeded Schema — leaves lint.test.ts (73), wiki-schema-source.test.ts and cli.test.ts (83) all green, 170 tests passing. Pre-existing: this is Wiki-vs-root precedence (Story 1.2 / AD-10), not DW-19 tenancy, and the gap predates this change. DW-19's own pins are at the loader plus the two call sites that carry a principal; the lint detectors carry none, so there is no non-owner caller to pin them with.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-test-coverage-and-flake-fixes
+status: open
 
 ### DW-159: `POST /api/wikis` is gated on sign-in but not ownership, so a non-owner can create a Wiki that every downstream surface then treats as inert.
 origin: spec-deferred 0cea96b84531
@@ -1932,8 +1926,7 @@ source_spec: `spec-dw-59-per-wiki-artifact-revisions.md`
 location: src/lib/wiki-artifact-revisions.ts, src/lib/backups.ts:56-85
 severity: medium
 reason: Every `writeWikiArtifact` writes a full copy under `tenants/<t>/wikis/<id>/revisions/<file>/` with no retention policy (deliberate — page revisions have none either), and `listWikiArtifactRevisions` stats every revision on each GET with an unbounded `Promise.all`. `src/lib/backups.ts` walks all of `tenants/<t>` against `MAX_BACKUP_FILES = 10_000` / `MAX_BACKUP_BYTES = 2 GB` and throws "Backup exceeds the safety limit" rather than degrading. Page revisions spread across slugs; these pile into one directory per artifact.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-decision-dw-215
+status: open
 decision: 2026-08-21 Cap revisions and degrade backups — Add a retention cap with pruning in saveWikiArtifactRevision plus a bounded listing, and make the backup walk truncate-with-a-flag at MAX_BACKUP_FILES/MAX_BACKUP_BYTES instead of throwing.
 decision: 2026-08-20 Cap revisions and degrade backups — Add a retention cap with pruning in saveWikiArtifactRevision plus a bounded listing, and make the backup walk truncate-with-a-flag at MAX_BACKUP_FILES/MAX_BACKUP_BYTES instead of throwing.
 
@@ -2273,8 +2266,7 @@ source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: src/app/api/email/ingest/route.ts:122
 severity: medium
 reason: (a) An email whose attachments are all unsupported but which has a body: the "queued" line is omitted, the "skipped" line fires, and a zero-attachment form is forwarded — untested end to end. (b) A single attachment over `MAX_DOCUMENT_SIZE` makes the route 400 the *whole* email (`src/app/api/email/ingest/route.ts:122-128`), so the body and every other attachment are lost, and the Worker does no per-attachment size pre-filter before forwarding.
-status: done 2026-08-22
-resolution: resolved by sweep bundle dw2-decision-dw-253
+status: open
 decision: 2026-08-20 Drop the oversized attachment — Change the route to skip an attachment over `MAX_DOCUMENT_SIZE` rather than 400 the request, ingest the body and the remaining attachments, and name the dropped file in the acknowledgement alongside the existing skipped-attachment sentence. Add a per-attachment size pre-filter in the Worker so an oversized part is never forwarded, and add the missing end-to-end case for an email whose attachments are all unsupported but which carries a body.
 
 ### DW-254: The prototype-chain fix applied to `mediaTypeFor` during review is unpinned by any test.
@@ -2327,8 +2319,7 @@ source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
 location: src/components/RecentIngests.tsx:487
 severity: medium
 reason: DW-86's verbatim reason names "the six converted use client components"; the bundle intent's prose named only four (ArticleView, VaultExplorer, ChatWorkspace, KnowledgeStudio) and this story covered those four. `src/components/RecentIngests.tsx:487,568`, `src/components/ActionInbox.tsx:387` and `src/components/BulkDocumentImport.tsx:532` call `hrefForSlug(...)` from the same conversion, and no `*.test.ts`/`*.test.tsx` under `src/` references any of the three. The harness they would need now exists, so this is a remaining gap rather than a constraint.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-test-coverage-and-flake-fixes
+status: open
 
 ### DW-260: NavHeader conveys the active route only through inline fontWeight, with no aria-current, so the current page is announced to assistive tech not at all.
 origin: spec-deferred 22cbe3585ae4
@@ -2620,8 +2611,7 @@ source_spec: `spec-dw-161-164-storage-write-integrity.md`
 location: src/lib/storage/filesystem.ts
 severity: medium
 reason: Measured under the full parallel suite: contributors 27ms -> 5091ms, lint 35ms -> 4854ms, query-history 102ms -> 24204ms. The same per-write cost is paid by `portable-archive.ts` on import (one write per archive entry), `backups.ts` on restore (one per asset), `embeddings.ts` on rebuild (each `upsertEmbedding` rewrites AND fsyncs the whole `.indexes/embeddings.json`) and by ingest. The cost is the durability guarantee working as specified, not a defect — but no benchmark, batching, or bound exists for those paths.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-filesystem-write-path-integrity
+status: open
 decision: 2026-08-20 Batch the loop paths — Keep fsync as the default for single writes, and give the loop paths a batched form: a bulk-write door that fsyncs once per batch (or a directory sync at the end) for portable-archive import, backup restore and ingest, plus an accumulate-then-flush shape for `upsertEmbedding` so an embeddings rebuild stops rewriting and syncing the whole index per vector. Add a benchmark that fails if any of those paths regresses past a recorded bound.
 
 ### DW-294: `POST /api/research` has no `isReadOnly()` gate, unlike ~20 sibling write routes.
@@ -2880,8 +2870,7 @@ source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
 location: src/lib/merge.ts:204
 severity: medium
 reason: `src/lib/merge.ts:204` calls `reconcilePage(into.body, from.body)` with no `owner`, so the guidance branch at ingest.ts:1168 is skipped entirely. The reconcile prompt is the same prompt in both cases, so the merged prose is held to a different standard depending on which door it came through. This change touched that signature (adding the cache parameter) without closing the asymmetry, which is out of DW-141's scope but worth a decision.
-status: done 2026-08-22
-resolution: resolved by sweep bundle dw2-decision-dw-323
+status: open
 decision: 2026-08-21 Guide the merge door — Resolve the accountable owner from into.frontmatter.owner (falling back to the acting principal) and pass it plus a fresh createWorkspaceGuidanceCache() into reconcilePage from merge.ts, with a test pinning which owner's guidance a cross-owner merge uses.
 decision: 2026-08-20 Guide the merge door — Resolve the accountable owner from into.frontmatter.owner (falling back to the acting principal) and pass it plus a fresh createWorkspaceGuidanceCache() into reconcilePage from merge.ts, with a test pinning which owner's guidance a cross-owner merge uses.
 
@@ -2900,8 +2889,7 @@ source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
 location: src/components/__tests__/workspace-purpose-settings.test.tsx:837
 severity: medium
 reason: Observed failing once during full-suite verification for this story (the badge still read "not configured" when the 1s `waitFor` expired), then passing on re-run and passing 42/42 in isolation. It is entirely fetchMock-driven, touches nothing in this change, and predates it (introduced with DW-136/142/301). It races the mount fetch against the `returnToTab()` recheck.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-test-coverage-and-flake-fixes
+status: open
 
 ### DW-326: DW-304's URL rule is write-time only: a value stored before this change, or one supplied through OLLAMA_BASE_URL, still reaches the provider SDK unvalidated.
 origin: spec-deferred b7a9d467256f
@@ -3011,8 +2999,7 @@ source_spec: `spec-dw-127-309-doc-drift-corrections.md`
 location: SCHEMA.md:126
 severity: medium
 reason: SCHEMA.md:126-167 lists GET/POST discuss, GET/PATCH the thread, and POST comments as live. All five are entries in RETIRED_SURFACES (src/lib/retired.ts:37-40) and answer 404. Same drift class as DW-129, one heading above the block this change corrected; the intent named only the contributor surface.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-doc-and-comment-drift-corrections
+status: open
 
 ### DW-339: SCHEMA.md's planned-evolution status still calls talk pages and contributor profiles complete, contradicting the new retired-surfaces block.
 origin: spec-deferred 493f9af093ca
@@ -3036,8 +3023,7 @@ source_spec: `spec-dw-127-309-doc-drift-corrections.md`
 location: src/lib/maintenance.ts:11
 severity: medium
 reason: src/lib/maintenance.ts's module header and workers/task-consumer/README.md:47-49 both re-list the union by hand. `MaintainFixType` (src/lib/tasks.ts:164-172) appears in no test, so adding a ninth member re-stales both silently -- exactly the mechanism DW-127 reported. DW-130 got a pin in this pass (mcp-annotations.test.ts); this list did not, because the intent did not ask for one.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-hand-copied-list-parity-pins
+status: open
 
 ### DW-342: A fifth supported-format sentence lives in the bulk importer and is already stale, and the private allowlist behind it is narrower than the app's.
 origin: spec-deferred fe13901b98f1
@@ -3054,8 +3040,7 @@ source_spec: `spec-dw-132-249-prose-inventory-parity.md`
 location: src/lib/tasks.ts:213
 severity: medium
 reason: `src/lib/tasks.ts:213` builds `new Set<MaintainFixType>([...])`, which rejects extra members but not omitted ones — the exact half `AssertNever` was added to cover for `TASK_KINDS` one screen above. A ninth fix type wired into `src/lib/maintenance.ts` but forgotten here makes `parseTask` return null at :440, so the enqueued task is treated as poison and goes to the DLQ, with `tsc` silent. `workers/task-consumer/README.md:48-50` restates the eight fix types in prose and nothing reads it — a seventh inventory of the same shape as the six this pass pinned.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-hand-copied-list-parity-pins
+status: open
 
 ### DW-344: The bulk-import file picker advertises formats the very next step refuses.
 origin: spec-deferred ec1d252f2b80
@@ -3079,8 +3064,7 @@ source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
 location: src/app/api/lint/fix/route.ts:17
 severity: medium
 reason: `src/app/api/lint/fix/route.ts:17-30` lists `missing-crossref`, `orphan-page`, `stale-index`, `empty-page` and `contradiction` under "Supported issue types", omitting `broken-link`, `missing-concept-page`, `stale-page`, `unmigrated-page` and `supersedes-dangling` — the very type DW-229 was about. This story derived every executable copy of the list and left the one an integrator reads. It is a doc comment, so nothing observes it; the repo's own convention for pinning a prose inventory it cannot generate is `prose-inventory-parity.test.ts`.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-hand-copied-list-parity-pins
+status: open
 
 ### DW-347: Bulk import's `accept` advertises 21 MIME types its validator never consults, so a file the picker admits by content type alone is still refused client-side.
 origin: spec-deferred 4e813d060c28
@@ -3088,8 +3072,7 @@ source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
 location: src/lib/bulk-document-import.ts:80
 severity: medium
 reason: `validationError` (`src/lib/bulk-document-import.ts`) branches only on `documentExtension(file.name)` and ignores `file.type` entirely, while `ACCEPTED_DOCUMENT_ATTRIBUTE` now derives from extensions AND `SUPPORTED_DOCUMENT_MIME_TYPES`. An extension-less file carrying `application/pdf` therefore passes the picker and is rejected by the manifest, though `detectDocumentFormat` at `/api/ingest/document` accepts it on the MIME arm. This is the residual half of DW-246's class (client narrower than server); the intent named the list, not the MIME arm, so it is out of this story's scope.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-advertised-input-validation-parity
+status: open
 
 ### DW-348: The two untrusted lint-fix doors accept an unvalidated `type` even though `AUTO_FIXABLE_CHECK_TYPES` now exists as a tuple to validate against.
 origin: spec-deferred ac2df2d3e945
@@ -3097,8 +3080,7 @@ source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
 location: src/app/api/lint/fix/route.ts:54
 severity: medium
 reason: `src/app/api/lint/fix/route.ts:54-56` destructures `type` off a raw `await req.json()` with no schema at all, and `src/lib/mcp-http.ts:490` declares it as free-form `str(...)`. `src/mcp.ts:2465` does validate, but against `z.enum(ALL_CHECK_TYPES)` rather than the fixable subset. The `ownEntry` guard added by this story is currently the only defense; `z.enum(AUTO_FIXABLE_CHECK_TYPES)` at the door would make it a second line rather than the sole one.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-advertised-input-validation-parity
+status: open
 
 ### DW-349: workers/email-ingest/README.md:20 documents a live app menu path with the retired brand ("the address entered under Yopedia **Settings -> Email ingestion**"), so the exemption freezes wrong operator d
 origin: spec-deferred 8edfd4178f50
@@ -3130,8 +3112,7 @@ source_spec: `spec-dw-236-244-brand-scan-coverage.md`
 location: src/lib/__tests__/brand-copy.test.ts:52
 severity: medium
 reason: strayYopedia("the yopedia-first workflow") returns no match, so that prose would pass the scan. The workwiki side guards the identical case with its anchored alternation and a "the workwiki-first approach" slip case. The pattern is pre-existing and narrowing it needs evidence about which real Cloudflare resource names depend on it, so the new yopedia case table pins today's behaviour rather than changing it.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-hand-copied-list-parity-pins
+status: open
 
 ### DW-353: Named single files and newly walked roots surface as ENOENT rather than a pin failure when renamed or removed.
 origin: spec-deferred 7e47d62e4062
@@ -3171,8 +3152,7 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: src/app/api/email/ingest/route.ts:202
 severity: medium
 reason: `src/app/api/email/ingest/route.ts` returns `{ accepted, duplicate, ... , supportedAttachmentCount }` on the duplicate path without `skippedAttachmentCount`, while the success path returns both. Pre-dates this change, but it is the same response contract the change corrects. The only test on that path asserts accepted/duplicate/status/slug and nothing about attachment counts.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-email-ingest-accounting-and-worker-tests
+status: open
 
 ### DW-358: Quoted-printable transfer encoding is unaccounted for in the raw-size cap, which is derived from base64 expansion alone.
 origin: spec-deferred 18e6b2bf1947
@@ -3180,8 +3160,7 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: workers/email-ingest/index.ts
 severity: medium
 reason: Many clients send text/* attachments and non-ASCII bodies as quoted-printable, which expands up to roughly 3x for byte-dense content — far beyond base64's 4/3. A large .csv or .txt attachment can therefore still be refused below the advertised per-document ceiling, for the same reason DW-104 described for base64.
-status: done 2026-08-22
-resolution: resolved by sweep bundle dw2-decision-dw-358
+status: open
 decision: 2026-08-21 Widen for worst-case encoding — Derive MAX_RAW_EMAIL_BYTES from the worst-case transfer encoding (a quoted-printable expansion factor rather than base64's ~1.37), re-pin the parity test, and record the new derivation beside the constant.
 decision: 2026-08-20 Widen for worst-case encoding — Derive MAX_RAW_EMAIL_BYTES from the worst-case transfer encoding (a quoted-printable expansion factor rather than base64's ~1.37), re-pin the parity test, and record the new derivation beside the constant.
 
@@ -3207,8 +3186,7 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: workers/email-ingest/index.ts:59
 severity: medium
 reason: `MAX_RAW_EMAIL_BYTES` leaves 65,533 bytes of slack above the 14,348,938-byte wire size of a base64-encoded `MAX_DOCUMENT_SIZE` document, while the Worker's own `MAX_EMAIL_CONTENT_CHARS` is 100,000 and the body is truncated only *after* the `rawSize` gate. An email carrying a 10 MB attachment plus a body anywhere near the accepted length is refused with a size bounce although every individual limit is respected. Not a regression -- the old 10 MB cap refused that message too -- and the constant's comment now says so, but no test covers the interaction of the two caps.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-email-ingest-accounting-and-worker-tests
+status: open
 
 ### DW-362: The raw cap bounds one full-size document, so several mid-size supported documents are refused wholesale even though every per-document and per-count limit is respected.
 origin: spec-deferred 95bfc309fad5
@@ -3216,8 +3194,7 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: workers/email-ingest/index.ts:59
 severity: medium
 reason: `MAX_EMAIL_ATTACHMENTS` is 10 and `MAX_DOCUMENT_SIZE` is 10 MB, so the advertised envelope is up to ten documents; ten 2 MB documents encode to roughly 27 MB and are bounced by `MAX_RAW_EMAIL_BYTES` (14.4 MB) with "larger than 13.7 MB". The per-message cap and the per-email attachment cap describe incompatible envelopes, which also makes the new over-cap acknowledgement line unreachable for anything but small files. Pre-existing and worse before this change (the cap was 10 MB); distinct from the aggregate-memory item above, which is about the forwarding copies rather than the gate.
-status: done 2026-08-22
-resolution: resolved by sweep bundle dw2-decision-dw-362
+status: open
 decision: 2026-08-21 Derive an aggregate budget — Derive MAX_RAW_EMAIL_BYTES from a stated aggregate budget (up to MAX_EMAIL_ATTACHMENTS documents, or an explicit total) so the advertised attachment count is actually reachable, re-pin the parity test, and add a multi-document aggregate case.
 decision: 2026-08-20 Derive an aggregate budget — Derive MAX_RAW_EMAIL_BYTES from a stated aggregate budget (up to MAX_EMAIL_ATTACHMENTS documents, or an explicit total) so the advertised attachment count is actually reachable, re-pin the parity test, and add a multi-document aggregate case.
 
@@ -3235,8 +3212,7 @@ source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
 location: workers/email-ingest/index.ts:255-263
 severity: medium
 reason: `workers/email-ingest/index.ts:255-263` replies "the ingest service is not configured" and returns without forwarding when `YOPEDIA_SERVICE_TOKEN` is absent; :326 throws `YOPEDIA_SITE_URL is missing`, caught by the surrounding try/catch into the "could not queue this email" reply. Neither branch is exercised anywhere, so deleting either -- and forwarding an unauthenticated request, or one to a relative URL -- fails nothing. The new `forwardedRequest(siteUrl)` helper already parameterises the site, so the second is one fixture away.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-email-ingest-accounting-and-worker-tests
+status: open
 
 ### DW-365: `assetFromArchive` still indexes the unzipped file map with a raw `files[target]`, one line above the `ownLookup` call added to close exactly that pattern.
 origin: spec-deferred d5c3b8bba1b8
@@ -3294,8 +3270,7 @@ source_spec: `spec-dw-71-326-272-settings-config-resolution-hardening.md`
 location: src/lib/storage/filesystem.ts:266
 severity: medium
 reason: src/lib/storage/filesystem.ts:266-299. `readFileWithEtag` resolves `fs.readFile` and `fs.stat` through `Promise.all` — an unordered pair, so a write landing between them can yield old content with a fresh etag, and the CAS then MATCHES on a stale merge base. The etag itself is `${mtime.getTime()}-${size}`, so two saves in the same millisecond that swap equal-length values collide. Measured ~190/200 identical etags for back-to-back rewrites without fsync on a scratch file, 0/100 through the provider's fsync+rename path. Never worse than the unconditional write it replaced, and R2's server-side conditional put is exact — but the fs guard is narrower than "refuses instead" reads. Closing it means a content hash or stat-then-read ordering in the storage layer, whose contract and other consumer (graphify-jobs.ts) are outside this bundle. Documented at src/lib/config.ts's saveConfig docblock rather than hidden.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-filesystem-write-path-integrity
+status: open
 
 ### DW-372: A pre-DW-272 build reading the new single-object config carries `__settingsVersion` through as an ordinary key and writes it back, so the stamp stops rotating on a rollback.
 origin: spec-deferred 9589cff245eb
@@ -3311,8 +3286,8 @@ source_spec: `spec-dw-26-62-283-320-workbench-client-state-and-nav.md`
 location: src/components/workbench/Workbench.tsx (settingsOpen canvas swap)
 severity: medium
 reason: `Workbench.tsx` renders `settingsOpen ? <SettingsCanvas …/> : <ModeCanvas …>{children}</ModeCanvas>`, so `children` (`WikiWorkbench`) leaves the tree when the rail's Settings control — or, since this change, `g s` — opens the surface. Pre-existing: the rail control has behaved this way since Story 1.9, and DW-26 names `ModeCanvas` and mode switching only. Closing it means deciding how `SettingsCanvas` keeps owning discard-on-leave for its own draft while no longer being the thing that unmounts the canvas beside it.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-settings-canvas-mount-preservation
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw-settings-canvas-mount-preservation
 
 ### DW-374: Only `TimeoutError`/`AbortError` are treated as unconfirmed, so a dropped connection or a 502/504 is reported as a known failure — with transport vocabulary — and no refresh runs.
 origin: spec-deferred e6705ae0513e
@@ -3356,8 +3331,7 @@ source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.m
 location: src/lib/wiki.ts:409, src/app/api/wiki/[slug]/route.ts:161
 severity: medium
 reason: `src/lib/wiki.ts:409-419` warns and returns `null` for every non-ENOENT read failure, and `PUT /api/wiki/[slug]` turns that `null` into `page not found: <slug>` before the precondition is ever consulted. This bundle made exactly the opposite call one layer over: when `writeWikiArtifact` is given an `expectedVersion`, a failed pre-write read rethrows rather than being read as "absent", because "absent" is answered as a conflict and a blip is not one. The page path keeps the older behaviour, so the same transient failure is a 404 on one surface and a 500 on the other. Pre-existing — the swallow predates the precondition and this change only added the `fresh` option beside it — and closing it means changing `readWikiPage`'s null contract, which ~40 callers depend on.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-wiki-read-failure-contract
+status: open
 
 ### DW-379: The other read-modify-write merge bases still read through `pageCache`, so the staleness DW-195 closed for the precondition-bearing reads is open on every path that merges into cached bytes and writes
 origin: spec-deferred 620dd58d504a
@@ -3365,8 +3339,7 @@ source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.m
 location: src/lib/patch-metadata.ts, src/lib/merge.ts, src/lib/lint-fix.ts
 severity: medium
 reason: `src/lib/patch-metadata.ts` (the `PATCH` frontmatter merge), the page revert in `src/app/api/wiki/[slug]/revisions/route.ts`, `src/lib/merge.ts` and several sites in `src/lib/lint-fix.ts` all call `readWikiPage` / `readWikiPageWithFrontmatter` without `{ fresh: true }` and then write the merged result. A bulk scan (`lint.ts`, `search.ts`, `query.ts`, `dataview.ts`) holding a superseded entry open across one of those requests makes the merge base a file that is no longer stored, and the write lands it back. Pre-existing and unrelated to the precondition — none of these routes is gated, and the spec's Never clause forbids gating them — but "do not gate it" is a different decision from "let it merge into cached bytes". Closing it is a sweep over those call sites, not a change to this guard.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-merge-base-fresh-reads
+status: open
 
 ### DW-380: A fresh read still falls back from a FAILED silo read to the flat copy, so a version can describe bytes at a path the write will not target.
 origin: spec-deferred 60eded0bf0fa
@@ -3374,8 +3347,7 @@ source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.m
 location: src/lib/wiki.ts:389
 severity: medium
 reason: `src/lib/wiki.ts:389-401` warns on a non-ENOENT silo failure and falls through to `wikiRelPath(...)`, which is the legacy flat file. `fresh` bypasses `pageCache` but not that fallback, so a transient silo failure on a precondition-bearing read hands the editor the version of the flat copy while `writeWikiPageWithSideEffects` resolves the tenant path — a precondition computed over one file and compared against another. Pre-existing: the fallback predates the version entirely and exists so a not-yet-migrated page still reads. Closing it means letting a precondition-bearing read refuse rather than widen, which needs the same null-contract change the entry above names.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-wiki-read-failure-contract
+status: open
 
 ### DW-381: The re-template confirm still presents the Schema overwrite as unrecoverable, which DW-213 has just made false.
 origin: spec-deferred 612a8939a001
@@ -3391,8 +3363,7 @@ source_spec: `spec-dw-209-289-wiki-rename-refresh-and-sweep-cap.md`
 location: src/lib/wikis.ts (deleteWiki)
 severity: medium
 reason: DW-209 established the rule this change generalises: a registry operation that also moves bytes a Preview renders must bump, because a non-current Wiki's operations change no `currentWikiId` and the Workbench's selection-reset effect never fires. `deleteWiki` (src/lib/wikis.ts) meets that description exactly — it deletes the artifact directory — and still carries no tail. `WikiSwitcher.tsx` calls `router.refresh()` itself, which covers the client that performed the delete but not any other open client. Pre-existing; surfaced by generalising the rule, not caused by it.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-delete-wiki-data-version-bump
+status: open
 
 ### DW-383: A sweep candidate whose age cannot be read is skipped but still consumes one of the per-pass cap slots on every pass, so enough of them could starve the tail of the list.
 origin: spec-deferred 5c402c238ab7
@@ -3448,8 +3419,7 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/lib/lint-fix.ts:729-730 and src/lib/lint-checks.ts:727
 severity: medium
 reason: `src/lib/lint-fix.ts:729-730` and the check's own `suggestion` at `src/lib/lint-checks.ts:727` both say: clear the Disputed toggle in the page editor (PATCH /api/wiki/<slug> with metadata { disputed: false }). After DW-121 that PATCH is refused for every non-admin principal on a public knowledge page, so the instruction names a loop only an agent token's owner-as-admin, a service principal or a site admin can complete. In this deployment the human IS the site owner and therefore an admin, so the action still works for them; the copy is inaccurate for anyone else. The spec scoped lint copy out of this pass (Design Notes, "Non-admin metadata loop"). Both sites must move together — closing only lint-fix.ts leaves half the copy wrong.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-authz-gate-fallout-corrections
+status: open
 
 ### DW-390: Deleting the reconciliation-thread writer took the last programmatic caller of the whole talk thread API with it.
 origin: spec-deferred 83dd95b177cf
@@ -3457,8 +3427,7 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/lib/talk.ts, src/lib/browse.ts:184
 severity: medium
 reason: `listThreads`, `createThread`, `getThread`, `addComment`, `resolveThread` and `hasOpenThread` now have no non-test callers; only `deleteDiscussions` (lifecycle.ts), `getDiscussRelPrefix` (discuss-stats-index.ts, contributors.ts) and `getDiscussionStatsForSlugs` (browse.ts) are still read, and the talk HTTP surfaces that drove the rest are retired. A knock-on: `browse.ts:184` still renders a per-page discussion count that nothing can increase any more, and pre-existing reconciliation threads stay on disk feeding it. Retiring that surface — and the discuss-stats/contributor indexes hanging off it — is wider than DW-230 asked, and the spec's Never list forbids touching talk.ts's remaining readers, so it is recorded rather than resolved. The retirement banner in talk.ts says the same thing so the dead surface is not mistaken for live API.
-status: done 2026-08-22
-resolution: resolved by sweep bundle dw2-decision-dw-390
+status: open
 decision: 2026-08-21 Retire the dead writers only — Delete listThreads, createThread, getThread, addComment, resolveThread and hasOpenThread from src/lib/talk.ts along with their now-orphaned tests, leaving deleteDiscussions, getDiscussRelPrefix and getDiscussionStatsForSlugs (and therefore browse's count and the discuss-stats/contributor indexes) exactly as they are.
 
 ### DW-391: A non-admin page owner can no longer take their own public knowledge page private — the realm became a one-way door for them.
@@ -3468,7 +3437,6 @@ location: src/lib/patch-metadata.ts:106-140
 severity: medium
 reason: `patchMetadata`'s realm ACL (`src/lib/patch-metadata.ts:106`) runs above the owner-only visibility guard, so `{ visibility: "private" }` on a public, non-agent-scoped, non-artifact page is now refused for its own owner over both REST and MCP, and that guard is unreachable for them. This follows directly from the recorded DW-121 decision (metadata is refused wherever body is), and the visibility-guard suite had to reseed onto an `html` artifact to keep exercising the guard at all — which is the signal that the plain-public path changed underneath it. In this deployment the human is the site owner and therefore an admin, so it does not bite here; a multi-user deployment would feel it, and there is no non-admin exit from the realm.
 status: done 2026-08-21
-decision: 2026-08-21 Keep the realm closed — The DW-121 rule stands as recorded — metadata is refused wherever body is — and a public knowledge page is taken private by an admin or a service principal only.
 resolution: closed by human decision: The DW-121 rule stands as recorded — metadata is refused wherever body is — and a public knowledge page is taken private by an admin or a service principal only.
 decision: 2026-08-21 Keep the realm closed — The DW-121 rule stands as recorded — metadata is refused wherever body is — and a public knowledge page is taken private by an admin or a service principal only.
 
@@ -3478,8 +3446,7 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/components/RevisionHistory.tsx
 severity: medium
 reason: `canRevert` in `src/components/RevisionHistory.tsx` carries a realm term and a site-owner term but no `isSignedIn` term, so an anonymous viewer of a public artifact or an agent-scoped page is still shown Revert and its irreversible-sounding confirm in front of a write the middleware 401s. This predates DW-269 (the control was ungated for everyone), and the recorded intent asked only for "the same realm term the Delete gate got", with the spec's Never list forbidding an ownership term — so the signed-in half was deliberately left alone. `ArticleActions` reads `isSignedIn` for exactly this purpose one component over.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-authz-gate-fallout-corrections
+status: open
 
 ### DW-393: An orphan page — on disk but absent from the page index — now makes its ingest-history row undeletable and fails the whole batch.
 origin: spec-deferred a01843f3f763
@@ -3487,8 +3454,7 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/app/api/ingest/history/route.ts
 severity: medium
 reason: The DW-270 gate keys on `listReadableWikiPages`, which filters the page INDEX, not a per-page read. `src/lib/lint.ts:94`'s `checkOrphanPages` exists because index/disk drift is a real state here. A done job whose page is in that state used to delete the page and clear the job record; it now answers 404 for the entire request, clearing nothing else selected alongside it. This is exact parity with the pre-existing `ingestIds` preflight, which has always behaved this way, so DW-270 inherited the behaviour rather than inventing it.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-authz-gate-fallout-corrections
+status: open
 
 ### DW-394: Both guidance memos are keyed by `owner`, but the files they memoize are addressed by TENANT, so two owner strings in one tenant key two entries over one file.
 origin: spec-deferred 1eea774dfd5c
@@ -3504,8 +3470,7 @@ source_spec: `spec-dw-322-324-dictionary-guidance-and-request-cache.md`
 location: src/mcp.ts:528
 severity: medium
 reason: `handleIngestBatch` (src/mcp.ts:526-532) calls `ingestUrl(url, {...})` sequentially inside a `for` loop, so every URL of one agent action resolves the Workspace Purpose and re-reads the dictionary from scratch. The remedy is now one line — add `guidanceCache: createGuidanceCache()` to that options literal — but DW-324 names `src/app/api/ingest/batch/route.ts` specifically and this spec's scope was held to the HTTP door, so the MCP door was deliberately not touched.
-status: done 2026-08-21
-resolution: resolved by sweep bundle dw2-mcp-batch-guidance-cache
+status: open
 
 ### DW-396: `IngestOptions` now carries a live, non-serializable object guarded only by the convention that queue task payloads are hand-written literals.
 origin: spec-deferred f8d8c4c6caab
@@ -3530,8 +3495,6 @@ location: src/lib/embeddings.ts:170 (resolveEmbeddingProvider); src/components/w
 severity: medium
 reason: `resolveEmbeddingProvider` takes `process.env.EMBEDDING_PROVIDER` ahead of the stored field and falls back to the detected generation provider (`cfg.provider`) when nothing is stored. No save moves either, so `embeddingProviderChanged` never sees a switch: with `EMBEDDING_PROVIDER=google` and a stored OpenAI key, `embeddingApiKeyFor("google", cfg)` still returns it and `_createEmbeddingModel` still passes the stored `embeddingBaseUrl`. Pre-existing, and out of scope for the recorded decisions, whose trigger is literally "whenever `embeddingProvider` changes" — closing it means deciding what a chat-provider change may do to an embedding credential. This pass also makes one NEW consequence reachable on an env-pinned deployment: the stored provider select stays editable there, and moving it now clears the credential the env-selected vendor is using. The surface stays honest (the key hint flips to "No key is stored." and the row's env sentence already says the variable owns the selection),
 status: open
-decision: 2026-08-22 Disable the select under an env pin — Disable the embedding-provider select in SettingsCanvas.tsx:580-586 whenever `EMBEDDING_PROVIDER` is set, with the existing env-override hint copy, so the newly reachable consequence disappears without touching the frozen clear rule.
-decision: 2026-08-22 Disable the select under an env pin — Disable the embedding-provider select in SettingsCanvas.tsx:580-586 whenever `EMBEDDING_PROVIDER` is set, with the existing env-override hint copy, so the newly reachable consequence disappears without touching the frozen clear rule.
 
 ### DW-399: `spec-dw-66-72-settings-credential-fidelity.md` still reads `status: 'in-progress'` for DW-69/DW-72 under the superseded per-provider keying approach.
 origin: spec-deferred ce665a977ec1
@@ -3556,8 +3519,6 @@ location: src/lib/embeddings.ts:203-215
 severity: medium
 reason: `resolveEmbeddingProvider` returns the override at `src/lib/embeddings.ts:203` and the saved provider at `:211-215` without consulting `getOllamaBaseUrl`, and `getEmbeddingModel` constructs `createOllama()` with no baseURL when none resolves. So a corpus can still be embedded against the SDK's localhost default while the owner believes it is going to the endpoint they typed. This bundle's intent scopes the fix to auto-DETECTION, so the explicit rungs were deliberately untouched and are neither closed nor documented as exceptions.
 status: open
-decision: 2026-08-22 Warn once, keep selecting — Keep the explicit selection authoritative but emit a warn-once from `resolveEmbeddingProvider` naming the SDK localhost default as the endpoint actually in effect, so the substitution is audible. Smallest change, no behaviour change.
-decision: 2026-08-22 Warn once, keep selecting — Keep the explicit selection authoritative but emit a warn-once from `resolveEmbeddingProvider` naming the SDK localhost default as the endpoint actually in effect, so the substitution is audible. Smallest change, no behaviour change.
 
 ### DW-402: A refused `OLLAMA_BASE_URL` is now described only in a server log; every owner-facing surface still advertises the variable as the remedy and reports no reason it was ignored.
 origin: spec-deferred 3f538ea33f5f
@@ -3565,7 +3526,8 @@ source_spec: `spec-dw-368-370-provider-selection-truthfulness.md`
 location: src/components/StatusBadge.tsx:81
 severity: medium
 reason: `StatusBadge.tsx:81` lists `OLLAMA_BASE_URL / OLLAMA_MODEL` as the fix in the very panel shown when nothing is configured, and `getEffectiveSettings` reports `ollamaBaseUrlSource: "none"` with no accompanying reason, so an owner who set the variable to `localhost:11434` sees "no provider configured" while the variable is set. The repo already has the pattern for saying this out loud (`envCustomBaseUrl` + `settingsEnvOverrideCopy`, `SettingsCanvas.tsx:531-535`).
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw3-embedding-readiness-truthfulness
 
 ### DW-403: The extraction section's "Credential ready" badge can be green for `custom` while extraction still throws, because `providerIsConfigured("custom")` checks base URL and API key but not the model name C
 origin: spec-deferred a7d97b2655cd
@@ -3573,7 +3535,8 @@ source_spec: `spec-dw-368-370-provider-selection-truthfulness.md`
 location: src/lib/config.ts:865
 severity: medium
 reason: `providerIsConfigured` at `src/lib/config.ts:865-867` tests only the two credential halves, and `DEFAULT_MODELS` deliberately carries no `custom` entry, so `getConfiguredModel` throws "The Custom provider needs a model name" (`src/lib/llm.ts:406-410`) for a deployment the badge calls ready. Pre-existing and independent of this change's pointer.
-status: open
+status: done 2026-08-22
+resolution: resolved by sweep bundle dw3-embedding-readiness-truthfulness
 
 ### DW-404: The re-arm gate `kept.length > 0` is a property of the per-query top-K window, not of the corpus, so a partially-rebuilt (mixed-model) corpus can oscillate warn -> re-arm -> warn and revert DW-310's o
 origin: spec-deferred 2b8128268e58
@@ -3582,8 +3545,6 @@ location: src/lib/embeddings.ts (searchByVector re-arm branch)
 severity: medium
 reason: `queryEmbeddings` sorts and slices to `topK` BEFORE `searchByVector` applies the model filter (src/lib/storage/filesystem.ts queryEmbeddings; contract in src/lib/storage/types.ts). With one stale-tagged and one current-tagged vector and `topK: 1`, eight alternating queries emitted FOUR drift lines instead of one. This is not contrived: `rebuildVectorStore` upserts page by page with no bulk swap, so the store is mixed for the whole duration of the very operation the re-arm exists to detect, and it deliberately leaves stale orphans behind. The tighter gate (`kept.length === matches.length`, or a rebuild-completion epoch) was NOT applied because the recorded 2026-08-21 decision names `kept.length > 0` as the trigger verbatim; narrowing it is a decision this run does not hold.
 status: open
-decision: 2026-08-22 Require a whole-window match — Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.
-decision: 2026-08-22 Require a whole-window match — Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.
 
 ### DW-405: A single unlabelled legacy vector satisfies `kept.length > 0` and re-arms `drift:<active model>` on a corpus where every labelled vector is still stale, so a genuinely un-rebuilt corpus can repeat the
 origin: spec-deferred f6e0ffb78ddc
@@ -3592,8 +3553,6 @@ location: src/lib/embeddings.ts (searchByVector re-arm branch, modelMatches)
 severity: medium
 reason: `modelMatches` deliberately returns true when `metadata.model` is absent (pre-migration / KV-fallback vectors must survive the filter — pinned by the existing test "keeps unlabelled (legacy) vectors with no model metadata"). Seeding one unlabelled vector plus stale-tagged ones and alternating three queries produced TWO drift lines where the throttle should give one. A gate of `kept.some((m) => m.metadata.model === currentModel)` would close it, but that also narrows the decided `kept.length > 0` trigger. The inline comment at the re-arm branch was corrected to stop claiming corpus-level proof.
 status: open
-decision: 2026-08-22 Require a positive labelled match — Gate re-arm on `kept.some((m) => m.metadata.model === currentModel)` so only positive proof of a rebuilt vector re-arms, leaving `modelMatches` permissive for results.
-decision: 2026-08-22 Require a positive labelled match — Gate re-arm on `kept.some((m) => m.metadata.model === currentModel)` so only positive proof of a rebuilt vector re-arms, leaving `modelMatches` permissive for results.
 
 ### DW-406: `relatedByVector` runs the same model filter but neither warns nor re-arms, so a deployment whose only vector traffic is page-render related lookups observes neither the drift nor its recovery.
 origin: spec-deferred da6f7511b5fb
@@ -3643,450 +3602,58 @@ severity: low
 reason: Both abort with `ERROR packages field missing or empty` from the pnpm workspace config; `npx vitest run` and `npx eslint .` on the same tree run clean. `spec-dw-48-data-version-refresh-retry.md`'s Auto Run Result records the identical failure, so it long predates this story. It matters because `vitest.config.ts`'s own comment states that `.github/workflows/ci.yml` runs `pnpm test` and nothing else — whatever the exact script resolution, the documented developer entry points are broken.
 status: open
 
-### DW-412: Opening Settings with `g s` while a modal dialog inside the mode canvas holds focus drops the keyboard on `<body>`, because the section it is in goes `display: none`.
-origin: spec-deferred a438c49568e0
+### DW-412: Opening Settings still unmounts the Preview column, silently discarding its unsaved markdown draft — the same loss DW-373 fixed one column over.
+origin: spec-deferred 5531bcb9520c
 source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
-location: src/components/workbench/Workbench.tsx (openSettings)
+location: src/components/workbench/Workbench.tsx:295
 severity: medium
-reason: `openSettings` sets `settingsOpen` and nothing moves focus. With the Create Wiki dialog focused (`useDialogA11y` focuses the container on open), hiding the section blurs the focused node in a real browser; jsdom leaves `activeElement` on the hidden node, so no mounted case can observe the outcome either way. Not a regression — the old code unmounted the section, which lost focus the same way — but DW-373 makes the state survivable, so where focus should land (the Settings canvas already carries `tabIndex={-1}`) is now a decidable question rather than a moot one. The rail path is unaffected: the owner's click puts focus on the control before the hide.
+reason: `Workbench.tsx:295` computes `previewOpen = shouldDockPreview(mode, selection) && !settingsOpen`, so `PreviewColumn` (which owns `draft`/`draftSeed`) leaves the tree whenever the Settings surface opens. `selectRow`'s own comment at `Workbench.tsx:719` already records it: "A mode switch, a Wiki switch, a tab switch and Settings all still discard silently." Pre-existing: the `&& !settingsOpen` undock predates DW-373 and the intent named the mode canvas only.
 status: open
 
-### DW-413: Global `g <key>` shortcuts fire while a modal dialog holds focus, so the keyboard can leave a dialog the owner is mid-way through without closing it.
-origin: spec-deferred 6632becdc7e9
+### DW-413: Opening Settings moves focus nowhere, so in a real browser a keyboard user inside the canvas is dropped on <body> when it goes `display: none`.
+origin: spec-deferred 019e0d5eb098
 source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
-location: src/hooks/useKeyboardShortcuts.ts:19-26 (isEditableTarget)
+location: src/components/workbench/Workbench.tsx (openSettings / toggleSettings)
 severity: medium
-reason: `isEditableTarget` in src/hooks/useKeyboardShortcuts.ts guards only INPUT / TEXTAREA / SELECT / contenteditable, so a keydown on the dialog container or any of its buttons reaches the dispatcher. Pre-existing and unrelated to DW-373, but more visible now that the dialog survives the resulting surface change instead of being torn down: the owner presses `g s`, Settings appears, and an open modal is still mounted behind it.
+reason: `g s` fires from the document and the rail control focuses itself; neither focuses the Settings section, which carries `tabIndex={-1}` precisely to be a landing place. A real engine blurs focus out of a subtree that becomes `display: none`; jsdom does not, which is why `settings-canvas-persistence.test.tsx`'s "does not move focus when it hides the canvas" can assert the keystroke leaves focus put. Not a DW-373 regression — the previous unmount dropped focus the same way — but the mounted canvas makes it observable and testable.
 status: open
 
-### DW-414: A trip through Settings re-expands every tree group the owner had collapsed, because the left column — and with it `TreePanel`'s local `closed` state — is unmounted.
-origin: spec-deferred 96ddf1630ffb
+### DW-414: `useDialogA11y`'s close path can restore focus into a hidden canvas while Settings is showing.
+origin: spec-deferred 7ceac9bfb832
 source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
-location: src/components/workbench/Workbench.tsx:1037 (TreePanel/SettingsNav swap)
+location: src/hooks/useDialogA11y.ts (teardown / close branch)
 severity: medium
-reason: `Workbench.tsx:1037` still swaps `TreePanel` for `SettingsNav` on `settingsOpen`, and `TreePanel` holds the owner's collapsed groups in `const [closed, setClosed] = useState<Record<string, boolean>>({})` (src/components/workbench/TreePanel.tsx:116), seeded from nothing and persisted nowhere. This is the same class of loss DW-373 closes one column over, and it is pre-existing rather than introduced here — the column swap predates this change and DW-373's intent scopes it out. It is more visible now: the `g s` prose names the column swap as "what is NOT preserved" without naming the state it costs, and an owner who has just learned their Wiki draft survives Settings has no reason to expect the tree beside it does not.
+reason: Its teardown early-returns only when the dialog is still open AND hidden (`if (openRef.current && !visibleRef.current) return;`). `WikiWorkbench.tsx:131` resets `createOpen` to false whenever `currentWikiId`/`currentId` moves, which a `DataVersionWatcher`-driven `router.refresh()` can do while the canvas is withdrawn — the close branch then focuses `openerRef.current`, a connected but `display: none` node, which is a silent no-op that leaves the keyboard on `<body>` mid-Settings. Pre-existing hook behaviour; keeping the canvas permanently mounted widens the window.
 status: open
 
-### DW-415: Every `pnpm <script>` in this repo fails with `ERROR packages field missing or empty`, so the documented `pnpm test` and `pnpm lint` commands cannot be run at all.
-origin: spec-deferred cb272d56d683
+### DW-415: The `[hidden]` withdrawal rules have no specificity floor, so a later shell-scoped `display` rule beats them.
+origin: spec-deferred 6ddef8b35447
 source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
-location: package.json / missing pnpm-workspace.yaml (repo root)
-severity: medium
-reason: `pnpm test` and `pnpm lint` both exit non-zero with `ERROR packages field missing or empty` on a clean tree at 5b613b8, with no test or lint output. There is no `pnpm-workspace.yaml` at the repo root, while `package.json` defines `test`/`lint` normally — so pnpm resolves this directory as a workspace root it then rejects. Pre-existing and repo-wide, not caused by DW-373, but it is why this spec's own acceptance criterion ("Given `pnpm test` and `pnpm lint` are run … both pass") has been met via `npx vitest run` / `npx eslint` in two passes now. Every contributor and CI step following the README hits it.
-status: open
-
-### DW-416: `importPortableArchive`'s second loop re-encodes and rewrites every page the first loop already published to the same compatibility path.
-origin: spec-deferred 0b3e3e2b4aa9
-source_spec: `spec-dw-293-371-filesystem-write-path-integrity.md`
-location: src/lib/portable-archive.ts:206-234
+location: src/app/globals.css:2690-2710
 severity: low
-reason: Loop 1 writes `wikiRelPath(entry.path.slice("wiki/".length))` for every `wiki/` manifest entry; loop 2 then reads each page back, re-encodes it and writes the same bytes to the same path again. Loop 2 only adds value for tenant pages that were NOT in the archive. Pre-existing structure, but the new fsync budget makes the cost legible: it is a second full batch of barriers for bytes just written (visible in the import budget row).
+reason: `.wb-canvas[hidden]` and `.wb-canvas-mode[hidden]` are both (0,2,0). `globals.css` already writes (0,3,0) shell-scoped rules that set `display` (e.g. `.wb-shell[data-collapsed="true"] .wb-left { display: none }`), so a future `.wb-shell[data-preview="true"] .wb-canvas { display: flex }` would put the withdrawn canvas back on screen underneath Settings — while both rules' comments claim the attribute "cannot be undone by accident". Nothing asserts that no later rule sets `display` on either selector. Pre-existing pattern inherited from DW-26; a fix belongs to both rules together.
 status: open
 
-### DW-417: The bulk doors stop at writes, so cleanup loops keep the exact per-item barrier cost this work removed from the write paths.
-origin: spec-deferred e7906ecaa4d2
-source_spec: `spec-dw-293-371-filesystem-write-path-integrity.md`
-location: src/lib/storage/types.ts
+### DW-416: The mode canvas's scroll offset is not preserved across a Settings visit.
+origin: spec-deferred 86882ef5b044
+source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
+location: src/components/workbench/ModeCanvas.tsx (the hidden `.wb-canvas` section)
 severity: low
-reason: `deleteFile` and `removeEmbedding` gained no batch counterpart. Any loop that deletes per item still pays one round-trip each, and `removeEmbedding` still rewrites and fsyncs the whole embeddings blob per id — the same shape `upsertEmbedding` had before `upsertEmbeddings` existed. Not caused by this change; surfaced by having the write half done.
+reason: `.wb-canvas` is the scroll container (`overflow: auto`, `globals.css:2665`) and `display: none` discards the scroll box, so returning from Settings drops the owner at the top of a long canvas. DW-373's premise is that the visit costs nothing; this is the one thing it still costs, and the `hidden` mechanism the intent itself names cannot reach it. Not a regression — the previous unmount lost it too.
 status: open
 
-### DW-418: The filesystem CAS's check-then-publish window is narrowed to a bare `rename` but is not closed.
-origin: spec-deferred 530664b84f3b
-source_spec: `spec-dw-293-371-filesystem-write-path-integrity.md`
-location: src/lib/storage/filesystem.ts
-severity: low
-reason: `writeFileIfMatch` now stages and fsyncs the replacement, re-reads the destination to compare an exact content hash, and only then renames — so a writer that lands between the comparison and the rename still loses its update. Closing it needs a lock or a new storage primitive, which DW-371 scoped out and this spec's Block If names explicitly. Recorded in the `writeFileIfMatch` and `saveConfig` docblocks rather than hidden.
-status: open
-
-### DW-419: `wikiPageExists` is the untouched near-twin of the read this bundle fixed and now contradicts it: it widens from a non-ENOENT silo failure to the flat file, and rethrows a non-ENOENT flat failure raw
-origin: spec-deferred 8e49b61373aa
-source_spec: `spec-dw-378-380-wiki-read-failure-contract.md`
-location: src/lib/wiki.ts:289
-severity: low
-reason: `src/lib/wiki.ts` `wikiPageExists` warns on a non-ENOENT silo failure and falls through to `wikiRelPath(...)` — the same widening DW-380 closed for the fresh read, 100 lines above it — and its flat catch does `throw err`, so a caller sees an unclassified errno whose message carries an absolute server path rather than `PAGE_UNREADABLE_COPY`. Pre-existing and out of this bundle's `fresh`-scoped reach: `wikiPageExists` has no `fresh` option and returns a boolean, so it has no "precondition-bearing" mode to gate on.
-status: open
-
-### DW-420: `GET /api/workbench/preview?kind=file` still degrades an unreadable `wiki/<slug>.md` to the shared 404, and that door seeds the same `PUT /api/wiki/[slug]` precondition the `kind=page` door now refuse
-origin: spec-deferred b1179af399c7
-source_spec: `spec-dw-378-380-wiki-read-failure-contract.md`
-location: src/lib/workbench-files.ts (readSafely) via src/app/api/workbench/preview/route.ts
+### DW-417: The reason a refused `OLLAMA_BASE_URL` was ignored reaches no MOUNTED surface in the one deployment state DW-402 describes, so that owner still reads a bare "No LLM provider configured".
+origin: spec-deferred 7864c5a12629
+source_spec: `spec-dw-402-403-endpoint-refusal-and-readiness.md`
+location: src/app/settings/page.tsx:117-135 and src/components/StatusBadge.tsx
 severity: medium
-reason: The Files tab reaches the same bytes through `readWorkbenchFile` -> `readSafely` (`src/lib/workbench-files.ts`), which swallows every non-ENOENT error into `null`, so the route answers `notFound()`. The payload it would otherwise serve carries a `version` for the same page `PUT`, so this is DW-378's lie surviving on a second read door of the same route. Closing it means giving `readSafely` a refusing mode, which is outside the `fresh`-scoped contract this bundle established; the route comment names the residual.
+reason: `StatusBadge` — the component the ledger names, and the one this change taught to render the sentence — is imported by nothing in `src/` except its own new test (verified repo-wide). Its reachable twin is the status block at `src/app/settings/page.tsx:117-135`, which renders `status?.configured ? "Connected: …" : "No LLM provider configured"` from the same `/api/status` body and was left unchanged; `useSettings` now carries `status.ollamaBaseUrlIssue` and nothing reads it. The other render site, `ProviderForm`'s endpoint block, is gated on `effectiveProvider === "ollama"` (`src/components/ProviderForm.tsx:96-97`) — and in the described state (`OLLAMA_BASE_URL=localhost:11434`, nothing else set) `detectEnvProvider` deliberately selects no provider, so the block never renders and the owner must guess "pick Ollama" to be told why Ollama was not picked. Pre-existing (the badge has never been mounted) and outside this bundle's named render sites, but it is what stands between the served fie
 status: open
 
-### DW-421: `PATCH` and `DELETE /api/wiki/[slug]` still answer `page not found` for a page whose bytes could not be read, and `DELETE`'s catch maps an unknown error to 400.
-origin: spec-deferred 9e74cdc9694d
-source_spec: `spec-dw-378-380-wiki-read-failure-contract.md`
-location: src/app/api/wiki/[slug]/route.ts:47, src/lib/patch-metadata.ts
+### DW-418: `yopedia status` prints the provider verdict with no reason, so the CLI — the surface a headless operator actually reaches — still reports "not configured" for a variable the deployment saw and refuse
+origin: spec-deferred 6fcc711d76d0
+source_spec: `spec-dw-402-403-endpoint-refusal-and-readiness.md`
+location: src/cli.ts:554-567
 severity: medium
-reason: `patchMetadata` reads unqualified, so a non-ENOENT storage failure becomes `null` -> `code = "NOT_FOUND"` -> 404 at the `PATCH` door; `DELETE` reads unqualified at `src/app/api/wiki/[slug]/route.ts:47` and answers the same 404 on `!existing`. Both verbs MUTATE the page, so both make the existence claim DW-378 names — the intent scoped this bundle to the `fresh` path and neither verb takes one. `DELETE`'s catch additionally classifies anything that is not "page not found" as 400, so it would mis-answer `PageUnreadableError` as a client error if it ever gained a fresh read.
-status: open
-
-### DW-422: A failed PAGE-INDEX read re-opens both lies for a silo-resident page, because `getPageIndex` is fail-soft and a fresh read skips the silo branch entirely when it answers `null`.
-origin: spec-deferred 3b5753753c86
-source_spec: `spec-dw-378-380-wiki-read-failure-contract.md`
-location: src/lib/wiki.ts:416 via src/lib/page-index.ts
-severity: medium
-reason: `getPageIndex` logs and returns `null` on its own storage failure (`src/lib/page-index.ts`). `readWikiPage` then never computes a silo path: a silo-only page meets ENOENT on the flat path and resolves `null` (DW-378's 404, unfixed), and a page with a stale flat copy yields a version over a file the write will not target (DW-380, unfixed). The intent enumerates "a non-ENOENT silo or page failure"; an index failure is neither, so closing it needs its own decision about whether a precondition-bearing read may proceed without the index.
-status: open
-
-### DW-423: `PUT /api/workbench/artifact` relays the raw errno message as owner-facing copy when its precondition-bearing read fails.
-origin: spec-deferred c35a0bf9c596
-source_spec: `spec-dw-378-380-wiki-read-failure-contract.md`
-location: src/app/api/workbench/artifact/route.ts:86
-severity: medium
-reason: `writeWikiArtifact` rethrows the read failure raw when `expectedVersion` was supplied (`src/lib/wikis.ts:920`), and the route maps anything that is not read-only / write-conflict / `ClientInputError` to 500 with `getErrorMessage(error)`. `savePreviewBody` relays a served `{ error }` verbatim for any non-502/504 status, so in the same Preview editor a page save now shows `PAGE_UNREADABLE_COPY` while an artifact save shows `EIO: i/o error, read '/abs/server/path/...'`. Pre-existing; the sibling half of the divergence DW-378 named.
-status: open
-
-### DW-424: The MCP page-write tools merge into `pageCache` bytes exactly as the REST doors did before this sweep.
-origin: spec-deferred a0848fa3298f
-source_spec: `spec-dw-379-merge-base-fresh-reads.md`
-location: src/mcp.ts:279, src/mcp.ts:1366
-severity: medium
-reason: `handleUpdatePage` (`src/mcp.ts:279`) reads `readWikiPageWithFrontmatter(args.slug)` unqualified and re-serializes that frontmatter into its write; `handleRevertPage` (`src/mcp.ts:1366`) does the same and also takes its title fallback from it. These are the byte-for-byte twins of `patch-metadata.ts:96` and the revert route at `revisions/route.ts:145`, both swept here. Out of scope for this bundle: the ledger entry's `location` names `patch-metadata.ts`, `merge.ts` and `lint-fix.ts`, and the intent adds only the revisions route — `src/mcp.ts` is named nowhere. The same bulk scan makes an agent-driven update or revert revert an intervening save.
-status: open
-
-### DW-425: The create-conflict guards decide from a cached read, so a cached NEGATIVE entry lets a create write straight over a live page.
-origin: spec-deferred 766c2a76c3b3
-source_spec: `spec-dw-379-merge-base-fresh-reads.md`
-location: src/app/api/wiki/route.ts:104, src/mcp.ts:221, src/cli.ts:366
-severity: medium
-reason: `POST /api/wiki` (`src/app/api/wiki/route.ts:104`), `handleCreatePage` (`src/mcp.ts:221`) and the CLI (`src/cli.ts:366`, `:429`) each do `const existing = await readWikiPage(slug)` and refuse with 409 / an error when it answers a page. `readWikiPage` caches `null` too, so a scan that missed the slug before it was created leaves a negative entry that turns the guard off — the same failure this bundle closed for `fixStaleIndex` and `fixMissingConceptPage`, but with a full-page overwrite rather than a dropped index entry as the damage. Out of scope: none of these files is named by the intent or the ledger entry.
-status: open
-
-### DW-426: `DELETE /api/wiki/[slug]` reads its ACL frontmatter through the cache and answers a storage blip as `page not found`.
-origin: spec-deferred 9dbfe4056cd9
-source_spec: `spec-dw-379-merge-base-fresh-reads.md`
-location: src/app/api/wiki/[slug]/route.ts:53
-severity: medium
-reason: `src/app/api/wiki/[slug]/route.ts:53` reads unqualified and then decides `canWriteFrontmatter(existing.frontmatter, …)` from those bytes — an authorization verdict taken from a possibly superseded copy — and answers `null` as a 404 where `PUT` and `PATCH` beside it now answer 503 for the same fault. Out of scope: the delete is not a read-modify-write merge base and the intent names neither it nor the `DELETE` verb; closing it is the same one-line adoption plus the 503 branch its siblings already carry.
-status: open
-
-### DW-427: The ingest write path's frontmatter merge bases still read through `pageCache`.
-origin: spec-deferred 410e28be8d2b
-source_spec: `spec-dw-379-merge-base-fresh-reads.md`
-location: src/lib/ingest.ts:1381, src/lib/ingest.ts:1819, src/lib/ingest.ts:521
-severity: medium
-reason: `attachIngestTrigger` (`src/lib/ingest.ts:1381`) reads unqualified and re-serializes that page at `:1424` (`serializeFrontmatter(frontmatter, existing.body)`); the re-ingest merge base at `:1819` (which carries `created`, `source_count`, `tags`, `authors`, `owner`, `sources`) and `reingest`'s own read at `:521` have the same shape. Structurally identical to the `patchMetadata` site swept here, and the highest-traffic read-modify-write in the codebase. Out of scope: `ingest.ts` is named neither by the intent nor by the ledger entry's `location`.
-status: open
-
-### DW-428: On the editor's two-leg save, a `PATCH` refusal now tells the owner "nothing was changed" after the body leg has already landed.
-origin: spec-deferred 93828101760f
-source_spec: `spec-dw-379-merge-base-fresh-reads.md`
-location: src/components/WikiEditor.tsx:288
-severity: medium
-reason: `src/components/WikiEditor.tsx:259-303` saves the body with `PUT` and then `PATCH`es metadata, relaying the served `{ error }` verbatim into its error banner. With the 503 branch added here, a read blip on the second leg shows `PAGE_UNREADABLE_COPY` — "so nothing was changed" — to an owner whose body write did land. The previous answer (`page not found`) was also wrong, but it did not make a claim about what was written. Not closable inside this bundle: the spec's Never clause forbids new copy, and the alternative is a client change to the save flow (e.g. reporting the legs separately), which the intent does not reach.
-status: open
-decision: 2026-08-22 Per-leg client reporting — Track in WikiEditor that the PUT leg landed and prefix the PATCH failure accordingly — "Your text was saved; the metadata change was not — <served error>" — leaving all server copy and the frozen sentences untouched.
-decision: 2026-08-22 Per-leg client reporting — Track in WikiEditor that the PUT leg landed and prefix the PATCH failure accordingly — "Your text was saved; the metadata change was not — <served error>" — leaving all server copy and the frozen sentences untouched.
-
-### DW-429: `setCurrentWiki` moves no `dataVersion`, so switching the current Wiki leaves every OTHER open client rendering the previous Wiki's artifacts with nothing to un-stale them.
-origin: spec-deferred 5e52805cf407
-source_spec: `spec-dw-382-delete-wiki-data-version-bump.md`
-location: src/lib/wikis.ts (setCurrentWiki)
-severity: medium
-reason: A Preview and the Files tree both resolve `purpose.md`/`schema.md` through `registry.currentId` read server-side at fetch time (src/app/api/workbench/preview/route.ts:214-222, src/app/page.tsx:98-101 -> src/lib/workbench-files.ts:298-321). A switch is therefore the ONLY operation that changes which bytes those surfaces resolve to — and `WikiSwitcher`'s own `router.refresh()` covers just the acting client. This is a strictly stronger form of the DW-382 argument: DW-382's ledger premise ("a Preview open on those artifacts in a second client keeps rendering bytes whose Wiki is gone") is false for delete, but TRUE for a switch. Raised independently by review layers on all three passes of this story. Pre-existing; `setCurrentWiki`'s no-bump exemption is a recorded decision (src/lib/__tests__/workbench-data-version.test.ts, the bump-site guard's rationale comment), so changing it needs its own story rather than a drive-by.
-status: open
-decision: 2026-08-22 Bump at the kernel tail — Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock, as `renameWiki` does, rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6.
-decision: 2026-08-22 Bump at the kernel tail — Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock, as `renameWiki` does, rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6.
-
-### DW-430: `renameWiki`'s JSDoc quotes the Preview fetch dep list as `[selection, dataVersion, editing]`; the real deps include `retryNonce`.
-origin: spec-deferred 4c119690dd9a
-source_spec: `spec-dw-382-delete-wiki-data-version-bump.md`
-location: src/lib/wikis.ts:1313
-severity: low
-reason: src/lib/wikis.ts:1313 versus src/components/workbench/PreviewColumn.tsx:563 (`[selection, dataVersion, editing, retryNonce]`). Pre-existing prose drift, not introduced here — this story's own new paragraph was held to quote-exactly-or-omit and omits the list.
-status: open
-
-### DW-431: Several docblocks in `wikis.ts` enumerate the writers that carry the `bumpDataVersion` tail, and none of the enumerations is complete.
-origin: spec-deferred 1dc1514e55c9
-source_spec: `spec-dw-382-delete-wiki-data-version-bump.md`
-location: src/lib/wikis.ts:374,1250,1310
-severity: low
-reason: src/lib/wikis.ts:1310 ("the same tail `createWiki` and `applyScenarioTemplate` carry") omits `writeWikiArtifact` and now `deleteWiki`; :1250-1251 and :374-375 list the same set incompletely. Each was already short before this story and is one entry shorter now that `wikis.ts` has five bump sites. The executable guard (src/lib/__tests__/workbench-data-version.test.ts) is complete and authoritative; these are prose only.
-status: open
-
-### DW-432: `GET /api/ingest/history` still filters the ledger with the page index alone, so an orphaned page's history row is never listed and the `ingestIds` half of the DW-393 fallback is unreachable from the
-origin: spec-deferred a874a83479d7
-source_spec: `spec-dw-389-392-393-authz-gate-fallout-corrections.md`
-location: src/app/api/ingest/history/route.ts:139
-severity: medium
-reason: The GET at `src/app/api/ingest/history/route.ts` builds `readable` from `listReadableWikiPages(principal)` and drops every ledger entry whose `primary_slug` the index does not carry. `RecentIngests.tsx` is the only producer of `ingestIds` and builds them exclusively from that GET's `entries`, so an orphan row can only be deleted by a caller hand-writing ids (CLI/MCP/direct HTTP). The `jobIds` half — the path DW-393's own harm statement describes ("a done job whose page is in that state") — is UI-reachable and is fixed. Left out deliberately: widening the GET would cost up to `MAX_BULK_DELETE` page reads on a hot listing path and change what the list shows, neither of which the intent asked for.
-status: open
-decision: 2026-08-22 Bounded per-page read fallback — For slugs the index misses, fall back to a bounded per-page read (cap at MAX_BULK_DELETE) on this listing path only, so orphan rows list and become deletable while the read cost stays bounded.
-decision: 2026-08-22 Bounded per-page read fallback — For slugs the index misses, fall back to a bounded per-page read (cap at MAX_BULK_DELETE) on this listing path only, so orphan rows list and become deletable while the read cost stays bounded.
-
-### DW-433: `maintenance_scan`'s tool description in `src/lib/mcp-http.ts` is a third copy of the disputed-clear fact and now disagrees with the shared clause.
-origin: spec-deferred a496dcb750e4
-source_spec: `spec-dw-389-392-393-authz-gate-fallout-corrections.md`
-location: src/lib/mcp-http.ts:434
-severity: low
-reason: DW-389 named two sites and they now read one owner (`disputedClearInstruction`). `src/lib/mcp-http.ts:434` tells agents "clearing the flag is a human review", while the new clause tells humans that on a public knowledge page only an agent or a site admin can clear it. Pre-existing copy at a site outside the intent's two, so it was not moved with them, but it is the next place this fact can drift.
-status: open
-
-### DW-434: `describe("batch_ingest_urls")` pins `vaultId` but nothing else the MCP batch options literal carries — `tags` and `triggeredBy` reach the ingested pages and the ledger untested.
-origin: spec-deferred 674ea9f09987
-source_spec: `spec-dw-395-mcp-batch-guidance-cache.md`
-location: src/lib/__tests__/mcp.test.ts:1591
-severity: low
-reason: The options literal at `src/mcp.ts:542-548` conditionally spreads `tags`, `owner`/`author` and `triggeredBy` into every `ingestUrl` of the batch. Of those, only the vault filing that happens AFTER the call has a test ("files each successfully ingested page into the provided vault"). A slip in one of the three conditional spreads — an inverted guard, a dropped key — would leave the whole MCP suite green. DW-395 edited this exact literal, which is what surfaced the gap; the gap itself predates it.
-status: open
-
-### DW-435: The pre-existing `mcp.test.ts` cases force the no-LLM ingest path by deleting only `ANTHROPIC_API_KEY`, which does not actually guarantee it.
-origin: spec-deferred 6e3150110ef6
-source_spec: `spec-dw-395-mcp-batch-guidance-cache.md`
-location: src/lib/__tests__/mcp.test.ts:1611
-severity: low
-reason: `hasLLMKey()` (`src/lib/llm.ts:204`) delegates to `detectEnvProvider()` (`src/lib/config.ts:801`), which also honours `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `DEEPSEEK_API_KEY`, `OLLAMA_API_KEY`, `OLLAMA_BASE_URL`/`OLLAMA_MODEL`, plus config-file `ollama`/`custom` providers. On a machine with any of those set, the sibling batch and ingest cases in this file silently exercise the LLM branch their comments say they avoid. DW-395's own new block was hardened against this (all seven vars cleared plus an `expect(hasLLMKey()).toBe(false)` guard); the cases around it were left as found.
-status: open
-
-### DW-436: Four live `useSlugTenants` consumers still have no rendered-anchor pin, so reverting their `hrefForSlug` call sites to a default-tenant path leaves the whole suite green — the same gap DW-259 closed f
-origin: spec-deferred 5a5c0e3173c8
-source_spec: `spec-dw-158-259-325-test-coverage-and-flake-fixes.md`
-location: src/components/IngestSuccess.tsx:20
-severity: medium
-reason: `src/components/IngestSuccess.tsx:20` and `:35` (two anchors, rendered by `src/app/ingest/page.tsx`), `src/hooks/useGlobalSearch.ts:197` (`router.push(hrefForSlug(slug))`, reached from `NavHeader.tsx`), and the `hrefForSlug={hrefForSlug}` wiring at `src/app/lint/LintClient.tsx:100` down into `src/components/LintIssueCard.tsx:101`. A repo-wide grep finds zero test references to `IngestSuccess` or `useGlobalSearch`, and `LintClient` appears in tests only inside a comment. The one nearby suite, `src/components/__tests__/lint-check-parity.test.tsx:166,230`, injects its own `hrefForSlug` stub returning `/u/yopedia/<slug>` — so it asserts its own stub and is blind by construction to what `LintClient` actually passes down, exactly the pattern `owner-scoped-anchors.test.tsx` was written to replace. Consequence: the post-ingest confirmation link, every global-search navigation, and every lint-issue link can regress to a wrong-handle `/u/yopedia/<slug>` hop with CI green. Pre-existing; DW-259 sc
-status: open
-
-### DW-437: The production half of the DW-325 race is unaddressed: a real browser recheck fired between the load commit and the passive mirror flush is dropped silently, with no retry.
-origin: spec-deferred dce618ff3929
-source_spec: `spec-dw-158-259-325-test-coverage-and-flake-fixes.md`
-location: src/components/WorkspacePurposeSettings.tsx
-severity: medium
-reason: `standDown` reaches `screenRef` through a PASSIVE effect (the `screenRef` mirror effect in `src/components/WorkspacePurposeSettings.tsx`), while `load("recheck")` reads it as its first early return. Between the commit that clears `loading` and the passive-effect flush, a `visibilitychange` calls `load("recheck")`, reads a stale `standDown: true`, and returns without issuing the GET — so the form goes on naming a wiki that is no longer active until something else triggers a re-read. DW-325's own intent offered "or derive `standDown` during render" as the alternative remedy; this bundle took the test-side reading, which closes the flake but leaves the component's window open and unpinned. Two independent review layers raised it against this diff.
-status: open
-
-### DW-438: The Worker reads its KV config outside any try/catch, so a binding or KV failure throws out of `email()` with no reply and no reject -- the sender gets silence.
-origin: spec-deferred e6d1cfe5d551
-source_spec: `spec-dw-357-361-364-email-ingest-accounting-and-worker-tests.md`
-location: workers/email-ingest/index.ts:224
-severity: medium
-reason: `workers/email-ingest/index.ts:224` calls `await env.YOPEDIA_CONFIG.get(CONFIG_KEY, "json")` as the handler's first statement, ahead of every `reply(...)` and `setReject(...)` path. Every other failure mode in the handler answers the sender; this one cannot, because nothing has been established yet to answer with. Pre-existing and untouched by this change.
-status: open
-
-### DW-439: The Worker's two attachment-filename fallbacks diverge, so a nameless attachment inflates the route's locally derived skipped floor by one though nothing was skipped.
-origin: spec-deferred 4501089e2210
-source_spec: `spec-dw-357-361-364-email-ingest-accounting-and-worker-tests.md`
-location: workers/email-ingest/index.ts:317
-severity: medium
-reason: `workers/email-ingest/index.ts` records names as `attachment.filename || "unnamed attachment"` but forwards the file part as `attachment.filename || `attachment-${index + 1}``. The route unions and deduplicates the two lists, so one nameless PDF yields two names and one file: `localSkipped` is 1 while the Worker honestly forwarded a `skippedAttachmentCount` of 0, and the floor wins. Pre-existing; the accounting expression this change hoisted is unmodified.
-status: open
-
-### DW-440: A missing site URL answers the sender "Please try again in a few minutes", advice that can never work for a permanent misconfiguration.
-origin: spec-deferred 4ec77283601d
-source_spec: `spec-dw-357-361-364-email-ingest-accounting-and-worker-tests.md`
-location: workers/email-ingest/index.ts:326
-severity: low
-reason: `workers/email-ingest/index.ts:326` throws inside the forwarding `try` rather than returning early beside the service-token check, so it inherits the transient-failure copy at :371. The token branch already demonstrates the better shape with its own explicit message. Now pinned as-is by `email-ingest-worker.test.ts`, so correcting the asymmetry later will read as a test regression unless done deliberately.
-status: open
-
-### DW-441: The raw-size refusal never says the body contributed, so a sender who shrinks only the attachment bounces again.
-origin: spec-deferred 35acc26f383d
-source_spec: `spec-dw-357-361-364-email-ingest-accounting-and-worker-tests.md`
-location: workers/email-ingest/index.ts:248
-severity: low
-reason: The reply quotes one figure ("larger than 13.7 MB") against `message.rawSize`, but the bounce this bundle pins is caused by the document and the body together -- exactly the case where shrinking the obvious culprit does not help. DW-361 records the trade-off as accepted; the sender-facing copy was left out of that acceptance. Out of scope here: the intent was to prove the trade-off without moving any cap.
-status: open
-
-### DW-442: Nothing pins SCHEMA.md's "Retired surfaces" prose to `RETIRED_SURFACES`, so both retired-surface blocks can rot the same way the Talk block just did.
-origin: spec-deferred 9b10f77ef413
-source_spec: `spec-dw-108-131-338-doc-and-comment-drift-corrections.md`
-location: SCHEMA.md:156
-severity: medium
-reason: This change added a second hand-maintained doc/code coupling: SCHEMA.md's new Talk-pages "Retired surfaces" paragraph and the DW-129 contributor paragraph (`SCHEMA.md:207-217`) both restate entries of `RETIRED_SURFACES` (`src/lib/retired.ts`) in prose, and no source or test file references either heading. `retired-surfaces.test.ts` derives the constant from the tree on disk, so retiring or un-retiring a surface stays honest in code and silently stales the docs — the exact mechanism that produced DW-129 and then DW-338. The graph href got a pin in this pass; the prose did not, because the intent named only the marking-retired edit.
-status: open
-
-### DW-443: `SCHEMA.md` restates the same ten auto-fixable check types, their descriptions and two hardcoded counts, and nothing pins it.
-origin: spec-deferred 53a280f96d45
-source_spec: `spec-dw-341-343-346-352-hand-copied-list-parity-pins.md`
-location: SCHEMA.md:667
-severity: medium
-reason: `SCHEMA.md:667-686` says "Lint auto-fix handles ten of fifteen checks" and names all ten, then describes six of them and enumerates "the five exceptions without auto-fix". That is a third restatement of `AUTO_FIXABLE_CHECK_TYPES` and a second of `NOT_AUTO_FIXABLE`, with the cardinalities written out by hand. It is root markdown, already inside `prose-inventory-parity.test.ts`'s reach via `readProse`/`extract`, and `SCHEMA.md` is executable — AGENTS.md records that its page-conventions section is loaded into LLM prompts on every ingest. This pass pinned the route JSDoc and the two `MaintainFixType` sentences and left this one, so the parity header's census ("nine, across eight files") is already one short.
-status: open
-
-### DW-444: Nothing pins `MaintainFixType` against `AUTO_FIXABLE_CHECK_TYPES`, so a new deterministic auto-fix would be unenqueueable and DLQ exactly as DW-343 described.
-origin: spec-deferred 48d6baa5d480
-source_spec: `spec-dw-341-343-346-352-hand-copied-list-parity-pins.md`
-location: src/lib/tasks.ts:202
-severity: medium
-reason: `MaintainFixType` (`src/lib/tasks.ts:202-210`) is exactly `AUTO_FIXABLE_CHECK_TYPES` (`src/lib/lint-types.ts:64-75`) minus `contradiction` and `missing-concept-page` — the two LLM handlers — but the relationship is coincidence, not contract. Add a deterministic fix to `lint-types.ts` and `lint-fix.ts` and `tsc` stays silent while `maintenance.ts` cannot enqueue it and `parseTask` returns null: the DW-343 poison-message failure one list over. This pass imported both consts into the same test file for the first time, which is what made the gap visible; closing it is either `Exclude<AutoFixableCheckType, "contradiction" | "missing-concept-page">` or a parity assertion, and both are decisions beyond this bundle.
-status: open
-
-### DW-445: `POST /api/lint/fix`'s JSDoc documents no response contract — neither the statuses it returns nor the success shape.
-origin: spec-deferred 0a7f5bd105d7
-source_spec: `spec-dw-341-343-346-352-hand-copied-list-parity-pins.md`
-location: src/app/api/lint/fix/route.ts:19
-severity: low
-reason: The route answers 403 twice (owner gate, read-only refusal), 400 on `FixValidationError`, 404 on `FixNotFoundError`, `PAGE_UNREADABLE_STATUS` on an unreadable page, and 500 otherwise, and returns a `FixResult` (`{ success, slug, message }`) on the happy path. The header comment — rewritten at length in this pass to complete the issue-type inventory — names none of them, so an integrator reading the one door DW-346 was about still cannot tell a refusal from a failure. Pre-existing: the five-entry version documented no statuses either.
-status: open
-
-### DW-446: mcp-http's `fix_lint_issue` gates `type` but still spreads its arguments through a bare cast, so a non-string `slug` or `target` reaches the fix handlers unvalidated.
-origin: spec-deferred 685d20f52094
-source_spec: `spec-dw-347-348-advertised-input-validation-parity.md`
-location: src/lib/mcp-http.ts:521
-severity: medium
-reason: `run` in `src/lib/mcp-http.ts` now calls `autoFixRefusal(a.type, ...)`, then hands the rest through `...(a as { type: string; slug: string; ... })`. `dispatchMcp` validates `tools/call` arguments nowhere, so `{"type":"orphan-page","slug":7}` still reaches `fixOrphanPage(7)` — the same failure `POST /api/lint/fix` now refuses at the door. Out of scope here: DW-348's intent names `type` only.
-status: open
-
-### DW-447: POST /api/lint/fix resolves a principal for its owner gate but never passes it as `author`, so every REST-initiated fix is attributed to the default "lint-fix" while both MCP doors stamp the caller's
-origin: spec-deferred c3bee16b7dd2
-source_spec: `spec-dw-347-348-advertised-input-validation-parity.md`
-location: src/app/api/lint/fix/route.ts:157
-severity: medium
-reason: `route.ts` calls `getPrincipal()` for `isOwnerHandle`, then invokes `fixLintIssue(type, slug ?? "", targetSlug, message)` with no fifth argument, defaulting `author` to `"lint-fix"` (`src/lib/lint-fix.ts`). `handleFixLintIssue` receives `author: p!.handle` on both MCP doors, so the same fix is attributed differently depending on which door ran it. Pre-existing; unchanged by this story.
-status: open
-decision: 2026-08-22 Record the trigger separately — Keep `"lint-fix"` as `author` on all three doors and add a `triggeredBy` field carrying the principal's handle, the shape `handleReingest` already uses at src/mcp.ts:1243-1245. Drops `author: p!.handle` from mcp-http.ts:527 so the doors agree, without touching the contributor contract.
-decision: 2026-08-22 Record the trigger separately — Keep `"lint-fix"` as `author` on all three doors and add a `triggeredBy` field carrying the principal's handle, the shape `handleReingest` already uses at src/mcp.ts:1243-1245. Drops `author: p!.handle` from mcp-http.ts:527 so the doors agree, without touching the contributor contract.
-
-### DW-448: The 504 deadline sentence never reaches the owner: the client falls back to POST /api/query on any non-ok answer, and that route still relays the raw transport message.
-origin: spec-deferred 77f0be51cb37
-source_spec: `spec-dw-64-stream-deadline-copy.md`
-location: src/app/api/query/route.ts:74
-severity: medium
-reason: src/hooks/useStreamingQuery.ts:129-155 re-issues the non-streaming query on `!res.ok` and shows `fallbackData?.error ?? errMsg`; src/app/api/query/route.ts:74-82 answers `getErrorMessage(error)` at 500. A deadline that fires on both attempts therefore shows "The operation was aborted due to timeout" from the fallback. Pre-existing, and out of scope by the frozen decision, which names the stream route only.
-status: open
-
-### DW-449: A deadline-truncated answer is recorded by the client as a complete one, now with the deadline sentence saved inside the answer text.
-origin: spec-deferred 19b4d44051fe
-source_spec: `spec-dw-64-stream-deadline-copy.md`
-location: src/hooks/useStreamingQuery.ts:167
-severity: medium
-reason: The mid-stream path closes at 200, so useStreamingQuery never sets an error; it runs extractCitedSlugs over the partial text and calls onComplete with it (src/hooks/useStreamingQuery.ts:167-200), which is what query history persists. Making the truncation visible is this change's point; persisting the notice as model output is the residue.
-status: open
-
-### DW-450: A fired deadline inside the retrieval re-rank is swallowed, so it degrades answer quality silently instead of surfacing.
-origin: spec-deferred daa659b1e51c
-source_spec: `spec-dw-64-stream-deadline-copy.md`
-location: src/lib/query-search.ts:250
-severity: low
-reason: src/lib/query-search.ts:250-253 catches every re-rank error (`logger.warn`, fall through to fusion results), and the vector half does the same at :194-200. This is why the route's own 504 arm has no reachable pre-stream door today: a configured deadline that fires during retrieval is absorbed, and the owner is answered from BM25 fusion with no sign that the re-rank never ran. Pre-existing.
-status: open
-
-### DW-451: An answer cut off by the output-token cap still ends silently — the same owner-facing silence a deadline used to produce.
-origin: spec-deferred 263a985f6382
-source_spec: `spec-dw-64-stream-deadline-copy.md`
-location: src/app/api/query/stream/route.ts:255
-severity: low
-reason: The stream carries `finish` with `finishReason: "length"` when QUERY_MAX_OUTPUT_TOKENS is reached; nothing in the route or the client says so, so the answer simply stops mid-sentence. Same defect shape as DW-64's mid-stream half, different cause, and out of scope for a decision about the LLM deadline.
-status: open
-
-### DW-452: The bounded artifact-revision listing hides a legacy over-cap backlog with no signal on the wire, while the backup half says "partial" out loud at four surfaces.
-origin: spec-deferred 23e413821c9f
-source_spec: `spec-dw-215-artifact-revision-retention-and-backup-degradation.md`
-location: src/lib/wiki-artifact-revisions.ts (listWikiArtifactRevisions) and src/app/api/workbench/artifact/revisions/route.ts
-severity: low
-reason: `listWikiArtifactRevisions` returns the newest MAX_ARTIFACT_REVISIONS stems and the route's `{ revisions }` shape carries no `total`/`hasMore`/cap field, so a client cannot distinguish "this artifact has 50 revisions" from "50 of 300". Pruning only fires on a save, so an artifact never edited again keeps a directory the reader silently truncates. The intent forecloses `?limit=`/pagination, so the honest alternative is a marker, not a knob — a decision this run had no authority to make.
-status: open
-
-### DW-453: The Worker's raw-message gate bounces the whole email for any attachment more than ~50 KB above MAX_EMAIL_DOCUMENT_BYTES, so the new per-file oversize skip only ever fires in a narrow band just above
-origin: spec-deferred 3b1043c2dc89
-source_spec: `spec-dw-253-email-oversized-attachment-skip.md`
-location: workers/email-ingest/index.ts:271
-severity: medium
-reason: MAX_RAW_EMAIL_BYTES is ceil(10 MiB x BASE64_EXPANSION_FACTOR) + 64 KiB, checked on message.rawSize before the MIME parse. An attachment of size S reaches the wire at about 1.368 x S, so a document more than roughly 47 KB over the 10 MB ceiling pushes rawSize past that gate and the sender gets the "larger than 13.7 MB" whole-message refusal -- body and every other attachment lost -- without ever reaching the new oversizedAttachments filter. The two "too big" replies also quote two different ceilings (10 MB vs 13.7 MB) depending on which gate catches the message. Pre-existing (the gate is DW-104's), surfaced by DW-253: it materially bounds how often the per-file skip can help, and the acknowledgement copy implies a broader guarantee.
-status: done 2026-08-22
-resolution: already resolved: workers/email-ingest/index.ts:228-230 — MAX_RAW_EMAIL_BYTES is now ceil(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES x WORST_CASE_TRANSFER_ENCODING_FACTOR) + MIME_ENVELOPE_HEADROOM_BYTES = 65,496,679, not the 14,414,471 this entry describes. Against the 10 MiB per-document ceiling (index.ts:46) an attachment now survives the raw gate up to ~47.8 MB decoded under base64 and ~20.97 MB under quoted-printable, so the per-file oversize skip at index.ts:508-513 has a 10 MiB-to-~21 MB band, not the ~50 KB band the entry names. DW-358 and DW-362 widened the cap 4.5x after this entry was filed.
-
-### DW-454: An empty or whitespace-only reconcile response makes `mergePages` replace the survivor's body with the ABSORBED page's body, then hard-delete the absorbed page — silent data loss with no revision to r
-origin: spec-deferred 376999e4dd82
-source_spec: `spec-dw-323-merge-door-workspace-guidance.md`
-location: src/lib/merge.ts:302
-severity: medium
-reason: `reconcilePage` fails soft to the NEW body on an empty model response (src/lib/ingest.ts:1176 — `if (!out || out.trim() === "") return { body: newBody, ... }`). At the ingest door `newBody` is the freshly synthesized article, so that fallback is correct. At the merge door `newBody` is `from.body`, so the survivor's existing prose is overwritten wholesale by the page being absorbed, and step 5 then hard-deletes `from` along with its revision history. The `catch` in `mergePages` does not fire — the call RESOLVED. Pre-existing: predates DW-323, which only added the guidance arguments.
-status: open
-
-### DW-455: The MIME envelope headroom was never re-derived for a quoted-printable BODY, only for the attachment, although DW-358's own reason names non-ASCII bodies as a carrier.
-origin: spec-deferred 13bdee0a97ef
-source_spec: `spec-dw-358-raw-email-cap-worst-case-encoding.md`
-location: workers/email-ingest/index.ts (MIME_ENVELOPE_HEADROOM_BYTES)
-severity: medium
-reason: MIME_ENVELOPE_HEADROOM_BYTES is still 64 KiB and its comment still frames the body as "an ordinary text body". MAX_EMAIL_CONTENT_CHARS is 100,000, so a non-ASCII body sent quoted-printable reaches the wire at up to ~312 KB -- roughly five times the headroom that is meant to cover part headers, boundaries AND the body. The document half of DW-358 is fixed; the body half is not, and the pair's recorded trade-off ("only has to be simultaneously satisfiable for realistic mail") predates the encoding this change is about. Whether to re-derive the headroom from MAX_EMAIL_CONTENT_CHARS x WORST_CASE_TRANSFER_ENCODING_FACTOR is a cap decision, not a patch.
-status: open
-decision: 2026-08-22 Budget the body inside the cap — Hold `MAX_RAW_EMAIL_BYTES` constant and pay for the worst-case encoded body out of `AGGREGATE_DOCUMENT_AVERAGE_BYTES` (index.ts:74), so the envelope is honest without widening the cap. Update the derivation comment and the allowlist-parity test.
-decision: 2026-08-22 Budget the body inside the cap — Hold `MAX_RAW_EMAIL_BYTES` constant and pay for the worst-case encoded body out of `AGGREGATE_DOCUMENT_AVERAGE_BYTES` (index.ts:74), so the envelope is honest without widening the cap. Update the derivation comment and the allowlist-parity test.
-
-### DW-456: Widening the raw cap 2.27x roughly doubles the peak decoded-attachment memory the Worker buffers, which is exactly the exposure DW-360 records and nothing bounds it.
-origin: spec-deferred 5c2352e6d293
-source_spec: `spec-dw-358-raw-email-cap-worst-case-encoding.md`
-location: workers/email-ingest/index.ts (attachmentBytes / forwarded FormData)
-severity: medium
-reason: DW-360's own recorded reason is "Nothing bounds the aggregate size of the attachments the Worker copies into the forwarded FormData, and raising the raw cap raises that peak." MAX_RAW_EMAIL_BYTES just moved from 14,414,471 to 32,781,108, so the base64-carried payload a message may deliver rises from ~10.5 MB to ~23.9 MB of decoded bytes, and attachmentBytes copies each part again on top of the parsed MIME tree, inside a Cloudflare Worker isolate. An aggregate budget is DW-362's subject and was out of scope for this bundle, so no guard was added -- but the exposure is measurably larger than when DW-360 was filed.
-status: open
-
-### DW-457: The widened cap (31.2 MB quoted to senders) may now exceed Cloudflare Email Routing's own inbound message-size limit, making the gate unreachable and the quoted figure unachievable.
-origin: spec-deferred a4a9423aaf37
-source_spec: `spec-dw-358-raw-email-cap-worst-case-encoding.md`
-location: workers/email-ingest/index.ts (MAX_RAW_EMAIL_MB refusal copy)
-severity: medium
-reason: Two independent reviewers flagged that Email Routing enforces a platform inbound ceiling (reported as 25 MiB, unverified offline and recorded nowhere in this repo). If that holds, messages between the platform limit and 32,781,108 bytes are rejected upstream and never reach the Worker, so the refusal copy invites a sender to resend under a ceiling that will also fail -- and the very scenario DW-358 names (a byte-dense 10 MB .csv sent quoted-printable, 32,715,573 bytes on the wire) could still never arrive. Clamping MAX_RAW_EMAIL_MB to a recorded transport bound is a different decision from "widen for worst-case encoding" and needs its own.
-status: open
-decision: 2026-08-22 Clamp conservatively to 25 MiB — Clamp to 25 MiB now with the source recorded as unverified-but-conservative, accepting that DW-362's ten-part worst case becomes unreachable by design, and update the quoted figure and tests.
-decision: 2026-08-22 Clamp conservatively to 25 MiB — Clamp to 25 MiB now with the source recorded as unverified-but-conservative, accepting that DW-362's ten-part worst case becomes unreachable by design, and update the quoted figure and tests.
-
-### DW-458: Three open ledger entries now carry reasons that are stale or false against the widened cap and will be read as current by the next sweep.
-origin: spec-deferred e94dd403c72e
-source_spec: `spec-dw-358-raw-email-cap-worst-case-encoding.md`
-location: _bmad-output/implementation-artifacts/deferred-work.md (DW-361, DW-362, DW-453)
-severity: low
-reason: DW-361's trade-off ("a full-size document plus a maximal body is refused") no longer binds for base64: 14,448,938 now fits under 32,781,108, and only the quoted-printable measurement still bounces. DW-362's premise ("ten 2 MB documents encode to roughly 27 MB and are bounced by MAX_RAW_EMAIL_BYTES (14.4 MB)") is now false -- 27 MB fits. DW-453's band ("a document more than roughly 47 KB over the 10 MB ceiling pushes rawSize past that gate") widens by more than two orders of magnitude, and its quoted "larger than 13.7 MB" copy is now "31.2 MB". This session was forbidden to edit the ledger, so the re-verification is recorded here instead.
-status: open
-
-### DW-459: The aggregate attachment budget is the raw cap's derivation only; nothing bounds the decoded bytes a single message actually buffers.
-origin: spec-deferred cbc839a81bd2
-source_spec: `spec-dw-362-email-raw-cap-aggregate-budget.md`
-location: workers/email-ingest/index.ts
-severity: medium
-reason: `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` widens `MAX_RAW_EMAIL_BYTES` from one document to ten, so a message may now legitimately carry up to 20 MiB of decoded attachments (and, since the only post-decode gates are the per-document `MAX_EMAIL_DOCUMENT_BYTES` filter and the `MAX_EMAIL_ATTACHMENTS` slice, roughly 47 MB decoded if the sender picks base64 -- the cheap encoding the cap is NOT derived from -- rather than the worst-case one it is). The Worker decodes every eligible part into a `Uint8Array` up front in `eligibleAttachments`, so that is buffered in the isolate at once, and `src/app/api/email/ingest/route.ts` then buffers the same forwarded payload again with `await request.formData()`. Adding a post-decode aggregate gate, a skip reason, or sender-visible copy was explicitly out of scope for DW-362 (Never: "The stated budget is only the cap's derivation here"); bounding buffered decoded bytes is DW-360/DW-456's subject.
-status: open
-
-### DW-460: The cap now quoted to senders (62.4 MB) is roughly 2.5x the inbound message-size ceiling DW-457 reports Cloudflare Email Routing enforcing, so the widening DW-362 bought may be unreachable in producti
-origin: spec-deferred fdbab632977d
-source_spec: `spec-dw-362-email-raw-cap-aggregate-budget.md`
-location: workers/email-ingest/index.ts (MAX_RAW_EMAIL_MB refusal copy)
-severity: medium
-reason: DW-457 (open) records a reported 25 MiB Email Routing inbound limit, unverified offline and recorded nowhere in this repo, against the then-new 31.2 MB figure. This change takes `MAX_RAW_EMAIL_MB` to 62.4 MB, and the scenario the change exists to admit -- ten 2 MiB parts, 65,431,170 bytes on the worst-case wire -- sits about 2.6x that reported ceiling. If DW-457's premise holds, the refusal copy at `workers/email-ingest/index.ts` invites a resend under a ceiling the transport rejects first. Clamping the cap to a recorded transport bound is DW-457's own decision, not DW-362's, so nothing was clamped here -- but DW-457's magnitude doubled and its entry does not say so.
-status: open
-
-### DW-461: Six open ledger entries now quote cap figures this change invalidates, the same staleness DW-458 was filed for and which nothing has yet corrected.
-origin: spec-deferred 6406b6d1e5d9
-source_spec: `spec-dw-362-email-raw-cap-aggregate-budget.md`
-location: _bmad-output/implementation-artifacts/deferred-work.md (DW-361, DW-362, DW-453, DW-456, DW-457, DW-458)
-severity: low
-reason: DW-361, DW-362, DW-453, DW-456, DW-457 and DW-458 itself all quote 32,781,108 bytes / 31.2 MB / 23.9 MB decoded. `MAX_RAW_EMAIL_BYTES` is now 65,496,679 (62.4 MB quoted) and the base64-carried decoded payload rises from ~23.9 MB to ~47.8 MB. DW-458 exists precisely because the DW-358 session was forbidden to edit the ledger and recorded the staleness in its spec instead; this session is under the same prohibition, so the re-verification is recorded here rather than in the entries.
-status: open
-
-### DW-462: Ten documents above the stated 2 MiB average but under the advertised 10 MB per-document ceiling are still refused wholesale -- the accepted residual of choosing an explicit total over the full advert
-origin: spec-deferred 0d9272e76d4f
-source_spec: `spec-dw-362-email-raw-cap-aggregate-budget.md`
-location: workers/email-ingest/index.ts (MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES)
-severity: low
-reason: The human decision offered "up to `MAX_EMAIL_ATTACHMENTS` documents, or an explicit total" and this change took the explicit total (20 MiB), because the full envelope -- 10 x `MAX_EMAIL_DOCUMENT_BYTES` -- is ~312 MB on the worst-case wire. So the shape DW-362 describes ("several mid-size supported documents refused wholesale even though every per-document and per-count limit is respected") still occurs above ~1.91 MiB per document at ten attachments under worst-case encoding (~4.34 MB under base64); the threshold moved rather than disappeared. Nothing sender-visible advertises the 2 MiB average, while the 10 MB per-document ceiling is still quoted back to senders in the oversized-attachment line.
-status: open
-
-### DW-463: `MAX_RAW_EMAIL_MB` computes in MiB and quotes the result to senders as "MB", and the widening grows that mislabelling from ~1 MB to ~3 MB.
-origin: spec-deferred 01082dfde612
-source_spec: `spec-dw-362-email-raw-cap-aggregate-budget.md`
-location: workers/email-ingest/index.ts (MAX_RAW_EMAIL_MB)
-severity: low
-reason: `(MAX_RAW_EMAIL_BYTES / 1024 / 1024)` floored to one decimal yields 62.4 and is written as "larger than 62.4 MB"; 65,496,679 bytes is 65.5 decimal MB. Pre-existing and shared with `MAX_EMAIL_DOCUMENT_MB` and the route's own "10 MB" copy, so correcting it is a copy decision across both surfaces, not a local fix -- but the absolute gap is now large enough for a sender to act on it, and this is the same figure DW-457 says may be unachievable.
-status: open
-
-### DW-464: Deleting talk.ts's derived-index hooks left `syncDiscussStatsForSlug` and `recordTalkForAuthor` with no non-test caller — the same readerless-export condition DW-390 was raised to fix, one module over
-origin: spec-deferred adb8e7b5bfa5
-source_spec: `spec-dw-390-retire-dead-talk-thread-writers.md`
-location: src/lib/discuss-stats-index.ts:69, src/lib/contributor-index.ts:218
-severity: medium
-reason: `grep -rn "syncDiscussStatsForSlug|recordTalkForAuthor" src/ --include=*.ts` outside `__tests__` now returns only the two definitions. Their only production callers were `syncDiscussStatsHook` and `recordTalkContributorHook` in `talk.ts`, both deleted here. Neither index is broken: `rebuildDiscussStatsIndex` / `rebuildContributorIndex` still scan storage, and `removeDiscussStatsForSlug` still runs from `deleteDiscussions`. Not resolved in this story because the DW-390 decision explicitly kept the discuss-stats and contributor indexes "exactly as they are"; both doc comments were corrected to record the state.
-status: done 2026-08-22
-decision: 2026-08-22 Keep both, close as recorded — DW-390's decision deliberately carved the two indexes out; the doc comments at discuss-stats-index.ts:63-70 and contributor-index.ts:213-221 already record the readerless state, so nothing further is owed.
-resolution: closed by human decision: DW-390's decision deliberately carved the two indexes out; the doc comments at discuss-stats-index.ts:63-70 and contributor-index.ts:213-221 already record the readerless state, so nothing further is owed.
-decision: 2026-08-22 Keep both, close as recorded — DW-390's decision deliberately carved the two indexes out; the doc comments at discuss-stats-index.ts:63-70 and contributor-index.ts:213-221 already record the readerless state, so nothing further is owed.
-
-### DW-465: `getDiscussDir` and `ensureDiscussDir` now have no non-test caller either, and `ensureDiscussDir` is an explicit no-op.
-origin: spec-deferred 057152ba3b6d
-source_spec: `spec-dw-390-retire-dead-talk-thread-writers.md`
-location: src/lib/talk.ts:47-52
-severity: low
-reason: Neither appears in the DW-390 delete list nor the keep list, so they were out of scope. After this change the only importers are `talk.test.ts` (which uses `getDiscussDir` to locate the file it seeds) and `SCHEMA.md` prose. `ensureDiscussDir` has had an empty body since the storage-provider migration — the provider creates parent directories on write.
+reason: `runStatus` (`src/cli.ts:554-567`) reads `getEffectiveSettings()` and prints `LLM provider` and `Embeddings` only. The payload now carries `ollamaBaseUrlIssue` beside those fields, so the sentence is one line away, but nothing prints it. This change touched `src/lib/__tests__/cli.test.ts` only to keep a whole-object fixture compiling. Same harm class as DW-402 on a third surface the bundle's intent did not name.
 status: open

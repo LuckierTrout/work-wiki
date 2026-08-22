@@ -147,6 +147,7 @@ beforeEach(() => {
     apiKeySource: "none",
     ollamaBaseUrl: null,
     ollamaBaseUrlSource: "none",
+    ollamaBaseUrlIssue: null,
     structuredKnowledgeProvider: null,
     structuredKnowledgeProviderSource: "none",
     structuredKnowledgeModel: null,
@@ -159,6 +160,7 @@ beforeEach(() => {
     provider: "ollama-cloud",
     model: "gpt-oss:120b",
     embeddingSupport: true,
+    ollamaBaseUrlIssue: null,
   });
 });
 

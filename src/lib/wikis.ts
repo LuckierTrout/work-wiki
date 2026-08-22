@@ -463,11 +463,10 @@ async function seedWikiArtifacts(
  * land here — with a seed already part-written, which is exactly the state a
  * compensation must be allowed to clean up rather than refuse.
  *
- * Both are FAIL-SOFT in the same shape as `deleteWiki`'s byte-removal handlers:
- * a cleanup that itself throws is warned about and swallowed, because the
- * caller must receive the ORIGINAL storage failure. Compensation removes
- * wreckage; it never turns a failure into a success, and never replaces the
- * diagnosis with its own.
+ * Both are FAIL-SOFT in the same shape as `deleteWiki`'s tail: a cleanup that
+ * itself throws is warned about and swallowed, because the caller must receive
+ * the ORIGINAL storage failure. Compensation removes wreckage; it never turns a
+ * failure into a success, and never replaces the diagnosis with its own.
  */
 
 /** One seeded file's pre-seed bytes, or null when it did not exist. */
@@ -1681,36 +1680,6 @@ export async function sweepOrphanWikiDirectories(owner: string): Promise<number>
  * caller does; anything past the cap waits for the next delete or the next cron
  * tick rather than lengthening this one under the tenant lock.
  *
- * IT DOES BUMP `dataVersion` (DW-382), the same tail {@link writeWikiArtifact},
- * {@link createWiki}, {@link applyScenarioTemplate} and {@link renameWiki} all
- * carry under the rule DW-209 established. The stale surface is NOT a Preview
- * and not the Files tree: a Preview resolves `purpose.md` and `schema.md`
- * through `currentId` read server-side at fetch time and the Files tree is
- * built from `currentId` alone, so neither can ever name a Wiki this call is
- * allowed to remove. What DOES go stale in a second open client is THE WIKI
- * LIST — `page.tsx` hands `registry.wikis` down and `WikiSwitcher` renders it as
- * the switch, rename and delete pickers and gates its controls on
- * `wikis.length > 1` — so that client keeps offering a Wiki that is gone, and
- * acting on it 404s, until something re-renders the server component. A delete
- * moves no `currentWikiId`, so the Workbench's selection-reset effect never
- * fires and the counter is the ONLY thing that can tell it. (A client still
- * showing artifact bytes from back when the deleted Wiki was current was
- * ALREADY stale before this call — that window is opened by
- * {@link setCurrentWiki}, which by recorded decision does not bump — so the
- * bump repairs it incidentally and is not earned by it.)
- *
- * The tail is OUTSIDE the lock (`bumpDataVersion` takes `DATA_VERSION_LOCK` and
- * `withFileLock` is not reentrant), fail-soft (a delete whose registry write
- * landed must not be reported as failed because the counter did not move), and
- * fires only when the locked body returned a record — an unknown id writes
- * nothing, and the current-Wiki refusal throws before the registry write.
- *
- * It bumps even when `deleteDirectory` or the inline sweep failed: the registry
- * entry is gone either way, so the Wiki has disappeared from every read in the
- * app and the list every other client is offering is wrong whether or not the
- * bytes went with it. The same reasoning that makes {@link renameWiki} bump
- * after a failed {@link retitlePurpose}.
- *
  * Pages, Sources, the page index and `tenants/<t>/wiki/**` are untouched: they
  * are tenant-wide, not per-Wiki, so a delete never removes content.
  */
@@ -1727,7 +1696,7 @@ export async function deleteWiki(
   // `DELETE /api/wikis/[id]` already refuses first, so this is the backstop for
   // a direct library caller.
   assertWritable(READ_ONLY_REFUSAL.wikiDelete);
-  const deleted = await withWikiLock(owner, async () => {
+  return withWikiLock(owner, async () => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
     if (!wiki) return null;
@@ -1759,19 +1728,6 @@ export async function deleteWiki(
     }
     return wiki;
   });
-
-  // Unknown id: nothing was written, so there is nothing to refresh to.
-  if (!deleted) return null;
-  try {
-    await bumpDataVersion();
-  } catch (error) {
-    logger.warn(
-      "wikis",
-      `the refresh signal did not move after deleting wiki "${deleted.id}"`,
-      error,
-    );
-  }
-  return deleted;
 }
 
 /** Read one seeded artifact, or null when it is missing. */

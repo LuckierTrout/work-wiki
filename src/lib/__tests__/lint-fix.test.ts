@@ -60,16 +60,11 @@ import {
   fixMissingConceptPage,
   fixStalePage,
   fixUnmigratedPage,
-  fixSupersededDangling,
   fixLintIssue,
   FixValidationError,
   FixNotFoundError,
 } from "../lint-fix";
-import {
-  ALL_CHECK_TYPES,
-  AUTO_FIXABLE_CHECK_TYPES,
-  disputedClearInstruction,
-} from "../lint-types";
+import { ALL_CHECK_TYPES, AUTO_FIXABLE_CHECK_TYPES } from "../lint-types";
 
 const mockedReadWikiPage = vi.mocked(readWikiPage);
 const mockedReadWikiPageWithFrontmatter = vi.mocked(readWikiPageWithFrontmatter);
@@ -1015,24 +1010,6 @@ describe("fixLintIssue", () => {
     );
   });
 
-  it("takes the clear path from the ONE shared clause, which names who can clear it", async () => {
-    // DW-389, the other half of the parity `lint-checks.test.ts` asserts. This
-    // refusal and `checkDisputedPages`'s `suggestion` were two hand-typed copies
-    // of the same instruction, and both described a `PATCH /api/wiki/<slug>`
-    // metadata write that `canWritePage`'s realm branch refuses on every public
-    // knowledge page — a loop most readers cannot close.
-    //
-    // Verbatim against `disputedClearInstruction`, because one owner for the
-    // sentence is the fix: a keyword pin would keep passing while this message
-    // drifted back into a private copy.
-    await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
-      disputedClearInstruction("contested-page"),
-    );
-    expect(disputedClearInstruction("contested-page")).toMatch(
-      /only an agent or a site admin/i,
-    );
-  });
-
   it("dispatches unmigrated-page to fixUnmigratedPage", async () => {
     mockedReadWikiPageWithFrontmatter.mockResolvedValue({
       slug: "old-page",
@@ -1153,200 +1130,5 @@ describe("check types with no auto-fix", () => {
         "Auto-fix not supported for this issue type",
       );
     }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Every read on this path is `{ fresh: true }` (DW-379)
-//
-// `pageCache` is module-global and ref-counted around bulk scans, and an
-// auto-fix is triggered by a lint scan — so `lint.ts`'s own `withPageCache` is
-// exactly the cache that can be holding a superseded entry open while the fix
-// runs. `../wiki` is mocked in this file, so the cache itself is not real here;
-// what stands in for it is a mock that PLAYS an open, stale cache: it answers
-// the superseded value to an unqualified read and the stored value to a fresh
-// one, which is precisely the difference `{ fresh: true }` makes. Drop the
-// option from the call site and each row below reads the cached value and
-// fails.
-// ---------------------------------------------------------------------------
-
-/** Answer `cached` to an unqualified read and `stored` to a fresh one. */
-function staleCache<T>(cached: T, stored: T) {
-  return async (_slug: string, options?: { fresh?: boolean }) =>
-    options?.fresh === true ? stored : cached;
-}
-
-describe("the fix functions read past a stale page cache", () => {
-  it("fixOrphanPage writes the STORED bytes back, never the cached copy", async () => {
-    // This fix re-writes the bytes it read, verbatim, to create the index
-    // entry. Written from a stale entry it reverts the page to a version that
-    // is no longer stored — an index repair that silently undoes an edit.
-    mockedReadWikiPage.mockImplementation(
-      staleCache(
-        {
-          slug: "orphan-stale",
-          title: "Orphan",
-          content: "# Orphan\n\nCached body.",
-          path: "/wiki/orphan-stale.md",
-        },
-        {
-          slug: "orphan-stale",
-          title: "Orphan",
-          content: "# Orphan\n\nStored body, LATER.",
-          path: "/wiki/orphan-stale.md",
-        },
-      ),
-    );
-
-    await fixOrphanPage("orphan-stale");
-
-    const call = mockedWriteWikiPageWithSideEffects.mock.calls[0][0];
-    expect(call.content).toBe("# Orphan\n\nStored body, LATER.");
-    expect(call.content).not.toContain("Cached body.");
-  });
-
-  it("fixStalePage bumps the expiry on the STORED frontmatter", async () => {
-    // Here the read is the FRONTMATTER merge base: the fix edits two fields and
-    // re-serializes everything else. From a stale entry, every other field —
-    // and the body — is written back as it was before the intervening save.
-    mockedReadWikiPageWithFrontmatter.mockImplementation(
-      staleCache(
-        {
-          slug: "stale-fm",
-          title: "Stale",
-          content: "---\nexpiry: 2025-01-01\n---\n\n# Stale\n\nCached body.",
-          path: "/wiki/stale-fm.md",
-          frontmatter: { expiry: "2025-01-01", tags: ["cached-tag"] },
-          body: "# Stale\n\nCached body.",
-        },
-        {
-          slug: "stale-fm",
-          title: "Stale",
-          content: "---\nexpiry: 2025-01-01\n---\n\n# Stale\n\nStored body, LATER.",
-          path: "/wiki/stale-fm.md",
-          frontmatter: { expiry: "2025-01-01", tags: ["stored-tag"] },
-          body: "# Stale\n\nStored body, LATER.",
-        },
-      ),
-    );
-
-    await fixStalePage("stale-fm");
-
-    const call = mockedWriteWikiPageWithSideEffects.mock.calls[0][0];
-    expect(call.content).toContain("stored-tag");
-    expect(call.content).toContain("Stored body, LATER.");
-    expect(call.content).not.toContain("cached-tag");
-    expect(call.content).not.toContain("Cached body.");
-  });
-
-  it("fixMissingConceptPage writes no stub over a page a NEGATIVE entry hides", async () => {
-    // A cached `null` is the same staleness as a stale positive entry, pointed
-    // the other way — and it does not always SUPPRESS a write the way the
-    // `fixStaleIndex` guard below does. Here it CAUSES one: the race guard sees
-    // "no such page", so the fix generates a stub and writes it straight over a
-    // page that already exists, replacing real content with a placeholder.
-    mockedReadWikiPage.mockImplementation(
-      staleCache(null, {
-        slug: "backpropagation",
-        title: "Backpropagation",
-        content: "# Backpropagation\n\nA real page someone already wrote.",
-        path: "/wiki/backpropagation.md",
-      }),
-    );
-    mockedHasLLMKey.mockReturnValue(false);
-
-    const result = await fixMissingConceptPage(
-      'Concept "Backpropagation" is mentioned in a, b but has no dedicated page. reason',
-    );
-
-    expect(result).toEqual({
-      success: true,
-      slug: "backpropagation",
-      message: "Page backpropagation.md already exists — no changes needed",
-    });
-    // The guard held: nothing was generated and nothing was written.
-    expect(mockedCallLLM).not.toHaveBeenCalled();
-    expect(mockedWriteWikiPageWithSideEffects).not.toHaveBeenCalled();
-  });
-
-  it("fixStaleIndex keeps the entry when the cache holds a NEGATIVE one", async () => {
-    // The same staleness pointed the other way: `readWikiPage` caches `null`
-    // too, so a scan that missed a page before it was created leaves a negative
-    // entry behind. The guard reads it as "the file really is gone" and drops
-    // the index entry of a page that exists — the repair becoming the damage.
-    mockedReadWikiPage.mockImplementation(
-      staleCache(null, {
-        slug: "index-live",
-        title: "Live",
-        content: "# Live\n\nIt exists.",
-        path: "/wiki/index-live.md",
-      }),
-    );
-    mockedListWikiPages.mockResolvedValue([
-      { slug: "index-live", title: "Live", summary: "It exists." },
-    ]);
-
-    const result = await fixStaleIndex("index-live");
-
-    expect(result).toEqual({
-      success: false,
-      slug: "index-live",
-      message: 'Page "index-live" exists — index entry is not stale',
-    });
-    // Nothing was dropped and nothing was logged.
-    expect(mockedUpdateIndex).not.toHaveBeenCalled();
-    expect(mockedAppendToLog).not.toHaveBeenCalled();
-  });
-
-  it("fixSupersededDangling keeps a reference the cache says is dead", async () => {
-    // The other negative-entry guard, and the one whose damage is silent: the
-    // page's `supersedes` points at a target that DOES exist, but a scan that
-    // missed it left `null` cached for that slug. Read through the cache, the
-    // fix concludes the reference is dead and deletes it — losing a lineage
-    // link no later pass can reconstruct.
-    //
-    // Slug-aware rather than `staleCache`, because the two reads here are
-    // different pages: the page being fixed reads the same in both modes, and
-    // only the TARGET is the one the cache is wrong about.
-    mockedReadWikiPageWithFrontmatter.mockImplementation(
-      async (slug: string, options?: { fresh?: boolean }) => {
-        if (slug === "has-supersedes") {
-          return {
-            slug,
-            title: "Has Supersedes",
-            content: "# Has Supersedes\n\nBody.",
-            path: "/wiki/has-supersedes.md",
-            frontmatter: { supersedes: "target-live" },
-            body: "# Has Supersedes\n\nBody.",
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          } as any;
-        }
-        if (slug === "target-live") {
-          // The stale negative entry, and what storage actually holds.
-          return options?.fresh === true
-            ? ({
-                slug,
-                title: "Target",
-                content: "# Target\n\nIt exists.",
-                path: "/wiki/target-live.md",
-                frontmatter: {},
-                body: "# Target\n\nIt exists.",
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              } as any)
-            : null;
-        }
-        return null;
-      },
-    );
-
-    const result = await fixSupersededDangling("has-supersedes");
-
-    expect(result).toEqual({
-      success: false,
-      slug: "has-supersedes",
-      message: 'supersedes target "target-live" now exists — nothing to fix',
-    });
-    // The reference is still on the page: nothing was written at all.
-    expect(mockedWriteWikiPageWithSideEffects).not.toHaveBeenCalled();
   });
 });

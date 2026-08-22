@@ -38,6 +38,7 @@ function settings(
     hasApiKey: false,
     ollamaBaseUrl: null,
     ollamaBaseUrlSource: "none",
+    ollamaBaseUrlIssue: null,
     structuredKnowledgeProvider: null,
     structuredKnowledgeProviderSource: "none",
     structuredKnowledgeModel: null,
@@ -160,5 +161,53 @@ describe("StructuredKnowledgeSettings — the custom-endpoint pointer", () => {
     expect(customPointer()).toBeNull();
     // …and the section says so, rather than quietly rendering nothing.
     expect(screen.getByText(/Primary provider/)).toBeTruthy();
+  });
+});
+
+describe("StructuredKnowledgeSettings — the credential badge", () => {
+  // The badge is a pure read of `structuredKnowledgeConfigured`, which DW-403
+  // changed the MEANING of: `providerIsUsable` now ANDs in the model name a
+  // `custom` selection has no default for, so the payload that used to arrive
+  // `true` for a configuration extraction refuses arrives `false`. The rule is
+  // executed in `config.test.ts`; this is the half of the row a source scan
+  // cannot see — that the flag reaches the owner as the amber sentence.
+
+  it('reads "Credential required" when the payload reports it unconfigured', () => {
+    render(
+      <StructuredKnowledgeSettings
+        {...props({
+          provider: "custom",
+          settings: settings({
+            structuredKnowledgeProvider: "custom",
+            structuredKnowledgeProviderSource: "config",
+            structuredKnowledgeConfigured: false,
+          }),
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Credential required")).toBeTruthy();
+    expect(screen.queryByText("Credential ready")).toBeNull();
+  });
+
+  it('reads "Credential ready" once the payload reports a usable selection', () => {
+    render(
+      <StructuredKnowledgeSettings
+        {...props({
+          provider: "custom",
+          model: "my-model",
+          settings: settings({
+            structuredKnowledgeProvider: "custom",
+            structuredKnowledgeProviderSource: "config",
+            structuredKnowledgeModel: "my-model",
+            structuredKnowledgeModelSource: "config",
+            structuredKnowledgeConfigured: true,
+          }),
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Credential ready")).toBeTruthy();
+    expect(screen.queryByText("Credential required")).toBeNull();
   });
 });

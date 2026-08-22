@@ -20,6 +20,10 @@ import {
   getRawDir,
   getEmbeddingModelOverride,
   getOllamaBaseUrl,
+  envOllamaBaseUrlAnswer,
+  resolveOllamaBaseUrl,
+  providerIsConfigured,
+  providerIsUsable,
   detectEnvProvider,
   DEFAULT_MODELS,
   applyWorkbenchSettings,
@@ -55,6 +59,11 @@ const ENV_KEYS = [
   "EMBEDDING_PROVIDER",
   "YOPEDIA_READONLY",
   "STORAGE_PROVIDER",
+  // The `custom` provider's two halves. They may live in the STORE, so a
+  // variable left set in the ambient environment would silently satisfy
+  // `providerIsConfigured("custom")` for cases that mean to control both.
+  "LLM_CUSTOM_API_KEY",
+  "LLM_CUSTOM_BASE_URL",
 ];
 
 beforeEach(async () => {
@@ -76,6 +85,8 @@ beforeEach(async () => {
   delete process.env.OLLAMA_MODEL;
   delete process.env.LLM_MODEL;
   delete process.env.EMBEDDING_PROVIDER;
+  delete process.env.LLM_CUSTOM_API_KEY;
+  delete process.env.LLM_CUSTOM_BASE_URL;
 
   // Point config store at the temp dir
   process.env.DATA_DIR = tmpDir;
@@ -103,6 +114,34 @@ afterEach(async () => {
   // Clean up temp dir
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
+
+/**
+ * Run `body` with `logger.warn` captured, and hand back this module's lines.
+ *
+ * ONE helper for every warn-once suite in this file. Three identical copies
+ * lived inside three `describe` blocks, which is three things to keep in step
+ * about how a warning is even observed — and the filter on `"config"` is what
+ * makes these assertions counts of THIS module's lines rather than of every
+ * line the process emitted.
+ *
+ * Synchronous on purpose: every body here reads a resolver, and awaiting the
+ * spy's own scope would let a line emitted after `finally` escape the capture.
+ * Cases that need `saveConfig`/`loadConfig` first do that OUTSIDE the spy,
+ * where those writes are not the thing being measured.
+ */
+function withWarnSpy<T>(body: () => T): { result: T; warnings: string[] } {
+  const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+  try {
+    return {
+      result: body(),
+      warnings: warn.mock.calls
+        .filter((call) => call[0] === "config")
+        .map((call) => String(call[1])),
+    };
+  } finally {
+    warn.mockRestore();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // loadConfig
@@ -1170,24 +1209,6 @@ describe("getOllamaBaseUrl", () => {
 // ---------------------------------------------------------------------------
 
 describe("getOllamaBaseUrl validation", () => {
-  /** Run `body` with `logger.warn` captured, and hand back this module's lines. */
-  async function withWarnSpy<T>(
-    body: () => T | Promise<T>,
-  ): Promise<{ result: T; warnings: string[] }> {
-    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
-    try {
-      const result = await body();
-      return {
-        result,
-        warnings: warn.mock.calls
-          .filter((call) => call[0] === "config")
-          .map((call) => String(call[1])),
-      };
-    } finally {
-      warn.mockRestore();
-    }
-  }
-
   it("falls THROUGH a bad stored endpoint to nothing, and warns once", async () => {
     // DW-304 made the write door refuse this; it does nothing about a value
     // stored before that rule, hand-edited in, or restored from a backup. The
@@ -1195,7 +1216,7 @@ describe("getOllamaBaseUrl validation", () => {
     await saveConfig({ ollamaBaseUrl: "file:///etc/passwd" });
     await loadConfig();
 
-    const { result, warnings } = await withWarnSpy(() => getOllamaBaseUrl());
+    const { result, warnings } = withWarnSpy(() => getOllamaBaseUrl());
 
     expect(result).toBeUndefined();
     expect(warnings).toHaveLength(1);
@@ -1209,7 +1230,7 @@ describe("getOllamaBaseUrl validation", () => {
     await loadConfig();
     process.env.OLLAMA_BASE_URL = "localhost:11434";
 
-    const { result, warnings } = await withWarnSpy(() => getOllamaBaseUrl());
+    const { result, warnings } = withWarnSpy(() => getOllamaBaseUrl());
 
     expect(result).toBe("http://ollama.internal:11434");
     expect(warnings).toHaveLength(1);
@@ -1221,7 +1242,7 @@ describe("getOllamaBaseUrl validation", () => {
     await loadConfig();
     process.env.OLLAMA_BASE_URL = "localhost:11434";
 
-    const { result, warnings } = await withWarnSpy(() => getOllamaBaseUrl());
+    const { result, warnings } = withWarnSpy(() => getOllamaBaseUrl());
 
     expect(result).toBeUndefined();
     expect(warnings).toHaveLength(2);
@@ -1235,7 +1256,7 @@ describe("getOllamaBaseUrl validation", () => {
     await loadConfig();
     process.env.OLLAMA_BASE_URL = "localhost:11434";
 
-    const { result, warnings } = await withWarnSpy(() => getOllamaBaseUrl());
+    const { result, warnings } = withWarnSpy(() => getOllamaBaseUrl());
 
     expect(result).toBeUndefined();
     expect(warnings).toHaveLength(2);
@@ -1250,7 +1271,7 @@ describe("getOllamaBaseUrl validation", () => {
     await saveConfig({ ollamaBaseUrl: "not-a-url" });
     await loadConfig();
 
-    const { warnings } = await withWarnSpy(() => {
+    const { warnings } = withWarnSpy(() => {
       for (let i = 0; i < 25; i += 1) getOllamaBaseUrl();
     });
 
@@ -1265,7 +1286,7 @@ describe("getOllamaBaseUrl validation", () => {
     await loadConfig();
     process.env.OLLAMA_BASE_URL = "  ";
 
-    const { result, warnings } = await withWarnSpy(() => getOllamaBaseUrl());
+    const { result, warnings } = withWarnSpy(() => getOllamaBaseUrl());
 
     expect(result).toBeUndefined();
     expect(warnings).toHaveLength(0);
@@ -1287,7 +1308,7 @@ describe("getOllamaBaseUrl validation", () => {
     await saveConfig({ provider: "ollama", ollamaBaseUrl: "file:///etc/passwd" });
     await loadConfig();
 
-    await withWarnSpy(() => {
+    withWarnSpy(() => {
       expect(getResolvedCredentials().ollamaBaseUrl).toBeNull();
     });
 
@@ -1304,21 +1325,6 @@ describe("getOllamaBaseUrl validation", () => {
 // ---------------------------------------------------------------------------
 
 describe("detectEnvProvider — the ollama branch", () => {
-  /** Run `body` with `logger.warn` captured, and hand back this module's lines. */
-  function withWarnSpy<T>(body: () => T): { result: T; warnings: string[] } {
-    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
-    try {
-      return {
-        result: body(),
-        warnings: warn.mock.calls
-          .filter((call) => call[0] === "config")
-          .map((call) => String(call[1])),
-      };
-    } finally {
-      warn.mockRestore();
-    }
-  }
-
   it("selects ollama from a USABLE endpoint", () => {
     process.env.OLLAMA_BASE_URL = "http://host:11434";
 
@@ -1561,5 +1567,306 @@ describe("applyWorkbenchSettings — embedding provider secret isolation", () =>
     applyWorkbenchSettings(existing, { embeddingProvider: "google" });
     expect(existing.embeddingApiKey).toBe("sk-o");
     expect(existing.embeddingBaseUrl).toBe("https://o/v1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The refusal is a VALUE, not a log line only (DW-402)
+// ---------------------------------------------------------------------------
+
+describe("the Ollama endpoint ladder reports WHY it refused a value", () => {
+  it("reports the ENV refusal on both accessors, and says the SAME thing the log did", () => {
+    // The whole point of the shared copy: the sentence a server operator finds
+    // in the log and the sentence the owner reads on the screen are one string,
+    // so they cannot drift into two explanations of one fact.
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result, warnings } = withWarnSpy(() => ({
+      env: envOllamaBaseUrlAnswer(),
+      full: resolveOllamaBaseUrl({}),
+    }));
+
+    // The URL half is untouched: still `undefined`, still no throw.
+    expect(result.env.url).toBeUndefined();
+    expect(result.full.url).toBeUndefined();
+    expect(getOllamaBaseUrl({})).toBeUndefined();
+
+    for (const issue of [result.env.issue, result.full.issue]) {
+      expect(issue).toContain("OLLAMA_BASE_URL");
+      expect(issue).toContain("localhost:11434");
+      // …and what to set instead, which is the only actionable half. The full
+      // path, matching the endpoint box's own placeholder — a remedy showing a
+      // different shape from the field beneath it is two answers, not one.
+      expect(issue).toContain("http://localhost:11434/api");
+    }
+    expect(result.full.issue).toBe(result.env.issue);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toBe(result.env.issue);
+  });
+
+  it("keeps the ENV reason when the STORE supplies the usable endpoint", async () => {
+    // The env value is the one that WOULD have won, so it is the one worth
+    // explaining — the owner set it and it is not the address in use.
+    await saveConfig({ ollamaBaseUrl: "http://ollama.internal:11434" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result } = withWarnSpy(() => resolveOllamaBaseUrl());
+
+    expect(result.url).toBe("http://ollama.internal:11434");
+    expect(result.issue).toContain("OLLAMA_BASE_URL");
+  });
+
+  it("reports NOTHING when the env value is usable — the store is never walked", async () => {
+    // A leg that never ran contributes no reason. The stored value here is
+    // unusable and must stay unmentioned: nothing read it, so complaining about
+    // it would describe a value that had no bearing on the answer.
+    await saveConfig({ ollamaBaseUrl: "not-a-url" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "http://host:11434";
+
+    const { result, warnings } = withWarnSpy(() => resolveOllamaBaseUrl());
+
+    expect(result).toEqual({ url: "http://host:11434", issue: null });
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("names the STORE, not the variable, when only the stored endpoint is refused", async () => {
+    await saveConfig({ ollamaBaseUrl: "not-a-url" });
+    await loadConfig();
+
+    const { result, warnings } = withWarnSpy(() => resolveOllamaBaseUrl());
+
+    expect(result.url).toBeUndefined();
+    expect(result.issue).toContain("stored");
+    expect(result.issue).toContain("not-a-url");
+    expect(result.issue).not.toContain("OLLAMA_BASE_URL");
+    // …and the remedy names the shape the endpoint box itself prompts for.
+    expect(result.issue).toContain("http://localhost:11434/api");
+    // THE SAME STRING the log got — the half most likely to drift, because the
+    // store's reason is only ever REPORTED when the env leg has none, so a
+    // second wording here could sit unnoticed behind every env-refused case.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toBe(result.issue);
+    // The env leg refused nothing, so IT reports nothing.
+    expect(envOllamaBaseUrlAnswer().issue).toBeNull();
+  });
+
+  it("treats BLANK as unset: no warning and no reason", async () => {
+    await saveConfig({ ollamaBaseUrl: "   " });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "  ";
+
+    const { result, warnings } = withWarnSpy(() => resolveOllamaBaseUrl());
+
+    expect(result).toEqual({ url: undefined, issue: null });
+    expect(envOllamaBaseUrlAnswer()).toEqual({ url: undefined, issue: null });
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("still warns for BOTH legs when both are refused, reporting the env one", async () => {
+    // Reporting one reason to the screen must not silence the other in the log:
+    // the two are different things to fix and the operator needs both.
+    await saveConfig({ ollamaBaseUrl: "not-a-url" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result, warnings } = withWarnSpy(() => resolveOllamaBaseUrl());
+
+    expect(result.url).toBeUndefined();
+    expect(result.issue).toContain("OLLAMA_BASE_URL");
+    expect(warnings).toHaveLength(2);
+    expect(warnings.filter((line) => line.includes("OLLAMA_BASE_URL"))).toHaveLength(1);
+    expect(warnings.filter((line) => line.includes("stored"))).toHaveLength(1);
+  });
+
+  it("carries the ENV reason on `/api/status`'s object", () => {
+    // The DW-402 deployment: the only Ollama signal is a refused variable, so
+    // no provider is selected at all and `configured: false` was the whole of
+    // what this object said about it.
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result } = withWarnSpy(() => getEffectiveProvider());
+
+    expect(result.provider).toBeNull();
+    expect(result.configured).toBe(false);
+    expect(result.ollamaBaseUrlIssue).toContain("OLLAMA_BASE_URL");
+    expect(result.ollamaBaseUrlIssue).toContain("localhost:11434");
+  });
+
+  it("keeps `ProviderInfo`'s reason ENV-ONLY, even when the store is what was refused", async () => {
+    // `detectEnvProvider` does not consult the store (DW-370), so this object
+    // must not answer a question it does not ask. The stored complaint has its
+    // own home on `EffectiveSettings`.
+    await saveConfig({ provider: "ollama", ollamaBaseUrl: "not-a-url" });
+    await loadConfig();
+
+    const { result } = withWarnSpy(() => getEffectiveProvider());
+
+    expect(result.ollamaBaseUrlIssue).toBeNull();
+    expect(withWarnSpy(() => getEffectiveSettings()).result.ollamaBaseUrlIssue).toContain(
+      "stored",
+    );
+  });
+
+  it("carries the FULL ladder's reason on the settings payload", async () => {
+    await saveConfig({ provider: "ollama" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result } = withWarnSpy(() => getEffectiveSettings());
+
+    // The box is empty and the badge says `none` — and now the payload says why.
+    expect(result.ollamaBaseUrl).toBeNull();
+    expect(result.ollamaBaseUrlSource).toBe("none");
+    expect(result.ollamaBaseUrlIssue).toContain("OLLAMA_BASE_URL");
+    expect(result.ollamaBaseUrlIssue).toContain("localhost:11434");
+  });
+
+  it("reports NO reason for Ollama Cloud, whose endpoint is not the ladder's", async () => {
+    // The cloud branch returns before the ladder is walked, so a refused
+    // variable had no bearing on the endpoint reported beside it.
+    await saveConfig({ provider: "ollama-cloud" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+    process.env.OLLAMA_API_KEY = "ollama-key";
+
+    const { result } = withWarnSpy(() => getEffectiveSettings());
+
+    expect(result.ollamaBaseUrl).toBe("https://ollama.com/api");
+    expect(result.ollamaBaseUrlSource).toBe("default");
+    expect(result.ollamaBaseUrlIssue).toBeNull();
+  });
+
+  it("reports no reason at all when nothing was refused", async () => {
+    await saveConfig({ provider: "ollama", ollamaBaseUrl: "http://ollama.internal:11434" });
+    await loadConfig();
+
+    expect(getEffectiveSettings().ollamaBaseUrlIssue).toBeNull();
+    expect(getEffectiveProvider().ollamaBaseUrlIssue).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Readiness needs a MODEL, not just a credential (DW-403)
+// ---------------------------------------------------------------------------
+
+describe("a provider with no default model is only ready once it is handed one", () => {
+  /** Both credential halves for `custom`, in the store where they may live. */
+  const CUSTOM_CREDENTIALS = {
+    provider: "custom",
+    customApiKey: "sk-custom",
+    customBaseUrl: "https://api.example/v1",
+  } as const;
+
+  it("refuses `custom` with both credential halves and no model anywhere", async () => {
+    // `providerIsConfigured` says yes — the credential question is satisfied —
+    // and `extractStructuredKnowledge` still refuses on `!selection.model`. The
+    // extraction badge read "Credential ready" for a configuration extraction
+    // will not run.
+    await saveConfig(CUSTOM_CREDENTIALS);
+    await loadConfig();
+
+    expect(providerIsConfigured("custom")).toBe(true);
+    expect(getEffectiveProvider().configured).toBe(false);
+    expect(getEffectiveSettings().configured).toBe(false);
+    expect(getStructuredKnowledgeModelSettings().configured).toBe(false);
+  });
+
+  it("accepts `custom` once a model is stored", async () => {
+    await saveConfig({ ...CUSTOM_CREDENTIALS, model: "my-model" });
+    await loadConfig();
+
+    expect(getEffectiveProvider().configured).toBe(true);
+    expect(getEffectiveSettings().configured).toBe(true);
+    expect(getStructuredKnowledgeModelSettings().configured).toBe(true);
+  });
+
+  it("accepts `custom` from a WORKLOAD model, on the workload site only", async () => {
+    await saveConfig({
+      ...CUSTOM_CREDENTIALS,
+      structuredKnowledgeProvider: "custom",
+      structuredKnowledgeModel: "extraction-model",
+    });
+    await loadConfig();
+
+    // The workload resolved its own model, so extraction is ready…
+    expect(getStructuredKnowledgeModelSettings().configured).toBe(true);
+    // …while the primary, which resolved none, is not. Each site judges the
+    // model IT resolved.
+    expect(getEffectiveProvider().configured).toBe(false);
+  });
+
+  it("accepts `custom` from LLM_MODEL", async () => {
+    await saveConfig(CUSTOM_CREDENTIALS);
+    await loadConfig();
+    process.env.LLM_MODEL = "env-model";
+
+    expect(getEffectiveProvider().configured).toBe(true);
+    expect(getEffectiveSettings().configured).toBe(true);
+  });
+
+  it("refuses a WHITESPACE-ONLY model, which `llm.ts` trims away to nothing", async () => {
+    await saveConfig({ ...CUSTOM_CREDENTIALS, model: "   " });
+    await loadConfig();
+
+    expect(getEffectiveProvider().configured).toBe(false);
+    expect(getEffectiveSettings().configured).toBe(false);
+    expect(getStructuredKnowledgeModelSettings().configured).toBe(false);
+  });
+
+  it("leaves a provider that CARRIES a default model reporting exactly as before", async () => {
+    // The rule is keyed off `DEFAULT_MODELS`, not off the literal "custom", and
+    // every provider with an entry falls back to it — so no keyed deployment's
+    // readiness moves.
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    await saveConfig({ provider: "anthropic" });
+    await loadConfig();
+
+    expect(getEffectiveProvider()).toMatchObject({ model: DEFAULT_MODELS.anthropic, configured: true });
+    expect(getEffectiveSettings().configured).toBe(true);
+    expect(getStructuredKnowledgeModelSettings().configured).toBe(true);
+
+    // …including `ollama`, whose credential is "none required".
+    await saveConfig({ provider: "ollama" });
+    _resetConfigCache();
+    await loadConfig();
+    expect(getEffectiveProvider().configured).toBe(true);
+  });
+
+  it("does not mistake an inherited Object member for a default model", async () => {
+    // `DEFAULT_MODELS` is a `Record<string, string>`, so a BARE index lookup
+    // walks the prototype: these names all resolve to a function and would tell
+    // the predicate "this provider carries a default, it needs no model" —
+    // readiness granted with no model anywhere. `cfg.provider` comes off disk,
+    // and this predicate is exported and asked at three sites, so the lookup
+    // must ask about the map's OWN keys.
+    for (const inherited of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+      // The hole is real: the bare lookup IS defined for every one of these…
+      expect((DEFAULT_MODELS as Record<string, unknown>)[inherited]).toBeDefined();
+      // …and the own-key question, which is the one the predicate asks, is not.
+      expect(Object.hasOwn(DEFAULT_MODELS, inherited)).toBe(false);
+      expect(providerIsUsable(inherited, null)).toBe(false);
+    }
+    // Every real provider still answers the own-key question the same way.
+    for (const real of Object.keys(DEFAULT_MODELS)) {
+      expect(Object.hasOwn(DEFAULT_MODELS, real)).toBe(true);
+    }
+  });
+
+  it("keeps `providerIsConfigured`'s own contract untouched", async () => {
+    // `llm.ts`'s `hasCustomProvider` gate asks the CREDENTIAL question and must
+    // keep getting the credential answer: a stored `custom` with no model is
+    // still a provider whose two halves are present. The new predicate is a
+    // composition over it, not a redefinition of it.
+    await saveConfig(CUSTOM_CREDENTIALS);
+    await loadConfig();
+
+    expect(providerIsConfigured("custom")).toBe(true);
+    expect(providerIsUsable("custom", null)).toBe(false);
+    expect(providerIsUsable("custom", "any-model")).toBe(true);
+    // A model cannot rescue a provider with no credential, in either direction.
+    expect(providerIsUsable(null, "a-model")).toBe(false);
+    expect(providerIsUsable("anthropic", "a-model")).toBe(false);
   });
 });

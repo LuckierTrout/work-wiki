@@ -336,22 +336,13 @@ describe("input validation", () => {
  * inside the lock or dropping it: every one of them would still pass with the
  * bump deleted if it only asserted on bytes.
  *
- * DELETE (DW-382) IS IN HERE FOR A DIFFERENT REASON, and the rows say so: it
- * moves no bytes a Preview renders at all. A Preview resolves both artifacts
- * through `currentId` read server-side at fetch time and the current Wiki is
- * undeletable, and the Files tree is built from `currentId` alone — so nothing a
- * delete takes can be under a second client. What goes stale there is the WIKI
- * LIST `page.tsx` hands down and `WikiSwitcher` renders: that client keeps
- * offering a Wiki that is gone, and acting on it 404s. A delete moves no
- * `currentWikiId` either, so the counter is the only thing that can tell it.
- *
  * EVERY ROW STARTS FROM A NON-ZERO COUNTER. `beforeEach` mints a fresh
  * `DATA_DIR`, so an unseeded counter reads `0` — and `0` is also what
  * `readDataVersion` answers when the store is unreadable. A `before` of `0`
  * would let "bumps once" pass against an implementation that just STORES `1`,
  * and let the "does not bump" rows pass against a counter that is failing open.
  */
-describe("create, re-template, rename and delete move the refresh signal (DW-49, DW-57, DW-209, DW-382)", () => {
+describe("create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209)", () => {
   it("bumps exactly once per create, not once per seeded file", async () => {
     // The FIRST create is what lifts the counter off zero, so the second one's
     // `before + 1` is arithmetic on the stored value rather than a literal an
@@ -509,150 +500,6 @@ describe("create, re-template, rename and delete move the refresh signal (DW-49,
     expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain("# Ops");
   });
 
-  it("bumps exactly once per delete, not once per removed directory", async () => {
-    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
-    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
-    // `drop` was created last, so it is current — move the pointer back.
-    await setCurrentWiki(OWNER, keep.id);
-    // TWO aged orphans, so the inline sweep really has directories to reclaim
-    // and "once" is arithmetic rather than an artefact of a single removal.
-    const orphans = [
-      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-      "11111111-2222-4333-8444-555555555555",
-    ];
-    for (const id of orphans) await ageDirectory(await plantOrphan(id));
-    const before = await readDataVersion();
-    expect(before).toBeGreaterThan(0); // the two creates' own bumps
-
-    expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
-
-    // Once, not once per removed directory: three directories went — the
-    // target's and both orphans' — and the signal is monotonic, so a consumer
-    // only needs "it moved forward".
-    expect(await readDataVersion()).toBe(before + 1);
-    // …and the bump is earned. The DELETE moves no `currentWikiId` — it refuses
-    // the current Wiki rather than re-pointing it — so the Workbench's
-    // selection-reset effect never fires, and this counter is the ONLY thing
-    // that can tell a SECOND open client that the Wiki list it is still
-    // offering names a Wiki that is gone (DW-382).
-    expect(await exists(wikiDir(drop.id))).toBe(false);
-    for (const id of orphans) expect(await exists(wikiDir(id))).toBe(false);
-  });
-
-  it("does not bump for a delete of an unknown or traversal-shaped id", async () => {
-    await createWiki(OWNER, { name: "Ops", scenario: "business" });
-    const before = await readDataVersion();
-    expect(before).toBeGreaterThan(0); // so "unchanged" is not "still zero"
-
-    for (const id of ["00000000-0000-4000-8000-000000000000", "../../etc/passwd"]) {
-      expect(await deleteWiki(OWNER, id)).toBeNull();
-    }
-
-    // The locked body returns before its first write, so no list anywhere has
-    // changed and a refresh would be pure churn.
-    expect(await readDataVersion()).toBe(before);
-  });
-
-  it("does not bump when the current-wiki refusal throws", async () => {
-    await createWiki(OWNER, { name: "One", scenario: "business" });
-    const second = await createWiki(OWNER, { name: "Two", scenario: "reading" });
-    const before = await readDataVersion();
-    expect(before).toBeGreaterThan(0);
-
-    // The refusal throws from inside the locked body, before a byte is written,
-    // and propagates straight past the tail.
-    await expect(deleteWiki(OWNER, second.id)).rejects.toThrow(ClientInputError);
-
-    // The counter ONLY: that nothing else moved — entry, directory, pointer —
-    // is already pinned in `describe("deleting a wiki")`.
-    expect(await readDataVersion()).toBe(before);
-  });
-
-  it("bumps a delete whose own directory removal failed", async () => {
-    // The registry entry is gone, so the Wiki has disappeared from every read
-    // in the app and the list a second client is offering is wrong whether or
-    // not the bytes went with it. `deleteDirectory` is fail-soft, so skipping
-    // the bump here would drop the signal on exactly the path where the two
-    // representations have diverged.
-    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
-    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
-    await setCurrentWiki(OWNER, keep.id);
-    const before = await readDataVersion();
-    expect(before).toBeGreaterThan(0);
-
-    const removal = vi
-      .spyOn(getStorage(), "deleteDirectory")
-      .mockRejectedValue(new Error("the directory is busy"));
-    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
-    let warned: unknown[][] = [];
-    try {
-      expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
-      // Captured BEFORE the restore — `mockRestore` clears `mock.calls`.
-      warned = warn.mock.calls.map((call) => [...call]);
-    } finally {
-      warn.mockRestore();
-      removal.mockRestore();
-    }
-
-    expect(await readDataVersion()).toBe(before + 1);
-    // The bytes really ARE still on disk — so the bump above is not being
-    // earned by a removal that quietly succeeded.
-    expect(await exists(wikiDir(drop.id))).toBe(true);
-    // …and the handler whose whole contract is "warn and swallow" really warned.
-    expect(
-      warned.some(
-        ([scope, message]) =>
-          scope === "wikis" &&
-          String(message).includes(
-            `removing the directory of deleted wiki "${drop.id}" failed`,
-          ),
-      ),
-    ).toBe(true);
-  });
-
-  it("bumps a delete whose inline orphan sweep failed", async () => {
-    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
-    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
-    await setCurrentWiki(OWNER, keep.id);
-    // Aged, so a sweep that RAN would have reclaimed it — which is what makes
-    // "still there" below evidence that the sweep really failed rather than an
-    // assertion that would hold on the happy path too.
-    const orphan = await plantOrphan("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
-    await ageDirectory(orphan);
-    const before = await readDataVersion();
-    expect(before).toBeGreaterThan(0);
-
-    // `sweepOrphans`' FIRST storage call, so the sweep throws while the Wiki's
-    // own `deleteDirectory` still succeeds. A blanket `deleteDirectory` mock
-    // would conflate the two failure modes.
-    const listing = vi
-      .spyOn(getStorage(), "listFiles")
-      .mockRejectedValue(new Error("the object store is unavailable"));
-    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
-    let warned: unknown[][] = [];
-    try {
-      expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
-      warned = warn.mock.calls.map((call) => [...call]);
-    } finally {
-      warn.mockRestore();
-      listing.mockRestore();
-    }
-
-    expect(await readDataVersion()).toBe(before + 1);
-    // The target's own directory went; the aged orphan did NOT — only true when
-    // the sweep failed, and what keeps this row from silently becoming a
-    // duplicate of the happy-path one the day the `listFiles` seam moves.
-    expect(await exists(wikiDir(drop.id))).toBe(false);
-    expect(await exists(orphan)).toBe(true);
-    expect(
-      warned.some(
-        ([scope, message]) =>
-          scope === "wikis" &&
-          String(message).includes("sweeping orphaned wiki directories failed"),
-      ),
-    ).toBe(true);
-  });
-
   // -------------------------------------------------------------------------
   // The counter store is down
   // -------------------------------------------------------------------------
@@ -661,13 +508,12 @@ describe("create, re-template, rename and delete move the refresh signal (DW-49,
    * WHOSE warning to assert on, and why it is not the callers'.
    *
    * `bumpDataVersion` wraps its ENTIRE body, so a rejecting `putIndex` makes it
-   * answer `0` rather than throw — which means the `try/catch` in `createWiki`,
-   * `applyScenarioTemplate`, `renameWiki` and `deleteWiki` never runs and their
-   * "the refresh signal did not move after …" wording never reaches the log. Those wrappers are
+   * answer `0` rather than throw — which means the `try/catch` in `createWiki`
+   * and `applyScenarioTemplate` never runs and their "the refresh signal did
+   * not move after …" wording never reaches the log. Those wrappers are
    * redundant defence, kept deliberately so the tail reads identically at all
-   * five call sites (`writeWikiArtifact` and `deleteWiki` included) and stays
-   * correct if `bumpDataVersion` ever stops swallowing; they are unreachable
-   * today.
+   * three call sites (`writeWikiArtifact` included) and stays correct if
+   * `bumpDataVersion` ever stops swallowing; they are unreachable today.
    *
    * So these rows assert on `data-version`'s own warn. Asserting on the
    * callers' sentence instead would be a test that passes with their `catch`
@@ -775,42 +621,6 @@ describe("create, re-template, rename and delete move the refresh signal (DW-49,
     expect(renamed?.name).toBe("Q4 plan");
     expect((await getWikiRegistry(OWNER)).wikis[0].name).toBe("Q4 plan");
     expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain("# Q4 plan");
-    // …while the signal genuinely did NOT move.
-    expect(await readDataVersion()).toBe(before);
-    expect(
-      warned.some(
-        ([scope, message]) =>
-          scope === "data-version" && String(message).includes(BUMP_FAILED_WARN),
-      ),
-    ).toBe(true);
-  });
-
-  it("still resolves a delete when the counter store rejects putIndex", async () => {
-    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
-    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
-    await setCurrentWiki(OWNER, keep.id);
-    const before = await readDataVersion();
-    expect(before).toBeGreaterThan(0);
-
-    const putIndex = vi
-      .spyOn(getStorage(), "putIndex")
-      .mockRejectedValue(new Error("kv is gone"));
-    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
-
-    let deleted: WikiRecord | null;
-    let warned: unknown[][] = [];
-    try {
-      deleted = await deleteWiki(OWNER, drop.id);
-      warned = warn.mock.calls.map((call) => [...call]);
-    } finally {
-      warn.mockRestore();
-      putIndex.mockRestore();
-    }
-
-    // The delete resolved and both halves of it landed…
-    expect(deleted?.id).toBe(drop.id);
-    expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([keep.id]);
-    expect(await exists(wikiDir(drop.id))).toBe(false);
     // …while the signal genuinely did NOT move.
     expect(await readDataVersion()).toBe(before);
     expect(
@@ -1125,13 +935,6 @@ async function ageDirectory(
   await fs.utimes(dir, when, when);
 }
 
-/** A `wikis/<uuid>/` directory with artifacts and no registry entry. */
-async function plantOrphan(id: string): Promise<string> {
-  await fs.mkdir(wikiDir(id), { recursive: true });
-  await fs.writeFile(path.join(wikiDir(id), "purpose.md"), "# Orphan\n");
-  return wikiDir(id);
-}
-
 /** Backdate a Wiki's `updatedAt` so "bumped" is an observation, not a coin flip. */
 async function backdate(wikiId: string, when = "2000-01-01T00:00:00.000Z"): Promise<void> {
   const file = abs(wikiRegistryPath(OWNER));
@@ -1346,6 +1149,13 @@ describe("deleting a wiki", () => {
 });
 
 describe("the orphan-directory sweep", () => {
+  /** A `wikis/<uuid>/` directory with artifacts and no registry entry. */
+  async function plantOrphan(id: string): Promise<string> {
+    await fs.mkdir(wikiDir(id), { recursive: true });
+    await fs.writeFile(path.join(wikiDir(id), "purpose.md"), "# Orphan\n");
+    return wikiDir(id);
+  }
+
   it("removes only unreferenced uuid directories, and counts them", async () => {
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     const orphan = await plantOrphan("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");

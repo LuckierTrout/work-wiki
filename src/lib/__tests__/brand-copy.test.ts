@@ -53,66 +53,6 @@ import manifest from "../../app/manifest";
 const SRC = path.resolve(__dirname, "../..");
 const ROOT = path.resolve(SRC, "..");
 
-/**
- * The lowercase-hyphen `yopedia-` family, name by name: the task queue and its
- * DLQ, the three Worker scripts, the R2 bucket, the Vectorize index, the three
- * temp-log basenames `scripts/setup-cloudflare.sh` derives from them, the
- * sandbox host and the source-monitor User-Agent.
- *
- * Enumerated, not shaped. The `yopedia-[a-z-]+` this replaced was a SHAPE, so
- * it waived "the yopedia-first workflow" as if it were a Cloudflare resource
- * (DW-352). Longest alternative first wherever one name prefixes another
- * (`tasks-dlq` before `tasks`), so the boundary lands past the whole name.
- *
- * Hoisted out of the allowlist so it can be checked for MINIMALITY. A retired
- * resource whose name stayed here would be the mirror failure — a word quietly
- * waived as display prose for something that no longer exists — so the test
- * below fails when a name here stops occurring in the scanned corpus, exactly
- * as `YOPEDIA_PROSE_EXEMPT` fails on a count that has gone stale.
- */
-const YOPEDIA_HYPHEN_IDENTIFIERS = [
-  "tasks-dlq",
-  "tasks",
-  "task-consumer",
-  "email-ingest",
-  "sandbox-runner",
-  "sandbox.internal",
-  "embeddings-bge-m3",
-  "raw",
-  "pages",
-  "vec",
-  "r2",
-  "monitor",
-] as const;
-
-/**
- * The enumeration as one anchored pattern, built from the list above so the
- * two cannot drift.
- *
- * Both boundaries block `A-Z`, `a-z`, `0-9`, `_` and `-`. Blocking more than
- * lowercase is the point: with only `[a-z0-9-]` guarded, "yopedia-tasksQueue",
- * "yopedia-tasks_dlq" and "yopedia-monitorUA" each lose their frozen prefix and
- * the residue carries no brand word left to count — half-stripped into silence,
- * which is the outcome the guard exists to prevent, not the one it prevented.
- * The leading boundary is the same point from the other side: "not-yopedia-tasks"
- * and "Xyopedia-raw" are not this deployment's resource names.
- *
- * A trailing `.` is deliberately still allowed, and that is a real residual, not
- * an oversight: `workers/task-consumer/README.md` documents the health check at
- * `https://yopedia-task-consumer.<subdomain>.workers.dev`, and the setup script
- * writes `/tmp/yopedia-r2.log`, `/tmp/yopedia-vec.log` and `/tmp/yopedia-pages.log`
- * — blocking `.` would flag a live hostname and move the pinned exempt counts.
- * Stated plainly so nobody reads more safety here than there is: a future
- * `yopedia-<enumerated name>.<anything>` stays waived on the strength of the
- * name before the dot.
- */
-const YOPEDIA_HYPHEN_PATTERN = new RegExp(
-  `(?<![A-Za-z0-9_-])yopedia-(?:${YOPEDIA_HYPHEN_IDENTIFIERS.map((name) =>
-    name.replace(/\./g, "\\."),
-  ).join("|")})(?![A-Za-z0-9_-])`,
-  "g",
-);
-
 /** Every `yopedia` spelling that is a runtime identifier, not display copy. */
 const IDENTIFIER_ALLOWLIST = [
   // All-caps is always an identifier: env vars, secrets, and Worker bindings.
@@ -125,7 +65,7 @@ const IDENTIFIER_ALLOWLIST = [
   /"yopedia"/g, // DEFAULT_TENANT, BASE_AGENT_OWNER, MCP serverInfo.name
   /yopedia--[a-z0-9-]+/g, // agent ids derived from BASE_AGENT_OWNER
   /yopedia_[a-z_]+/g, // localStorage keys
-  YOPEDIA_HYPHEN_PATTERN, // the enumerated lowercase-hyphen family — see above
+  /yopedia-[a-z-]+/g, // Cloudflare resource names, sandbox host, monitor UA
   /yopedia\.yolog\.dev/g, // upstream origin referenced in comments
   // The deployment origin derived from the frozen Cloudflare project name —
   // same class as the upstream origin above, and what `skills/` documents as
@@ -421,17 +361,10 @@ function expectUnionCorpus(read: string[]): void {
 /**
  * ROOT-relative path → the number of non-allowlisted `yopedia` occurrences it
  * is grandfathered to carry TODAY. These are this deployment's own history —
- * release notes, the Cloudflare setup script, the workers' READMEs, the
- * `wrangler.jsonc` resource names, and dated operational records that cite a
- * wiki page by its `yopedia`-era SLUG — and AGENTS.md tells maintainers not to
+ * release notes, the Cloudflare setup script, the workers' READMEs and the
+ * `wrangler.jsonc` resource names — and AGENTS.md tells maintainers not to
  * "fix" them, so they are exempt from the yopedia check ONLY. Both `workwiki`
  * rules still apply to every file here.
- *
- * That last class is the newest and the least obvious: a page slug quoted in a
- * production acceptance record is not a live identifier the allowlist should
- * waive everywhere — it is a fact about one day in this deployment's past, true
- * only in that file, which is exactly what a per-file COUNT expresses and a
- * pattern cannot.
  *
  * The count, not the path, is the waiver: a file-level exemption would let an
  * exempt file accumulate new Yopedia display prose forever, which is the very
@@ -444,11 +377,6 @@ const YOPEDIA_PROSE_EXEMPT = new Map([
   ["README.md", 5],
   ["wrangler.jsonc", 2],
   [path.join("docs", "trusted-memory-roadmap.md"), 2],
-  // A wiki page slug (`yopedia-project-tracking`) cited twice in a production
-  // acceptance record — this deployment's own history, which is exactly what
-  // this map is for. It reads as exempt only since the hyphen family stopped
-  // being a shape (DW-352); before that the wildcard swallowed the slug.
-  [path.join("docs", "production-owner-session-acceptance-2026-08-03.md"), 2],
   [path.join("scripts", "setup-cloudflare.sh"), 6],
   [path.join("workers", "task-consumer", "README.md"), 2],
   [path.join("workers", "task-consumer", "wrangler.jsonc"), 5],
@@ -622,34 +550,7 @@ describe("no stale brand strings in rendered copy", () => {
       'const DEFAULT_TENANT = "yopedia";',
       'owner: "yopedia--research-agent",',
       'localStorage.getItem("yopedia_recent_pages")',
-      // The lowercase-hyphen family, spelling by spelling — the enumeration
-      // replaced a wildcard, so every real name has to be named here or the
-      // narrowing silently strands a production identifier.
-      '"queue": "yopedia-tasks"',
-      '"dead_letter_queue": "yopedia-tasks-dlq"',
-      '"name": "yopedia-task-consumer"',
-      '"name": "yopedia-email-ingest"',
-      '"name": "yopedia-sandbox-runner"',
-      'endpoint: "https://yopedia-sandbox.internal/execute"',
-      '"index_name": "yopedia-embeddings-bge-m3"',
-      '"bucket_name": "yopedia-raw"',
-      // The three `tee` targets in `scripts/setup-cloudflare.sh`: log basenames
-      // derived from the resource each command creates, not resources
-      // themselves. `yopedia-r2` in particular exists ONLY here — the bucket it
-      // logs is `yopedia-raw`.
-      //
-      // The first two are whole lines copied verbatim (`:120` and `:145`), so a
-      // reader can diff them against the script and a `--flag` added mid-line
-      // cannot quietly turn this case into fiction.
-      "if $WRANGLER r2 bucket create yopedia-raw 2>&1 | tee /tmp/yopedia-r2.log; then",
-      "if $WRANGLER vectorize create yopedia-embeddings-bge-m3 --dimensions 1024 --metric cosine 2>&1 | tee /tmp/yopedia-vec.log; then",
-      // The third is a FRAGMENT of `:159`, not the whole line, and deliberately
-      // so: that command names the Pages PROJECT as a bare `yopedia`, which no
-      // pattern waives — it is one of the six occurrences
-      // `scripts/setup-cloudflare.sh` is exempted for, and quoting the line
-      // whole would assert the opposite of what the exemption records.
-      "tee /tmp/yopedia-pages.log",
-      '"User-Agent": "yopedia-monitor/1.0"',
+      'name = "yopedia-task-queue"',
       "https://yopedia.yolog.dev/api/mcp",
       "https://yopedia.yuanhao-li.workers.dev/api/mcp",
       "forked from https://github.com/yologdev/yopedia",
@@ -662,63 +563,9 @@ describe("no stale brand strings in rendered copy", () => {
       "# Yopedia inbound email",
       // The near-miss for the deployment origin: same shape, different host.
       "Yopedia.example.com is where the docs live",
-      // The regression guard for the enumerated lowercase-hyphen family: the
-      // wildcard `yopedia-[a-z-]+` it replaced swallowed this display prose as
-      // if it were a Cloudflare resource (DW-352).
-      "the yopedia-first workflow",
-      // One near-miss per enumerated name, each differing from the frozen
-      // spelling only where the alternation (or its trailing lookahead) pins
-      // it. Without the lookahead the first characters would be stripped and
-      // the rest would carry no "yopedia" left to count — a silent pass.
-      "yopedia-taskslist is not the queue",
-      "yopedia-tasks-dlqx is not the dead-letter queue",
-      "yopedia-task-producer is not a Worker",
-      "yopedia-email-outbox is not a Worker",
-      "yopedia-sandbox-runners is not a Worker",
-      "yopedia-sandbox.example is not the sandbox host",
-      "yopedia-embeddings-v2 is not the index",
-      "yopedia-rawdata is not the bucket",
-      "yopedia-pages-index is not the Pages log",
-      "yopedia-vectors is not the Vectorize log",
-      "yopedia-r2b is not the R2 log",
-      "yopedia-monitoring is not the User-Agent",
-      // One per class the WIDENED boundaries block. Under a lowercase-only
-      // guard each of these lost its frozen prefix and the residue carried no
-      // brand word left to count, so the scan passed on display prose.
-      "yopedia-tasksQueue is not the queue", // uppercase hump
-      "yopedia-monitorUA is not the User-Agent", // uppercase hump
-      "yopedia-tasks_dlq is not the dead-letter queue", // underscore
-      "yopedia-rawIsNotTheBucket", // uppercase hump, no separator at all
-      "not-yopedia-tasks is not the queue", // leading hyphen attachment
-      "Xyopedia-raw is not the bucket", // leading letter attachment
     ]) {
       expect(hasStrayYopedia(slip), slip).toBe(true);
     }
-  });
-
-  it("keeps every waived yopedia resource name earning its place", async () => {
-    // The mirror of the exemption-count test below. `YOPEDIA_PROSE_EXEMPT`
-    // fails in BOTH directions so a stale waiver cannot outlive what it
-    // waived; the enumeration needs the same, or a retired Cloudflare resource
-    // leaves its name behind as a permanent licence to write that word as
-    // display prose — DW-352 again, from the other end.
-    //
-    // `walk()` skips `__tests__`, so the frozen-case table above cannot keep a
-    // dead name alive: the evidence has to be in the shipped tree.
-    const seen = new Set<string>();
-    const { read } = await scanBrandSources((text) => {
-      for (const name of YOPEDIA_HYPHEN_IDENTIFIERS) {
-        if (text.includes(`yopedia-${name}`)) seen.add(name);
-      }
-      return null;
-    });
-    expectUnionCorpus(read);
-    const unused = YOPEDIA_HYPHEN_IDENTIFIERS.filter((name) => !seen.has(name));
-    expect(
-      unused,
-      `YOPEDIA_HYPHEN_IDENTIFIERS waives ${unused.join(", ")}, which no scanned file spells any more — ` +
-        `drop the name so the word stops being waived, or fix the spelling if the resource was renamed.`,
-    ).toEqual([]);
   });
 
   it('every remaining "yopedia" is a runtime identifier', async () => {

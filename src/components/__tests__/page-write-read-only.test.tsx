@@ -40,41 +40,18 @@ const { router } = vi.hoisted(() => ({
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => router }));
 // `RevisionHistory` reads the Clerk session for the identity half of its Revert
-// gate: the site owner keeps the door on a realm page, and since DW-392 being
-// SIGNED IN at all is a term — an anonymous viewer is offered no Restore button,
-// because `POST /api/wiki/[slug]/revisions` is a write the middleware 401s.
-//
-// So this session is signed in, and NOT as the site owner. These cases are about
-// the deployment's read-only refusal, which is the only thing that may hide or
-// annotate the control here; a signed-out session would remove the button for an
-// unrelated reason and make every "raises no dialog" assertion vacuous. The
-// session gate has its own suite in `revision-revert-session-gate.test.tsx`.
-//
-// "NOT the site owner" is ENFORCED below, not assumed: `yuanhao` is the handle
-// `.env.example` ships as `NEXT_PUBLIC_OWNER_HANDLE`, and `isOwnerHandle` reads
-// that var at call time — so on any machine where it is exported this viewer
-// would silently become the site owner and the premise here would be void. The
-// `beforeEach` deletes it, mirroring the guard the session suite uses.
+// gate (the site owner keeps the door on a realm page). Signed out here: these
+// cases are about the deployment's read-only state, not about who is looking.
 vi.mock("@clerk/nextjs", () => ({
-  useUser: () => ({
-    isLoaded: true,
-    isSignedIn: true,
-    user: { username: "yuanhao" },
-  }),
+  useUser: () => ({ isLoaded: true, isSignedIn: false, user: null }),
 }));
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let confirmMock: ReturnType<typeof vi.fn>;
 
-let originalOwnerHandle: string | undefined;
-
 beforeEach(() => {
   router.refresh.mockClear();
   router.push.mockClear();
-  // See the Clerk mock above: this keeps the signed-in viewer a NON-owner
-  // regardless of what is exported in the shell running the suite.
-  originalOwnerHandle = process.env.NEXT_PUBLIC_OWNER_HANDLE;
-  delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
   fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }) as unknown as Response);
   // Defaults to ACCEPTING, so a missing gate shows up as a request rather than
   // as a dialog nobody answered.
@@ -89,8 +66,6 @@ afterEach(() => {
   // tree down while the globals are still stubbed.
   cleanup();
   vi.unstubAllGlobals();
-  if (originalOwnerHandle === undefined) delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
-  else process.env.NEXT_PUBLIC_OWNER_HANDLE = originalOwnerHandle;
 });
 
 describe("Delete page, on a read-only deployment", () => {

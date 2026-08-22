@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { KeyboardShortcutsProvider } from "@/hooks/useKeyboardShortcuts";
 import { WikiWorkbench } from "@/components/WikiWorkbench";
 import { Workbench } from "@/components/workbench/Workbench";
@@ -9,70 +9,41 @@ import {
   WorkbenchDataProvider,
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
-import {
-  SETTINGS_LABEL,
-  type WorkbenchSettingsPayload,
-} from "@/lib/workbench-settings";
+import { SETTINGS_LABEL } from "@/lib/workbench-settings";
 
 /**
- * The mode canvas SURVIVES a trip through Settings (DW-373), MOUNTED.
+ * The mode canvas SURVIVES opening Settings (DW-373), MOUNTED.
  *
- * `Workbench` used to render `settingsOpen ? <SettingsCanvas/> : <ModeCanvas/>`,
- * so opening Settings — by the rail control or by `g s` — unmounted the whole
- * mode canvas and with it the Wiki subtree: an open Create Wiki dialog, the name
- * the owner had typed into it and the error it was showing. Coming back built an
- * empty card. DW-26 bought that subtree survival for MODE SWITCHES only, and
- * Settings was the door it did not cover.
+ * `Workbench` used to render `SettingsCanvas` INSTEAD of `ModeCanvas`, so
+ * reaching Settings — from the rail control or from `g s` — unmounted the whole
+ * mode canvas and the Wiki subtree inside it, destroying an open Create Wiki
+ * dialog, the name the owner had typed into it and the error it was showing.
+ * Coming back rebuilt an empty card. That is the exact loss DW-26 removed for
+ * mode switches, reintroduced one level up by Settings.
  *
- * The fix is the same withdrawal DW-26 already uses one level down: both
- * canvases mount, and the mode one goes behind `hidden`. Nothing a source scan
- * can see — the defect is what React does to a subtree that stops being
- * rendered — so the cases below are driven on the live document, across a real
- * click and a real keystroke.
+ * The fix is DW-26's, applied to the SECTION rather than to the subtree inside
+ * it: the mode canvas stays rendered and goes behind `hidden`. Hiding is not
+ * closing, and that distinction is the whole design — `CreateWikiDialog` resets
+ * its fields when `open` goes false, so flipping `open` to hide the dialog would
+ * discard the very draft this preserves.
  *
- * Hiding is not closing, and that distinction is the whole design.
- * `CreateWikiDialog` resets its fields when `open` goes false, so flipping
- * `open` to hide the dialog would discard the very draft this preserves.
+ * `SettingsCanvas` is the one that still comes and goes: it mounts on open and
+ * UNMOUNTS on close, because that unmount IS its own draft's discard.
  *
- * WHAT IS PRESERVED IS THE MODE CANVAS AND ITS SUBTREE, and that is the whole
- * of it. Three other things do not survive the trip, each on purpose and none of
- * them this fix's business:
- *
- * - the Settings draft, which is discarded on the way OUT. `SettingsCanvas` is
- *   still rendered CONDITIONALLY, so closing Settings unmounts it — the whole of
- *   "unsaved edits do not apply and are discarded on leave". A case below drives
- *   exactly that, so a future attempt to keep the Settings surface mounted too
- *   fails here rather than in a hand test;
- * - the docked Preview column, and with it an in-progress Preview markdown edit.
- *   `previewOpen` is `shouldDockPreview(mode, selection) && !settingsOpen`,
- *   untouched by DW-373: a docked Preview beside the settings nav would describe
- *   a tree row the owner cannot point at. The silent discard is a deferral
- *   `Workbench.tsx` records at the selection guard, not something this fix
- *   closes;
- * - the left column's trees, which `SettingsNav` takes the column from
- *   (UX-DR14).
- *
- * COVERAGE LIMIT: jsdom has no layout engine, and no stylesheet is in the
- * document unless a case puts one there — so in every case but the last,
- * `hidden` is an ATTRIBUTE and nothing more. What those cases can observe is the
- * contract the attribute carries (the a11y tree, via testing-library's
- * `hidden`-aware queries) and the document state a hidden dialog must not be
- * holding (`document.body.style.overflow`, the Tab trap), which is precisely the
- * half `hidden` does NOT deliver on its own. The last case covers the other
- * half by injecting the real rules and reading the cascade back.
- *
- * AND THE DOM SCROLL OFFSET IS NOT COMPONENT STATE. `.wb-canvas` is the scroll
- * container (`overflow: auto`) and it is the element `display: none` collapses,
- * so a Wiki canvas the owner had scrolled comes back from Settings at the top.
- * React state survives the trip; a scroll position is not React state. Not a
- * regression — the old code unmounted the section outright and lost it too — and
- * restoring it is out of scope here, but nothing below should be read as a claim
- * that the surface comes back pixel-identical.
+ * COVERAGE LIMIT, inherited from `wiki-canvas-persistence.test.tsx`: jsdom has
+ * no layout engine and applies no user-agent stylesheet, so `hidden` here is an
+ * ATTRIBUTE and nothing more — nothing mounted below can see a pixel. What it
+ * can see is the contract the attribute carries (the a11y tree, via
+ * testing-library's `hidden`-aware queries) and the document state a hidden
+ * dialog must not be holding (`document.body.style.overflow`, the Tab trap).
+ * The `display: none` that makes it a visual withdrawal is pinned in
+ * `globals.css` and read from there by the last case.
  */
 
 // ONE stable router object: several components in this shell key effects on the
-// router identity. `push` is spied precisely so its ABSENCE is observable — the
-// `g s` case is about a keystroke that must reach Settings without navigating.
+// router identity, and a fresh literal per call would rebuild them on every
+// re-render. `push` is spied so its ABSENCE stays observable — `g s` must not
+// navigate (DW-62).
 const { router } = vi.hoisted(() => ({
   router: { refresh: vi.fn(), push: vi.fn() },
 }));
@@ -91,83 +62,9 @@ const DATA: WorkbenchData = {
   readOnly: false,
 };
 
-/** The stored settings, as `GET /api/settings` serves them. */
-const STORED: WorkbenchSettingsPayload = {
-  version: "s1:00000000000000000000000000000000",
-  chatProvider: "openai",
-  chatModel: "gpt-4o",
-  ingestProvider: "anthropic",
-  ingestModel: "claude-sonnet-4-20250514",
-  customBaseUrl: null,
-  hasCustomApiKey: false,
-  llmTimeoutSeconds: null,
-  vectorSearchEnabled: false,
-  embeddingProvider: "openai",
-  embeddingModel: "text-embedding-3-small",
-  embeddingBaseUrl: null,
-  hasEmbeddingApiKey: true,
-  embeddingModelInEffect: null,
-  embeddingModelOverridden: false,
-  envEmbeddingProvider: null,
-  envEmbeddingModel: null,
-  envCustomBaseUrl: null,
-  envEmbeddingApiKeyProviders: [],
-  hasWorkersAiBinding: false,
-  firecrawlBaseUrl: null,
-  hasFirecrawlApiKey: false,
-  language: "English",
-  readOnly: false,
-};
-
-const DUPLICATE_NAME_COPY = "A wiki with that name already exists.";
+const CREATE_CONFLICT = "A wiki with that name already exists.";
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** Stylesheets a case put in the document, torn down with the tree below. */
-let injected: HTMLStyleElement[] = [];
-
-/**
- * Every rule in `globals.css` whose selector names the canvas SECTION class.
- *
- * `.wb-canvas` as a whole token, so `.wb-canvas-mode`, `.wb-canvas-pad` and
- * `.wb-canvas-preview-note` — three different elements — stay out of it. Rules
- * are collected at EVERY nesting depth and injected flat, so a `display` handed
- * to this class from inside an `@media` block is caught here rather than at a
- * width nobody tested. Flattening drops the condition, which is deliberate: a
- * `display` on this class cannot be width-scoped and still leave the withdrawal
- * intact at the widths it covers.
- *
- * WHAT THIS DOES NOT SEE, because the case it backs is named for the cascade: a
- * rule reaching the section any other way — `.wb-shell > section`, a bare
- * `section`, a `[hidden] { display: revert }` reset, a utility class — or one
- * from any stylesheet other than `globals.css`, the only file read. The guard
- * covers the shape a competing rule would plausibly take in THIS stylesheet,
- * which is the shape the triage that prompted it found; it is not a proof that
- * nothing in the cascade can reach the element.
- *
- * The pattern reads "a run with no braces in it, then a braced body with no
- * braces in it" — a declaration block holds no `{`, which is what separates one
- * from the `@media` wrapper around it.
- */
-function canvasRules(css: string): string[] {
-  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
-  const rules: string[] = [];
-  for (const match of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    // Whatever follows the previous rule's closing brace is this one's selector.
-    const selector = (match[1].split("}").pop() ?? "").trim();
-    if (!selector || selector.startsWith("@")) continue;
-    if (!/\.wb-canvas(?![\w-])/.test(selector)) continue;
-    rules.push(`${selector} { ${match[2].trim()} }`);
-  }
-  return rules;
-}
-
-/** Put rules in the document, remembered so `afterEach` can drop them again. */
-function injectCss(rules: string): void {
-  const style = document.createElement("style");
-  style.textContent = rules;
-  document.head.appendChild(style);
-  injected.push(style);
-}
 
 beforeEach(() => {
   router.refresh.mockClear();
@@ -178,31 +75,12 @@ beforeEach(() => {
   // mode the last one left in the URL, which `initialMode` would restore.
   window.history.pushState(null, "", "/");
   window.history.replaceState(null, "", "/");
-  // ONE stub for three callers, routed by URL rather than queued: the sidecar
-  // probe fires at mount, `SettingsCanvas` reads on every open, and the card
-  // POSTs its create. A one-shot answer would be spent on whichever fired first.
-  fetchMock = vi.fn(async (url: unknown) => {
-    const href = String(url);
-    if (href.startsWith("/api/settings")) {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ workbench: STORED }),
-      } as unknown as Response;
-    }
-    if (href === "/api/wikis") {
-      // A REAL error, refused by the route rather than typed into a prop: the
-      // sentence lives in `WikiWorkbench`'s state and the name lives in
-      // `CreateWikiDialog`'s, so a fixture that only checked the name would pass
-      // against a card rebuilt from scratch with the dialog reopened.
-      return {
-        ok: false,
-        status: 409,
-        json: async () => ({ error: DUPLICATE_NAME_COPY }),
-      } as unknown as Response;
-    }
-    return { ok: true, status: 200, json: async () => ({}) } as unknown as Response;
-  });
+  // `useSidecarStatus` probes the loopback port at mount, the card's create
+  // POSTs, and the Settings surface reads its payload. One stub answers all
+  // three; only the create's answer is ever asserted on.
+  fetchMock = vi.fn(
+    async () => ({ ok: true, status: 200, json: async () => ({}) }) as unknown as Response,
+  );
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -213,16 +91,12 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   document.body.style.overflow = "";
-  // `cleanup()` unmounts the tree; nothing else removes a `<style>` from the
-  // head, and a stylesheet left behind would silently style the next case.
-  for (const style of injected) style.remove();
-  injected = [];
 });
 
 /**
- * The assembled shell, exactly as `page.tsx` composes it, inside the app's real
- * shortcut dispatcher — which is what lets the `g s` case below drive the same
- * mounted tree as the rail cases.
+ * The assembled shell, as `page.tsx` composes it, inside the app's real
+ * dispatcher — `ClientProviders` wraps it that way, and `g s` reaches nothing
+ * without it.
  */
 async function renderShell(data: WorkbenchData = DATA) {
   const view = render(
@@ -252,410 +126,390 @@ function clickRail(label: string): HTMLButtonElement {
   return control;
 }
 
-/** Open (or close) Settings the way the rail does, and let the read settle. */
-async function toggleSettings(): Promise<HTMLButtonElement> {
-  const control = clickRail(SETTINGS_LABEL);
+/**
+ * Type a key sequence at the document, which is where the dispatcher listens.
+ *
+ * `document.body` rather than any control: `isInputElement` suppresses the
+ * shortcut inside form fields, so aiming these at the focused dialog's name
+ * field would be testing the suppression instead of the dispatch.
+ */
+async function press(...keys: string[]) {
+  for (const key of keys) {
+    fireEvent.keyDown(document.body, { key });
+  }
   await act(async () => {});
-  return control;
+}
+
+/**
+ * The two ways in, driven identically.
+ *
+ * Every case below runs against both, because the preservation is the SHELL's
+ * render and not either control's doing — a fix wired into one path only would
+ * pass a suite that drove the other.
+ *
+ * CLOSING is the rail control in both — see {@link closeSettings} for why that
+ * one control is the closer these cases drive.
+ */
+const OPENERS = [
+  {
+    name: "the rail control",
+    open: async () => {
+      clickRail(SETTINGS_LABEL);
+      await act(async () => {});
+      expect(router.push).not.toHaveBeenCalled();
+    },
+    /** A click focuses the control it lands on; that is the click, not the hide. */
+    focusAfterOpen: () => rail(SETTINGS_LABEL) as Element,
+  },
+  {
+    name: "g s",
+    open: async () => {
+      await press("g", "s");
+      // Every case below reasons about ONE mounted shell. If the keystroke fell
+      // through to `/settings` instead of the in-shell action (DW-62), the shell
+      // would have been torn down and rebuilt — and these cases would report
+      // "unmounted" for a reason that has nothing to do with DW-373. This is the
+      // only path that could navigate, so this is where the spy earns its place.
+      expect(router.push).not.toHaveBeenCalled();
+    },
+    /** A keystroke aimed at the document moves focus nowhere at all. */
+    focusAfterOpen: (before: Element) => before,
+  },
+] as const;
+
+/**
+ * Close Settings with the rail control.
+ *
+ * Not the only thing that closes it — `applyMode` calls `setSettingsOpen(false)`,
+ * so every mode pick closes it too — but the only thing that TOGGLES it, which
+ * is what these cases need: a mode pick would change the mode as well and leave
+ * the round trip proving something else. `g s` is no closer either: it reads
+ * "go to Settings" and OPENS rather than toggles (DW-62), which is why one
+ * closer serves both paths. That asymmetry is `settings-shortcut.test.tsx`'s
+ * subject, not this file's.
+ */
+async function closeSettings() {
+  clickRail(SETTINGS_LABEL);
+  await act(async () => {});
+}
+
+/** Is the in-shell Settings surface showing? The helper `settings-shortcut` uses. */
+function settingsShowing(): boolean {
+  return document.querySelector(".wb-set-pad") !== null;
 }
 
 /**
  * The Create Wiki dialog's name field, found WITHOUT the a11y tree.
  *
- * `getByLabelText` skips `hidden` subtrees, which is exactly what the visible
- * cases rely on — so the hidden cases have to reach the node another way or they
- * could not tell "removed from the a11y tree" apart from "unmounted", which is
- * the one distinction this file exists for.
+ * `getByLabelText` skips `hidden` subtrees, which is what the visible cases rely
+ * on — so the hidden cases have to reach the node another way or they could not
+ * tell "removed from the a11y tree" apart from "unmounted", which is the one
+ * distinction this file exists for.
  */
 function nameFieldNode(): HTMLInputElement | null {
   const dialog = document.querySelector('[role="dialog"][aria-modal="true"]');
   return dialog?.querySelector("input") ?? null;
 }
 
-/** The canvas section that is SHOWING — the one carrying the skip-link target. */
-function showingCanvas(): HTMLElement | null {
-  return document.querySelector("#wb-canvas");
+/**
+ * The error the refused create left on the card, read from the DOM not the a11y
+ * tree — and scoped to the mode canvas, because `SettingsCanvas` renders an
+ * alert of its own whenever its read fails.
+ */
+function alertNode(): HTMLElement | null {
+  return modeCanvas()?.querySelector('[role="alert"]') ?? null;
 }
 
-/** Is the in-shell Settings surface on screen? */
-function settingsShowing(): boolean {
-  return document.querySelector(".wb-set-pad") !== null;
+/** The mode canvas section — the `.wb-canvas` that is NOT the Settings one. */
+function modeCanvas(): HTMLElement | null {
+  const sections = Array.from(document.querySelectorAll<HTMLElement>(".wb-canvas"));
+  return sections.find((section) => section.querySelector(".wb-set-pad") === null) ?? null;
 }
 
 /**
- * Open Create Wiki from the empty state, type a name, and drive a refused create
- * so the card is holding a real error.
+ * Open Create Wiki from the empty state and type a name into it.
  *
- * The opener is FOCUSED before it is clicked, which is what a pointer or a
+ * The opener is FOCUSED before it is clicked, which is what a pointer or
  * keyboard activation actually does — `fireEvent.click` alone leaves
  * `document.activeElement` on `<body>`, so `useDialogA11y` would record the body
- * as the opener and every focus assertion below would be about nothing.
+ * as the opener.
  */
-async function openCreateWithError(name: string): Promise<HTMLButtonElement> {
+function openCreateWith(name: string): HTMLButtonElement {
   const opener = screen.getByRole("button", { name: "Create Wiki" }) as HTMLButtonElement;
   opener.focus();
   fireEvent.click(opener);
   fireEvent.change(screen.getByLabelText("Wiki name"), { target: { value: name } });
-  fireEvent.click(screen.getByRole("button", { name: "Create" }));
-  await act(async () => {});
-  expect(screen.getByRole("alert").textContent).toBe(DUPLICATE_NAME_COPY);
   return opener;
 }
 
-describe("an open Create Wiki dialog survives a trip through Settings (DW-373)", () => {
-  it("keeps the typed name and the shown error across the rail's Settings control", async () => {
-    await renderShell();
-    await openCreateWithError("Quarterly review");
+/**
+ * Open Create Wiki, type a name and get a REAL error onto the card.
+ *
+ * The error has to be refused by a create rather than handed in as a prop,
+ * because it lives in `WikiWorkbench`'s state while the name lives in
+ * `CreateWikiDialog`'s — a fixture that only checked the name would pass against
+ * a card that was rebuilt from scratch with the dialog reopened.
+ *
+ * Routed by URL, not queued with `mockResolvedValueOnce`: `useSidecarStatus`
+ * probes the loopback port at mount, so a one-shot answer is spent on the probe
+ * and the create sees the default `{}` — which fails for a different reason and
+ * would let these pass against the wrong sentence.
+ */
+async function openCreateWithRefusedName(name: string): Promise<HTMLButtonElement> {
+  fetchMock.mockImplementation(async (url: unknown) =>
+    String(url) === "/api/wikis"
+      ? ({
+          ok: false,
+          status: 409,
+          json: async () => ({ error: CREATE_CONFLICT }),
+        } as unknown as Response)
+      : ({ ok: true, status: 200, json: async () => ({}) } as unknown as Response),
+  );
+  const opener = openCreateWith(name);
+  fireEvent.click(screen.getByRole("button", { name: "Create" }));
+  await act(async () => {});
+  expect(screen.getByRole("alert").textContent).toBe(CREATE_CONFLICT);
+  return opener;
+}
 
-    await toggleSettings();
-    expect(settingsShowing()).toBe(true);
-    await toggleSettings();
-    expect(settingsShowing()).toBe(false);
+describe.each(OPENERS)(
+  "an open Create Wiki dialog survives Settings, opened via $name (DW-373)",
+  ({ open, focusAfterOpen }) => {
+    it("keeps the typed name and the shown error across Settings and back", async () => {
+      await renderShell();
+      await openCreateWithRefusedName("Quarterly review");
 
-    // Same dialog, same draft, same failure — not a fresh one seeded with the
-    // template's default name.
-    expect(screen.getByRole("dialog", { name: "Create Wiki" })).toBeTruthy();
-    expect((screen.getByLabelText("Wiki name") as HTMLInputElement).value).toBe(
-      "Quarterly review",
-    );
-    expect(screen.getByRole("alert").textContent).toBe(DUPLICATE_NAME_COPY);
-  });
-
-  it("keeps it across `g s` too, without navigating", async () => {
-    // The keyboard door. `g s` reaches the same one piece of shell state, so a
-    // fix that only covered the rail control would still destroy the draft for
-    // anyone who never touches the pointer — and `push` is spied so the route
-    // change DW-62 removed cannot creep back in under this change.
-    await renderShell();
-    await openCreateWithError("Quarterly review");
-
-    fireEvent.keyDown(document.body, { key: "g" });
-    fireEvent.keyDown(document.body, { key: "s" });
-    await act(async () => {});
-
-    expect(settingsShowing()).toBe(true);
-    expect(router.push).not.toHaveBeenCalled();
-    // Still in the document behind `hidden`, holding the draft.
-    expect(nameFieldNode()?.value).toBe("Quarterly review");
-
-    // `g s` OPENS rather than toggles, so the rail control is the way back.
-    await toggleSettings();
-    expect(settingsShowing()).toBe(false);
-    expect((screen.getByLabelText("Wiki name") as HTMLInputElement).value).toBe(
-      "Quarterly review",
-    );
-    expect(screen.getByRole("alert").textContent).toBe(DUPLICATE_NAME_COPY);
-  });
-
-  it("is HIDDEN rather than unmounted while Settings is showing", async () => {
-    await renderShell();
-    await openCreateWithError("Quarterly review");
-
-    await toggleSettings();
-
-    // Out of the accessibility tree: testing-library's default queries respect
-    // `hidden`, so a dialog behind it is unreachable by role and by label — the
-    // same thing a screen reader and a Tab press see.
-    expect(screen.queryByRole("dialog", { name: "Create Wiki" })).toBeNull();
-    // By ROLE, not by label: `queryByLabelText` walks the DOM and knows nothing
-    // about the accessibility tree, so it finds a hidden field and would report
-    // this as a failure whichever way the fix went.
-    expect(screen.queryByRole("textbox", { name: "Wiki name" })).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Wiki" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Create" })).toBeNull();
-    // …but still in the DOCUMENT, holding the draft. This is what tells hiding
-    // apart from the unmount that was the defect: an unmounted dialog has no
-    // node to find at all.
-    expect(nameFieldNode()?.value).toBe("Quarterly review");
-    // And the attribute that does it is on the CANVAS SECTION this time, one
-    // level up from `.wb-canvas-mode` — a wrapper cannot hide the element that
-    // contains it, and the section is what Settings used to replace.
-    const sections = Array.from(document.querySelectorAll("section.wb-canvas"));
-    expect(sections).toHaveLength(2);
-    const hiddenSection = sections.find((section) => section.hasAttribute("hidden"));
-    expect(hiddenSection).toBeTruthy();
-    expect(hiddenSection?.contains(nameFieldNode())).toBe(true);
-    // The dialog itself is untouched — closing it would reset its fields, which
-    // is the draft this preserves.
-    expect(document.querySelector('[role="dialog"][aria-modal="true"]')).toBeTruthy();
-  });
-
-  it("holds neither the body scroll lock nor the Tab trap while hidden", async () => {
-    await renderShell();
-    await openCreateWithError("Quarterly review");
-    // The lock is real while the dialog is on screen — a positive control, so
-    // the negative below cannot pass because the lock was never taken.
-    expect(document.body.style.overflow).toBe("hidden");
-
-    await toggleSettings();
-
-    // `hidden` removes the pixels, the a11y tree entry and the tab-order entry,
-    // and NOTHING that the dialog did to the document: the scroll lock and the
-    // capture-phase Tab listener both outlive it unless the surface publishes
-    // its visibility and the hook stands down.
-    expect(document.body.style.overflow).toBe("");
-
-    // Tab is not trapped. The trap is a capture-phase listener that calls
-    // `preventDefault` and pulls focus back into the dialog; with it armed over
-    // a hidden canvas, the keyboard user is stuck on a surface they cannot see.
-    const railButton = rail("Graph");
-    railButton.focus();
-    const tab = new KeyboardEvent("keydown", {
-      key: "Tab",
-      bubbles: true,
-      cancelable: true,
-    });
-    railButton.dispatchEvent(tab);
-    expect(tab.defaultPrevented).toBe(false);
-    expect(document.activeElement).toBe(railButton);
-
-    // Esc is stood down with them, and it is the one input that could undo this
-    // whole change: `useDialogA11y` answers it by calling `onDismiss`, and a
-    // dismissed `CreateWikiDialog` resets its fields — so a live handler over a
-    // canvas nobody can see would wipe the draft the owner still expects to
-    // find. It shares the `armed` gate with the two above TODAY, which is
-    // exactly why it is worth pinning separately: splitting it back onto `open`
-    // alone is a one-line change that leaves every other case here green.
-    const escape = new KeyboardEvent("keydown", {
-      key: "Escape",
-      bubbles: true,
-      cancelable: true,
-    });
-    railButton.dispatchEvent(escape);
-    expect(escape.defaultPrevented).toBe(false);
-    expect(nameFieldNode()?.value).toBe("Quarterly review");
-
-    // …and coming back re-arms all three. The scroll lock is read off the
-    // document; the trap is re-dispatched rather than assumed, because "both"
-    // was previously claimed by a comment and checked in one half.
-    await toggleSettings();
-    expect(document.body.style.overflow).toBe("hidden");
-    const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
-    expect(document.activeElement).toBe(dialog);
-    // Shift+Tab off the container is the branch the trap answers by pulling
-    // focus to the LAST focusable inside it — a plain Tab from the container
-    // is a no-op in an armed trap too, so it could not tell the two apart.
-    const trapped = new KeyboardEvent("keydown", {
-      key: "Tab",
-      shiftKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    dialog.dispatchEvent(trapped);
-    expect(trapped.defaultPrevented).toBe(true);
-  });
-
-  it("does not move focus when it hides the canvas", async () => {
-    // DW-26's rule, at this door. The owner put focus on the rail control
-    // themselves, and the recorded opener is inside the subtree that just went
-    // off screen — "restoring" to it would push the keyboard into hidden
-    // content.
-    await renderShell();
-    await openCreateWithError("Quarterly review");
-    expect(document.activeElement).toBe(
-      screen.getByRole("dialog", { name: "Create Wiki" }),
-    );
-
-    const control = await toggleSettings();
-    expect(document.activeElement).toBe(control);
-
-    // RE-SHOWING focuses the dialog again, exactly as opening it did.
-    await toggleSettings();
-    expect(document.activeElement).toBe(
-      screen.getByRole("dialog", { name: "Create Wiki" }),
-    );
-  });
-
-  it("never puts a second #wb-canvas on the page, in any mode", async () => {
-    // `CANVAS_ID` is the skip link's target (`SiteChrome` renders
-    // `<a href="#wb-canvas">`), and mounting two canvases at once is exactly the
-    // change that could have given it two — which would leave the browser to
-    // pick, and could land the bypass on the canvas nobody can see.
-    await renderShell();
-
-    for (const mode of ["Wiki", "Chat", "Graph"]) {
-      clickRail(mode);
-      await act(async () => {});
-
-      await toggleSettings();
+      await open();
       expect(settingsShowing()).toBe(true);
-      expect(document.querySelectorAll("#wb-canvas")).toHaveLength(1);
-      expect(document.querySelectorAll(".wb-canvas")).toHaveLength(2);
-      // The id and the landing place belong to the canvas that is SHOWING.
-      expect(showingCanvas()?.querySelector(".wb-set-pad")).toBeTruthy();
-      expect(showingCanvas()?.hasAttribute("hidden")).toBe(false);
-      expect(document.querySelectorAll('.wb-canvas[tabindex="-1"]')).toHaveLength(1);
-      expect(document.querySelector('.wb-canvas[tabindex="-1"]')).toBe(showingCanvas());
-      // …and it is FIRST in document order, which is the invariant
-      // `document.querySelector(".wb-canvas")` rests on — an idiom several
-      // suites already use to mean "the canvas the owner is looking at".
-      // Swapping the two JSX blocks changes nothing else and breaks only this.
-      expect(document.querySelector(".wb-canvas")).toBe(showingCanvas());
+      await closeSettings();
+      expect(settingsShowing()).toBe(false);
 
-      await toggleSettings();
-      expect(document.querySelectorAll(".wb-canvas")).toHaveLength(1);
-      expect(showingCanvas()?.hasAttribute("hidden")).toBe(false);
-    }
-  });
-
-  it("hands the canvas back in ONE commit when the rail switches mode out of Settings", async () => {
-    // `applyMode` calls `setSettingsOpen(false)` and `setModeState(next)`
-    // together, so a single transition unmounts `SettingsCanvas`, un-hides this
-    // section, moves `CANVAS_ID` and the tab index back onto it AND flips the
-    // mode branch — all in one render. Every other case here drives the two
-    // halves separately, which is the one arrangement that cannot observe them
-    // landing at once: an id handed over mid-commit, or a section that un-hides
-    // while the surface it was hidden for is still mounted, would show up
-    // nowhere else.
-    await renderShell();
-    await openCreateWithError("Quarterly review");
-    await toggleSettings();
-    expect(settingsShowing()).toBe(true);
-
-    clickRail("Chat");
-    await act(async () => {});
-
-    // Settings is gone — picking a mode is a way out of it, not a thing it
-    // survives — and the canvas that is left is the only one.
-    expect(settingsShowing()).toBe(false);
-    expect(document.querySelectorAll(".wb-canvas")).toHaveLength(1);
-    expect(document.querySelectorAll("#wb-canvas")).toHaveLength(1);
-    expect(document.querySelectorAll('.wb-canvas[tabindex="-1"]')).toHaveLength(1);
-    expect(document.querySelector('.wb-canvas[tabindex="-1"]')).toBe(showingCanvas());
-    expect(showingCanvas()?.hasAttribute("hidden")).toBe(false);
-    expect(screen.getByRole("heading", { name: "Chat" })).toBeTruthy();
-
-    // The draft changed which attribute is hiding it — `.wb-canvas-mode[hidden]`
-    // now, DW-26's, instead of the section's — and nothing else. Unreachable by
-    // role, still in the document, still holding the name.
-    expect(screen.queryByRole("dialog", { name: "Create Wiki" })).toBeNull();
-    expect(nameFieldNode()?.value).toBe("Quarterly review");
-    expect(
-      document.querySelector(".wb-canvas-mode")?.hasAttribute("hidden"),
-    ).toBe(true);
-
-    clickRail("Wiki");
-    await act(async () => {});
-    expect(screen.getByRole("dialog", { name: "Create Wiki" })).toBeTruthy();
-    expect((screen.getByLabelText("Wiki name") as HTMLInputElement).value).toBe(
-      "Quarterly review",
-    );
-    expect(screen.getByRole("alert").textContent).toBe(DUPLICATE_NAME_COPY);
-  });
-
-  it("gives the two canvases separate heading ids", async () => {
-    // `ModeCanvas`'s stub branch renders `<h2 id={headingId}>` for every
-    // non-Wiki mode and `SettingsCanvas`'s frame renders one too. Sharing the
-    // shell's single `useId` was safe only while the two could never mount
-    // together; with both in the document it is a duplicate id, and each
-    // canvas's `aria-labelledby` would resolve to whichever came first.
-    await renderShell();
-    clickRail("Chat");
-    await act(async () => {});
-    await toggleSettings();
-
-    // Asked of EACH canvas rather than of the document: a document-wide count
-    // of `h2[id]` is satisfied by one canvas that renders two headings and one
-    // that renders none — and none is the shape a regression takes here, since
-    // dropping the second `useId` along with the heading it names makes a
-    // duplicate id impossible too, which is the very thing being pinned.
-    //
-    // The mode canvas legitimately holds more than one `<h2 id>`: its own stub
-    // heading for the non-Wiki mode, plus `WikiWorkbench`'s, which stays in the
-    // tree behind `.wb-canvas-mode[hidden]` (DW-26). So the assertion is on the
-    // heading each section NAMES ITSELF BY, not on how many it contains.
-    const sections = Array.from(document.querySelectorAll("section.wb-canvas"));
-    expect(sections).toHaveLength(2);
-    const ids = sections.map((section) => {
-      // `aria-labelledby` is asserted non-empty first: `CSS.escape("")` builds
-      // the selector `"#"`, which throws a SyntaxError rather than failing with
-      // a readable message.
-      const labelledBy = section.getAttribute("aria-labelledby") ?? "";
-      expect(labelledBy).not.toBe("");
-      const heading = section.querySelector(`#${CSS.escape(labelledBy)}`);
-      // Inside its OWN section, and a heading — not resolved across the
-      // document to the other canvas's, which is exactly what a shared id did.
-      expect(heading?.tagName).toBe("H2");
-      return labelledBy;
+      // Same dialog, same draft, same failure — not a fresh one seeded with the
+      // template's default name.
+      expect(screen.getByRole("dialog", { name: "Create Wiki" })).toBeTruthy();
+      expect((screen.getByLabelText("Wiki name") as HTMLInputElement).value).toBe(
+        "Quarterly review",
+      );
+      expect(screen.getByRole("alert").textContent).toBe(CREATE_CONFLICT);
     });
-    // Unique across the DOCUMENT, which is where an id collision is resolved —
-    // not merely across the two ids collected above.
-    expect(new Set(ids).size).toBe(2);
-    for (const id of ids) {
-      expect(document.querySelectorAll(`#${CSS.escape(id)}`)).toHaveLength(1);
-    }
-  });
 
-  it("still discards an unsaved Settings edit on leave", async () => {
-    // The other half of the contract, and the reason `SettingsCanvas` stays
-    // CONDITIONAL while `ModeCanvas` became unconditional: leaving the surface
-    // UNMOUNTS it, and that unmount is the whole of "unsaved edits do not apply
-    // and are discarded on leave". Keeping it mounted behind `hidden` too would
-    // be the obvious symmetry and would break exactly this.
-    await renderShell();
-    await toggleSettings();
-    fireEvent.click(screen.getByRole("button", { name: "LLM Models" }));
-    await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
+    it("is HIDDEN rather than unmounted while Settings is showing", async () => {
+      await renderShell();
+      await openCreateWithRefusedName("Quarterly review");
 
-    const model = () => screen.getByLabelText("Chat model") as HTMLInputElement;
-    expect(model().value).toBe(STORED.chatModel);
-    fireEvent.change(model(), { target: { value: "an-unsaved-edit" } });
-    expect(model().value).toBe("an-unsaved-edit");
+      await open();
 
-    await toggleSettings();
-    expect(settingsShowing()).toBe(false);
-    await toggleSettings();
-    await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
+      // Out of the accessibility tree: testing-library's default queries respect
+      // `hidden`, so a dialog behind it is unreachable by role and by label —
+      // the same thing a screen reader and a Tab press see.
+      expect(screen.queryByRole("dialog", { name: "Create Wiki" })).toBeNull();
+      // By ROLE, not by label: `queryByLabelText` walks the DOM and knows
+      // nothing about the accessibility tree, so it finds a hidden field and
+      // would report this as a failure whichever way the fix went.
+      expect(screen.queryByRole("textbox", { name: "Wiki name" })).toBeNull();
+      expect(screen.queryByRole("heading", { name: "Wiki" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Create" })).toBeNull();
+      // The refused create's message specifically: `SettingsCanvas` renders an
+      // alert of its own here (the stubbed payload is not a settings body), so
+      // "no alert at all" would be asserting the wrong thing.
+      expect(screen.queryAllByRole("alert").map((node) => node.textContent)).not.toContain(
+        CREATE_CONFLICT,
+      );
 
-    // The category is shell state and survives; the DRAFT is not and does not.
-    expect(model().value).toBe(STORED.chatModel);
-  });
+      // …but still in the DOCUMENT, holding the draft AND the error. This is
+      // what tells hiding apart from the unmount that was the defect: an
+      // unmounted dialog has no node to find at all.
+      expect(nameFieldNode()?.value).toBe("Quarterly review");
+      expect(alertNode()?.textContent).toBe(CREATE_CONFLICT);
 
-  it("withdraws the hidden canvas through the real cascade, not just the attribute", async () => {
-    // The `display: none` that turns the attribute into a visual withdrawal is a
-    // user-agent default that ANY author rule setting `display` on the same
-    // element beats, and `.wb-canvas` sets no `display` of its own — so it is
-    // one restyle from being defeated, and with two canvases stacked in one grid
-    // cell that restyle puts the hidden one back on top of Settings. Hence the
-    // rule is STATED in `globals.css`, with the attribute in its selector.
+      // And the attribute that does it, on the SECTION the stylesheet's rule
+      // names — not on the dialog, which must stay `open`.
+      const section = modeCanvas();
+      expect(section?.hasAttribute("hidden")).toBe(true);
+      expect(section?.contains(nameFieldNode())).toBe(true);
+      // The hidden section holds neither of the two things that must be unique.
+      expect(section?.hasAttribute("id")).toBe(false);
+      expect(section?.hasAttribute("tabindex")).toBe(false);
+    });
+
+    it("holds neither the body scroll lock nor the Tab trap while hidden", async () => {
+      await renderShell();
+      openCreateWith("Quarterly review");
+      // The lock is real while the dialog is on screen — a positive control, so
+      // the negative below cannot pass because the lock was never taken.
+      expect(document.body.style.overflow).toBe("hidden");
+
+      await open();
+
+      // `hidden` removes the pixels and the a11y tree entry, and NOTHING the
+      // dialog did to the document: the scroll lock and the capture-phase Tab
+      // listener both outlive it unless the hook stands down.
+      expect(document.body.style.overflow).toBe("");
+
+      // Tab is not trapped. The trap is a capture-phase listener that calls
+      // `preventDefault` and pulls focus back into the dialog; armed over a
+      // hidden surface, the keyboard user is stuck on a canvas they cannot see —
+      // here, unable to Tab through Settings.
+      const railButton = rail("Graph");
+      railButton.focus();
+      const tab = new KeyboardEvent("keydown", {
+        key: "Tab",
+        bubbles: true,
+        cancelable: true,
+      });
+      railButton.dispatchEvent(tab);
+      expect(tab.defaultPrevented).toBe(false);
+      expect(document.activeElement).toBe(railButton);
+
+      // …and closing Settings re-arms both. The trap is driven from OUTSIDE the
+      // dialog, which is the branch that pulls a drifted focus back in — a Tab
+      // pressed from inside would only wrap at the last item and prove nothing
+      // here.
+      await closeSettings();
+      expect(document.body.style.overflow).toBe("hidden");
+      const outside = rail("Graph");
+      outside.focus();
+      const trapped = new KeyboardEvent("keydown", {
+        key: "Tab",
+        bubbles: true,
+        cancelable: true,
+      });
+      outside.dispatchEvent(trapped);
+      expect(trapped.defaultPrevented).toBe(true);
+      expect(
+        screen
+          .getByRole("dialog", { name: "Create Wiki" })
+          .contains(document.activeElement),
+      ).toBe(true);
+    });
+
+    it("does not move focus when it hides the canvas", async () => {
+      // HIDING must not move focus. Only the control the owner used may move it,
+      // and only to itself — nothing here may "restore" focus to the recorded
+      // opener, which is inside the subtree that just went off screen.
+      await renderShell();
+      openCreateWith("Quarterly review");
+      const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
+      expect(document.activeElement).toBe(dialog);
+
+      await open();
+
+      // Exactly what each path itself does and nothing more: clicking the rail
+      // control focuses that button, `g s` touches focus not at all. (jsdom does
+      // not blur through an ancestor `hidden` the way a browser does, which is
+      // what leaves the keystroke case observable at all.)
+      expect(document.activeElement).toBe(focusAfterOpen(dialog));
+    });
+
+    it("keeps exactly one #wb-canvas, on the Settings section", async () => {
+      // `CANVAS_ID` is the skip link's target (`SiteChrome` renders
+      // `<a href="#wb-canvas">`), and keeping the mode canvas mounted is exactly
+      // the change that could grow a second section answering to it — which
+      // would be a duplicate id and leave the browser to pick a bypass target.
+      await renderShell();
+      await open();
+
+      const targets = document.querySelectorAll("#wb-canvas");
+      expect(targets).toHaveLength(1);
+      expect(targets[0].querySelector(".wb-set-pad")).not.toBeNull();
+      expect(targets[0].getAttribute("tabindex")).toBe("-1");
+      // Both sections are present — that IS the fix — and only one is the target.
+      expect(document.querySelectorAll(".wb-canvas")).toHaveLength(2);
+      // And the landing place is unambiguous too.
+      expect(document.querySelectorAll(".wb-canvas[tabindex]")).toHaveLength(1);
+    });
+
+    it("leaves exactly one node on the shell's headingId, in a mode with no Wiki surface", async () => {
+      // `SettingsCanvas` renders `<h2 id={headingId}>` and so does `ModeCanvas`'s
+      // stub branch, off the SAME `useId` — so the stub must not render behind
+      // the hidden canvas or the document carries a duplicate id and the
+      // Settings section's `aria-labelledby` resolves to whichever came first.
+      await renderShell();
+      clickRail("Chat");
+      await act(async () => {});
+      expect(screen.getAllByRole("heading", { name: "Chat" })).toHaveLength(1);
+
+      await open();
+
+      const target = document.querySelector("#wb-canvas") as HTMLElement;
+      const headingId = target.getAttribute("aria-labelledby") ?? "";
+      expect(headingId).not.toBe("");
+      expect(document.querySelectorAll(`[id="${headingId}"]`)).toHaveLength(1);
+      // The stub branch is gone from the DOM entirely — it holds no state to
+      // lose, which is why it is skipped rather than hidden.
+      expect(document.querySelector(".wb-canvas[hidden] .wb-surface-title")).toBeNull();
+      // One reachable surface heading, and it is Settings'.
+      expect(screen.queryByRole("heading", { name: "Chat" })).toBeNull();
+      expect(document.getElementById(headingId)?.textContent).toBe(
+        screen.getAllByRole("heading", { level: 2 })[0]?.textContent,
+      );
+
+      // …and the stub branch RE-RENDERS on close, which is the other half of
+      // skipping it while hidden: it is dropped rather than merely hidden, so a
+      // guard that removed it for good would leave Chat a blank canvas with no
+      // heading, no empty-state sentence and nothing for the section to be
+      // labelled by.
+      await closeSettings();
+      expect(screen.getAllByRole("heading", { name: "Chat" })).toHaveLength(1);
+      const back = document.querySelector("#wb-canvas") as HTMLElement;
+      expect(back.querySelector(".wb-surface-title")?.textContent).toBe("Chat");
+      expect(back.querySelector(".wb-empty")).not.toBeNull();
+      // The heading it points at is the stub's own, on the same `headingId`
+      // `SettingsCanvas` had just given back — and it is still the only node
+      // carrying it.
+      expect(back.getAttribute("aria-labelledby")).toBe(headingId);
+      expect(document.querySelectorAll(`[id="${headingId}"]`)).toHaveLength(1);
+    });
+
+    it("puts the Wiki canvas back on screen when Settings closes", async () => {
+      // The round trip for a mode that has no dialog open: the subtree comes
+      // back reachable, and the section takes its id, tab index and label again.
+      const { container } = await renderShell();
+      await open();
+      await closeSettings();
+
+      expect(container.querySelectorAll("#wb-canvas")).toHaveLength(1);
+      expect(container.querySelectorAll(".wb-canvas")).toHaveLength(1);
+      const canvas = container.querySelector("#wb-canvas") as HTMLElement;
+      expect(canvas.hasAttribute("hidden")).toBe(false);
+      // The tab index is read, not assumed. It is what makes the skip link's
+      // target able to RECEIVE the focus the bypass sends it, and it is now
+      // conditional — dropping it would leave every other case here green while
+      // `#wb-canvas` quietly became unfocusable in the ordinary,
+      // Settings-closed state.
+      expect(canvas.getAttribute("tabindex")).toBe("-1");
+      expect(canvas.getAttribute("aria-labelledby")).toBe("wiki-workbench-heading");
+      expect(screen.getAllByRole("heading", { name: "Wiki" })).toHaveLength(1);
+    });
+  },
+);
+
+describe("the stylesheet backs the attribute (DW-373)", () => {
+  it("hides the canvas section with a rule the layout cannot defeat", async () => {
+    // jsdom loads no stylesheet and applies no user-agent sheet, so nothing
+    // above can see a pixel — `hidden` is an attribute there and the a11y-tree
+    // half is all the mounted assertions reach. The `display: none` that makes
+    // it a visual withdrawal is a UA default that ANY author rule setting
+    // `display` on the same element beats, and `.wb-canvas` already carries
+    // author `grid-column`, `overflow` and `background` — one `display` added to
+    // that block would put the withdrawn canvas back under Settings. So the rule
+    // is stated in `globals.css`, with the attribute in its selector, and read
+    // here from the real file rather than restated.
     const css = await readFile(
       path.resolve(__dirname, "../../../app/globals.css"),
       "utf8",
     );
     expect(css).toMatch(/\.wb-canvas\[hidden\] \{\s*display: none;\s*\}/);
-    // Outside every media query: the canvas is hidden at all three widths
-    // whenever Settings is showing. A rule wrapped in `@media (min-width: …)`
-    // would put it — dialog, draft and all — back on screen wherever it missed.
+
+    // Outside every media query. The `@media` block further down re-points
+    // `.wb-canvas` to `grid-column: 1`, so a withdrawal stated inside a width
+    // query would hold at some widths and not others — and wherever it missed,
+    // the hidden canvas would render underneath Settings.
     const before = css
       .slice(0, css.indexOf(".wb-canvas[hidden] {"))
       .replace(/\/\*[\s\S]*?\*\//g, "");
     const depth =
       (before.match(/\{/g) ?? []).length - (before.match(/\}/g) ?? []).length;
     expect(depth).toBe(0);
-
-    // …AND IT HAS TO WIN, which the two assertions above cannot see. Stating
-    // the rule only settles a tie: `.wb-canvas[hidden]` is specificity (0,2,0),
-    // and a later descendant rule of a shape this very stylesheet already uses —
-    // `.wb-shell[data-settings="true"] .wb-canvas { display: … }`, cf.
-    // `.wb-shell[data-collapsed="true"][data-settings="true"] .wb-left` — is
-    // (0,3,0) and beats it outright, with both the regex and the brace-depth
-    // check still passing. So the real rules go into the document and the
-    // CASCADE is read back off the live shell, which is the only thing that can
-    // tell "the rule exists" from "the rule decides".
-    injectCss(canvasRules(css).join("\n"));
-    await renderShell();
-    await toggleSettings();
-
-    const sections = Array.from(
-      document.querySelectorAll<HTMLElement>("section.wb-canvas"),
-    );
-    expect(sections).toHaveLength(2);
-    const hiddenSection = sections.find((section) => section.hasAttribute("hidden"));
-    expect(hiddenSection).toBeTruthy();
-    expect(getComputedStyle(hiddenSection!).display).toBe("none");
-    // The positive control: the assertion above must be failing to find pixels
-    // because THIS canvas has them, not because the injected sheet hides
-    // everything it touches.
-    expect(getComputedStyle(showingCanvas()!).display).not.toBe("none");
   });
 });
