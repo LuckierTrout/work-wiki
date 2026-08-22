@@ -3807,6 +3807,7 @@ location: src/app/api/ingest/history/route.ts:139
 severity: medium
 reason: The GET at `src/app/api/ingest/history/route.ts` builds `readable` from `listReadableWikiPages(principal)` and drops every ledger entry whose `primary_slug` the index does not carry. `RecentIngests.tsx` is the only producer of `ingestIds` and builds them exclusively from that GET's `entries`, so an orphan row can only be deleted by a caller hand-writing ids (CLI/MCP/direct HTTP). The `jobIds` half — the path DW-393's own harm statement describes ("a done job whose page is in that state") — is UI-reachable and is fixed. Left out deliberately: widening the GET would cost up to `MAX_BULK_DELETE` page reads on a hot listing path and change what the list shows, neither of which the intent asked for.
 status: open
+decision: 2026-08-22 Bounded per-page read fallback — For slugs the index misses, fall back to a bounded per-page read (cap at MAX_BULK_DELETE) on this listing path only, so orphan rows list and become deletable while the read cost stays bounded.
 
 ### DW-433: `maintenance_scan`'s tool description in `src/lib/mcp-http.ts` is a third copy of the disputed-clear fact and now disagrees with the shared clause.
 origin: spec-deferred a496dcb750e4
