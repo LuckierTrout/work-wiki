@@ -1425,7 +1425,8 @@ source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
 location: src/lib/lint-checks.ts:414 and src/lib/lint-checks.ts:570
 severity: medium
 reason: `checkContradictions()` and `checkMissingConceptPages()` call the no-argument `loadPageConventions()`. The only lint-side conventions test, `src/lib/__tests__/lint.test.ts:670`, writes a bare `SCHEMA.md` into its tmpdir and never sets `NEXT_PUBLIC_OWNER_HANDLE` or calls `createWiki`, so it exercises only the repo-root fallback branch. Replacing both detector calls with `loadPageConventions(`${process.cwd()}/SCHEMA.md`)` — lint permanently ignoring the active Wiki's seeded Schema — leaves lint.test.ts (73), wiki-schema-source.test.ts and cli.test.ts (83) all green, 170 tests passing. Pre-existing: this is Wiki-vs-root precedence (Story 1.2 / AD-10), not DW-19 tenancy, and the gap predates this change. DW-19's own pins are at the loader plus the two call sites that carry a principal; the lint detectors carry none, so there is no non-owner caller to pin them with.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-test-coverage-and-flake-fixes
 
 ### DW-159: `POST /api/wikis` is gated on sign-in but not ownership, so a non-owner can create a Wiki that every downstream surface then treats as inert.
 origin: spec-deferred 0cea96b84531
@@ -2319,7 +2320,8 @@ source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
 location: src/components/RecentIngests.tsx:487
 severity: medium
 reason: DW-86's verbatim reason names "the six converted use client components"; the bundle intent's prose named only four (ArticleView, VaultExplorer, ChatWorkspace, KnowledgeStudio) and this story covered those four. `src/components/RecentIngests.tsx:487,568`, `src/components/ActionInbox.tsx:387` and `src/components/BulkDocumentImport.tsx:532` call `hrefForSlug(...)` from the same conversion, and no `*.test.ts`/`*.test.tsx` under `src/` references any of the three. The harness they would need now exists, so this is a remaining gap rather than a constraint.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-test-coverage-and-flake-fixes
 
 ### DW-260: NavHeader conveys the active route only through inline fontWeight, with no aria-current, so the current page is announced to assistive tech not at all.
 origin: spec-deferred 22cbe3585ae4
@@ -2890,7 +2892,8 @@ source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
 location: src/components/__tests__/workspace-purpose-settings.test.tsx:837
 severity: medium
 reason: Observed failing once during full-suite verification for this story (the badge still read "not configured" when the 1s `waitFor` expired), then passing on re-run and passing 42/42 in isolation. It is entirely fetchMock-driven, touches nothing in this change, and predates it (introduced with DW-136/142/301). It races the mount fetch against the `returnToTab()` recheck.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-test-coverage-and-flake-fixes
 
 ### DW-326: DW-304's URL rule is write-time only: a value stored before this change, or one supplied through OLLAMA_BASE_URL, still reaches the provider SDK unvalidated.
 origin: spec-deferred b7a9d467256f
@@ -3801,4 +3804,20 @@ source_spec: `spec-dw-395-mcp-batch-guidance-cache.md`
 location: src/lib/__tests__/mcp.test.ts:1611
 severity: low
 reason: `hasLLMKey()` (`src/lib/llm.ts:204`) delegates to `detectEnvProvider()` (`src/lib/config.ts:801`), which also honours `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `DEEPSEEK_API_KEY`, `OLLAMA_API_KEY`, `OLLAMA_BASE_URL`/`OLLAMA_MODEL`, plus config-file `ollama`/`custom` providers. On a machine with any of those set, the sibling batch and ingest cases in this file silently exercise the LLM branch their comments say they avoid. DW-395's own new block was hardened against this (all seven vars cleared plus an `expect(hasLLMKey()).toBe(false)` guard); the cases around it were left as found.
+status: open
+
+### DW-436: Four live `useSlugTenants` consumers still have no rendered-anchor pin, so reverting their `hrefForSlug` call sites to a default-tenant path leaves the whole suite green — the same gap DW-259 closed f
+origin: spec-deferred 5a5c0e3173c8
+source_spec: `spec-dw-158-259-325-test-coverage-and-flake-fixes.md`
+location: src/components/IngestSuccess.tsx:20
+severity: medium
+reason: `src/components/IngestSuccess.tsx:20` and `:35` (two anchors, rendered by `src/app/ingest/page.tsx`), `src/hooks/useGlobalSearch.ts:197` (`router.push(hrefForSlug(slug))`, reached from `NavHeader.tsx`), and the `hrefForSlug={hrefForSlug}` wiring at `src/app/lint/LintClient.tsx:100` down into `src/components/LintIssueCard.tsx:101`. A repo-wide grep finds zero test references to `IngestSuccess` or `useGlobalSearch`, and `LintClient` appears in tests only inside a comment. The one nearby suite, `src/components/__tests__/lint-check-parity.test.tsx:166,230`, injects its own `hrefForSlug` stub returning `/u/yopedia/<slug>` — so it asserts its own stub and is blind by construction to what `LintClient` actually passes down, exactly the pattern `owner-scoped-anchors.test.tsx` was written to replace. Consequence: the post-ingest confirmation link, every global-search navigation, and every lint-issue link can regress to a wrong-handle `/u/yopedia/<slug>` hop with CI green. Pre-existing; DW-259 sc
+status: open
+
+### DW-437: The production half of the DW-325 race is unaddressed: a real browser recheck fired between the load commit and the passive mirror flush is dropped silently, with no retry.
+origin: spec-deferred dce618ff3929
+source_spec: `spec-dw-158-259-325-test-coverage-and-flake-fixes.md`
+location: src/components/WorkspacePurposeSettings.tsx
+severity: medium
+reason: `standDown` reaches `screenRef` through a PASSIVE effect (the `screenRef` mirror effect in `src/components/WorkspacePurposeSettings.tsx`), while `load("recheck")` reads it as its first early return. Between the commit that clears `loading` and the passive-effect flush, a `visibilitychange` calls `load("recheck")`, reads a stale `standDown: true`, and returns without issuing the GET — so the form goes on naming a wiki that is no longer active until something else triggers a re-read. DW-325's own intent offered "or derive `standDown` during render" as the alternative remedy; this bundle took the test-side reading, which closes the flake but leaves the component's window open and unpinned. Two independent review layers raised it against this diff.
 status: open

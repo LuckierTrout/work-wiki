@@ -38,6 +38,11 @@ import {
 } from "../lint";
 import { saveRawSource } from "../raw";
 import { serializeFrontmatter } from "../frontmatter";
+// DW-158's block at the foot of this file: the two LLM detectors must prompt
+// with the ACTIVE wiki's Schema, which needs a real wiki in the registry.
+import { _resetLocks } from "../lock";
+import { loadPageConventions } from "../schema";
+import { createWiki } from "../wikis";
 
 let tmpDir: string;
 let originalWikiDir: string | undefined;
@@ -1452,5 +1457,206 @@ describe("lint dispatches the disputed-page check", () => {
 
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0].type).toBe("disputed-page");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Schema the CONVENTION-CARRYING LLM detectors prompt with (DW-158)
+// ---------------------------------------------------------------------------
+
+/**
+ * The two CONVENTION-CARRYING LLM detectors prompt with the ACTIVE WIKI's
+ * Schema, not the repo root's.
+ *
+ * "The two", not "the LLM detectors": there is a THIRD, `checkIncompleteCoverage`,
+ * and it deliberately carries NO conventions at all. It hands `callLLM` a bare
+ * `INCOMPLETE_COVERAGE_SYSTEM_PROMPT` because its question is whether one page
+ * covers its own source, which the wiki's house style has no bearing on. That
+ * asymmetry is load-bearing in BOTH directions and neither half is pinned
+ * anywhere else — appending conventions to it, or dropping them from these two,
+ * would leave the suite green — so the last case below states the negative on
+ * the third detector rather than leaving it to be inferred from silence.
+ *
+ * `loadPageConventions()` has preferred the active Wiki's seeded `schema.md`
+ * since Story 1.2, and `wiki-schema-source.test.ts` pins the LOADER. What
+ * nothing pinned was the two CALL SITES in `lint-checks.ts`: both call the
+ * no-argument form, and pinning either one to `` `${process.cwd()}/SCHEMA.md` ``
+ * — the test-only override that bypasses tenant resolution entirely — left the
+ * whole suite green while every contradiction and coverage-gap judgement was
+ * made against the engine's default conventions instead of the Wiki the owner
+ * is actually running. The existing root-conventions case a few hundred lines
+ * up cannot see it: with no Wiki in the registry the two answers are the same
+ * string.
+ *
+ * So the assertion is on the SYSTEM PROMPT HANDED TO `callLLM` — the outermost
+ * thing these functions produce — and the marker it looks for is prose that
+ * exists ONLY in a seeded Scenario Template. Non-vacuity is proved in the file
+ * rather than asserted by reading: the first case shows the repo-root
+ * conventions do not carry the marker, so a detector that reached for the root
+ * file cannot pass by accident.
+ */
+describe("the LLM detectors prompt with the ACTIVE wiki's Schema (DW-158)", () => {
+  /** The site owner, as `readActiveWikiSchema` resolves them. */
+  const OWNER = "alice";
+  /**
+   * The reading template's own prose, projected into the executable Schema.
+   * `wiki-schema-source.test.ts` establishes it as the Wiki-only marker; the
+   * first case below re-proves that here rather than trusting the sibling file.
+   */
+  const WIKI_ONLY_MARKER = "Preserve sequence when it matters";
+
+  let originalOwner: string | undefined;
+
+  beforeEach(async () => {
+    // The outer `beforeEach` has already pointed DATA_DIR at this test's
+    // tmpdir and reset storage; the owner handle is what turns the registry
+    // into an ACTIVE wiki for `readActiveWikiSchema`.
+    originalOwner = process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    // The wiki kernel takes a per-owner lock, and locks are module state that
+    // outlives a tmpdir. Storage is reset again AFTER the env var so the
+    // provider is rebuilt with the owner in place.
+    _resetLocks();
+    _resetStorage();
+    mockedHasLLMKey.mockReturnValue(true);
+    mockedCallLLM.mockResolvedValue("[]");
+  });
+
+  afterEach(() => {
+    // The outer `afterEach` restores WIKI_DIR/RAW_DIR/DATA_DIR but knows
+    // nothing about this one — an owner handle leaked into the next file would
+    // silently change which Schema every other suite resolves.
+    if (originalOwner === undefined) delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    else process.env.NEXT_PUBLIC_OWNER_HANDLE = originalOwner;
+    _resetLocks();
+    _resetStorage();
+  });
+
+  /** Two pages that cross-reference each other, so `buildClusters` forms one. */
+  async function seedLinkedPages(): Promise<string[]> {
+    await writeWikiPage(
+      "wiki-schema-a",
+      "# Wiki Schema A\n\nContent about the topic. See [Wiki Schema B](wiki-schema-b.md).",
+    );
+    await writeWikiPage(
+      "wiki-schema-b",
+      "# Wiki Schema B\n\nContent about the topic. See [Wiki Schema A](wiki-schema-a.md).",
+    );
+    await updateIndex([
+      { slug: "wiki-schema-a", title: "Wiki Schema A", summary: "Test" },
+      { slug: "wiki-schema-b", title: "Wiki Schema B", summary: "Test" },
+    ]);
+    return ["wiki-schema-a", "wiki-schema-b"];
+  }
+
+  /**
+   * The system prompt of the ONE `callLLM` this run was supposed to make.
+   *
+   * The count is asserted, not just "was called at all": every case here seeds
+   * exactly one cluster / one page pair, so exactly one call is expected. A
+   * detector that grew a second call — a preflight, a retry, a per-page loop —
+   * would silently retarget `calls[0][0]` onto a prompt nobody meant, and the
+   * assertion downstream would then be pinning the wrong string while reading
+   * as though it still held.
+   */
+  function capturedSystemPrompt(expectedCalls = 1): string {
+    expect(
+      mockedCallLLM.mock.calls.length,
+      `expected exactly ${expectedCalls} LLM call for this fixture — a different ` +
+        `count means the prompt read below is not the one this case is about`,
+    ).toBe(expectedCalls);
+    return mockedCallLLM.mock.calls[0][0];
+  }
+
+  it("does not find the wiki's marker in the repo-root Schema", async () => {
+    // NON-VACUITY, stated first: every case below distinguishes "the wiki's
+    // Schema" from "the root Schema" by this one string, and that only means
+    // anything while the root file does not contain it.
+    const root = await loadPageConventions(`${process.cwd()}/SCHEMA.md`);
+    expect(root).toContain("## Page conventions");
+    expect(root).not.toContain(WIKI_ONLY_MARKER);
+  });
+
+  it("hands checkContradictions the active wiki's conventions", async () => {
+    await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
+    const slugs = await seedLinkedPages();
+
+    await checkContradictions(slugs);
+
+    const systemPrompt = capturedSystemPrompt();
+    expect(systemPrompt).toContain("conventions (from SCHEMA.md)");
+    expect(systemPrompt).toContain(WIKI_ONLY_MARKER);
+  });
+
+  it("hands checkMissingConceptPages the active wiki's conventions", async () => {
+    await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
+    const slugs = await seedLinkedPages();
+
+    await checkMissingConceptPages(slugs);
+
+    const systemPrompt = capturedSystemPrompt();
+    expect(systemPrompt).toContain("conventions (from SCHEMA.md)");
+    expect(systemPrompt).toContain(WIKI_ONLY_MARKER);
+  });
+
+  it("still reaches checkContradictions' repo-root conventions when no wiki exists", async () => {
+    // The fallback half of the same contract: an owner handle with an EMPTY
+    // registry must not strip the prompt, or a fresh deployment would lint
+    // against no conventions at all.
+    const slugs = await seedLinkedPages();
+
+    await checkContradictions(slugs);
+
+    const systemPrompt = capturedSystemPrompt();
+    expect(systemPrompt).toContain("conventions (from SCHEMA.md)");
+    expect(systemPrompt).not.toContain(WIKI_ONLY_MARKER);
+    expect(systemPrompt).toContain(
+      await loadPageConventions(`${process.cwd()}/SCHEMA.md`),
+    );
+  });
+
+  it("still reaches checkMissingConceptPages' repo-root conventions when no wiki exists", async () => {
+    // The SAME fallback, asserted at the second call site rather than inferred
+    // from the first. The two build their prompts independently, so one of them
+    // could stop appending the root conventions on a fresh deployment — the
+    // state every install starts in — while the other kept this block green.
+    const slugs = await seedLinkedPages();
+
+    await checkMissingConceptPages(slugs);
+
+    const systemPrompt = capturedSystemPrompt();
+    expect(systemPrompt).toContain("conventions (from SCHEMA.md)");
+    expect(systemPrompt).not.toContain(WIKI_ONLY_MARKER);
+    expect(systemPrompt).toContain(
+      await loadPageConventions(`${process.cwd()}/SCHEMA.md`),
+    );
+  });
+
+  it("hands checkIncompleteCoverage NO conventions, wiki or root", async () => {
+    // The third LLM detector, and the deliberate exception. Its question is
+    // whether one page covers its own raw source; the wiki's house style has no
+    // bearing on that, so it prompts with a bare
+    // `INCOMPLETE_COVERAGE_SYSTEM_PROMPT`. Asserted HERE, with a wiki active, so
+    // the asymmetry cannot be inverted in either direction unnoticed: appending
+    // conventions to this detector fails this case, and dropping them from the
+    // other two fails the cases above.
+    await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
+    await writeWikiPage(
+      "coverage-page",
+      "# Coverage Page\n\nA short overview of the topic.",
+    );
+    await updateIndex([
+      { slug: "coverage-page", title: "Coverage Page", summary: "A topic" },
+    ]);
+    await saveRawSource(
+      "coverage-page",
+      "# Coverage Page\n\nA short overview of the topic.\n\n## Details\n\n42% of readers skip this section.",
+    );
+
+    await checkIncompleteCoverage(["coverage-page"]);
+
+    const systemPrompt = capturedSystemPrompt();
+    expect(systemPrompt).not.toContain("conventions (from SCHEMA.md)");
+    expect(systemPrompt).not.toContain(WIKI_ONLY_MARKER);
   });
 });
