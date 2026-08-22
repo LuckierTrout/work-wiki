@@ -587,7 +587,8 @@ location: src/lib/llm.ts (callLLMStream, timeoutOption)
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `callLLMStream` is not retry-wrapped, so its single `AbortSignal.timeout` measures total stream duration rather than time-to-first-response: a 30s deadline set to catch hangs would truncate every answer that takes longer than 30s to finish. Separately, `AbortSignal.timeout` raises a `TimeoutError` whose message matches none of `RETRYABLE_MESSAGES`, so it propagates verbatim — "The operation was aborted due to timeout" is exactly the transport vocabulary this repo's copy rules exclude. Both need Chat's streaming semantics (Epic 3) to decide what a deadline means for a stream and which sentence the owner should see.
-status: open
+status: done 2026-08-21
+resolution: resolved by sweep bundle dw2-decision-dw-64
 decision: 2026-08-21 Keep deadline, fix the copy — Leave the whole-stream deadline as the frozen decision has it and only map TimeoutError/AbortError to an owner-facing sentence in src/app/api/query/stream/route.ts, with a test pinning it.
 decision: 2026-08-20 Keep deadline, fix the copy — Leave the whole-stream deadline as the frozen decision has it and only map TimeoutError/AbortError to an owner-facing sentence in src/app/api/query/stream/route.ts, with a test pinning it.
 
@@ -3912,4 +3913,36 @@ source_spec: `spec-dw-347-348-advertised-input-validation-parity.md`
 location: src/app/api/lint/fix/route.ts:157
 severity: medium
 reason: `route.ts` calls `getPrincipal()` for `isOwnerHandle`, then invokes `fixLintIssue(type, slug ?? "", targetSlug, message)` with no fifth argument, defaulting `author` to `"lint-fix"` (`src/lib/lint-fix.ts`). `handleFixLintIssue` receives `author: p!.handle` on both MCP doors, so the same fix is attributed differently depending on which door ran it. Pre-existing; unchanged by this story.
+status: open
+
+### DW-448: The 504 deadline sentence never reaches the owner: the client falls back to POST /api/query on any non-ok answer, and that route still relays the raw transport message.
+origin: spec-deferred 77f0be51cb37
+source_spec: `spec-dw-64-stream-deadline-copy.md`
+location: src/app/api/query/route.ts:74
+severity: medium
+reason: src/hooks/useStreamingQuery.ts:129-155 re-issues the non-streaming query on `!res.ok` and shows `fallbackData?.error ?? errMsg`; src/app/api/query/route.ts:74-82 answers `getErrorMessage(error)` at 500. A deadline that fires on both attempts therefore shows "The operation was aborted due to timeout" from the fallback. Pre-existing, and out of scope by the frozen decision, which names the stream route only.
+status: open
+
+### DW-449: A deadline-truncated answer is recorded by the client as a complete one, now with the deadline sentence saved inside the answer text.
+origin: spec-deferred 19b4d44051fe
+source_spec: `spec-dw-64-stream-deadline-copy.md`
+location: src/hooks/useStreamingQuery.ts:167
+severity: medium
+reason: The mid-stream path closes at 200, so useStreamingQuery never sets an error; it runs extractCitedSlugs over the partial text and calls onComplete with it (src/hooks/useStreamingQuery.ts:167-200), which is what query history persists. Making the truncation visible is this change's point; persisting the notice as model output is the residue.
+status: open
+
+### DW-450: A fired deadline inside the retrieval re-rank is swallowed, so it degrades answer quality silently instead of surfacing.
+origin: spec-deferred daa659b1e51c
+source_spec: `spec-dw-64-stream-deadline-copy.md`
+location: src/lib/query-search.ts:250
+severity: low
+reason: src/lib/query-search.ts:250-253 catches every re-rank error (`logger.warn`, fall through to fusion results), and the vector half does the same at :194-200. This is why the route's own 504 arm has no reachable pre-stream door today: a configured deadline that fires during retrieval is absorbed, and the owner is answered from BM25 fusion with no sign that the re-rank never ran. Pre-existing.
+status: open
+
+### DW-451: An answer cut off by the output-token cap still ends silently — the same owner-facing silence a deadline used to produce.
+origin: spec-deferred 263a985f6382
+source_spec: `spec-dw-64-stream-deadline-copy.md`
+location: src/app/api/query/stream/route.ts:255
+severity: low
+reason: The stream carries `finish` with `finishReason: "length"` when QUERY_MAX_OUTPUT_TOKENS is reached; nothing in the route or the client says so, so the answer simply stops mid-sentence. Same defect shape as DW-64's mid-stream half, different cause, and out of scope for a decision about the LLM deadline.
 status: open
