@@ -1,3 +1,4 @@
+import { isCoverageSentence, sanitizeCitedAnswer } from "./chat-citations";
 import { extractCitedSlugs } from "./citations";
 import { isEnoent } from "./errors";
 import { callLLM, hasLLMKey } from "./llm";
@@ -139,6 +140,14 @@ export function exportChatConversation(
 const MAX_CONVERSATIONS = 50;
 const MAX_MESSAGES = 80;
 const CONTEXT_MESSAGES = 12;
+const CONVERSATION_CAS_ATTEMPTS = 4;
+
+export class ChatPersistError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatPersistError";
+  }
+}
 
 function conversationsPath(owner: string): string {
   const tenant = tenantForOwner(owner);
@@ -152,22 +161,16 @@ function lockKey(owner: string): string {
 
 async function readConversations(owner: string): Promise<ChatConversation[]> {
   try {
-    const parsed = JSON.parse(
+    return parseConversationList(
       await getStorage().readFile(conversationsPath(owner)),
     );
-    return Array.isArray(parsed)
-      ? (parsed as ChatConversation[]).map(normalizeConversation)
-      : [];
   } catch (error) {
     if (isEnoent(error)) return [];
     throw error;
   }
 }
 
-async function writeConversations(
-  owner: string,
-  conversations: ChatConversation[],
-): Promise<void> {
+function serializeConversations(conversations: ChatConversation[]): string {
   const trimmed = conversations
     .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
     .slice(-MAX_CONVERSATIONS)
@@ -175,10 +178,55 @@ async function writeConversations(
       ...conversation,
       messages: conversation.messages.slice(-MAX_MESSAGES),
     }));
-  await getStorage().writeFile(
-    conversationsPath(owner),
-    JSON.stringify(trimmed, null, 2),
-  );
+  return JSON.stringify(trimmed, null, 2);
+}
+
+function parseConversationList(raw: string): ChatConversation[] {
+  const parsed = JSON.parse(raw) as unknown;
+  return Array.isArray(parsed)
+    ? (parsed as ChatConversation[]).map(normalizeConversation)
+    : [];
+}
+
+async function withConversationStore<T>(
+  owner: string,
+  mutate: (conversations: ChatConversation[]) => T,
+): Promise<T> {
+  return withFileLock(lockKey(owner), async () => {
+    const storage = getStorage();
+    const path = conversationsPath(owner);
+    for (let attempt = 0; attempt < CONVERSATION_CAS_ATTEMPTS; attempt += 1) {
+      let conversations: ChatConversation[] = [];
+      let etag: string | null = null;
+      try {
+        const read = await storage.readFileWithEtag(path);
+        etag = read.etag;
+        conversations = parseConversationList(read.content);
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+      }
+      const draft = conversations.map((conversation) => ({
+        ...conversation,
+        messages: [...conversation.messages],
+      }));
+      const result = mutate(draft);
+      const next = serializeConversations(draft);
+      if (etag === null) {
+        try {
+          await storage.readFile(path);
+          continue;
+        } catch (error) {
+          if (!isEnoent(error)) throw error;
+          await storage.writeFile(path, next);
+          return result;
+        }
+      }
+      if (await storage.writeFileIfMatch(path, next, etag)) {
+        return result;
+      }
+    }
+    throw new Error("Conversation store was busy; retry the request");
+  });
 }
 
 export async function listChatConversations(
@@ -208,8 +256,7 @@ export async function createChatConversation(
     historyDepth?: number;
   },
 ): Promise<ChatConversation> {
-  return withFileLock(lockKey(owner), async () => {
-    const conversations = await readConversations(owner);
+  return withConversationStore(owner, (conversations) => {
     const now = new Date().toISOString();
     const title =
       (input?.name ?? input?.title)?.trim().slice(0, 120) || "New conversation";
@@ -228,7 +275,6 @@ export async function createChatConversation(
       updatedAt: now,
     };
     conversations.push(conversation);
-    await writeConversations(owner, conversations);
     return conversation;
   });
 }
@@ -246,8 +292,7 @@ export async function updateChatConversation(
     historyDepth?: number;
   },
 ): Promise<ChatConversation | null> {
-  return withFileLock(lockKey(owner), async () => {
-    const conversations = await readConversations(owner);
+  return withConversationStore(owner, (conversations) => {
     const conversation = conversations.find((item) => item.id === id);
     if (!conversation) return null;
     const nextTitle = patch.name ?? patch.title;
@@ -273,7 +318,6 @@ export async function updateChatConversation(
       conversation.historyDepth = clampHistoryDepth(patch.historyDepth);
     }
     conversation.updatedAt = new Date().toISOString();
-    await writeConversations(owner, conversations);
     return conversation;
   });
 }
@@ -282,11 +326,10 @@ export async function deleteChatConversation(
   owner: string,
   id: string,
 ): Promise<boolean> {
-  return withFileLock(lockKey(owner), async () => {
-    const conversations = await readConversations(owner);
-    const filtered = conversations.filter((item) => item.id !== id);
-    if (filtered.length === conversations.length) return false;
-    await writeConversations(owner, filtered);
+  return withConversationStore(owner, (conversations) => {
+    const index = conversations.findIndex((item) => item.id === id);
+    if (index < 0) return false;
+    conversations.splice(index, 1);
     return true;
   });
 }
@@ -298,6 +341,98 @@ export interface PersistChatMessage {
   thinking?: string;
 }
 
+function lastTurnIsPair(messages: readonly ChatMessage[]): boolean {
+  if (messages.length < 2) return false;
+  const assistant = messages.at(-1);
+  const user = messages.at(-2);
+  return Boolean(
+    assistant &&
+      user &&
+      assistant.role === "assistant" &&
+      user.role === "user",
+  );
+}
+
+function assertCompleteTurn(frames: readonly PersistChatMessage[]): void {
+  if (
+    frames.length !== 2 ||
+    frames[0]?.role !== "user" ||
+    frames[1]?.role !== "assistant"
+  ) {
+    throw new ChatPersistError(
+      "A turn must be one user message then one assistant message",
+    );
+  }
+  if (!frames[0].content.trim() || !frames[1].content.trim()) {
+    throw new ChatPersistError("content cannot be empty");
+  }
+}
+
+/**
+ * Persist a complete user+assistant turn after a sidecar `done`.
+ * `replaceLastTurn` retracts the current pair in the same compare-and-swap.
+ */
+export async function persistChatTurn(
+  owner: string,
+  id: string,
+  frames: readonly PersistChatMessage[],
+  options?: { replaceLastTurn?: boolean },
+): Promise<ChatConversation | null> {
+  assertCompleteTurn(frames);
+  const userFrame = frames[0];
+  const assistantFrame = frames[1];
+  const sanitized = isCoverageSentence(assistantFrame.content)
+    ? { content: assistantFrame.content.trim(), citations: [] as ChatCitation[] }
+    : sanitizeCitedAnswer(assistantFrame.content, assistantFrame.citations);
+  if (
+    !isCoverageSentence(sanitized.content) &&
+    sanitized.citations.length === 0
+  ) {
+    throw new ChatPersistError("Answer is missing a mapped [n] citation");
+  }
+
+  return withConversationStore(owner, (conversations) => {
+    const conversation = conversations.find((item) => item.id === id);
+    if (!conversation) return null;
+    if (options?.replaceLastTurn) {
+      if (!lastTurnIsPair(conversation.messages)) {
+        throw new ChatPersistError("No last turn to replace");
+      }
+      conversation.messages = conversation.messages.slice(0, -2);
+    }
+    if (conversation.messages.length + 2 > MAX_MESSAGES) {
+      throw new ChatPersistError("Conversation is full");
+    }
+    const now = new Date().toISOString();
+    conversation.messages.push(
+      {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: userFrame.content.trim(),
+        sources: [],
+        citations: [],
+        createdAt: now,
+      },
+      {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: sanitized.content,
+        sources: sanitized.citations.map((citation) => citation.path),
+        citations: sanitized.citations,
+        ...(assistantFrame.thinking
+          ? { thinking: assistantFrame.thinking }
+          : {}),
+        createdAt: now,
+      },
+    );
+    if (conversation.title === "New conversation") {
+      conversation.title = userFrame.content.trim().slice(0, 80);
+    }
+    conversation.updatedAt = now;
+    return conversation;
+  });
+}
+
 /**
  * Persist user/assistant frames after a sidecar `done` — no Worker generation.
  */
@@ -307,35 +442,7 @@ export async function appendChatMessages(
   frames: readonly PersistChatMessage[],
 ): Promise<ChatConversation | null> {
   if (frames.length === 0) return getChatConversation(owner, id);
-  return withFileLock(lockKey(owner), async () => {
-    const conversations = await readConversations(owner);
-    const conversation = conversations.find((item) => item.id === id);
-    if (!conversation) return null;
-    const now = new Date().toISOString();
-    for (const frame of frames) {
-      const content = frame.content.trim();
-      if (!content) continue;
-      if (conversation.messages.length >= MAX_MESSAGES) break;
-      conversation.messages.push({
-        id: crypto.randomUUID(),
-        role: frame.role,
-        content,
-        sources: (frame.citations ?? []).map((citation) => citation.path),
-        citations: frame.citations ?? [],
-        ...(frame.thinking ? { thinking: frame.thinking } : {}),
-        createdAt: now,
-      });
-    }
-    const firstUser = frames
-      .map((frame) => (frame.role === "user" ? frame.content.trim() : ""))
-      .find(Boolean);
-    if (conversation.title === "New conversation" && firstUser) {
-      conversation.title = firstUser.slice(0, 80);
-    }
-    conversation.updatedAt = now;
-    await writeConversations(owner, conversations);
-    return conversation;
-  });
+  return persistChatTurn(owner, id, frames);
 }
 
 /**
@@ -346,18 +453,13 @@ export async function retractLastChatTurn(
   owner: string,
   id: string,
 ): Promise<{ conversation: ChatConversation; userContent: string } | null> {
-  return withFileLock(lockKey(owner), async () => {
-    const conversations = await readConversations(owner);
+  return withConversationStore(owner, (conversations) => {
     const conversation = conversations.find((item) => item.id === id);
-    if (!conversation || conversation.messages.length < 2) return null;
-    const assistant = conversation.messages.at(-1);
+    if (!conversation || !lastTurnIsPair(conversation.messages)) return null;
     const user = conversation.messages.at(-2);
-    if (!assistant || !user || assistant.role !== "assistant" || user.role !== "user") {
-      return null;
-    }
+    if (!user) return null;
     conversation.messages = conversation.messages.slice(0, -2);
     conversation.updatedAt = new Date().toISOString();
-    await writeConversations(owner, conversations);
     return { conversation, userContent: user.content };
   });
 }
@@ -644,8 +746,7 @@ export async function addChatTurn(
   if (!trimmed) throw new Error("Message cannot be empty");
   const generated = await generateChatAnswer(snapshot, trimmed, principal);
 
-  return withFileLock(lockKey(owner), async () => {
-    const conversations = await readConversations(owner);
+  return withConversationStore(owner, (conversations) => {
     const conversation = conversations.find((item) => item.id === id);
     if (!conversation) throw new Error("Conversation not found");
     const now = new Date().toISOString();
@@ -669,7 +770,6 @@ export async function addChatTurn(
       conversation.title = trimmed.slice(0, 80);
     }
     conversation.updatedAt = assistantMessage.createdAt;
-    await writeConversations(owner, conversations);
     return { conversation, message: assistantMessage };
   });
 }

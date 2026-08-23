@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-23-2026 11:00
+last_updated: 08-23-2026 16:00
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
@@ -74,7 +74,7 @@ development_status:
   3-9-regenerate-last-turn: done
   3-10-save-to-wiki: done
   3-11-search-mode: done
-  epic-3-retrospective: optional
+  epic-3-retrospective: done
 
   epic-4: backlog
   4-1-extract-todo-candidates-from-meeting-ingest: backlog
@@ -221,3 +221,89 @@ action_items:
     owner: "Product / architecture"
     status: done
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-3-retro-sidecar-security"
+    epic: 3
+    action: "Close the sidecar credential-exfiltration boundary with trusted origins,
+      locally resolved provider endpoints, validated inputs, deadlines, and response
+      bounds."
+    owner: "Sidecar / security"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-release-gates"
+    epic: 3
+    action: "Restore TypeScript, production build, full Vitest, lint, and add an authenticated
+      Epic 3 browser gate."
+    owner: "Workbench / QA"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-owner-wiki-authority"
+    epic: 3
+    action: "Enforce the configured owner across Conversation, message, Save, Retrieve,
+      and Search routes and bind current or UUID routing to the selected Wiki."
+    owner: "Kernel / auth"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-conversation-atomicity"
+    epic: 3
+    action: "Make Conversation and complete-turn mutations isolate-safe, atomic, capacity-safe,
+      and sequence-validated."
+    owner: "Kernel / storage"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-citation-integrity"
+    epic: 3
+    action: "Enforce mapped citation markers and persist, render, and save only validated
+      citations actually used by the answer."
+    owner: "Chat / retrieval"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-retrieval-budget"
+    epic: 3
+    action: "Unify Chat and Search retrieval and apply exact structured history and
+      numbered-body budget ceilings with saturated allocation tests."
+    owner: "Retrieval"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-full-body-ruling"
+    epic: 3
+    action: "Resolve and reconcile full-body retrieval versus hard context-budget
+      behavior for oversized relevant documents."
+    owner: "Product / architecture"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-retrieval-scale-identity"
+    epic: 3
+    action: "Bound and index corpus reads while preserving every immutable Source
+      identity and independent snapshot availability."
+    owner: "Retrieval / storage"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-regenerate-ui-safety"
+    epic: 3
+    action: "Make Regenerate, drafts, active turns, Conversation loads, Search results,
+      and settings patches failure-safe and race-fenced."
+    owner: "Workbench / Chat"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-streaming-readiness-ruling"
+    epic: 3
+    action: "Define and implement the authoritative sidecar streaming and Chat-readiness
+      contract, including done-required persistence."
+    owner: "Product / sidecar"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-save-lifecycle"
+    epic: 3
+    action: "Make Save-to-Wiki owner-safe, message-identity-based, provenance-complete,
+      idempotent, job-bound, and truthful about dispatch failure."
+    owner: "Wiki kernel / Ingest"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-executed-contracts-orchestration"
+    epic: 3
+    action: "Add executed successful-SSE, owner-negative, Preview-click, Thinking,
+      and Save-to-retrieval tests, then split concentrated Chat, retrieval, and sidecar
+      orchestration."
+    owner: "QA / maintainers"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"

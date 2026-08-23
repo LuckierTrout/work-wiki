@@ -266,6 +266,58 @@ describe("assemble and search", () => {
     expect(result.hits.every((hit) => hit.path.startsWith("raw/sources/"))).toBe(true);
   });
 
+  it("excludes an oversized page so a later smaller page can fill the 60% slot", async () => {
+    await seedPages([
+      { slug: "huge", title: "Huge alpha", body: "alpha ".repeat(8000) },
+      { slug: "tiny", title: "Tiny alpha", body: "alpha fits" },
+    ]);
+    const assembled = await assembleWikiContext("alpha", {
+      principal: null,
+      tokenBudget: 4000,
+    });
+    expect(assembled.coverage).toBe(true);
+    expect(assembled.hits.map((hit) => hit.id)).toEqual(["tiny"]);
+    expect(assembled.tokenUsage.pages).toBeLessThanOrEqual(
+      Math.floor(4000 * 0.6),
+    );
+    expect(assembled.numberedBodies).toContain("[1] Tiny alpha");
+    expect(assembled.numberedBodies).not.toContain("Huge alpha");
+  });
+
+  it("applies the 20% history cap to newest structured messages", async () => {
+    await seedPages([{ slug: "alpha", title: "Alpha", body: "alpha body" }]);
+    const assembled = await assembleWikiContext("alpha", {
+      principal: null,
+      tokenBudget: 4000,
+      historyDepth: 10,
+      history: [
+        { role: "user", content: "old ".repeat(400) },
+        { role: "assistant", content: "older ".repeat(400) },
+        { role: "user", content: "newest user" },
+        { role: "assistant", content: "newest assistant" },
+      ],
+    });
+    expect(assembled.historySlice.at(-1)).toEqual({
+      role: "assistant",
+      content: "newest assistant",
+    });
+    expect(assembled.tokenUsage.history).toBeLessThanOrEqual(
+      Math.floor(4000 * 0.2),
+    );
+    expect(assembled.historySlice.some((row) => row.content.startsWith("old "))).toBe(
+      false,
+    );
+  });
+
+  it("keeps distinct Source identities that share a body", async () => {
+    await saveRawSource("first", "identical backpropagation transcript");
+    await saveRawSource("second", "identical backpropagation transcript");
+    const { hits } = await retrieveHits("backpropagation", { principal: null });
+    const sources = hits.filter((hit) => hit.kind === "source");
+    expect(sources.some((hit) => hit.id === "source:first")).toBe(true);
+    expect(sources.some((hit) => hit.id === "source:second")).toBe(true);
+  });
+
   it("Search hits carry path, title, snippet, and score", async () => {
     await seedPages([{ slug: "alpha", title: "Alpha", body: "alpha concept page" }]);
     const result = await searchWiki("alpha", { principal: null });

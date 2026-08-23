@@ -18,11 +18,15 @@ const pkg = require("../package.json");
 export const SIDECAR_HOST = "127.0.0.1";
 export const SIDECAR_PORT = 19828;
 export const SSE_EVENTS = ["meta", "agent", "done", "cancelled", "error"];
+export const PROVIDER_TIMEOUT_MS = 60_000;
+export const MAX_PROVIDER_RESPONSE_CHARS = 200_000;
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const LOOPBACK_ORIGIN_RE = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i;
 const COVERAGE_COPY =
   "Wiki has no coverage for this. Ingest a source or run Deep Research.";
+const CITATION_MARKER_RE = /\[([1-9]\d*)\]/g;
 
 export function healthPayload() {
   return {
@@ -66,6 +70,8 @@ export function parseDotEnv(text) {
   return out;
 }
 
+/** @param {string} text
+ *  @param {Record<string, string | undefined>} [env] */
 export function applyDotEnv(text, env = process.env) {
   const parsed = parseDotEnv(text);
   for (const [key, value] of Object.entries(parsed)) {
@@ -95,6 +101,9 @@ export function readSidecarConfig(dataDir = process.env.DATA_DIR || process.cwd(
   }
 }
 
+/** @param {string} provider
+ *  @param {Record<string, string | undefined>} [env]
+ *  @param {Record<string, unknown>} [config] */
 export function resolveChatSecret(provider, env = process.env, config = {}) {
   switch (provider) {
     case "anthropic":
@@ -114,6 +123,7 @@ export function resolveChatSecret(provider, env = process.env, config = {}) {
   }
 }
 
+/** @param {Record<string, string | undefined>} [env] */
 function detectEnvProvider(env = process.env) {
   if (env.ANTHROPIC_API_KEY) return "anthropic";
   if (env.OPENAI_API_KEY) return "openai";
@@ -122,6 +132,107 @@ function detectEnvProvider(env = process.env) {
   if (env.OLLAMA_API_KEY) return "ollama-cloud";
   if (env.OLLAMA_BASE_URL || env.OLLAMA_MODEL) return "ollama";
   return null;
+}
+
+/** Local env/config only. Caller-selected provider identity is ignored. */
+/** @param {Record<string, string | undefined>} [env]
+ *  @param {Record<string, unknown>} [config] */
+export function resolveChatProvider(env = process.env, config = {}) {
+  return config.chatProvider || detectEnvProvider(env) || "anthropic";
+}
+
+/** Local env/config only. Caller-selected endpoints are ignored. */
+/** @param {string} provider
+ *  @param {Record<string, string | undefined>} [env]
+ *  @param {Record<string, unknown>} [config] */
+export function resolveChatEndpoint(provider, env = process.env, config = {}) {
+  if (provider === "custom") return config.customBaseUrl || "";
+  if (provider === "deepseek") return "https://api.deepseek.com";
+  if (provider === "ollama-cloud") return "https://ollama.com/v1";
+  if (provider === "ollama") {
+    return env.OLLAMA_BASE_URL || "http://127.0.0.1:11434/v1";
+  }
+  if (provider === "openai") return "https://api.openai.com/v1";
+  return "";
+}
+
+export function allowSidecarOrigin(origin) {
+  if (!origin) return true;
+  return LOOPBACK_ORIGIN_RE.test(origin);
+}
+
+export function sanitizeCitedAnswer(content, citations, coverageCopy = COVERAGE_COPY) {
+  const byN = new Map();
+  for (const row of Array.isArray(citations) ? citations : []) {
+    if (
+      !row ||
+      typeof row !== "object" ||
+      !Number.isInteger(row.n) ||
+      row.n < 1 ||
+      typeof row.path !== "string" ||
+      !row.path.trim()
+    ) {
+      continue;
+    }
+    if (!byN.has(row.n)) byN.set(row.n, row);
+  }
+  const used = new Set();
+  const invented = new Set();
+  const text = typeof content === "string" ? content : "";
+  for (const match of text.matchAll(CITATION_MARKER_RE)) {
+    const n = Number(match[1]);
+    if (byN.has(n)) used.add(n);
+    else invented.add(n);
+  }
+  let next = text;
+  for (const n of invented) next = next.replaceAll(`[${n}]`, "");
+  next = next.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (used.size === 0) {
+    return { content: coverageCopy, citations: [], coverage: false };
+  }
+  return {
+    content: next,
+    citations: [...used]
+      .sort((a, b) => a - b)
+      .map((n) => byN.get(n)),
+    coverage: true,
+  };
+}
+
+function mergeAbortSignals(left, right) {
+  if (typeof AbortSignal.any === "function") {
+    return AbortSignal.any([left, right]);
+  }
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (left.aborted || right.aborted) {
+    controller.abort();
+    return controller.signal;
+  }
+  left.addEventListener("abort", abort, { once: true });
+  right.addEventListener("abort", abort, { once: true });
+  return controller.signal;
+}
+
+function providerSignal(signal) {
+  const timeout = AbortSignal.timeout(PROVIDER_TIMEOUT_MS);
+  return signal ? mergeAbortSignals(signal, timeout) : timeout;
+}
+
+async function readProviderJson(response) {
+  const text = await response.text();
+  if (text.length > MAX_PROVIDER_RESPONSE_CHARS) {
+    throw new Error("Provider response too large");
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error("Provider returned invalid JSON");
+  }
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export function createChatTurnSession(req, res, stream) {
@@ -166,8 +277,12 @@ export function createChatTurnSession(req, res, stream) {
   return { signal: controller.signal, emitCancelled, settle };
 }
 
-function cors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+function cors(req, res) {
+  const origin = req.headers.origin;
+  if (origin && allowSidecarOrigin(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
 }
@@ -226,7 +341,7 @@ async function callAnthropic({ apiKey, model, system, messages, signal }) {
     }),
     signal,
   });
-  const payload = await response.json();
+  const payload = await readProviderJson(response);
   if (!response.ok) {
     throw new Error(payload?.error?.message || `Anthropic ${response.status}`);
   }
@@ -250,7 +365,7 @@ async function callOpenAiCompatible({ apiKey, model, system, messages, baseUrl, 
     }),
     signal,
   });
-  const payload = await response.json();
+  const payload = await readProviderJson(response);
   if (!response.ok) {
     throw new Error(payload?.error?.message || `OpenAI-compatible ${response.status}`);
   }
@@ -273,7 +388,7 @@ async function callGoogle({ apiKey, model, system, messages, signal }) {
     }),
     signal,
   });
-  const payload = await response.json();
+  const payload = await readProviderJson(response);
   if (!response.ok) {
     throw new Error(payload?.error?.message || `Google ${response.status}`);
   }
@@ -281,39 +396,30 @@ async function callGoogle({ apiKey, model, system, messages, signal }) {
 }
 
 export async function generateChat({
-  provider,
+  provider: _ignoredProvider,
   model,
   apiKey: _ignoredApiKey,
-  baseUrl,
+  baseUrl: _ignoredBaseUrl,
   system,
   messages,
   signal,
-}) {
+} = {}) {
   const config = readSidecarConfig();
-  const resolvedProvider =
-    provider || config.chatProvider || detectEnvProvider() || "anthropic";
-  const resolvedModel = model || config.chatModel || "claude-sonnet-4-5";
+  const resolvedProvider = resolveChatProvider(process.env, config);
+  const resolvedModel = config.chatModel || model || "claude-sonnet-4-5";
   const key = resolveChatSecret(resolvedProvider, process.env, config);
   if (!key && resolvedProvider !== "ollama") {
     throw new Error("Configure a Chat model in Settings.");
   }
-  const resolvedBase =
-    baseUrl ||
-    config.customBaseUrl ||
-    (resolvedProvider === "deepseek"
-      ? "https://api.deepseek.com"
-      : resolvedProvider === "ollama-cloud"
-        ? "https://ollama.com/v1"
-        : resolvedProvider === "ollama"
-          ? "http://127.0.0.1:11434/v1"
-          : "https://api.openai.com/v1");
+  const resolvedBase = resolveChatEndpoint(resolvedProvider, process.env, config);
+  const bounded = providerSignal(signal);
   if (resolvedProvider === "google") {
     return callGoogle({
       apiKey: key,
       model: resolvedModel,
       system,
       messages,
-      signal,
+      signal: bounded,
     });
   }
   if (
@@ -321,13 +427,16 @@ export async function generateChat({
     resolvedProvider === "deepseek" ||
     resolvedProvider === "custom"
   ) {
+    if (!resolvedBase) {
+      throw new Error("Configure a Chat model in Settings.");
+    }
     return callOpenAiCompatible({
       apiKey: key,
       model: resolvedModel,
       system,
       messages,
       baseUrl: resolvedBase,
-      signal,
+      signal: bounded,
     });
   }
   if (resolvedProvider === "ollama" || resolvedProvider === "ollama-cloud") {
@@ -337,7 +446,7 @@ export async function generateChat({
       system,
       messages,
       baseUrl: resolvedBase,
-      signal,
+      signal: bounded,
     });
   }
   return callAnthropic({
@@ -345,7 +454,7 @@ export async function generateChat({
     model: resolvedModel,
     system,
     messages,
-    signal,
+    signal: bounded,
   });
 }
 
@@ -366,27 +475,93 @@ function isAbortError(error) {
   );
 }
 
+function rejectChat(res, status, error) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error }));
+}
+
+function parseHistory(value) {
+  if (value === undefined) return { messages: [] };
+  if (!Array.isArray(value)) return { error: "messages must be an array" };
+  const messages = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) return { error: "invalid history row" };
+    if (item.role !== "user" && item.role !== "assistant") {
+      return { error: "invalid history role" };
+    }
+    if (typeof item.content !== "string") {
+      return { error: "invalid history content" };
+    }
+    messages.push({ role: item.role, content: item.content });
+  }
+  return { messages };
+}
+
+function parseCitations(value) {
+  if (value === undefined) return { citations: [] };
+  if (!Array.isArray(value)) return { error: "citations must be an array" };
+  const citations = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) return { error: "invalid citation" };
+    if (
+      !Number.isInteger(item.n) ||
+      item.n < 1 ||
+      typeof item.path !== "string" ||
+      !item.path.trim() ||
+      typeof item.title !== "string" ||
+      typeof item.type !== "string"
+    ) {
+      return { error: "invalid citation" };
+    }
+    citations.push({
+      n: item.n,
+      path: item.path.trim(),
+      title: item.title,
+      type: item.type,
+    });
+  }
+  return { citations };
+}
+
 async function handleChat(req, res, wikiId) {
   if (!isSidecarWikiId(wikiId)) {
-    res.writeHead(400, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "invalid_wiki_id" }));
+    rejectChat(res, 400, "invalid_wiki_id");
     return;
   }
   let body;
   try {
     body = await readBody(req);
   } catch {
-    res.writeHead(400, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "invalid JSON" }));
+    rejectChat(res, 400, "invalid JSON");
+    return;
+  }
+  if (!isPlainObject(body)) {
+    rejectChat(res, 400, "invalid JSON");
+    return;
+  }
+  const historyParsed = parseHistory(body.messages);
+  if (historyParsed.error) {
+    rejectChat(res, 400, historyParsed.error);
+    return;
+  }
+  const citationParsed = parseCitations(body.citations);
+  if (citationParsed.error) {
+    rejectChat(res, 400, citationParsed.error);
+    return;
+  }
+  const context = typeof body.context === "string" ? body.context : "";
+  const query =
+    typeof body.query === "string" ? body.query.trim() : "";
+  if (!query && context.trim() && body.coverage !== false) {
+    rejectChat(res, 400, "query is required");
     return;
   }
   const stream =
     body.stream === true ||
     String(req.headers.accept || "").includes("text/event-stream");
   const session = createChatTurnSession(req, res, stream);
-  const citations = Array.isArray(body.citations) ? body.citations : [];
-  const history = Array.isArray(body.messages) ? body.messages : [];
-  const context = typeof body.context === "string" ? body.context : "";
+  const citations = citationParsed.citations;
+  const history = historyParsed.messages;
   const system = [
     typeof body.system === "string" ? body.system : "",
     context ? `NUMBERED CONTEXT\n${context}` : "",
@@ -431,23 +606,17 @@ async function handleChat(req, res, wikiId) {
   }
 
   const userText =
-    typeof body.query === "string" && body.query.trim()
-      ? body.query.trim()
-      : history.filter((item) => item.role === "user").at(-1)?.content || "";
-  const messages = [
-    ...history
-      .filter((item) => item.role === "user" || item.role === "assistant")
-      .map((item) => ({ role: item.role, content: String(item.content ?? "") })),
-  ];
+    query ||
+    history.filter((item) => item.role === "user").at(-1)?.content ||
+    "";
+  const messages = [...history];
   if (!messages.some((item) => item.role === "user" && item.content === userText) && userText) {
     messages.push({ role: "user", content: userText });
   }
 
   try {
     const raw = await generateChat({
-      provider: body.model?.provider,
-      model: body.model?.model,
-      baseUrl: body.model?.baseUrl,
+      model: typeof body.model?.model === "string" ? body.model.model : undefined,
       system,
       messages,
       signal: session.signal,
@@ -457,11 +626,12 @@ async function handleChat(req, res, wikiId) {
       return;
     }
     const split = extractThinking(raw);
+    const sanitized = sanitizeCitedAnswer(split.content, citations);
     await done({
-      content: split.content,
+      content: sanitized.content,
       thinking: split.thinking,
-      citations,
-      coverage: true,
+      citations: sanitized.citations,
+      coverage: sanitized.coverage,
     });
   } catch (error) {
     if (session.signal.aborted || isAbortError(error)) {
@@ -486,7 +656,7 @@ async function handleChat(req, res, wikiId) {
 
 export function createSidecarServer() {
   return http.createServer(async (req, res) => {
-    cors(res);
+    cors(req, res);
     const url = new URL(req.url || "/", `http://${SIDECAR_HOST}:${SIDECAR_PORT}`);
     if (req.method === "OPTIONS") {
       res.writeHead(204);

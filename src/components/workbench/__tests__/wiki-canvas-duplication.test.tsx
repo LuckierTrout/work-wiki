@@ -56,6 +56,13 @@ const OTHER: WikiRecord = {
 const PREVIEW_SENTENCE = PREVIEW_UNSELECTED_COPY;
 const PREVIEW_NOTE_SELECTOR = '.wb-shell[data-preview="true"] .wb-canvas-preview-note';
 
+/** Chat/Search stay mounted behind `hidden`; they are not on-screen Wiki controls. */
+function visibleSelects(root: ParentNode = document): HTMLSelectElement[] {
+  return [...root.querySelectorAll("select")].filter(
+    (node) => !node.closest("[hidden]"),
+  );
+}
+
 /**
  * The DW-39 rule, sliced out of the REAL stylesheet rather than restated here.
  *
@@ -256,7 +263,7 @@ describe("one Wiki switcher and one create control per viewport (DW-33)", () => 
     expect(screen.getAllByText(PREVIEW_SENTENCE)).toHaveLength(1);
     // Exactly one combobox anywhere: a relabelled switcher would slip past the
     // name query above but not past this.
-    expect(document.querySelectorAll("select")).toHaveLength(1);
+    expect(visibleSelects()).toHaveLength(1);
   });
 
   it("has no canvas control that opens the create flow, whatever it is called", async () => {
@@ -335,7 +342,7 @@ describe("one Wiki switcher and one create control per viewport (DW-33)", () => 
     expect(screen.getAllByRole("button", { name: /new wiki/i })).toHaveLength(1);
     const canvas = container.querySelector(".wb-canvas") as HTMLElement;
     expect(within(canvas).queryByLabelText(/active wiki/i)).toBeNull();
-    expect(canvas.querySelector("select")).toBeNull();
+    expect(visibleSelects(canvas)).toHaveLength(0);
   });
 
   it("keeps the canvas empty state and the header create control with no wiki", async () => {

@@ -4,6 +4,8 @@ import os from "os";
 import path from "path";
 import {
   appendChatMessages,
+  persistChatTurn,
+  ChatPersistError,
   createChatConversation,
   deleteChatConversation,
   exportChatConversation,
@@ -120,6 +122,62 @@ describe("owner chat conversations", () => {
     expect(retracted?.userContent).toBe("What is alpha?");
     expect(retracted?.conversation.messages).toEqual([]);
     expect(await retractLastChatTurn("alice", conversation.id)).toBeNull();
+  });
+
+  it("replaces the last turn in one compare-and-swap", async () => {
+    const conversation = await createChatConversation("alice");
+    await appendChatMessages("alice", conversation.id, [
+      { role: "user", content: "What is alpha?" },
+      {
+        role: "assistant",
+        content: "First answer [1].",
+        citations: [{ n: 1, path: "wiki/alpha.md", title: "Alpha", type: "page" }],
+      },
+    ]);
+    const replaced = await persistChatTurn(
+      "alice",
+      conversation.id,
+      [
+        { role: "user", content: "What is alpha?" },
+        {
+          role: "assistant",
+          content: "Second answer [1].",
+          citations: [{ n: 1, path: "wiki/alpha.md", title: "Alpha", type: "page" }],
+        },
+      ],
+      { replaceLastTurn: true },
+    );
+    expect(replaced?.messages).toHaveLength(2);
+    expect(replaced?.messages[1]?.content).toBe("Second answer [1].");
+  });
+
+  it("rejects a turn that would overflow capacity", async () => {
+    const conversation = await createChatConversation("alice");
+    const storedPath = path.join(
+      tmpDir,
+      "tenants",
+      "alice",
+      "chat-conversations.json",
+    );
+    const stored = JSON.parse(await fs.readFile(storedPath, "utf8"));
+    stored[0].messages = Array.from({ length: 79 }, (_, index) => ({
+      id: `m${index}`,
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: `row ${index}`,
+      sources: [],
+      createdAt: conversation.createdAt,
+    }));
+    await fs.writeFile(storedPath, JSON.stringify(stored));
+    await expect(
+      persistChatTurn("alice", conversation.id, [
+        { role: "user", content: "one more" },
+        {
+          role: "assistant",
+          content: "cannot fit [1].",
+          citations: [{ n: 1, path: "wiki/alpha.md", title: "Alpha", type: "page" }],
+        },
+      ]),
+    ).rejects.toBeInstanceOf(ChatPersistError);
   });
 
   it("refuses an empty rename", async () => {

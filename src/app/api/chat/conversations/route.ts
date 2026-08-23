@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getPrincipal } from "@/lib/auth";
+import { requireOwnerPrincipal } from "@/lib/owner-route";
 import {
   conversationWithName,
   createChatConversation,
@@ -11,7 +11,7 @@ import { clampHistoryDepth, clampTokenBudget } from "@/lib/chat-contract";
 import { getErrorMessage } from "@/lib/errors";
 
 export async function GET() {
-  const principal = await getPrincipal();
+  const principal = await requireOwnerPrincipal();
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
@@ -27,7 +27,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const principal = await getPrincipal();
+  const principal = await requireOwnerPrincipal();
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
@@ -67,6 +67,12 @@ export async function POST(request: Request) {
         { error: "contextBudget must be compact, standard, or expanded" },
         { status: 400 },
       );
+    }
+    if (body.tokenBudget !== undefined && typeof body.tokenBudget !== "number") {
+      return NextResponse.json({ error: "tokenBudget must be a number" }, { status: 400 });
+    }
+    if (body.historyDepth !== undefined && typeof body.historyDepth !== "number") {
+      return NextResponse.json({ error: "historyDepth must be a number" }, { status: 400 });
     }
     const conversation = await createChatConversation(principal.handle, {
       ...(typeof body.title === "string" ? { title: body.title } : {}),

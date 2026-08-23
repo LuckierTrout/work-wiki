@@ -3,11 +3,11 @@ import { isChatRetrievalMode } from "@/lib/chat";
 import {
   clampHistoryDepth,
   clampTokenBudget,
-  isFilesystemWikiId,
   type ChatExportMessage,
 } from "@/lib/chat-contract";
 import { getErrorMessage } from "@/lib/errors";
 import { requireOwnerPrincipal } from "@/lib/owner-route";
+import { requireAccessibleWikiId } from "@/lib/wiki-access";
 import { assembleWikiContext } from "@/lib/wiki-retrieve";
 
 interface RouteContext {
@@ -20,8 +20,9 @@ export async function POST(request: Request, { params }: RouteContext) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
   const { wikiId } = await params;
-  if (isFilesystemWikiId(wikiId)) {
-    return NextResponse.json({ error: "invalid_wiki_id" }, { status: 400 });
+  const access = await requireAccessibleWikiId(principal.handle, wikiId);
+  if (!access.ok) {
+    return NextResponse.json({ error: access.error }, { status: access.status });
   }
   try {
     const body = (await request.json().catch(() => ({}))) as {

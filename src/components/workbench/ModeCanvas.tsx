@@ -127,27 +127,46 @@ export function ModeCanvas({
         </div>
       </SurfaceVisibilityProvider>
 
-      {!wikiActive && !hidden && (
+      {sidecar === "up" ? (
+        <div className="wb-canvas-pad" hidden={mode !== "chat" || hidden}>
+          {mode === "chat" && !hidden ? (
+            <h2 id={headingId} className="wb-surface-title">
+              {workbenchMode("chat").label}
+            </h2>
+          ) : null}
+          <ChatCanvas
+            wikiId={wikiId ?? "current"}
+            readOnly={readOnly}
+            onDockPreview={onDockPreview ?? (() => {})}
+          />
+        </div>
+      ) : mode === "chat" && !hidden ? (
+        <div className="wb-canvas-pad">
+          <h2 id={headingId} className="wb-surface-title">
+            {workbenchMode("chat").label}
+          </h2>
+          <p className="wb-empty">{CHAT_SIDECAR_DOWN_COPY}</p>
+        </div>
+      ) : null}
+
+      <div className="wb-canvas-pad" hidden={mode !== "search" || hidden}>
+        {mode === "search" && !hidden ? (
+          <h2 id={headingId} className="wb-surface-title">
+            {workbenchMode("search").label}
+          </h2>
+        ) : null}
+        <SearchCanvas
+          wikiId={wikiId ?? "current"}
+          onDockPreview={onDockPreview ?? (() => {})}
+        />
+      </div>
+
+      {!wikiActive && !hidden && mode !== "chat" && mode !== "search" && (
         <div className="wb-canvas-pad">
           <h2 id={headingId} className="wb-surface-title">
             {surface.label}
           </h2>
-          {mode === "chat" ? (
-            sidecar === "up" ? (
-              <ChatCanvas
-                wikiId={wikiId ?? "current"}
-                readOnly={readOnly}
-                onDockPreview={onDockPreview ?? (() => {})}
-              />
-            ) : (
-              <p className="wb-empty">{CHAT_SIDECAR_DOWN_COPY}</p>
-            )
-          ) : mode === "search" ? (
-            <SearchCanvas
-              wikiId={wikiId ?? "current"}
-              onDockPreview={onDockPreview ?? (() => {})}
-            />
-          ) : mode === "graph" ? (
+          {mode === "graph" ? (
             // Both sentences render; CSS width queries reveal exactly one. No
             // user-agent branch and no width measurement in JS (UX-DR24).
             <>

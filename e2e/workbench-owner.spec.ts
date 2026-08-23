@@ -27,6 +27,26 @@ test.describe("private Workbench owner journey", () => {
     ).toBeVisible();
   });
 
+  test("Chat and Search rails expose their canvases", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Chat", exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByText("Start the local sidecar on 127.0.0.1:19828 to use Chat.")
+        .or(page.getByRole("button", { name: "New Chat" })),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Search", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Search", exact: true })).toBeVisible();
+    await expect(page.getByPlaceholder("Press Enter to search.")).toBeVisible();
+    await page.getByPlaceholder("Press Enter to search.").fill("alpha");
+    await page.getByPlaceholder("Press Enter to search.").press("Enter");
+    await expect(
+      page.getByText("No matching Pages or Sources.").or(page.getByText("Searching…")),
+    ).toBeVisible();
+  });
+
   test("the Files tab is reachable after sign-in", async ({ page }) => {
     await page.goto("/");
     await page.getByRole("tab", { name: "Files" }).click();

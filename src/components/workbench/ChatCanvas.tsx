@@ -8,6 +8,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
+import { sanitizeCitedAnswer } from "@/lib/chat-citations";
 import {
   CHAT_HISTORY_DEPTH_DEFAULT,
   CHAT_TOKEN_BUDGET_DEFAULT,
@@ -112,8 +113,11 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   const liveRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sendInFlight = useRef(false);
+  const saveInFlight = useRef(false);
+  const loadSeq = useRef(0);
+  const persistSeq = useRef(0);
+  const patchChain = useRef(Promise.resolve());
 
-  const active = conversations.find((item) => item.id === activeId) ?? null;
   const empty = messages.length === 0 && !streaming;
 
   const loadList = useCallback(async () => {
@@ -126,10 +130,12 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   }, []);
 
   const loadConversation = useCallback(async (id: string) => {
+    const seq = ++loadSeq.current;
     const body = await send<{ conversation?: ConversationRow }>(
       `/api/chat/conversations/${encodeURIComponent(id)}`,
       { method: "GET" },
     );
+    if (seq !== loadSeq.current) return;
     const conversation = body.conversation;
     if (!conversation) {
       setMessages([]);
@@ -162,6 +168,12 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
         setError(cause instanceof Error ? cause.message : "Chat failed.");
       });
   }, [loadList, loadConversation]);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   function stopTurn() {
     abortRef.current?.abort();
@@ -233,22 +245,27 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     }
   }
 
-  async function patchActive(patch: Record<string, unknown>) {
+  function patchActive(patch: Record<string, unknown>) {
     if (!activeId || readOnly) return;
-    const body = await send<{ conversation?: ConversationRow }>(
-      `/api/chat/conversations/${encodeURIComponent(activeId)}`,
-      {
-        method: "PATCH",
-        body: JSON.stringify(patch),
-      },
-    );
-    if (body.conversation) {
-      setConversations((current) =>
-        current.map((item) =>
-          item.id === activeId ? { ...item, ...body.conversation } : item,
-        ),
-      );
-    }
+    const id = activeId;
+    patchChain.current = patchChain.current
+      .then(async () => {
+        const body = await send<{ conversation?: ConversationRow }>(
+          `/api/chat/conversations/${encodeURIComponent(id)}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify(patch),
+          },
+        );
+        if (body.conversation) {
+          setConversations((current) =>
+            current.map((item) =>
+              item.id === id ? { ...item, ...body.conversation } : item,
+            ),
+          );
+        }
+      })
+      .catch(() => undefined);
   }
 
   function dockCitation(citation: ChatCitation) {
@@ -260,13 +277,19 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     if (row) dockCitation(row);
   }
 
-  async function persistFrames(id: string, frames: CanvasMessage[]) {
+  async function persistFrames(
+    id: string,
+    frames: CanvasMessage[],
+    options?: { replaceLastTurn?: boolean },
+  ) {
+    const seq = ++persistSeq.current;
     const body = await send<{ conversation?: ConversationRow }>(
       `/api/chat/conversations/${encodeURIComponent(id)}/messages`,
       {
         method: "POST",
         body: JSON.stringify({
           persist: true,
+          replaceLastTurn: options?.replaceLastTurn === true,
           messages: frames.map((frame) => ({
             role: frame.role,
             content: frame.content,
@@ -277,6 +300,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
       },
     );
     if (!body.conversation) throw new Error("Persist failed.");
+    if (seq !== persistSeq.current) return;
     setMessages(body.conversation.messages ?? []);
     setConversations((current) =>
       current.map((item) =>
@@ -285,7 +309,15 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     );
   }
 
-  async function sendTurn(text: string, conversationId: string): Promise<boolean> {
+  function clearOptimistic() {
+    setMessages((current) => current.filter((item) => !item.id.startsWith("pending-")));
+  }
+
+  async function sendTurn(
+    text: string,
+    conversationId: string,
+    options?: { history?: CanvasMessage[]; replaceLastTurn?: boolean },
+  ): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || streaming || sendInFlight.current || readOnly) return false;
     sendInFlight.current = true;
@@ -298,7 +330,8 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     setVectorNote(null);
     setStreamText("");
     setStreamThinking("");
-    const history: ChatExportMessage[] = messages.map((message) => ({
+    const historySource = options?.history ?? messages;
+    const history: ChatExportMessage[] = historySource.map((message) => ({
       id: message.id,
       role: message.role,
       content: message.content,
@@ -326,19 +359,24 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
         setVectorNote(assembled.vectorPhase.message || CHAT_VECTOR_FALLBACK_COPY);
       }
       if (!assembled.coverage) {
-        await persistFrames(conversationId, [
-          { id: "u", role: "user", content: trimmed },
-          {
-            id: "a",
-            role: "assistant",
-            content: assembled.coverageMessage || CHAT_COVERAGE_MISSING_COPY,
-            citations: [],
-          },
-        ]);
+        await persistFrames(
+          conversationId,
+          [
+            { id: "u", role: "user", content: trimmed },
+            {
+              id: "a",
+              role: "assistant",
+              content: assembled.coverageMessage || CHAT_COVERAGE_MISSING_COPY,
+              citations: [],
+            },
+          ],
+          { replaceLastTurn: options?.replaceLastTurn },
+        );
         return true;
       }
       if (!assembled.chatModel.configured) {
         setError(CHAT_MODEL_MISSING_COPY);
+        clearOptimistic();
         return false;
       }
       const controller = new AbortController();
@@ -359,7 +397,9 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
           indexSlice: assembled.indexSlice,
           messages: assembled.historySlice,
           citations: assembled.citations,
-          model: assembled.chatModel,
+          model: {
+            model: assembled.chatModel.model,
+          },
         }),
       });
       if (!sidecarRes.ok || !sidecarRes.body) {
@@ -369,11 +409,13 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
       const reader = sidecarRes.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let donePayload: {
-        content?: string;
-        thinking?: string;
-        citations?: ChatCitation[];
-      } | null = null;
+      const doneBox: {
+        current: {
+          content?: string;
+          thinking?: string;
+          citations?: ChatCitation[];
+        } | null;
+      } = { current: null };
       const applySseBlock = (block: string) => {
         const eventMatch = /event:\s*(\w+)/.exec(block);
         const dataMatch = /data:\s*({[\s\S]*})/.exec(block);
@@ -390,7 +432,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
             setStreamThinking(data.thinking);
           }
         } else if (event === "done") {
-          donePayload = data as {
+          doneBox.current = data as {
             content?: string;
             thinking?: string;
             citations?: ChatCitation[];
@@ -413,20 +455,30 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
         buffer = blocks.pop() ?? "";
         for (const block of blocks) applySseBlock(block);
       }
-      const content = donePayload?.content?.trim() || CHAT_COVERAGE_MISSING_COPY;
-      await persistFrames(conversationId, [
-        { id: "u", role: "user", content: trimmed },
-        {
-          id: "a",
-          role: "assistant",
-          content,
-          citations: donePayload?.citations ?? assembled.citations,
-          thinking: donePayload?.thinking,
-        },
-      ]);
+      if (!doneBox.current) {
+        throw new Error("Chat ended before a complete answer.");
+      }
+      const sanitized = sanitizeCitedAnswer(
+        doneBox.current.content ?? "",
+        doneBox.current.citations ?? assembled.citations,
+      );
+      await persistFrames(
+        conversationId,
+        [
+          { id: "u", role: "user", content: trimmed },
+          {
+            id: "a",
+            role: "assistant",
+            content: sanitized.content,
+            citations: sanitized.citations,
+            thinking: doneBox.current.thinking,
+          },
+        ],
+        { replaceLastTurn: options?.replaceLastTurn },
+      );
       return true;
     } catch (cause) {
-      setMessages((current) => current.filter((item) => !item.id.startsWith("pending-")));
+      clearOptimistic();
       if ((cause as Error).name === "AbortError") return false;
       setError(cause instanceof Error ? cause.message : "Chat failed.");
       return false;
@@ -472,31 +524,44 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
 
   async function regenerate() {
     if (readOnly || !activeId || messages.length < 2 || streaming) return;
-    const body = await send<{
-      noop?: boolean;
-      userContent?: string | null;
-      conversation?: ConversationRow;
-    }>(`/api/chat/conversations/${encodeURIComponent(activeId)}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ retractLastTurn: true }),
+    const assistant = messages.at(-1);
+    const user = messages.at(-2);
+    if (
+      !assistant ||
+      !user ||
+      assistant.role !== "assistant" ||
+      user.role !== "user"
+    ) {
+      return;
+    }
+    const prior = messages;
+    const history = messages.slice(0, -2);
+    setMessages(history);
+    const ok = await sendTurn(user.content, activeId, {
+      history,
+      replaceLastTurn: true,
     });
-    if (body.noop || !body.userContent) return;
-    setMessages(body.conversation?.messages ?? []);
-    const ok = await sendTurn(body.userContent, activeId);
-    if (!ok) setComposer(body.userContent);
+    if (!ok) {
+      setMessages(prior);
+      setComposer(user.content);
+      drafts.current[activeId] = user.content;
+    }
   }
 
   async function saveToWiki() {
-    if (!activeId || readOnly) return;
+    if (!activeId || readOnly || saveInFlight.current) return;
     const assistant = [...messages].reverse().find((item) => item.role === "assistant");
     if (!assistant) return;
+    saveInFlight.current = true;
     try {
       await send(`/api/chat/conversations/${encodeURIComponent(activeId)}/save`, {
         method: "POST",
-        body: JSON.stringify({ content: assistant.content }),
+        body: JSON.stringify({ messageId: assistant.id }),
       });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Save failed.");
+    } finally {
+      saveInFlight.current = false;
     }
   }
 

@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
-import { getPrincipal } from "@/lib/auth";
+import { citationPathAllowed } from "@/lib/chat-citations";
 import { getChatConversation } from "@/lib/chat";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { ingest } from "@/lib/ingest";
 import { createIngestJob } from "@/lib/ingest-jobs";
+import { requireOwnerPrincipal } from "@/lib/owner-route";
 import { saveAnswerToWiki } from "@/lib/query";
 import { saveRawSourceFor } from "@/lib/raw";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { sourceSha256 } from "@/lib/source-sha256";
+import { validateSlug } from "@/lib/wiki";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -22,8 +24,19 @@ function queryAnswerSourceSlug(pageSlug: string): string {
   return `query-${leaf}`;
 }
 
+function wikiSlugFromCitationPath(path: string): string | null {
+  if (!path.startsWith("wiki/") || !path.endsWith(".md")) return null;
+  const slug = path.slice("wiki/".length, -".md".length);
+  try {
+    validateSlug(slug);
+    return slug;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(request: Request, { params }: RouteContext) {
-  const principal = await getPrincipal();
+  const principal = await requireOwnerPrincipal();
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
@@ -41,16 +54,19 @@ export async function POST(request: Request, { params }: RouteContext) {
     }
     const body = (await request.json().catch(() => ({}))) as {
       title?: unknown;
-      content?: unknown;
+      messageId?: unknown;
     };
-    const lastAssistant = [...conversation.messages]
-      .reverse()
-      .find((message) => message.role === "assistant");
-    const content =
-      typeof body.content === "string" && body.content.trim()
-        ? body.content.trim()
-        : lastAssistant?.content.trim() ?? "";
-    if (!content) {
+    const messageId =
+      typeof body.messageId === "string" ? body.messageId.trim() : "";
+    const assistant = messageId
+      ? conversation.messages.find(
+          (message) => message.id === messageId && message.role === "assistant",
+        )
+      : [...conversation.messages]
+          .reverse()
+          .find((message) => message.role === "assistant");
+    const content = assistant?.content.trim() ?? "";
+    if (!assistant || !content) {
       return NextResponse.json(
         { error: "No assistant answer to save." },
         { status: 400 },
@@ -60,14 +76,24 @@ export async function POST(request: Request, { params }: RouteContext) {
       typeof body.title === "string" && body.title.trim()
         ? body.title.trim()
         : conversation.title || "Chat answer";
-    const sources = (lastAssistant?.citations ?? [])
-      .map((citation) => citation.path.replace(/^wiki\//, "").replace(/\.md$/, ""))
-      .filter((slug) => slug && !slug.includes("/"));
+    const citations = (assistant.citations ?? []).filter((citation) =>
+      citationPathAllowed(citation.path),
+    );
+    const wikiSlugs = citations
+      .map((citation) => wikiSlugFromCitationPath(citation.path))
+      .filter((slug): slug is string => Boolean(slug));
+    const sourcePaths = citations
+      .map((citation) => citation.path)
+      .filter((path) => path.startsWith("raw/sources/"));
+    const contentWithProvenance =
+      sourcePaths.length > 0
+        ? `${content}\n\n## Sources\n${sourcePaths.map((path) => `- \`${path}\``).join("\n")}`
+        : content;
     const result = await saveAnswerToWiki(
       title,
-      content,
+      contentWithProvenance,
       undefined,
-      sources.length > 0 ? sources : undefined,
+      wikiSlugs.length > 0 ? wikiSlugs : undefined,
       "markdown",
       principal.handle,
       principal.handle,
@@ -78,8 +104,8 @@ export async function POST(request: Request, { params }: RouteContext) {
       },
     );
     const sourceSlug = queryAnswerSourceSlug(result.slug);
-    const contentSha256 = await sourceSha256(content);
-    await saveRawSourceFor(sourceSlug, contentSha256, content, {
+    const contentSha256 = await sourceSha256(contentWithProvenance);
+    await saveRawSourceFor(sourceSlug, contentSha256, contentWithProvenance, {
       owner: principal.handle,
     });
     const sourcePath = `raw/sources/${sourceSlug}/${contentSha256}.md`;
@@ -89,42 +115,64 @@ export async function POST(request: Request, { params }: RouteContext) {
       owner: principal.handle,
       title,
     });
-    const ingestResponse = await enqueueOrInline(
+    const pagePayload = {
+      slug: result.slug,
+      path: `wiki/${result.slug}.md`,
       jobId,
-      {
-        kind: "ingest",
-        title,
-        content,
-        owner: principal.handle,
-        author: principal.handle,
-        tags: ["query-answer"],
+      sourcePath,
+    };
+    try {
+      const ingestResponse = await enqueueOrInline(
         jobId,
-        sourceType: "text",
-        sourcePath,
-        contentSha256,
-      },
-      () =>
-        ingest(title, content, {
+        {
+          kind: "ingest",
+          title,
+          content: contentWithProvenance,
           owner: principal.handle,
           author: principal.handle,
-          triggeredBy: principal.handle,
           tags: ["query-answer"],
+          jobId,
           sourceType: "text",
           sourcePath,
           contentSha256,
-        }),
-    );
-    const ingestBody = (await ingestResponse.json().catch(() => ({}))) as {
-      queued?: boolean;
-      jobId?: string;
-    };
-    return NextResponse.json({
-      slug: result.slug,
-      path: `wiki/${result.slug}.md`,
-      jobId: ingestBody.jobId ?? jobId,
-      queued: ingestBody.queued ?? true,
-      sourcePath,
-    });
+        },
+        () =>
+          ingest(title, contentWithProvenance, {
+            owner: principal.handle,
+            author: principal.handle,
+            triggeredBy: principal.handle,
+            tags: ["query-answer"],
+            sourceType: "text",
+            sourcePath,
+            contentSha256,
+            jobId,
+          }),
+      );
+      if (!ingestResponse.ok) {
+        return NextResponse.json(
+          { ...pagePayload, queued: false },
+          { status: 202 },
+        );
+      }
+      const ingestBody = (await ingestResponse.json().catch(() => ({}))) as {
+        queued?: boolean;
+        jobId?: string;
+      };
+      return NextResponse.json({
+        ...pagePayload,
+        jobId: ingestBody.jobId ?? jobId,
+        queued: ingestBody.queued ?? true,
+      });
+    } catch (error) {
+      return NextResponse.json(
+        {
+          ...pagePayload,
+          queued: false,
+          error: getErrorMessage(error),
+        },
+        { status: 202 },
+      );
+    }
   } catch (error) {
     if (isReadOnlyError(error)) {
       return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });

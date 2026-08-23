@@ -32,14 +32,12 @@ import { buildWeightedGraphEdges, expandGraphSeeds } from "./graph-relevance";
 import { logger } from "./logger";
 import { listRawSources, listRawSourceSnapshots, readRawSource, readRawSourceById } from "./raw";
 import { loadPageConventions } from "./schema";
-import { parseSources } from "./sources";
 import type { IndexEntry } from "./types";
 import { CHAT_COVERAGE_MISSING_COPY, CHAT_VECTOR_FALLBACK_COPY } from "./workbench-modes";
 import {
   isArtifactType,
   listReadableWikiPages,
   readWikiPage,
-  readWikiPageWithFrontmatter,
 } from "./wiki";
 import type { Principal } from "./auth";
 
@@ -51,6 +49,7 @@ export const TITLE_MATCH_BONUS = 10;
 const SPECIAL_SLUGS = new Set(["purpose", "index"]);
 const DEFAULT_SEARCH_TOP_K = 10;
 const DEFAULT_SEED_LIMIT = 24;
+const PAGE_READ_CONCURRENCY = 8;
 const WIKI_LINK_RE = /\[([^\]]*)\]\(([^)]+)\.md\)/g;
 const WIKILINK_RE = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g;
 
@@ -129,6 +128,31 @@ export interface SearchRetrieveResult {
   vectorPhase: VectorPhase;
 }
 
+async function mapPool<T, R>(
+  items: readonly T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const out = new Array<R>(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      out[index] = await mapper(items[index], index);
+    }
+  }
+  await Promise.all(
+    Array.from(
+      { length: Math.min(Math.max(1, limit), items.length) },
+      () => worker(),
+    ),
+  );
+  return out;
+}
+
 export function scoreRetrieveDocument(
   queryTokens: readonly string[],
   title: string,
@@ -146,6 +170,38 @@ export function scoreRetrieveDocument(
   return bodyScore + (titleHit ? TITLE_MATCH_BONUS : 0);
 }
 
+async function loadPurposeAndIndex(): Promise<{
+  purpose: RetrieveDocument | null;
+  index: RetrieveDocument | null;
+}> {
+  const purposePage = await readWikiPage("purpose");
+  const indexPage = await readWikiPage("index");
+  return {
+    purpose: purposePage
+      ? {
+          id: "purpose",
+          path: "wiki/purpose.md",
+          title: purposePage.title || "purpose",
+          body: purposePage.content,
+          kind: "purpose",
+          type: "purpose",
+          slug: "purpose",
+        }
+      : null,
+    index: indexPage
+      ? {
+          id: "index",
+          path: "wiki/index.md",
+          title: indexPage.title || "index",
+          body: indexPage.content,
+          kind: "index",
+          type: "index",
+          slug: "index",
+        }
+      : null,
+  };
+}
+
 export async function loadRetrieveDocuments(
   principal: Principal | null,
   retrievalMode: RetrievalMode = "wiki",
@@ -158,38 +214,15 @@ export async function loadRetrieveDocuments(
   const entries = (await listReadableWikiPages(principal)).filter(
     (entry) => !isArtifactType(entry.type),
   );
-  const purposePage = await readWikiPage("purpose");
-  const indexPage = await readWikiPage("index");
-  const purpose = purposePage
-    ? {
-        id: "purpose",
-        path: "wiki/purpose.md",
-        title: purposePage.title || "purpose",
-        body: purposePage.content,
-        kind: "purpose" as const,
-        type: "purpose",
-        slug: "purpose",
-      }
-    : null;
-  const index = indexPage
-    ? {
-        id: "index",
-        path: "wiki/index.md",
-        title: indexPage.title || "index",
-        body: indexPage.content,
-        kind: "index" as const,
-        type: "index",
-        slug: "index",
-      }
-    : null;
+  const { purpose, index } = await loadPurposeAndIndex();
 
+  const pageEntries = entries.filter((entry) => !SPECIAL_SLUGS.has(entry.slug));
   const pages: RetrieveDocument[] = [];
   if (retrievalMode !== "sources") {
-    for (const entry of entries) {
-      if (SPECIAL_SLUGS.has(entry.slug)) continue;
+    const loaded = await mapPool(pageEntries, PAGE_READ_CONCURRENCY, async (entry) => {
       const page = await readWikiPage(entry.slug);
-      if (!page) continue;
-      pages.push({
+      if (!page) return null;
+      const doc: RetrieveDocument = {
         id: entry.slug,
         path: `wiki/${entry.slug}.md`,
         title: entry.title || entry.slug,
@@ -197,23 +230,21 @@ export async function loadRetrieveDocuments(
         kind: "page",
         type: entry.type || "page",
         slug: entry.slug,
-      });
+      };
+      return doc;
+    });
+    for (const doc of loaded) {
+      if (doc) pages.push(doc);
     }
   }
 
   const sources: RetrieveDocument[] = [];
-  const seenBodies = new Set<string>();
-  const pushSource = (doc: RetrieveDocument) => {
-    if (seenBodies.has(doc.body)) return;
-    seenBodies.add(doc.body);
-    sources.push(doc);
-  };
   try {
     const raw = await listRawSources();
     for (const source of raw) {
       try {
         const loaded = await readRawSource(source.slug);
-        pushSource({
+        sources.push({
           id: `source:${source.slug}`,
           path: `raw/sources/${source.filename}`,
           title: source.slug,
@@ -225,11 +256,15 @@ export async function loadRetrieveDocuments(
         logger.warn("retrieve", `raw source read failed for ${source.slug}`, error);
       }
     }
+  } catch (error) {
+    logger.warn("retrieve", "listRawSources failed", error);
+  }
+  try {
     const snapshots = await listRawSourceSnapshots();
     for (const snapshot of snapshots) {
       try {
         const loaded = await readRawSourceById(snapshot.slug, snapshot.rawId);
-        pushSource({
+        sources.push({
           id: `source:${snapshot.slug}:${snapshot.rawId}`,
           path: snapshot.path,
           title: snapshot.slug,
@@ -246,7 +281,7 @@ export async function loadRetrieveDocuments(
       }
     }
   } catch (error) {
-    logger.warn("retrieve", "listRawSources failed", error);
+    logger.warn("retrieve", "listRawSourceSnapshots failed", error);
   }
 
   const candidates =
@@ -354,22 +389,15 @@ async function expandHits(
     .map((hit) => (hit.kind === "page" ? hit.id : undefined))
     .filter((slug): slug is string => Boolean(slug));
   try {
-    const evidence = await Promise.all(
-      pageDocs.map(async (doc) => {
-        const page = await readWikiPageWithFrontmatter(doc.slug as string);
-        const entry = entries.find((item) => item.slug === doc.slug);
-        return {
-          id: doc.slug as string,
-          directTargets: extractWikiTargets(page?.body ?? doc.body, allowed),
-          sourceUrls: page
-            ? parseSources(page.frontmatter.sources as string | string[] | undefined).map(
-                (source) => source.url,
-              )
-            : [],
-          ...(typeof entry?.type === "string" ? { type: entry.type } : {}),
-        };
-      }),
-    );
+    const evidence = pageDocs.map((doc) => {
+      const entry = entries.find((item) => item.slug === doc.slug);
+      return {
+        id: doc.slug as string,
+        directTargets: extractWikiTargets(doc.body, allowed),
+        sourceUrls: [] as string[],
+        ...(typeof entry?.type === "string" ? { type: entry.type } : {}),
+      };
+    });
     const expanded = expandGraphSeeds(
       seedSlugs,
       buildWeightedGraphEdges(evidence),
@@ -559,23 +587,12 @@ export async function assembleWikiContext(
   const trimmed = query.trim();
   if (!trimmed) return base;
 
-  const { candidates, purpose, index, entries } = await loadRetrieveDocuments(
-    options.principal,
-    options.retrievalMode ?? "wiki",
-  );
-  const phase1 = tokenizedHits(trimmed, candidates);
-  const { hits: merged, vectorPhase } = await mergeVectorHits(
-    trimmed,
-    phase1,
-    candidates,
-    options.topK ?? DEFAULT_SEED_LIMIT,
-  );
-  const expanded = await expandHits(
-    merged,
-    candidates,
-    entries,
-    options.topK ?? DEFAULT_SEED_LIMIT,
-  );
+  const { purpose, index } = await loadPurposeAndIndex();
+  const { hits: expanded, vectorPhase } = await retrieveHits(trimmed, {
+    ...options,
+    tokenBudget,
+    historyDepth,
+  });
 
   if (expanded.length === 0) {
     return { ...base, vectorPhase };
@@ -586,44 +603,32 @@ export async function assembleWikiContext(
   const indexBudget = Math.floor(tokenBudget * CHAT_INDEX_BUDGET_RATIO);
   const systemBudget = Math.floor(tokenBudget * CHAT_SYSTEM_BUDGET_RATIO);
 
+  // Full numbered body or exclude. Later smaller pages may still enter.
   const packedPages: RetrieveHit[] = [];
-  let pageTokens = 0;
   for (const hit of expanded) {
-    const cost = estimateTokens(hit.body);
-    if (pageTokens + cost > pageBudget) {
-      if (packedPages.length > 0) continue;
-      const chars = Math.max(0, pageBudget * 4);
-      packedPages.push({ ...hit, body: hit.body.slice(0, chars) });
-      pageTokens = pageBudget;
-      break;
-    }
+    const candidate = [...packedPages, hit];
+    const numbered = numberBodies(candidate);
+    if (estimateTokens(numbered.numberedBodies) > pageBudget) continue;
     packedPages.push(hit);
-    pageTokens += cost;
-    if (pageTokens >= pageBudget) break;
   }
 
-  let numbered = numberBodies(packedPages);
-  while (
-    packedPages.length > 1 &&
-    estimateTokens(numbered.numberedBodies) > pageBudget
-  ) {
-    packedPages.pop();
-    numbered = numberBodies(packedPages);
+  if (packedPages.length === 0) {
+    return { ...base, vectorPhase };
   }
-  const { numberedBodies, citations } = numbered;
-  const history = (options.history ?? []).slice(-historyDepth);
-  const historyParts = history.map((message) => `${message.role}: ${message.content}`);
-  let historySlice = history;
-  let historyText = packSlice(historyParts, historyBudget);
+
+  const { numberedBodies, citations } = numberBodies(packedPages);
+  let historySlice = (options.history ?? []).slice(-historyDepth);
+  let historyText = historySlice
+    .map((message) => `${message.role}: ${message.content}`)
+    .join("\n\n");
   while (
     historySlice.length > 0 &&
     estimateTokens(historyText) > historyBudget
   ) {
     historySlice = historySlice.slice(1);
-    historyText = packSlice(
-      historySlice.map((message) => `${message.role}: ${message.content}`),
-      historyBudget,
-    );
+    historyText = historySlice
+      .map((message) => `${message.role}: ${message.content}`)
+      .join("\n\n");
   }
 
   const indexSlice = packSlice(index ? [index.body] : [], indexBudget);

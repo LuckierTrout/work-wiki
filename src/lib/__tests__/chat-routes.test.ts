@@ -1,23 +1,26 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/chat", async (original) => ({
   ...(await original<typeof import("@/lib/chat")>()),
   addChatTurn: vi.fn(),
-  appendChatMessages: vi.fn(),
+  persistChatTurn: vi.fn(),
   retractLastChatTurn: vi.fn(),
   createChatConversation: vi.fn(),
   getChatConversation: vi.fn(),
   updateChatConversation: vi.fn(),
 }));
 
-import { POST as createConversation } from "@/app/api/chat/conversations/route";
+import {
+  GET as listConversations,
+  POST as createConversation,
+} from "@/app/api/chat/conversations/route";
 import { PATCH as updateConversation } from "@/app/api/chat/conversations/[id]/route";
 import { POST as addMessage } from "@/app/api/chat/conversations/[id]/messages/route";
 import { getPrincipal } from "@/lib/auth";
 import {
   addChatTurn,
-  appendChatMessages,
+  persistChatTurn,
   createChatConversation,
   retractLastChatTurn,
   updateChatConversation,
@@ -35,7 +38,7 @@ const CONVERSATION: ChatConversation = {
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedAddTurn = vi.mocked(addChatTurn);
-const mockedAppend = vi.mocked(appendChatMessages);
+const mockedPersist = vi.mocked(persistChatTurn);
 const mockedRetract = vi.mocked(retractLastChatTurn);
 const mockedCreate = vi.mocked(createChatConversation);
 const mockedUpdate = vi.mocked(updateChatConversation);
@@ -138,7 +141,7 @@ describe("chat evidence-mode API", () => {
   });
 
   it("persists sidecar frames without Worker generation", async () => {
-    mockedAppend.mockResolvedValue({
+    mockedPersist.mockResolvedValue({
       ...CONVERSATION,
       messages: [
         {
@@ -165,12 +168,13 @@ describe("chat evidence-mode API", () => {
       { params: Promise.resolve({ id: CONVERSATION.id }) },
     );
     expect(response.status).toBe(200);
-    expect(mockedAppend).toHaveBeenCalledWith(
+    expect(mockedPersist).toHaveBeenCalledWith(
       "alice",
       CONVERSATION.id,
       expect.arrayContaining([
         expect.objectContaining({ role: "user", content: "What is alpha?" }),
       ]),
+      { replaceLastTurn: false },
     );
     expect(mockedAddTurn).not.toHaveBeenCalled();
   });
@@ -189,5 +193,69 @@ describe("chat evidence-mode API", () => {
       expect.objectContaining({ userContent: "What is alpha?", noop: false }),
     );
     expect(mockedRetract).toHaveBeenCalledWith("alice", CONVERSATION.id);
+  });
+
+  it("rejects a misordered persist batch before storage", async () => {
+    const response = await addMessage(
+      request("POST", {
+        persist: true,
+        messages: [{ role: "assistant", content: "Only the model spoke [1]." }],
+      }),
+      { params: Promise.resolve({ id: CONVERSATION.id }) },
+    );
+    expect(response.status).toBe(400);
+    expect(mockedPersist).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed persist JSON with 400", async () => {
+    const response = await addMessage(
+      new Request("http://localhost/api/chat/conversations/x/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{",
+      }),
+      { params: Promise.resolve({ id: CONVERSATION.id }) },
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects a non-numeric tokenBudget", async () => {
+    const created = await createConversation(
+      request("POST", { tokenBudget: "big" }),
+    );
+    expect(created.status).toBe(400);
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("configured owner gate", () => {
+  const previousOwner = process.env.NEXT_PUBLIC_OWNER_HANDLE;
+
+  afterEach(() => {
+    if (previousOwner === undefined) delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    else process.env.NEXT_PUBLIC_OWNER_HANDLE = previousOwner;
+  });
+
+  it("401s Conversation and Save when the principal is not the owner", async () => {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = "owner";
+    mockedPrincipal.mockResolvedValue({ id: "user-1", handle: "alice" });
+
+    const list = await listConversations();
+    expect(list.status).toBe(401);
+
+    const persist = await addMessage(
+      request("POST", { persist: true, messages: [] }),
+      { params: Promise.resolve({ id: CONVERSATION.id }) },
+    );
+    expect(persist.status).toBe(401);
+
+    const { POST: saveAnswer } = await import(
+      "@/app/api/chat/conversations/[id]/save/route"
+    );
+    const saved = await saveAnswer(request("POST", { messageId: "a1" }), {
+      params: Promise.resolve({ id: CONVERSATION.id }),
+    });
+    expect(saved.status).toBe(401);
+    expect(mockedPersist).not.toHaveBeenCalled();
   });
 });

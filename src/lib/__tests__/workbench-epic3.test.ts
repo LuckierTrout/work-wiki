@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
-import { readFile } from "node:fs/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { SIDECAR_HEALTH_URL, SIDECAR_SSE_EVENTS } from "../sidecar";
 import { CHAT_COVERAGE_MISSING_COPY, CHAT_COMPOSER_PLACEHOLDER } from "../workbench-modes";
@@ -15,6 +17,7 @@ import { POST as POST_SEARCH } from "@/app/api/v1/projects/[wikiId]/search/route
 import { POST as POST_RETRIEVE } from "@/app/api/v1/projects/[wikiId]/retrieve/route";
 import {
   applyDotEnv,
+  allowSidecarOrigin,
   createChatTurnSession,
   createSidecarServer,
   formatSse,
@@ -22,7 +25,9 @@ import {
   healthPayload,
   isSidecarWikiId,
   parseDotEnv,
+  resolveChatEndpoint,
   resolveChatSecret,
+  sanitizeCitedAnswer,
   SSE_EVENTS,
 } from "../../../sidecar/server.mjs";
 
@@ -100,6 +105,21 @@ describe("kernel Search auth and empty query", () => {
     );
     expect(empty.status).toBe(400);
   });
+
+  it("rejects a ceremonial wiki id that is not current or a UUID", async () => {
+    const { getPrincipal } = await import("@/lib/auth");
+    vi.mocked(getPrincipal).mockResolvedValueOnce({ id: "alice", handle: "alice" } as never);
+    const res = await POST_SEARCH(
+      new Request("http://local/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "alpha" }),
+      }),
+      { params: Promise.resolve({ wikiId: "not-a-wiki" }) },
+    );
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({ error: "invalid_wiki_id" });
+  });
 });
 
 describe("sidecar contract", () => {
@@ -167,6 +187,17 @@ describe("sidecar contract", () => {
     expect(text).toContain(CHAT_COVERAGE_MISSING_COPY);
     expect(text).not.toMatch(/event: agent[\s\S]*\[1\]/);
     expect(SSE_EVENTS).toContain("cancelled");
+
+      const forbidden = await fetch(`http://127.0.0.1:${port}/api/v1/health`, {
+        headers: { Origin: "https://evil.example" },
+      });
+      expect(forbidden.headers.get("access-control-allow-origin")).toBeNull();
+      const trusted = await fetch(`http://127.0.0.1:${port}/api/v1/health`, {
+        headers: { Origin: "http://localhost:3000" },
+      });
+      expect(trusted.headers.get("access-control-allow-origin")).toBe(
+        "http://localhost:3000",
+      );
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
@@ -233,7 +264,7 @@ describe("Workbench Chat does not use Worker query or ChatWorkspace", () => {
     const css = await readRel("src/app/globals.css");
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
     expect(css).toContain(".wb-chat-thinking--live p");
-    expect(chat).toContain("body: JSON.stringify({ content: assistant.content })");
+    expect(chat).toContain("body: JSON.stringify({ messageId: assistant.id })");
     expect(chat).not.toContain("assistant.thinking");
   });
 });
@@ -289,14 +320,14 @@ describe("sidecar local credentials and cancel", () => {
     const res = {
       headersSent: false,
       writableEnded: false,
-      writeHead() {
-        this.headersSent = true;
+      writeHead(_code?: number, _headers?: unknown) {
+        res.headersSent = true;
       },
       write(chunk: string) {
         chunks.push(chunk);
       },
       end() {
-        this.writableEnded = true;
+        res.writableEnded = true;
       },
     };
     const req = { on() {} };
@@ -315,5 +346,141 @@ describe("Search empty query stays quiet", () => {
     expect(search).toContain('if (!trimmed) return');
     expect(search).toContain("workbenchMode(\"search\").emptyState");
     expect(search).not.toContain("setError(\"Query cannot be empty");
+  });
+});
+
+describe("sidecar origin, endpoint, and citation integrity", () => {
+  it("allows only loopback browser origins", () => {
+    expect(allowSidecarOrigin(undefined)).toBe(true);
+    expect(allowSidecarOrigin("http://localhost:3000")).toBe(true);
+    expect(allowSidecarOrigin("http://127.0.0.1:19828")).toBe(true);
+    expect(allowSidecarOrigin("https://evil.example")).toBe(false);
+  });
+
+  it("resolves provider endpoints from local config only", () => {
+    expect(
+      resolveChatEndpoint("custom", {}, { customBaseUrl: "http://127.0.0.1:9/v1" }),
+    ).toBe("http://127.0.0.1:9/v1");
+    expect(resolveChatEndpoint("openai", {}, { customBaseUrl: "http://evil" })).toBe(
+      "https://api.openai.com/v1",
+    );
+  });
+
+  it("drops invented and unused citations", () => {
+    const result = sanitizeCitedAnswer("Hello [1] and [9].", [
+      { n: 1, path: "wiki/alpha.md", title: "Alpha", type: "page" },
+      { n: 2, path: "wiki/beta.md", title: "Beta", type: "page" },
+    ]);
+    expect(result.coverage).toBe(true);
+    expect(result.citations).toEqual([
+      { n: 1, path: "wiki/alpha.md", title: "Alpha", type: "page" },
+    ]);
+    expect(result.content).toContain("[1]");
+    expect(result.content).not.toContain("[9]");
+  });
+});
+
+describe("successful sidecar provider SSE", () => {
+  afterEach(() => {
+    delete process.env.LLM_CUSTOM_API_KEY;
+  });
+
+  it("aggregates thinking and cited content from the local provider only", async () => {
+    const captured: { urls: string[]; attacker: boolean } = { urls: [], attacker: false };
+    const provider = http.createServer((req, res) => {
+      captured.urls.push(`${req.method} ${req.url}`);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "<thinking>look at alpha</thinking>Alpha is defined [1].",
+              },
+            },
+          ],
+        }),
+      );
+    });
+    const attacker = http.createServer((_req, res) => {
+      captured.attacker = true;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "stolen" } }] }));
+    });
+    await Promise.all([
+      new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve)),
+      new Promise<void>((resolve) => attacker.listen(0, "127.0.0.1", resolve)),
+    ]);
+    const providerPort = (provider.address() as { port: number }).port;
+    const attackerPort = (attacker.address() as { port: number }).port;
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "sidecar-sse-"));
+    const previousDataDir = process.env.DATA_DIR;
+    const previousKey = process.env.LLM_CUSTOM_API_KEY;
+    process.env.DATA_DIR = tmp;
+    process.env.LLM_CUSTOM_API_KEY = "sidecar-secret";
+    await writeFile(
+      path.join(tmp, ".llm-wiki-config.json"),
+      JSON.stringify({
+        chatProvider: "custom",
+        chatModel: "local-test",
+        customBaseUrl: `http://127.0.0.1:${providerPort}/v1`,
+      }),
+    );
+    const sidecar = createSidecarServer();
+    await new Promise<void>((resolve) => sidecar.listen(0, "127.0.0.1", resolve));
+    const sidecarPort = (sidecar.address() as { port: number }).port;
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${sidecarPort}/api/v1/projects/current/chat`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+          },
+          body: JSON.stringify({
+            stream: true,
+            query: "What is alpha?",
+            coverage: true,
+            context: "[1] Alpha\npath: wiki/alpha.md\ntype: page\n\nalpha body",
+            citations: [
+              { n: 1, path: "wiki/alpha.md", title: "Alpha", type: "page" },
+              { n: 2, path: "wiki/beta.md", title: "Beta", type: "page" },
+            ],
+            model: {
+              provider: "custom",
+              baseUrl: `http://127.0.0.1:${attackerPort}/v1`,
+              apiKey: "browser-key",
+            },
+          }),
+        },
+      );
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).toContain("event: meta");
+      expect(text).toContain("event: agent");
+      expect(text).toContain("event: done");
+      expect(text).toContain("look at alpha");
+      expect(text).toContain("Alpha is defined [1].");
+      expect(text).not.toContain("wiki/beta.md");
+      expect(captured.attacker).toBe(false);
+      expect(captured.urls.some((row) => row.includes("/chat/completions"))).toBe(true);
+    } finally {
+      if (previousDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = previousDataDir;
+      if (previousKey === undefined) delete process.env.LLM_CUSTOM_API_KEY;
+      else process.env.LLM_CUSTOM_API_KEY = previousKey;
+      await Promise.all([
+        new Promise<void>((resolve, reject) =>
+          sidecar.close((error) => (error ? reject(error) : resolve())),
+        ),
+        new Promise<void>((resolve, reject) =>
+          provider.close((error) => (error ? reject(error) : resolve())),
+        ),
+        new Promise<void>((resolve, reject) =>
+          attacker.close((error) => (error ? reject(error) : resolve())),
+        ),
+      ]);
+    }
   });
 });

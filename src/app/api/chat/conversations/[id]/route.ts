@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getPrincipal } from "@/lib/auth";
+import { requireOwnerPrincipal } from "@/lib/owner-route";
 import {
   conversationWithName,
   deleteChatConversation,
@@ -17,7 +17,7 @@ interface RouteContext {
 }
 
 export async function GET(_request: Request, { params }: RouteContext) {
-  const principal = await getPrincipal();
+  const principal = await requireOwnerPrincipal();
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
@@ -40,13 +40,13 @@ export async function GET(_request: Request, { params }: RouteContext) {
 }
 
 export async function PATCH(request: Request, { params }: RouteContext) {
-  const principal = await getPrincipal();
+  const principal = await requireOwnerPrincipal();
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
   try {
     const { id } = await params;
-    const body = (await request.json()) as {
+    let body: {
       title?: unknown;
       name?: unknown;
       scope?: unknown;
@@ -55,6 +55,11 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       tokenBudget?: unknown;
       historyDepth?: unknown;
     };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
+    }
     if (body.title !== undefined && typeof body.title !== "string") {
       return NextResponse.json({ error: "title must be a string" }, { status: 400 });
     }
@@ -85,6 +90,12 @@ export async function PATCH(request: Request, { params }: RouteContext) {
         { error: "contextBudget must be compact, standard, or expanded" },
         { status: 400 },
       );
+    }
+    if (body.tokenBudget !== undefined && typeof body.tokenBudget !== "number") {
+      return NextResponse.json({ error: "tokenBudget must be a number" }, { status: 400 });
+    }
+    if (body.historyDepth !== undefined && typeof body.historyDepth !== "number") {
+      return NextResponse.json({ error: "historyDepth must be a number" }, { status: 400 });
     }
     const conversation = await updateChatConversation(principal.handle, id, {
       ...(typeof body.title === "string" ? { title: body.title } : {}),
@@ -119,7 +130,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
 }
 
 export async function DELETE(_request: Request, { params }: RouteContext) {
-  const principal = await getPrincipal();
+  const principal = await requireOwnerPrincipal();
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }

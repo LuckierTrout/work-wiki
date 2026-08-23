@@ -21,6 +21,7 @@ const CONV = {
       id: "a1",
       role: "assistant" as const,
       content: "Alpha [1].",
+      thinking: "I looked at alpha.\nThen I cited it.",
       citations: [{ n: 1, path: "wiki/alpha.md", title: "Alpha", type: "page" }],
     },
   ],
@@ -104,5 +105,44 @@ describe("Chat read-only refuses writes", () => {
 describe("coverage copy is citation-free", () => {
   it("does not carry a fake [1]", () => {
     expect(CHAT_COVERAGE_MISSING_COPY).not.toMatch(/\[\d+\]/);
+  });
+});
+
+describe("citation and Search Preview docks", () => {
+  it("docks Preview from an in-answer [n] and a Search hit", async () => {
+    const onDock = vi.fn();
+    render(<ChatCanvas wikiId="current" readOnly={false} onDockPreview={onDock} />);
+    await screen.findByRole("button", { name: "Evidence review" });
+    fireEvent.click(screen.getAllByRole("button", { name: "[1]" })[0]!);
+    expect(onDock).toHaveBeenCalledWith({ kind: "page", slug: "alpha" });
+
+    send.mockResolvedValueOnce({
+      hits: [
+        {
+          path: "raw/sources/meet/cafe01.md",
+          title: "Meet",
+          snippet: "transcript",
+          score: 2,
+        },
+      ],
+    });
+    const searchDock = vi.fn();
+    render(<SearchCanvas wikiId="current" onDockPreview={searchDock} />);
+    fireEvent.change(screen.getByLabelText("Search query"), {
+      target: { value: "alpha" },
+    });
+    fireEvent.keyDown(screen.getByLabelText("Search query"), { key: "Enter" });
+    fireEvent.click(await screen.findByRole("button", { name: /Meet/ }));
+    expect(searchDock).toHaveBeenCalledWith({
+      kind: "file",
+      path: "raw/sources/meet/cafe01.md",
+    });
+  });
+
+  it("restores a stored Thinking block after reload", async () => {
+    render(<ChatCanvas wikiId="current" readOnly={false} onDockPreview={vi.fn()} />);
+    const summary = await screen.findByText("Thinking");
+    fireEvent.click(summary);
+    expect(screen.getByText(/I looked at alpha/)).toBeTruthy();
   });
 });

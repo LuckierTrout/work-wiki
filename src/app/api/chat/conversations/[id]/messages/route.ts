@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { getPrincipal } from "@/lib/auth";
 import {
-  appendChatMessages,
+  ChatPersistError,
   conversationWithName,
+  persistChatTurn,
   retractLastChatTurn,
   type PersistChatMessage,
 } from "@/lib/chat";
+import { requireOwnerPrincipal } from "@/lib/owner-route";
 import type { ChatCitation } from "@/lib/chat-contract";
 import { getErrorMessage } from "@/lib/errors";
 
@@ -42,18 +43,24 @@ function asCitations(value: unknown): ChatCitation[] | undefined {
 }
 
 export async function POST(request: Request, { params }: RouteContext) {
-  const principal = await getPrincipal();
+  const principal = await requireOwnerPrincipal();
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
   try {
     const { id } = await params;
-    const body = (await request.json()) as {
+    let body: {
       persist?: unknown;
       retractLastTurn?: unknown;
+      replaceLastTurn?: unknown;
       message?: unknown;
       messages?: unknown;
     };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
+    }
 
     if (body.retractLastTurn === true) {
       const retracted = await retractLastChatTurn(principal.handle, id);
@@ -101,7 +108,19 @@ export async function POST(request: Request, { params }: RouteContext) {
           ...(typeof row.thinking === "string" ? { thinking: row.thinking } : {}),
         });
       }
-      const conversation = await appendChatMessages(principal.handle, id, frames);
+      if (
+        frames.length !== 2 ||
+        frames[0]?.role !== "user" ||
+        frames[1]?.role !== "assistant"
+      ) {
+        return NextResponse.json(
+          { error: "A turn must be one user message then one assistant message" },
+          { status: 400 },
+        );
+      }
+      const conversation = await persistChatTurn(principal.handle, id, frames, {
+        replaceLastTurn: body.replaceLastTurn === true,
+      });
       if (!conversation) {
         return NextResponse.json({ error: "Conversation not found." }, { status: 404 });
       }
@@ -114,13 +133,14 @@ export async function POST(request: Request, { params }: RouteContext) {
     );
   } catch (error) {
     const message = getErrorMessage(error);
-    const status = /not found/i.test(message)
-      ? 404
-      : /cannot be empty/i.test(message)
+    const status =
+      error instanceof ChatPersistError || /cannot be empty/i.test(message)
         ? 400
-        : /no original source material|no readable pages/i.test(message)
-          ? 422
-          : 500;
+        : /not found/i.test(message)
+          ? 404
+          : /no original source material|no readable pages/i.test(message)
+            ? 422
+            : 500;
     return NextResponse.json(
       { error: message },
       { status },

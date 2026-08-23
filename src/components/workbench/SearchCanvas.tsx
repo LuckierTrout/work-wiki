@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { send } from "@/lib/workbench-request";
 import {
   CHAT_VECTOR_FALLBACK_COPY,
@@ -27,10 +27,12 @@ export function SearchCanvas({ wikiId, onDockPreview }: SearchCanvasProps) {
   const [error, setError] = useState<string | null>(null);
   const [vectorNote, setVectorNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const searchSeq = useRef(0);
 
   async function runSearch(value: string) {
     const trimmed = value.trim();
     if (!trimmed) return;
+    const seq = ++searchSeq.current;
     setBusy(true);
     setError(null);
     setVectorNote(null);
@@ -39,6 +41,7 @@ export function SearchCanvas({ wikiId, onDockPreview }: SearchCanvasProps) {
         `/api/v1/projects/${encodeURIComponent(wikiId)}/search`,
         { method: "POST", body: JSON.stringify({ query: trimmed, topK: 10 }) },
       );
+      if (seq !== searchSeq.current) return;
       if (body.error) {
         setError(body.error);
         setHits(null);
@@ -49,10 +52,11 @@ export function SearchCanvas({ wikiId, onDockPreview }: SearchCanvasProps) {
         setVectorNote(body.vectorPhase.message || CHAT_VECTOR_FALLBACK_COPY);
       }
     } catch (cause) {
+      if (seq !== searchSeq.current) return;
       setError(cause instanceof Error ? cause.message : "Search failed.");
       setHits(null);
     } finally {
-      setBusy(false);
+      if (seq === searchSeq.current) setBusy(false);
     }
   }
 
