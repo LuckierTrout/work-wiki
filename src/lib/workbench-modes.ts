@@ -73,6 +73,17 @@ export const BADGE_MODE_NOUNS: Partial<Record<WorkbenchModeId, string>> = {
 export const CHAT_SIDECAR_DOWN_COPY =
   "Start the local sidecar on 127.0.0.1:19828 to use Chat.";
 
+export const CHAT_COVERAGE_MISSING_COPY =
+  "Wiki has no coverage for this. Ingest a source or run Deep Research.";
+
+export const CHAT_COMPOSER_PLACEHOLDER = "Type a message…";
+
+export const CHAT_VECTOR_FALLBACK_COPY =
+  "Vector search failed. Falling back to tokenized search.";
+
+export const CHAT_MODEL_MISSING_COPY =
+  "Configure a Chat model in Settings.";
+
 /**
  * Chat's own empty state, reachable only once a sidecar answers. Derived from
  * the `chat` entry above rather than retyped: this module's whole point is that

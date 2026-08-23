@@ -387,6 +387,13 @@ export async function query(
  *
  * Returns the slug of the newly created wiki page.
  */
+export interface SaveAnswerOptions {
+  conversationId?: string;
+  conversationName?: string;
+  /** Default Chat save: slug under wiki/queries/<slug>.md. */
+  underQueries?: boolean;
+}
+
 export async function saveAnswerToWiki(
   title: string,
   rawContent: string,
@@ -395,8 +402,13 @@ export async function saveAnswerToWiki(
   contentType: "markdown" | "html" | "slides" = "markdown",
   owner?: string,
   author?: string,
+  extras?: SaveAnswerOptions,
 ): Promise<{ slug: string }> {
-  const slug = explicitSlug || slugify(title);
+  const baseSlug = explicitSlug || slugify(title);
+  const slug =
+    extras?.underQueries && baseSlug && !baseSlug.startsWith("queries/")
+      ? `queries/${baseSlug.replace(/^queries-/, "")}`
+      : baseSlug;
 
   if (!slug) {
     throw new Error("Title must produce a valid slug");
@@ -423,12 +435,16 @@ export async function saveAnswerToWiki(
   //    H1 (it renders in the sandboxed iframe — a document, or a deck for slides).
   //  - markdown: prepend an H1 if missing.
   const html = isHtml ? stripHtmlFence(content) : content;
+  const conversationLink =
+    extras?.conversationId
+      ? `Conversation: [${String(extras.conversationName || extras.conversationId).replace(/[[\]]/g, "")}](/?mode=chat&conversation=${encodeURIComponent(extras.conversationId)})\n\n`
+      : "";
   const needsH1 = !isArtifact && !content.trimStart().startsWith("# ");
   const pageContent = isHtml
     ? html
     : needsH1
-      ? `# ${title}\n\n${content}`
-      : content;
+      ? `# ${title}\n\n${conversationLink}${content}`
+      : `${conversationLink}${content}`;
 
   // Summary comes from plain text: tag-stripped for HTML; for markdown/slides,
   // heading-stripped — and with baked illustration images stripped so an image

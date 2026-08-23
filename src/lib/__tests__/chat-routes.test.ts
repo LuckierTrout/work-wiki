@@ -4,6 +4,8 @@ vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/chat", async (original) => ({
   ...(await original<typeof import("@/lib/chat")>()),
   addChatTurn: vi.fn(),
+  appendChatMessages: vi.fn(),
+  retractLastChatTurn: vi.fn(),
   createChatConversation: vi.fn(),
   getChatConversation: vi.fn(),
   updateChatConversation: vi.fn(),
@@ -15,7 +17,9 @@ import { POST as addMessage } from "@/app/api/chat/conversations/[id]/messages/r
 import { getPrincipal } from "@/lib/auth";
 import {
   addChatTurn,
+  appendChatMessages,
   createChatConversation,
+  retractLastChatTurn,
   updateChatConversation,
   type ChatConversation,
 } from "@/lib/chat";
@@ -31,6 +35,8 @@ const CONVERSATION: ChatConversation = {
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedAddTurn = vi.mocked(addChatTurn);
+const mockedAppend = vi.mocked(appendChatMessages);
+const mockedRetract = vi.mocked(retractLastChatTurn);
 const mockedCreate = vi.mocked(createChatConversation);
 const mockedUpdate = vi.mocked(updateChatConversation);
 
@@ -131,5 +137,59 @@ describe("chat evidence-mode API", () => {
     );
     expect(response.status).toBe(422);
     expect((await response.json()).error).toMatch(/no original source material/i);
+  });
+
+  it("persists sidecar frames without Worker generation", async () => {
+    mockedAppend.mockResolvedValue({
+      ...CONVERSATION,
+      messages: [
+        {
+          id: "m1",
+          role: "user",
+          content: "What is alpha?",
+          sources: [],
+          createdAt: CONVERSATION.createdAt,
+        },
+      ],
+    });
+    const response = await addMessage(
+      request("POST", {
+        persist: true,
+        messages: [
+          { role: "user", content: "What is alpha?" },
+          {
+            role: "assistant",
+            content: "Alpha [1].",
+            citations: [{ n: 1, path: "wiki/alpha.md", title: "Alpha", type: "page" }],
+          },
+        ],
+      }),
+      { params: Promise.resolve({ id: CONVERSATION.id }) },
+    );
+    expect(response.status).toBe(200);
+    expect(mockedAppend).toHaveBeenCalledWith(
+      "alice",
+      CONVERSATION.id,
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: "What is alpha?" }),
+      ]),
+    );
+    expect(mockedAddTurn).not.toHaveBeenCalled();
+  });
+
+  it("retracts the last turn for Regenerate", async () => {
+    mockedRetract.mockResolvedValue({
+      conversation: CONVERSATION,
+      userContent: "What is alpha?",
+    });
+    const response = await addMessage(
+      request("POST", { retractLastTurn: true }),
+      { params: Promise.resolve({ id: CONVERSATION.id }) },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(
+      expect.objectContaining({ userContent: "What is alpha?", noop: false }),
+    );
+    expect(mockedRetract).toHaveBeenCalledWith("alice", CONVERSATION.id);
   });
 });

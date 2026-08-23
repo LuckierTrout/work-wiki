@@ -15,7 +15,8 @@
     "journal:preview": "pnpm journal:build && node journal-site/preview.mjs",
     "sync": "node tools/work-wiki-sync.mjs",
     "cli": "tsx src/cli.ts",
-    "mcp": "tsx src/mcp.ts"
+    "mcp": "tsx src/mcp.ts",
+    "sidecar": "node sidecar/server.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.66",

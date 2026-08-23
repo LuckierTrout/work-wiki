@@ -301,7 +301,6 @@ describe("ModeCanvas", () => {
     const source = await read("ModeCanvas.tsx");
     expect(source).toContain("@/lib/workbench-modes");
     expect(source).toContain("CHAT_SIDECAR_DOWN_COPY");
-    expect(source).toContain("CHAT_SIDECAR_UP_COPY");
     expect(source).toContain("GRAPH_NARROW_COPY");
     expect(source).toContain("surface.emptyState");
     // A sentence typed here is a second definition of copy the handoff fixes.
@@ -311,7 +310,11 @@ describe("ModeCanvas", () => {
 
   it("fails Chat closed rather than degrading it", async () => {
     const source = await read("ModeCanvas.tsx");
-    expect(source).toContain('sidecar === "up" ? CHAT_SIDECAR_UP_COPY : CHAT_SIDECAR_DOWN_COPY');
+    expect(source).toContain("CHAT_SIDECAR_DOWN_COPY");
+    expect(source).toContain("<ChatCanvas");
+    expect(source).toContain('sidecar === "up"');
+    expect(source).toContain("<ChatCanvas");
+    expect(source).not.toContain("ChatWorkspace");
   });
 });
 

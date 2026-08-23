@@ -20,11 +20,11 @@ function respond(ok: boolean, status: number): Response {
 }
 
 describe("loopback contract", () => {
-  it("probes 127.0.0.1:19828/health", () => {
+  it("probes 127.0.0.1:19828/api/v1/health", () => {
     // The Worker cannot reach localhost, so this URL must never become a
     // same-origin server route pretending to check the sidecar.
     expect(SIDECAR_ORIGIN).toBe("http://127.0.0.1:19828");
-    expect(SIDECAR_HEALTH_URL).toBe("http://127.0.0.1:19828/health");
+    expect(SIDECAR_HEALTH_URL).toBe("http://127.0.0.1:19828/api/v1/health");
   });
 
   it("requests exactly that URL, uncached", async () => {

@@ -418,7 +418,27 @@ export function shouldDockPreview(
   mode: WorkbenchModeId,
   selection: TreeSelection | null,
 ): boolean {
-  return mode === "wiki" && selection !== null;
+  if (selection === null) return false;
+  return mode === "wiki" || mode === "chat" || mode === "search";
+}
+
+/**
+ * Map a retrieve / Search path onto the Preview pick the column already loads.
+ * Flat `wiki/<slug>.md` pages stay page selections; Sources and nested wiki
+ * files are file picks so Preview reads the stored path.
+ */
+export function selectionFromContentPath(path: string): TreeSelection {
+  const normalized = path.replace(/^\//, "");
+  if (normalized.startsWith("wiki/") && normalized.endsWith(".md")) {
+    const rest = normalized.slice("wiki/".length, -".md".length);
+    if (rest && !rest.includes("/")) {
+      return { kind: "page", slug: rest };
+    }
+    if (rest.startsWith("queries/") && !rest.slice("queries/".length).includes("/")) {
+      return { kind: "page", slug: rest };
+    }
+  }
+  return { kind: "file", path: normalized };
 }
 
 /**

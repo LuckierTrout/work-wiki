@@ -384,7 +384,10 @@ describe("validateSlug", () => {
   });
 
   it("rejects slugs with forward slash", () => {
+    expect(() => validateSlug("queries/chat-answer")).not.toThrow();
     expect(() => validateSlug("foo/bar")).toThrow(/path separators/);
+    expect(() => validateSlug("queries/foo/bar")).toThrow(/path separators/);
+    expect(() => validateSlug("queries/")).toThrow(/path separators/);
   });
 
   it("rejects slugs with backslash", () => {

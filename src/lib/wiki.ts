@@ -178,6 +178,8 @@ const SAFE_SLUG_RE = new RegExp(
  *
  * @throws {Error} with a descriptive message when the slug is invalid.
  */
+const QUERIES_SLUG_PREFIX = "queries/";
+
 export function validateSlug(slug: string): void {
   if (typeof slug !== "string" || slug.trim().length === 0) {
     throw new Error("Invalid slug: must be a non-empty string");
@@ -185,13 +187,23 @@ export function validateSlug(slug: string): void {
   if (slug.includes("\0")) {
     throw new Error("Invalid slug: must not contain null bytes");
   }
-  if (slug.includes("/") || slug.includes("\\")) {
+  if (slug.includes("\\")) {
     throw new Error("Invalid slug: must not contain path separators");
   }
   if (slug.includes("..")) {
     throw new Error("Invalid slug: must not contain path traversal (..)")
   }
-  if (!SAFE_SLUG_RE.test(slug)) {
+  const leaf = slug.startsWith(QUERIES_SLUG_PREFIX)
+    ? slug.slice(QUERIES_SLUG_PREFIX.length)
+    : slug;
+  if (slug.startsWith(QUERIES_SLUG_PREFIX)) {
+    if (!leaf || leaf.includes("/")) {
+      throw new Error("Invalid slug: must not contain path separators");
+    }
+  } else if (slug.includes("/")) {
+    throw new Error("Invalid slug: must not contain path separators");
+  }
+  if (!SAFE_SLUG_RE.test(leaf)) {
     throw new Error(
       `Invalid slug: "${slug}" does not match the safe pattern (lowercase alphanumeric and hyphens, cannot start or end with hyphen)`,
     );

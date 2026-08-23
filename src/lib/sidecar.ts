@@ -13,7 +13,22 @@
  */
 
 export const SIDECAR_ORIGIN = "http://127.0.0.1:19828";
-export const SIDECAR_HEALTH_URL = `${SIDECAR_ORIGIN}/health`;
+export const SIDECAR_HEALTH_URL = `${SIDECAR_ORIGIN}/api/v1/health`;
+
+/** Locked SSE event names for loopback Chat. The sidecar must emit only these. */
+export const SIDECAR_SSE_EVENTS = [
+  "meta",
+  "agent",
+  "done",
+  "cancelled",
+  "error",
+] as const;
+
+export type SidecarSseEvent = (typeof SIDECAR_SSE_EVENTS)[number];
+
+export function sidecarChatUrl(wikiId: string): string {
+  return `${SIDECAR_ORIGIN}/api/v1/projects/${encodeURIComponent(wikiId)}/chat`;
+}
 
 /** A refused port answers instantly; a wedged one must not stall the rail. */
 export const SIDECAR_PROBE_TIMEOUT_MS = 1500;

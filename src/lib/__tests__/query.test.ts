@@ -912,6 +912,32 @@ describe("saveAnswerToWiki", () => {
     expect(entry!.summary).toContain("Neural networks are computational models");
   });
 
+  it("files a Chat save under wiki/queries/ with a Conversation link", async () => {
+    await ensureDirectories();
+    const { slug } = await saveAnswerToWiki(
+      "Cited answer",
+      "The wiki says alpha [1].",
+      undefined,
+      undefined,
+      "markdown",
+      "alice",
+      "alice",
+      {
+        conversationId: "conv-1",
+        conversationName: "Ask alpha",
+        underQueries: true,
+      },
+    );
+    expect(slug).toBe("queries/cited-answer");
+    const page = await readWikiPage(slug);
+    expect(page).not.toBeNull();
+    expect(page!.content).toContain(
+      "Conversation: [Ask alpha](/?mode=chat&conversation=conv-1)",
+    );
+    expect(page!.content).toContain("The wiki says alpha [1].");
+    expect(page!.content).not.toContain("<thinking>");
+  });
+
   it("saves an HTML answer verbatim as a typed, owner-attributed artifact", async () => {
     await ensureDirectories();
     const html =

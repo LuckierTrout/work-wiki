@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import {
+  conversationWithName,
   deleteChatConversation,
+  exportChatConversation,
   getChatConversation,
   isChatContextBudget,
   isChatRetrievalMode,
   updateChatConversation,
 } from "@/lib/chat";
+import { clampHistoryDepth, clampTokenBudget } from "@/lib/chat-contract";
 import { getErrorMessage } from "@/lib/errors";
 
 interface RouteContext {
@@ -24,7 +27,13 @@ export async function GET(_request: Request, { params }: RouteContext) {
     if (!conversation) {
       return NextResponse.json({ error: "Conversation not found." }, { status: 404 });
     }
-    return NextResponse.json({ conversation });
+    const url = new URL(_request.url);
+    if (url.searchParams.get("export") === "1") {
+      return NextResponse.json({
+        conversation: exportChatConversation(conversation),
+      });
+    }
+    return NextResponse.json({ conversation: conversationWithName(conversation) });
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
@@ -39,12 +48,18 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     const { id } = await params;
     const body = (await request.json()) as {
       title?: unknown;
+      name?: unknown;
       scope?: unknown;
       retrievalMode?: unknown;
       contextBudget?: unknown;
+      tokenBudget?: unknown;
+      historyDepth?: unknown;
     };
     if (body.title !== undefined && typeof body.title !== "string") {
       return NextResponse.json({ error: "title must be a string" }, { status: 400 });
+    }
+    if (body.name !== undefined && typeof body.name !== "string") {
+      return NextResponse.json({ error: "name must be a string" }, { status: 400 });
     }
     if (
       body.scope !== undefined &&
@@ -73,6 +88,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     }
     const conversation = await updateChatConversation(principal.handle, id, {
       ...(typeof body.title === "string" ? { title: body.title } : {}),
+      ...(typeof body.name === "string" ? { name: body.name } : {}),
       ...(body.scope === null || typeof body.scope === "string"
         ? { scope: body.scope }
         : {}),
@@ -82,11 +98,17 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       ...(isChatContextBudget(body.contextBudget)
         ? { contextBudget: body.contextBudget }
         : {}),
+      ...(typeof body.tokenBudget === "number"
+        ? { tokenBudget: clampTokenBudget(body.tokenBudget) }
+        : {}),
+      ...(typeof body.historyDepth === "number"
+        ? { historyDepth: clampHistoryDepth(body.historyDepth) }
+        : {}),
     });
     if (!conversation) {
       return NextResponse.json({ error: "Conversation not found." }, { status: 404 });
     }
-    return NextResponse.json({ conversation });
+    return NextResponse.json({ conversation: conversationWithName(conversation) });
   } catch (error) {
     const message = getErrorMessage(error);
     return NextResponse.json(

@@ -3,10 +3,13 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import {
+  appendChatMessages,
   createChatConversation,
   deleteChatConversation,
+  exportChatConversation,
   getChatConversation,
   listChatConversations,
+  retractLastChatTurn,
   updateChatConversation,
 } from "../chat";
 import { _resetLocks } from "../lock";
@@ -75,5 +78,54 @@ describe("owner chat conversations", () => {
       retrievalMode: "wiki",
       contextBudget: "standard",
     });
+  });
+
+  it("persists citations and thinking, exports name, and retracts a turn", async () => {
+    const conversation = await createChatConversation("alice", {
+      name: "Ask the wiki",
+      tokenBudget: 8000,
+      historyDepth: 6,
+    });
+    const persisted = await appendChatMessages("alice", conversation.id, [
+      { role: "user", content: "What is alpha?" },
+      {
+        role: "assistant",
+        content: "Alpha is defined here [1].",
+        citations: [
+          { n: 1, path: "wiki/alpha.md", title: "Alpha", type: "page" },
+        ],
+        thinking: "I looked at alpha.",
+      },
+    ]);
+    expect(persisted?.messages[1]).toMatchObject({
+      content: "Alpha is defined here [1].",
+      thinking: "I looked at alpha.",
+      citations: [{ n: 1, path: "wiki/alpha.md", title: "Alpha", type: "page" }],
+    });
+    const exported = exportChatConversation(persisted!);
+    expect(exported).toEqual(
+      expect.objectContaining({
+        id: conversation.id,
+        name: "Ask the wiki",
+      }),
+    );
+    expect(exported.messages[1].citations).toHaveLength(1);
+    expect(exported.messages[1].thinking).toBe("I looked at alpha.");
+    expect(conversation.tokenBudget).toBe(8000);
+    expect(conversation.historyDepth).toBe(6);
+    expect(persisted?.tokenBudget).toBe(8000);
+    expect(persisted?.historyDepth).toBe(6);
+
+    const retracted = await retractLastChatTurn("alice", conversation.id);
+    expect(retracted?.userContent).toBe("What is alpha?");
+    expect(retracted?.conversation.messages).toEqual([]);
+    expect(await retractLastChatTurn("alice", conversation.id)).toBeNull();
+  });
+
+  it("refuses an empty rename", async () => {
+    const conversation = await createChatConversation("alice", { name: "Keep me" });
+    await expect(
+      updateChatConversation("alice", conversation.id, { name: "   " }),
+    ).rejects.toThrow(/cannot be empty/);
   });
 });

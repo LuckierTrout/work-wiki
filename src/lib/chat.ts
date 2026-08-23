@@ -28,6 +28,14 @@ import {
   validateTenant,
 } from "./wiki";
 import type { Principal } from "./auth";
+import {
+  CHAT_HISTORY_DEPTH_DEFAULT,
+  CHAT_TOKEN_BUDGET_DEFAULT,
+  clampHistoryDepth,
+  clampTokenBudget,
+  type ChatCitation,
+  type ChatExportRecord,
+} from "./chat-contract";
 
 export type ChatRole = "user" | "assistant";
 export type ChatBackend = "native" | "hermes";
@@ -60,6 +68,8 @@ export interface ChatMessage {
   sources: string[];
   createdAt: string;
   backend?: ChatBackend;
+  citations?: ChatCitation[];
+  thinking?: string;
 }
 
 export interface ChatConversation {
@@ -70,9 +80,60 @@ export interface ChatConversation {
   retrievalMode?: ChatRetrievalMode;
   /** Optional at rest for conversations created before context controls existed. */
   contextBudget?: ChatContextBudget;
+  /** Epic 3 token slider (4K–1M). Absent on pre-Epic-3 rows. */
+  tokenBudget?: number;
+  /** History depth N; tighter of N vs the 20% history slot wins at assemble. */
+  historyDepth?: number;
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
+}
+
+function normalizeConversation(conversation: ChatConversation): ChatConversation {
+  return {
+    ...conversation,
+    retrievalMode: conversation.retrievalMode === "sources" ? "sources" : "wiki",
+    contextBudget: isChatContextBudget(conversation.contextBudget)
+      ? conversation.contextBudget
+      : "standard",
+    tokenBudget: clampTokenBudget(
+      conversation.tokenBudget ?? CHAT_TOKEN_BUDGET_DEFAULT,
+    ),
+    historyDepth: clampHistoryDepth(
+      conversation.historyDepth ?? CHAT_HISTORY_DEPTH_DEFAULT,
+    ),
+    messages: conversation.messages.map((message) => ({
+      ...message,
+      citations: Array.isArray(message.citations) ? message.citations : [],
+      ...(typeof message.thinking === "string" && message.thinking
+        ? { thinking: message.thinking }
+        : {}),
+    })),
+  };
+}
+
+export function conversationWithName<T extends ChatConversation>(
+  conversation: T,
+): T & { name: string } {
+  return { ...conversation, name: conversation.title };
+}
+
+export function exportChatConversation(
+  conversation: ChatConversation,
+): ChatExportRecord {
+  const normalized = normalizeConversation(conversation);
+  return {
+    id: normalized.id,
+    name: normalized.title,
+    messages: normalized.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      citations: message.citations ?? [],
+      ...(message.thinking ? { thinking: message.thinking } : {}),
+      createdAt: message.createdAt,
+    })),
+  };
 }
 
 const MAX_CONVERSATIONS = 50;
@@ -95,13 +156,7 @@ async function readConversations(owner: string): Promise<ChatConversation[]> {
       await getStorage().readFile(conversationsPath(owner)),
     );
     return Array.isArray(parsed)
-      ? (parsed as ChatConversation[]).map((conversation) => ({
-          ...conversation,
-          retrievalMode: conversation.retrievalMode === "sources" ? "sources" : "wiki",
-          contextBudget: isChatContextBudget(conversation.contextBudget)
-            ? conversation.contextBudget
-            : "standard",
-        }))
+      ? (parsed as ChatConversation[]).map(normalizeConversation)
       : [];
   } catch (error) {
     if (isEnoent(error)) return [];
@@ -145,20 +200,29 @@ export async function createChatConversation(
   owner: string,
   input?: {
     title?: string;
+    name?: string;
     scope?: string;
     retrievalMode?: ChatRetrievalMode;
     contextBudget?: ChatContextBudget;
+    tokenBudget?: number;
+    historyDepth?: number;
   },
 ): Promise<ChatConversation> {
   return withFileLock(lockKey(owner), async () => {
     const conversations = await readConversations(owner);
     const now = new Date().toISOString();
+    const title =
+      (input?.name ?? input?.title)?.trim().slice(0, 120) || "New conversation";
     const conversation: ChatConversation = {
       id: crypto.randomUUID(),
-      title: input?.title?.trim().slice(0, 120) || "New conversation",
+      title,
       ...(input?.scope?.trim() ? { scope: input.scope.trim() } : {}),
       retrievalMode: input?.retrievalMode ?? "wiki",
       contextBudget: input?.contextBudget ?? "standard",
+      tokenBudget: clampTokenBudget(input?.tokenBudget ?? CHAT_TOKEN_BUDGET_DEFAULT),
+      historyDepth: clampHistoryDepth(
+        input?.historyDepth ?? CHAT_HISTORY_DEPTH_DEFAULT,
+      ),
       messages: [],
       createdAt: now,
       updatedAt: now,
@@ -174,17 +238,21 @@ export async function updateChatConversation(
   id: string,
   patch: {
     title?: string;
+    name?: string;
     scope?: string | null;
     retrievalMode?: ChatRetrievalMode;
     contextBudget?: ChatContextBudget;
+    tokenBudget?: number;
+    historyDepth?: number;
   },
 ): Promise<ChatConversation | null> {
   return withFileLock(lockKey(owner), async () => {
     const conversations = await readConversations(owner);
     const conversation = conversations.find((item) => item.id === id);
     if (!conversation) return null;
-    if (patch.title !== undefined) {
-      const title = patch.title.trim();
+    const nextTitle = patch.name ?? patch.title;
+    if (nextTitle !== undefined) {
+      const title = nextTitle.trim();
       if (!title) throw new Error("Conversation title cannot be empty");
       conversation.title = title.slice(0, 120);
     }
@@ -197,6 +265,12 @@ export async function updateChatConversation(
     }
     if (patch.contextBudget !== undefined) {
       conversation.contextBudget = patch.contextBudget;
+    }
+    if (patch.tokenBudget !== undefined) {
+      conversation.tokenBudget = clampTokenBudget(patch.tokenBudget);
+    }
+    if (patch.historyDepth !== undefined) {
+      conversation.historyDepth = clampHistoryDepth(patch.historyDepth);
     }
     conversation.updatedAt = new Date().toISOString();
     await writeConversations(owner, conversations);
@@ -214,6 +288,77 @@ export async function deleteChatConversation(
     if (filtered.length === conversations.length) return false;
     await writeConversations(owner, filtered);
     return true;
+  });
+}
+
+export interface PersistChatMessage {
+  role: ChatRole;
+  content: string;
+  citations?: ChatCitation[];
+  thinking?: string;
+}
+
+/**
+ * Persist user/assistant frames after a sidecar `done` — no Worker generation.
+ */
+export async function appendChatMessages(
+  owner: string,
+  id: string,
+  frames: readonly PersistChatMessage[],
+): Promise<ChatConversation | null> {
+  if (frames.length === 0) return getChatConversation(owner, id);
+  return withFileLock(lockKey(owner), async () => {
+    const conversations = await readConversations(owner);
+    const conversation = conversations.find((item) => item.id === id);
+    if (!conversation) return null;
+    const now = new Date().toISOString();
+    for (const frame of frames) {
+      const content = frame.content.trim();
+      if (!content) continue;
+      if (conversation.messages.length >= MAX_MESSAGES) break;
+      conversation.messages.push({
+        id: crypto.randomUUID(),
+        role: frame.role,
+        content,
+        sources: (frame.citations ?? []).map((citation) => citation.path),
+        citations: frame.citations ?? [],
+        ...(frame.thinking ? { thinking: frame.thinking } : {}),
+        createdAt: now,
+      });
+    }
+    const firstUser = frames
+      .map((frame) => (frame.role === "user" ? frame.content.trim() : ""))
+      .find(Boolean);
+    if (conversation.title === "New conversation" && firstUser) {
+      conversation.title = firstUser.slice(0, 80);
+    }
+    conversation.updatedAt = now;
+    await writeConversations(owner, conversations);
+    return conversation;
+  });
+}
+
+/**
+ * Remove the last user+assistant pair. No-op when the conversation has no pair.
+ * Returns the retracted user content so Regenerate can re-send it.
+ */
+export async function retractLastChatTurn(
+  owner: string,
+  id: string,
+): Promise<{ conversation: ChatConversation; userContent: string } | null> {
+  return withFileLock(lockKey(owner), async () => {
+    const conversations = await readConversations(owner);
+    const conversation = conversations.find((item) => item.id === id);
+    if (!conversation || conversation.messages.length < 2) return null;
+    const assistant = conversation.messages.at(-1);
+    const user = conversation.messages.at(-2);
+    if (!assistant || !user || assistant.role !== "assistant" || user.role !== "user") {
+      return null;
+    }
+    conversation.messages = conversation.messages.slice(0, -2);
+    conversation.updatedAt = new Date().toISOString();
+    await writeConversations(owner, conversations);
+    return { conversation, userContent: user.content };
   });
 }
 

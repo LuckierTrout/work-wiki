@@ -10,6 +10,8 @@
 import { describe, expect, it } from "vitest";
 import {
   BADGE_MODE_NOUNS,
+  CHAT_COMPOSER_PLACEHOLDER,
+  CHAT_COVERAGE_MISSING_COPY,
   CHAT_SIDECAR_DOWN_COPY,
   CHAT_SIDECAR_UP_COPY,
   DEFAULT_WORKBENCH_MODE,
@@ -95,6 +97,10 @@ describe("empty-state copy", () => {
     // localhost, so there is nothing else to tell the owner to do.
     expect(CHAT_SIDECAR_DOWN_COPY).toContain("127.0.0.1:19828");
     expect(CHAT_SIDECAR_UP_COPY).toBe(HANDOFF_COPY.chat);
+    expect(CHAT_COVERAGE_MISSING_COPY).toBe(
+      "Wiki has no coverage for this. Ingest a source or run Deep Research.",
+    );
+    expect(CHAT_COMPOSER_PLACEHOLDER).toBe("Type a message…");
     expect(GRAPH_NARROW_COPY).toBe("The graph needs a wider window.");
   });
 });

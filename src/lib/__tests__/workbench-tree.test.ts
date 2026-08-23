@@ -252,12 +252,15 @@ describe("the Preview dock rule", () => {
   const page: TreeSelection = { kind: "page", slug: "a" };
   const file: TreeSelection = { kind: "file", path: "wiki/a.md" };
 
-  it("docks only in Wiki mode, and only with something selected", () => {
+  it("docks Wiki, Chat citations, and Search hits — never an empty Chat", () => {
     expect(shouldDockPreview("wiki", page)).toBe(true);
     expect(shouldDockPreview("wiki", file)).toBe(true);
     expect(shouldDockPreview("wiki", null)).toBe(false);
-    // Every other mode keeps its own canvas; the trees are not on screen.
-    for (const mode of ["chat", "sources", "search", "graph", "lint"] as const) {
+    expect(shouldDockPreview("chat", page)).toBe(true);
+    expect(shouldDockPreview("search", file)).toBe(true);
+    expect(shouldDockPreview("chat", null)).toBe(false);
+    expect(shouldDockPreview("search", null)).toBe(false);
+    for (const mode of ["sources", "graph", "lint"] as const) {
       expect(shouldDockPreview(mode, page)).toBe(false);
       expect(shouldDockPreview(mode, null)).toBe(false);
     }

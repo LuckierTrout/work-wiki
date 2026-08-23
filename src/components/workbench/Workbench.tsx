@@ -1556,6 +1556,9 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
         sidecar={sidecar}
         headingId={headingId}
         hidden={settingsOpen}
+        wikiId={currentWikiId ?? "current"}
+        readOnly={readOnly}
+        onDockPreview={selectRow}
       >
         {children}
       </ModeCanvas>

@@ -4,12 +4,14 @@ import type { ReactNode } from "react";
 import { SurfaceVisibilityProvider } from "@/hooks/useSurfaceVisibility";
 import {
   CHAT_SIDECAR_DOWN_COPY,
-  CHAT_SIDECAR_UP_COPY,
   GRAPH_NARROW_COPY,
   workbenchMode,
   type WorkbenchModeId,
 } from "@/lib/workbench-modes";
 import type { SidecarStatus } from "@/lib/sidecar";
+import type { TreeSelection } from "@/lib/workbench-tree";
+import { ChatCanvas } from "./ChatCanvas";
+import { SearchCanvas } from "./SearchCanvas";
 
 /**
  * The active mode's canvas.
@@ -69,6 +71,9 @@ export interface ModeCanvasProps {
    */
   hidden?: boolean;
   children: ReactNode;
+  wikiId?: string | null;
+  readOnly?: boolean;
+  onDockPreview?: (selection: TreeSelection) => void;
 }
 
 /**
@@ -84,6 +89,9 @@ export function ModeCanvas({
   headingId,
   hidden = false,
   children,
+  wikiId = "current",
+  readOnly = false,
+  onDockPreview,
 }: ModeCanvasProps) {
   const surface = workbenchMode(mode);
   const wikiActive = mode === "wiki";
@@ -125,12 +133,20 @@ export function ModeCanvas({
             {surface.label}
           </h2>
           {mode === "chat" ? (
-            // Fails closed. Until a sidecar answers on the loopback port there is
-            // no Chat to degrade into — the Worker cannot reach localhost, so a
-            // server-side stand-in would be a stub, not an answer.
-            <p className="wb-empty">
-              {sidecar === "up" ? CHAT_SIDECAR_UP_COPY : CHAT_SIDECAR_DOWN_COPY}
-            </p>
+            sidecar === "up" ? (
+              <ChatCanvas
+                wikiId={wikiId ?? "current"}
+                readOnly={readOnly}
+                onDockPreview={onDockPreview ?? (() => {})}
+              />
+            ) : (
+              <p className="wb-empty">{CHAT_SIDECAR_DOWN_COPY}</p>
+            )
+          ) : mode === "search" ? (
+            <SearchCanvas
+              wikiId={wikiId ?? "current"}
+              onDockPreview={onDockPreview ?? (() => {})}
+            />
           ) : mode === "graph" ? (
             // Both sentences render; CSS width queries reveal exactly one. No
             // user-agent branch and no width measurement in JS (UX-DR24).

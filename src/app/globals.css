@@ -2771,6 +2771,146 @@ body:has(.wb-shell) {
   margin: 0;
   color: var(--wb-muted);
 }
+.wb-chat,
+.wb-search {
+  display: flex;
+  min-width: 320px;
+  min-height: 0;
+  gap: var(--wb-space-3);
+}
+.wb-chat {
+  align-items: stretch;
+}
+.wb-chat--sources {
+  outline: 1px solid var(--wb-foreground);
+  outline-offset: 2px;
+}
+.wb-chat-sidebar {
+  width: 180px;
+  flex: 0 0 180px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+  border-right: 1px solid var(--wb-border);
+  padding-right: var(--wb-space-3);
+}
+.wb-chat-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+}
+.wb-chat-list li {
+  display: flex;
+  gap: var(--wb-space-1);
+}
+.wb-chat-row,
+.wb-chat-new,
+.wb-chat-delete,
+.wb-chat-composer button,
+.wb-chat-toolbar button,
+.wb-search-hit,
+.wb-chat-cite,
+.wb-chat-refs button {
+  font: inherit;
+  color: var(--wb-foreground);
+  background: transparent;
+  border: 1px solid var(--wb-border);
+  padding: var(--wb-space-1) var(--wb-space-2);
+  text-align: left;
+}
+.wb-chat-row--active {
+  background: var(--wb-border);
+  font-weight: var(--wb-weight-strong);
+}
+.wb-chat-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+}
+.wb-chat-toolbar,
+.wb-chat-composer,
+.wb-search-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+  align-items: center;
+}
+.wb-chat-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--wb-muted);
+}
+.wb-chat-log {
+  flex: 1;
+  min-height: 8rem;
+  overflow: auto;
+}
+.wb-chat-body {
+  white-space: pre-wrap;
+}
+.wb-chat-sources-banner,
+.wb-chat-vector,
+.wb-chat-error {
+  margin: 0;
+  color: var(--wb-muted);
+}
+.wb-chat-error {
+  color: var(--wb-foreground);
+}
+.wb-chat-composer textarea,
+.wb-search-input,
+.wb-chat-rename,
+.wb-chat-field input,
+.wb-chat-field select {
+  font: inherit;
+  color: var(--wb-foreground);
+  background: var(--wb-surface);
+  border: 1px solid var(--wb-border);
+  padding: var(--wb-space-1) var(--wb-space-2);
+}
+.wb-chat-composer textarea {
+  flex: 1;
+  min-width: 160px;
+  resize: vertical;
+}
+.wb-search {
+  flex-direction: column;
+}
+.wb-search-input {
+  width: 100%;
+}
+.wb-search-hits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+}
+.wb-search-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+.wb-search-hit-path,
+.wb-search-hit-snippet {
+  color: var(--wb-muted);
+}
+.wb-chat-thinking--live p {
+  margin: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wb-chat-thinking--live p {
+    opacity: 1 !important;
+  }
+}
 /* Exactly one of the Graph sentences is visible at any width; the swap is a
    media query, never a user-agent branch. */
 .wb-empty--narrow {
