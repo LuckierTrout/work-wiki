@@ -67,6 +67,7 @@ import {
   PREVIEW_UNREACHABLE_COPY,
   PREVIEW_UNREACHABLE_STREAK,
   PREVIEW_UPDATED_COPY,
+  previewDisputedCopy,
   WIKILINK_MISSING_COPY,
   artifactRevisionDate,
   artifactRevisionLabel,
@@ -1045,6 +1046,23 @@ describe("previewRefreshAnnouncement", () => {
   });
 });
 
+describe("previewDisputedCopy", () => {
+  it("renders the compact disputed header only when the flag is true", () => {
+    expect(previewDisputedCopy(true)).toBe("disputed: true");
+    expect(previewDisputedCopy(false)).toBeNull();
+    expect(previewDisputedCopy(undefined)).toBeNull();
+  });
+
+  it("PreviewColumn prints that sentence from the payload flag", async () => {
+    const source = await fs.readFile(
+      path.resolve(__dirname, "../../components/workbench/PreviewColumn.tsx"),
+      "utf8",
+    );
+    expect(source).toContain("previewDisputedCopy(payload?.disputed)");
+    expect(source).toContain("wb-preview-fm-row");
+  });
+});
+
 describe("the announcement copy", () => {
   it("names the thing the Preview just docked on", () => {
     // The same shape as `Settings, <category>`: a surface appeared and it is
@@ -1544,6 +1562,20 @@ describe("GET /api/workbench/preview", () => {
       truncated: false,
       editable: true,
     });
+  });
+
+  it("surfaces disputed: true on the payload and does not invent a clear", async () => {
+    await fs.writeFile(
+      path.join(root, "wiki", "contested.md"),
+      "---\ntitle: contested\ntype: concept\ndisputed: true\n---\n\n# Contested\n\nbody\n",
+      "utf-8",
+    );
+    listed.add("contested");
+    await writeIndex();
+    const response = await get("kind=page&slug=contested");
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    expect(payload.disputed).toBe(true);
   });
 
   it("answers 404 with ONE body for gated-out, absent and traversal alike", async () => {

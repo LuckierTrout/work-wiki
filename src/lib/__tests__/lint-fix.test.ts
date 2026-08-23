@@ -855,6 +855,21 @@ describe("fixLintIssue", () => {
     expect(written.content).toContain("[a live one](tgt.md)");
   });
 
+  it("drops a dangling [[slug]] when fixing a broken-link", async () => {
+    mockedReadWikiPage.mockResolvedValue({
+      slug: "src",
+      title: "Src",
+      content: "# Src\n\nSee [[gone]] and [a live one](tgt.md).",
+      path: "/wiki/src.md",
+    });
+
+    const result = await fixLintIssue("broken-link", "src", "gone");
+    expect(result.success).toBe(true);
+    const written = mockedWriteWikiPageWithSideEffects.mock.calls[0][0];
+    expect(written.content).not.toContain("[[gone]]");
+    expect(written.content).toContain("[a live one](tgt.md)");
+  });
+
   it("dispatches contradiction to fixContradiction", async () => {
     mockedHasLLMKey.mockReturnValue(true);
     mockedReadWikiPage

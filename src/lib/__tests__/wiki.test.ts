@@ -959,10 +959,34 @@ describe("/api/wiki/graph route", () => {
       new Request("http://localhost/api/wiki/graph") as never,
     );
     const data = (await res.json()) as {
+      nodes: { id: string; linkCount: number }[];
       edges: { source: string; target: string }[];
     };
 
     expect(data.edges).toHaveLength(0);
+    expect(data.nodes).toEqual([
+      expect.objectContaining({ id: "real", linkCount: 0 }),
+    ]);
+  });
+
+  it("counts [[wikilink]] targets as the wikilink Relevance signal", async () => {
+    await writeWikiPage("alpha", "# Alpha\n\nSee [[beta]] for the rest.");
+    await writeWikiPage("beta", "# Beta\n\nMentions [[alpha]] in return.");
+    await updateIndex([
+      { slug: "alpha", title: "Alpha", summary: "First" },
+      { slug: "beta", title: "Beta", summary: "Second" },
+    ]);
+
+    const { GET } = await import("../../app/api/wiki/graph/route");
+    const res = await GET(
+      new Request("http://localhost/api/wiki/graph") as never,
+    );
+    const data = (await res.json()) as {
+      edges: { source: string; target: string; weight: number; signals: string[] }[];
+    };
+    expect(data.edges).toHaveLength(1);
+    expect(data.edges[0]?.signals).toContain("direct link");
+    expect(data.edges[0]?.weight).toBeGreaterThanOrEqual(3);
   });
 
   it("a scoped graph excludes another owner's private page (readable ∩ scope)", async () => {

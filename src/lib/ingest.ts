@@ -1547,6 +1547,8 @@ const ANALYSIS_SYSTEM_PROMPT = `You analyze a source document for a wiki ingest.
 - tensions: string[] (contradictions or open questions)
 - recommendedStructure: string (short note on how to organize the page)
 - classificationContext: string (echo any folder location you were given, or "")
+- searchQueries: string[] (follow-up research queries if a human should decide what to look up)
+- reviewItems: optional array of { kind: "warning"|"lightbulb", title, summary, queries }
 Write all string values in English.`;
 
 async function analyzeSource(

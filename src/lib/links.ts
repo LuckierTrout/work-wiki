@@ -5,6 +5,18 @@
  * lifecycle.ts, and lint.ts.
  */
 
+import { slugify } from "./slugify";
+
+function normalizeWikilinkTarget(raw: string): string {
+  const trimmed = raw.trim().replace(/\.md$/i, "");
+  const last =
+    trimmed
+      .split("/")
+      .filter((part) => part && part !== "." && part !== "..")
+      .pop() ?? "";
+  return slugify(last);
+}
+
 /**
  * Escape special regex characters in a string so it can be used
  * in a `new RegExp(...)` constructor safely.
@@ -25,6 +37,8 @@ export interface WikiLink {
  * Extract all wiki-style markdown links from content.
  * Returns an array of { text, targetSlug } for each `[text](slug.md)` link found.
  */
+const WIKILINK_RE = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g;
+
 export function extractWikiLinks(content: string): WikiLink[] {
   const results: WikiLink[] = [];
   const re = /\[([^\]]*)\]\(([^)]+)\.md\)/g;
@@ -36,11 +50,40 @@ export function extractWikiLinks(content: string): WikiLink[] {
 }
 
 /**
+ * Markdown `[text](slug.md)` and `[[wikilink]]` / `[[slug|text]]` targets.
+ * Used by graph Relevance and Workbench Lint so both spellings count.
+ */
+export function extractAllInternalLinks(content: string): WikiLink[] {
+  const results = extractWikiLinks(content);
+  const wikiRe = new RegExp(WIKILINK_RE.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = wikiRe.exec(content)) !== null) {
+    const targetSlug = normalizeWikilinkTarget(match[1] ?? "");
+    if (!targetSlug) continue;
+    results.push({ text: (match[2] ?? match[1] ?? targetSlug).trim(), targetSlug });
+  }
+  return results;
+}
+
+/** Distinct target slugs from markdown links and `[[wikilink]]`s. */
+export function extractAllInternalTargets(content: string): string[] {
+  const seen = new Set<string>();
+  const targets: string[] = [];
+  for (const { targetSlug } of extractAllInternalLinks(content)) {
+    if (seen.has(targetSlug)) continue;
+    seen.add(targetSlug);
+    targets.push(targetSlug);
+  }
+  return targets;
+}
+
+/**
  * Test whether `content` contains a markdown link to `targetSlug.md`.
  */
 export function hasLinkTo(content: string, targetSlug: string): boolean {
   const pattern = new RegExp(`\\]\\(${escapeRegex(targetSlug)}\\.md\\)`);
-  return pattern.test(content);
+  if (pattern.test(content)) return true;
+  return extractAllInternalTargets(content).includes(targetSlug);
 }
 
 // ---------------------------------------------------------------------------

@@ -41,6 +41,7 @@ import {
   PREVIEW_TIMEOUT_REASON,
   PREVIEW_UNREACHABLE_COPY,
   PREVIEW_UNSUPPORTED_COPY,
+  previewDisputedCopy,
   artifactRevisionDate,
   artifactRevisionMeta,
   canEditPreview,
@@ -1126,6 +1127,9 @@ function PreviewPane({
             {page?.updated && <p className="wb-preview-fm-row">updated: {page.updated}</p>}
             {typeof page?.sourceCount === "number" && (
               <p className="wb-preview-fm-row">sources: {page.sourceCount}</p>
+            )}
+            {previewDisputedCopy(payload?.disputed) && (
+              <p className="wb-preview-fm-row">{previewDisputedCopy(payload?.disputed)}</p>
             )}
           </>
         ) : (

@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-23-2026 12:50
+last_updated: 08-23-2026 14:35
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
@@ -83,17 +83,17 @@ development_status:
   4-4-links-back-to-the-meeting: done
   epic-4-retrospective: optional
 
-  epic-5: backlog
-  5-1-4-signal-relevance-in-the-kernel: backlog
-  5-2-graph-canvas-with-sigma: backlog
-  5-3-louvain-communities-and-type-community-toggle: backlog
-  5-4-graph-hover-zoom-and-position-cache: backlog
-  5-5-surprising-connections: backlog
-  5-6-knowledge-gaps: backlog
-  5-7-insight-highlight-and-deep-research-entry: backlog
-  5-8-lint-report: backlog
-  5-9-mechanical-auto-fix: backlog
-  5-10-review-queue: backlog
+  epic-5: done
+  5-1-4-signal-relevance-in-the-kernel: done
+  5-2-graph-canvas-with-sigma: done
+  5-3-louvain-communities-and-type-community-toggle: done
+  5-4-graph-hover-zoom-and-position-cache: done
+  5-5-surprising-connections: done
+  5-6-knowledge-gaps: done
+  5-7-insight-highlight-and-deep-research-entry: done
+  5-8-lint-report: done
+  5-9-mechanical-auto-fix: done
+  5-10-review-queue: done
   epic-5-retrospective: optional
 
   epic-6: backlog

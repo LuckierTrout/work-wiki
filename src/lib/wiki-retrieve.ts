@@ -28,10 +28,12 @@ import {
 } from "./config";
 import { extractBestSnippet } from "./query-search";
 import { searchByVector } from "./embeddings";
+import { parseFrontmatter } from "./frontmatter";
 import { buildWeightedGraphEdges, expandGraphSeeds } from "./graph-relevance";
 import { logger } from "./logger";
 import { listRawSources, listRawSourceSnapshots, readRawSource, readRawSourceById } from "./raw";
 import { loadPageConventions } from "./schema";
+import { parseSources } from "./sources";
 import type { IndexEntry } from "./types";
 import { CHAT_COVERAGE_MISSING_COPY, CHAT_VECTOR_FALLBACK_COPY } from "./workbench-modes";
 import {
@@ -63,6 +65,7 @@ export interface RetrieveDocument {
   kind: RetrieveDocKind;
   type: string;
   slug?: string;
+  sourceUrls?: string[];
 }
 
 export interface RetrieveHit {
@@ -222,6 +225,12 @@ export async function loadRetrieveDocuments(
     const loaded = await mapPool(pageEntries, PAGE_READ_CONCURRENCY, async (entry) => {
       const page = await readWikiPage(entry.slug);
       if (!page) return null;
+      let parsed: ReturnType<typeof parseFrontmatter>;
+      try {
+        parsed = parseFrontmatter(page.content);
+      } catch {
+        parsed = { data: {}, body: page.content };
+      }
       const doc: RetrieveDocument = {
         id: entry.slug,
         path: `wiki/${entry.slug}.md`,
@@ -230,6 +239,9 @@ export async function loadRetrieveDocuments(
         kind: "page",
         type: entry.type || "page",
         slug: entry.slug,
+        sourceUrls: parseSources(
+          parsed.data.sources as string | string[] | undefined,
+        ).map((source) => source.url),
       };
       return doc;
     });
@@ -394,7 +406,7 @@ async function expandHits(
       return {
         id: doc.slug as string,
         directTargets: extractWikiTargets(doc.body, allowed),
-        sourceUrls: [] as string[],
+        sourceUrls: doc.sourceUrls ?? [],
         ...(typeof entry?.type === "string" ? { type: entry.type } : {}),
       };
     });

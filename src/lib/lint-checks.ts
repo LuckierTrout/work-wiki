@@ -3,7 +3,7 @@ import type { FileEntry } from "./storage";
 import { readWikiPage, readWikiPageWithFrontmatter, listWikiPages, wikiRelPath } from "./wiki";
 import { hasLLMKey, callLLM } from "./llm";
 import { loadPageConventions } from "./schema";
-import { extractWikiLinks } from "./links";
+import { extractAllInternalLinks, extractWikiLinks } from "./links";
 import type { LintIssue } from "./types";
 import { logger } from "./logger";
 import { findDuplicateEntities } from "./alias-index";
@@ -143,7 +143,7 @@ export async function checkBrokenLinks(
     const page = await readWikiPage(slug);
     if (!page) continue;
 
-    const links = extractWikiLinks(page.content);
+    const links = extractAllInternalLinks(page.content);
     for (const { targetSlug } of links) {
       // Skip infrastructure files (index.md, log.md)
       if (INFRASTRUCTURE_FILES.has(`${targetSlug}.md`)) continue;

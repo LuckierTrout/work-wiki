@@ -410,16 +410,23 @@ export function restorableSelection(
  * Whether the Preview column docks — the story's headline behaviour, lifted out
  * of JSX so it is executed by a test rather than grepped for in a source scan.
  *
- * Wiki, Chat citations, Search hits, and Todos meeting links dock Preview.
- * Other modes stay undocked so a column does not show a pick whose source
- * the owner can no longer see.
+ * Wiki, Chat citations, Search hits, Todos meeting links, and Graph / Lint /
+ * Review page picks dock Preview.
  */
 export function shouldDockPreview(
   mode: WorkbenchModeId,
   selection: TreeSelection | null,
 ): boolean {
   if (selection === null) return false;
-  return mode === "wiki" || mode === "chat" || mode === "search" || mode === "todos";
+  return (
+    mode === "wiki" ||
+    mode === "chat" ||
+    mode === "search" ||
+    mode === "todos" ||
+    mode === "graph" ||
+    mode === "lint" ||
+    mode === "review"
+  );
 }
 
 /**

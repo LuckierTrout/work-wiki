@@ -80,6 +80,7 @@ const WRITER_EXPORTS: Record<string, readonly string[]> = {
     "fixContradiction",
     "fixMissingConceptPage",
     "fixBrokenLink",
+    "fixRenamedSlug",
     "fixStalePage",
     "fixUnmigratedPage",
     "fixSupersededDangling",
@@ -90,6 +91,8 @@ const WRITER_EXPORTS: Record<string, readonly string[]> = {
   "@/lib/tenant-admin": ["deleteTenant"],
   "@/lib/search": ["updateRelatedPages"],
   "@/lib/document-sources": ["preserveDocumentSources"],
+  "@/lib/review-queue": ["createPageFromReview"],
+  "@/lib/workbench-lint-fix": ["fixWorkbenchLintIssue"],
 };
 
 /** Every `src/lib/*.ts` module whose own code calls a kernel writer. */
@@ -101,6 +104,7 @@ const WRITER_MODULES = [
   "memory-proposals",
   "merge",
   "query",
+  "review-queue",
   "search",
   "tenant-admin",
 ] as const;

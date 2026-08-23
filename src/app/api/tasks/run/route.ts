@@ -21,7 +21,9 @@ import {
   DEFAULT_AGENT_NAME,
   listAgentsForOwner,
 } from "@/lib/agents";
-import { hasIngestAnalysis } from "@/lib/ingest-analysis";
+import { hasIngestAnalysis, loadIngestAnalysis } from "@/lib/ingest-analysis";
+import { enqueueReviewFromAnalysis } from "@/lib/review-queue";
+import { getWikiRegistry } from "@/lib/wikis";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { getVectorSearchSettings, isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
@@ -552,6 +554,27 @@ export async function POST(req: Request) {
         logger.warn(
           "tasks",
           `todo-candidate extract dispatch failed for slug="${result.primarySlug}": ${getErrorMessage(err)}`,
+        );
+      }
+      try {
+        const analysis = task.jobId ? await loadIngestAnalysis(task.jobId) : null;
+        if (analysis) {
+          let wikiId = "current";
+          try {
+            wikiId = (await getWikiRegistry(actionOwner)).currentId ?? "current";
+          } catch {
+            wikiId = "current";
+          }
+          await enqueueReviewFromAnalysis(actionOwner, {
+            wikiId,
+            pageSlug: result.primarySlug,
+            analysis,
+          });
+        }
+      } catch (err) {
+        logger.warn(
+          "tasks",
+          `review-queue enqueue failed for slug="${result.primarySlug}": ${getErrorMessage(err)}`,
         );
       }
       try {

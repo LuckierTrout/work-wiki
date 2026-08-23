@@ -9,6 +9,16 @@
 import { isEnoent } from "./errors";
 import { getStorage } from "./storage";
 
+export interface IngestReviewItemDraft {
+  kind?: "warning" | "lightbulb";
+  title: string;
+  summary?: string;
+  path?: string;
+  queries?: string[];
+  /** Extra model actions drop or map to Skip — never Accept/Reject/Revise. */
+  action?: string;
+}
+
 export interface IngestAnalysis {
   entities: string[];
   concepts: string[];
@@ -18,6 +28,8 @@ export interface IngestAnalysis {
   recommendedStructure: string;
   /** Folder location such as `papers > energy` — classification context only. */
   classificationContext?: string;
+  searchQueries?: string[];
+  reviewItems?: IngestReviewItemDraft[];
 }
 
 function relPathFor(jobId: string): string {
@@ -48,6 +60,26 @@ export function parseIngestAnalysis(raw: unknown): IngestAnalysis | null {
     Array.isArray(value)
       ? value.filter((item): item is string => typeof item === "string")
       : [];
+  const reviewItems = Array.isArray(record.reviewItems)
+    ? record.reviewItems.flatMap((item): IngestReviewItemDraft[] => {
+        if (!item || typeof item !== "object") return [];
+        const row = item as Record<string, unknown>;
+        if (typeof row.title !== "string" || !row.title.trim()) return [];
+        return [
+          {
+            title: row.title,
+            ...(row.kind === "warning" || row.kind === "lightbulb" ? { kind: row.kind } : {}),
+            ...(typeof row.summary === "string" ? { summary: row.summary } : {}),
+            ...(typeof row.path === "string" ? { path: row.path } : {}),
+            ...(Array.isArray(row.queries)
+              ? { queries: row.queries.filter((query): query is string => typeof query === "string") }
+              : {}),
+            ...(typeof row.action === "string" ? { action: row.action } : {}),
+          },
+        ];
+      })
+    : [];
+  const searchQueries = strings(record.searchQueries);
   return {
     entities: strings(record.entities),
     concepts: strings(record.concepts),
@@ -62,6 +94,8 @@ export function parseIngestAnalysis(raw: unknown): IngestAnalysis | null {
     record.classificationContext.trim()
       ? { classificationContext: record.classificationContext }
       : {}),
+    ...(searchQueries.length > 0 ? { searchQueries } : {}),
+    ...(reviewItems.length > 0 ? { reviewItems } : {}),
   };
 }
 

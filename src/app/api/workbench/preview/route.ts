@@ -3,6 +3,7 @@ import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { parseFrontmatter } from "@/lib/frontmatter";
 import { stripFrontmatterBlock } from "@/lib/markdown";
 import { isOwnerHandle } from "@/lib/owner";
 import { listReadableWikiPages, readWikiPage } from "@/lib/wiki";
@@ -138,6 +139,12 @@ async function handle(request: Request) {
     if (!page) return notFound();
 
     const { body, truncated } = capPreviewBody(bodyFor("markdown", page.content));
+    let disputed = false;
+    try {
+      disputed = parseFrontmatter(page.content).data.disputed === true;
+    } catch {
+      disputed = false;
+    }
     const payload: PreviewPayload = {
       name: findKnowledgePage(knowledge, slug)?.title ?? slug,
       path: `wiki/${slug}.md`,
@@ -145,6 +152,7 @@ async function handle(request: Request) {
       format: "markdown",
       body,
       truncated,
+      ...(disputed ? { disputed: true } : {}),
       // The write precondition (DW-38/51), derived from the WHOLE stored file
       // rather than from `body`: `PUT /api/wiki/[slug]` checks it against
       // `existing.content`, which still carries the YAML block this payload
@@ -236,6 +244,12 @@ async function handle(request: Request) {
     bodyFor(format, content, artifact !== undefined),
   );
 
+  let disputed = false;
+  try {
+    disputed = !!(slug && content) && parseFrontmatter(content).data.disputed === true;
+  } catch {
+    disputed = false;
+  }
   const payload: PreviewPayload = {
     name: segments[segments.length - 1],
     path: displayPath,
@@ -244,6 +258,7 @@ async function handle(request: Request) {
     format,
     body,
     truncated,
+    ...(disputed ? { disputed: true } : {}),
     // The write precondition (DW-38/51/56), over the RAW bytes this route read
     // — before `bodyFor` stripped anything and before the cap sliced anything,
     // because those are the bytes the write routes hold. An `unsupported`

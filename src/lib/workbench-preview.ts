@@ -154,6 +154,13 @@ export interface PreviewPayload {
   version?: string | null;
   /** The confirm-gated editor is offered only when this is true. */
   editable: boolean;
+  /** Compact header flag — never auto-cleared. */
+  disputed?: boolean;
+}
+
+/** Compact Preview header copy. Visible only when the flag is true. */
+export function previewDisputedCopy(disputed: boolean | undefined): string | null {
+  return disputed === true ? "disputed: true" : null;
 }
 
 /**

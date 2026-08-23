@@ -47,6 +47,7 @@ import {
   writeStoredCollapsed,
   writeStoredMode,
   writeStoredSelection,
+  writeStoredResearchFill,
   writeStoredSplitWidths,
   writeStoredTreeTab,
 } from "@/lib/workbench-state";
@@ -186,7 +187,7 @@ const LEFT_ID = "wb-left-column";
  */
 const PREVIEW_ID = "wb-preview-column";
 
-export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount = 0 }: WorkbenchProps) {
+export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount: reviewCountProp = 0 }: WorkbenchProps) {
   // The left column's working set is server-loaded in `page.tsx` and handed
   // across the server/client boundary by `WorkbenchDataProvider`.
   const {
@@ -203,6 +204,9 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount 
   } = useWorkbenchData();
   const [todoCount, setTodoCount] = useState(todoCountProp);
   const todoBadgeSeq = useRef(0);
+  const [reviewCount, setReviewCount] = useState(reviewCountProp);
+  const reviewBadgeSeq = useRef(0);
+  const [researchFillId, setResearchFillId] = useState<string | null>(null);
   const [mode, setModeState] = useState<WorkbenchModeId>(DEFAULT_WORKBENCH_MODE);
   const [collapsed, setCollapsed] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -372,12 +376,33 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount 
   }, [todoCountProp]);
 
   useEffect(() => {
+    setReviewCount(reviewCountProp);
+  }, [reviewCountProp]);
+
+  useEffect(() => {
     let cancelled = false;
     const seq = ++todoBadgeSeq.current;
     send<{ pendingCount?: number }>("/api/todos", { method: "GET" })
       .then((body) => {
         if (!cancelled && seq === todoBadgeSeq.current && typeof body.pendingCount === "number") {
           setTodoCount(body.pendingCount);
+        }
+      })
+      .catch(() => {
+        /* Badge stays at the last known count. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dataVersion]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const seq = ++reviewBadgeSeq.current;
+    send<{ pendingCount?: number }>("/api/review-queue", { method: "GET" })
+      .then((body) => {
+        if (!cancelled && seq === reviewBadgeSeq.current && typeof body.pendingCount === "number") {
+          setReviewCount(body.pendingCount);
         }
       })
       .catch(() => {
@@ -652,6 +677,15 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount 
       }
     },
     [applyMode],
+  );
+
+  const openResearch = useCallback(
+    (projectId: string) => {
+      writeStoredResearchFill(projectId);
+      setResearchFillId(projectId);
+      selectMode("research");
+    },
+    [selectMode],
   );
 
   // Back and Forward. The entry the browser moved to is the only input — the
@@ -1584,6 +1618,10 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount 
         readOnly={readOnly}
         onDockPreview={selectRow}
         onTodoCountChange={setTodoCount}
+        onReviewCountChange={setReviewCount}
+        onOpenResearch={openResearch}
+        dataVersion={dataVersion}
+        researchFillId={researchFillId}
       >
         {children}
       </ModeCanvas>

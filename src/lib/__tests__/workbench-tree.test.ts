@@ -263,7 +263,13 @@ describe("the Preview dock rule", () => {
     expect(shouldDockPreview("todos", page)).toBe(true);
     expect(shouldDockPreview("todos", file)).toBe(true);
     expect(shouldDockPreview("todos", null)).toBe(false);
-    for (const mode of ["sources", "graph", "lint"] as const) {
+    expect(shouldDockPreview("graph", page)).toBe(true);
+    expect(shouldDockPreview("lint", page)).toBe(true);
+    expect(shouldDockPreview("review", page)).toBe(true);
+    expect(shouldDockPreview("graph", null)).toBe(false);
+    expect(shouldDockPreview("lint", null)).toBe(false);
+    expect(shouldDockPreview("review", null)).toBe(false);
+    for (const mode of ["sources"] as const) {
       expect(shouldDockPreview(mode, page)).toBe(false);
       expect(shouldDockPreview(mode, null)).toBe(false);
     }

@@ -81,6 +81,13 @@ vi.mock("@/lib/todo-extract", () => ({
 vi.mock("@/lib/todos", () => ({
   recordTodoExtractError: vi.fn(async () => {}),
 }));
+vi.mock("@/lib/review-queue", () => ({
+  enqueueReviewFromAnalysis: vi.fn(async () => []),
+}));
+vi.mock("@/lib/ingest-analysis", async (orig) => ({
+  ...(await orig<typeof import("@/lib/ingest-analysis")>()),
+  loadIngestAnalysis: vi.fn(async () => null),
+}));
 
 import { getServicePrincipal } from "@/lib/auth";
 import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest, IngestCancelledError } from "@/lib/ingest";
@@ -134,6 +141,11 @@ const mockedAddToVault = vi.mocked(addToVault);
 
 import { addAgentLearningPage } from "@/lib/agents";
 const mockedAddLearning = vi.mocked(addAgentLearningPage);
+
+import { enqueueReviewFromAnalysis } from "@/lib/review-queue";
+import { loadIngestAnalysis } from "@/lib/ingest-analysis";
+const mockedEnqueueReview = vi.mocked(enqueueReviewFromAnalysis);
+const mockedLoadAnalysis = vi.mocked(loadIngestAnalysis);
 
 async function run(body: unknown, headers?: Record<string, string>) {
   const { POST } = await import("@/app/api/tasks/run/route");
@@ -811,6 +823,56 @@ describe("POST /api/tasks/run", () => {
     expect(res.status).toBe(500);
     expect(mockedEnqueueTask).not.toHaveBeenCalledWith(
       expect.objectContaining({ kind: "extract-todo-candidates" }),
+    );
+    expect(mockedEnqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("does not enqueue Review items when ingest is skipped", async () => {
+    mockedLoadAnalysis.mockResolvedValue({
+      entities: [],
+      concepts: [],
+      arguments: [],
+      existingLinks: [],
+      tensions: ["Would have been a Review card."],
+      recommendedStructure: "",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngest.mockResolvedValue({ primarySlug: "existing", skipped: true } as any);
+    const res = await run({
+      kind: "ingest",
+      content: "same bytes",
+      owner: "alice",
+      jobId: "job-skip-review",
+    });
+    expect(res.status).toBe(200);
+    expect(mockedEnqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("enqueues Review items after a successful compile with analysis", async () => {
+    mockedLoadAnalysis.mockResolvedValue({
+      entities: [],
+      concepts: [],
+      arguments: [],
+      existingLinks: [],
+      tensions: ["Sources disagree."],
+      recommendedStructure: "",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngest.mockResolvedValue({ primarySlug: "topic" } as any);
+    const res = await run({
+      kind: "ingest",
+      content: "body",
+      title: "Topic",
+      owner: "alice",
+      jobId: "job-review",
+    });
+    expect(res.status).toBe(200);
+    expect(mockedEnqueueReview).toHaveBeenCalledWith(
+      "alice",
+      expect.objectContaining({
+        pageSlug: "topic",
+        analysis: expect.objectContaining({ tensions: ["Sources disagree."] }),
+      }),
     );
   });
 

@@ -49,6 +49,8 @@ export const WORKBENCH_SPLIT_KEY = "yopedia_workbench_split";
 export const WORKBENCH_SELECTION_KEY = "yopedia_workbench_selection";
 export const WORKBENCH_TREE_SCROLL_KEY = "yopedia_workbench_tree_scroll";
 export const WORKBENCH_SOURCES_SCROLL_KEY = "yopedia_workbench_sources_scroll";
+export const WORKBENCH_GRAPH_LAYOUT_KEY = "yopedia_workbench_graph_layout";
+export const WORKBENCH_RESEARCH_FILL_KEY = "yopedia_workbench_research_fill";
 
 /** The only stored value that means "collapsed"; everything else is expanded. */
 const COLLAPSED_TRUE = "1";
@@ -296,6 +298,80 @@ export function writeStoredSourcesScroll(offset: number): void {
       WORKBENCH_SOURCES_SCROLL_KEY,
       String(storedOffset(Math.round(offset))),
     );
+  } catch {
+    // private mode / quota
+  }
+}
+
+export interface GraphNodePosition {
+  x: number;
+  y: number;
+}
+
+export interface GraphLayoutCache {
+  camera?: { x: number; y: number; ratio: number };
+  positions: Record<string, GraphNodePosition>;
+}
+
+function storedPosition(value: unknown): GraphNodePosition | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.x !== "number" || typeof record.y !== "number") return null;
+  if (!Number.isFinite(record.x) || !Number.isFinite(record.y)) return null;
+  return { x: record.x, y: record.y };
+}
+
+export function readStoredGraphLayout(): GraphLayoutCache {
+  const record = readStoredRecord(WORKBENCH_GRAPH_LAYOUT_KEY);
+  if (!record) return { positions: {} };
+  const positions: Record<string, GraphNodePosition> = {};
+  if (record.positions && typeof record.positions === "object" && !Array.isArray(record.positions)) {
+    for (const [id, value] of Object.entries(record.positions as Record<string, unknown>)) {
+      const pos = storedPosition(value);
+      if (pos) positions[id] = pos;
+    }
+  }
+  const cameraRaw = record.camera;
+  let camera: GraphLayoutCache["camera"];
+  if (cameraRaw && typeof cameraRaw === "object") {
+    const cam = cameraRaw as Record<string, unknown>;
+    if (
+      typeof cam.x === "number" &&
+      typeof cam.y === "number" &&
+      typeof cam.ratio === "number" &&
+      Number.isFinite(cam.x) &&
+      Number.isFinite(cam.y) &&
+      Number.isFinite(cam.ratio) &&
+      cam.ratio > 0
+    ) {
+      camera = { x: cam.x, y: cam.y, ratio: cam.ratio };
+    }
+  }
+  return camera ? { camera, positions } : { positions };
+}
+
+export function writeStoredGraphLayout(layout: GraphLayoutCache): void {
+  writeStoredJson(WORKBENCH_GRAPH_LAYOUT_KEY, {
+    ...(layout.camera ? { camera: layout.camera } : {}),
+    positions: layout.positions,
+  });
+}
+
+export function readStoredResearchFill(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(WORKBENCH_RESEARCH_FILL_KEY);
+    return raw && raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeStoredResearchFill(id: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (!id) window.localStorage.removeItem(WORKBENCH_RESEARCH_FILL_KEY);
+    else window.localStorage.setItem(WORKBENCH_RESEARCH_FILL_KEY, id);
   } catch {
     // private mode / quota
   }

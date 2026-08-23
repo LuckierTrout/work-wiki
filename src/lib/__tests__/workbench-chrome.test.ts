@@ -301,8 +301,9 @@ describe("ModeCanvas", () => {
     const source = await read("ModeCanvas.tsx");
     expect(source).toContain("@/lib/workbench-modes");
     expect(source).toContain("CHAT_SIDECAR_DOWN_COPY");
-    expect(source).toContain("GRAPH_NARROW_COPY");
     expect(source).toContain("surface.emptyState");
+    const graph = await read("GraphCanvas.tsx");
+    expect(graph).toContain("GRAPH_NARROW_COPY");
     // A sentence typed here is a second definition of copy the handoff fixes.
     expect(source).not.toContain("Press Enter to search.");
     expect(source).not.toContain("No pending cards.");
@@ -321,6 +322,17 @@ describe("ModeCanvas", () => {
     const source = await read("ModeCanvas.tsx");
     expect(source).toContain("<TodosCanvas");
     expect(source).toContain('mode !== "todos"');
+  });
+
+  it("mounts Graph, Lint, and Review canvases instead of the generic stub", async () => {
+    const source = await read("ModeCanvas.tsx");
+    expect(source).toContain("<GraphCanvas");
+    expect(source).toContain("<LintCanvas");
+    expect(source).toContain("<ReviewCanvas");
+    expect(source).toContain("<ResearchCanvas");
+    expect(source).toContain('mode !== "graph"');
+    expect(source).toContain('mode !== "lint"');
+    expect(source).toContain('mode !== "review"');
   });
 });
 

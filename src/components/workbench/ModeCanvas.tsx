@@ -4,13 +4,16 @@ import type { ReactNode } from "react";
 import { SurfaceVisibilityProvider } from "@/hooks/useSurfaceVisibility";
 import {
   CHAT_SIDECAR_DOWN_COPY,
-  GRAPH_NARROW_COPY,
   workbenchMode,
   type WorkbenchModeId,
 } from "@/lib/workbench-modes";
 import type { SidecarStatus } from "@/lib/sidecar";
 import type { TreeSelection } from "@/lib/workbench-tree";
 import { ChatCanvas } from "./ChatCanvas";
+import { GraphCanvas } from "./GraphCanvas";
+import { LintCanvas } from "./LintCanvas";
+import { ResearchCanvas } from "./ResearchCanvas";
+import { ReviewCanvas } from "./ReviewCanvas";
 import { SearchCanvas } from "./SearchCanvas";
 import { TodosCanvas } from "./TodosCanvas";
 
@@ -76,6 +79,10 @@ export interface ModeCanvasProps {
   readOnly?: boolean;
   onDockPreview?: (selection: TreeSelection) => void;
   onTodoCountChange?: (count: number) => void;
+  onReviewCountChange?: (count: number) => void;
+  onOpenResearch?: (projectId: string) => void;
+  dataVersion?: number;
+  researchFillId?: string | null;
 }
 
 /**
@@ -95,6 +102,10 @@ export function ModeCanvas({
   readOnly = false,
   onDockPreview,
   onTodoCountChange,
+  onReviewCountChange,
+  onOpenResearch,
+  dataVersion = 0,
+  researchFillId = null,
 }: ModeCanvasProps) {
   const surface = workbenchMode(mode);
   const wikiActive = mode === "wiki";
@@ -179,21 +190,80 @@ export function ModeCanvas({
         />
       </div>
 
-      {!wikiActive && !hidden && mode !== "chat" && mode !== "search" && mode !== "todos" && (
+      <div className="wb-canvas-pad" hidden={mode !== "graph" || hidden}>
+        {mode === "graph" && !hidden ? (
+          <h2 id={headingId} className="wb-surface-title">
+            {workbenchMode("graph").label}
+          </h2>
+        ) : null}
+        <GraphCanvas
+          wikiId={wikiId ?? "current"}
+          readOnly={readOnly}
+          active={mode === "graph" && !hidden}
+          dataVersion={dataVersion}
+          onDockPreview={onDockPreview ?? (() => {})}
+          onOpenResearch={onOpenResearch}
+        />
+      </div>
+
+      <div className="wb-canvas-pad" hidden={mode !== "lint" || hidden}>
+        {mode === "lint" && !hidden ? (
+          <h2 id={headingId} className="wb-surface-title">
+            {workbenchMode("lint").label}
+          </h2>
+        ) : null}
+        <LintCanvas
+          wikiId={wikiId ?? "current"}
+          readOnly={readOnly}
+          active={mode === "lint" && !hidden}
+          onDockPreview={onDockPreview ?? (() => {})}
+        />
+      </div>
+
+      <div className="wb-canvas-pad" hidden={mode !== "review" || hidden}>
+        {mode === "review" && !hidden ? (
+          <h2 id={headingId} className="wb-surface-title">
+            {workbenchMode("review").label}
+          </h2>
+        ) : null}
+        <ReviewCanvas
+          wikiId={wikiId ?? "current"}
+          readOnly={readOnly}
+          active={mode === "review" && !hidden}
+          dataVersion={dataVersion}
+          onDockPreview={onDockPreview ?? (() => {})}
+          onPendingCountChange={onReviewCountChange}
+          onOpenResearch={onOpenResearch}
+        />
+      </div>
+
+      <div className="wb-canvas-pad" hidden={mode !== "research" || hidden}>
+        {mode === "research" && !hidden ? (
+          <h2 id={headingId} className="wb-surface-title">
+            {workbenchMode("research").label}
+          </h2>
+        ) : null}
+        <ResearchCanvas
+          wikiId={wikiId ?? "current"}
+          active={mode === "research" && !hidden}
+          filledId={researchFillId}
+        />
+      </div>
+
+      {!wikiActive &&
+        !hidden &&
+        mode !== "chat" &&
+        mode !== "search" &&
+        mode !== "todos" &&
+        mode !== "graph" &&
+        mode !== "lint" &&
+        mode !== "review" &&
+        mode !== "research" && (
         <div className="wb-canvas-pad">
           <h2 id={headingId} className="wb-surface-title">
             {surface.label}
           </h2>
-          {mode === "graph" ? (
-            // Both sentences render; CSS width queries reveal exactly one. No
-            // user-agent branch and no width measurement in JS (UX-DR24).
-            <>
-              <p className="wb-empty wb-empty--wide">{surface.emptyState}</p>
-              <p className="wb-empty wb-empty--narrow">{GRAPH_NARROW_COPY}</p>
-            </>
-          ) : (
-            <p className="wb-empty">{surface.emptyState}</p>
-          )}
+          <p className="wb-empty">{surface.emptyState}</p>
         </div>
       )}
     </section>

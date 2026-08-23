@@ -10,10 +10,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   WORKBENCH_COLLAPSED_KEY,
+  WORKBENCH_GRAPH_LAYOUT_KEY,
   WORKBENCH_MODE_KEY,
   readStoredCollapsed,
+  readStoredGraphLayout,
   readStoredMode,
   writeStoredCollapsed,
+  writeStoredGraphLayout,
   writeStoredMode,
 } from "../workbench-state";
 
@@ -166,5 +169,31 @@ describe("left-column collapse", () => {
       },
     });
     expect(() => writeStoredCollapsed(true)).not.toThrow();
+  });
+});
+
+describe("graph layout cache", () => {
+  it("keeps the yopedia runtime key", () => {
+    expect(WORKBENCH_GRAPH_LAYOUT_KEY).toBe("yopedia_workbench_graph_layout");
+  });
+
+  it("round-trips camera and node positions", () => {
+    const storage = memoryStorage();
+    stubWindow(storage);
+    writeStoredGraphLayout({
+      camera: { x: 1, y: 2, ratio: 0.5 },
+      positions: { alpha: { x: 10, y: 20 } },
+    });
+    expect(readStoredGraphLayout()).toEqual({
+      camera: { x: 1, y: 2, ratio: 0.5 },
+      positions: { alpha: { x: 10, y: 20 } },
+    });
+  });
+
+  it("degrades invalid JSON to empty positions", () => {
+    stubWindow(memoryStorage({ [WORKBENCH_GRAPH_LAYOUT_KEY]: "{not-json" }));
+    expect(readStoredGraphLayout()).toEqual({ positions: {} });
+    stubWindow(memoryStorage({ [WORKBENCH_GRAPH_LAYOUT_KEY]: '{"positions":{"a":{"x":"no"}}}' }));
+    expect(readStoredGraphLayout()).toEqual({ positions: {} });
   });
 });

@@ -23,10 +23,21 @@ export interface WeightedGraphEdge {
   signals: string[];
 }
 
-const DIRECT_LINK_WEIGHT = 3;
-const SHARED_SOURCE_WEIGHT = 4;
-const ADAMIC_ADAR_WEIGHT = 1.5;
-const TYPE_AFFINITY_WEIGHT = 1;
+/** v1 Relevance contract. Changing these is a product change. */
+export const RELEVANCE_WEIGHTS = {
+  wikilink: 3,
+  sourceOverlap: 4,
+  adamicAdar: 1.5,
+  typeAffinity: 1,
+} as const;
+
+const DIRECT_LINK_WEIGHT = RELEVANCE_WEIGHTS.wikilink;
+const SHARED_SOURCE_WEIGHT = RELEVANCE_WEIGHTS.sourceOverlap;
+const ADAMIC_ADAR_WEIGHT = RELEVANCE_WEIGHTS.adamicAdar;
+const TYPE_AFFINITY_WEIGHT = RELEVANCE_WEIGHTS.typeAffinity;
+
+/** Edges at or above shared-Source weight render green; weaker edges are gray. */
+export const STRONG_EDGE_WEIGHT = RELEVANCE_WEIGHTS.sourceOverlap;
 
 function pairKey(a: string, b: string): string {
   return a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;

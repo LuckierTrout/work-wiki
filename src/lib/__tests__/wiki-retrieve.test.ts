@@ -32,6 +32,8 @@ vi.mock("../config", async (importOriginal) => {
 import { searchByVector } from "../embeddings";
 import { getVectorSearchSettings, loadConfigSync } from "../config";
 import { _resetStorage } from "../storage";
+import { serializeFrontmatter } from "../frontmatter";
+import { buildSourceEntry, serializeSources } from "../sources";
 import { ensureDirectories, updateIndex, writeWikiPage } from "../wiki";
 import { saveRawSource, saveRawSourceFor } from "../raw";
 import {
@@ -170,6 +172,46 @@ describe("assemble and search", () => {
     expect(ids).toContain("seed");
     expect(ids).toContain("neighbor");
     expect(ids).toContain("leaf");
+  });
+
+  it("expands a shared-Source neighbor ahead of a wikilink-only neighbor", async () => {
+    const shared = serializeSources([
+      buildSourceEntry("https://example.com/shared", "url", "system"),
+    ]);
+    await writeWikiPage(
+      "seed",
+      serializeFrontmatter(
+        { title: "Seed", type: "concept", sources: shared },
+        "# Seed\n\nbackpropagation primer. See [[wikilink-only]].",
+      ),
+    );
+    await writeWikiPage(
+      "overlap",
+      serializeFrontmatter(
+        { title: "Overlap", type: "note", sources: shared },
+        "# Overlap\n\nunrelated filler words with no query token.",
+      ),
+    );
+    await writeWikiPage(
+      "wikilink-only",
+      "# Wikilink Only\n\nstill no query token here either",
+    );
+    await updateIndex([
+      { slug: "seed", title: "Seed", summary: "primer", type: "concept" },
+      { slug: "overlap", title: "Overlap", summary: "shared", type: "note" },
+      {
+        slug: "wikilink-only",
+        title: "Wikilink Only",
+        summary: "link",
+        type: "person",
+      },
+    ]);
+    const { hits } = await retrieveHits("backpropagation", { principal: null, topK: 3 });
+    const ids = hits.map((hit) => hit.id);
+    expect(ids[0]).toBe("seed");
+    expect(ids.indexOf("overlap")).toBeGreaterThan(-1);
+    expect(ids.indexOf("wikilink-only")).toBeGreaterThan(-1);
+    expect(ids.indexOf("overlap")).toBeLessThan(ids.indexOf("wikilink-only"));
   });
 
   it("surfaces a vector-phase failure and still returns tokenized hits", async () => {

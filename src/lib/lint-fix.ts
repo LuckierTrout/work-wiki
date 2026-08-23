@@ -1,6 +1,8 @@
+import { resolveAlias } from "./alias-index";
 import { readWikiPage, readWikiPageWithFrontmatter, listWikiPages, updateIndex, appendToLog, isArtifactType } from "./wiki";
 import { writeWikiPageWithSideEffects, deleteWikiPage } from "./lifecycle";
 import { callLLM, hasLLMKey } from "./llm";
+import { escapeRegex } from "./links";
 import { slugify } from "./slugify";
 import { serializeFrontmatter } from "./frontmatter";
 import type { AutoFixableCheckType } from "./lint-types";
@@ -429,8 +431,14 @@ export async function fixBrokenLink(
     `\\[([^\\]]*)\\]\\(${escaped}\\.md\\)`,
     "g",
   );
+  const wikiRe = new RegExp(
+    `\\[\\[${escaped}(?:#[^\\]|]+)?(?:\\|([^\\]]+))?\\]\\]`,
+    "g",
+  );
 
-  const updatedContent = page.content.replace(linkRe, "$1");
+  const updatedContent = page.content
+    .replace(linkRe, "$1")
+    .replace(wikiRe, (_, label: string | undefined) => label || targetSlug);
 
   if (updatedContent === page.content) {
     return {
@@ -460,6 +468,59 @@ export async function fixBrokenLink(
     success: true,
     slug,
     message: `Removed broken link(s) to ${targetSlug}.md from ${slug}.md`,
+  };
+}
+
+/**
+ * Rewrite a wikilink or markdown link whose target slug was renamed (alias).
+ */
+export async function fixRenamedSlug(
+  slug: string,
+  targetSlug: string,
+  author = "lint-fix",
+): Promise<FixResult> {
+  if (!slug) throw new FixValidationError("Missing required field: slug");
+  if (!targetSlug) throw new FixValidationError("Missing required field: targetSlug");
+  const canonical = await resolveAlias(targetSlug);
+  if (!canonical || canonical === targetSlug) {
+    throw new FixValidationError(`No renamed-slug target for ${targetSlug}`);
+  }
+  const page = await readWikiPage(slug);
+  if (!page) throw new FixNotFoundError(`Page not found: ${slug}`);
+  const escaped = escapeRegex(targetSlug);
+  const mdRe = new RegExp(`\\[([^\\]]*)\\]\\(${escaped}\\.md\\)`, "g");
+  const wikiRe = new RegExp(
+    `\\[\\[${escaped}(?:#[^\\]|]+)?(?:\\|([^\\]]+))?\\]\\]`,
+    "g",
+  );
+  const updatedContent = page.content
+    .replace(mdRe, `[$1](${canonical}.md)`)
+    .replace(wikiRe, (_, label: string | undefined) =>
+      label ? `[[${canonical}|${label}]]` : `[[${canonical}]]`,
+    );
+  if (updatedContent === page.content) {
+    return {
+      success: true,
+      slug,
+      message: `No renamed-slug links to ${targetSlug} found in ${slug}.md — no changes needed`,
+    };
+  }
+  const summaryMatch = updatedContent.match(/^#\s+.+\n+(.+)/m);
+  const summary = summaryMatch ? summaryMatch[1].slice(0, 120) : slug;
+  await writeWikiPageWithSideEffects({
+    slug,
+    title: page.title,
+    content: updatedContent,
+    summary,
+    logOp: "edit",
+    logDetails: () => `auto-fix: rewrote renamed slug "${targetSlug}" → "${canonical}"`,
+    crossRefSource: null,
+    author,
+  });
+  return {
+    success: true,
+    slug,
+    message: `Rewrote links from ${targetSlug} to ${canonical} in ${slug}.md`,
   };
 }
 

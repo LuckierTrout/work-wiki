@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   escapeRegex,
+  extractAllInternalLinks,
   extractWikiLinks,
   hasLinkTo,
   DEFAULT_TENANT,
@@ -77,6 +78,33 @@ describe("extractWikiLinks", () => {
   });
 });
 
+describe("extractAllInternalLinks", () => {
+  it("includes [[slug]] and [[slug|text]] alongside markdown links", () => {
+    const content =
+      "See [[alpha]] and [[beta|Beta page]] plus [Gamma](gamma.md).";
+    const links = extractAllInternalLinks(content);
+    expect(links).toEqual(
+      expect.arrayContaining([
+        { text: "Gamma", targetSlug: "gamma" },
+        { text: "alpha", targetSlug: "alpha" },
+        { text: "Beta page", targetSlug: "beta" },
+      ]),
+    );
+  });
+
+  it("does not treat [[wikilink]] as a markdown extractWikiLinks hit", () => {
+    expect(extractWikiLinks("See [[alpha]] only.")).toEqual([]);
+    expect(extractAllInternalLinks("See [[alpha]] only.")).toEqual([
+      { text: "alpha", targetSlug: "alpha" },
+    ]);
+  });
+
+  it("slugifies titles and strips wiki/ and .md from [[wikilink]] targets", () => {
+    const links = extractAllInternalLinks("See [[Foo Bar]] and [[wiki/old-name.md]].");
+    expect(links.map((link) => link.targetSlug).sort()).toEqual(["foo-bar", "old-name"]);
+  });
+});
+
 describe("hasLinkTo", () => {
   it("returns true when content contains a link to the slug", () => {
     const content = "See [Transformers](transformers.md) for more info.";
@@ -104,6 +132,10 @@ describe("hasLinkTo", () => {
     const content = "See [Foobar](foobar.md) page.";
     // "foo" should not match "foobar.md"
     expect(hasLinkTo(content, "foo")).toBe(false);
+  });
+
+  it("treats a [[wikilink]] as a link to the slugified target", () => {
+    expect(hasLinkTo("See [[Foo Bar]] for more.", "foo-bar")).toBe(true);
   });
 });
 

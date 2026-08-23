@@ -302,6 +302,18 @@ describe("checkBrokenLinks", () => {
     expect(issues).toEqual([]);
   });
 
+  it("detects a dangling [[wikilink]] as a broken link with source page", async () => {
+    await writeWikiPage(
+      "source",
+      "# Source\n\nThis links to [[missing-page]] which does not exist on disk.",
+    );
+    const issues = await checkBrokenLinks(["source"]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.type).toBe("broken-link");
+    expect(issues[0]?.slug).toBe("source");
+    expect(issues[0]?.target).toBe("missing-page");
+  });
+
   it("skips links to infrastructure files (index.md, log.md)", async () => {
     await writeWikiPage(
       "page",

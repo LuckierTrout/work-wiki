@@ -208,6 +208,11 @@ export const READ_ONLY_REFUSAL = {
    */
   sourceMeeting:
     "Sources cannot be marked as meetings while this deployment is read-only.",
+  /** Workbench Review queue writers. */
+  reviewQueue: "Review items cannot be changed while this deployment is read-only.",
+  /** Dismissed Graph Insights. */
+  graphInsightDismiss:
+    "Graph insights cannot be dismissed while this deployment is read-only.",
   /**
    * `POST /api/tasks/scan` — the autonomous-maintenance producer.
    *
