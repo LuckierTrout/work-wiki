@@ -404,6 +404,9 @@ vi.mock("@/lib/ingest-async", () => ({
       new Response(JSON.stringify({ queued: true, jobId }), { status: 202 }),
   ),
 }));
+vi.mock("@/lib/source-meeting", () => ({
+  setSourceMeeting: vi.fn(async (path: string) => ({ path, meeting: true })),
+}));
 
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -415,6 +418,7 @@ import { ingest, recordSourceResee } from "@/lib/ingest";
 import { resolveContentSha256 } from "@/lib/source-index";
 import { readRawSourceTree, saveRawSourceFor, saveRawSourceTree } from "@/lib/raw";
 import { POST } from "@/app/api/workbench/intake/route";
+import { setSourceMeeting } from "@/lib/source-meeting";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedReadOnly = vi.mocked(isReadOnly);
@@ -719,6 +723,11 @@ describe("POST /api/workbench/intake — files", () => {
     const task = mockedEnqueue.mock.calls[0][1] as { origin?: string };
     expect(task.origin).toBe("plaud");
     expect(mockedIngest).not.toHaveBeenCalled();
+    expect(vi.mocked(setSourceMeeting)).toHaveBeenCalledWith(
+      "alice",
+      expect.stringMatching(/^raw\/sources\//),
+      true,
+    );
   });
 
   it("skips Analysis/Generation when SHA256 already ingested", async () => {

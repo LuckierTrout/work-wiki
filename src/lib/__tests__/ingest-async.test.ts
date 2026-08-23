@@ -2,13 +2,18 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn() }));
 vi.mock("@/lib/ingest-jobs", () => ({ updateIngestJob: vi.fn(async () => null) }));
+vi.mock("@/lib/todo-dispatch", () => ({
+  dispatchMeetingTodoExtract: vi.fn(async () => "skipped"),
+}));
 
 import { enqueueTask } from "@/lib/tasks";
 import { updateIngestJob } from "@/lib/ingest-jobs";
+import { dispatchMeetingTodoExtract } from "@/lib/todo-dispatch";
 import { enqueueOrInline } from "@/lib/ingest-async";
 
 const mockedEnqueue = vi.mocked(enqueueTask);
 const mockedUpdate = vi.mocked(updateIngestJob);
+const mockedDispatch = vi.mocked(dispatchMeetingTodoExtract);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -72,5 +77,42 @@ describe("enqueueOrInline", () => {
     );
     // It must NOT then mark done.
     expect(mockedUpdate).not.toHaveBeenCalledWith("j1", expect.objectContaining({ status: "done" }));
+  });
+
+  it("dispatches meeting extract after a successful owner inline ingest", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    mockedDispatch.mockResolvedValueOnce("ran");
+    const owned = {
+      kind: "ingest" as const,
+      jobId: "j1",
+      owner: "alice",
+      origin: "plaud" as const,
+      sourcePath: "raw/sources/meet/a.md",
+    };
+    await enqueueOrInline("j1", owned, async () => ({ primarySlug: "meet" }));
+    expect(mockedDispatch).toHaveBeenCalledWith(
+      "alice",
+      {
+        origin: "plaud",
+        sourcePath: "raw/sources/meet/a.md",
+        slug: "meet",
+      },
+      { failSoft: true },
+    );
+  });
+
+  it("does not dispatch meeting extract when the inline ingest is skipped", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    const owned = {
+      kind: "ingest" as const,
+      jobId: "j1",
+      owner: "alice",
+      origin: "plaud" as const,
+    };
+    await enqueueOrInline("j1", owned, async () => ({
+      primarySlug: "meet",
+      skipped: true,
+    }));
+    expect(mockedDispatch).not.toHaveBeenCalled();
   });
 });

@@ -14,6 +14,7 @@ import { stageText } from "@/lib/ingest-staging";
 import { logger } from "@/lib/logger";
 import { readRawSourceTree, saveRawSourceFor, saveRawSourceTree } from "@/lib/raw";
 import { workbenchSourcePath } from "@/lib/source-delete";
+import { setSourceMeeting } from "@/lib/source-meeting";
 import { readWikiPageWithFrontmatter } from "@/lib/wiki";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { type Task } from "@/lib/tasks";
@@ -265,6 +266,17 @@ async function authorizedShaSkip(
   return { slug: resee.primarySlug, ...(existingPath ? { path: existingPath } : {}) };
 }
 
+async function rememberPlaudMeeting(
+  owner: string,
+  sourcePath: string | undefined,
+  origin?: "plaud",
+): Promise<void> {
+  if (origin !== "plaud" || !sourcePath) return;
+  await setSourceMeeting(owner, sourcePath, true).catch((error) => {
+    logger.warn("intake", `plaud meeting flag failed for "${sourcePath}"`, error);
+  });
+}
+
 async function recordSkippedJob(input: {
   owner: string;
   title: string;
@@ -275,6 +287,7 @@ async function recordSkippedJob(input: {
   sourceType: "text" | "url";
   digest: string;
 }): Promise<string> {
+  await rememberPlaudMeeting(input.owner, input.sourceRel, input.origin);
   const jobId = crypto.randomUUID();
   try {
     await createIngestJob({
@@ -408,6 +421,8 @@ async function storeAndQueue(input: {
     contentSha256: digest,
     sourcePath: path,
   };
+
+  await rememberPlaudMeeting(owner, path, origin);
 
   const jobId = crypto.randomUUID();
 

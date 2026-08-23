@@ -110,6 +110,13 @@ export type Task =
       owner: string;
     }
   | {
+      /** Meeting-only Todo Candidates after a successful Plaud or marked-meeting compile. */
+      kind: "extract-todo-candidates";
+      slug: string;
+      owner: string;
+      sourcePath?: string;
+    }
+  | {
       /** Derive source-linked structured records from an accepted page revision. */
       kind: "extract-knowledge";
       slug: string;
@@ -201,6 +208,7 @@ export type Task =
 export const TASK_KINDS = [
   "ingest",
   "extract-actions",
+  "extract-todo-candidates",
   "extract-knowledge",
   "compile-knowledge",
   "run-agent",
@@ -513,6 +521,23 @@ export function parseTask(body: unknown): Task | null {
         kind: "extract-actions",
         slug: t.slug,
         owner: t.owner,
+      };
+    case "extract-todo-candidates":
+      if (
+        typeof t.slug !== "string" ||
+        t.slug.trim() === "" ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return {
+        kind: "extract-todo-candidates",
+        slug: t.slug,
+        owner: t.owner,
+        ...(typeof t.sourcePath === "string" && t.sourcePath.trim()
+          ? { sourcePath: t.sourcePath.slice(0, 1_000) }
+          : {}),
       };
     case "extract-knowledge":
       if (

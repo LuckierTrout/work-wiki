@@ -73,6 +73,8 @@ import {
   type KnowledgeGroup,
   type TreeSelection,
 } from "@/lib/workbench-tree";
+import { workbenchSourcePath } from "@/lib/source-delete";
+import { MarkMeetingControl } from "./MarkMeetingControl";
 import { PreviewBody } from "./PreviewBody";
 
 /**
@@ -1130,6 +1132,9 @@ function PreviewPane({
           <p className="wb-preview-fm-row">
             <code className="wb-preview-path">{selection.path}</code>
           </p>
+        )}
+        {selection.kind === "file" && workbenchSourcePath(selection.path) && (
+          <MarkMeetingControl path={selection.path} readOnly={readOnly} />
         )}
       </div>
 

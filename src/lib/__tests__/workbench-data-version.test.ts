@@ -1029,6 +1029,7 @@ describe("the bump lives at exactly one site", () => {
       "lib/data-version.ts",
       "lib/lifecycle.ts",
       "lib/raw.ts",
+      "lib/todos.ts",
       "lib/wikis.ts",
     ]);
   });

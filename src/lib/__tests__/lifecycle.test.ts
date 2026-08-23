@@ -1206,6 +1206,13 @@ describe("Stories 2.4–2.12 compile remnants", () => {
     await proposeActionItems("alice", [
       { title: "Follow up", sourceSlug: path },
     ]);
+    const { enqueueTodoCandidates, listTodos } = await import("../todos");
+    await enqueueTodoCandidates("alice", {
+      wikiId: "current",
+      sourceId: path,
+      pageSlug: "meet-summary",
+      candidates: [{ title: "Send recap", rationale: "Asked in the meeting." }],
+    });
 
     const result = await cascadeDeleteSource({ owner: "alice", path });
     expect(result.deletedPages[0]).toBe("meet-summary");
@@ -1222,6 +1229,10 @@ describe("Stories 2.4–2.12 compile remnants", () => {
     expect(kept?.content).not.toContain("deadbeef");
     const todos = await listActionItems("alice");
     expect(todos[0]?.sourceMissing).toBe(true);
+    const kernelTodos = await listTodos("alice");
+    expect(kernelTodos).toHaveLength(1);
+    expect(kernelTodos[0]?.sourceMissing).toBe(true);
+    expect(kernelTodos[0]?.title).toBe("Send recap");
     await expect(
       getStorage().readFile(rawSourceRelPath("meet/deadbeef.md")),
     ).rejects.toThrow();

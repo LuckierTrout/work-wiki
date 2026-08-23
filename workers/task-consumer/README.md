@@ -9,7 +9,7 @@ the deployed main app's **`POST /api/tasks/run`** with the system token. It is a
 **thin dispatcher** — the actual work runs in the main app, which has the full
 `src/lib` and the OpenNext request context. The task kinds it carries are the
 `Task` union in `src/lib/tasks.ts`: async `ingest`, `extract-actions`,
-`extract-knowledge`, `compile-knowledge`, `run-agent`, `run-research`,
+`extract-todo-candidates`, `extract-knowledge`, `compile-knowledge`, `run-agent`, `run-research`,
 `monitor-source`, `deliver-monitor-digest`, `deliver-integration`,
 `create-backup`, and `maintain` (with `op: "staleness"` or `op: "fix"`). This
 worker imports **no `src/lib` code** (that would transitively pull Clerk/Next +
@@ -22,7 +22,7 @@ the Graphify job (`/api/knowledge/graphify`), research runs
 (`/api/research/<id>/run`), backups (`/api/system/backups`), monitor digests
 (`/api/monitor-digests`), the integration outbox and memory proposals
 (`src/lib/integration-outbox.ts`, `src/lib/memory-proposals.ts`), the executor
-itself (`/api/tasks/run` chains `extract-actions`, `extract-knowledge`,
+itself (`/api/tasks/run` chains `extract-actions`, `extract-todo-candidates`, `extract-knowledge`,
 `compile-knowledge`, and `after-ingest` agent runs), and this worker's **daily
 cron** → `POST /api/tasks/scan` (autonomous maintenance, Q2). That list is the
 main entry points, not a closed set — for the authoritative one, grep the callers

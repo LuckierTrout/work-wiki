@@ -32,6 +32,10 @@ import {
   type DocumentSourceInput,
 } from "@/lib/document-sources";
 import { extractActionsFromPage } from "@/lib/action-extractor";
+import { dispatchMeetingTodoExtract } from "@/lib/todo-dispatch";
+import { setSourceMeeting } from "@/lib/source-meeting";
+import { extractTodoCandidatesFromMeeting } from "@/lib/todo-extract";
+import { recordTodoExtractError } from "@/lib/todos";
 import { runSpecializedAgent } from "@/lib/agent-runtime";
 import { runSourceMonitor } from "@/lib/source-monitors";
 import { deliverMonitorDigest } from "@/lib/monitor-digests";
@@ -181,6 +185,28 @@ export async function POST(req: Request) {
     if (task.kind === "extract-actions") {
       const items = await extractActionsFromPage(task.owner, task.slug);
       return NextResponse.json({ ok: true, created: items.length });
+    }
+
+    if (task.kind === "extract-todo-candidates") {
+      try {
+        const items = await extractTodoCandidatesFromMeeting(
+          task.owner,
+          task.slug,
+          task.sourcePath,
+        );
+        return NextResponse.json({ ok: true, created: items.length });
+      } catch (error) {
+        try {
+          await recordTodoExtractError(task.owner, {
+            message: getErrorMessage(error),
+            slug: task.slug,
+            ...(task.sourcePath ? { sourcePath: task.sourcePath } : {}),
+          });
+        } catch (writeErr) {
+          logger.warn("tasks", "failed to record todo extract error", writeErr);
+        }
+        throw error;
+      }
     }
 
     if (task.kind === "extract-knowledge") {
@@ -502,6 +528,30 @@ export async function POST(req: Request) {
         logger.warn(
           "tasks",
           `action extraction enqueue failed for slug="${result.primarySlug}": ${getErrorMessage(err)}`,
+        );
+      }
+      try {
+        if (task.origin === "plaud" && task.sourcePath) {
+          await setSourceMeeting(actionOwner, task.sourcePath, true).catch((err) => {
+            logger.warn(
+              "tasks",
+              `plaud meeting flag failed for "${task.sourcePath}": ${getErrorMessage(err)}`,
+            );
+          });
+        }
+        await dispatchMeetingTodoExtract(
+          actionOwner,
+          {
+            origin: task.origin,
+            sourcePath: task.sourcePath,
+            slug: result.primarySlug,
+          },
+          { failSoft: true },
+        );
+      } catch (err) {
+        logger.warn(
+          "tasks",
+          `todo-candidate extract dispatch failed for slug="${result.primarySlug}": ${getErrorMessage(err)}`,
         );
       }
       try {

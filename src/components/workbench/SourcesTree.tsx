@@ -19,7 +19,9 @@ import {
   type FileNode,
   type TreeSelection,
 } from "@/lib/workbench-tree";
+import { workbenchSourcePath } from "@/lib/source-delete";
 import { FileRows } from "./TreePanel";
+import { MarkMeetingControl } from "./MarkMeetingControl";
 
 export interface SourcesTreeProps {
   files: readonly FileNode[];
@@ -29,6 +31,7 @@ export interface SourcesTreeProps {
   selection: TreeSelection | null;
   onSelect: (selection: TreeSelection) => void;
   onDelete?: (path: string) => void;
+  readOnly?: boolean;
 }
 
 const SOURCES_EMPTY = workbenchMode("sources").emptyState
@@ -46,6 +49,7 @@ export function SourcesTree({
   selection,
   onSelect,
   onDelete,
+  readOnly = false,
 }: SourcesTreeProps) {
   const baseId = useId();
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -110,8 +114,14 @@ export function SourcesTree({
     return <p className="wb-tree-empty">{SOURCES_EMPTY}</p>;
   }
 
+  const selectedSource =
+    selection?.kind === "file" ? workbenchSourcePath(selection.path) : null;
+
   return (
     <div className="wb-sources-tree" ref={bodyRef}>
+      {selectedSource && (
+        <MarkMeetingControl path={selectedSource} readOnly={readOnly} />
+      )}
       <FileRows
         nodes={visible}
         depth={0}

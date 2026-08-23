@@ -77,6 +77,17 @@ describe("parseTask", () => {
       owner: "alice",
     });
     expect(parseTask({
+      kind: "extract-todo-candidates",
+      slug: "meet",
+      owner: "alice",
+      sourcePath: "raw/sources/meet/abc.md",
+    })).toEqual({
+      kind: "extract-todo-candidates",
+      slug: "meet",
+      owner: "alice",
+      sourcePath: "raw/sources/meet/abc.md",
+    });
+    expect(parseTask({
       kind: "run-agent",
       agentId: "alice--scout",
       owner: "alice",

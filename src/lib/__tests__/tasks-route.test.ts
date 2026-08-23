@@ -69,9 +69,24 @@ vi.mock("@/lib/graphify-jobs", () => ({
 vi.mock("@/lib/monitor-digests", () => ({
   deliverMonitorDigest: vi.fn(),
 }));
+vi.mock("@/lib/source-meeting", () => ({
+  meetingExtractTarget: vi.fn(async (_owner: string, input: { origin?: string; sourcePath?: string }) =>
+    input.origin === "plaud" ? { sourcePath: input.sourcePath } : null,
+  ),
+  setSourceMeeting: vi.fn(async (path: string) => ({ path, meeting: true })),
+}));
+vi.mock("@/lib/todo-extract", () => ({
+  extractTodoCandidatesFromMeeting: vi.fn(async () => []),
+}));
+vi.mock("@/lib/todos", () => ({
+  recordTodoExtractError: vi.fn(async () => {}),
+}));
 
 import { getServicePrincipal } from "@/lib/auth";
 import { ingest, ingestUrl, ingestPdf, ingestImage, ingestDocument, reingest, IngestCancelledError } from "@/lib/ingest";
+import { meetingExtractTarget, setSourceMeeting } from "@/lib/source-meeting";
+import { recordTodoExtractError } from "@/lib/todos";
+import { extractTodoCandidatesFromMeeting } from "@/lib/todo-extract";
 import { enqueueTask } from "@/lib/tasks";
 import { rebuildVectorStore } from "@/lib/embeddings";
 import { getVectorSearchSettings } from "@/lib/config";
@@ -89,6 +104,10 @@ import { deliverMonitorDigest } from "@/lib/monitor-digests";
 
 const mockedGetService = vi.mocked(getServicePrincipal);
 const mockedEnqueueTask = vi.mocked(enqueueTask);
+const mockedMeetingTarget = vi.mocked(meetingExtractTarget);
+const mockedSetMeeting = vi.mocked(setSourceMeeting);
+const mockedExtractTodos = vi.mocked(extractTodoCandidatesFromMeeting);
+const mockedRecordTodoError = vi.mocked(recordTodoExtractError);
 const mockedRebuild = vi.mocked(rebuildVectorStore);
 const mockedVector = vi.mocked(getVectorSearchSettings);
 const mockedIngest = vi.mocked(ingest);
@@ -153,6 +172,13 @@ beforeEach(() => {
     owner: "alice",
     email: { status: "sent", attempts: 1 },
   } as never);
+  mockedMeetingTarget.mockReset();
+  mockedMeetingTarget.mockImplementation(
+    async (_owner: string, input: { origin?: string; sourcePath?: string }) =>
+      input.origin === "plaud" ? { sourcePath: input.sourcePath } : null,
+  );
+  mockedExtractTodos.mockReset();
+  mockedExtractTodos.mockResolvedValue([]);
   // Default: authenticated as the service principal.
   mockedGetService.mockReturnValue({ id: "service:yopedia", handle: "yopedia" });
 });
@@ -734,6 +760,7 @@ describe("POST /api/tasks/run", () => {
       title: "Standup",
       owner: "alice",
       origin: "plaud",
+      sourcePath: "raw/sources/meet/abc.md",
     });
     expect(res.status).toBe(200);
     expect(mockedEnqueueTask).not.toHaveBeenCalledWith(
@@ -741,6 +768,125 @@ describe("POST /api/tasks/run", () => {
     );
     expect(mockedEnqueueTask).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "extract-knowledge", slug: "meet" }),
+    );
+    expect(mockedEnqueueTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "extract-todo-candidates",
+        slug: "meet",
+        owner: "alice",
+        sourcePath: "raw/sources/meet/abc.md",
+      }),
+    );
+    expect(mockedSetMeeting).toHaveBeenCalledWith(
+      "alice",
+      "raw/sources/meet/abc.md",
+      true,
+    );
+  });
+
+  it("does not enqueue extract-todo-candidates when ingest is skipped", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngest.mockResolvedValue({ primarySlug: "existing", skipped: true } as any);
+    const res = await run({
+      kind: "ingest",
+      content: "same bytes",
+      owner: "alice",
+      origin: "plaud",
+      jobId: "job-skip-todos",
+    });
+    expect(res.status).toBe(200);
+    expect(mockedEnqueueTask).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "extract-todo-candidates" }),
+    );
+  });
+
+  it("does not enqueue extract-todo-candidates when ingest fails", async () => {
+    mockedIngest.mockRejectedValueOnce(new Error("LLM timeout"));
+    const res = await run({
+      kind: "ingest",
+      content: "transcript",
+      owner: "alice",
+      origin: "plaud",
+    });
+    expect(res.status).toBe(500);
+    expect(mockedEnqueueTask).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "extract-todo-candidates" }),
+    );
+  });
+
+  it("does not enqueue extract-todo-candidates for a non-meeting ingest", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngest.mockResolvedValue({ primarySlug: "notes" } as any);
+    mockedMeetingTarget.mockResolvedValueOnce(null);
+    const res = await run({
+      kind: "ingest",
+      content: "body",
+      title: "Notes",
+      owner: "alice",
+    });
+    expect(res.status).toBe(200);
+    expect(mockedEnqueueTask).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "extract-todo-candidates" }),
+    );
+  });
+
+  it("enqueues extract-todo-candidates for a marked-meeting ingest", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngest.mockResolvedValue({ primarySlug: "notes" } as any);
+    mockedMeetingTarget.mockResolvedValueOnce({
+      sourcePath: "raw/sources/notes/cafe.md",
+    });
+    const res = await run({
+      kind: "ingest",
+      content: "transcript",
+      title: "Notes",
+      owner: "alice",
+      sourcePath: "raw/sources/notes/cafe.md",
+    });
+    expect(res.status).toBe(200);
+    expect(mockedEnqueueTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "extract-todo-candidates",
+        slug: "notes",
+        owner: "alice",
+        sourcePath: "raw/sources/notes/cafe.md",
+      }),
+    );
+  });
+
+  it("runs extract-todo-candidates and does not call proposeActionItems", async () => {
+    mockedExtractTodos.mockResolvedValueOnce([]);
+    const res = await run({
+      kind: "extract-todo-candidates",
+      slug: "meet",
+      owner: "alice",
+      sourcePath: "raw/sources/meet/abc.md",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, created: 0 });
+    expect(mockedExtractTodos).toHaveBeenCalledWith(
+      "alice",
+      "meet",
+      "raw/sources/meet/abc.md",
+    );
+  });
+
+  it("records a visible extract error when extract-todo-candidates throws", async () => {
+    mockedExtractTodos.mockRejectedValueOnce(new Error("no key"));
+    const res = await run({
+      kind: "extract-todo-candidates",
+      slug: "meet",
+      owner: "alice",
+      sourcePath: "raw/sources/meet/abc.md",
+    });
+    expect(res.status).toBe(500);
+    expect(mockedRecordTodoError).toHaveBeenCalledWith(
+      "alice",
+      expect.objectContaining({
+        message: "no key",
+        slug: "meet",
+        sourcePath: "raw/sources/meet/abc.md",
+      }),
     );
   });
 

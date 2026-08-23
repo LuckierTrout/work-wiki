@@ -12,6 +12,7 @@ import type { SidecarStatus } from "@/lib/sidecar";
 import type { TreeSelection } from "@/lib/workbench-tree";
 import { ChatCanvas } from "./ChatCanvas";
 import { SearchCanvas } from "./SearchCanvas";
+import { TodosCanvas } from "./TodosCanvas";
 
 /**
  * The active mode's canvas.
@@ -74,6 +75,7 @@ export interface ModeCanvasProps {
   wikiId?: string | null;
   readOnly?: boolean;
   onDockPreview?: (selection: TreeSelection) => void;
+  onTodoCountChange?: (count: number) => void;
 }
 
 /**
@@ -92,6 +94,7 @@ export function ModeCanvas({
   wikiId = "current",
   readOnly = false,
   onDockPreview,
+  onTodoCountChange,
 }: ModeCanvasProps) {
   const surface = workbenchMode(mode);
   const wikiActive = mode === "wiki";
@@ -161,7 +164,22 @@ export function ModeCanvas({
         />
       </div>
 
-      {!wikiActive && !hidden && mode !== "chat" && mode !== "search" && (
+      <div className="wb-canvas-pad" hidden={mode !== "todos" || hidden}>
+        {mode === "todos" && !hidden ? (
+          <h2 id={headingId} className="wb-surface-title">
+            {workbenchMode("todos").label}
+          </h2>
+        ) : null}
+        <TodosCanvas
+          wikiId={wikiId ?? "current"}
+          readOnly={readOnly}
+          active={mode === "todos" && !hidden}
+          onDockPreview={onDockPreview ?? (() => {})}
+          onPendingCountChange={onTodoCountChange}
+        />
+      </div>
+
+      {!wikiActive && !hidden && mode !== "chat" && mode !== "search" && mode !== "todos" && (
         <div className="wb-canvas-pad">
           <h2 id={headingId} className="wb-surface-title">
             {surface.label}

@@ -215,6 +215,7 @@ describe("copy and dock", () => {
     expect(shouldDockPreview("chat", { kind: "page", slug: "alpha" })).toBe(true);
     expect(shouldDockPreview("chat", null)).toBe(false);
     expect(shouldDockPreview("search", { kind: "file", path: "raw/sources/a.md" })).toBe(true);
+    expect(shouldDockPreview("todos", { kind: "page", slug: "standup" })).toBe(true);
     expect(selectionFromContentPath("wiki/alpha.md")).toEqual({
       kind: "page",
       slug: "alpha",

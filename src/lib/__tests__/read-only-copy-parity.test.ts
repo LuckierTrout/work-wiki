@@ -271,6 +271,9 @@ describe("client refusal copy mirrors the server's", () => {
       ["names-terms/[id]/route.ts", "namesTerms"],
       ["email/settings/route.ts", "emailSettings"],
       ["tasks/scan/route.ts", "maintenanceScan"],
+      ["todos/route.ts", "todos"],
+      ["todos/[id]/route.ts", "todos"],
+      ["sources/meeting/route.ts", "sourceMeeting"],
     ] as const) {
       const source = await routeSource(route);
       expect(source, route).toContain(`error: READ_ONLY_REFUSAL.${key}`);

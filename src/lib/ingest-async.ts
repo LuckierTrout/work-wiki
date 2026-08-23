@@ -11,6 +11,7 @@ import { enqueueTask, type Task } from "./tasks";
 import { updateIngestJob } from "./ingest-jobs";
 import { getErrorMessage } from "./errors";
 import { logger } from "./logger";
+import { dispatchMeetingTodoExtract } from "./todo-dispatch";
 
 /** Mark a job failed (best-effort; a status-write blip must not mask the real
  *  error we're about to rethrow — but log it rather than swallowing silently). */
@@ -66,6 +67,20 @@ export async function enqueueOrInline(
       jobId,
       ...(result.primarySlug ? { slug: result.primarySlug } : {}),
     });
+  }
+  const extractOwner = task.kind === "ingest"
+    ? task.triggeredBy?.trim() || task.owner?.trim()
+    : undefined;
+  if (extractOwner && result.primarySlug && task.kind === "ingest") {
+    await dispatchMeetingTodoExtract(
+      extractOwner,
+      {
+        origin: task.origin,
+        sourcePath: task.sourcePath,
+        slug: result.primarySlug,
+      },
+      { failSoft: true },
+    );
   }
   await updateIngestJob(jobId, {
     status: "done",

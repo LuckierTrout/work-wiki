@@ -53,6 +53,7 @@ describe("portable owner archive", () => {
     await getStorage().writeFile("tenants/alice/wiki/atlas.md", page);
     await getStorage().writeFile("tenants/alice/action-items.json", "[]");
     await getStorage().writeFile("tenants/alice/chat-conversations.json", "[]");
+    await getStorage().writeFile("tenants/alice/todos.json", '{"items":[]}');
     const archive = await buildPortableArchive("alice");
     expect(archive.manifest.format).toBe("workwiki-portable-archive");
     const names = archive.manifest.files.map((entry) => entry.path);
@@ -61,6 +62,8 @@ describe("portable owner archive", () => {
     expect(names).toContain(".obsidian/core-plugins.json");
     expect(names).toContain("action-items.json");
     expect(names).toContain("chat-conversations.json");
+    expect(names).toContain("todos.json");
+    expect(names.every((name) => !name.includes("todos.md"))).toBe(true);
   });
 
   it("refuses to restore an archive into another owner tenant", async () => {

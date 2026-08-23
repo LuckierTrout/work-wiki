@@ -199,6 +199,16 @@ export const READ_ONLY_REFUSAL = {
   emailSettings:
     "Email ingestion settings cannot be changed while this deployment is read-only.",
   /**
+   * Kernel Todos writers and `/api/todos` — Candidates, approve/reject, patch,
+   * and owner delete.
+   */
+  todos: "Todos cannot be changed while this deployment is read-only.",
+  /**
+   * Mark as meeting — `/api/sources/meeting` and {@link import("./source-meeting").setSourceMeeting}.
+   */
+  sourceMeeting:
+    "Sources cannot be marked as meetings while this deployment is read-only.",
+  /**
    * `POST /api/tasks/scan` — the autonomous-maintenance producer.
    *
    * The scan refuses WHOLE rather than degrading to `?dry=1`: `dry` is the

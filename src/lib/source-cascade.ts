@@ -10,6 +10,7 @@
  */
 
 import { markActionItemsSourceMissing } from "./action-items";
+import { markTodosSourceMissing } from "./todos";
 import { serializeFrontmatter } from "./frontmatter";
 import { cancelJobsForSource } from "./ingest-jobs";
 import { deleteWikiPage, writeWikiPageWithSideEffects } from "./lifecycle";
@@ -281,6 +282,7 @@ export async function cascadeDeleteSource(input: {
     for (const key of keys) {
       await markActionItemsSourceMissing(input.owner, key);
     }
+    await markTodosSourceMissing(input.owner, input.path);
   } catch (error) {
     logger.warn("source-cascade", "todo source-missing mark failed", error);
   }

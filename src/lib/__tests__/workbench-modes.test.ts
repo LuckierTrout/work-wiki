@@ -16,6 +16,7 @@ import {
   CHAT_SIDECAR_UP_COPY,
   DEFAULT_WORKBENCH_MODE,
   GRAPH_NARROW_COPY,
+  TODOS_NON_MEETING_COPY,
   WORKBENCH_MODES,
   badgeAccessibleName,
   isWorkbenchModeId,
@@ -102,6 +103,9 @@ describe("empty-state copy", () => {
     );
     expect(CHAT_COMPOSER_PLACEHOLDER).toBe("Type a message…");
     expect(GRAPH_NARROW_COPY).toBe("The graph needs a wider window.");
+    expect(TODOS_NON_MEETING_COPY).toBe(
+      "This Source is not a meeting. Mark as meeting to extract Todos.",
+    );
   });
 });
 

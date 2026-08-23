@@ -2903,6 +2903,167 @@ body:has(.wb-shell) {
 .wb-search-hit-snippet {
   color: var(--wb-muted);
 }
+.wb-todos {
+  display: flex;
+  flex-direction: column;
+  min-width: 320px;
+  min-height: 0;
+  gap: var(--wb-space-3);
+}
+.wb-todos-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+}
+.wb-todos-seg {
+  display: flex;
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  overflow: hidden;
+}
+.wb-todos-seg-btn {
+  font: inherit;
+  padding: 4px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--wb-muted);
+  cursor: pointer;
+}
+.wb-todos-seg-btn--on {
+  background: var(--wb-surface-subtle);
+  color: var(--wb-foreground);
+  font-weight: var(--wb-weight-strong);
+}
+.wb-todos-bulk,
+.wb-todos-filters,
+.wb-todos-actions,
+.wb-todos-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--wb-space-2);
+}
+.wb-todos-btn {
+  font: inherit;
+  padding: 5px 10px;
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  background: transparent;
+  color: var(--wb-foreground);
+  cursor: pointer;
+}
+.wb-todos-btn--primary {
+  background: var(--wb-primary);
+  border-color: var(--wb-primary);
+  color: var(--wb-primary-foreground);
+}
+.wb-todos-btn--reject {
+  color: #dc2626;
+  border-color: transparent;
+  background: transparent;
+}
+.wb-todos-btn[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+.wb-todos-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+.wb-todos-card {
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  padding: 12px 14px;
+  background: var(--wb-surface);
+}
+.wb-todos-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: var(--wb-weight-strong);
+}
+.wb-todos-rationale {
+  margin: 0 0 8px;
+}
+.wb-todos-meta {
+  margin: 0 0 8px;
+  color: var(--wb-muted);
+  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+}
+.wb-todos-path,
+.wb-todos-link {
+  font-family: var(--wb-font-mono);
+  font-size: 12px;
+  color: var(--wb-muted);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.wb-todos-error,
+.wb-todos-extract-error {
+  margin: 0;
+  color: var(--wb-foreground);
+}
+.wb-todos-extract-error {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+}
+.wb-todos-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--wb-muted);
+  font-size: 12px;
+}
+.wb-todos-field input,
+.wb-todos-field select {
+  font: inherit;
+  color: var(--wb-foreground);
+  background: var(--wb-surface);
+  border: 1px solid var(--wb-border);
+  padding: var(--wb-space-1) var(--wb-space-2);
+}
+.wb-todos-check {
+  display: block;
+  margin-bottom: var(--wb-space-2);
+}
+.wb-mark-meeting {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--wb-space-1);
+  padding: var(--wb-space-2) 0;
+}
+.wb-mark-meeting-copy,
+.wb-mark-meeting-error {
+  margin: 0;
+  color: var(--wb-muted);
+  font-size: 12px;
+}
+.wb-mark-meeting-btn {
+  font: inherit;
+  padding: 4px 10px;
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-md);
+  background: transparent;
+  color: var(--wb-foreground);
+  cursor: pointer;
+}
+.wb-mark-meeting-btn[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
 .wb-chat-thinking--live p {
   margin: 0;
 }

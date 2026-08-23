@@ -316,6 +316,12 @@ describe("ModeCanvas", () => {
     expect(source).toContain("<ChatCanvas");
     expect(source).not.toContain("ChatWorkspace");
   });
+
+  it("mounts TodosCanvas instead of the generic stub", async () => {
+    const source = await read("ModeCanvas.tsx");
+    expect(source).toContain("<TodosCanvas");
+    expect(source).toContain('mode !== "todos"');
+  });
 });
 
 describe("shell chrome carries no serif", () => {

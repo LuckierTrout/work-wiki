@@ -66,6 +66,13 @@ export const BADGE_MODE_NOUNS: Partial<Record<WorkbenchModeId, string>> = {
 };
 
 /**
+ * Shown on a Source that is neither Plaud-origin nor marked meeting.
+ * One definition — Preview and Sources import this; do not inline.
+ */
+export const TODOS_NON_MEETING_COPY =
+  "This Source is not a meeting. Mark as meeting to extract Todos.";
+
+/**
  * Chat fails closed when no sidecar answers on the loopback port. It names the
  * port because that is the only thing the owner can act on — the Worker cannot
  * reach localhost, so there is no server-side fallback to offer instead.

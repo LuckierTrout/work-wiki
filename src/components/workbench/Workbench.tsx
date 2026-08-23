@@ -186,7 +186,7 @@ const LEFT_ID = "wb-left-column";
  */
 const PREVIEW_ID = "wb-preview-column";
 
-export function Workbench({ children, todoCount = 0, reviewCount = 0 }: WorkbenchProps) {
+export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount = 0 }: WorkbenchProps) {
   // The left column's working set is server-loaded in `page.tsx` and handed
   // across the server/client boundary by `WorkbenchDataProvider`.
   const {
@@ -201,6 +201,8 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
     dataVersion,
     readOnly,
   } = useWorkbenchData();
+  const [todoCount, setTodoCount] = useState(todoCountProp);
+  const todoBadgeSeq = useRef(0);
   const [mode, setModeState] = useState<WorkbenchModeId>(DEFAULT_WORKBENCH_MODE);
   const [collapsed, setCollapsed] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -364,6 +366,27 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
   // Settings withdraws this column, it does not take the draft down with it.
   const previewOpen = previewDocked && !settingsOpen;
   liveRef.current = { selection, docked: previewOpen };
+
+  useEffect(() => {
+    setTodoCount(todoCountProp);
+  }, [todoCountProp]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const seq = ++todoBadgeSeq.current;
+    send<{ pendingCount?: number }>("/api/todos", { method: "GET" })
+      .then((body) => {
+        if (!cancelled && seq === todoBadgeSeq.current && typeof body.pendingCount === "number") {
+          setTodoCount(body.pendingCount);
+        }
+      })
+      .catch(() => {
+        /* Badge stays at the last known count. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dataVersion]);
 
   useEffect(() => {
     // The URL wins over storage, and only for the MODE (DW-27): a deep link is
@@ -1479,6 +1502,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
                 filesUnavailable={filesUnavailable}
                 hasWiki={currentWikiId !== null}
                 selection={selection}
+                readOnly={readOnly}
                 onSelect={selectRow}
                 onDelete={
                   readOnly
@@ -1559,6 +1583,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
         wikiId={currentWikiId ?? "current"}
         readOnly={readOnly}
         onDockPreview={selectRow}
+        onTodoCountChange={setTodoCount}
       >
         {children}
       </ModeCanvas>
