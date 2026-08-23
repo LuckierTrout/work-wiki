@@ -60,7 +60,12 @@ interface AssembleResponse {
   indexSlice: string;
   historySlice: Array<{ role: "user" | "assistant"; content: string }>;
   vectorPhase: { status: string; message?: string };
-  chatModel: { provider: string | null; model: string | null; configured: boolean };
+  chatModel: {
+    provider: string | null;
+    model: string | null;
+    configured: boolean;
+    baseUrl?: string;
+  };
 }
 
 function renderCited(content: string, onCite: (n: number) => void) {
@@ -157,6 +162,10 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
         setError(cause instanceof Error ? cause.message : "Chat failed.");
       });
   }, [loadList, loadConversation]);
+
+  function stopTurn() {
+    abortRef.current?.abort();
+  }
 
   function switchConversation(id: string) {
     abortRef.current?.abort();
@@ -542,6 +551,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
                     aria-current={current ? "true" : undefined}
                     onClick={() => switchConversation(item.id)}
                     onDoubleClick={() => {
+                      if (readOnly) return;
                       setRenameId(item.id);
                       setRenameValue(label);
                     }}
@@ -570,6 +580,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
             Smart retrieval
             <select
               value={retrievalMode}
+              disabled={readOnly}
               onChange={(event) => {
                 const next = event.target.value === "sources" ? "sources" : "wiki";
                 setRetrievalMode(next);
@@ -604,6 +615,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
               min={1}
               max={80}
               value={historyDepth}
+              disabled={readOnly}
               onChange={(event) => setHistoryDepth(Number(event.target.value) || 1)}
               onBlur={() => void patchActive({ historyDepth })}
             />
@@ -717,14 +729,21 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
             onKeyDown={onComposerKey}
             placeholder={CHAT_COMPOSER_PLACEHOLDER}
             rows={3}
+            disabled={readOnly}
           />
-          <button
-            type="button"
-            disabled={readOnly || !composer.trim() || streaming}
-            onClick={() => void onSend()}
-          >
-            Send
-          </button>
+          {streaming ? (
+            <button type="button" onClick={stopTurn}>
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={readOnly || !composer.trim()}
+              onClick={() => void onSend()}
+            >
+              Send
+            </button>
+          )}
         </div>
       </div>
     </div>

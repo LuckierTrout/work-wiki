@@ -127,16 +127,14 @@ describe("chat evidence-mode API", () => {
     expect(mockedUpdate).not.toHaveBeenCalled();
   });
 
-  it("returns a useful client error when a scope has no original snapshots", async () => {
-    mockedAddTurn.mockRejectedValue(
-      new Error("No original source material is available in this scope."),
-    );
+  it("refuses Worker generation on the leftover { message } door", async () => {
     const response = await addMessage(
       request("POST", { message: "What does the source say?" }),
       { params: Promise.resolve({ id: CONVERSATION.id }) },
     );
-    expect(response.status).toBe(422);
-    expect((await response.json()).error).toMatch(/no original source material/i);
+    expect(response.status).toBe(410);
+    await expect(response.json()).resolves.toEqual({ error: "sidecar_required" });
+    expect(mockedAddTurn).not.toHaveBeenCalled();
   });
 
   it("persists sidecar frames without Worker generation", async () => {

@@ -61,11 +61,11 @@ replaced on refresh, and this list must survive the refresh.
 
 - UX and functionality parity target is [nashsu/llm_wiki](https://github.com/nashsu/llm_wiki): three-column Workbench (tree + chat + preview) plus icon sidebar. Chat is a rail icon (not a permanent center column); Preview docks when a tree pick or citation is active.
 - Ingest is two sequential LLM calls (analysis, then generation), not a single read-and-write step.
-- Sources auto-queue ingest on arrival (upload, folder import, email, Plaud/direct connect, API/MCP); the web contract is not OS folder-watch.
+- Sources auto-queue ingest on arrival (upload, folder import, URL/clip, bookmarklet, share, `/save`, email, Plaud/direct connect, API/MCP) into `raw/sources/` via Intake, not the vault `/api/ingest` queue. Raw snapshots are immutable: a changed body mints a content-hashed snapshot and leaves old bytes (`saveRawSource` is first-write-only). The web contract is not OS folder-watch.
 - Meeting transcripts (especially Plaud) should extract todos with approve/reject, due dates, and links back to the source page — only for Plaud-origin sources or a Source marked “meeting”.
 - Final PRD: `_bmad-output/planning-artifacts/prds/prd-work-wiki-2026-08-12/`.
 - Preview is view-first; markdown edit is a confirm-gated escape hatch (no WYSIWYG).
-- Chat Agent, local API/MCP, and shell run on a local sidecar; the Workbench stays on the Next.js web app.
+- Chat Agent, local API/MCP, and shell run on a local sidecar at `127.0.0.1:19828` (the sidecar never imports `src/lib`); the Workbench stays on the Next.js web app and fails closed when the sidecar is down (cloud Chat 503 `sidecar_required`). SSE events are exactly `meta`, `agent`, `done`, `cancelled`, `error`. `/api/query` is not v1 Chat. Chat and Search share one retrieval pipeline (vector off by default). Save-to-wiki goes under `wiki/queries/`; thinking is stored but never cited or saved.
 - Active UX run: `_bmad-output/planning-artifacts/ux-designs/ux-work-wiki-2026-08-12/` — `DESIGN.md` + `EXPERIENCE.md` are `status: final`. Nashsu screenshots in `imports/` are layout/density reference. Type: SF chrome, Georgia Preview. Color: nashsu light gray, black primary.
 - Active architecture run: `_bmad-output/planning-artifacts/architecture/architecture-work-wiki-2026-08-12/` — `ARCHITECTURE-SPINE.md` is `status: final`. Wiki kernel (OpenNext + R2) is the system of record; local sidecar owns Chat/extract/shell/` :19828`.
 - Final spec: `_bmad-output/specs/spec-work-wiki/` (`SPEC.md`, `glossary.md`, `success-metrics.md`); companions are the final PRD, UX, and architecture spine.

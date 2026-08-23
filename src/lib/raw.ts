@@ -161,6 +161,55 @@ export async function saveRawSource(
 /** A per-source raw id is a hex hash — path-safe by construction. */
 const RAW_ID_RE = /^[a-f0-9]+$/;
 
+export interface RawSourceSnapshot {
+  slug: string;
+  rawId: string;
+  /** Workbench path, e.g. `raw/sources/<slug>/<rawId>.md`. */
+  path: string;
+}
+
+/**
+ * Retrieve-only walk of hashed `raw/sources/<slug>/<hex>.md` snapshots.
+ *
+ * {@link listRawSources} stays non-recursive — that is the browse contract.
+ * Chat/Search Phase 1 uses this so Epic 2 identity copies are candidates
+ * without appearing as extra rows in the Sources list.
+ */
+export async function listRawSourceSnapshots(): Promise<RawSourceSnapshot[]> {
+  const roots: Array<{ prefix: string; pathPrefix: string }> = [
+    { prefix: rawSourceRelPath(""), pathPrefix: `raw/${RAW_SOURCES_DIR}` },
+    { prefix: rawRelPath(""), pathPrefix: "raw" },
+  ];
+  const snapshots: RawSourceSnapshot[] = [];
+  const seen = new Set<string>();
+  for (const root of roots) {
+    const entries = await listPrefix(root.prefix);
+    for (const entry of entries) {
+      if (!entry.isDirectory || entry.name.startsWith(".")) continue;
+      try {
+        validateSlug(entry.name);
+      } catch {
+        continue;
+      }
+      const children = await listPrefix(`${root.prefix}/${entry.name}`);
+      for (const child of children) {
+        if (child.isDirectory || !child.name.endsWith(".md")) continue;
+        const rawId = child.name.slice(0, -3);
+        if (!RAW_ID_RE.test(rawId)) continue;
+        const key = `${entry.name}/${rawId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        snapshots.push({
+          slug: entry.name,
+          rawId,
+          path: `${root.pathPrefix}/${entry.name}/${child.name}`,
+        });
+      }
+    }
+  }
+  return snapshots;
+}
+
 /**
  * Save the raw snapshot of ONE source of a page at
  * `raw/sources/<slug>/<rawId>.md`.

@@ -631,6 +631,7 @@ async function generateChatAnswer(
   };
 }
 
+/** Legacy Worker generation. The HTTP `{ message }` door is retired (410). */
 export async function addChatTurn(
   owner: string,
   id: string,

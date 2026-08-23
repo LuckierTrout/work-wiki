@@ -19,12 +19,18 @@ import {
   type ChatCitation,
   type SearchHit,
 } from "./chat-contract";
-import { getChatModelSettings, getVectorSearchSettings, loadConfigSync } from "./config";
+import {
+  getChatModelSettings,
+  getCustomBaseUrl,
+  getOllamaBaseUrl,
+  getVectorSearchSettings,
+  loadConfigSync,
+} from "./config";
 import { extractBestSnippet } from "./query-search";
 import { searchByVector } from "./embeddings";
 import { buildWeightedGraphEdges, expandGraphSeeds } from "./graph-relevance";
 import { logger } from "./logger";
-import { listRawSources, readRawSource } from "./raw";
+import { listRawSources, listRawSourceSnapshots, readRawSource, readRawSourceById } from "./raw";
 import { loadPageConventions } from "./schema";
 import { parseSources } from "./sources";
 import type { IndexEntry } from "./types";
@@ -114,6 +120,7 @@ export interface AssembledContext {
     provider: string | null;
     model: string | null;
     configured: boolean;
+    baseUrl?: string;
   };
 }
 
@@ -195,12 +202,18 @@ export async function loadRetrieveDocuments(
   }
 
   const sources: RetrieveDocument[] = [];
+  const seenBodies = new Set<string>();
+  const pushSource = (doc: RetrieveDocument) => {
+    if (seenBodies.has(doc.body)) return;
+    seenBodies.add(doc.body);
+    sources.push(doc);
+  };
   try {
     const raw = await listRawSources();
     for (const source of raw) {
       try {
         const loaded = await readRawSource(source.slug);
-        sources.push({
+        pushSource({
           id: `source:${source.slug}`,
           path: `raw/sources/${source.filename}`,
           title: source.slug,
@@ -210,6 +223,26 @@ export async function loadRetrieveDocuments(
         });
       } catch (error) {
         logger.warn("retrieve", `raw source read failed for ${source.slug}`, error);
+      }
+    }
+    const snapshots = await listRawSourceSnapshots();
+    for (const snapshot of snapshots) {
+      try {
+        const loaded = await readRawSourceById(snapshot.slug, snapshot.rawId);
+        pushSource({
+          id: `source:${snapshot.slug}:${snapshot.rawId}`,
+          path: snapshot.path,
+          title: snapshot.slug,
+          body: loaded.content,
+          kind: "source",
+          type: "source",
+        });
+      } catch (error) {
+        logger.warn(
+          "retrieve",
+          `raw snapshot read failed for ${snapshot.slug}/${snapshot.rawId}`,
+          error,
+        );
       }
     }
   } catch (error) {
@@ -478,13 +511,29 @@ function numberBodies(hits: readonly RetrieveHit[]): {
   return { numberedBodies: parts.join("\n\n"), citations };
 }
 
+function chatModelForRetrieve(): AssembledContext["chatModel"] {
+  const chatModel = getChatModelSettings();
+  let baseUrl: string | null = null;
+  if (chatModel.provider === "custom") {
+    baseUrl = getCustomBaseUrl();
+  } else if (chatModel.provider === "ollama" || chatModel.provider === "ollama-cloud") {
+    baseUrl = getOllamaBaseUrl() ?? null;
+  }
+  return {
+    provider: chatModel.provider,
+    model: chatModel.model,
+    configured: chatModel.configured,
+    ...(baseUrl ? { baseUrl } : {}),
+  };
+}
+
 export async function assembleWikiContext(
   query: string,
   options: AssembleOptions,
 ): Promise<AssembledContext> {
   const tokenBudget = clampTokenBudget(options.tokenBudget ?? CHAT_TOKEN_BUDGET_DEFAULT);
   const historyDepth = clampHistoryDepth(options.historyDepth ?? CHAT_HISTORY_DEPTH_DEFAULT);
-  const chatModel = getChatModelSettings();
+  const chatModel = chatModelForRetrieve();
   const emptyUsage = {
     pages: 0,
     history: 0,
@@ -504,11 +553,7 @@ export async function assembleWikiContext(
     coverage: false,
     coverageMessage: CHAT_COVERAGE_MISSING_COPY,
     vectorPhase: { status: "off" } as VectorPhase,
-    chatModel: {
-      provider: chatModel.provider,
-      model: chatModel.model,
-      configured: chatModel.configured,
-    },
+    chatModel,
   };
 
   const trimmed = query.trim();

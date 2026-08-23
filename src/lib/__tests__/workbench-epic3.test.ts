@@ -14,9 +14,15 @@ import { POST as POST_CHAT_ALIAS } from "@/app/api/v1/chat/route";
 import { POST as POST_SEARCH } from "@/app/api/v1/projects/[wikiId]/search/route";
 import { POST as POST_RETRIEVE } from "@/app/api/v1/projects/[wikiId]/retrieve/route";
 import {
+  applyDotEnv,
+  createChatTurnSession,
   createSidecarServer,
+  formatSse,
+  generateChat,
   healthPayload,
   isSidecarWikiId,
+  parseDotEnv,
+  resolveChatSecret,
   SSE_EVENTS,
 } from "../../../sidecar/server.mjs";
 
@@ -134,12 +140,14 @@ describe("sidecar contract", () => {
       });
       expect(jsonRes.status).toBe(200);
       expect(jsonRes.headers.get("content-type")).toContain("application/json");
-      await expect(jsonRes.json()).resolves.toEqual({
+      const jsonBody = await jsonRes.json();
+      expect(jsonBody).toEqual({
         content: CHAT_COVERAGE_MISSING_COPY,
         thinking: "",
         citations: [],
         coverage: false,
       });
+      expect(jsonBody.content).not.toMatch(/\[\d+\]/);
 
       const sseRes = await fetch(url, {
         method: "POST",
@@ -155,8 +163,10 @@ describe("sidecar contract", () => {
       const events = [...text.matchAll(/^event: (\w+)/gm)].map((match) => match[1]);
       expect(events[0]).toBe("meta");
       expect(events.at(-1)).toBe("done");
-      expect(events.every((name) => (SIDECAR_SSE_EVENTS as readonly string[]).includes(name))).toBe(true);
-      expect(text).toContain(CHAT_COVERAGE_MISSING_COPY);
+    expect(events.every((name) => (SIDECAR_SSE_EVENTS as readonly string[]).includes(name))).toBe(true);
+    expect(text).toContain(CHAT_COVERAGE_MISSING_COPY);
+    expect(text).not.toMatch(/event: agent[\s\S]*\[1\]/);
+    expect(SSE_EVENTS).toContain("cancelled");
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
@@ -190,6 +200,15 @@ describe("copy and dock", () => {
 });
 
 describe("Workbench Chat does not use Worker query or ChatWorkspace", () => {
+  it("retires Worker generation on the leftover { message } door", async () => {
+    const route = await readRel("src/app/api/chat/conversations/[id]/messages/route.ts");
+    const legacy = await readRel("src/components/ChatWorkspace.tsx");
+    expect(route).not.toContain("addChatTurn");
+    expect(route).toContain('error: "sidecar_required"');
+    expect(legacy).not.toContain("JSON.stringify({ message })");
+    expect(legacy).toContain("/?mode=chat");
+  });
+
   it("keeps /api/query and ChatWorkspace off the rail surfaces", async () => {
     const chat = await readRel("src/components/workbench/ChatCanvas.tsx");
     const search = await readRel("src/components/workbench/SearchCanvas.tsx");
@@ -207,6 +226,8 @@ describe("Workbench Chat does not use Worker query or ChatWorkspace", () => {
     expect(mode).toContain("CHAT_SIDECAR_DOWN_COPY");
     expect(chat).toContain("Regenerate");
     expect(chat).toContain("Save to Wiki");
+    expect(chat).toContain("Stop");
+    expect(chat).not.toContain("body.model?.apiKey");
     expect(chat).toContain("wb-chat-thinking");
     expect(chat).toContain("Sources-only");
     const css = await readRel("src/app/globals.css");
@@ -224,8 +245,67 @@ describe("Save to Wiki door", () => {
     expect(route).toContain("underQueries: true");
     expect(route).toContain("enqueueOrInline");
     expect(route).toContain("createIngestJob");
+    expect(route).toContain("saveRawSourceFor");
+    expect(route).toContain("sourcePath");
+    expect(route).toContain("contentSha256");
     expect(save).toContain("queries/${baseSlug");
     expect(save).toContain("writeWikiPageWithSideEffects");
+  });
+});
+
+describe("sidecar local credentials and cancel", () => {
+  it("parses dotenv without overriding a live env value", () => {
+    expect(parseDotEnv("ANTHROPIC_API_KEY=from-file\n# skip\n")).toEqual({
+      ANTHROPIC_API_KEY: "from-file",
+    });
+    const env: Record<string, string | undefined> = { ANTHROPIC_API_KEY: "already" };
+    applyDotEnv("ANTHROPIC_API_KEY=from-file\nOPENAI_API_KEY=new\n", env);
+    expect(env.ANTHROPIC_API_KEY).toBe("already");
+    expect(env.OPENAI_API_KEY).toBe("new");
+  });
+
+  it("resolves secrets from env/config and ignores a request apiKey", async () => {
+    expect(resolveChatSecret("anthropic", { ANTHROPIC_API_KEY: "sk" })).toBe("sk");
+    expect(resolveChatSecret("custom", {}, { customApiKey: "stored" })).toBe("stored");
+    const previous = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      await expect(
+        generateChat({
+          provider: "anthropic",
+          apiKey: "sk-from-browser",
+          system: "s",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      ).rejects.toThrow(/Configure a Chat model in Settings/);
+    } finally {
+      if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previous;
+    }
+  });
+
+  it("emits cancelled once when the client aborts before settle", () => {
+    const chunks: string[] = [];
+    const res = {
+      headersSent: false,
+      writableEnded: false,
+      writeHead() {
+        this.headersSent = true;
+      },
+      write(chunk: string) {
+        chunks.push(chunk);
+      },
+      end() {
+        this.writableEnded = true;
+      },
+    };
+    const req = { on() {} };
+    const session = createChatTurnSession(req, res, true);
+    session.emitCancelled();
+    session.emitCancelled();
+    expect(chunks.join("")).toBe(formatSse("cancelled", {}));
+    expect(res.writableEnded).toBe(true);
+    session.settle();
   });
 });
 

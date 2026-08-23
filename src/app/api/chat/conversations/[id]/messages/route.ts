@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import {
-  addChatTurn,
   appendChatMessages,
   conversationWithName,
   retractLastChatTurn,
@@ -109,14 +108,9 @@ export async function POST(request: Request, { params }: RouteContext) {
       return NextResponse.json({ conversation: conversationWithName(conversation) });
     }
 
-    if (typeof body.message !== "string" || !body.message.trim()) {
-      return NextResponse.json(
-        { error: "message is required and must be a non-empty string" },
-        { status: 400 },
-      );
-    }
     return NextResponse.json(
-      await addChatTurn(principal.handle, id, body.message, principal),
+      { error: "sidecar_required" },
+      { status: 410 },
     );
   } catch (error) {
     const message = getErrorMessage(error);

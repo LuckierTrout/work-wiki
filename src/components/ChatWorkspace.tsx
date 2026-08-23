@@ -34,9 +34,7 @@ export function ChatWorkspace() {
     { value: "", label: "All knowledge" },
     { value: "mine", label: "My pages" },
   ]);
-  const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The saved banner links via the server-returned canonical `url`: a
   // just-created slug cannot be in the session-cached slug→tenant map, so
@@ -84,56 +82,6 @@ export function ChatWorkspace() {
       setContextBudget(data.conversation.contextBudget ?? "standard");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not open conversation.");
-    }
-  }
-
-  async function createConversation(): Promise<ChatConversation> {
-    const data = await json<{ conversation: ChatConversation }>(
-      await fetch("/api/chat/conversations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope, retrievalMode, contextBudget }),
-      }),
-    );
-    setConversations((current) => [data.conversation, ...current]);
-    setActive(data.conversation);
-    return data.conversation;
-  }
-
-  async function send() {
-    const message = draft.trim();
-    if (!message || sending) return;
-    setSending(true);
-    setError(null);
-    setDraft("");
-    try {
-      const conversation = active ?? (await createConversation());
-      const optimistic: ChatMessage = {
-        id: `pending-${Date.now()}`,
-        role: "user",
-        content: message,
-        sources: [],
-        createdAt: new Date().toISOString(),
-      };
-      setActive((current) => current ? { ...current, messages: [...current.messages, optimistic] } : current);
-      const data = await json<{ conversation: ChatConversation; message: ChatMessage }>(
-        await fetch(`/api/chat/conversations/${conversation.id}/messages`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message }),
-        }),
-      );
-      setActive(data.conversation);
-      setConversations((current) => [
-        { ...data.conversation, messages: [] },
-        ...current.filter((item) => item.id !== data.conversation.id),
-      ]);
-    } catch (reason) {
-      setDraft(message);
-      setError(reason instanceof Error ? reason.message : "The message could not be sent.");
-      if (active) void openConversation(active.id);
-    } finally {
-      setSending(false);
     }
   }
 
@@ -257,7 +205,7 @@ export function ChatWorkspace() {
             )}
           </div>
         </div>
-        <button className="btn primary" type="button" onClick={() => { setActive(null); setScope(""); setRetrievalMode("wiki"); setContextBudget("standard"); setDraft(""); }}>
+        <button className="btn primary" type="button" onClick={() => { setActive(null); setScope(""); setRetrievalMode("wiki"); setContextBudget("standard"); }}>
           New conversation
         </button>
       </div>
@@ -306,20 +254,20 @@ export function ChatWorkspace() {
             <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
               <label className="row" style={{ gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
                 Search
-                <select value={scope} onChange={(event) => void changeScope(event.target.value)} disabled={sending} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
+                <select value={scope} onChange={(event) => void changeScope(event.target.value)} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
                   {scopeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </label>
               <label className="row" style={{ gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
                 Evidence
-                <select value={retrievalMode} onChange={(event) => void changeRetrievalMode(event.target.value as ChatRetrievalMode)} disabled={sending} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
+                <select value={retrievalMode} onChange={(event) => void changeRetrievalMode(event.target.value as ChatRetrievalMode)} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
                   <option value="wiki">Wiki pages</option>
                   <option value="sources">Original sources only</option>
                 </select>
               </label>
               <label className="row" style={{ gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
                 Context
-                <select value={contextBudget} onChange={(event) => void changeContextBudget(event.target.value as ChatContextBudget)} disabled={sending} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
+                <select value={contextBudget} onChange={(event) => void changeContextBudget(event.target.value as ChatContextBudget)} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
                   <option value="compact">Compact · 4 pages</option>
                   <option value="standard">Standard · 8 pages</option>
                   <option value="expanded">Expanded · 12 pages</option>
@@ -357,20 +305,15 @@ export function ChatWorkspace() {
                     )}
                   </article>
                 ))}
-                {sending && (
-                  <p className="receipt" style={{ color: "var(--muted)" }}>
-                    {retrievalMode === "sources" ? "Reading original snapshots and composing…" : "Searching pages and composing…"}
-                  </p>
-                )}
               </div>
             )}
           </div>
 
           <div style={{ borderTop: "1px solid var(--rule)", padding: 14, background: "var(--paper-2)" }}>
-            <form onSubmit={(event) => { event.preventDefault(); void send(); }} className="row" style={{ gap: 10, alignItems: "end" }}>
-              <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} rows={2} placeholder="Ask a follow-up…" disabled={sending} style={{ flex: 1, resize: "vertical", minHeight: 54, border: "1px solid var(--rule-strong)", borderRadius: 12, background: "var(--paper)", color: "var(--ink)", padding: "11px 13px", fontFamily: "var(--font-read)", fontSize: 15 }} />
-              <button className="btn primary" type="submit" disabled={sending || !draft.trim()}>{sending ? "Working…" : "Send"}</button>
-            </form>
+            <p style={{ margin: "0 0 10px", color: "var(--muted)", fontSize: 14, lineHeight: 1.5 }}>
+              Ask the wiki from Workbench Chat. This page no longer generates answers.
+            </p>
+            <Link href="/?mode=chat" className="btn primary">Open Workbench Chat</Link>
           </div>
         </section>
       </div>

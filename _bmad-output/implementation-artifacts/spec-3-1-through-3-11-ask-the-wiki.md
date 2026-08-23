@@ -4,8 +4,8 @@ type: 'feature'
 created: '2026-08-22'
 status: 'done'
 baseline_revision: '625a3348f93d80ef97a28df4f1639000beac2d67'
-review_loop_iteration: 0
-followup_review_recommended: true
+review_loop_iteration: 1
+followup_review_recommended: false
 context:
   - '{project-root}/AGENTS.md'
   - '{project-root}/_bmad-output/implementation-artifacts/epic-3-context.md'
@@ -15,47 +15,11 @@ warnings:
   - oversized
 deferred:
   - summary: >-
-      Sidecar Chat generation uses process env keys; retrieve does not send
-      provider secrets to the browser.
+      Thinking still arrives as one agent frame after a blocking provider
+      call, not incremental tokens.
     evidence: |-
-      Settings GET omits secrets. Loopback tokens are later. Chat fails
-      closed with a Settings sentence when the sidecar has no key.
-    location: >-
-      sidecar/server.mjs
-    severity: medium
-  - summary: >-
-      Save to Wiki writes the query Page, then queues a second text ingest of
-      the same answer body.
-    evidence: |-
-      save/route.ts calls saveAnswerToWiki then enqueueOrInline(ingest
-      sourceType text). Two-step compile may create another primary page.
-    location: >-
-      src/app/api/chat/conversations/[id]/save/route.ts
-    severity: medium
-  - summary: >-
-      Phase 1 lists raw/sources/ non-recursively, so hashed snapshot files
-      under a slug subdirectory are not retrieve candidates.
-    evidence: |-
-      listRawSources skips subdirectories by contract. Epic 2 hashed
-      snapshots stay on readRawSourceById.
-    location: >-
-      src/lib/raw.ts
-    severity: medium
-  - summary: >-
-      POST conversations/:id/messages { message } still runs Worker
-      addChatTurn for the legacy /chat page.
-    evidence: |-
-      Workbench uses persist / retractLastTurn only. The { message } branch
-      remains for ChatWorkspace.
-    location: >-
-      src/app/api/chat/conversations/[id]/messages/route.ts
-    severity: medium
-  - summary: >-
-      Sidecar never emits cancelled; there is no Stop control. Thinking
-      arrives as one agent frame after a blocking provider call.
-    evidence: |-
-      generateChat is one HTTP call; cancelled is parsed by the client but
-      not produced. AC names the event, not a Stop button.
+      generateChat is one HTTP call; the live Thinking viewport paints the
+      complete block. prefers-reduced-motion is already honored.
     location: >-
       sidecar/server.mjs
     severity: low
@@ -194,6 +158,21 @@ New (expected):
 
 ## Review Triage Log
 
+### 2026-08-23 — Follow-up review
+- intent_gap: 0
+- bad_spec: 0
+- patch: 5: (high 0, medium 4, low 1)
+- defer: 1: (high 0, medium 0, low 1)
+- reject: 0
+- addressed_findings:
+  - `[medium]` `[patch]` Sidecar loads `.env` / `.env.local` on `pnpm sidecar` and Settings JSON for custom key; retrieve still omits `apiKey`; request `apiKey` is ignored
+  - `[medium]` `[patch]` Save stores a hashed Source and queues ingest with `sourcePath` / `contentSha256` instead of a second free-floating text ingest
+  - `[medium]` `[patch]` Phase 1 walks hashed `raw/sources/<slug>/<hex>.md` via `listRawSourceSnapshots`; `listRawSources` stays non-recursive
+  - `[medium]` `[patch]` `{ message }` on conversations messages is 410 `sidecar_required`; ChatWorkspace no longer calls Worker generation
+  - `[low]` `[patch]` Stop aborts the in-flight sidecar turn; sidecar emits `cancelled` on disconnect/abort and does not persist deltas
+- residual:
+  - Thinking is still one post-generation frame (low). Loopback tokens stay later.
+
 ### 2026-08-22 — Review pass
 - intent_gap: 0
 - bad_spec: 0
@@ -252,13 +231,13 @@ Status: done
 - Workbench: `ChatCanvas.tsx`, `SearchCanvas.tsx`, `ModeCanvas.tsx`, `workbench-tree.ts`, `workbench-modes.ts`
 - Tests: wiki-retrieve, chat-store, chat-routes, workbench-epic3, query save, sidecar, chrome/modes
 
-**Review:** 20 patches applied (3 high, 15 medium, 2 low). 5 deferred. 8 rejected (Stop button, browser API keys, export UI, R2 sidecar-owns-retrieve, image lightbox, inventing citations to satisfy [n], treating leftover addChatTurn as this story's SoR, CORS lockdown on loopback).
+**Review:** Follow-up closed the five deferred items (sidecar env/config keys, Save source-path ingest, hashed snapshot retrieve, retired `{ message }` Worker door, Stop/`cancelled`). 20 earlier patches still hold, including `send()` as a parsed-body helper.
 
-**Follow-up review recommended:** true — patched high 3, medium 15, low 2; score `3×15 + 1×2 = 47` (≥ 5). High alone forces true.
+**Follow-up review recommended:** false — follow-up patches are medium/low; Thinking streaming remains a low residual.
 
 **Verification:**
-- Spec command plus chat-routes and workbench-tree: 273 passed (10 files)
+- Spec command plus chat-routes, workbench-tree, and raw listing: 318 passed (11 files)
 
-**Residual risks:** Sidecar keys from machine env; Save queues a second text ingest; hashed `raw/sources/<slug>/<hash>` not in Phase 1 listing; leftover Worker `addChatTurn` on `{ message }`; cancelled/Stop not shipped; Thinking is one post-generation frame.
+**Residual risks:** Thinking is one post-generation frame. Loopback API tokens are still later.
 
 **Browser:** Chat/Search rail flows were not exercised in a running Next.js Workbench this run.

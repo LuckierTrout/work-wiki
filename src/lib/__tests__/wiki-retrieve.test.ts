@@ -33,7 +33,7 @@ import { searchByVector } from "../embeddings";
 import { getVectorSearchSettings, loadConfigSync } from "../config";
 import { _resetStorage } from "../storage";
 import { ensureDirectories, updateIndex, writeWikiPage } from "../wiki";
-import { saveRawSource } from "../raw";
+import { saveRawSource, saveRawSourceFor } from "../raw";
 import {
   TITLE_MATCH_BONUS,
   assembleWikiContext,
@@ -235,6 +235,25 @@ describe("assemble and search", () => {
     });
     expect(assembled.tokenUsage.total).toBeLessThanOrEqual(4000);
     expect(assembled.tokenUsage.budget).toBe(4000);
+  });
+
+  it("includes hashed raw/sources snapshots that the browse list skips", async () => {
+    await saveRawSourceFor("plaud-meet", "cafe01", "hashed snapshot about backpropagation");
+    const { hits } = await retrieveHits("backpropagation", { principal: null });
+    expect(hits.some((hit) => hit.path === "raw/sources/plaud-meet/cafe01.md")).toBe(true);
+  });
+
+  it("does not leak an apiKey on the retrieve chatModel payload", async () => {
+    await seedPages([{ slug: "alpha", title: "Alpha", body: "alpha body" }]);
+    const assembled = await assembleWikiContext("alpha", { principal: null });
+    expect(assembled.chatModel).toEqual(
+      expect.objectContaining({
+        provider: "anthropic",
+        model: "claude-sonnet-4-5",
+        configured: true,
+      }),
+    );
+    expect(assembled.chatModel).not.toHaveProperty("apiKey");
   });
 
   it("Sources-only returns source paths", async () => {

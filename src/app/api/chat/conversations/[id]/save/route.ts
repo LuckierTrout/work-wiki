@@ -7,10 +7,19 @@ import { enqueueOrInline } from "@/lib/ingest-async";
 import { ingest } from "@/lib/ingest";
 import { createIngestJob } from "@/lib/ingest-jobs";
 import { saveAnswerToWiki } from "@/lib/query";
+import { saveRawSourceFor } from "@/lib/raw";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
+import { sourceSha256 } from "@/lib/source-sha256";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
+}
+
+function queryAnswerSourceSlug(pageSlug: string): string {
+  const leaf = pageSlug.startsWith("queries/")
+    ? pageSlug.slice("queries/".length)
+    : pageSlug;
+  return `query-${leaf}`;
 }
 
 export async function POST(request: Request, { params }: RouteContext) {
@@ -68,6 +77,12 @@ export async function POST(request: Request, { params }: RouteContext) {
         underQueries: true,
       },
     );
+    const sourceSlug = queryAnswerSourceSlug(result.slug);
+    const contentSha256 = await sourceSha256(content);
+    await saveRawSourceFor(sourceSlug, contentSha256, content, {
+      owner: principal.handle,
+    });
+    const sourcePath = `raw/sources/${sourceSlug}/${contentSha256}.md`;
     const jobId = crypto.randomUUID();
     await createIngestJob({
       jobId,
@@ -84,6 +99,9 @@ export async function POST(request: Request, { params }: RouteContext) {
         author: principal.handle,
         tags: ["query-answer"],
         jobId,
+        sourceType: "text",
+        sourcePath,
+        contentSha256,
       },
       () =>
         ingest(title, content, {
@@ -92,6 +110,8 @@ export async function POST(request: Request, { params }: RouteContext) {
           triggeredBy: principal.handle,
           tags: ["query-answer"],
           sourceType: "text",
+          sourcePath,
+          contentSha256,
         }),
     );
     const ingestBody = (await ingestResponse.json().catch(() => ({}))) as {
@@ -103,6 +123,7 @@ export async function POST(request: Request, { params }: RouteContext) {
       path: `wiki/${result.slug}.md`,
       jobId: ingestBody.jobId ?? jobId,
       queued: ingestBody.queued ?? true,
+      sourcePath,
     });
   } catch (error) {
     if (isReadOnlyError(error)) {

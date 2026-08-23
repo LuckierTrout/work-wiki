@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-22-2026 21:02
+last_updated: 08-23-2026 11:00
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
@@ -62,7 +62,7 @@ development_status:
   2-12-zip-export-and-import: done
   epic-2-retrospective: done
 
-  epic-3: in-progress
+  epic-3: done
   3-1-sidecar-health-and-chat-http-sse: done
   3-2-conversations-sidebar-and-persistence: done
   3-3-tokenized-retrieval-budget-and-numbered-assembly: done

@@ -7,6 +7,7 @@ import {
   saveRawSourceFor,
   saveRawSourceTree,
   listRawSources,
+  listRawSourceSnapshots,
   readRawSource,
   readRawSourceById,
   tenantRawSourceRelPath,
@@ -304,6 +305,13 @@ describe("per-source raw snapshots", () => {
     expect(slugs).toContain("flat-one");
     // The per-source subdir is not surfaced as a flat raw source.
     expect(slugs).not.toContain("cafe01");
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "flat-one",
+        rawId: "cafe01",
+        path: "raw/sources/flat-one/cafe01.md",
+      },
+    ]);
   });
 
   it("writes the snapshot under raw/sources/<slug>/<rawId>.md", async () => {
