@@ -115,6 +115,8 @@ export interface SourceEntry {
    * raw existed (those keep only the single latest `raw/<slug>.md`).
    */
   raw_id?: string;
+  /** Plaud-origin Intake. Absent on other doors. Survives job GC. */
+  origin?: "plaud";
 }
 
 // ---------------------------------------------------------------------------

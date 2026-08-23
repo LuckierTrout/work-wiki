@@ -32,7 +32,7 @@ import {
   WIKILINK_MISSING_COPY,
 } from "../workbench-preview";
 import { WORKBENCH_MODES } from "../workbench-modes";
-import { activityDisplayStatus } from "../workbench-activity";
+import { activityDisplayStatus, activityQueueProgress } from "../workbench-activity";
 import { nextSourceWindowLimit, SOURCES_WINDOW_STEP } from "../workbench-tree";
 
 const SRC = path.resolve(__dirname, "../..");
@@ -731,15 +731,17 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
     expect(submit.slice(0, submit.indexOf("</form>"))).not.toContain('setDraft("")');
   });
 
-  it("docks Activity under the left column on Wiki, Sources, and Files", async () => {
+  it("docks Activity under the left column on Wiki and Sources", async () => {
     const source = await read("Workbench.tsx");
     expect(source).toContain("<ActivityDock");
     expect(source).toMatch(
-      /\(mode === "wiki" \|\| mode === "sources" \|\| mode === "files"\) && !settingsOpen && \(/,
+      /\(mode === "wiki" \|\| mode === "sources"\) && !settingsOpen && \(/,
     );
     expect(source).toContain("<SourcesTree");
     expect(source).toContain("ConfirmDialog");
     expect(source).toContain("SOURCE_DELETE_TITLE");
+    expect(source).toContain("@/lib/source-delete");
+    expect(source).not.toContain("@/lib/source-cascade");
     expect(source).toContain("if (!sourceDeletePath || sourceDeleteBusy) return;");
     const activity = await read("ActivityDock.tsx");
     expect(activity).toContain("ACTIVITY_TITLE");
@@ -762,7 +764,7 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
     const settings = await read("SettingsCanvas.tsx");
     expect(settings).not.toMatch(/Plaud connect|Plaud OAuth/i);
     const ingest = await readFile(path.join(SRC, "lib/ingest.ts"), "utf8");
-    expect(ingest).toContain("withFileLock(`ingest-llm:${input.owner}`");
+    expect(ingest).toContain("withDurableLock(`ingest-llm:${input.owner}`");
     expect(ingest).toContain('stage: "analysis"');
     expect(ingest).toContain('stage: "generation"');
     expect(ingest).toMatch(/Write all string values in English|English-only/);
@@ -786,6 +788,24 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
       "Generation",
     );
     expect(nextSourceWindowLimit(80, 240, false)).toBe(80 + SOURCES_WINDOW_STEP);
+    expect(
+      activityQueueProgress([
+        {
+          jobId: "1",
+          title: "old",
+          displayStatus: "succeeded",
+          canCancel: false,
+          canRetry: false,
+        },
+        {
+          jobId: "2",
+          title: "now",
+          displayStatus: "Analysis",
+          canCancel: true,
+          canRetry: false,
+        },
+      ]),
+    ).toEqual({ completed: 0, total: 1, activeStep: "Analysis" });
   });
 
   it("offers the same control in Wiki mode and on the Sources column", async () => {
@@ -872,7 +892,7 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
     expect(source).toContain("INTAKE_FILE_REQUIRED_COPY");
     // An empty Folder pick is said on the Folder action, not swallowed by
     // `submitIntakeFiles([])` — the shell reports it before that helper runs.
-    expect(source).toContain("INTAKE_FOLDER_COPY");
+    expect(source).toContain("emptyFolderOutcome()");
     expect(source).toContain("if (picked.length === 0)");
   });
 
@@ -927,7 +947,8 @@ describe("page.tsx loads the trees from the authenticated principal", () => {
     // read `pageIndex.entries` would have stayed green.
     expect(source).toContain("readableSlugsFromKnowledge(knowledge)");
     expect(source).not.toMatch(/readableSlugs\s*=\s*new Set\(/);
-    expect(source).toContain("{ readableSlugs }");
+    expect(source).toContain("WORKBENCH_FIRST_PAINT_LIMIT");
+    expect(source).toContain("{ readableSlugs, limit: WORKBENCH_FIRST_PAINT_LIMIT }");
     // The gate is the page index, so a failed index read is a failed file read:
     // an empty slug set filters every page out of `wiki/`, and the tab would
     // otherwise show an empty silo where the truth is "we could not find out".

@@ -11,7 +11,7 @@ import {
   IngestCancelledError,
 } from "@/lib/ingest";
 import { rebuildVectorStore } from "@/lib/embeddings";
-import { INGEST_CANCELLED_COPY } from "@/lib/ingest-jobs";
+import { INGEST_CANCELLED_COPY, claimIngestJob } from "@/lib/ingest-jobs";
 import { extractDocumentTextAsync } from "@/lib/document-extract";
 import { fixLintIssue } from "@/lib/lint-fix";
 import { getIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
@@ -21,6 +21,7 @@ import {
   DEFAULT_AGENT_NAME,
   listAgentsForOwner,
 } from "@/lib/agents";
+import { hasIngestAnalysis } from "@/lib/ingest-analysis";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { getVectorSearchSettings, isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
@@ -297,14 +298,29 @@ export async function POST(req: Request) {
 
     if (task.jobId) {
       const current = await getIngestJob(task.jobId);
-      if (current?.cancelled) {
-        if (current.status === "queued") {
+      if (current?.cancelled || current?.sourceDeleted) {
+        if (current.status === "queued" || current.status === "retrying") {
           await updateIngestJob(task.jobId, {
             status: "failed",
             error: current.error || INGEST_CANCELLED_COPY,
           });
         }
         return NextResponse.json({ ok: true, cancelled: true });
+      }
+      if (current && (current.status === "queued" || current.status === "retrying")) {
+        const claimed = await claimIngestJob(
+          task.jobId,
+          current.owner,
+        );
+        if (!claimed) {
+          return NextResponse.json({ ok: true, skipped: true });
+        }
+      } else if (
+        current?.status === "processing" ||
+        current?.status === "failed" ||
+        current?.status === "skipped"
+      ) {
+        return NextResponse.json({ ok: true, skipped: true });
       }
     }
 
@@ -329,7 +345,10 @@ export async function POST(req: Request) {
       ...(task.title && task.title.trim() ? { title: task.title.trim() } : {}),
       ...(task.origin ? { origin: task.origin } : {}),
       ...(task.jobId ? { jobId: task.jobId } : {}),
-      ...(task.reuseAnalysis ? { reuseAnalysis: true } : {}),
+      ...((task.reuseAnalysis ||
+        (task.jobId ? await hasIngestAnalysis(task.jobId) : false))
+        ? { reuseAnalysis: true }
+        : {}),
       ...(task.contentSha256 ? { contentSha256: task.contentSha256 } : {}),
       ...(task.sourcePath ? { sourcePath: task.sourcePath } : {}),
     };
@@ -567,8 +586,13 @@ export async function POST(req: Request) {
     // a storage error here must not mask the original failure or skip the
     // status mapping below.
     if (task.kind === "ingest" && task.jobId) {
+      const exhausted =
+        Number.isFinite(queueAttempt) && queueAttempt >= 3;
       try {
-        await updateIngestJob(task.jobId, { status: "failed", error: message });
+        await updateIngestJob(task.jobId, {
+          status: exhausted ? "failed" : "retrying",
+          error: message,
+        });
       } catch (writeErr) {
         logger.error(
           "tasks",

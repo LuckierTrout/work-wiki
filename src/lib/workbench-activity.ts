@@ -47,7 +47,7 @@ export interface ActivityRow {
  * `effectiveStatus` (stale → failed) is applied by the server before this.
  */
 export function activityDisplayStatus(
-  status: "queued" | "processing" | "done" | "failed" | "skipped",
+  status: "queued" | "processing" | "retrying" | "done" | "failed" | "skipped",
   stage?: string,
   kind?: ActivityJobKind,
   cancelled?: boolean,
@@ -56,7 +56,7 @@ export function activityDisplayStatus(
   if (status === "skipped") return "skipped";
   if (status === "done") return "succeeded";
   if (status === "failed") return "failed";
-  if (status === "queued") return "pending";
+  if (status === "queued" || status === "retrying") return "pending";
   if (kind === "embed") return "Generation";
   if (
     stage === "generation" ||
@@ -74,13 +74,15 @@ export function activityQueueProgress(rows: readonly ActivityRow[]): {
   total: number;
   activeStep: ActivityDisplayStatus | null;
 } {
-  const total = rows.length;
-  const completed = rows.filter((row) =>
-    row.displayStatus === "succeeded" ||
-    row.displayStatus === "skipped" ||
-    row.displayStatus === "failed",
-  ).length;
-  const active = rows.find(
+  const activeRows = rows.filter(
+    (row) =>
+      row.displayStatus === "pending" ||
+      row.displayStatus === "Analysis" ||
+      row.displayStatus === "Generation",
+  );
+  const total = activeRows.length;
+  const completed = 0;
+  const active = activeRows.find(
     (row) =>
       row.displayStatus === "Analysis" || row.displayStatus === "Generation",
   );

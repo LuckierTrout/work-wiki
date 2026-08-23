@@ -18,9 +18,13 @@
 
 import {
   INTAKE_FOLDER_COPY,
+  INTAKE_PATH_COLLISION_COPY,
   INTAKE_URL_REQUIRED_COPY,
   classifyIntakeFile,
+  intakeRefusedCopy,
+  intakeSkippedCopy,
   intakeStoredCopy,
+  intakeStoredNotQueuedCopy,
   isIntakeUrl,
   sanitizeIntakeRelativePath,
 } from "./workbench-intake";
@@ -37,11 +41,19 @@ export const INTAKE_ROUTE = "/api/workbench/intake";
 export const INTAKE_FILE_ACTION = "store that file";
 export const INTAKE_URL_ACTION = "store that URL";
 
+export type IntakeDisposition =
+  | "queued"
+  | "skipped"
+  | "not_queued"
+  | "refused"
+  | "failed"
+  | "unconfirmed";
+
 /** What became of ONE arrival. */
 export interface IntakeOutcome {
   /** What the owner called it: the filename, or the URL they typed. */
   readonly name: string;
-  /** `null` when the Source was stored and Ingest queued. */
+  /** `null` when the Source was stored, skipped, or queued. */
   readonly error: string | null;
   /**
    * NOTHING IS KNOWN about this arrival — see `WriteFailure.unconfirmed`. The
@@ -49,10 +61,36 @@ export interface IntakeOutcome {
    * owner it failed: the bytes may be stored and the job queued already.
    */
   readonly unconfirmed: boolean;
+  readonly disposition: IntakeDisposition;
 }
 
 function stored(name: string): IntakeOutcome {
-  return { name, error: null, unconfirmed: false };
+  return { name, error: null, unconfirmed: false, disposition: "queued" };
+}
+
+interface IntakeResponseBody {
+  queued?: unknown;
+  skipped?: unknown;
+  refused?: unknown;
+  error?: unknown;
+  path?: unknown;
+}
+
+function outcomeFromBody(name: string, body: IntakeResponseBody): IntakeOutcome {
+  if (body.refused === true) {
+    const error =
+      typeof body.error === "string" && body.error.trim()
+        ? body.error
+        : INTAKE_PATH_COLLISION_COPY;
+    return { name, error, unconfirmed: false, disposition: "refused" };
+  }
+  if (body.skipped === true) {
+    return { name, error: null, unconfirmed: false, disposition: "skipped" };
+  }
+  if (body.queued === false) {
+    return { name, error: null, unconfirmed: false, disposition: "not_queued" };
+  }
+  return stored(name);
 }
 
 /**
@@ -92,7 +130,12 @@ export function partitionIntakeFiles(files: readonly File[]): {
 
 /** The Folder action expanded to nothing. No Source is invented for it. */
 export function emptyFolderOutcome(): IntakeOutcome {
-  return { name: "", error: INTAKE_FOLDER_COPY, unconfirmed: false };
+  return {
+    name: "",
+    error: INTAKE_FOLDER_COPY,
+    unconfirmed: false,
+    disposition: "refused",
+  };
 }
 
 /**
@@ -110,7 +153,12 @@ export async function submitIntakeFile(
 ): Promise<IntakeOutcome> {
   const verdict = classifyIntakeFile(file.name, file.type);
   if (!verdict.ok) {
-    return { name: file.name, error: verdict.reason, unconfirmed: false };
+    return {
+      name: file.name,
+      error: verdict.reason,
+      unconfirmed: false,
+      disposition: "refused",
+    };
   }
   const form = new FormData();
   form.append("file", file);
@@ -121,16 +169,26 @@ export async function submitIntakeFile(
   if (relative) {
     const path = sanitizeIntakeRelativePath(relative);
     if (!path.ok) {
-      return { name: file.name, error: path.reason, unconfirmed: false };
+      return {
+        name: file.name,
+        error: path.reason,
+        unconfirmed: false,
+        disposition: "refused",
+      };
     }
     form.append("relativePath", path.path);
   }
   try {
-    await sendForm(INTAKE_ROUTE, form);
-    return stored(file.name);
+    const body = await sendForm<IntakeResponseBody>(INTAKE_ROUTE, form);
+    return outcomeFromBody(file.name, body);
   } catch (cause) {
     const failure = writeFailure(cause, INTAKE_FILE_ACTION);
-    return { name: file.name, error: failure.message, unconfirmed: failure.unconfirmed };
+    return {
+      name: file.name,
+      error: failure.message,
+      unconfirmed: failure.unconfirmed,
+      disposition: failure.unconfirmed ? "unconfirmed" : "failed",
+    };
   }
 }
 
@@ -144,18 +202,31 @@ export async function submitIntakeUrl(
     // An empty field or a non-http(s) string invents no Source and makes no
     // request — the failure belongs to the action the owner took. A clip
     // without a URL cannot satisfy provenance either.
-    return { name: trimmed, error: INTAKE_URL_REQUIRED_COPY, unconfirmed: false };
+    return {
+      name: trimmed,
+      error: INTAKE_URL_REQUIRED_COPY,
+      unconfirmed: false,
+      disposition: "refused",
+    };
   }
-  const clipText = typeof clip === "string" ? clip.trim() : "";
-  const body = clipText
+  const clipText = typeof clip === "string" ? clip : "";
+  const payload = clipText.trim()
     ? { url: trimmed, clip: clipText }
     : { url: trimmed };
   try {
-    await send(INTAKE_ROUTE, { method: "POST", body: JSON.stringify(body) });
-    return stored(trimmed);
+    const body = await send<IntakeResponseBody>(INTAKE_ROUTE, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    return outcomeFromBody(trimmed, body);
   } catch (cause) {
     const failure = writeFailure(cause, INTAKE_URL_ACTION);
-    return { name: trimmed, error: failure.message, unconfirmed: failure.unconfirmed };
+    return {
+      name: trimmed,
+      error: failure.message,
+      unconfirmed: failure.unconfirmed,
+      disposition: failure.unconfirmed ? "unconfirmed" : "failed",
+    };
   }
 }
 
@@ -180,7 +251,13 @@ export async function submitIntakeFiles(
 
 /** Did anything land? Decides whether the trees are worth re-polling. */
 export function intakeStoredCount(outcomes: readonly IntakeOutcome[]): number {
-  return outcomes.filter((outcome) => outcome.error === null).length;
+  return outcomes.filter(
+    (outcome) =>
+      outcome.error === null &&
+      (outcome.disposition === "queued" ||
+        outcome.disposition === "skipped" ||
+        outcome.disposition === "not_queued"),
+  ).length;
 }
 
 /**
@@ -208,15 +285,27 @@ export function intakeShouldRefresh(outcomes: readonly IntakeOutcome[]): boolean
  * about — and a URL's name is the URL, which is the only handle it has.
  */
 export function intakeReport(outcomes: readonly IntakeOutcome[]): string {
-  // Nothing was attempted — a drag that carried no files, a batch the caller
-  // filtered to nothing. "Stored 0 sources" would report an arrival that never
-  // happened.
   if (outcomes.length === 0) return "";
-  const stored = intakeStoredCount(outcomes);
+  const queued = outcomes.filter((o) => o.disposition === "queued").length;
+  const skipped = outcomes.filter((o) => o.disposition === "skipped").length;
+  const notQueued = outcomes.filter((o) => o.disposition === "not_queued").length;
+  const refused = outcomes.filter((o) => o.disposition === "refused").length;
   const failures = outcomes
-    .filter((outcome) => outcome.error !== null)
-    .map((outcome) => (outcome.name ? `${outcome.name}: ${outcome.error}` : outcome.error))
+    .filter(
+      (outcome) =>
+        outcome.error !== null &&
+        outcome.disposition !== "skipped" &&
+        outcome.disposition !== "not_queued",
+    )
+    .map((outcome) =>
+      outcome.name ? `${outcome.name}: ${outcome.error}` : outcome.error,
+    )
     .join(" ");
-  if (!failures) return intakeStoredCopy(stored);
-  return stored === 0 ? failures : `${intakeStoredCopy(stored)} ${failures}`;
+  const parts: string[] = [];
+  if (queued > 0) parts.push(intakeStoredCopy(queued));
+  if (skipped > 0) parts.push(intakeSkippedCopy(skipped));
+  if (notQueued > 0) parts.push(intakeStoredNotQueuedCopy(notQueued));
+  if (refused > 0 && !failures) parts.push(intakeRefusedCopy(refused));
+  if (failures) parts.push(failures);
+  return parts.join(" ");
 }

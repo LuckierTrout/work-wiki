@@ -1109,7 +1109,7 @@ describe("Stories 2.4–2.12 compile remnants", () => {
         title: summary!.title,
         content: serializeFrontmatter(
           { ...parsed.data, disputed: true, type: "summary" },
-          parsed.content,
+          parsed.body,
         ),
       }),
     );
@@ -1204,7 +1204,7 @@ describe("Stories 2.4–2.12 compile remnants", () => {
       }),
     );
     await proposeActionItems("alice", [
-      { title: "Follow up", sourceSlug: "deadbeef" },
+      { title: "Follow up", sourceSlug: path },
     ]);
 
     const result = await cascadeDeleteSource({ owner: "alice", path });
@@ -1258,5 +1258,63 @@ describe("Stories 2.4–2.12 compile remnants", () => {
     expect(retried?.sourceRel).toBe("raw/sources/meet/abc.md");
     expect(retried?.reuseAnalysis).toBe(true);
     expect((await loadIngestAnalysis("job-retry-1"))?.entities).toEqual(["Ada"]);
+  });
+
+  it("deletes a folder-imported Source by stored path, not by leaf name", async () => {
+    const { cascadeDeleteSource } = await import("../source-cascade");
+    const { saveRawSourceTree } = await import("../raw");
+    const { ingest } = await import("../ingest");
+    const stored = await saveRawSourceTree(
+      "papers/energy/note.md",
+      "# Energy notes\n\nGrid facts.\n",
+      { owner: "alice" },
+    );
+    await ingest("Energy notes", "# Energy notes\n\nGrid facts.\n", {
+      owner: "alice",
+      author: "alice",
+      sourceType: "text",
+      sourcePath: stored.path,
+      relativePath: "papers/energy/note.md",
+    });
+    const pages = await listWikiPages();
+    const concept = pages.find(
+      (entry) =>
+        entry.slug !== "overview" &&
+        entry.slug !== "index" &&
+        entry.slug !== "log" &&
+        !entry.title.includes("source summary"),
+    );
+    expect(concept).toBeTruthy();
+    await cascadeDeleteSource({ owner: "alice", path: stored.path });
+    expect(await readWikiPage(concept!.slug)).toBeNull();
+    await expect(
+      getStorage().readFile("raw/sources/papers/energy/note.md"),
+    ).rejects.toThrow();
+  });
+
+  it("does not offer Retry while a job is automatically retrying", async () => {
+    const { createIngestJob, retryIngestJob, updateIngestJob } =
+      await import("../ingest-jobs");
+    await createIngestJob({ jobId: "job-auto-1", owner: "alice", title: "Meet" });
+    await updateIngestJob("job-auto-1", { status: "retrying", error: "LLM timeout" });
+    expect(await retryIngestJob("job-auto-1", "alice")).toBeNull();
+  });
+
+  it("fails a tracked compile when Analysis is not valid JSON", async () => {
+    const llm = await import("../llm");
+    const hasKey = vi.spyOn(llm, "hasLLMKey").mockReturnValue(true);
+    const call = vi
+      .spyOn(llm, "callLLM")
+      .mockResolvedValue("# Not JSON\n\nWiki body.");
+    const { ingest } = await import("../ingest");
+    await expect(
+      ingest("Meet", "# Meet\n\nNotes.", {
+        owner: "alice",
+        author: "alice",
+        jobId: "job-analysis-1",
+      }),
+    ).rejects.toThrow(/Analysis did not return valid JSON/);
+    hasKey.mockRestore();
+    call.mockRestore();
   });
 });

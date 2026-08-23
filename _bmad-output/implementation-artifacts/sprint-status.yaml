@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-22-2026 18:02
+last_updated: 08-22-2026 21:02
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
@@ -60,7 +60,7 @@ development_status:
   2-10-confirm-gated-cascade-source-delete: done
   2-11-progressive-sources-view: done
   2-12-zip-export-and-import: done
-  epic-2-retrospective: optional
+  epic-2-retrospective: done
 
   epic-3: backlog
   3-1-sidecar-health-and-chat-http-sse: backlog
@@ -157,3 +157,67 @@ action_items:
     owner: "BMAD workflow"
     status: done
     ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md"
+  - id: "epic-2-retro-release-gates"
+    epic: 2
+    action: "Restore build, typecheck, full Vitest, lint, and authenticated Playwright
+      by fixing the Workbench client-server Source-delete boundary and all resulting
+      regressions."
+    owner: "Workbench / platform"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-intake-dedup"
+    epic: 2
+    action: "Make Intake dedup owner-safe, byte-exact, collision-safe, and truthful
+      about stored, skipped, refused, and not-queued outcomes."
+    owner: "Intake / storage"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-ingest-state-machine"
+    epic: 2
+    action: "Implement durable owner-serial ingest and atomic retry, cancel, progress,
+      and terminal job transitions across Worker isolates."
+    owner: "Queue / runtime"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-source-identity"
+    epic: 2
+    action: "Unify durable Source identity and provenance across Plaud origin, folder
+      paths, Pages, summaries, indexes, Todos, retries, deletes, and archives."
+    owner: "Wiki kernel"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-cancel-cascade"
+    epic: 2
+    action: "Make cancel and Source cascade owner-scoped, atomically fenced, exact-keyed,
+      and resumable without orphaned bytes or pages."
+    owner: "Wiki kernel"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-bookkeeping"
+    epic: 2
+    action: "Make Analysis failure retryable and bookkeeping idempotently repairable,
+      Schema-driven, and explicit about Overview summary inclusion."
+    owner: "Ingest / lifecycle"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-sources-activity"
+    epic: 2
+    action: "Provide server-progressive Sources listing, active-queue progress, and
+      executed route and interaction tests for Activity, delete, and vector backfill."
+    owner: "Workbench / API"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-orchestration"
+    epic: 2
+    action: "After correctness, extract shared dispatch contracts and move Intake
+      and delete orchestration out of the Workbench shell."
+    owner: "Architecture / maintainers"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-contract-rulings"
+    epic: 2
+    action: "Resolve and reconcile strict-versus-fail-soft vector embedding, dataVersion,
+      and identical-bytes Source identity contracts."
+    owner: "Product / architecture"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"

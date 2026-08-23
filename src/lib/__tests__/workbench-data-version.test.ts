@@ -1154,20 +1154,17 @@ describe("the bump lives at exactly one site", () => {
     // write. This pins WHERE the bump is, the way the `wikis.ts` test above
     // pins its four.
     //
-    // One site, in the private `storeRawSource`, which both public writers
-    // (`saveRawSource` and `saveRawSourceFor`) go through. It has to be AFTER
-    // the write and BELOW the early return that declines an occupied key: a
-    // Source is immutable (FR-2), so a re-arrival stores nothing — and a
-    // counter that moved anyway would re-render the shell on every re-ingest of
-    // a page, for bytes that did not change.
+    // Three sites, each after a real byte change: a new store, a silo repair
+    // that made the Source visible, and a cascade delete. A re-arrival that
+    // changed nothing still returns before the write bump (FR-2).
     const stripComments = (text: string): string =>
       text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
     const source = stripComments(await readSource("lib/raw.ts"));
 
     // Both forms, for the reason the `wikis.ts` case gives: the identifier form
     // is what catches a bump fired unawaited, which the await form cannot see.
-    expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(1);
-    expect(source.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(1);
+    expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(3);
+    expect(source.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(3);
 
     const at = source.indexOf("async function storeRawSource(");
     expect(at).toBeGreaterThan(-1);
@@ -1177,10 +1174,10 @@ describe("the bump lives at exactly one site", () => {
 
     const skip = body.indexOf("return false;");
     const write = body.indexOf("writeFile(rel, content)");
-    const bump = body.indexOf("await bumpDataVersion();");
+    const writeBump = body.lastIndexOf("await bumpDataVersion();");
     expect(skip).toBeGreaterThan(-1);
-    expect(bump).toBeGreaterThan(write);
-    expect(bump).toBeGreaterThan(skip);
+    expect(writeBump).toBeGreaterThan(write);
+    expect(writeBump).toBeGreaterThan(skip);
   });
 
   it("introduces no second refresh paradigm anywhere in src", async () => {

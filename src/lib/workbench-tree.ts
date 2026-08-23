@@ -32,6 +32,9 @@ export const WORKBENCH_FILE_LIMIT = 2000;
 export const SOURCES_WINDOW_INITIAL = 80;
 export const SOURCES_WINDOW_STEP = 80;
 
+/** SSR file walk budget so first paint does not wait on every row. */
+export const WORKBENCH_FIRST_PAINT_LIMIT = 80;
+
 /**
  * Deepest level the walk descends to, counting the root directory as level 1:
  * `wiki/` is 1, `wiki/a.md` is 2, `raw/sources/` is 2, a hashed Intake key

@@ -75,7 +75,6 @@ import {
 import {
   INTAKE_DROP_COPY,
   INTAKE_FILE_REQUIRED_COPY,
-  INTAKE_FOLDER_COPY,
   INTAKE_IN_FLIGHT_COPY,
   INTAKE_READ_ONLY_COPY,
   intakeDragHasFiles,
@@ -83,6 +82,7 @@ import {
 import {
   intakeReport,
   intakeShouldRefresh,
+  emptyFolderOutcome,
   submitIntakeFiles,
   submitIntakeUrl,
   type IntakeOutcome,
@@ -107,7 +107,7 @@ import {
   SOURCE_DELETE_CONFIRM,
   SOURCE_DELETE_TITLE,
   SOURCE_ROUTE,
-} from "@/lib/source-cascade";
+} from "@/lib/source-delete";
 import { IconRail } from "./IconRail";
 import { ActivityDock } from "./ActivityDock";
 import { IntakeControls } from "./IntakeControls";
@@ -915,7 +915,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       // indistinguishable from losing the pick; the drop of an empty file list
       // still uses `INTAKE_FILE_REQUIRED_COPY` above this helper.
       if (picked.length === 0) {
-        reportIntake([{ name: "", error: INTAKE_FOLDER_COPY, unconfirmed: false }]);
+        reportIntake([emptyFolderOutcome()]);
         return;
       }
       // A batch is already in flight. The controls are disabled, but a DROP has
@@ -1022,11 +1022,12 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
       // coordinates have to agree that we are outside before we reset —
       // otherwise a leave between two children would kill the overlay mid-drag.
       if (event.relatedTarget !== null) return;
+      const root = document.documentElement;
       if (
         event.clientX > 0 &&
         event.clientY > 0 &&
-        event.clientX < window.innerWidth &&
-        event.clientY < window.innerHeight
+        event.clientX < root.clientWidth &&
+        event.clientY < root.clientHeight
       ) {
         return;
       }
@@ -1491,7 +1492,7 @@ export function Workbench({ children, todoCount = 0, reviewCount = 0 }: Workbenc
             )}
           </div>
         )}
-        {(mode === "wiki" || mode === "sources" || mode === "files") && !settingsOpen && (
+        {(mode === "wiki" || mode === "sources") && !settingsOpen && (
           <ActivityDock readOnly={readOnly} />
         )}
         {/* Settings' own nav takes the column the trees usually have (UX-DR14).

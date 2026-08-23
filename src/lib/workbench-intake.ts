@@ -217,6 +217,21 @@ export function intakeStoredCopy(count: number): string {
   return `Stored ${count} ${count === 1 ? "source" : "sources"}. Ingest is queued.`;
 }
 
+export const INTAKE_PATH_COLLISION_COPY =
+  "A different source already occupies that folder path.";
+
+export function intakeSkippedCopy(count: number): string {
+  return `Skipped compile for ${count} ${count === 1 ? "source" : "sources"} (already ingested).`;
+}
+
+export function intakeStoredNotQueuedCopy(count: number): string {
+  return `Stored ${count} ${count === 1 ? "source" : "sources"}. Ingest was not queued.`;
+}
+
+export function intakeRefusedCopy(count: number): string {
+  return `Refused ${count} ${count === 1 ? "source" : "sources"}.`;
+}
+
 // ---------------------------------------------------------------------------
 // Classifying one arrival
 // ---------------------------------------------------------------------------

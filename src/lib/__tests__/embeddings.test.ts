@@ -16,6 +16,12 @@ vi.mock("../config", async () => {
   return {
     ...actual,
     loadConfigSync: vi.fn(() => ({})),
+    getVectorSearchSettings: vi.fn(() => ({
+      enabled: true,
+      provider: "openai",
+      model: "text-embedding-3-small",
+      baseUrl: undefined,
+    })),
   };
 });
 

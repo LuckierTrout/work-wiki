@@ -14,6 +14,7 @@ import {
   buildFileTree,
   buildKnowledgeTree,
   readableSlugsFromKnowledge,
+  WORKBENCH_FIRST_PAINT_LIMIT,
 } from "@/lib/workbench-tree";
 import { emptyRegistry, getWikiRegistry } from "@/lib/wikis";
 
@@ -98,7 +99,7 @@ export default async function Home() {
   const fileListing = await listWorkbenchFilePaths(
     principal.handle,
     wikiRegistry.registry.currentId,
-    { readableSlugs },
+    { readableSlugs, limit: WORKBENCH_FIRST_PAINT_LIMIT },
   )
     .then((listing) => ({ ...listing, unavailable: false }))
     .catch((error) => {

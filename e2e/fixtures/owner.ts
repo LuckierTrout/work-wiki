@@ -9,9 +9,9 @@ import { E2E_OWNER_ID, E2E_SECRET } from "../env";
  * with.
  */
 export const test = base.extend({
-  storageState: async ({}, use) => {
+  storageState: async ({}, apply) => {
     const value = await mintE2eCookie(E2E_OWNER_ID, E2E_SECRET);
-    await use({
+    await apply({
       cookies: [
         {
           name: E2E_COOKIE_NAME,

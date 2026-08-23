@@ -4,7 +4,8 @@ import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
-import { cascadeDeleteSource, sourceRestFromPath } from "@/lib/source-cascade";
+import { cascadeDeleteSource } from "@/lib/source-cascade";
+import { sourceRestFromPath } from "@/lib/source-delete";
 import { INTAKE_SIGN_IN_COPY } from "@/lib/workbench-intake";
 
 /**

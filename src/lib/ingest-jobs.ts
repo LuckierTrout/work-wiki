@@ -8,13 +8,20 @@
 
 import { getStorage } from "./storage";
 import { isEnoent } from "./errors";
+import { withFileLock } from "./lock";
 import { logger } from "./logger";
 import type { EmailIngestMetadata } from "./email-ingest";
 
 /** Default TTL for terminal ingest jobs before GC deletes the file (7 days). */
 export const INGEST_JOB_GC_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-export type IngestJobStatus = "queued" | "processing" | "done" | "failed" | "skipped";
+export type IngestJobStatus =
+  | "queued"
+  | "processing"
+  | "retrying"
+  | "done"
+  | "failed"
+  | "skipped";
 export type IngestJobStage =
   | "queued"
   | "extracting"
@@ -49,7 +56,11 @@ export const INGEST_JOB_STALE_MS = 20 * 60 * 1000;
 export function effectiveStatus(
   job: Pick<IngestJob, "status" | "updatedAt">,
 ): { status: IngestJobStatus; error?: string } {
-  if (job.status === "queued" || job.status === "processing") {
+  if (
+    job.status === "queued" ||
+    job.status === "processing" ||
+    job.status === "retrying"
+  ) {
     const age = Date.now() - Date.parse(job.updatedAt);
     if (Number.isFinite(age) && age > INGEST_JOB_STALE_MS) {
       return { status: "failed", error: "This ingest stalled — please try again." };
@@ -87,6 +98,8 @@ export interface IngestJob {
   contentSha256?: string;
   kind?: IngestJobKind;
   cancelled?: boolean;
+  /** Source was cascade-deleted; workers must not write Pages. */
+  sourceDeleted?: boolean;
   reuseAnalysis?: boolean;
   progressDone?: number;
   progressTotal?: number;
@@ -199,6 +212,7 @@ export type IngestJobPatch = Partial<
     | "error"
     | "title"
     | "cancelled"
+    | "sourceDeleted"
     | "reuseAnalysis"
     | "progressDone"
     | "progressTotal"
@@ -213,25 +227,84 @@ export async function updateIngestJob(
   jobId: string,
   patch: IngestJobPatch,
 ): Promise<IngestJob | null> {
-  const existing = await getIngestJob(jobId);
-  if (!existing) {
-    logger.warn("ingest-jobs", `updateIngestJob: job ${jobId} not found`);
-    return null;
+  return withFileLock(`ingest-job:${jobId}`, async () => {
+    const existing = await getIngestJob(jobId);
+    if (!existing) {
+      logger.warn("ingest-jobs", `updateIngestJob: job ${jobId} not found`);
+      return null;
+    }
+    const updated: IngestJob = {
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
+    return updated;
+  });
+}
+
+/**
+ * Claim a queued or retrying job for this isolate. Returns null if another
+ * worker already holds it, it is terminal, cancelled, or source-deleted.
+ */
+export async function claimIngestJob(
+  jobId: string,
+  owner: string,
+): Promise<IngestJob | null> {
+  return withFileLock(`ingest-job:${jobId}`, async () => {
+    const job = await getIngestJob(jobId);
+    if (!job || job.owner !== owner) return null;
+    if (job.cancelled || job.sourceDeleted) return null;
+    if (job.status !== "queued" && job.status !== "retrying") return null;
+    const updated: IngestJob = {
+      ...job,
+      status: "processing",
+      stage: job.stage === "generation" ? "generation" : "extracting",
+      updatedAt: new Date().toISOString(),
+    };
+    await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
+    return updated;
+  });
+}
+
+/** Cancel or tombstone every non-terminal job whose Source identity matches. */
+export async function cancelJobsForSource(
+  owner: string,
+  keys: readonly string[],
+): Promise<number> {
+  const keySet = new Set(keys);
+  const jobs = await listIngestJobs({ owner, limit: 500 });
+  let n = 0;
+  for (const job of jobs) {
+    if (!job.sourceRel) continue;
+    if (!keySet.has(job.sourceRel) && !keys.some((key) => job.sourceRel?.endsWith(key))) {
+      continue;
+    }
+    if (job.status === "done" || job.status === "skipped") {
+      await updateIngestJob(job.jobId, { sourceDeleted: true, cancelled: true });
+      n += 1;
+      continue;
+    }
+    await updateIngestJob(job.jobId, {
+      cancelled: true,
+      sourceDeleted: true,
+      status: job.status === "processing" ? "processing" : "failed",
+      error: INGEST_CANCELLED_COPY,
+    });
+    n += 1;
   }
-  const updated: IngestJob = {
-    ...existing,
-    ...patch,
-    updatedAt: new Date().toISOString(),
-  };
-  await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
-  return updated;
+  return n;
 }
 
 // ---------------------------------------------------------------------------
 // Garbage collection — purge terminal jobs older than a TTL
 // ---------------------------------------------------------------------------
 
-const TERMINAL_STATUSES: Set<IngestJobStatus> = new Set(["done", "failed", "skipped"]);
+const TERMINAL_STATUSES: Set<IngestJobStatus> = new Set([
+  "done",
+  "failed",
+  "skipped",
+]);
 
 /**
  * Ask a queued or in-flight job to stop before Page writes. Terminal jobs are
@@ -243,22 +316,38 @@ export async function cancelIngestJob(
   jobId: string,
   owner: string,
 ): Promise<IngestJob | null> {
-  const job = await getIngestJob(jobId);
-  if (!job || job.owner !== owner) return null;
-  if (job.status === "done" || job.status === "skipped") return job;
-  if (job.status === "failed") {
-    // Do not overwrite an existing failed error with cancelled copy.
-    if (job.cancelled) return job;
-    return updateIngestJob(jobId, { cancelled: true });
-  }
-  if (job.status === "processing") {
-    // Keep processing so Retry cannot start a second compile mid-write.
-    return updateIngestJob(jobId, { cancelled: true });
-  }
-  return updateIngestJob(jobId, {
-    cancelled: true,
-    status: "failed",
-    error: INGEST_CANCELLED_COPY,
+  return withFileLock(`ingest-job:${jobId}`, async () => {
+    const job = await getIngestJob(jobId);
+    if (!job || job.owner !== owner) return null;
+    if (job.status === "done" || job.status === "skipped") return job;
+    if (job.status === "failed") {
+      if (job.cancelled) return job;
+      const updated: IngestJob = {
+        ...job,
+        cancelled: true,
+        updatedAt: new Date().toISOString(),
+      };
+      await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
+      return updated;
+    }
+    if (job.status === "processing") {
+      const updated: IngestJob = {
+        ...job,
+        cancelled: true,
+        updatedAt: new Date().toISOString(),
+      };
+      await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
+      return updated;
+    }
+    const updated: IngestJob = {
+      ...job,
+      cancelled: true,
+      status: "failed",
+      error: INGEST_CANCELLED_COPY,
+      updatedAt: new Date().toISOString(),
+    };
+    await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
+    return updated;
   });
 }
 
@@ -270,16 +359,23 @@ export async function retryIngestJob(
   jobId: string,
   owner: string,
 ): Promise<IngestJob | null> {
-  const job = await getIngestJob(jobId);
-  if (!job || job.owner !== owner) return null;
-  if (job.status === "processing") return null;
-  if (job.status !== "failed") return null;
-  return updateIngestJob(jobId, {
-    status: "queued",
-    stage: "queued",
-    error: "",
-    cancelled: false,
-    reuseAnalysis: true,
+  return withFileLock(`ingest-job:${jobId}`, async () => {
+    const job = await getIngestJob(jobId);
+    if (!job || job.owner !== owner) return null;
+    if (job.sourceDeleted) return null;
+    if (job.status === "processing" || job.status === "retrying") return null;
+    if (job.status !== "failed") return null;
+    const updated: IngestJob = {
+      ...job,
+      status: "queued",
+      stage: "queued",
+      error: "",
+      cancelled: false,
+      reuseAnalysis: true,
+      updatedAt: new Date().toISOString(),
+    };
+    await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
+    return updated;
   });
 }
 const JOBS_PREFIX = "ingest-jobs";

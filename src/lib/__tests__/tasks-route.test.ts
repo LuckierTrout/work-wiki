@@ -571,7 +571,7 @@ describe("POST /api/tasks/run", () => {
     expect(mockedDeleteStaged).not.toHaveBeenCalled();
     // The tracked job is recorded failed.
     expect(mockedUpdateJob).toHaveBeenCalledWith("job-x", {
-      status: "failed",
+      status: "retrying",
       error: "R2 read flaked",
     });
   });
@@ -644,7 +644,7 @@ describe("POST /api/tasks/run", () => {
       stage: "extracting",
     });
     expect(mockedUpdateJob).toHaveBeenCalledWith("job-2", {
-      status: "failed",
+      status: "retrying",
       error: "LLM timeout",
     });
   });

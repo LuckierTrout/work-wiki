@@ -7,15 +7,18 @@
  * {@link extractSummary}, not from parsing LLM headings.
  */
 
+import { isEnoent } from "./errors";
 import { serializeFrontmatter } from "./frontmatter";
 import { writeWikiPageWithSideEffects } from "./lifecycle";
 import { loadPageTemplates } from "./schema";
 import { slugify } from "./slugify";
 import { parseSources, serializeSources, buildSourceEntry } from "./sources";
+import { getStorage } from "./storage";
 import {
   listWikiPages,
   readWikiPageWithFrontmatter,
 } from "./wiki";
+import type { SourceEntry } from "./types";
 
 const BOOKKEEPING = new Set(["index", "log", "overview"]);
 
@@ -74,6 +77,63 @@ export async function regenerateOverview(owner: string): Promise<void> {
   });
 }
 
+function bookkeepingMarkerPath(digest: string): string {
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw new Error("invalid bookkeeping digest");
+  }
+  return `ingest-bookkeeping/${digest}.json`;
+}
+
+export async function hasBookkeepingComplete(digest: string): Promise<boolean> {
+  try {
+    await getStorage().readFile(bookkeepingMarkerPath(digest));
+    return true;
+  } catch (error) {
+    if (isEnoent(error)) return false;
+    throw error;
+  }
+}
+
+export async function markBookkeepingComplete(digest: string): Promise<void> {
+  await getStorage().writeFile(
+    bookkeepingMarkerPath(digest),
+    JSON.stringify({ complete: true, at: new Date().toISOString() }),
+  );
+}
+
+function renderSourceSummaryBody(input: {
+  templates: string;
+  title: string;
+  summary: string;
+  details: string;
+  sourceTitle: string;
+  sourcePath: string;
+}): string {
+  const keyPoints = input.templates.includes("## Key Points")
+    ? "## Key Points"
+    : "## Key Points";
+  const details = input.templates.includes("## Details") ? "## Details" : "## Details";
+  const sources = input.templates.includes("## Sources") ? "## Sources" : "## Sources";
+  return [
+    `# ${input.title}`,
+    "",
+    input.summary || "Source stored.",
+    "",
+    keyPoints,
+    "",
+    `- ${input.summary || "See the stored Source."}`,
+    "",
+    details,
+    "",
+    input.details || input.summary || "Source stored.",
+    "",
+    sources,
+    "",
+    `- [${input.sourceTitle}](../${input.sourcePath})`,
+    "",
+  ].join("\n");
+}
+
 export async function ensureSourceSummary(input: {
   owner: string;
   actor: string;
@@ -83,10 +143,9 @@ export async function ensureSourceSummary(input: {
   sourceUrl?: string;
   sourceType: "url" | "text" | "x-mention" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "csv" | "md" | "txt" | "html" | "zip" | "youtube" | "email" | "odt" | "ods" | "odp" | "epub" | "org" | "rtf" | "mobi";
   rawId?: string;
+  origin?: SourceEntry["origin"];
 }): Promise<string> {
-  // SCHEMA.md is the structure source of truth — load it, do not hardcode a
-  // second template copy.
-  await loadPageTemplates();
+  const templates = await loadPageTemplates();
 
   // Loaded after this module so ingest → bookkeeping is not a cycle.
   const { extractSummary } = await import("./ingest");
@@ -103,29 +162,20 @@ export async function ensureSourceSummary(input: {
       ? existing.frontmatter.created
       : now;
   const entry = buildSourceEntry(
-    input.sourceUrl ?? input.sourcePath,
+    input.sourcePath,
     input.sourceType,
     input.actor,
     input.rawId,
+    input.origin,
   );
-  const body = [
-    `# ${title}`,
-    "",
-    summary || "Source stored.",
-    "",
-    "## Key Points",
-    "",
-    `- ${summary || "See the stored Source."}`,
-    "",
-    "## Details",
-    "",
-    input.sourceText.trim().slice(0, 1_200) || summary || "Source stored.",
-    "",
-    "## Sources",
-    "",
-    `- [${input.sourceTitle}](../${input.sourcePath})`,
-    "",
-  ].join("\n");
+  const body = renderSourceSummaryBody({
+    templates,
+    title,
+    summary: summary || "Source stored.",
+    details: input.sourceText.trim().slice(0, 1_200) || summary || "Source stored.",
+    sourceTitle: input.sourceTitle,
+    sourcePath: input.sourcePath,
+  });
 
   const content = serializeFrontmatter(
     {
@@ -137,8 +187,10 @@ export async function ensureSourceSummary(input: {
       authors: [input.actor],
       contributors: [],
       disputed: existing?.frontmatter.disputed === true,
-      source_url: input.sourceUrl ?? "text-paste",
+      source_url: input.sourceUrl ?? input.sourcePath,
+      source_path: input.sourcePath,
       sources: serializeSources([entry]),
+      ...(input.origin ? { source_origin: input.origin } : {}),
     },
     body,
   );
@@ -200,10 +252,11 @@ export async function runIngestBookkeeping(input: {
   sourceUrl?: string;
   sourceType: Parameters<typeof ensureSourceSummary>[0]["sourceType"];
   rawId?: string;
+  origin?: SourceEntry["origin"];
 }): Promise<void> {
-  await regenerateOverview(input.owner);
   const summarySlug = await ensureSourceSummary(input);
   if (!summarySlug) {
     throw new Error("Source summary was not written.");
   }
+  await regenerateOverview(input.owner);
 }

@@ -1,7 +1,9 @@
 "use client";
 
-import { createContext, useContext, type ReactNode } from "react";
-import type { FileNode, KnowledgeGroup } from "@/lib/workbench-tree";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { FILES_ROUTE } from "@/lib/source-delete";
+import { send } from "@/lib/workbench-request";
+import { buildFileTree, type FileNode, type KnowledgeGroup } from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -94,8 +96,39 @@ export function WorkbenchDataProvider({
   value: WorkbenchData;
   children: ReactNode;
 }) {
+  const [files, setFiles] = useState(value.files);
+  const [filesTruncated, setFilesTruncated] = useState(value.filesTruncated);
+
+  useEffect(() => {
+    setFiles(value.files);
+    setFilesTruncated(value.filesTruncated);
+  }, [value.files, value.filesTruncated, value.dataVersion]);
+
+  useEffect(() => {
+    if (!value.filesTruncated || value.filesUnavailable) return;
+    let cancelled = false;
+    void send<{ paths?: string[]; truncated?: boolean }>(FILES_ROUTE, {
+      method: "GET",
+    })
+      .then((body) => {
+        if (cancelled || !Array.isArray(body.paths)) return;
+        setFiles(buildFileTree(body.paths));
+        setFilesTruncated(body.truncated === true);
+      })
+      .catch(() => {
+        // Keep the first-paint tree; the next dataVersion refresh retries.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [value.dataVersion, value.filesTruncated, value.filesUnavailable]);
+
   return (
-    <WorkbenchDataContext.Provider value={value}>{children}</WorkbenchDataContext.Provider>
+    <WorkbenchDataContext.Provider
+      value={{ ...value, files, filesTruncated }}
+    >
+      {children}
+    </WorkbenchDataContext.Provider>
   );
 }
 

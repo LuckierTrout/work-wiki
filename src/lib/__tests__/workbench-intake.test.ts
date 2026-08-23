@@ -36,6 +36,7 @@ import {
   INTAKE_EMPTY_SOURCE_COPY,
   INTAKE_EXTENSIONS,
   INTAKE_FALLBACK_SLUG,
+  INTAKE_FILE_REQUIRED_COPY,
   INTAKE_FOLDER_COPY,
   INTAKE_FOLDER_LABEL,
   INTAKE_IMPORT_LABEL,
@@ -370,6 +371,7 @@ vi.mock("@/lib/raw", () => ({
     path: `raw/sources/${relativePath}`,
     created: true,
   })),
+  readRawSourceTree: vi.fn(async () => null),
 }));
 vi.mock("@/lib/fetch", async (importOriginal) => ({
   // The real module for `ALLOWED_CONTENT_TYPES`, which the narrowing case above
@@ -385,6 +387,10 @@ vi.mock("@/lib/ingest-jobs", () => ({ createIngestJob: vi.fn(async () => ({})) }
 vi.mock("@/lib/source-index", () => ({
   resolveContentSha256: vi.fn(async () => null),
   resolveStoredSourcePath: vi.fn(async () => "raw/sources/existing/abc.md"),
+}));
+vi.mock("@/lib/wiki", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../wiki")>()),
+  readWikiPageWithFrontmatter: vi.fn(async () => null),
 }));
 vi.mock("@/lib/source-sha256", () => ({
   sourceSha256: vi.fn(async () => "ab".repeat(32)),
@@ -407,7 +413,7 @@ import { createIngestJob } from "@/lib/ingest-jobs";
 import { stageText } from "@/lib/ingest-staging";
 import { ingest, recordSourceResee } from "@/lib/ingest";
 import { resolveContentSha256 } from "@/lib/source-index";
-import { saveRawSourceFor, saveRawSourceTree } from "@/lib/raw";
+import { readRawSourceTree, saveRawSourceFor, saveRawSourceTree } from "@/lib/raw";
 import { POST } from "@/app/api/workbench/intake/route";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
@@ -415,6 +421,7 @@ const mockedReadOnly = vi.mocked(isReadOnly);
 const mockedFetchUrl = vi.mocked(fetchUrlContent);
 const mockedSave = vi.mocked(saveRawSourceFor);
 const mockedSaveTree = vi.mocked(saveRawSourceTree);
+const mockedReadTree = vi.mocked(readRawSourceTree);
 const mockedIngest = vi.mocked(ingest);
 const mockedResee = vi.mocked(recordSourceResee);
 const mockedSha = vi.mocked(resolveContentSha256);
@@ -592,12 +599,21 @@ describe("POST /api/workbench/intake — files", () => {
     expect((await post(fileRequest())).status).toBe(400);
     expectNothingCommitted();
     vi.clearAllMocks();
-    // Whitespace only: nothing storable arrived, and no Source is invented for
-    // it — the failure belongs to the action the owner took.
-    const { status, body } = await post(fileRequest(new File(["   \n  "], "blank.md")));
+    // Zero bytes: nothing storable arrived. Whitespace is still bytes and is
+    // stored as-is (Story 2.7).
+    const { status, body } = await post(fileRequest(new File([""], "blank.md")));
     expect(status).toBe(400);
-    expect(body.error).toBe(INTAKE_EMPTY_SOURCE_COPY);
+    expect(body.error).toBe(INTAKE_FILE_REQUIRED_COPY);
     expectNothingCommitted();
+  });
+
+  it("stores a whitespace-only file as those exact bytes", async () => {
+    const { status, body } = await post(
+      fileRequest(new File(["   \n  "], "blank.md")),
+    );
+    expect(status).toBe(202);
+    expect(mockedSave.mock.calls[0][2]).toBe("   \n  ");
+    expect(body.queued).toBe(true);
   });
 
   it("makes N files into N Sources and N queue items", async () => {
@@ -642,18 +658,19 @@ describe("POST /api/workbench/intake — files", () => {
     );
   });
 
-  it("does not queue Ingest when the tree key is already occupied", async () => {
+  it("does not queue Ingest when the tree key already holds the same bytes", async () => {
     mockedSaveTree.mockResolvedValueOnce({
       path: "raw/sources/papers/energy/note.md",
       created: false,
     });
+    mockedReadTree.mockResolvedValueOnce("new bytes");
     const { status, body } = await post(
       fileRequest(new File(["new bytes"], "note.md"), "papers/energy/note.md"),
     );
     expect(status).toBe(200);
     expect(body.queued).toBe(false);
+    expect(body.skipped).toBe(true);
     expect(body.path).toBe("raw/sources/papers/energy/note.md");
-    expect(mockedJob).not.toHaveBeenCalled();
     expect(mockedEnqueue).not.toHaveBeenCalled();
     expect(mockedIngest).not.toHaveBeenCalled();
   });
@@ -722,15 +739,42 @@ describe("POST /api/workbench/intake — files", () => {
     });
   });
 
-  it("does not write a second Source on a folder SHA256 hit", async () => {
+  it("stores the second folder path on a SHA256 hit and skips compile", async () => {
     mockedSha.mockResolvedValueOnce("existing-page");
-    const { status } = await post(
+    const { status, body } = await post(
       fileRequest(new File(["# Same"], "note.md"), "papers/energy/note.md"),
     );
     expect(status).toBe(200);
+    expect(body.skipped).toBe(true);
     expect(mockedSave).not.toHaveBeenCalled();
-    expect(mockedSaveTree).not.toHaveBeenCalled();
+    expect(mockedSaveTree).toHaveBeenCalledTimes(1);
     expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("refuses a folder path occupied by different bytes", async () => {
+    mockedSaveTree.mockResolvedValueOnce({
+      path: "raw/sources/papers/energy/note.md",
+      created: false,
+    });
+    mockedReadTree.mockResolvedValueOnce("old bytes");
+    const { status, body } = await post(
+      fileRequest(new File(["# New"], "note.md"), "papers/energy/note.md"),
+    );
+    expect(status).toBe(409);
+    expect(body.refused).toBe(true);
+    expect(body.queued).toBe(false);
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("does not skip or disclose a SHA hit the caller cannot re-see", async () => {
+    mockedSha.mockResolvedValueOnce("other-owner-page");
+    mockedResee.mockResolvedValueOnce(null);
+    const { status, body } = await post(fileRequest(new File(["# Same"], "same.md")));
+    expect(status).toBe(202);
+    expect(body.skipped).not.toBe(true);
+    expect(body.slug).not.toBe("other-owner-page");
+    expect(mockedSave).toHaveBeenCalled();
+    expect(mockedEnqueue).toHaveBeenCalled();
   });
 
   it("refuses a file over the byte cap", async () => {
@@ -967,8 +1011,8 @@ describe("the client's per-item submit", () => {
       expect(init.headers).toBeUndefined();
     }
     expect(outcomes).toEqual([
-      { name: "a.md", error: null, unconfirmed: false },
-      { name: "b.txt", error: null, unconfirmed: false },
+      { name: "a.md", error: null, unconfirmed: false, disposition: "queued" },
+      { name: "b.txt", error: null, unconfirmed: false, disposition: "queued" },
     ]);
     vi.unstubAllGlobals();
   });
@@ -1057,7 +1101,7 @@ describe("the client's per-item submit", () => {
     await submitIntakeUrl("https://example.com/a", "  selected paragraph  ");
     expect(JSON.parse(String(spy.mock.calls[0][1].body))).toEqual({
       url: "https://example.com/a",
-      clip: "selected paragraph",
+      clip: "  selected paragraph  ",
     });
 
     spy.mockClear();
@@ -1209,8 +1253,18 @@ describe("a folder drop stores each leaf and queues it", () => {
 });
 
 describe("the batch sentence", () => {
-  const stored = (name: string) => ({ name, error: null, unconfirmed: false });
-  const failed = (name: string, error: string) => ({ name, error, unconfirmed: false });
+  const stored = (name: string) => ({
+    name,
+    error: null,
+    unconfirmed: false,
+    disposition: "queued" as const,
+  });
+  const failed = (name: string, error: string) => ({
+    name,
+    error,
+    unconfirmed: false,
+    disposition: "failed" as const,
+  });
 
   it("counts what landed when everything landed", () => {
     expect(intakeReport([stored("a.md"), stored("b.md")])).toBe(intakeStoredCopy(2));
@@ -1240,7 +1294,9 @@ describe("the batch sentence", () => {
     expect(intakeShouldRefresh([stored("a.md")])).toBe(true);
     expect(intakeShouldRefresh([failed("a.md", "no")])).toBe(false);
     expect(
-      intakeShouldRefresh([{ name: "a.md", error: "unknown", unconfirmed: true }]),
+      intakeShouldRefresh([
+        { name: "a.md", error: "unknown", unconfirmed: true, disposition: "unconfirmed" },
+      ]),
     ).toBe(true);
   });
 });

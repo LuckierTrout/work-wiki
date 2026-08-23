@@ -149,6 +149,20 @@ describe("ingest-jobs", () => {
     expect((await getIngestJob("proc-1"))?.status).toBe("processing");
   });
 
+  it("cancel of a retrying job becomes failed immediately", async () => {
+    await createIngestJob({ jobId: "retrying-1", owner: "alice", title: "R" });
+    await updateIngestJob("retrying-1", { status: "retrying" });
+    const cancelled = await cancelIngestJob("retrying-1", "alice");
+    expect(cancelled).toMatchObject({
+      status: "failed",
+      cancelled: true,
+      error: INGEST_CANCELLED_COPY,
+    });
+    expect(await retryIngestJob("retrying-1", "alice")).toMatchObject({
+      status: "queued",
+    });
+  });
+
   it("does not overwrite an existing failed error with cancelled copy", async () => {
     await createIngestJob({ jobId: "fail-1", owner: "alice", title: "F" });
     await updateIngestJob("fail-1", { status: "failed", error: "LLM timeout" });

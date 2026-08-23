@@ -21,7 +21,7 @@ import {
   type ActivityRow,
 } from "@/lib/workbench-activity";
 import { INTAKE_SIGN_IN_COPY } from "@/lib/workbench-intake";
-import { sourceRestFromPath } from "@/lib/source-cascade";
+import { sourceRestFromPath } from "@/lib/source-delete";
 
 /**
  * GET /api/workbench/activity — Activity poll source.
@@ -50,8 +50,11 @@ export async function GET() {
       ...(error || job.error ? { error: error || job.error } : {}),
       ...(typeof job.progressDone === "number" ? { progressDone: job.progressDone } : {}),
       ...(typeof job.progressTotal === "number" ? { progressTotal: job.progressTotal } : {}),
-      canCancel: !job.cancelled && (status === "queued" || status === "processing"),
-      canRetry: status === "failed",
+      canCancel:
+        !job.cancelled &&
+        !job.sourceDeleted &&
+        (status === "queued" || status === "processing" || status === "retrying"),
+      canRetry: status === "failed" && !job.sourceDeleted,
     };
   });
   return NextResponse.json({ rows });

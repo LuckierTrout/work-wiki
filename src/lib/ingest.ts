@@ -61,6 +61,7 @@ export function mergeSourceEntry(sources: SourceEntry[], entry: SourceEntry): So
       // Carry the new snapshot id (a new body mints a new content-hashed
       // id; also upgrades a legacy entry that predates per-source raw).
       ...(entry.raw_id ? { raw_id: entry.raw_id } : {}),
+      ...(entry.origin ? { origin: entry.origin } : {}),
     };
   } else {
     base.push(entry);
@@ -153,13 +154,18 @@ import {
   saveIngestAnalysis,
   type IngestAnalysis,
 } from "./ingest-analysis";
-import { runIngestBookkeeping } from "./ingest-bookkeeping";
+import {
+  hasBookkeepingComplete,
+  markBookkeepingComplete,
+  runIngestBookkeeping,
+} from "./ingest-bookkeeping";
 import {
   getIngestJob,
   INGEST_CANCELLED_COPY,
   updateIngestJob,
 } from "./ingest-jobs";
-import { withFileLock } from "./lock";
+import { withDurableLock, withFileLock } from "./lock";
+import { sourceRestFromPath, workbenchSourcePath } from "./source-delete";
 
 // ---------------------------------------------------------------------------
 // Ingest ledger — append-only JSONL record of each ingest operation
@@ -1369,7 +1375,7 @@ export class IngestCancelledError extends Error {
 async function assertNotCancelled(jobId?: string): Promise<void> {
   if (!jobId) return;
   const job = await getIngestJob(jobId);
-  if (job?.cancelled) throw new IngestCancelledError();
+  if (job?.cancelled || job?.sourceDeleted) throw new IngestCancelledError();
 }
 
 /**
@@ -1560,25 +1566,22 @@ async function analyzeSource(
   ]
     .filter(Boolean)
     .join("\n");
-  try {
-    const raw = await callLLM(ANALYSIS_SYSTEM_PROMPT, user, {
-      maxOutputTokens: 2_000,
-    });
-    const start = raw.indexOf("{");
-    const end = raw.lastIndexOf("}");
-    const parsed =
-      start >= 0 && end > start
-        ? parseIngestAnalysis(JSON.parse(raw.slice(start, end + 1)))
-        : null;
-    const analysis = parsed ?? emptyIngestAnalysis(context);
-    if (context && !analysis.classificationContext) {
-      analysis.classificationContext = context;
-    }
-    return analysis;
-  } catch (error) {
-    logger.warn("ingest", "analysis JSON failed; using empty analysis", error);
-    return emptyIngestAnalysis(context);
+  const raw = await callLLM(ANALYSIS_SYSTEM_PROMPT, user, {
+    maxOutputTokens: 2_000,
+  });
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  const parsed =
+    start >= 0 && end > start
+      ? parseIngestAnalysis(JSON.parse(raw.slice(start, end + 1)))
+      : null;
+  if (!parsed) {
+    throw new Error("Analysis did not return valid JSON.");
   }
+  if (context && !parsed.classificationContext) {
+    parsed.classificationContext = context;
+  }
+  return parsed;
 }
 
 async function runTwoStepSynthesis(input: {
@@ -1590,22 +1593,20 @@ async function runTwoStepSynthesis(input: {
   reuseAnalysis?: boolean;
   relativePath?: string;
 }): Promise<string> {
-  return withFileLock(`ingest-llm:${input.owner}`, async () => {
-    let analysis: IngestAnalysis | null = null;
-    if (input.reuseAnalysis && input.jobId) {
-      analysis = await loadIngestAnalysis(input.jobId);
+  return withDurableLock(`ingest-llm:${input.owner}`, async () => {
+    // Classic ingest (no tracked job) stays one Generation call. The two-step
+    // Analysis → Generation contract is the Workbench compile path.
+    if (!input.jobId) {
+      return synthesizeBody(input.title, input.content, input.owner, input.cache);
     }
+    let analysis: IngestAnalysis | null = await loadIngestAnalysis(input.jobId);
     if (!analysis) {
-      if (input.jobId) {
-        await updateIngestJob(input.jobId, { stage: "analysis" });
-      }
+      await updateIngestJob(input.jobId, { stage: "analysis" });
       analysis = await analyzeSource(input.title, input.content, input.relativePath);
-      if (input.jobId) await saveIngestAnalysis(input.jobId, analysis);
+      await saveIngestAnalysis(input.jobId, analysis);
     }
     await assertNotCancelled(input.jobId);
-    if (input.jobId) {
-      await updateIngestJob(input.jobId, { stage: "generation" });
-    }
+    await updateIngestJob(input.jobId, { stage: "generation" });
     return synthesizeBody(
       input.title,
       input.content,
@@ -1771,15 +1772,57 @@ export async function ingest(
   if (!prebuiltContent) {
     const dupSlug = await resolveContentSha256(sha256);
     if (dupSlug) {
-      const result = await recordSourceResee(dupSlug, {
-        url:
-          options?.sourceUrl ??
-          (options?.sourceType === "email" ? "email" : "text-paste"),
-        type: options?.sourceType ?? (options?.sourceUrl ? "url" : "text"),
-        triggeredBy: options?.triggeredBy,
-        actorOwner: owner,
-      });
-      if (result) return result;
+      const existingPage = await readWikiPageWithFrontmatter(dupSlug);
+      if (
+        existingPage &&
+        !sameHumanOwner(owner, existingPage.frontmatter.owner)
+      ) {
+        // Cross-owner hit: compile our own Source; do not attach or expose.
+      } else {
+        const result = await recordSourceResee(dupSlug, {
+          url:
+            (options?.sourcePath
+              ? workbenchSourcePath(options.sourcePath)
+              : null) ??
+            options?.sourcePath ??
+            options?.sourceUrl ??
+            (options?.sourceType === "email" ? "email" : "text-paste"),
+          type: options?.sourceType ?? (options?.sourceUrl ? "url" : "text"),
+          triggeredBy: options?.triggeredBy,
+          actorOwner: owner,
+        });
+        if (result) {
+          if (
+            (options?.sourcePath || options?.jobId) &&
+            !(await hasBookkeepingComplete(sha256))
+          ) {
+            const sourceType =
+              options?.sourceType ?? (options?.sourceUrl ? "url" : "text");
+            await runIngestBookkeeping({
+              owner,
+              actor,
+              sourceTitle: effectiveTitle,
+              sourceText: content,
+              sourcePath:
+                (options?.sourcePath
+                  ? workbenchSourcePath(options.sourcePath)
+                  : null) ??
+                options?.sourcePath ??
+                (options?.relativePath
+                  ? `raw/sources/${options.relativePath}`
+                  : `raw/sources/${dupSlug}`),
+              sourceUrl: options?.sourceUrl,
+              sourceType,
+              rawId: options?.sourcePath
+                ? (sourceRestFromPath(options.sourcePath) ?? undefined)
+                : undefined,
+              origin: options?.origin,
+            });
+            await markBookkeepingComplete(sha256);
+          }
+          return result;
+        }
+      }
     }
   }
 
@@ -1896,8 +1939,14 @@ export async function ingest(
 
   // --- Write path ---
 
-  // 3. Save raw source
-  const rawPath = await saveRawSource(slug, content);
+  // 3. Save raw source. Intake already stored the canonical object at
+  // `options.sourcePath` — do not mint untracked duplicates.
+  const canonicalSourcePath = options?.sourcePath
+    ? (workbenchSourcePath(options.sourcePath) ?? options.sourcePath)
+    : undefined;
+  const rawPath = canonicalSourcePath
+    ? canonicalSourcePath
+    : await saveRawSource(slug, content);
 
   // 4. Build / refresh the YAML frontmatter block. New pages get
   // created = updated = today and source_count = 1. Re-ingesting the same
@@ -1949,10 +1998,22 @@ export async function ingest(
   const sourceType = options?.sourceType
     ?? (options?.sourceUrl ? "url" : "text");
   const sourceUrl =
-    options?.sourceUrl ?? (sourceType === "email" ? "email" : "text-paste");
-  const rawId = contentHash(content);
-  await saveRawSourceFor(slug, rawId, content);
-  const sourceEntry = buildSourceEntry(sourceUrl, sourceType, options?.triggeredBy, rawId);
+    canonicalSourcePath ??
+    options?.sourceUrl ??
+    (sourceType === "email" ? "email" : "text-paste");
+  const rawId = canonicalSourcePath
+    ? (sourceRestFromPath(canonicalSourcePath) ?? contentHash(content))
+    : contentHash(content);
+  if (!canonicalSourcePath) {
+    await saveRawSourceFor(slug, rawId, content);
+  }
+  const sourceEntry = buildSourceEntry(
+    sourceUrl,
+    sourceType,
+    options?.triggeredBy,
+    rawId,
+    options?.origin,
+  );
   frontmatter.sources = serializeSources([sourceEntry]);
 
   // Tags = the page's own CONCEPT as a topic tag (deterministic) + caller tags +
@@ -2152,41 +2213,44 @@ export async function ingest(
 
   const contentWithFm = serializeFrontmatter(frontmatter, wikiContent);
 
-  await assertNotCancelled(options?.jobId);
-
-  // 5. Hand off to the unified write pipeline. We pass the raw `content` as
-  // `crossRefSource` so the LLM sees the full document when picking related
-  // pages, matching the previous behaviour.
-  const { updatedSlugs } = await writeWikiPageWithSideEffects({
-    slug,
-    title: pageTitle,
-    content: contentWithFm,
-    summary,
-    logOp: "ingest",
-    crossRefSource: content,
-    author: actor,
-    logDetails: ({ updatedSlugs }) =>
-      `slug: ${slug} · updated ${updatedSlugs.length} related page(s)`,
+  const commitLock = options?.jobId ? `ingest-job:${options.jobId}` : `ingest-commit:${slug}`;
+  const { updatedSlugs } = await withFileLock(commitLock, async () => {
+    await assertNotCancelled(options?.jobId);
+    return writeWikiPageWithSideEffects({
+      slug,
+      title: pageTitle,
+      content: contentWithFm,
+      summary,
+      logOp: "ingest",
+      crossRefSource: content,
+      author: actor,
+      logDetails: ({ updatedSlugs }) =>
+        `slug: ${slug} · updated ${updatedSlugs.length} related page(s)`,
+    });
   });
 
   // 6. Alias index is updated automatically by the lifecycle pipeline
   //    (writeWikiPageWithSideEffects → runPageLifecycleOp) — no caller-side
   //    call needed. The source index (URL/content-hash → slug) is caller-owned,
   //    so refresh it here for future dedup hits.
-  const sourcePath = options?.sourcePath
+  const sourcePath = canonicalSourcePath
     || (options?.relativePath
       ? `raw/sources/${options.relativePath}`
       : `raw/sources/${slug}/${rawId}.md`);
-  await runIngestBookkeeping({
-    owner,
-    actor,
-    sourceTitle: effectiveTitle,
-    sourceText: content,
-    sourcePath,
-    sourceUrl: options?.sourceUrl,
-    sourceType,
-    rawId,
-  });
+  if (canonicalSourcePath || options?.jobId) {
+    await runIngestBookkeeping({
+      owner,
+      actor,
+      sourceTitle: effectiveTitle,
+      sourceText: content,
+      sourcePath,
+      sourceUrl: options?.sourceUrl,
+      sourceType,
+      rawId,
+      origin: options?.origin,
+    });
+    await markBookkeepingComplete(sha256);
+  }
 
   // Bookkeeping first: a throw here can retry without SHA-skipping this write.
   updateSourceIndexForPage(

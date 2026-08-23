@@ -70,7 +70,7 @@ export function ActivityDock({ readOnly = false }: ActivityDockProps) {
         {ACTIVITY_TITLE}
         {progress.total > 0 && (
           <span className="wb-activity-count">
-            {progress.completed}/{progress.total}
+            {progress.total} in queue
             {progress.activeStep ? ` · ${progress.activeStep}` : ""}
           </span>
         )}

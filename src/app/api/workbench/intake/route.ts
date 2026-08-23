@@ -5,14 +5,16 @@ import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
 import { contentHash } from "@/lib/embeddings";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { fetchUrlContent } from "@/lib/fetch";
-import { ingest, recordSourceResee, type IngestOptions } from "@/lib/ingest";
+import { ingest, recordSourceResee, sameHumanOwner, type IngestOptions } from "@/lib/ingest";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { createIngestJob } from "@/lib/ingest-jobs";
 import { resolveContentSha256, resolveStoredSourcePath } from "@/lib/source-index";
 import { sourceSha256 } from "@/lib/source-sha256";
 import { stageText } from "@/lib/ingest-staging";
 import { logger } from "@/lib/logger";
-import { saveRawSourceFor, saveRawSourceTree } from "@/lib/raw";
+import { readRawSourceTree, saveRawSourceFor, saveRawSourceTree } from "@/lib/raw";
+import { workbenchSourcePath } from "@/lib/source-delete";
+import { readWikiPageWithFrontmatter } from "@/lib/wiki";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { type Task } from "@/lib/tasks";
 import {
@@ -20,6 +22,7 @@ import {
   INTAKE_BAD_PATH_COPY,
   INTAKE_EMPTY_SOURCE_COPY,
   INTAKE_FILE_REQUIRED_COPY,
+  INTAKE_PATH_COLLISION_COPY,
   INTAKE_SIGN_IN_COPY,
   INTAKE_URL_REQUIRED_COPY,
   classifyIntakeFile,
@@ -124,7 +127,7 @@ async function intakeFile(
     );
   }
 
-  const text = (await file.text()).trim();
+  const text = await file.text();
   if (text.length === 0) {
     return NextResponse.json({ error: INTAKE_EMPTY_SOURCE_COPY }, { status: 400 });
   }
@@ -178,8 +181,8 @@ async function intakeUrl(
   // A non-empty string clip is the body — store it and skip the fetch. Missing
   // or non-string clip is absent, not hashed; empty clip keeps the 2.1 fetch.
   const clipRaw = (body as { clip?: unknown }).clip;
-  const clip = typeof clipRaw === "string" ? clipRaw.trim() : "";
-  if (clip) {
+  const clip = typeof clipRaw === "string" ? clipRaw : "";
+  if (clip.trim()) {
     const bytes = new TextEncoder().encode(clip).byteLength;
     if (bytes > MAX_DOCUMENT_SIZE) {
       return NextResponse.json(
@@ -214,8 +217,8 @@ async function intakeUrl(
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 400 });
   }
 
-  const text = fetched.content.trim();
-  if (text.length === 0) {
+  const text = fetched.content;
+  if (text.trim().length === 0) {
     return NextResponse.json({ error: INTAKE_EMPTY_SOURCE_COPY }, { status: 400 });
   }
 
@@ -239,6 +242,59 @@ async function intakeUrl(
  * immutable after save" holds without a second upload of the same name being
  * refused.
  */
+async function authorizedShaSkip(
+  digest: string,
+  owner: string,
+  sourceUrl?: string,
+  sourceType: "text" | "url" = "text",
+): Promise<{ slug: string; path?: string } | null> {
+  const existing = await resolveContentSha256(digest);
+  if (!existing) return null;
+  const page = await readWikiPageWithFrontmatter(existing);
+  if (page && !sameHumanOwner(owner, page.frontmatter.owner)) {
+    return null;
+  }
+  const existingPath = await resolveStoredSourcePath(existing);
+  const resee = await recordSourceResee(existing, {
+    url: sourceUrl ?? existingPath ?? "text-paste",
+    type: sourceType,
+    triggeredBy: owner,
+    actorOwner: owner,
+  });
+  if (!resee) return null;
+  return { slug: resee.primarySlug, ...(existingPath ? { path: existingPath } : {}) };
+}
+
+async function recordSkippedJob(input: {
+  owner: string;
+  title: string;
+  sourceUrl?: string;
+  origin?: "plaud";
+  sourceRel?: string;
+  relativePath?: string;
+  sourceType: "text" | "url";
+  digest: string;
+}): Promise<string> {
+  const jobId = crypto.randomUUID();
+  try {
+    await createIngestJob({
+      jobId,
+      owner: input.owner,
+      title: input.title,
+      status: "skipped",
+      ...(input.sourceUrl ? { url: input.sourceUrl } : {}),
+      ...(input.origin ? { origin: input.origin } : {}),
+      ...(input.sourceRel ? { sourceRel: input.sourceRel } : {}),
+      ...(input.relativePath ? { relativePath: input.relativePath } : {}),
+      sourceType: input.sourceType,
+      contentSha256: input.digest,
+    });
+  } catch (error) {
+    logger.error("intake", `could not record skipped job for "${input.title}"`, error);
+  }
+  return jobId;
+}
+
 async function storeAndQueue(input: {
   owner: string;
   slug: string;
@@ -252,43 +308,7 @@ async function storeAndQueue(input: {
   const { owner, slug, text, title, sourceType, sourceUrl, relativePath, origin } = input;
 
   const digest = await sourceSha256(text);
-  const existing = await resolveContentSha256(digest);
-  if (existing) {
-    const existingPath = await resolveStoredSourcePath(existing);
-    const resee = await recordSourceResee(existing, {
-      url: sourceUrl ?? existingPath ?? "text-paste",
-      type: sourceType,
-      triggeredBy: owner,
-      actorOwner: owner,
-    });
-    const jobId = crypto.randomUUID();
-    try {
-      await createIngestJob({
-        jobId,
-        owner,
-        title,
-        status: "skipped",
-        ...(sourceUrl ? { url: sourceUrl } : {}),
-        ...(origin ? { origin } : {}),
-        ...(existingPath ? { sourceRel: existingPath } : {}),
-        ...(relativePath ? { relativePath } : {}),
-        sourceType,
-        contentSha256: digest,
-      });
-    } catch (error) {
-      logger.error("intake", `could not record skipped job for "${existing}"`, error);
-    }
-    return NextResponse.json(
-      {
-        queued: false,
-        skipped: true,
-        ...(existingPath ? { path: existingPath } : {}),
-        jobId,
-        slug: resee?.primarySlug ?? existing,
-      },
-      { status: 200 },
-    );
-  }
+  const authorized = await authorizedShaSkip(digest, owner, sourceUrl, sourceType);
 
   // Loose files keep the 2.1 hash key so a second `notes.md` does not collide.
   // Folder identity is the sanitized relative path (FR-40); both writers share
@@ -296,14 +316,85 @@ async function storeAndQueue(input: {
   let path: string;
   if (relativePath) {
     const stored = await saveRawSourceTree(relativePath, text, { owner });
-    path = stored.path;
-    // Path identity: a declined write left the first bytes on disk. Queuing
-    // the NEW body would compile text the Source does not hold.
+    path =
+      workbenchSourcePath(stored.path) ?? `raw/sources/${relativePath}`;
     if (!stored.created) {
-      return NextResponse.json({ queued: false, path }, { status: 200 });
+      const held = await readRawSourceTree(relativePath);
+      if (held !== null && held !== text) {
+        return NextResponse.json(
+          {
+            queued: false,
+            refused: true,
+            path,
+            error: INTAKE_PATH_COLLISION_COPY,
+          },
+          { status: 409 },
+        );
+      }
+      const jobId = await recordSkippedJob({
+        owner,
+        title,
+        sourceUrl,
+        origin,
+        sourceRel: path,
+        relativePath,
+        sourceType,
+        digest,
+      });
+      return NextResponse.json(
+        {
+          queued: false,
+          skipped: true,
+          path,
+          jobId,
+          ...(authorized ? { slug: authorized.slug } : {}),
+        },
+        { status: 200 },
+      );
     }
+    if (authorized) {
+      const jobId = await recordSkippedJob({
+        owner,
+        title,
+        sourceUrl,
+        origin,
+        sourceRel: path,
+        relativePath,
+        sourceType,
+        digest,
+      });
+      return NextResponse.json(
+        { queued: false, skipped: true, path, jobId, slug: authorized.slug },
+        { status: 200 },
+      );
+    }
+  } else if (authorized) {
+    const jobId = await recordSkippedJob({
+      owner,
+      title,
+      sourceUrl,
+      origin,
+      sourceRel: authorized.path,
+      sourceType,
+      digest,
+    });
+    return NextResponse.json(
+      {
+        queued: false,
+        skipped: true,
+        ...(authorized.path ? { path: authorized.path } : {}),
+        jobId,
+        slug: authorized.slug,
+      },
+      { status: 200 },
+    );
   } else {
-    path = await saveRawSourceFor(slug, contentHash(text), text, { owner });
+    const storedPath = await saveRawSourceFor(slug, contentHash(text), text, {
+      owner,
+    });
+    path =
+      workbenchSourcePath(storedPath) ??
+      `raw/sources/${slug}/${contentHash(text)}.md`;
   }
 
   const options: IngestOptions = {

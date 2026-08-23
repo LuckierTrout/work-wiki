@@ -89,3 +89,49 @@ export async function withFileLock<T>(
 export function _resetLocks(): void {
   locks.clear();
 }
+
+/**
+ * Durable owner-serial lease on top of the in-process lock. The file lease
+ * is visible to other isolates; the in-process lock serializes same-isolate
+ * callers. Not a linearizable lock on R2, but it fences overlapping LLM
+ * work when combined with the consumer's max_concurrency: 1.
+ */
+export async function withDurableLock<T>(
+  key: string,
+  fn: () => Promise<T>,
+  ttlMs = 15 * 60 * 1000,
+): Promise<T> {
+  const { getStorage } = await import("./storage");
+  const { isEnoent } = await import("./errors");
+  const safe = key.replace(/[^a-zA-Z0-9._:-]/g, "_");
+  const rel = `locks/${safe}.json`;
+
+  return withFileLock(key, async () => {
+    const storage = getStorage();
+    const now = Date.now();
+    try {
+      const raw = await storage.readFile(rel);
+      const lease = JSON.parse(raw) as { until?: number };
+      if (typeof lease.until === "number" && lease.until > now) {
+        throw new Error("ingest lock busy");
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === "ingest lock busy") {
+        throw error;
+      }
+      if (!isEnoent(error)) {
+        // Unreadable or corrupt lease — take it.
+      }
+    }
+    await storage.writeFile(rel, JSON.stringify({ until: now + ttlMs }));
+    try {
+      return await fn();
+    } finally {
+      try {
+        await storage.deleteFile(rel);
+      } catch {
+        // lease expiry is the backstop
+      }
+    }
+  });
+}

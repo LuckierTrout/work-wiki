@@ -227,6 +227,18 @@ export async function saveRawSourceTree(
   };
 }
 
+/** Read the stored bytes at a folder-import path, or null if missing. */
+export async function readRawSourceTree(
+  relativePath: string,
+): Promise<string | null> {
+  try {
+    return await getStorage().readFile(rawSourceRelPath(relativePath));
+  } catch (error) {
+    if (isEnoent(error)) return null;
+    throw error;
+  }
+}
+
 /**
  * Read one per-source raw snapshot written by {@link saveRawSourceFor}.
  * Both `slug` and `rawId` are validated before any filesystem access (the slug
