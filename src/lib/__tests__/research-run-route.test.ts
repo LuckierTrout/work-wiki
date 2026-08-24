@@ -213,6 +213,7 @@ describe("PATCH and DELETE /api/research/[id]", () => {
     expect(mockedUpdate).toHaveBeenCalled();
     expect(mockedUpdate.mock.calls[0][2]({ status: "draft" } as never)).toBe(true);
     expect(mockedUpdate.mock.calls[0][2]({ status: "collecting" } as never)).toBe(false);
+    expect(mockedUpdate.mock.calls[0][2]({ status: "draft", deleteRequested: true } as never)).toBe(false);
   });
 
   it("refuses a client-supplied status or synthesis", async () => {
@@ -223,6 +224,15 @@ describe("PATCH and DELETE /api/research/[id]", () => {
     expect((await PATCH(patchRequest({ status: "complete" }), { params })).status).toBe(400);
     expect((await PATCH(patchRequest({ synthesis: "# Invented" }), { params })).status).toBe(400);
     expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
+  it("404s an edit of a row DELETE already retired", async () => {
+    mockedUpdate.mockResolvedValue(null);
+    mockedGet.mockResolvedValue({ id: "p1", status: "cancelled", deleteRequested: true } as Awaited<
+      ReturnType<typeof getResearchProject>
+    >);
+
+    expect((await PATCH(patchRequest({ title: "New" }), { params })).status).toBe(404);
   });
 
   it("refuses an edit of a running project", async () => {

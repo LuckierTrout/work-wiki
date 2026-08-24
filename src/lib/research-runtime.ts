@@ -349,6 +349,10 @@ export async function reconcileResearchProjects(
           await deleteResearchOutbox(owner, project.id);
           outboxIds.delete(project.id);
         }
+        if (project.deleteRequested) {
+          await deleteResearchProject(owner, project.id);
+          changed = true;
+        }
         continue;
       }
       if (project.completion || outboxIds.has(project.id)) {

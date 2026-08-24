@@ -81,6 +81,7 @@ import {
   deleteResearchProject,
   getResearchProject,
   listResearchProjects,
+  mutateResearchProject,
   updateResearchProject,
 } from "../research-projects";
 import {
@@ -903,6 +904,19 @@ describe("deep research — remediations", () => {
     expect(recovered?.status).toBe("complete");
     expect(recovered?.completion?.phase).toBe("done");
     expect(recovered?.error).toBeUndefined();
+  });
+
+  it("reconcile deletes a finished row that DELETE could not remove mid-write", async () => {
+    const created = await project();
+    await runResearchProject("alice", created.id);
+    await mutateResearchProject("alice", created.id, (project) => {
+      project.deleteRequested = true;
+      return project;
+    });
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    expect(await getResearchProject("alice", created.id)).toBeNull();
   });
 
   it("does not rewrite a completed project when leftover outbox is only cleanup", async () => {

@@ -20,7 +20,7 @@ import { sourceSha256 } from "./source-sha256";
 import { buildSourceEntry, serializeSources } from "./sources";
 import { getStorage } from "./storage";
 import { enqueueTask } from "./tasks";
-import { readWikiPage, tenantForOwner, validateTenant } from "./wiki";
+import { tenantForOwner, validateTenant } from "./wiki";
 
 /**
  * Durable Page / Source / Ingest completion.
@@ -131,6 +131,11 @@ export function researchFrontmatter(
 
 /** How long a Page-write claim stays exclusive before a crash resume may steal it. */
 export const RESEARCH_PAGE_WRITE_STALE_MS = 2 * 60 * 1000;
+/** How often a live writer renews {@link RESEARCH_PAGE_WRITE_STALE_MS}. */
+const RESEARCH_PAGE_WRITE_HEARTBEAT_MS = Math.max(
+  5_000,
+  Math.floor(RESEARCH_PAGE_WRITE_STALE_MS / 6),
+);
 
 /** Stable Ingest job id: same project + source + body always mint the same id. */
 export async function researchIngestJobId(
@@ -167,12 +172,15 @@ export function researchWriteClaimIsFresh(
   return Number.isFinite(age) && age < RESEARCH_PAGE_WRITE_STALE_MS;
 }
 
-async function researchPageWritten(slug: string): Promise<boolean> {
-  try {
-    return (await readWikiPage(slug, { fresh: true })) != null;
-  } catch {
-    return false;
-  }
+function startWriteClaimHeartbeat(owner: string, id: string, claimId: string): () => void {
+  const timer = setInterval(() => {
+    void mutateResearchProject(owner, id, (project) => {
+      if (project.completion?.writeClaimId !== claimId) return null;
+      project.completion.writeClaimedAt = new Date().toISOString();
+      return project;
+    }).catch(() => undefined);
+  }, RESEARCH_PAGE_WRITE_HEARTBEAT_MS);
+  return () => clearInterval(timer);
 }
 
 async function writeResearchPage(owner: string, outbox: ResearchOutbox): Promise<void> {
@@ -200,9 +208,8 @@ async function writeResearchPage(owner: string, outbox: ResearchOutbox): Promise
  *
  * The exclusive fence is `completion.writeClaimId`. Winning that CAS owns
  * the Page write. A concurrent loser returns without touching the lifecycle
- * writer. If this run already materialised the Page, later drains advance
- * the phase without writing again. A claim is stealable only when it is
- * stale (or missing) AND the Page file is still absent.
+ * writer. A live writer renews `writeClaimedAt` so a crash resume cannot
+ * steal the claim while the lifecycle call is still running.
  */
 export async function commitResearchPage(
   owner: string,
@@ -229,10 +236,6 @@ export async function commitResearchPage(
   const sources = existing.completion?.sources?.length
     ? existing.completion.sources
     : await completionSourcesFromOutbox(outbox);
-
-  if (existing.completion?.phase === "page" && await researchPageWritten(outbox.pageSlug)) {
-    return markResearchPageWritten(owner, id, existing, outbox, sources);
-  }
 
   const claimId = crypto.randomUUID();
   const claimed = await mutateResearchProject(owner, id, (project) => {
@@ -261,6 +264,7 @@ export async function commitResearchPage(
     return null;
   }
 
+  const stopHeartbeat = startWriteClaimHeartbeat(owner, id, claimId);
   try {
     const latest = await getResearchProject(owner, id);
     if (!latest || latest.completion?.writeClaimId !== claimId) return latest;
@@ -268,9 +272,6 @@ export async function commitResearchPage(
       await deleteResearchOutbox(owner, id);
       await deleteResearchProject(owner, id);
       return null;
-    }
-    if (await researchPageWritten(outbox.pageSlug)) {
-      return markResearchPageWritten(owner, id, latest, outbox, sources, claimId);
     }
     await writeResearchPage(owner, outbox);
   } catch (error) {
@@ -282,6 +283,8 @@ export async function commitResearchPage(
       return project;
     }).catch(() => undefined);
     throw error;
+  } finally {
+    stopHeartbeat();
   }
 
   return markResearchPageWritten(owner, id, existing, outbox, sources, claimId);
@@ -293,7 +296,7 @@ async function markResearchPageWritten(
   existing: ResearchProject,
   outbox: ResearchOutbox,
   sources: ResearchCompletionSource[],
-  claimId?: string,
+  claimId: string,
 ): Promise<ResearchProject | null> {
   const latest = await getResearchProject(owner, id);
   return updateResearchProjectIf(
@@ -301,7 +304,7 @@ async function markResearchPageWritten(
     id,
     (project) =>
       project.completion?.phase === "page"
-      && (claimId === undefined || project.completion.writeClaimId === claimId),
+      && project.completion.writeClaimId === claimId,
     {
       completion: {
         phase: "sources",
@@ -526,10 +529,9 @@ async function drainOrphanOutbox(
 ): Promise<void> {
   const claimPath = `${outboxPath(owner, id)}.writing`;
   if (!await claimOrphanWrite(owner, claimPath)) return;
+  const stopHeartbeat = startOrphanClaimHeartbeat(claimPath);
   try {
-    if (!await researchPageWritten(outbox.pageSlug)) {
-      await writeResearchPage(owner, outbox);
-    }
+    await writeResearchPage(owner, outbox);
     const sources = await completionSourcesFromOutbox(outbox);
     let failed = 0;
     for (const meta of sources) {
@@ -547,12 +549,31 @@ async function drainOrphanOutbox(
     }
     if (failed === 0) await deleteResearchOutbox(owner, id);
   } finally {
+    stopHeartbeat();
     try {
       await getStorage().deleteFile(claimPath);
     } catch (error) {
       if (!isEnoent(error)) throw error;
     }
   }
+}
+
+function startOrphanClaimHeartbeat(claimPath: string): () => void {
+  const timer = setInterval(() => {
+    void (async () => {
+      try {
+        const read = await getStorage().readFileWithEtag(claimPath);
+        await getStorage().writeFileIfMatch(
+          claimPath,
+          JSON.stringify({ at: new Date().toISOString() }),
+          read.etag,
+        );
+      } catch {
+        // The write finished or another isolate stole the claim.
+      }
+    })();
+  }, RESEARCH_PAGE_WRITE_HEARTBEAT_MS);
+  return () => clearInterval(timer);
 }
 
 async function claimOrphanWrite(owner: string, claimPath: string): Promise<boolean> {

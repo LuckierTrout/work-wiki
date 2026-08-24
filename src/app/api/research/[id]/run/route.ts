@@ -107,7 +107,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
   const { id } = await params;
   const { getResearchProject } = await import("@/lib/research-projects");
   const project = await getResearchProject(principal.handle, id);
-  return project
+  return project && !project.deleteRequested
     ? NextResponse.json({ project, availableProviders: availableResearchProviders() })
     : NextResponse.json({ error: "Research project not found." }, { status: 404 });
 }

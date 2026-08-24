@@ -41,7 +41,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     const project = await updateResearchProjectIf(
       principal.handle,
       id,
-      (current) => EDITABLE.has(current.status),
+      (current) => EDITABLE.has(current.status) && !current.deleteRequested,
       {
         ...(typeof body.title === "string" ? { title: body.title } : {}),
         ...(typeof body.question === "string" ? { question: body.question } : {}),
@@ -50,7 +50,9 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     );
     if (project) return NextResponse.json({ project });
     const current = await getResearchProject(principal.handle, id);
-    if (!current) return NextResponse.json({ error: "Research project not found." }, { status: 404 });
+    if (!current || current.deleteRequested) {
+      return NextResponse.json({ error: "Research project not found." }, { status: 404 });
+    }
     return NextResponse.json(
       { error: "A running or finished research project cannot be edited." },
       { status: 409 },
