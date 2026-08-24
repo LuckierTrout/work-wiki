@@ -36,12 +36,18 @@ function normalizeUrl(url: string): string | null {
   }
 }
 
+function isAllowed(href: string, allowed: Set<string>): boolean {
+  const normalized = normalizeUrl(href);
+  return normalized !== null && allowed.has(normalized);
+}
+
 /**
- * Drop markdown links whose href is not one of the fetched source URLs.
+ * Drop every URL-bearing citation whose href is not one of the fetched sources.
  *
  * The model is instructed to cite only those URLs; this is the fence when it
- * does not. The label stays so the sentence still reads; the invented URL
- * does not.
+ * does not. Inline links, images, autolinks, reference-style links, HTML
+ * anchors, and bare URLs are all checked. Labels stay so the sentence still
+ * reads; the invented URL does not.
  */
 export function restrictResearchCitations(
   markdown: string,
@@ -50,13 +56,40 @@ export function restrictResearchCitations(
   const allowed = new Set(
     allowedUrls.map(normalizeUrl).filter((url): url is string => url !== null),
   );
-  return markdown.replace(
-    /\[([^\]]+)\]\((https?:[^)\s]+)\)/gi,
-    (full, label: string, href: string) => {
-      const normalized = normalizeUrl(href);
-      return normalized && allowed.has(normalized) ? full : label;
+  const droppedRefs = new Set<string>();
+  let next = markdown.replace(
+    /^[ \t]*\[([^\]]+)\]:[ \t]*<?(https?:[^\s>]+)>?[ \t]*.*$/gim,
+    (full, id: string, href: string) => {
+      if (isAllowed(href, allowed)) return full;
+      droppedRefs.add(id.toLowerCase());
+      return "";
     },
   );
+  next = next.replace(
+    /!\[([^\]]*)\]\((https?:[^)\s]+)\)/gi,
+    (full, alt: string, href: string) => (isAllowed(href, allowed) ? full : alt),
+  );
+  next = next.replace(
+    /\[([^\]]+)\]\((https?:[^)\s]+)\)/gi,
+    (full, label: string, href: string) => (isAllowed(href, allowed) ? full : label),
+  );
+  next = next.replace(
+    /<(https?:[^>\s]+)>/gi,
+    (full, href: string) => (isAllowed(href, allowed) ? full : ""),
+  );
+  next = next.replace(
+    /<a\s+[^>]*href=["'](https?:[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+    (full, href: string, label: string) => (isAllowed(href, allowed) ? full : label),
+  );
+  next = next.replace(
+    /\[([^\]]+)\]\[([^\]]+)\]/g,
+    (full, text: string, id: string) => (droppedRefs.has(id.toLowerCase()) ? text : full),
+  );
+  next = next.replace(
+    /(?<!\]\()(?<!<)(https?:\/\/[^\s<>)"']+)/gi,
+    (href: string) => (isAllowed(href, allowed) ? href : ""),
+  );
+  return next.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
 }
 
 /** Newest `limit` thinking lines, in order, each trimmed and bounded. */

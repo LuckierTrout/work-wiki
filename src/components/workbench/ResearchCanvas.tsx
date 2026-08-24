@@ -7,6 +7,7 @@ import { readStoredResearchFill } from "@/lib/workbench-state";
 import {
   RESEARCH_ACTIVE_STATUSES,
   RESEARCH_POLL_MS,
+  researchIsPolling,
   researchStatusLabel,
   researchTaskLine,
   researchWikiId,
@@ -67,10 +68,16 @@ export function ResearchCanvas({
   const [startError, setStartError] = useState<string | null>(null);
   const [openThinking, setOpenThinking] = useState<Record<string, boolean>>({});
   const loadSeq = useRef(0);
+  const startSeq = useRef(0);
+  const wikiScope = useRef(wikiId);
 
   useEffect(() => {
+    wikiScope.current = wikiId;
+    loadSeq.current += 1;
+    startSeq.current += 1;
     setProjects([]);
     setError(null);
+    setStartError(null);
   }, [wikiId]);
 
   const load = useCallback(async () => {
@@ -99,9 +106,7 @@ export function ResearchCanvas({
   // interval against it would be a request every few seconds for the life of
   // the session; a queued project matters too, since the thing being waited for
   // is precisely a transition this panel cannot otherwise learn about.
-  const streaming = projects.some((project) =>
-    RESEARCH_ACTIVE_STATUSES.includes(project.status),
-  );
+  const streaming = projects.some(researchIsPolling);
   useEffect(() => {
     if (!active || !streaming) return;
     const timer = setInterval(() => {
@@ -115,9 +120,11 @@ export function ResearchCanvas({
 
   async function start() {
     if (!canStart) return;
+    const originWikiId = wikiScope.current;
+    const seq = ++startSeq.current;
     setStarting(true);
     setStartError(null);
-    const vaultId = researchWikiId(wikiId);
+    const vaultId = researchWikiId(originWikiId);
     let created: string | null = null;
     try {
       const body = await send<{ project?: { id: string } }>("/api/research", {
@@ -126,14 +133,22 @@ export function ResearchCanvas({
           title: topic.trim(),
           question: topic.trim(),
           queries,
-          // The active wiki, so the run's auto-Ingest lands here even if the
-          // rail moves on before it finishes — the same record Graph and Review
-          // write on their own confirms. Omitted rather than sent as the rail's
-          // `"current"` placeholder, which is not an id any wiki has.
+          // The wiki the start came FROM, recorded so the run's auto-Ingest
+          // lands there even if the rail moves on before it finishes — the same
+          // record Graph and Review write on their own confirms. Omitted rather
+          // than sent as the rail's `"current"` placeholder, which is not an id
+          // any wiki has.
           ...(vaultId ? { vaultId } : {}),
         }),
       });
       created = body.project?.id ?? null;
+      if (seq !== startSeq.current || wikiScope.current !== originWikiId) {
+        if (created) {
+          await send(`/api/research/${encodeURIComponent(created)}/run`, { method: "POST" })
+            .catch(() => undefined);
+        }
+        return;
+      }
       if (!created) {
         setStartError("Deep Research did not return a project.");
         return;
@@ -141,19 +156,26 @@ export function ResearchCanvas({
       // CREATE THEN RUN, the same two calls Graph and Review make. Mode-direct
       // start is not a different door — it is the same one without a dialog.
       await send(`/api/research/${encodeURIComponent(created)}/run`, { method: "POST" });
+      if (seq !== startSeq.current || wikiScope.current !== originWikiId) return;
       setTopic("");
       setQueryText("");
     } catch (cause) {
+      if (seq !== startSeq.current || wikiScope.current !== originWikiId) return;
       setStartError(writeFailure(cause, "start Deep Research").message);
     } finally {
-      setStarting(false);
+      if (seq === startSeq.current && wikiScope.current === originWikiId) {
+        setStarting(false);
+      }
       // RELOADED EITHER WAY, and this is the case that used to be missed: when
       // the RUN was refused, the create had already stored a project and
       // `queueResearchProject` had already marked it failed, but nothing
       // re-read the list — so the owner saw the error sentence above an empty
       // panel still reading "No research tasks yet." The row and the sentence
-      // now arrive together.
-      if (created) await load();
+      // now arrive together. A wiki switch fences the reload so Wiki A's
+      // response cannot paint Wiki B.
+      if (created && seq === startSeq.current && wikiScope.current === originWikiId) {
+        await load();
+      }
     }
   }
 

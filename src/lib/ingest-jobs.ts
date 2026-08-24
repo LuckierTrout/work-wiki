@@ -117,10 +117,8 @@ function relPathFor(jobId: string): string {
   return `ingest-jobs/${jobId}.json`;
 }
 
-/** Create a job in the `queued` state. */
-export async function createIngestJob(input: {
+function buildIngestJob(input: {
   jobId: string;
-  /** Optional — non-URL sources (pasted text, uploaded PDF/image) have none. */
   url?: string;
   owner: string;
   title?: string;
@@ -134,10 +132,10 @@ export async function createIngestJob(input: {
   kind?: IngestJobKind;
   wikiId?: string;
   status?: IngestJobStatus;
-}): Promise<IngestJob> {
+}): IngestJob {
   const now = new Date().toISOString();
   const status = input.status ?? "queued";
-  const job: IngestJob = {
+  return {
     jobId: input.jobId,
     ...(input.url ? { url: input.url } : {}),
     owner: input.owner,
@@ -156,8 +154,26 @@ export async function createIngestJob(input: {
     createdAt: now,
     updatedAt: now,
   };
-  await getStorage().writeFile(relPathFor(input.jobId), JSON.stringify(job));
-  return job;
+}
+
+/**
+ * Create a job only if that id is free. `created: false` means another isolate
+ * already owns the record — callers must not enqueue a second Ingest.
+ */
+export async function createIngestJobIfAbsent(input: Parameters<typeof buildIngestJob>[0]): Promise<{
+  job: IngestJob;
+  created: boolean;
+}> {
+  const job = buildIngestJob(input);
+  const wrote = await getStorage().writeFileIfAbsent(relPathFor(input.jobId), JSON.stringify(job));
+  if (wrote) return { job, created: true };
+  const existing = await getIngestJob(input.jobId);
+  return { job: existing ?? job, created: false };
+}
+
+/** Create a job in the `queued` state. */
+export async function createIngestJob(input: Parameters<typeof buildIngestJob>[0]): Promise<IngestJob> {
+  return (await createIngestJobIfAbsent(input)).job;
 }
 
 /**
@@ -167,6 +183,7 @@ export async function createIngestJob(input: {
 export async function listIngestJobs(input: {
   owner: string;
   source?: "email";
+  wikiId?: string;
   limit?: number;
 }): Promise<IngestJob[]> {
   const entries = await getStorage().listFiles(JOBS_PREFIX);
@@ -179,6 +196,7 @@ export async function listIngestJobs(input: {
       const job = JSON.parse(raw) as IngestJob;
       if (job.owner !== input.owner) continue;
       if (input.source && job.source !== input.source) continue;
+      if (input.wikiId && job.wikiId && job.wikiId !== input.wikiId) continue;
       jobs.push(job);
     } catch (error) {
       if (!isEnoent(error)) {

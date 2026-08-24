@@ -3,6 +3,8 @@ import { withFileLock } from "./lock";
 import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
 
+const CAS_ATTEMPTS = 8;
+
 export type ResearchProjectStatus =
   | "draft"
   | "queued"
@@ -162,11 +164,52 @@ async function readProjects(owner: string): Promise<ResearchProject[]> {
  * create path refuses at the cap before it gets here, so the create can no
  * longer reach a state where this silently evicts a stored project.
  */
-async function writeProjects(owner: string, projects: ResearchProject[]): Promise<void> {
-  await getStorage().writeFile(
-    projectPath(owner),
-    JSON.stringify(projects.slice(-MAX_PROJECTS), null, 2),
-  );
+function serializeProjects(projects: ResearchProject[]): string {
+  return JSON.stringify(projects.slice(-MAX_PROJECTS), null, 2);
+}
+
+/**
+ * Compare-and-set mutation of the project registry.
+ *
+ * Same-isolate callers still serialize on {@link withFileLock}. Cross-isolate
+ * callers race `readFileWithEtag` / `writeFileIfMatch` — the in-process lock
+ * is invisible to another Worker isolate, so a queued→collecting claim that
+ * only locked in memory could run twice. Exported so tests can race two
+ * callers without that lock.
+ */
+export async function applyResearchProjectMutation<T>(
+  owner: string,
+  mutate: (projects: ResearchProject[]) => { projects: ResearchProject[]; result: T },
+): Promise<T> {
+  const storage = getStorage();
+  const path = projectPath(owner);
+  const lastError = new Error("Research projects were busy; retry the request.");
+  for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
+    let etag: string | null = null;
+    let projects: ResearchProject[] = [];
+    try {
+      const read = await storage.readFileWithEtag(path);
+      etag = read.etag;
+      const parsed = JSON.parse(read.content) as unknown;
+      projects = Array.isArray(parsed) ? parsed as ResearchProject[] : [];
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+    }
+    const next = mutate(projects);
+    const body = serializeProjects(next.projects);
+    const wrote = etag === null
+      ? await storage.writeFileIfAbsent(path, body)
+      : await storage.writeFileIfMatch(path, body, etag);
+    if (wrote) return next.result;
+  }
+  throw lastError;
+}
+
+async function lockedMutation<T>(
+  owner: string,
+  mutate: (projects: ResearchProject[]) => { projects: ResearchProject[]; result: T },
+): Promise<T> {
+  return withFileLock(lockKey(owner), () => applyResearchProjectMutation(owner, mutate));
 }
 
 export async function listResearchProjects(owner: string): Promise<ResearchProject[]> {
@@ -212,8 +255,7 @@ export async function createResearchProject(
   input: ResearchProjectInput,
 ): Promise<ResearchProject> {
   const cleaned = cleanInput(input);
-  return withFileLock(lockKey(owner), async () => {
-    const projects = await readProjects(owner);
+  return lockedMutation(owner, (projects) => {
     if (projects.length >= MAX_PROJECTS) {
       throw new ClientInputError(
         `This workspace already has the maximum of ${MAX_PROJECTS} research projects.`,
@@ -228,8 +270,7 @@ export async function createResearchProject(
       updatedAt: now,
     };
     projects.push(project);
-    await writeProjects(owner, projects);
-    return project;
+    return { projects, result: project };
   });
 }
 
@@ -256,9 +297,9 @@ export async function updateResearchProject(
  * Apply `patch` only when `predicate` holds against the stored project.
  *
  * The lost race returns `null` so a second Queue delivery cannot both search.
- * Same-isolate callers still serialize on the file lock; the predicate is what
- * makes the queued→collecting claim atomic for two isolates that both read
- * `queued`.
+ * Same-isolate callers serialize on the file lock; cross-isolate callers race
+ * the registry CAS, so two isolates that both read `queued` cannot both write
+ * `collecting`.
  */
 export async function updateResearchProjectIf(
   owner: string,
@@ -269,16 +310,34 @@ export async function updateResearchProjectIf(
   return mutateProject(owner, id, predicate, patch);
 }
 
+/**
+ * Apply an in-place mutator under the same CAS as {@link updateResearchProjectIf}.
+ *
+ * Returns `null` when the project is gone or `mutate` returns null (lost claim).
+ */
+export async function mutateResearchProject(
+  owner: string,
+  id: string,
+  mutate: (project: ResearchProject) => ResearchProject | null,
+): Promise<ResearchProject | null> {
+  return lockedMutation(owner, (projects) => {
+    const index = projects.findIndex((item) => item.id === id);
+    if (index < 0) return { projects, result: null };
+    const next = mutate(projects[index]);
+    if (!next) return { projects, result: null };
+    next.updatedAt = new Date().toISOString();
+    projects[index] = next;
+    return { projects, result: next };
+  });
+}
+
 async function mutateProject(
   owner: string,
   id: string,
   predicate: (project: ResearchProject) => boolean,
   patch: Parameters<typeof updateResearchProject>[2],
 ): Promise<ResearchProject | null> {
-  return withFileLock(lockKey(owner), async () => {
-    const projects = await readProjects(owner);
-    const project = projects.find((item) => item.id === id);
-    if (!project) return null;
+  return mutateResearchProject(owner, id, (project) => {
     if (!predicate(project)) return null;
     if (patch.title !== undefined || patch.question !== undefined) {
       const cleaned = cleanInput({
@@ -353,18 +412,14 @@ async function mutateProject(
       if (patch.completion) project.completion = patch.completion;
       else delete project.completion;
     }
-    project.updatedAt = new Date().toISOString();
-    await writeProjects(owner, projects);
     return project;
   });
 }
 
 export async function deleteResearchProject(owner: string, id: string): Promise<boolean> {
-  return withFileLock(lockKey(owner), async () => {
-    const projects = await readProjects(owner);
+  return lockedMutation(owner, (projects) => {
     const next = projects.filter((project) => project.id !== id);
-    if (next.length === projects.length) return false;
-    await writeProjects(owner, next);
-    return true;
+    if (next.length === projects.length) return { projects, result: false };
+    return { projects: next, result: true };
   });
 }

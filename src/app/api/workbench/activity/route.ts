@@ -29,12 +29,17 @@ import { sourceRestFromPath } from "@/lib/source-delete";
  * re-queue the same stored Source (no second store).
  */
 
-export async function GET() {
+export async function GET(request: Request) {
   const principal = await getPrincipal();
   if (!principal) {
     return NextResponse.json({ error: INTAKE_SIGN_IN_COPY }, { status: 401 });
   }
-  const jobs = await listIngestJobs({ owner: principal.handle, limit: 100 });
+  const wikiId = new URL(request.url).searchParams.get("wikiId")?.trim() || undefined;
+  const jobs = await listIngestJobs({
+    owner: principal.handle,
+    limit: 100,
+    ...(wikiId ? { wikiId } : {}),
+  });
   const rows: ActivityRow[] = jobs.map((job) => {
     const { status, error } = effectiveStatus(job);
     const displayStatus = activityDisplayStatus(
@@ -47,6 +52,7 @@ export async function GET() {
       jobId: job.jobId,
       title: job.title?.trim() || job.url || "Ingest",
       displayStatus,
+      ...(job.wikiId ? { wikiId: job.wikiId } : {}),
       ...(error || job.error ? { error: error || job.error } : {}),
       ...(typeof job.progressDone === "number" ? { progressDone: job.progressDone } : {}),
       ...(typeof job.progressTotal === "number" ? { progressTotal: job.progressTotal } : {}),
@@ -122,6 +128,7 @@ export async function POST(request: NextRequest) {
         author: principal.handle,
         triggeredBy: principal.handle,
         jobId: job.jobId,
+        ...(job.wikiId ? { tags: [`wiki:${job.wikiId}`] } : {}),
         ...(job.title ? { title: job.title } : {}),
         ...(job.origin ? { origin: job.origin } : {}),
         ...(job.relativePath ? { relativePath: job.relativePath } : {}),
@@ -139,6 +146,7 @@ export async function POST(request: NextRequest) {
           author: principal.handle,
           triggeredBy: principal.handle,
           jobId: job.jobId,
+          ...(job.wikiId ? { tags: [`wiki:${job.wikiId}`] } : {}),
           ...(job.origin ? { origin: job.origin } : {}),
           ...(job.relativePath ? { relativePath: job.relativePath } : {}),
           ...(job.sourceType === "url" || job.sourceType === "text"

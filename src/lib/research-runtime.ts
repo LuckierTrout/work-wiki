@@ -12,12 +12,15 @@ import {
   commitResearchPage,
   drainResearchOutbox,
   evidenceFromFetched,
+  listResearchOutboxIds,
+  loadResearchOutbox,
   type FetchedSource,
 } from "./research-completion";
 import {
   deleteResearchProject,
   getResearchProject,
   listResearchProjects,
+  mutateResearchProject,
   updateResearchProject,
   updateResearchProjectIf,
   type ResearchProject,
@@ -217,21 +220,21 @@ export async function queueResearchProject(
 }
 
 export async function cancelResearchProject(owner: string, id: string): Promise<ResearchProject> {
-  const project = await getResearchProject(owner, id);
-  if (!project) throw new Error("Research project not found");
-  const updated = await updateResearchProject(owner, id, {
-    cancelRequested: true,
-    ...(project.status === "queued" ? { status: "cancelled" as const } : {}),
-    progress: {
+  const updated = await mutateResearchProject(owner, id, (project) => {
+    project.cancelRequested = true;
+    const queuedIdle = project.status === "queued" && !project.completion;
+    if (queuedIdle) project.status = "cancelled";
+    project.progress = {
       completedQueries: project.progress?.completedQueries ?? 0,
       totalQueries: project.progress?.totalQueries ?? Math.max(1, project.queries.length),
-      message: project.status === "queued" ? "Cancelled." : "Cancellation requested.",
-    },
+      message: queuedIdle ? "Cancelled." : "Cancellation requested.",
+    };
+    return project;
   });
   if (!updated) throw new Error("Research project not found");
   // Only a queued project never started a worker. Releasing a `ready` slot
   // here is what let a fourth run in while synthesis was still running.
-  if (project.status === "queued") {
+  if (updated.status === "cancelled" && !updated.completion) {
     await releaseResearchSlot(owner, id);
     await drainResearchQueue(owner);
   }
@@ -249,15 +252,23 @@ export async function retireResearchProject(owner: string, id: string): Promise<
   const project = await getResearchProject(owner, id);
   if (!project) return false;
   if (project.status !== "complete") {
-    await updateResearchProject(owner, id, {
-      cancelRequested: true,
-      status: "cancelled",
-      progress: {
-        completedQueries: project.progress?.completedQueries ?? 0,
-        totalQueries: project.progress?.totalQueries ?? Math.max(1, project.queries.length),
+    await mutateResearchProject(owner, id, (current) => {
+      current.cancelRequested = true;
+      if (!current.completion || current.completion.phase === "page") {
+        current.status = "cancelled";
+      }
+      current.progress = {
+        completedQueries: current.progress?.completedQueries ?? 0,
+        totalQueries: current.progress?.totalQueries ?? Math.max(1, current.queries.length),
         message: "Deleted.",
-      },
+      };
+      return current;
     });
+  }
+  if (project.completion && project.completion.phase !== "done") {
+    await drainResearchOutbox(owner, id).catch(() => undefined);
+  } else if (await loadResearchOutbox(owner, id)) {
+    await drainResearchOutbox(owner, id).catch(() => undefined);
   }
   await releaseResearchSlot(owner, id);
   await drainResearchQueue(owner);
@@ -309,11 +320,16 @@ export async function reconcileResearchProjects(
   const now = Date.now();
   let changed = false;
   try {
+    const outboxIds = new Set(await listResearchOutboxIds(owner));
     for (const project of projects) {
       const held = await holdsResearchSlot(owner, project.id);
-      if (project.completion && project.completion.phase !== "done") {
+      if (
+        (project.completion && project.completion.phase !== "done")
+        || outboxIds.has(project.id)
+      ) {
         await drainResearchOutbox(owner, project.id);
         changed = true;
+        outboxIds.delete(project.id);
         continue;
       }
       if (project.cancelRequested && !held) {
@@ -344,6 +360,10 @@ export async function reconcileResearchProjects(
           message: "Interrupted.",
         },
       });
+      changed = true;
+    }
+    for (const orphanId of outboxIds) {
+      await drainResearchOutbox(owner, orphanId);
       changed = true;
     }
     if (projects.some((project) => project.status === "queued" && !project.cancelRequested)) {
@@ -764,15 +784,19 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const current = await getResearchProject(owner, id);
+    const phase = current?.completion?.phase;
+    const pageWritten = phase === "sources" || phase === "done";
     await updateResearchProject(owner, id, {
-      status: current?.completion ? current.status : "failed",
+      status: pageWritten || phase === "page" ? current?.status ?? "ready" : "failed",
       error: message,
       progress: {
         completedQueries: current?.progress?.completedQueries ?? 0,
         totalQueries: queries.length,
-        message: current?.completion
+        message: pageWritten
           ? "The Page was written; finishing Sources and Ingest failed. Retry will resume."
-          : "Research failed. Nothing was written to the wiki.",
+          : phase === "page"
+            ? "Research failed before the Page landed. Retry will resume the write."
+            : "Research failed. Nothing was written to the wiki.",
       },
     });
     throw error;

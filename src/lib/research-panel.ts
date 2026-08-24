@@ -29,6 +29,18 @@ export const RESEARCH_ACTIVE_STATUSES: readonly ResearchProjectStatus[] = [
 ];
 
 /**
+ * Whether the panel must keep polling this row.
+ *
+ * Active statuses always poll. A `complete` row whose outbox is still draining
+ * must poll too — otherwise a partial ingest that already wrote the Page
+ * freezes at "N still pending" and never retries.
+ */
+export function researchIsPolling(project: ResearchProject): boolean {
+  if (RESEARCH_ACTIVE_STATUSES.includes(project.status)) return true;
+  return project.completion !== undefined && project.completion.phase !== "done";
+}
+
+/**
  * How often the panel re-reads while something is active.
  *
  * Fast enough that a query-to-query transition is visible as a transition

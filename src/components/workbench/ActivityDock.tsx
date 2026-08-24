@@ -23,9 +23,10 @@ const POLL_MS = 2_000;
 
 export interface ActivityDockProps {
   readOnly?: boolean;
+  wikiId?: string | null;
 }
 
-export function ActivityDock({ readOnly = false }: ActivityDockProps) {
+export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockProps) {
   const [open, setOpen] = useState(readStoredActivityOpen);
   const [rows, setRows] = useState<ActivityRow[]>([]);
   const [cancelId, setCancelId] = useState<string | null>(null);
@@ -35,14 +36,22 @@ export function ActivityDock({ readOnly = false }: ActivityDockProps) {
 
   const refresh = useCallback(async () => {
     try {
-      const body = await send<{ rows?: ActivityRow[] }>(ACTIVITY_ROUTE, {
+      const scope = wikiId?.trim() && wikiId !== "current" ? wikiId.trim() : "";
+      const path = scope
+        ? `${ACTIVITY_ROUTE}?wikiId=${encodeURIComponent(scope)}`
+        : ACTIVITY_ROUTE;
+      const body = await send<{ rows?: ActivityRow[] }>(path, {
         method: "GET",
       });
       setRows(Array.isArray(body.rows) ? body.rows : []);
     } catch {
       // poll fail-soft — the last rows stay on screen
     }
-  }, []);
+  }, [wikiId]);
+
+  useEffect(() => {
+    setRows([]);
+  }, [wikiId]);
 
   useEffect(() => {
     void refresh();

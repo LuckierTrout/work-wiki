@@ -116,6 +116,15 @@ describe("ingest-jobs", () => {
     expect(jobs[0].email?.attachmentNames).toEqual(["notes.pdf"]);
   });
 
+  it("filters ingest jobs to one Workbench Wiki", async () => {
+    await createIngestJob({ jobId: "job-a", owner: "alice", title: "A", wikiId: "wiki-a" });
+    await createIngestJob({ jobId: "job-b", owner: "alice", title: "B", wikiId: "wiki-b" });
+    await createIngestJob({ jobId: "job-legacy", owner: "alice", title: "Legacy" });
+
+    const scoped = await listIngestJobs({ owner: "alice", wikiId: "wiki-a" });
+    expect(scoped.map((job) => job.jobId).sort()).toEqual(["job-a", "job-legacy"]);
+  });
+
   it("deletes an owned terminal job", async () => {
     await createIngestJob({ jobId: "terminal", owner: "alice", title: "Done" });
     await updateIngestJob("terminal", { status: "done", slug: "done-page" });

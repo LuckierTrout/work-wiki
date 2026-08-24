@@ -746,6 +746,7 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
     const activity = await read("ActivityDock.tsx");
     expect(activity).toContain("ACTIVITY_TITLE");
     expect(activity).toContain("ACTIVITY_ROUTE");
+    expect(activity).toContain("wikiId");
     expect(activity).not.toContain("extract-actions");
     const sources = await read("SourcesTree.tsx");
     expect(sources).toContain("workbenchMode(\"sources\").emptyState");

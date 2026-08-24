@@ -25,6 +25,21 @@ describe("restrictResearchCitations", () => {
     expect(restrictResearchCitations(markdown, ["https://example.com/a"]))
       .toBe("See [ok](https://example.com/a) and nope.");
   });
+
+  it("strips autolinks, images, reference links, HTML anchors, and bare URLs", () => {
+    const markdown = [
+      "See <https://evil.example/auto> and ![pic](https://evil.example/img).",
+      "[ref][gone] and [kept][ok].",
+      "[gone]: https://evil.example/ref",
+      "[ok]: https://example.com/a",
+      '<a href="https://evil.example/html">html</a>',
+      "Bare https://evil.example/bare and https://example.com/a",
+    ].join("\n");
+    const fenced = restrictResearchCitations(markdown, ["https://example.com/a"]);
+    expect(fenced).not.toContain("evil.example");
+    expect(fenced).toContain("https://example.com/a");
+    expect(fenced).toContain("html");
+  });
 });
 
 describe("appendThinkingLines", () => {

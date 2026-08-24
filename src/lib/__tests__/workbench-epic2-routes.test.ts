@@ -91,6 +91,10 @@ function jsonRequest(url: string, body: unknown): Request {
   });
 }
 
+function activityGet(url = "http://localhost/api/workbench/activity"): Request {
+  return new Request(url);
+}
+
 async function asJson(response: Response): Promise<{
   status: number;
   body: Record<string, unknown>;
@@ -115,7 +119,7 @@ beforeEach(() => {
 describe("GET /api/workbench/activity", () => {
   it("answers 401 with no session", async () => {
     mockedPrincipal.mockResolvedValue(null);
-    const { status, body } = await asJson(await GET_ACTIVITY());
+    const { status, body } = await asJson(await GET_ACTIVITY(activityGet()));
     expect(status).toBe(401);
     expect(body.error).toBe(INTAKE_SIGN_IN_COPY);
     expect(mockedList).not.toHaveBeenCalled();
@@ -164,7 +168,7 @@ describe("GET /api/workbench/activity", () => {
       },
     ] as never);
 
-    const { status, body } = await asJson(await GET_ACTIVITY());
+    const { status, body } = await asJson(await GET_ACTIVITY(activityGet()));
     expect(status).toBe(200);
     const rows = body.rows as Array<{
       jobId: string;
@@ -192,6 +196,32 @@ describe("GET /api/workbench/activity", () => {
       canRetry: false,
       canCancel: false,
     });
+  });
+
+  it("scopes the list to the requested Wiki", async () => {
+    mockedList.mockResolvedValue([
+      {
+        jobId: "wiki-a",
+        owner: "alice",
+        status: "done",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        title: "A",
+        wikiId: "wiki-a",
+      },
+    ] as never);
+
+    const { status, body } = await asJson(
+      await GET_ACTIVITY(activityGet("http://localhost/api/workbench/activity?wikiId=wiki-a")),
+    );
+
+    expect(status).toBe(200);
+    expect(mockedList).toHaveBeenCalledWith({
+      owner: "alice",
+      limit: 100,
+      wikiId: "wiki-a",
+    });
+    expect((body.rows as Array<{ wikiId?: string }>)[0]?.wikiId).toBe("wiki-a");
   });
 });
 

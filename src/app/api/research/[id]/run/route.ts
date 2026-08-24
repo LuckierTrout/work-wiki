@@ -31,7 +31,19 @@ export async function POST(request: Request, { params }: RouteContext) {
   }
   try {
     const { id } = await params;
-    const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+    const raw = await request.text();
+    let body: Record<string, unknown> = {};
+    if (raw.trim()) {
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return NextResponse.json({ error: "Request body must be a JSON object." }, { status: 400 });
+        }
+        body = parsed as Record<string, unknown>;
+      } catch {
+        return NextResponse.json({ error: "Request body must be JSON." }, { status: 400 });
+      }
+    }
     if (body.action === "cancel") {
       return NextResponse.json({ project: await cancelResearchProject(principal.handle, id) });
     }

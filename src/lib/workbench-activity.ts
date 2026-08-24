@@ -34,6 +34,7 @@ export interface ActivityRow {
   jobId: string;
   title: string;
   displayStatus: ActivityDisplayStatus;
+  wikiId?: string;
   error?: string;
   progressDone?: number;
   progressTotal?: number;

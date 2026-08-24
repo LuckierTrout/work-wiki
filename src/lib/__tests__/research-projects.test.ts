@@ -4,6 +4,7 @@ import os from "os";
 import path from "path";
 import {
   MAX_PROJECTS,
+  applyResearchProjectMutation,
   createResearchProject,
   deleteResearchProject,
   filterResearchProjects,
@@ -146,9 +147,10 @@ describe("research projects", () => {
       const storage = getStorage();
       const fault = new Error("disk full");
       const spy = vi
-        .spyOn(storage, "writeFile")
+        .spyOn(storage, "writeFileIfMatch")
         .mockImplementation(async (target: string) => {
           if (target.endsWith("research-projects.json")) throw fault;
+          return false;
         });
 
       try {
@@ -198,5 +200,24 @@ describe("research projects", () => {
     );
     expect(first?.status).toBe("collecting");
     expect(second).toBeNull();
+  });
+
+  it("lets only one of two isolate-style claim racers write collecting", async () => {
+    const created = await createResearchProject("alice", { title: "Race", question: "Once?" });
+    await updateResearchProject("alice", created.id, { status: "queued" });
+
+    const claim = () =>
+      applyResearchProjectMutation("alice", (projects) => {
+        const project = projects.find((item) => item.id === created.id);
+        if (!project || project.status !== "queued") {
+          return { projects, result: null };
+        }
+        project.status = "collecting";
+        return { projects, result: project };
+      });
+
+    const [first, second] = await Promise.all([claim(), claim()]);
+    expect([first, second].filter(Boolean)).toHaveLength(1);
+    expect((await listResearchProjects("alice"))[0]?.status).toBe("collecting");
   });
 });

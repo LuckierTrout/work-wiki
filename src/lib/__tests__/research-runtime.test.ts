@@ -42,7 +42,14 @@ vi.mock("../llm", () => ({
 }));
 vi.mock("../lifecycle", () => ({ writeWikiPageWithSideEffects: vi.fn() }));
 vi.mock("../raw", () => ({ saveRawSourceFor: vi.fn() }));
-vi.mock("../ingest-jobs", () => ({ createIngestJob: vi.fn() }));
+vi.mock("../ingest-jobs", () => ({
+  createIngestJob: vi.fn(),
+  createIngestJobIfAbsent: vi.fn(async (input: { jobId: string }) => ({
+    job: input,
+    created: true,
+  })),
+  getIngestJob: vi.fn(async () => null),
+}));
 vi.mock("../tasks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../tasks")>();
   return { ...actual, enqueueTask: vi.fn(async () => true) };
@@ -58,7 +65,8 @@ vi.mock("../wiki", async (importOriginal) => {
   return { ...actual, listWikiPages: vi.fn(async () => [] as IndexEntry[]) };
 });
 
-import { createIngestJob } from "../ingest-jobs";
+import { createIngestJobIfAbsent } from "../ingest-jobs";
+import { drainResearchOutbox, saveResearchOutbox } from "../research-completion";
 import { writeWikiPageWithSideEffects } from "../lifecycle";
 import { callLLM, callLLMStream } from "../llm";
 import { _resetLocks } from "../lock";
@@ -106,7 +114,7 @@ const mockedLLM = vi.mocked(callLLM);
 const mockedStream = vi.mocked(callLLMStream);
 const mockedWritePage = vi.mocked(writeWikiPageWithSideEffects);
 const mockedSaveRaw = vi.mocked(saveRawSourceFor);
-const mockedIngestJob = vi.mocked(createIngestJob);
+const mockedIngestJob = vi.mocked(createIngestJobIfAbsent);
 const mockedEnqueue = vi.mocked(enqueueTask);
 const mockedVault = vi.mocked(addToVault);
 const mockedPages = vi.mocked(listWikiPages);
@@ -147,6 +155,8 @@ beforeEach(async () => {
   mockedEnqueue.mockResolvedValue(true);
   mockedStream.mockRejectedValue(new Error("stream unavailable in unit tests"));
   mockedWritePage.mockImplementation(async ({ slug }) => ({ slug, updatedSlugs: [] }));
+  mockedSaveRaw.mockReset();
+  mockedSaveRaw.mockResolvedValue("");
   mockedSearch.mockResolvedValue([
     {
       title: "Launch brief",
@@ -195,6 +205,7 @@ describe("deep research run — success", () => {
       sourceType: "url",
       wikiId: "alice--launch",
     });
+    expect(mockedIngestJob.mock.calls[0][0].jobId).toMatch(/^[a-z0-9]{64}$/);
     const ingestTask = mockedEnqueue.mock.calls
       .map(([task]) => task)
       .find((task) => task.kind === "ingest");
@@ -869,15 +880,49 @@ describe("deep research — remediations", () => {
   });
 
   it("does not claim the Page was written when the lifecycle writer fails", async () => {
-    mockedWritePage.mockRejectedValue(new Error("registry down"));
+    mockedWritePage.mockRejectedValueOnce(new Error("registry down"));
     const created = await project();
 
     await expect(runResearchProject("alice", created.id)).rejects.toThrow(/registry down/);
 
     const stored = await getResearchProject("alice", created.id);
-    expect(stored?.status).toBe("failed");
-    expect(stored?.progress?.message).toMatch(/Nothing was written/);
-    expect(stored?.completion).toBeUndefined();
+    expect(stored?.completion?.phase).toBe("page");
+    expect(stored?.progress?.message).toMatch(/resume the write|Nothing was written|before the Page landed/);
+    expect(stored?.progress?.message).not.toMatch(/The Page was written/);
+  });
+
+  it("resumes the Page write from a discoverable phase-page completion", async () => {
+    mockedWritePage.mockRejectedValueOnce(new Error("registry down"));
+    const created = await project();
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(/registry down/);
+
+    const recovered = await drainResearchOutbox("alice", created.id);
+
+    expect(mockedWritePage).toHaveBeenCalledTimes(2);
+    expect(recovered?.status).toBe("complete");
+    expect(recovered?.completion?.phase).toBe("done");
+    expect(recovered?.error).toBeUndefined();
+  });
+
+  it("reconcile drains an outbox even when the project has no completion pointer", async () => {
+    const created = await project();
+    await saveResearchOutbox("alice", created.id, {
+      pageSlug: "research-launch-evidence",
+      title: "Launch evidence",
+      synthesis: "# Launch evidence\n\nA brief.",
+      thinking: [],
+      sources: [{
+        url: "https://example.com/launch/brief",
+        title: "Launch brief",
+        text: "THE WHOLE PAGE BODY.",
+      }],
+      evidence: [{ url: "https://example.com/launch/brief", title: "Launch brief" }],
+    });
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    expect(mockedWritePage).toHaveBeenCalledTimes(1);
+    expect((await getResearchProject("alice", created.id))?.status).toBe("complete");
   });
 
   it("resolves the current Settings provider on retry, not a stale project pin", async () => {

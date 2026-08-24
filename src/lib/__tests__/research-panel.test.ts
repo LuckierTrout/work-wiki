@@ -10,6 +10,7 @@ import {
   RESEARCH_ACTIVE_STATUSES,
   RESEARCH_POLL_MS,
   parseResearchQueries,
+  researchIsPolling,
   researchStatusLabel,
   researchTaskLine,
 } from "../research-panel";
@@ -38,6 +39,14 @@ describe("research panel vocabulary", () => {
     expect(RESEARCH_ACTIVE_STATUSES).not.toContain("draft");
     expect(RESEARCH_ACTIVE_STATUSES).not.toContain("complete");
     expect(RESEARCH_POLL_MS).toBeGreaterThan(0);
+    expect(researchIsPolling(project({
+      status: "complete",
+      completion: { phase: "sources", pageSlug: "research-x", sources: [] },
+    }))).toBe(true);
+    expect(researchIsPolling(project({
+      status: "complete",
+      completion: { phase: "done", pageSlug: "research-x", sources: [] },
+    }))).toBe(false);
   });
 
   it("never shows the store's own state-machine words to an owner", () => {

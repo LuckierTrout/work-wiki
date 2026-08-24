@@ -363,6 +363,59 @@ describe("Research Panel — starting a run", () => {
     expect(created).not.toHaveProperty("vaultId");
   });
 
+  it("still starts a created project after a wiki switch, without painting the other wiki", async () => {
+    let resolveCreate: ((value: { project: { id: string } }) => void) | undefined;
+    send.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/research" && init?.method === "POST") {
+        return await new Promise<{ project: { id: string } }>((resolve) => {
+          resolveCreate = resolve;
+        });
+      }
+      if (String(url).includes("/run")) return { project: { id: "new-1" } };
+      return { projects: [] };
+    });
+
+    const { rerender } = render(
+      <ResearchCanvas wikiId="6f1b7e10-0000-4000-8000-000000000000" />,
+    );
+    await screen.findByText(workbenchMode("research").emptyState!);
+    fireEvent.change(screen.getByLabelText("Topic"), { target: { value: "Launch evidence" } });
+    fireEvent.change(screen.getByLabelText("Queries"), { target: { value: "launch evidence" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start Deep Research" }));
+
+    rerender(<ResearchCanvas wikiId="6f1b7e10-0000-4000-8000-000000000001" />);
+    resolveCreate?.({ project: { id: "new-1" } });
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith(
+      "/api/research/new-1/run",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    expect(screen.queryByText(/no credential|Deep Research did not return/)).toBeNull();
+  });
+
+  it("keeps polling a complete row whose ingest is still draining", async () => {
+    send.mockResolvedValue({
+      projects: [project({
+        status: "complete",
+        completion: { phase: "sources", pageSlug: "research-x", sources: [] },
+        progress: { completedQueries: 1, totalQueries: 1, message: "1 source ingest still pending." },
+      })],
+    });
+    vi.useFakeTimers();
+
+    render(<ResearchCanvas wikiId="current" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RESEARCH_POLL_MS + 10);
+    });
+    expect(send.mock.calls.length).toBeGreaterThan(1);
+
+    vi.useRealTimers();
+  });
+
   it("sends the real wiki id when the rail has one", async () => {
     send.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url === "/api/research" && init?.method === "POST") return { project: { id: "new-1" } };

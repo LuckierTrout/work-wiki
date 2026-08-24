@@ -1534,7 +1534,7 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
           </div>
         )}
         {(mode === "wiki" || mode === "sources") && !settingsOpen && (
-          <ActivityDock readOnly={readOnly} />
+          <ActivityDock readOnly={readOnly} wikiId={currentWikiId} />
         )}
         {/* Settings' own nav takes the column the trees usually have (UX-DR14).
             AFTER the withdrawn panel, so the reading and tab order of the

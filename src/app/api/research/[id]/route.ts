@@ -3,7 +3,7 @@ import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
-import { getResearchProject, updateResearchProject } from "@/lib/research-projects";
+import { getResearchProject, updateResearchProjectIf } from "@/lib/research-projects";
 import { retireResearchProject } from "@/lib/research-runtime";
 
 interface RouteContext { params: Promise<{ id: string }> }
@@ -38,22 +38,23 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     if (body.queries !== undefined && (!Array.isArray(body.queries) || body.queries.some((value) => typeof value !== "string"))) {
       return NextResponse.json({ error: "queries must be a list of strings" }, { status: 400 });
     }
+    const project = await updateResearchProjectIf(
+      principal.handle,
+      id,
+      (current) => EDITABLE.has(current.status),
+      {
+        ...(typeof body.title === "string" ? { title: body.title } : {}),
+        ...(typeof body.question === "string" ? { question: body.question } : {}),
+        ...(Array.isArray(body.queries) ? { queries: body.queries as string[] } : {}),
+      },
+    );
+    if (project) return NextResponse.json({ project });
     const current = await getResearchProject(principal.handle, id);
     if (!current) return NextResponse.json({ error: "Research project not found." }, { status: 404 });
-    if (!EDITABLE.has(current.status)) {
-      return NextResponse.json(
-        { error: "A running or finished research project cannot be edited." },
-        { status: 409 },
-      );
-    }
-    const project = await updateResearchProject(principal.handle, id, {
-      ...(typeof body.title === "string" ? { title: body.title } : {}),
-      ...(typeof body.question === "string" ? { question: body.question } : {}),
-      ...(Array.isArray(body.queries) ? { queries: body.queries as string[] } : {}),
-    });
-    return project
-      ? NextResponse.json({ project })
-      : NextResponse.json({ error: "Research project not found." }, { status: 404 });
+    return NextResponse.json(
+      { error: "A running or finished research project cannot be edited." },
+      { status: 409 },
+    );
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
