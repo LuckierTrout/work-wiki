@@ -1,0 +1,6 @@
+exact-head SHA: 250688ee769d356c8be6c8567b00c2dd7b34a620
+command: pnpm exec tsc --noEmit
+cwd: /Users/christianlee/App-Development/work-wiki
+started: 2026-08-24T15:22:43Z
+exit: 0
+finished: 2026-08-24T15:22:45Z

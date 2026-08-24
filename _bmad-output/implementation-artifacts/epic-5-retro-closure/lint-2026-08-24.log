@@ -1,0 +1,13 @@
+exact-head SHA: 250688ee769d356c8be6c8567b00c2dd7b34a620
+command: pnpm lint
+cwd: /Users/christianlee/App-Development/work-wiki
+started: 2026-08-24T15:22:44Z
+
+> work-wiki@0.1.0 lint /Users/christianlee/App-Development/work-wiki
+> eslint
+
+The prop value with an expression type of TSNonNullExpression could not be resolved. Please file an issue ( https://github.com/jsx-eslint/jsx-ast-utils/issues/new ) to get this fixed immediately.
+The prop value with an expression type of TSNonNullExpression could not be resolved. Please file an issue ( https://github.com/jsx-eslint/jsx-ast-utils/issues/new ) to get this fixed immediately.
+The prop value with an expression type of TSNonNullExpression could not be resolved. Please file an issue ( https://github.com/jsx-eslint/jsx-ast-utils/issues/new ) to get this fixed immediately.
+exit: 0
+finished: 2026-08-24T15:22:49Z

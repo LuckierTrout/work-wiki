@@ -1,0 +1,211 @@
+exact-head SHA: 250688ee769d356c8be6c8567b00c2dd7b34a620
+command: pnpm build
+cwd: /Users/christianlee/App-Development/work-wiki
+started: 2026-08-24T15:24:36Z
+
+> work-wiki@0.1.0 build /Users/christianlee/App-Development/work-wiki
+> next build
+
+   ▲ Next.js 15.5.18
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 7.4s
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/113) ...
+   Generating static pages (28/113) 
+   Generating static pages (56/113) 
+   Generating static pages (84/113) 
+ ✓ Generating static pages (113/113)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                                        Size  First Load JS
+┌ ƒ /                                                           56.3 kB         214 kB
+├ ○ /_not-found                                                   998 B         104 kB
+├ ○ /about                                                        173 B         107 kB
+├ ○ /agent-api                                                  1.06 kB         236 kB
+├ ƒ /agents                                                     8.35 kB         159 kB
+├ ƒ /api/action-items                                             469 B         104 kB
+├ ƒ /api/action-items/[id]                                        469 B         104 kB
+├ ƒ /api/admin/migrate                                            469 B         104 kB
+├ ƒ /api/admin/rebuild-embeddings                                 469 B         104 kB
+├ ƒ /api/admin/reset                                              469 B         104 kB
+├ ƒ /api/admin/tenant/[handle]                                    469 B         104 kB
+├ ƒ /api/agent-interactions                                       469 B         104 kB
+├ ƒ /api/agent-interactions/[id]                                  469 B         104 kB
+├ ƒ /api/agent-sandbox-approvals                                  469 B         104 kB
+├ ƒ /api/agent-sandbox-approvals/[id]                             469 B         104 kB
+├ ƒ /api/agent-skills                                             469 B         104 kB
+├ ƒ /api/agent-skills/[id]                                        469 B         104 kB
+├ ƒ /api/agent-workspaces                                         469 B         104 kB
+├ ƒ /api/agent-workspaces/[workspaceId]/artifacts/[artifactId]    469 B         104 kB
+├ ƒ /api/agents                                                   469 B         104 kB
+├ ƒ /api/agents/[id]                                              469 B         104 kB
+├ ƒ /api/agents/[id]/activity                                     469 B         104 kB
+├ ƒ /api/agents/[id]/context                                      469 B         104 kB
+├ ƒ /api/agents/[id]/ingest                                       469 B         104 kB
+├ ƒ /api/agents/[id]/publish                                      469 B         104 kB
+├ ƒ /api/agents/[id]/run                                          469 B         104 kB
+├ ƒ /api/agents/[id]/token                                        469 B         104 kB
+├ ƒ /api/agents/ensure                                            469 B         104 kB
+├ ƒ /api/agents/seed                                              469 B         104 kB
+├ ƒ /api/archive/export                                           469 B         104 kB
+├ ƒ /api/archive/import                                           469 B         104 kB
+├ ƒ /api/assets/[...path]                                         469 B         104 kB
+├ ƒ /api/chat/conversations                                       469 B         104 kB
+├ ƒ /api/chat/conversations/[id]                                  469 B         104 kB
+├ ƒ /api/chat/conversations/[id]/messages                         469 B         104 kB
+├ ƒ /api/chat/conversations/[id]/save                             469 B         104 kB
+├ ƒ /api/chat/hermes                                              469 B         104 kB
+├ ƒ /api/contributors                                             469 B         104 kB
+├ ƒ /api/contributors/[handle]                                    469 B         104 kB
+├ ƒ /api/email/ingest                                             469 B         104 kB
+├ ƒ /api/email/settings                                           469 B         104 kB
+├ ƒ /api/graph/insights                                           469 B         104 kB
+├ ƒ /api/graph/workbench                                          469 B         104 kB
+├ ƒ /api/ingest                                                   469 B         104 kB
+├ ƒ /api/ingest/batch                                             469 B         104 kB
+├ ƒ /api/ingest/document                                          469 B         104 kB
+├ ƒ /api/ingest/history                                           469 B         104 kB
+├ ƒ /api/ingest/image                                             469 B         104 kB
+├ ƒ /api/ingest/jobs                                              469 B         104 kB
+├ ƒ /api/ingest/pdf                                               469 B         104 kB
+├ ƒ /api/ingest/reingest                                          469 B         104 kB
+├ ƒ /api/ingest/status/[jobId]                                    469 B         104 kB
+├ ƒ /api/ingest/x-mention                                         469 B         104 kB
+├ ƒ /api/integrations                                             469 B         104 kB
+├ ƒ /api/integrations/[id]/retry                                  469 B         104 kB
+├ ƒ /api/integrations/calendar                                    469 B         104 kB
+├ ƒ /api/knowledge                                                469 B         104 kB
+├ ƒ /api/knowledge/compilation                                    469 B         104 kB
+├ ƒ /api/knowledge/graphify                                       469 B         104 kB
+├ ƒ /api/knowledge/insights                                       469 B         104 kB
+├ ƒ /api/lint                                                     469 B         104 kB
+├ ƒ /api/lint/fix                                                 469 B         104 kB
+├ ƒ /api/lint/workbench                                           469 B         104 kB
+├ ƒ /api/lint/workbench-fix                                       469 B         104 kB
+├ ƒ /api/mcp                                                      469 B         104 kB
+├ ƒ /api/monitor-digests                                          469 B         104 kB
+├ ƒ /api/monitor-digests/[id]/read                                469 B         104 kB
+├ ƒ /api/monitors                                                 469 B         104 kB
+├ ƒ /api/monitors/[id]                                            469 B         104 kB
+├ ƒ /api/monitors/[id]/run                                        469 B         104 kB
+├ ƒ /api/names-terms                                              469 B         104 kB
+├ ƒ /api/names-terms/[id]                                         469 B         104 kB
+├ ƒ /api/query                                                    469 B         104 kB
+├ ƒ /api/query/demo                                               469 B         104 kB
+├ ƒ /api/query/history                                            469 B         104 kB
+├ ƒ /api/query/save                                               469 B         104 kB
+├ ƒ /api/query/stream                                             469 B         104 kB
+├ ƒ /api/raw/[slug]                                               469 B         104 kB
+├ ƒ /api/research                                                 469 B         104 kB
+├ ƒ /api/research/[id]                                            469 B         104 kB
+├ ƒ /api/research/[id]/run                                        469 B         104 kB
+├ ƒ /api/review-queue                                             469 B         104 kB
+├ ƒ /api/review-queue/[id]                                        469 B         104 kB
+├ ƒ /api/review/proposals                                         469 B         104 kB
+├ ƒ /api/review/proposals/[id]                                    469 B         104 kB
+├ ƒ /api/settings                                                 469 B         104 kB
+├ ƒ /api/settings/rebuild-embeddings                              469 B         104 kB
+├ ƒ /api/settings/test                                            469 B         104 kB
+├ ƒ /api/sources/meeting                                          469 B         104 kB
+├ ƒ /api/sources/search                                           469 B         104 kB
+├ ƒ /api/status                                                   469 B         104 kB
+├ ƒ /api/sync/status                                              469 B         104 kB
+├ ƒ /api/system/backups                                           469 B         104 kB
+├ ƒ /api/system/backups/[id]/verify                               469 B         104 kB
+├ ƒ /api/system/evaluations                                       469 B         104 kB
+├ ƒ /api/system/evaluations/[id]                                  469 B         104 kB
+├ ƒ /api/system/health                                            469 B         104 kB
+├ ƒ /api/tasks/run                                                469 B         104 kB
+├ ƒ /api/tasks/scan                                               469 B         104 kB
+├ ƒ /api/todos                                                    469 B         104 kB
+├ ƒ /api/todos/[id]                                               469 B         104 kB
+├ ƒ /api/v1/chat                                                  469 B         104 kB
+├ ƒ /api/v1/projects/[wikiId]/chat                                469 B         104 kB
+├ ƒ /api/v1/projects/[wikiId]/retrieve                            469 B         104 kB
+├ ƒ /api/v1/projects/[wikiId]/search                              469 B         104 kB
+├ ƒ /api/vaults                                                   469 B         104 kB
+├ ƒ /api/vaults/[id]                                              469 B         104 kB
+├ ƒ /api/vaults/[id]/pages                                        469 B         104 kB
+├ ƒ /api/vaults/[id]/pages/[slug]                                 469 B         104 kB
+├ ƒ /api/vaults/[id]/pages/[slug]/original                        469 B         104 kB
+├ ƒ /api/wiki                                                     469 B         104 kB
+├ ƒ /api/wiki/[slug]                                              469 B         104 kB
+├ ƒ /api/wiki/[slug]/discuss                                      469 B         104 kB
+├ ƒ /api/wiki/[slug]/discuss/[threadIndex]                        469 B         104 kB
+├ ƒ /api/wiki/[slug]/discuss/[threadIndex]/ask-yoyo               469 B         104 kB
+├ ƒ /api/wiki/[slug]/discuss/[threadIndex]/comments               469 B         104 kB
+├ ƒ /api/wiki/[slug]/lineage                                      469 B         104 kB
+├ ƒ /api/wiki/[slug]/revisions                                    469 B         104 kB
+├ ƒ /api/wiki/browse                                              469 B         104 kB
+├ ƒ /api/wiki/dataview                                            469 B         104 kB
+├ ƒ /api/wiki/export                                              469 B         104 kB
+├ ƒ /api/wiki/graph                                               469 B         104 kB
+├ ƒ /api/wiki/routes                                              469 B         104 kB
+├ ƒ /api/wiki/search                                              469 B         104 kB
+├ ƒ /api/wiki/templates                                           469 B         104 kB
+├ ƒ /api/wikis                                                    469 B         104 kB
+├ ƒ /api/wikis/[id]                                               469 B         104 kB
+├ ƒ /api/wikis/[id]/template                                      469 B         104 kB
+├ ƒ /api/wikis/current                                            469 B         104 kB
+├ ƒ /api/workbench/activity                                       469 B         104 kB
+├ ƒ /api/workbench/artifact                                       469 B         104 kB
+├ ƒ /api/workbench/artifact/revisions                             469 B         104 kB
+├ ƒ /api/workbench/files                                          469 B         104 kB
+├ ƒ /api/workbench/intake                                         469 B         104 kB
+├ ƒ /api/workbench/preview                                        469 B         104 kB
+├ ƒ /api/workbench/source                                         469 B         104 kB
+├ ƒ /api/workbench/version                                        469 B         104 kB
+├ ƒ /api/workspace-profile                                        469 B         104 kB
+├ ƒ /chat                                                        4.1 kB         283 kB
+├ ○ /icon.svg                                                       0 B            0 B
+├ ○ /ingest                                                     13.3 kB         158 kB
+├ ƒ /integrations                                               2.96 kB         150 kB
+├ ƒ /knowledge                                                  4.47 kB         155 kB
+├ ƒ /lint                                                       4.15 kB         111 kB
+├ ○ /manifest.webmanifest                                         469 B         104 kB
+├ ƒ /monitors                                                   4.93 kB         155 kB
+├ ○ /opengraph-image                                              469 B         104 kB
+├ ○ /query                                                      7.47 kB         288 kB
+├ ƒ /raw/[slug]                                                   469 B         104 kB
+├ ƒ /review                                                     5.13 kB         156 kB
+├ ○ /robots.txt                                                   469 B         104 kB
+├ ƒ /save                                                       3.59 kB         149 kB
+├ ƒ /settings                                                   10.8 kB         128 kB
+├ ƒ /share/[handle]/[slug]                                        469 B         104 kB
+├ ƒ /share/[handle]/[slug]/opengraph-image                        469 B         104 kB
+├ ƒ /sign-in/[[...sign-in]]                                       339 B         147 kB
+├ ƒ /studio                                                     13.4 kB         296 kB
+├ ƒ /system                                                     4.93 kB         155 kB
+├ ƒ /tasks                                                      4.61 kB         155 kB
+├ ƒ /u/[handle]                                                   469 B         104 kB
+├ ƒ /u/[handle]/[slug]                                          5.15 kB         286 kB
+├ ƒ /u/[handle]/[slug]/edit                                     3.18 kB         110 kB
+├ ƒ /u/[handle]/a/[agent]                                         469 B         104 kB
+├ ƒ /u/[handle]/raw/[slug]                                      3.23 kB         238 kB
+├ ƒ /vault                                                      1.96 kB         152 kB
+├ ƒ /vault/[id]                                                 7.39 kB         114 kB
+├ ○ /vault/agents                                                 469 B         104 kB
+├ ƒ /waitlist/[[...waitlist]]                                     469 B         104 kB
+├ ○ /wiki                                                         469 B         104 kB
+├ ƒ /wiki/[slug]                                                  469 B         104 kB
+├ ƒ /wiki/[slug]/edit                                             469 B         104 kB
+├ ○ /wiki/contributors                                            469 B         104 kB
+├ ○ /wiki/graph                                                 5.04 kB         146 kB
+├ ƒ /wiki/log                                                   2.08 kB         109 kB
+└ ƒ /wiki/new                                                   2.37 kB         106 kB
++ First Load JS shared by all                                    103 kB
+  ├ chunks/7225-733b25c9a568697c.js                             46.1 kB
+  ├ chunks/e7ff40a0-f50c0161ffe8f047.js                         54.2 kB
+  └ other shared chunks (total)                                 3.15 kB
+
+
+ƒ Middleware                                                    88.5 kB
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+exit: 0
+finished: 2026-08-24T15:25:02Z

@@ -222,6 +222,7 @@ New (expected):
 - 2026-08-23 — Feature-area review chunk 3 applied all 15 Review/Ingest patches. No `<intent-contract>` edits.
 - 2026-08-23 — Feature-area review chunk 4 applied all 15 Workbench delivery/browser/storage patches. No `<intent-contract>` edits.
 - 2026-08-23 — Final full-diff chunk applied all 3 delivery-metadata/evidence patches. No `<intent-contract>` edits.
+- 2026-08-24 — Retained exact-head gates at `250688ee769d356c8be6c8567b00c2dd7b34a620`. No `<intent-contract>` edits. This does not clear `followup_review_recommended`.
 
 ## Review Triage Log
 
@@ -232,7 +233,7 @@ New (expected):
 - decision_needed: 0
 - dismissed: 9
 - verification: hooks JSON and sprint YAML parse clean; retained-log counts match their historical files; current working-tree gates are TypeScript clean, production build clean, full lint exit 0, 6,590/6,590 Vitest green, and 17/17 Playwright green
-- remaining_gate: commit the final diff, rerun all gates at that immutable SHA from a clean tree, and obtain the reviewer step that can clear `followup_review_recommended`
+- remaining_gate: reviewer step at `250688ee769d356c8be6c8567b00c2dd7b34a620` that can clear `followup_review_recommended`; exact-head gate output is retained in `epic-5-retro-closure/`
 
 ### 2026-08-23 — Feature-area chunk 4 follow-up
 - scope: Workbench delivery / browser journeys / storage / refresh wiring
@@ -326,4 +327,4 @@ These rulings sit outside `<intent-contract>` and are the authoritative answers 
 
 `followup_review_recommended` stays `true` until a fresh review at the same SHA as the retained release-gate output records no unresolved acceptance findings. Action 10's closure that would clear this flag is a reviewer step, not an implementer step.
 
-Retained gate output for this working tree lives at `_bmad-output/implementation-artifacts/epic-5-retro-closure/`.
+Exact-head gate output at `250688ee769d356c8be6c8567b00c2dd7b34a620` lives at `_bmad-output/implementation-artifacts/epic-5-retro-closure/`.
