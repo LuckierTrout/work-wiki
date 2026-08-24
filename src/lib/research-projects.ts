@@ -74,6 +74,11 @@ export interface ResearchCompletion {
   pageSlug: string;
   wikiId?: string;
   sources: ResearchCompletionSource[];
+  /**
+   * When this isolate claimed the Page write. A fresh claim blocks every
+   * other writer; a stale one can be stolen after a crash.
+   */
+  writeClaimedAt?: string;
 }
 
 export interface ResearchProjectInput {

@@ -12,11 +12,14 @@ import { _resetLocks } from "../lock";
 import {
   commitResearchPage,
   drainResearchOutbox,
+  listResearchOutboxIds,
+  loadResearchOutbox,
   researchIngestJobId,
   saveResearchOutbox,
 } from "../research-completion";
 import {
   createResearchProject,
+  deleteResearchProject,
   getResearchProject,
   updateResearchProject,
 } from "../research-projects";
@@ -157,5 +160,66 @@ describe("research completion outbox", () => {
     const second = await drainResearchOutbox("alice", created.id);
     expect(second?.completion?.sources[0]?.jobId).toBe(jobId);
     expect(second?.error).toBeUndefined();
+  });
+
+  it("lets only one of two concurrent commits write the Page", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+
+    await Promise.all([
+      commitResearchPage("alice", created.id, OUTBOX),
+      commitResearchPage("alice", created.id, OUTBOX),
+    ]);
+
+    expect(mockedWritePage).toHaveBeenCalledTimes(1);
+    expect((await getResearchProject("alice", created.id))?.completion?.phase).toBe("sources");
+  });
+
+  it("removes the outbox once drain finishes so a later poll is a no-op", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "sources",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [{
+          url: OUTBOX.sources[0].url,
+          title: OUTBOX.sources[0].title,
+          slug: "research-example-com-launch-brief",
+          sha: "abc",
+        }],
+      },
+    });
+
+    const first = await drainResearchOutbox("alice", created.id);
+    expect(first?.completion?.phase).toBe("done");
+    expect(await loadResearchOutbox("alice", created.id)).toBeNull();
+    expect(await listResearchOutboxIds("alice")).toEqual([]);
+
+    mockedEnqueue.mockClear();
+    const second = await drainResearchOutbox("alice", created.id);
+    expect(second?.completion?.phase).toBe("done");
+    expect(second?.updatedAt).toBe(first?.updatedAt);
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("drains an orphan outbox after the project row is gone", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    expect(await deleteResearchProject("alice", created.id)).toBe(true);
+
+    await drainResearchOutbox("alice", created.id);
+
+    expect(mockedWritePage).toHaveBeenCalledTimes(1);
+    expect(mockedEnqueue).toHaveBeenCalledWith(expect.objectContaining({ kind: "ingest" }));
+    expect(await loadResearchOutbox("alice", created.id)).toBeNull();
   });
 });

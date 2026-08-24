@@ -10,6 +10,7 @@ import {
 } from "./research-concurrency";
 import {
   commitResearchPage,
+  deleteResearchOutbox,
   drainResearchOutbox,
   evidenceFromFetched,
   listResearchOutboxIds,
@@ -270,6 +271,10 @@ export async function retireResearchProject(owner: string, id: string): Promise<
   } else if (await loadResearchOutbox(owner, id)) {
     await drainResearchOutbox(owner, id).catch(() => undefined);
   }
+  const remaining = await getResearchProject(owner, id);
+  if (remaining?.completion?.phase === "done") {
+    await deleteResearchOutbox(owner, id);
+  }
   await releaseResearchSlot(owner, id);
   await drainResearchQueue(owner);
   return deleteResearchProject(owner, id);
@@ -323,10 +328,14 @@ export async function reconcileResearchProjects(
     const outboxIds = new Set(await listResearchOutboxIds(owner));
     for (const project of projects) {
       const held = await holdsResearchSlot(owner, project.id);
-      if (
-        (project.completion && project.completion.phase !== "done")
-        || outboxIds.has(project.id)
-      ) {
+      if (project.completion?.phase === "done") {
+        if (outboxIds.has(project.id)) {
+          await deleteResearchOutbox(owner, project.id);
+          outboxIds.delete(project.id);
+        }
+        continue;
+      }
+      if (project.completion || outboxIds.has(project.id)) {
         await drainResearchOutbox(owner, project.id);
         changed = true;
         outboxIds.delete(project.id);

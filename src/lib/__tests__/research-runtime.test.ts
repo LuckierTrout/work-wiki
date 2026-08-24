@@ -66,7 +66,7 @@ vi.mock("../wiki", async (importOriginal) => {
 });
 
 import { createIngestJobIfAbsent } from "../ingest-jobs";
-import { drainResearchOutbox, saveResearchOutbox } from "../research-completion";
+import { drainResearchOutbox, loadResearchOutbox, saveResearchOutbox } from "../research-completion";
 import { writeWikiPageWithSideEffects } from "../lifecycle";
 import { callLLM, callLLMStream } from "../llm";
 import { _resetLocks } from "../lock";
@@ -78,6 +78,7 @@ import {
 } from "../research-concurrency";
 import {
   createResearchProject,
+  deleteResearchProject,
   getResearchProject,
   listResearchProjects,
   updateResearchProject,
@@ -902,6 +903,59 @@ describe("deep research — remediations", () => {
     expect(recovered?.status).toBe("complete");
     expect(recovered?.completion?.phase).toBe("done");
     expect(recovered?.error).toBeUndefined();
+  });
+
+  it("does not rewrite a completed project when leftover outbox is only cleanup", async () => {
+    const created = await project();
+    const finished = await runResearchProject("alice", created.id);
+    expect(finished.completion?.phase).toBe("done");
+    const before = await getResearchProject("alice", created.id);
+    await saveResearchOutbox("alice", created.id, {
+      pageSlug: "research-launch-evidence",
+      title: "Launch evidence",
+      synthesis: "# Launch evidence\n\nA brief.",
+      thinking: [],
+      sources: [{
+        url: "https://example.com/launch/brief",
+        title: "Launch brief",
+        text: "THE WHOLE PAGE BODY.",
+      }],
+      evidence: [{ url: "https://example.com/launch/brief", title: "Launch brief" }],
+    });
+    mockedWritePage.mockClear();
+    mockedEnqueue.mockClear();
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    expect((await getResearchProject("alice", created.id))?.updatedAt).toBe(before?.updatedAt);
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+    expect(await loadResearchOutbox("alice", created.id)).toBeNull();
+  });
+
+  it("reconcile drains an orphan outbox after the project row is gone", async () => {
+    const created = await project();
+    await saveResearchOutbox("alice", created.id, {
+      pageSlug: "research-launch-evidence",
+      title: "Launch evidence",
+      synthesis: "# Launch evidence\n\nA brief.",
+      thinking: [],
+      sources: [{
+        url: "https://example.com/launch/brief",
+        title: "Launch brief",
+        text: "THE WHOLE PAGE BODY.",
+      }],
+      evidence: [{ url: "https://example.com/launch/brief", title: "Launch brief" }],
+    });
+    expect(await deleteResearchProject("alice", created.id)).toBe(true);
+    mockedWritePage.mockClear();
+    mockedEnqueue.mockClear();
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    expect(mockedWritePage).toHaveBeenCalledTimes(1);
+    expect(mockedEnqueue).toHaveBeenCalledWith(expect.objectContaining({ kind: "ingest" }));
+    expect(await loadResearchOutbox("alice", created.id)).toBeNull();
   });
 
   it("reconcile drains an outbox even when the project has no completion pointer", async () => {
