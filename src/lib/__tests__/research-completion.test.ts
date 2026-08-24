@@ -133,6 +133,61 @@ describe("research completion outbox", () => {
       .toBe(expected);
   });
 
+  it("does not let a concurrent drain un-ingest a source the other drain finished", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    const outbox = {
+      ...OUTBOX,
+      sources: [
+        OUTBOX.sources[0],
+        {
+          url: "https://example.com/launch/appendix",
+          title: "Launch appendix",
+          text: "APPENDIX BODY.",
+        },
+      ],
+      evidence: [
+        ...OUTBOX.evidence,
+        { url: "https://example.com/launch/appendix", title: "Launch appendix" },
+      ],
+    };
+    await saveResearchOutbox("alice", created.id, outbox);
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "sources",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [
+          {
+            url: outbox.sources[0].url,
+            title: outbox.sources[0].title,
+            slug: "research-example-com-launch-brief",
+            sha: "abc",
+            ingested: true,
+            jobId: "already-done",
+          },
+          {
+            url: outbox.sources[1].url,
+            title: outbox.sources[1].title,
+            slug: "research-example-com-launch-appendix",
+            sha: "def",
+          },
+        ],
+      },
+    });
+
+    await Promise.all([
+      drainResearchOutbox("alice", created.id),
+      drainResearchOutbox("alice", created.id),
+    ]);
+
+    const sources = (await getResearchProject("alice", created.id))?.completion?.sources ?? [];
+    expect(sources.find((source) => source.url === outbox.sources[0].url)?.ingested).toBe(true);
+    expect(sources.find((source) => source.url === outbox.sources[1].url)?.ingested).toBe(true);
+    expect(sources.find((source) => source.url === outbox.sources[0].url)?.jobId).toBe("already-done");
+  });
+
   it("keeps the job id when ingest fails so a retry does not mint another", async () => {
     mockedEnqueue.mockRejectedValue(new Error("queue down"));
     const created = await createResearchProject("alice", {

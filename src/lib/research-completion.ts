@@ -510,42 +510,51 @@ export async function drainResearchOutbox(
     );
   }
 
-  const failed = nextSources.filter((source) => !source.ingested);
-  const next: ResearchCompletion = {
-    ...completion,
-    phase: failed.length === 0 ? "done" : "sources",
-    sources: nextSources,
-  };
-
-  if (failed.length === 0) {
-    const updated = await updateResearchProject(owner, id, {
-      status: "complete",
-      completion: next,
-      proposalId: null,
-      error: null,
-      progress: {
+  const updated = await mutateResearchProject(owner, id, (project) => {
+    if (!project.completion) return null;
+    const localByUrl = new Map(nextSources.map((source) => [source.url, source]));
+    const sources = project.completion.sources.map((stored) => {
+      const local = localByUrl.get(stored.url);
+      if (!local) return stored;
+      if (stored.ingested) {
+        return { ...local, ...stored, ingested: true, error: undefined, jobId: stored.jobId ?? local.jobId };
+      }
+      return { ...stored, ...local, jobId: stored.jobId ?? local.jobId };
+    });
+    const failed = sources.filter((source) => !source.ingested);
+    project.completion = {
+      ...project.completion,
+      phase: failed.length === 0 ? "done" : "sources",
+      sources,
+    };
+    project.status = "complete";
+    delete project.proposalId;
+    if (failed.length === 0) {
+      delete project.error;
+      project.progress = {
         completedQueries: current.progress?.completedQueries ?? current.queries.length,
         totalQueries: current.progress?.totalQueries ?? current.queries.length,
-        message: `Wrote ${completion.pageSlug}. Ingested ${nextSources.length} sources.`,
-      },
-    });
+        message: `Wrote ${completion.pageSlug}. Ingested ${sources.length} sources.`,
+      };
+    } else {
+      project.error = `${failed.length} source${failed.length === 1 ? "" : "s"} did not ingest. The Page was written.`;
+      project.progress = {
+        completedQueries: current.progress?.completedQueries ?? current.queries.length,
+        totalQueries: current.progress?.totalQueries ?? current.queries.length,
+        message: `Wrote ${completion.pageSlug}. ${failed.length} source ingest(s) still pending.`,
+      };
+    }
+    return project;
+  });
+
+  const done = updated?.completion?.phase === "done";
+  if (done) {
     await deleteResearchOutbox(owner, id);
-    if (updated?.deleteRequested || current.deleteRequested) {
+    if (updated.deleteRequested || current.deleteRequested) {
       await deleteResearchProject(owner, id);
     }
-    return updated;
   }
-
-  return updateResearchProject(owner, id, {
-    status: "complete",
-    completion: next,
-    error: `${failed.length} source${failed.length === 1 ? "" : "s"} did not ingest. The Page was written.`,
-    progress: {
-      completedQueries: current.progress?.completedQueries ?? current.queries.length,
-      totalQueries: current.progress?.totalQueries ?? current.queries.length,
-      message: `Wrote ${completion.pageSlug}. ${failed.length} source ingest(s) still pending.`,
-    },
-  });
+  return updated ?? getResearchProject(owner, id);
 }
 
 async function drainOrphanOutbox(
