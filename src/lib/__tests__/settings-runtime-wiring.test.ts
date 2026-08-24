@@ -144,6 +144,15 @@ const ENV_KEYS = [
   "EMBEDDING_MODEL",
   "EMBEDDING_PROVIDER",
   "STORAGE_PROVIDER",
+  // Deep Research (AD-18). Cleared per case for the same reason as the rest: a
+  // value exported in a developer's shell would decide the provider the
+  // research cases below are asserting.
+  "RESEARCH_PROVIDER",
+  "TAVILY_API_KEY",
+  "SERPAPI_API_KEY",
+  "SERPAPI_ENGINE",
+  "SEARXNG_BASE_URL",
+  "SEARXNG_CATEGORIES",
 ];
 
 beforeEach(async () => {
@@ -1064,5 +1073,125 @@ describe("both Settings surfaces answer the substitution question the same way",
     };
     expect(after.workbench.embeddingModelInEffect).toBe("text-embedding-3-small");
     expect(after.workbench.embeddingModelOverridden).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Deep Research provider, store and environment together (AD-18)
+// ---------------------------------------------------------------------------
+//
+// `research-providers.test.ts` drives the resolver over a hand-built settings
+// snapshot; this is the other half — that the SNAPSHOT is what the store and the
+// environment actually produce, and that what crosses the wire carries booleans
+// rather than keys. The two would agree on a bug in `getResearchSettings`
+// otherwise.
+
+describe("the Deep Research provider resolves from the same config the surface serves", () => {
+  it("serves presence booleans and never a stored key (AD-23)", async () => {
+    await store({
+      researchProvider: "serpapi",
+      tavilyApiKey: "tvly-stored",
+      serpApiKey: "serp-stored",
+      serpApiEngine: "bing",
+      searxngBaseUrl: "https://searx.example",
+      searxngCategories: "general,news",
+    });
+
+    const payload = getWorkbenchSettings(false);
+    expect(payload).toMatchObject({
+      researchProvider: "serpapi",
+      hasTavilyApiKey: true,
+      hasSerpApiKey: true,
+      serpApiEngine: "bing",
+      searxngBaseUrl: "https://searx.example",
+      searxngCategories: "general,news",
+      envResearchProvider: null,
+      envResearchProviders: [],
+    });
+    // The whole serialized payload, because a leak is a leak wherever it rides.
+    const wire = JSON.stringify(payload);
+    expect(wire).not.toContain("tvly-stored");
+    expect(wire).not.toContain("serp-stored");
+  });
+
+  it("resolves the stored selection, and refuses it when its key is missing", async () => {
+    const { resolveResearchProvider, selectResearchProvider } = await import(
+      "../research-providers"
+    );
+
+    // Selected with no credential: a THROW naming the provider, even though
+    // another provider's key is sitting right there. No silent fallback.
+    await store({ researchProvider: "searxng", tavilyApiKey: "tvly-stored" });
+    expect(selectResearchProvider()).toBe("searxng");
+    expect(() => resolveResearchProvider()).toThrow(/SearXNG/);
+
+    // …and with SearXNG's own credential — its instance URL — it runs.
+    await store({
+      researchProvider: "searxng",
+      tavilyApiKey: "tvly-stored",
+      searxngBaseUrl: "https://searx.example",
+    });
+    expect(resolveResearchProvider()).toBe("searxng");
+  });
+
+  it("lets RESEARCH_PROVIDER win over the store, and says so on the wire", async () => {
+    await store({ researchProvider: "tavily", tavilyApiKey: "tvly-stored" });
+    process.env.RESEARCH_PROVIDER = "searxng";
+    process.env.SEARXNG_BASE_URL = "https://env-searx.example";
+    _resetConfigCache();
+    await loadConfig();
+
+    const { resolveResearchProvider } = await import("../research-providers");
+    expect(resolveResearchProvider()).toBe("searxng");
+    expect(getWorkbenchSettings(false)).toMatchObject({
+      // The STORED selection is still what the box edits…
+      researchProvider: "tavily",
+      // …and the env override is served beside it, so the surface can say which
+      // one will actually run. `Remove` is never offered for a variable no
+      // route can delete, which is why the env URL rides in its own field.
+      envResearchProvider: "searxng",
+      envSearxngBaseUrl: "https://env-searx.example",
+      searxngBaseUrl: null,
+      envResearchProviders: ["searxng"],
+    });
+  });
+
+  it("ignores a RESEARCH_PROVIDER nobody can correct", async () => {
+    // A typo in a variable the owner may not control must not refuse every
+    // research run forever — there would be no way through from any surface.
+    await store({ researchProvider: "tavily", tavilyApiKey: "tvly-stored" });
+    process.env.RESEARCH_PROVIDER = "firecrawl";
+    _resetConfigCache();
+    await loadConfig();
+
+    const { resolveResearchProvider } = await import("../research-providers");
+    expect(resolveResearchProvider()).toBe("tavily");
+    expect(getWorkbenchSettings(false).envResearchProvider).toBeNull();
+  });
+
+  it("takes an env key over a stored one, field by field", async () => {
+    await store({ researchProvider: "tavily" });
+    process.env.TAVILY_API_KEY = "tvly-env";
+    process.env.SERPAPI_ENGINE = "duckduckgo";
+    _resetConfigCache();
+    await loadConfig();
+
+    const { getResearchSettings } = await import("../config");
+    expect(getResearchSettings()).toMatchObject({
+      tavilyApiKey: "tvly-env",
+      serpApiEngine: "duckduckgo",
+    });
+    // `hasTavilyApiKey` stays about the STORE, so Remove is never offered for a
+    // key this route cannot delete — the rule the embedding key already follows.
+    expect(getWorkbenchSettings(false)).toMatchObject({
+      hasTavilyApiKey: false,
+      envResearchProviders: ["tavily"],
+    });
+  });
+
+  it("defaults the SerpApi engine to the value it used to hardcode", async () => {
+    await store({ researchProvider: "serpapi", serpApiKey: "serp-stored" });
+    const { getResearchSettings } = await import("../config");
+    expect(getResearchSettings().serpApiEngine).toBe("google");
   });
 });

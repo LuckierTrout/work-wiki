@@ -12,6 +12,7 @@ import {
   readStoredGraphLayout,
   writeStoredGraphLayout,
 } from "@/lib/workbench-state";
+import { researchWikiId } from "@/lib/research-panel";
 import { selectionFromContentPath, type TreeSelection } from "@/lib/workbench-tree";
 import { cameraStateToFitNodes, stableNodePositions } from "@/lib/graph-camera-fit";
 import { DeepResearchConfirm } from "./DeepResearchConfirm";
@@ -52,7 +53,7 @@ function prefersReducedMotion(): boolean {
 }
 
 export function GraphCanvas({
-  wikiId: _wikiId,
+  wikiId,
   readOnly = false,
   active = true,
   dataVersion = 0,
@@ -366,6 +367,8 @@ export function GraphCanvas({
   async function confirmResearch(values: { topic: string; queries: string[] }) {
     setResearchBusy(true);
     setResearchError(null);
+    const vaultId = researchWikiId(wikiId);
+    let created: string | null = null;
     try {
       const body = await send<{ project?: { id: string } }>("/api/research", {
         method: "POST",
@@ -374,20 +377,37 @@ export function GraphCanvas({
           question: values.topic,
           queries: values.queries,
           pageSlugs: research?.slugs ?? [],
+          // The active wiki, recorded so the run's auto-Ingest lands here even
+          // if the rail moves on before it finishes. Omitted when the rail has no
+          // real wiki yet — never the `"current"` sentinel.
+          ...(vaultId ? { vaultId } : {}),
         }),
       });
-      const id = body.project?.id;
-      if (!id) {
+      created = body.project?.id ?? null;
+      if (!created) {
         setResearchError("Deep Research did not return a project.");
         return;
       }
-      setResearch(null);
-      onOpenResearch?.(id);
+      // CREATE THEN RUN — see `ReviewCanvas.confirmResearch` for why the start
+      // is a second call rather than folded into the create.
+      await send(`/api/research/${encodeURIComponent(created)}/run`, { method: "POST" });
     } catch (cause) {
-      setResearchError(writeFailure(cause, "open Deep Research").message);
+      // ONE CONFIRM, ONE PROJECT. A refused RUN used to leave this dialog open
+      // holding the sentence, and a second Confirm then created a SECOND project
+      // for the same topic — one press per refusal, all of them stored. Once the
+      // create has landed the confirm is spent: the dialog closes and the panel
+      // opens on the project, where `queueResearchProject` has already recorded
+      // why the start failed. Only a failed CREATE keeps the dialog, because then
+      // there is no project to look at.
+      if (!created) {
+        setResearchError(writeFailure(cause, "open Deep Research").message);
+        return;
+      }
     } finally {
       setResearchBusy(false);
     }
+    setResearch(null);
+    onOpenResearch?.(created);
   }
 
   return (

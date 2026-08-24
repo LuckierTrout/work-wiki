@@ -75,6 +75,18 @@ function workbench(
     hasWorkersAiBinding: false,
     firecrawlBaseUrl: null,
     hasFirecrawlApiKey: false,
+    // Deep Research, fresh: nothing chosen, nothing configured. This file is
+    // about the FLAT page, which renders none of these — they are here because
+    // the payload type is one type.
+    researchProvider: null,
+    envResearchProvider: null,
+    hasTavilyApiKey: false,
+    hasSerpApiKey: false,
+    serpApiEngine: null,
+    searxngBaseUrl: null,
+    envSearxngBaseUrl: null,
+    searxngCategories: null,
+    envResearchProviders: [],
     language: "English",
     readOnly: false,
     ...overrides,

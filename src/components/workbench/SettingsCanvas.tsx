@@ -11,9 +11,17 @@ import {
 import { APP_NAME, APP_TAGLINE } from "@/lib/brand";
 import { EMBEDDING_PROVIDERS, PROVIDER_INFO, embeddingProviderLabel } from "@/lib/providers";
 import {
+  DEFAULT_SERPAPI_ENGINE,
+  RESEARCH_PROVIDERS,
   SETTINGS_CUSTOM_ENDPOINT_COPY,
   SETTINGS_FIRECRAWL_COPY,
   SETTINGS_GENERAL_SCHEMA_COPY,
+  SETTINGS_RESEARCH_COPY,
+  SETTINGS_RESEARCH_PROVIDER_LABEL,
+  draftResearchProvider,
+  draftResearchProviderConfigured,
+  researchProviderLabel,
+  researchProviderUnconfiguredCopy,
   SETTINGS_KEY_ABSENT_COPY,
   SETTINGS_KEY_PLACEHOLDER,
   SETTINGS_KEY_REMOVE_COPY,
@@ -369,13 +377,36 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
    *   without being marked, because marking it is a dead end.
    */
   function textRow(
-    key: "chatModel" | "ingestModel" | "customBaseUrl" | "embeddingModel" | "embeddingBaseUrl" | "firecrawlBaseUrl" | "llmTimeoutSeconds",
+    key:
+      | "chatModel"
+      | "ingestModel"
+      | "customBaseUrl"
+      | "embeddingModel"
+      | "embeddingBaseUrl"
+      | "firecrawlBaseUrl"
+      | "serpApiEngine"
+      | "searxngBaseUrl"
+      | "searxngCategories"
+      | "llmTimeoutSeconds",
     label: string,
     hint?: string,
     invalid?: boolean,
+    /**
+     * The env value that OWNS this field, when one does.
+     *
+     * Present means the box is showing something it does not control: the
+     * environment wins at run time, so the box shows the env value and refuses
+     * edits — `readOnly` rather than `disabled`, the same choice the whole
+     * surface makes, so the value stays reachable and readable. Editable-looking
+     * boxes whose contents a run ignores are the disagreement `providerRow`'s
+     * env note exists to prevent, and a text row is no different for being a
+     * text row.
+     */
+    envPin?: string | null,
   ) {
     const id = field(key);
     const hintId = `${id}-hint`;
+    const pinned = typeof envPin === "string" && envPin.length > 0;
     return (
       <p className="wb-set-row">
         {/* Labelled beyond the placeholder — the accessibility floor's own rule. */}
@@ -386,10 +417,13 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
           id={id}
           className="wb-set-input"
           type="text"
-          value={values[key]}
-          onChange={(event) => set(key, event.target.value)}
+          value={pinned ? envPin : values[key]}
+          onChange={(event) => {
+            if (pinned) return;
+            set(key, event.target.value);
+          }}
           spellCheck={false}
-          readOnly={stored.readOnly}
+          readOnly={stored.readOnly || pinned}
           // A range printed beside a box is invisible to a screen reader; the
           // accepted values have to be part of the control's own description —
           // and on a read-only deployment so is the reason the box will not
@@ -402,7 +436,8 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
           // `YOPEDIA_READONLY` makes every box unfixable. The DESCRIPTION still
           // rides, so the reason is announced; only the "this field is wrong,
           // fix it" mark is withheld, because there is nothing to fix it with.
-          aria-invalid={(invalid && !stored.readOnly) || undefined}
+          // An env pin is the same dead end for the same reason.
+          aria-invalid={(invalid && !stored.readOnly && !pinned) || undefined}
         />
         {hint && (
           <span className="wb-set-hint" id={hintId}>
@@ -461,7 +496,12 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
   }
 
   function secretRow(
-    key: "customApiKey" | "embeddingApiKey" | "firecrawlApiKey",
+    key:
+      | "customApiKey"
+      | "embeddingApiKey"
+      | "firecrawlApiKey"
+      | "tavilyApiKey"
+      | "serpApiKey",
     label: string,
     hasStoredKey: boolean,
     extraHint?: string,
@@ -519,6 +559,70 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
             {removing ? SETTINGS_KEY_UNDO_COPY : SETTINGS_KEY_REMOVE_COPY}
           </button>
         )}
+      </p>
+    );
+  }
+
+  /**
+   * The Deep Research provider select.
+   *
+   * `aria-disabled` rather than `disabled` and the env-override note are the
+   * two conventions `providerRow` above already follows, and this row follows
+   * them for the same reasons — the long explanation lives there.
+   *
+   * WHAT IS DIFFERENT is the hint. It answers "will a run start", not "what is
+   * selected": the selection is visible in the control, and the fact the owner
+   * cannot see is whether the provider they just picked has a credential. So a
+   * configured selection gets the standing sentence and an unconfigured one gets
+   * {@link researchProviderUnconfiguredCopy}, which names the provider and the
+   * thing to supply.
+   */
+  function researchProviderRow() {
+    const id = field("researchProvider");
+    const hintId = `${id}-hint`;
+    const envPinned = stored.envResearchProvider !== null;
+    const selected = draftResearchProvider(values, stored);
+    const configured = draftResearchProviderConfigured(values, stored);
+    return (
+      <p className="wb-set-row">
+        <label className="wb-set-label" htmlFor={id}>
+          {SETTINGS_RESEARCH_PROVIDER_LABEL}
+        </label>
+        <select
+          id={id}
+          className="wb-set-select"
+          // The ENV override wins at run time, so it is what the box shows when
+          // it is set — the same reading the embedding provider select applies.
+          // Showing the stored value beside a run that uses another provider is
+          // the disagreement this whole pair of fields exists to avoid.
+          //
+          // `selected` rather than the raw draft field, so a store with NOTHING
+          // chosen shows Tavily — the provider that would actually run — rather
+          // than an empty value with no matching option, which a browser
+          // renders as the first row while the draft still holds `""`. There is
+          // no "inherit" rung here for the same reason: one provider always
+          // runs, and the default is a real answer rather than a deferral.
+          value={selected}
+          aria-disabled={stored.readOnly || envPinned || undefined}
+          onChange={(event) => {
+            if (stored.readOnly || envPinned) return;
+            set("researchProvider", event.target.value);
+          }}
+          aria-describedby={describedBy(hintId)}
+        >
+          {RESEARCH_PROVIDERS.map((option) => (
+            <option key={option} value={option}>
+              {researchProviderLabel(option)}
+            </option>
+          ))}
+        </select>
+        <span className="wb-set-hint" id={hintId}>
+          {envPinned
+            ? `RESEARCH_PROVIDER is set to ${researchProviderLabel(selected)} and wins over this box.`
+            : configured
+              ? `${researchProviderLabel(selected)} is configured and will run the next Deep Research.`
+              : researchProviderUnconfiguredCopy(selected)}
+        </span>
       </p>
     );
   }
@@ -735,6 +839,43 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
       case "external-sources":
         return (
           <>
+            {/* DEEP RESEARCH FIRST, Firecrawl second. The order is the reading
+                order of the question an owner arrives here with — "why will
+                Deep Research not start" — and putting the Firecrawl pair on top
+                is what let the old copy be read as the answer to it. */}
+            <h3 className="wb-set-heading">Deep Research</h3>
+            <p className="wb-set-note">{SETTINGS_RESEARCH_COPY}</p>
+            {researchProviderRow()}
+            {secretRow("tavilyApiKey", "Tavily API key", stored.hasTavilyApiKey)}
+            {secretRow("serpApiKey", "SerpApi API key", stored.hasSerpApiKey)}
+            {textRow(
+              "serpApiEngine",
+              "SerpApi engine",
+              `Leave blank for ${DEFAULT_SERPAPI_ENGINE}.`,
+            )}
+            {/* The instance URL is SearXNG's credential — it needs no key — so
+                it rides as a text row with an env note rather than as a
+                secret: there is nothing to hide, and `Remove` on a value the
+                env may own would be a button that cannot work. */}
+            {textRow(
+              "searxngBaseUrl",
+              "SearXNG instance URL",
+              stored.envSearxngBaseUrl
+                ? `SEARXNG_BASE_URL is set to ${stored.envSearxngBaseUrl} and wins over this box.`
+                : "The instance Deep Research queries when SearXNG is selected.",
+              undefined,
+              // Pinned when the env owns it, exactly as the provider select is.
+              // The note above said the env wins while the box still accepted
+              // typing and a Save still stored what was typed — a value the next
+              // run would ignore.
+              stored.envSearxngBaseUrl,
+            )}
+            {textRow(
+              "searxngCategories",
+              "SearXNG categories",
+              "Comma-separated. Leave blank for the instance default.",
+            )}
+            <h3 className="wb-set-heading">Capture</h3>
             <p className="wb-set-note">{SETTINGS_FIRECRAWL_COPY}</p>
             {textRow("firecrawlBaseUrl", "Firecrawl base URL")}
             {secretRow(

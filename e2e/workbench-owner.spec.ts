@@ -130,6 +130,17 @@ test.describe("private Workbench owner journey", () => {
     await expect(
       page.getByRole("navigation", { name: "Settings categories" }),
     ).toBeVisible();
+    await page.getByRole("button", { name: "External Sources" }).click();
+    await expect(page.getByLabel("Deep Research provider")).toBeVisible();
+    await expect(page.getByLabel("Deep Research provider")).toHaveValue("tavily");
+    await expect(page.getByLabel("Tavily API key")).toBeVisible();
+    await expect(page.getByLabel("SerpApi API key")).toBeVisible();
+    await expect(
+      page.getByText(
+        "Firecrawl is an optional Capture credential for fetching pages; it is not a Deep Research search provider.",
+      ),
+    ).toBeVisible();
+    await expect(page.getByLabel("Firecrawl API key")).toBeVisible();
   });
 
   test("Chat and Search rails expose their canvases", async ({ page }) => {
@@ -225,14 +236,25 @@ test.describe("private Workbench owner journey", () => {
     const dialog = page.getByRole("dialog", { name: "Deep Research" });
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Confirm" }).click();
+    // CONFIRM NOW STARTS A RUN, and this deployment has no research provider
+    // (pinned unconfigured in `playwright.config.ts`), so the start is refused.
+    // The old assertion here — a draft card reading "web search has not
+    // started." — was the Epic 5 behaviour this epic removes: a confirmed topic
+    // that nothing would ever search.
+    //
+    // ONE CONFIRM, ONE PROJECT. The create landed, so the confirm is spent: the
+    // dialog closes and the panel opens on the project. A dialog left open
+    // holding the refusal was a Confirm that minted another project per press.
+    await expect(dialog).toBeHidden({ timeout: 15_000 });
     await expect(page.getByRole("heading", { name: "Deep Research", exact: true })).toBeVisible({
       timeout: 15_000,
     });
+    // The failure is ON THE RECORD, which is the point — not only in a dialog
+    // that closed.
     const research = page.locator(".wb-research");
-    await expect(research.locator(".wb-todos-card")).toBeVisible();
-    await expect(
-      research.getByText("Draft — web search has not started."),
-    ).toBeVisible();
+    await expect(research.locator(".wb-research-task")).toBeVisible({ timeout: 15_000 });
+    await expect(research.getByText("Failed")).toBeVisible();
+    await expect(research.getByText(/no credential/)).toBeVisible();
   });
 
   test("Lint auto-fix and Review Create Page / Skip in the signed-in browser", async ({

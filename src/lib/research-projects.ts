@@ -34,6 +34,16 @@ export interface ResearchProject {
   provider?: "tavily" | "serpapi" | "searxng";
   progress?: { completedQueries: number; totalQueries: number; message: string };
   results?: ResearchProjectResult[];
+  /**
+   * The run's narration, newest last — what the Research Panel shows as
+   * thinking.
+   *
+   * PANEL-ONLY. It is never written to the research Page, never saved as a
+   * Source and never cited: the same rule Chat applies to its own thinking. It
+   * lives on the project rather than in a stream because the panel POLLS, and a
+   * line emitted while nobody was looking still has to be there when they look.
+   */
+  thinking?: string[];
   proposalId?: string;
   cancelRequested?: boolean;
   error?: string;
@@ -199,6 +209,7 @@ export async function updateResearchProject(
     provider?: ResearchProject["provider"] | null;
     progress?: ResearchProject["progress"] | null;
     results?: ResearchProjectResult[] | null;
+    thinking?: readonly string[] | null;
     proposalId?: string | null;
     cancelRequested?: boolean;
     error?: string | null;
@@ -256,6 +267,17 @@ export async function updateResearchProject(
         query: result.query.trim().slice(0, 1_000),
       }));
       else delete project.results;
+    }
+    if (patch.thinking !== undefined) {
+      // Bounded at both ends: 200 lines of 500 characters, keeping the NEWEST
+      // when a long run overflows. A run narrates once per query and once per
+      // phase, so the cap is only reached by a pathological run — and the tail
+      // is the half worth keeping, because the panel follows the newest line.
+      const lines = (patch.thinking ?? [])
+        .map((line) => line.trim().replace(/\s+/g, " ").slice(0, 500))
+        .filter((line) => line.length > 0);
+      if (lines.length > 0) project.thinking = lines.slice(-200);
+      else delete project.thinking;
     }
     if (patch.proposalId !== undefined) {
       if (patch.proposalId?.trim()) project.proposalId = patch.proposalId.trim().slice(0, 160);

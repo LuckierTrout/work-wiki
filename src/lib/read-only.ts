@@ -186,6 +186,19 @@ export const READ_ONLY_REFUSAL = {
   researchCreate:
     "Research projects cannot be created while this deployment is read-only.",
   /**
+   * `POST /api/research/[id]/run`, `PATCH`/`DELETE /api/research/[id]`.
+   *
+   * ONE sentence for all four, the {@link pageWrite} reasoning: they are one
+   * capability from where the owner stands — running, editing, cancelling and
+   * deleting a research project are the same "change my research" — and four
+   * near-identical sentences would be four things to keep in step for no gain
+   * the reader can see. `researchCreate` stays its own because it is refused
+   * from a different surface (the confirm dialog) and says something the others
+   * cannot: that nothing was created.
+   */
+  researchMutate:
+    "Research projects cannot be changed while this deployment is read-only.",
+  /**
    * The three Names & Terms writers — `POST /api/names-terms` and
    * `PUT`/`DELETE /api/names-terms/[id]`.
    *

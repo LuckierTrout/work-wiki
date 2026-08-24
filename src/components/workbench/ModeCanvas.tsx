@@ -244,9 +244,13 @@ export function ModeCanvas({
           </h2>
         ) : null}
         <ResearchCanvas
-          wikiId={wikiId ?? "current"}
+          // `null`, not the `"current"` placeholder every other canvas takes:
+          // this one PERSISTS the value on a research project, and a stored
+          // `"current"` is a wiki id that resolves to nothing forever.
+          wikiId={wikiId ?? null}
           active={mode === "research" && !hidden}
           filledId={researchFillId}
+          readOnly={readOnly}
         />
       </div>
 

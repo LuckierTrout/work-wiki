@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { parseResearchQueries } from "@/lib/research-panel";
 
 export interface DeepResearchConfirmValues {
   topic: string;
@@ -36,10 +37,13 @@ export function DeepResearchConfirm({
     setQueryText(initialQueries.join("\n"));
   }, [open, initialTopic, initialQueries]);
 
-  const queries = queryText
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+  // THE PANEL'S HELPER, not a second local split. This one trimmed and dropped
+  // blanks but kept DUPLICATES, which the store then deduplicated — so a
+  // textarea holding the same query twice enabled Confirm with a count of two
+  // and started a run with one, and three identical lines enabled it with three.
+  // `parseResearchQueries` is what the mode-direct start counts with, and one
+  // definition of "how many queries is this" is the only way the two agree.
+  const queries = parseResearchQueries(queryText);
 
   return (
     <ConfirmDialog

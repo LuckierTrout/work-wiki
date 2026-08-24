@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { researchWikiId } from "@/lib/research-panel";
 import { normalizeReviewCount } from "@/lib/review-count";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { workbenchMode } from "@/lib/workbench-modes";
@@ -118,6 +119,7 @@ export function ReviewCanvas({
     if (!originWikiId) return;
     setResearchBusy(true);
     setResearchError(null);
+    let created: string | null = null;
     try {
       const body = await send<{ project?: { id: string } }>("/api/research", {
         method: "POST",
@@ -126,24 +128,48 @@ export function ReviewCanvas({
           question: values.topic,
           queries: values.queries,
           pageSlugs: originPageSlug ? [originPageSlug] : [],
+          // The wiki the confirm came FROM, recorded on the project so the
+          // auto-Ingest lands there even if the rail has moved on by the time
+          // the run finishes. `originWikiId` still SCOPES this canvas's reads,
+          // but only a real id is persisted — never the rail's `"current"`
+          // placeholder, which resolves to no wiki forever.
+          ...(researchWikiId(originWikiId) ? { vaultId: researchWikiId(originWikiId) } : {}),
         }),
       });
       if (seq !== researchSeq.current || wikiScope.current !== originWikiId) return;
-      const id = body.project?.id;
-      if (!id) {
+      created = body.project?.id ?? null;
+      if (!created) {
         setResearchError("Deep Research did not return a project.");
         return;
       }
-      setResearch(null);
-      onOpenResearch?.(id);
+      // CREATE THEN RUN. Confirm used to stop at the create, which left a draft
+      // project nothing would ever search — the owner had confirmed a topic and
+      // got a card that said web search had not started. The run is a second
+      // call because create and start are separately refusable: a create that
+      // succeeded and a start that was refused for a missing provider key is a
+      // real state, and it has to be reportable as itself.
+      await send(`/api/research/${encodeURIComponent(created)}/run`, { method: "POST" });
     } catch (cause) {
       if (seq !== researchSeq.current || wikiScope.current !== originWikiId) return;
-      setResearchError(writeFailure(cause, "open Deep Research").message);
+      // ONE CONFIRM, ONE PROJECT — the same rule as `GraphCanvas`. A refused RUN
+      // left this dialog open with its sentence, and pressing Confirm again
+      // created a second project for the same Review card. Once the create has
+      // landed the dialog closes and the panel opens on the project, which is
+      // where the refusal is recorded. Only a failed CREATE keeps the dialog.
+      if (!created) {
+        setResearchError(writeFailure(cause, "open Deep Research").message);
+        return;
+      }
     } finally {
       if (seq === researchSeq.current && wikiScope.current === originWikiId) {
         setResearchBusy(false);
       }
     }
+    if (seq !== researchSeq.current || wikiScope.current !== originWikiId) return;
+    // The Review card stays PENDING: Deep Research is a second opinion on it,
+    // not a decision about it. Only Skip and Create Page resolve a card.
+    setResearch(null);
+    onOpenResearch?.(created);
   }
 
   return (

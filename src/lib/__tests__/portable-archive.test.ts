@@ -54,6 +54,7 @@ describe("portable owner archive", () => {
     await getStorage().writeFile("tenants/alice/action-items.json", "[]");
     await getStorage().writeFile("tenants/alice/chat-conversations.json", "[]");
     await getStorage().writeFile("tenants/alice/todos.json", '{"items":[]}');
+    await getStorage().writeFile("tenants/alice/research-projects.json", "[]");
     const archive = await buildPortableArchive("alice");
     expect(archive.manifest.format).toBe("workwiki-portable-archive");
     const names = archive.manifest.files.map((entry) => entry.path);
@@ -63,6 +64,7 @@ describe("portable owner archive", () => {
     expect(names).toContain("action-items.json");
     expect(names).toContain("chat-conversations.json");
     expect(names).toContain("todos.json");
+    expect(names).toContain("research-projects.json");
     expect(names.every((name) => !name.includes("todos.md"))).toBe(true);
   });
 

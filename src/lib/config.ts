@@ -11,7 +11,10 @@ import {
   canEnableVectorSearch,
   embeddingProviderChanged,
   isAbsoluteHttpUrl,
+  isResearchProviderId,
   ollamaBaseUrlRefusedCopy,
+  DEFAULT_SERPAPI_ENGINE,
+  type ResearchProviderId,
   type VectorSearchInputs,
   type WorkbenchSettingsPatch,
   type WorkbenchSettingsStored,
@@ -76,9 +79,32 @@ export interface AppConfig {
   embeddingBaseUrl?: string;
   /** Embedding credential, when it is not supplied as an env secret. */
   embeddingApiKey?: string;
-  /** Firecrawl credentials, stored for Epic 6's Deep Research. */
+  /**
+   * Firecrawl credentials — an optional CAPTURE credential.
+   *
+   * Not a Deep Research provider: research searches through Tavily / SerpApi /
+   * SearXNG (AD-18). The three fields below are the research ones.
+   */
   firecrawlApiKey?: string;
   firecrawlBaseUrl?: string;
+  /**
+   * Deep Research (Epic 6 / AD-18). One provider is selected and used; there is
+   * no fallback to another when its credential is missing, because a silent
+   * substitution would search somewhere the owner did not choose.
+   *
+   * Absent `researchProvider` means the default (`tavily`), which is what makes
+   * "unset" a working configuration on a deployment that only supplies
+   * `TAVILY_API_KEY`.
+   */
+  researchProvider?: string;
+  tavilyApiKey?: string;
+  serpApiKey?: string;
+  /** SerpApi's search engine, e.g. `google`. Absent means the default. */
+  serpApiEngine?: string;
+  /** The SearXNG instance to query. SearXNG needs no key, only this. */
+  searxngBaseUrl?: string;
+  /** Comma-separated SearXNG categories. Absent means the instance's default. */
+  searxngCategories?: string;
 }
 
 /** Describes where each setting was resolved from. */
@@ -1331,9 +1357,8 @@ export interface FirecrawlSettings {
 }
 
 /**
- * Firecrawl credentials. Stored here for Epic 6's Deep Research; nothing in this
- * epic calls Firecrawl, so this is a reader with no consumer yet — which is the
- * point of storing them now.
+ * Firecrawl credentials — an optional CAPTURE credential with no Deep Research
+ * role. Deep Research reads {@link getResearchSettings} instead.
  */
 export function getFirecrawlSettings(): FirecrawlSettings {
   const cfg = loadConfigSync();
@@ -1345,6 +1370,78 @@ export function getFirecrawlSettings(): FirecrawlSettings {
     ),
     baseUrl: nonEmpty(cfg.firecrawlBaseUrl),
   };
+}
+
+/**
+ * Everything the Deep Research search leg needs, resolved once.
+ *
+ * ENV WINS, field by field, the same precedence every other setting here
+ * follows. `provider` is `null` when NEITHER env nor store names one — the
+ * caller applies {@link DEFAULT_RESEARCH_PROVIDER}, because "nothing chosen"
+ * and "chosen to be Tavily" have to stay distinguishable on the Settings
+ * surface (an editable select cannot show a value it did not store).
+ *
+ * The KEYS ride here as values rather than as booleans, unlike
+ * {@link FirecrawlSettings}: this is the reader the search functions use, and a
+ * second door that re-read `process.env` per provider is how the surface and
+ * the run end up disagreeing about which provider is configured. Nothing serves
+ * this object over HTTP — {@link getWorkbenchSettings} derives BOOLEANS from it,
+ * which is the AD-23 boundary.
+ */
+export interface ResearchSettings {
+  provider: ResearchProviderId | null;
+  envProvider: ResearchProviderId | null;
+  tavilyApiKey: string | null;
+  serpApiKey: string | null;
+  serpApiEngine: string;
+  searxngBaseUrl: string | null;
+  envSearxngBaseUrl: string | null;
+  searxngCategories: string | null;
+}
+
+export function getResearchSettings(): ResearchSettings {
+  const cfg = loadConfigSync();
+  const envProviderRaw = nonEmpty(process.env.RESEARCH_PROVIDER);
+  // An env value that is not one of the three is IGNORED rather than fatal: it
+  // cannot be corrected from any surface, and refusing every research run over
+  // a typo in a variable the owner may not control would leave no way through.
+  // The stored select still decides, and the surface still shows what it holds.
+  const envProvider = isResearchProviderId(envProviderRaw) ? envProviderRaw : null;
+  const storedProvider = isResearchProviderId(cfg.researchProvider)
+    ? cfg.researchProvider
+    : null;
+  return {
+    provider: envProvider ?? storedProvider,
+    envProvider,
+    tavilyApiKey:
+      nonEmpty(process.env.TAVILY_API_KEY) ?? nonEmpty(cfg.tavilyApiKey),
+    serpApiKey:
+      nonEmpty(process.env.SERPAPI_API_KEY) ?? nonEmpty(cfg.serpApiKey),
+    serpApiEngine:
+      nonEmpty(process.env.SERPAPI_ENGINE) ??
+      nonEmpty(cfg.serpApiEngine) ??
+      DEFAULT_SERPAPI_ENGINE,
+    searxngBaseUrl:
+      nonEmpty(process.env.SEARXNG_BASE_URL) ?? nonEmpty(cfg.searxngBaseUrl),
+    envSearxngBaseUrl: nonEmpty(process.env.SEARXNG_BASE_URL),
+    searxngCategories:
+      nonEmpty(process.env.SEARXNG_CATEGORIES) ?? nonEmpty(cfg.searxngCategories),
+  };
+}
+
+/**
+ * WHICH providers the ENVIRONMENT alone carries a credential for.
+ *
+ * Separate from {@link getResearchSettings} because it answers a different
+ * question: the surface offers `Remove` only for a credential the store owns,
+ * and no route can delete an environment variable.
+ */
+export function envResearchProviders(): ResearchProviderId[] {
+  const out: ResearchProviderId[] = [];
+  if (nonEmpty(process.env.TAVILY_API_KEY)) out.push("tavily");
+  if (nonEmpty(process.env.SERPAPI_API_KEY)) out.push("serpapi");
+  if (nonEmpty(process.env.SEARXNG_BASE_URL)) out.push("searxng");
+  return out;
 }
 
 /**
@@ -1455,6 +1552,7 @@ export function getWorkbenchSettings(
 ): WorkbenchSettingsValues {
   const cfg = loadConfigSync();
   const firecrawl = getFirecrawlSettings();
+  const research = getResearchSettings();
   const envProvider = envEmbeddingProvider();
   // Resolved from the `cfg` already read above, through the ONE helper
   // `getEffectiveSettings` uses (DW-312/DW-313) — so the two Settings surfaces
@@ -1508,6 +1606,28 @@ export function getWorkbenchSettings(
     hasWorkersAiBinding,
     firecrawlBaseUrl: firecrawl.baseUrl,
     hasFirecrawlApiKey: firecrawl.hasKey,
+    // Deep Research. The STORED select rides in `researchProvider` and the env
+    // override rides beside it, the same split the embedding pair uses and for
+    // the same reason: `RESEARCH_PROVIDER` wins at run time, so folding it into
+    // the editable field would show an unsaveable value in a select and persist
+    // it on the next save.
+    researchProvider: isResearchProviderId(cfg.researchProvider)
+      ? cfg.researchProvider
+      : null,
+    envResearchProvider: research.envProvider,
+    // BOOLEANS, not the keys — AD-23. `getResearchSettings` holds the values and
+    // never crosses this boundary.
+    hasTavilyApiKey: nonEmpty(cfg.tavilyApiKey) !== null,
+    hasSerpApiKey: nonEmpty(cfg.serpApiKey) !== null,
+    serpApiEngine: nonEmpty(cfg.serpApiEngine),
+    // The STORED instance URL, with the env override served apart — SearXNG's
+    // URL is its credential, so it follows the key rule rather than the
+    // endpoint rule: `Remove` must not be offered for a variable no route can
+    // delete.
+    searxngBaseUrl: nonEmpty(cfg.searxngBaseUrl),
+    envSearxngBaseUrl: research.envSearxngBaseUrl,
+    searxngCategories: nonEmpty(cfg.searxngCategories),
+    envResearchProviders: envResearchProviders(),
     language: SETTINGS_LANGUAGE_VALUE,
     readOnly: isReadOnly(),
   };
@@ -1622,6 +1742,16 @@ export function applyWorkbenchSettings(
   setText("embeddingApiKey", patch.embeddingApiKey);
   setText("firecrawlBaseUrl", patch.firecrawlBaseUrl);
   setText("firecrawlApiKey", patch.firecrawlApiKey);
+  // Deep Research. NO clear-on-switch here, deliberately, unlike the embedding
+  // pair above: each provider has its OWN credential field, so moving the
+  // select cannot hand Tavily's key to SerpApi. Keeping the other provider's
+  // key is what lets an owner switch back without pasting it again.
+  setText("researchProvider", patch.researchProvider);
+  setText("tavilyApiKey", patch.tavilyApiKey);
+  setText("serpApiKey", patch.serpApiKey);
+  setText("serpApiEngine", patch.serpApiEngine);
+  setText("searxngBaseUrl", patch.searxngBaseUrl);
+  setText("searxngCategories", patch.searxngCategories);
 
   if (patch.llmTimeoutSeconds !== undefined) {
     if (patch.llmTimeoutSeconds === null) {

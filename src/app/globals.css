@@ -3129,6 +3129,42 @@ body:has(.wb-shell) {
   margin: 0;
   padding-left: 1.2em;
 }
+/* The Research Panel's start form and task rows. No new colour: the chip and
+   the focused row borrow the same border/muted tokens every other canvas uses,
+   so Graph stays the only categorical-colour surface. */
+.wb-research-start {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+}
+.wb-research-task {
+  /* `min-width: 0` so a long query cannot push the row wider than the canvas
+     and start a horizontal scroll on the whole panel. */
+  min-width: 0;
+}
+.wb-research-task--focus {
+  border-color: var(--wb-foreground);
+}
+.wb-research-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+  margin: 0 0 8px;
+}
+.wb-research-chip {
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--wb-muted);
+}
+/* The live thinking viewport inside a task row is bounded and scrolls, which is
+   what "the viewport follows the newest line" needs something to scroll. The
+   panel itself still grows with content — this caps only the five-line block. */
+.wb-research-task .wb-chat-thinking--live {
+  max-height: 7.5em;
+  overflow: auto;
+}
 .wb-mark-meeting {
   display: flex;
   flex-direction: column;

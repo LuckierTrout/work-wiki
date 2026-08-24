@@ -41,6 +41,16 @@ export default defineConfig({
       DATA_DIR: "e2e/.data",
       WIKI_DIR: "e2e/.data/wiki",
       RAW_DIR: "e2e/.data/raw",
+      // Deep Research is deliberately UNCONFIGURED here, and pinned so rather
+      // than left to `process.env` above: a developer with a Tavily key exported
+      // in their shell would otherwise have the Graph confirm below fire real
+      // outbound searches and a real LLM synthesis, and the assertion would flip
+      // between "refused" and "searching" depending on whose machine ran it.
+      // Set-but-empty counts as unset everywhere `nonEmpty` reads a credential.
+      RESEARCH_PROVIDER: "",
+      TAVILY_API_KEY: "",
+      SERPAPI_API_KEY: "",
+      SEARXNG_BASE_URL: "",
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:
         process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ??
         "pk_test_ZWUyZS1sb2NhbC1ub3QtZm9yLXByb2Q",

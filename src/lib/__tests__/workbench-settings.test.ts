@@ -309,6 +309,17 @@ function emptyPayload(): WorkbenchSettingsPayload {
     hasWorkersAiBinding: false,
     firecrawlBaseUrl: null,
     hasFirecrawlApiKey: false,
+    // Deep Research on a fresh deployment: nothing chosen (which READS as
+    // Tavily), no credential for any of the three, no env override.
+    researchProvider: null,
+    envResearchProvider: null,
+    hasTavilyApiKey: false,
+    hasSerpApiKey: false,
+    serpApiEngine: null,
+    searxngBaseUrl: null,
+    envSearxngBaseUrl: null,
+    searxngCategories: null,
+    envResearchProviders: [],
     language: SETTINGS_LANGUAGE_VALUE,
     readOnly: false,
   };
@@ -4513,10 +4524,11 @@ describe("the Settings components stay inside the shell", () => {
     // Every control a read-only deployment refuses routes its description
     // through `describedBy`, which APPENDS the save bar's read-only sentence to
     // the control's own hint — `aria-describedby` takes a space-separated list,
-    // so the hint is kept rather than replaced. Five call sites now: the two
-    // pickers, the vector switch, `textRow` (seven rows) and `secretRow` (the
-    // three API-key rows, DW-307).
-    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(5);
+    // so the hint is kept rather than replaced. Six call sites now: the two
+    // provider pickers, the vector switch, `textRow`, `secretRow` (DW-307) and
+    // the Deep Research provider picker, whose hint carries both the env-pinned
+    // note and the "this provider has no credential" refusal.
+    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(6);
     expect(canvas).toContain('const readOnlyNoteId = field("bar-note");');
     expect(canvas).toContain('<span className="wb-set-bar-note" id={readOnlyNoteId}>');
     // Each row builder wires its own hint; none of them renders a bare span.

@@ -444,9 +444,81 @@ export function settingsEnvKeyCopy(providerName: string): string {
   return `${providerName} supplies its API key from the environment; nothing needs to be stored here.`;
 }
 
-/** External Sources: the one credential Story 1.9 stores for Epic 6. */
+/**
+ * External Sources: the optional Capture credential.
+ *
+ * REWORDED for Epic 6. It used to say the key was "stored for Deep Research",
+ * which is now false in a way that matters: Deep Research searches through
+ * Tavily / SerpApi / SearXNG (AD-18) and Firecrawl is not one of them, so an
+ * owner who stored only a Firecrawl key and read that sentence would believe
+ * Deep Research was configured and get a visible start refusal instead.
+ */
 export const SETTINGS_FIRECRAWL_COPY =
-  "Firecrawl credentials are stored for Deep Research; nothing here calls it yet.";
+  "Firecrawl is an optional Capture credential for fetching pages; it is not a Deep Research search provider.";
+
+// ---------------------------------------------------------------------------
+// Deep Research providers (Epic 6 / AD-18)
+// ---------------------------------------------------------------------------
+
+/**
+ * The three selectable Deep Research search providers, in select order.
+ *
+ * Firecrawl is deliberately absent — see {@link SETTINGS_FIRECRAWL_COPY}. The
+ * vocabulary lives HERE rather than in `research-providers.ts` because this
+ * module is client-safe and `SettingsCanvas` renders the select; the kernel
+ * module imports the type back from here so there is one list, not two.
+ */
+export const RESEARCH_PROVIDERS = ["tavily", "serpapi", "searxng"] as const;
+
+export type ResearchProviderId = (typeof RESEARCH_PROVIDERS)[number];
+
+/** Tavily out of the box (`epic-6-context.md:23`). */
+export const DEFAULT_RESEARCH_PROVIDER: ResearchProviderId = "tavily";
+
+export function isResearchProviderId(value: unknown): value is ResearchProviderId {
+  return (
+    typeof value === "string" &&
+    (RESEARCH_PROVIDERS as readonly string[]).includes(value)
+  );
+}
+
+const RESEARCH_PROVIDER_LABELS: Record<ResearchProviderId, string> = {
+  tavily: "Tavily",
+  serpapi: "SerpApi",
+  searxng: "SearXNG",
+};
+
+export function researchProviderLabel(provider: ResearchProviderId): string {
+  return RESEARCH_PROVIDER_LABELS[provider];
+}
+
+/** SerpApi's default engine — today's hardcoded value, now editable. */
+export const DEFAULT_SERPAPI_ENGINE = "google";
+
+export const SETTINGS_RESEARCH_COPY =
+  "Deep Research searches with one provider at a time. Missing credentials for the selected provider fail the run visibly — no other provider is used in its place.";
+
+export const SETTINGS_RESEARCH_PROVIDER_LABEL = "Deep Research provider";
+
+export const SETTINGS_INVALID_RESEARCH_PROVIDER_COPY =
+  "Choose Tavily, SerpApi, or SearXNG as the Deep Research provider.";
+
+/**
+ * Said beside the select when the SELECTED provider carries no credential.
+ *
+ * A sentence rather than a disabled option: the owner may be selecting the
+ * provider precisely so they can then paste its key, and a select that refuses
+ * the row it is about to configure is a dead end.
+ */
+export function researchProviderUnconfiguredCopy(
+  provider: ResearchProviderId,
+): string {
+  const needed =
+    provider === "searxng"
+      ? "an instance URL"
+      : "an API key";
+  return `${researchProviderLabel(provider)} has no ${needed} yet, so Deep Research cannot start. Supply it below.`;
+}
 
 /** Interface: English only, no picker (`epic-1-context.md:29`). */
 export const SETTINGS_LANGUAGE_LABEL = "Language";
@@ -598,6 +670,33 @@ export interface WorkbenchSettingsPayload {
   hasWorkersAiBinding: boolean;
   firecrawlBaseUrl: string | null;
   hasFirecrawlApiKey: boolean;
+  /**
+   * The STORED Deep Research provider — `null` means nothing was chosen, which
+   * reads as {@link DEFAULT_RESEARCH_PROVIDER} everywhere it is resolved.
+   *
+   * Stored and env ride APART for the same reason the embedding pair does:
+   * `RESEARCH_PROVIDER` wins at run time, so folding it into this box would
+   * show an unsaveable value in an editable control and persist it on the next
+   * save.
+   */
+  researchProvider: ResearchProviderId | null;
+  envResearchProvider: ResearchProviderId | null;
+  hasTavilyApiKey: boolean;
+  hasSerpApiKey: boolean;
+  serpApiEngine: string | null;
+  searxngBaseUrl: string | null;
+  envSearxngBaseUrl: string | null;
+  searxngCategories: string | null;
+  /**
+   * WHICH research providers the ENVIRONMENT already carries a credential for.
+   *
+   * A list rather than a boolean, on the `envEmbeddingApiKeyProviders`
+   * argument: `TAVILY_API_KEY` is not a SerpApi key, and a flat boolean would
+   * let the surface report a provider as configured when the selected one is
+   * not. `Remove` is never offered for a key on this list — the route cannot
+   * delete an environment variable.
+   */
+  envResearchProviders: ResearchProviderId[];
   /** Fixed. There is no locale picker anywhere in this surface. */
   language: typeof SETTINGS_LANGUAGE_VALUE;
   /** `YOPEDIA_READONLY=1`: the save bar refuses before the route has to. */
@@ -647,6 +746,12 @@ export interface WorkbenchSettingsPatch {
   embeddingApiKey?: string | null;
   firecrawlBaseUrl?: string | null;
   firecrawlApiKey?: string | null;
+  researchProvider?: string | null;
+  tavilyApiKey?: string | null;
+  serpApiKey?: string | null;
+  serpApiEngine?: string | null;
+  searxngBaseUrl?: string | null;
+  searxngCategories?: string | null;
 }
 
 /**
@@ -685,6 +790,18 @@ export function isWorkbenchSettingsPayload(
     nullableString("embeddingModel") &&
     nullableString("embeddingBaseUrl") &&
     nullableString("firecrawlBaseUrl") &&
+    nullableString("serpApiEngine") &&
+    nullableString("searxngBaseUrl") &&
+    nullableString("envSearxngBaseUrl") &&
+    nullableString("searxngCategories") &&
+    // The two provider names are checked against the LIST, not merely for
+    // being strings: an unknown id would seed the select with a value it has
+    // no option for, and the box would then read as a provider this build
+    // cannot search with. `null` is a real state (nothing chosen → Tavily).
+    (payload.researchProvider === null ||
+      isResearchProviderId(payload.researchProvider)) &&
+    (payload.envResearchProvider === null ||
+      isResearchProviderId(payload.envResearchProvider)) &&
     nullableString("envEmbeddingProvider") &&
     nullableString("envEmbeddingModel") &&
     nullableString("envCustomBaseUrl") &&
@@ -711,6 +828,10 @@ export function isWorkbenchSettingsPayload(
     Array.isArray(payload.envEmbeddingApiKeyProviders) &&
     payload.envEmbeddingApiKeyProviders.every((p) => typeof p === "string") &&
     typeof payload.hasFirecrawlApiKey === "boolean" &&
+    typeof payload.hasTavilyApiKey === "boolean" &&
+    typeof payload.hasSerpApiKey === "boolean" &&
+    Array.isArray(payload.envResearchProviders) &&
+    payload.envResearchProviders.every(isResearchProviderId) &&
     typeof payload.readOnly === "boolean" &&
     payload.language === SETTINGS_LANGUAGE_VALUE
   );
@@ -1338,7 +1459,16 @@ export function validateWorkbenchSettingsPatch(
     }
   }
 
-  for (const key of ["customBaseUrl", "embeddingBaseUrl", "firecrawlBaseUrl"] as const) {
+  for (const key of [
+    "customBaseUrl",
+    "embeddingBaseUrl",
+    "firecrawlBaseUrl",
+    // The SearXNG instance is an endpoint like any other, and it rides the same
+    // absolute-http rule for the same reason: a relative value would be
+    // resolved against whatever host the deployment runs on, so a research run
+    // would search the deployment instead of the web.
+    "searxngBaseUrl",
+  ] as const) {
     const raw = patch[key];
     if (raw === undefined || raw === null || raw === "") continue;
     if (typeof raw !== "string" || !isAbsoluteHttpUrl(raw.trim())) {
@@ -1346,11 +1476,43 @@ export function validateWorkbenchSettingsPatch(
     }
   }
 
-  for (const key of ["customApiKey", "embeddingApiKey", "firecrawlApiKey"] as const) {
+  for (const key of [
+    "customApiKey",
+    "embeddingApiKey",
+    "firecrawlApiKey",
+    "tavilyApiKey",
+    "serpApiKey",
+  ] as const) {
     const raw = patch[key];
     if (raw === undefined || raw === null) continue;
     if (typeof raw !== "string") {
       return { ok: false, error: SETTINGS_INVALID_SECRET_COPY };
+    }
+  }
+
+  {
+    const raw = patch.researchProvider;
+    // `null` and `""` both mean "no stored choice", which resolves to the
+    // default. Anything else has to be one of the three this build can search
+    // with — storing an unknown name would leave the select showing a provider
+    // with no option row and every run refusing.
+    if (!(raw === undefined || raw === null || raw === "")) {
+      if (!isResearchProviderId(raw)) {
+        return { ok: false, error: SETTINGS_INVALID_RESEARCH_PROVIDER_COPY };
+      }
+    }
+  }
+
+  for (const key of ["serpApiEngine", "searxngCategories"] as const) {
+    const raw = patch[key];
+    // Free text with no vocabulary to check against: SerpApi adds engines and
+    // a SearXNG instance defines its own categories, so an allowlist here would
+    // refuse a value the owner's instance accepts. `null` clears; a blank
+    // string is refused for the same reason a blank model name is — "clear
+    // this" and "I typed nothing" must not be the same request.
+    if (raw === undefined || raw === null) continue;
+    if (typeof raw !== "string" || raw.trim().length === 0) {
+      return { ok: false, error: SETTINGS_INVALID_MODEL_COPY };
     }
   }
 
@@ -1677,6 +1839,17 @@ export interface SettingsDraft {
   embeddingApiKey: string | null;
   firecrawlBaseUrl: string;
   firecrawlApiKey: string | null;
+  /**
+   * The Deep Research provider select. `""` is "nothing chosen", which reads as
+   * {@link DEFAULT_RESEARCH_PROVIDER} — the same `""`-means-unset convention the
+   * other selects on this surface use.
+   */
+  researchProvider: string;
+  tavilyApiKey: string | null;
+  serpApiKey: string | null;
+  serpApiEngine: string;
+  searxngBaseUrl: string;
+  searxngCategories: string;
 }
 
 /** Untouched — see {@link SettingsDraft}. */
@@ -1701,6 +1874,12 @@ export function settingsDraftFromPayload(
     embeddingApiKey: SECRET_UNTOUCHED,
     firecrawlBaseUrl: payload.firecrawlBaseUrl ?? "",
     firecrawlApiKey: SECRET_UNTOUCHED,
+    researchProvider: payload.researchProvider ?? "",
+    tavilyApiKey: SECRET_UNTOUCHED,
+    serpApiKey: SECRET_UNTOUCHED,
+    serpApiEngine: payload.serpApiEngine ?? "",
+    searxngBaseUrl: payload.searxngBaseUrl ?? "",
+    searxngCategories: payload.searxngCategories ?? "",
   };
 }
 
@@ -1829,6 +2008,10 @@ export function settingsSaveBody(draft: SettingsDraft): WorkbenchSettingsPatch {
     embeddingModel: draftText(draft.embeddingModel),
     embeddingBaseUrl: draftText(draft.embeddingBaseUrl),
     firecrawlBaseUrl: draftText(draft.firecrawlBaseUrl),
+    researchProvider: draftText(draft.researchProvider),
+    serpApiEngine: draftText(draft.serpApiEngine),
+    searxngBaseUrl: draftText(draft.searxngBaseUrl),
+    searxngCategories: draftText(draft.searxngCategories),
   };
   // Secrets ride only when the owner touched them — see `secretPatchValue`.
   const custom = secretPatchValue(draft.customApiKey);
@@ -1837,7 +2020,61 @@ export function settingsSaveBody(draft: SettingsDraft): WorkbenchSettingsPatch {
   if (embedding !== undefined) patch.embeddingApiKey = embedding;
   const firecrawl = secretPatchValue(draft.firecrawlApiKey);
   if (firecrawl !== undefined) patch.firecrawlApiKey = firecrawl;
+  const tavily = secretPatchValue(draft.tavilyApiKey);
+  if (tavily !== undefined) patch.tavilyApiKey = tavily;
+  const serpapi = secretPatchValue(draft.serpApiKey);
+  if (serpapi !== undefined) patch.serpApiKey = serpapi;
   return patch;
+}
+
+/**
+ * Does the SELECTED research provider have a credential, counting env and store?
+ *
+ * The browser's half of the same question `resolveResearchProvider` answers on
+ * the kernel side, and it exists so the surface can say so BEFORE a run refuses:
+ * the select is the one control that decides which credential matters, and a
+ * "configured" light driven by "any provider has a key" would report green for
+ * a deployment whose every research run fails.
+ *
+ * SearXNG's credential is its instance URL, not a key — a public instance needs
+ * no token, so requiring one would refuse the provider's normal deployment.
+ */
+export function draftResearchProviderConfigured(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): boolean {
+  const provider = draftResearchProvider(draft, payload);
+  if (provider === "searxng") {
+    return (
+      payload.envSearxngBaseUrl !== null ||
+      draftText(draft.searxngBaseUrl) !== null
+    );
+  }
+  const typed = secretPatchValue(
+    provider === "tavily" ? draft.tavilyApiKey : draft.serpApiKey,
+  );
+  // `null` is a pending Remove, and it un-configures the provider even though
+  // the store still holds the key — the save that follows deletes it, and a row
+  // that keeps saying "configured" until reload is the same misreport
+  // `draftEmbeddingKeyStored` closed for the embedding key.
+  if (typed === null) return payload.envResearchProviders.includes(provider);
+  if (typed !== undefined) return true;
+  const stored = provider === "tavily" ? payload.hasTavilyApiKey : payload.hasSerpApiKey;
+  return stored || payload.envResearchProviders.includes(provider);
+}
+
+/**
+ * WHICH provider a draft resolves to — env override, then the select, then the
+ * default. The same precedence the kernel applies, so the surface and the run
+ * cannot disagree about which provider is about to be used.
+ */
+export function draftResearchProvider(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): ResearchProviderId {
+  if (payload.envResearchProvider !== null) return payload.envResearchProvider;
+  const chosen = draftText(draft.researchProvider);
+  return isResearchProviderId(chosen) ? chosen : DEFAULT_RESEARCH_PROVIDER;
 }
 
 /** Trim-and-null: a box holding only whitespace holds nothing. */

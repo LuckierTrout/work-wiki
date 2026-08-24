@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
+import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import {
   deleteResearchProject,
   updateResearchProject,
@@ -15,6 +17,15 @@ const STATUSES = new Set<ResearchProjectStatus>([
 export async function PATCH(request: Request, { params }: RouteContext) {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+  // Same gate, same ordering, same reason as the run door: the kernel writer
+  // behind this handler writes the project record straight to storage and would
+  // refuse nothing on its own.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.researchMutate },
+      { status: 403 },
+    );
+  }
   try {
     const { id } = await params;
     const body = (await request.json()) as Record<string, unknown>;
@@ -52,6 +63,12 @@ export async function PATCH(request: Request, { params }: RouteContext) {
 export async function DELETE(_request: Request, { params }: RouteContext) {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.researchMutate },
+      { status: 403 },
+    );
+  }
   try {
     const { id } = await params;
     return (await deleteResearchProject(principal.handle, id))

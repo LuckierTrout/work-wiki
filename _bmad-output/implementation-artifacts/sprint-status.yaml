@@ -34,7 +34,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-23-2026 22:45
+last_updated: 08-24-2026 10:55
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
@@ -101,12 +101,12 @@ development_status:
   5-10-review-queue: done
   epic-5-retrospective: done
 
-  epic-6: backlog
-  6-1-configure-deep-research-providers: backlog
-  6-2-confirm-topic-and-queries-before-start: backlog
-  6-3-research-panel-streams-progress: backlog
-  6-4-own-queue-max-3-concurrent: backlog
-  6-5-research-page-thinking-auto-ingest: backlog
+  epic-6: done
+  6-1-configure-deep-research-providers: done
+  6-2-confirm-topic-and-queries-before-start: done
+  6-3-research-panel-streams-progress: done
+  6-4-own-queue-max-3-concurrent: done
+  6-5-research-page-thinking-auto-ingest: done
   epic-6-retrospective: optional
 
   epic-7: backlog

@@ -591,7 +591,7 @@ describe("Deep Research confirm", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it("Confirm from Review creates a draft and never runs web search", async () => {
+  it("Confirm from Review creates the project and then runs it", async () => {
     const item = {
       id: "r1",
       kind: "lightbulb" as const,
@@ -611,7 +611,7 @@ describe("Deep Research confirm", () => {
     });
     const onOpen = vi.fn();
     render(
-      <ReviewCanvas wikiId="current" onDockPreview={vi.fn()} onOpenResearch={onOpen} />,
+      <ReviewCanvas wikiId="wiki-r" onDockPreview={vi.fn()} onOpenResearch={onOpen} />,
     );
     await screen.findByText("Follow up");
     fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
@@ -622,9 +622,179 @@ describe("Deep Research confirm", () => {
         expect.objectContaining({ method: "POST" }),
       );
     });
-    const urls = send.mock.calls.map((call) => String(call[0]));
-    expect(urls.some((url) => url.includes("/run"))).toBe(false);
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(
+        "/api/research/proj-1/run",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
     expect(onOpen).toHaveBeenCalledWith("proj-1");
+    const [, createInit] = send.mock.calls.find(([url]) => url === "/api/research")!;
+    expect(JSON.parse(String((createInit as RequestInit).body))).toMatchObject({
+      // The wiki the confirm came FROM, and the originating page, so the run's
+      // auto-Ingest lands where the card lives.
+      vaultId: "wiki-r",
+      pageSlugs: ["topic"],
+    });
+    // Starting a research run is not a JUDGMENT on the Review item. The item
+    // stays pending: the whole point of researching it is that the owner does
+    // not know the answer yet, and resolving it here would take it off the queue
+    // before the brief exists.
+    const resolved = send.mock.calls.filter(
+      ([url, init]) =>
+        String(url).startsWith("/api/review-queue/") &&
+        (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(resolved).toEqual([]);
+  });
+
+  it("Confirm from Graph creates then runs, and records the wiki it came from", async () => {
+    // The Epic 5 confirm stopped at the create, which left a draft project
+    // nothing would ever search — the owner had confirmed a topic and got a card
+    // saying web search had not started.
+    send.mockImplementation(async (url: string) => {
+      if (url === "/api/research") return { project: { id: "proj-g" } };
+      if (String(url).includes("/run")) return { project: { id: "proj-g", status: "queued" } };
+      return {
+        nodes: [{ id: "alone", label: "Alone", tenant: "yopedia", linkCount: 0, tags: [] }],
+        edges: [],
+        insights: [isolatedInsight],
+        communities: [],
+        types: [],
+      };
+    });
+    const onOpenResearch = vi.fn();
+    render(
+      <GraphCanvas wikiId="wiki-a" onDockPreview={vi.fn()} onOpenResearch={onOpenResearch} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /Alone is isolated/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith(
+      "/api/research/proj-g/run",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const [, createInit] = send.mock.calls.find(([url]) => url === "/api/research")!;
+    // The wiki the confirm came FROM, so the run's auto-Ingest lands there even
+    // if the rail has moved on by the time it finishes.
+    expect(JSON.parse(String((createInit as RequestInit).body)))
+      .toMatchObject({ vaultId: "wiki-a" });
+    expect(onOpenResearch).toHaveBeenCalledWith("proj-g");
+  });
+
+  it("opens the panel on the created project even when the run is refused", async () => {
+    // ONE CONFIRM, ONE PROJECT. This used to keep the dialog open holding the
+    // refusal, so a second Confirm minted a SECOND project for the same card —
+    // one per press, all of them stored. The create already landed, so the
+    // confirm is spent: the dialog closes and the panel opens on the project,
+    // where `queueResearchProject` has recorded why the start failed.
+    const item = {
+      id: "r1",
+      kind: "lightbulb" as const,
+      title: "Follow up",
+      summary: "Stored queries.",
+      path: "wiki/topic.md",
+      queries: ["What else belongs here?"],
+      status: "pending" as const,
+      createdAt: "2026-08-23T00:00:00.000Z",
+      updatedAt: "2026-08-23T00:00:00.000Z",
+      pageSlug: "topic",
+    };
+    send.mockImplementation(async (url: string) => {
+      if (String(url).startsWith("/api/review-queue")) return { items: [item], pendingCount: 1 };
+      if (url === "/api/research") return { project: { id: "proj-1", status: "draft" } };
+      if (String(url).includes("/run")) throw new Error("Deep Research is set to Tavily, which has no credential.");
+      return {};
+    });
+    const onOpen = vi.fn();
+    render(
+      <ReviewCanvas wikiId="current" onDockPreview={vi.fn()} onOpenResearch={onOpen} />,
+    );
+    await screen.findByText("Follow up");
+    fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith("proj-1"));
+    // The dialog is gone, so there is nothing left to press twice.
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+    const creates = send.mock.calls.filter(([url]) => url === "/api/research");
+    expect(creates).toHaveLength(1);
+  });
+
+  it("keeps the Graph dialog open when the CREATE itself fails", async () => {
+    // The other half of the rule: with no project there is nothing to open, so
+    // the sentence has to live where the owner is — in the dialog.
+    send.mockImplementation(async (url: string) => {
+      if (url === "/api/research") throw new Error("This workspace already has the maximum");
+      return {
+        nodes: [{ id: "alone", label: "Alone", tenant: "yopedia", linkCount: 0, tags: [] }],
+        edges: [],
+        insights: [isolatedInsight],
+        communities: [],
+        types: [],
+      };
+    });
+    const onOpenResearch = vi.fn();
+    render(
+      <GraphCanvas wikiId="wiki-a" onDockPreview={vi.fn()} onOpenResearch={onOpenResearch} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /Alone is isolated/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(await screen.findByText(/maximum/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeTruthy();
+    expect(onOpenResearch).not.toHaveBeenCalled();
+  });
+
+  it("never sends the rail's `current` placeholder as a wiki id", async () => {
+    // `ModeCanvas` defaults `wikiId` to `"current"`, and this value is PERSISTED
+    // on the project — a stored `"current"` resolves to no wiki, forever.
+    send.mockImplementation(async (url: string) => {
+      if (url === "/api/research") return { project: { id: "proj-c" } };
+      if (String(url).includes("/run")) return { project: { id: "proj-c", status: "queued" } };
+      return {
+        nodes: [{ id: "alone", label: "Alone", tenant: "yopedia", linkCount: 0, tags: [] }],
+        edges: [],
+        insights: [isolatedInsight],
+        communities: [],
+        types: [],
+      };
+    });
+    render(<GraphCanvas wikiId="current" onDockPreview={vi.fn()} onOpenResearch={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Alone is isolated/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith(
+      "/api/research/proj-c/run",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const [, createInit] = send.mock.calls.find(([url]) => url === "/api/research")!;
+    expect(JSON.parse(String((createInit as RequestInit).body))).not.toHaveProperty("vaultId");
+  });
+
+  it("counts the queries the store would keep, not the lines that were typed", async () => {
+    // The dialog used to split with its own local helper, which dropped blanks
+    // but kept DUPLICATES — so two identical lines enabled Confirm with a count
+    // of two and started a run with one.
+    const onConfirm = vi.fn();
+    render(
+      <DeepResearchConfirm
+        open
+        initialTopic="Topic"
+        initialQueries={["one"]}
+        onCancel={vi.fn()}
+        onConfirm={onConfirm}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/Queries/), {
+      target: { value: "one\n\n one \ntwo" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(onConfirm).toHaveBeenCalledWith({ topic: "Topic", queries: ["one", "two"] });
   });
 });
 

@@ -12,17 +12,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/research-projects", () => ({
   createResearchProject: vi.fn(),
-  listResearchProjects: vi.fn(),
+  listResearchProjects: vi.fn(async () => []),
+}));
+vi.mock("@/lib/research-runtime", () => ({
+  reconcileResearchProjects: vi.fn(async (_owner, projects) => projects),
 }));
 
-import { POST } from "@/app/api/research/route";
+import { GET, POST } from "@/app/api/research/route";
 import { getPrincipal } from "@/lib/auth";
 import { ClientInputError } from "@/lib/errors";
 import { createResearchProject } from "@/lib/research-projects";
+import { reconcileResearchProjects } from "@/lib/research-runtime";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedCreate = vi.mocked(createResearchProject);
+const mockedReconcile = vi.mocked(reconcileResearchProjects);
 
 const request = (body: unknown) =>
   new Request("http://localhost/api/research", {
@@ -133,5 +138,24 @@ describe("POST /api/research failure classification", () => {
 
     expect(response.status).toBe(201);
     expect(await response.json()).toEqual({ project: { id: "p1" } });
+  });
+
+  it("reconciles interrupted runs on the panel's read", async () => {
+    // SM-3: the poll is where a queued project whose wake-up was lost gets
+    // re-dispatched and an abandoned `collecting` one gets failed visibly.
+    await GET();
+
+    expect(mockedReconcile).toHaveBeenCalledWith("alice", []);
+  });
+
+  it("does not reconcile on a read-only deployment", async () => {
+    // Reconciling writes. Every other door refuses a write here, so a GET that
+    // quietly performed one would be the single exception.
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await GET();
+
+    expect(response.status).toBe(200);
+    expect(mockedReconcile).not.toHaveBeenCalled();
   });
 });
