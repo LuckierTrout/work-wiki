@@ -386,7 +386,35 @@ describe("research completion outbox", () => {
     mockedEnqueue.mockResolvedValue(true);
     mockedEnqueue.mockClear();
     await drainResearchOutbox("alice", created.id);
+    expect(mockedWritePage).toHaveBeenCalledTimes(1);
     expect(mockedEnqueue).toHaveBeenCalledWith(expect.objectContaining({ kind: "ingest" }));
+    expect(await loadResearchOutbox("alice", created.id)).toBeNull();
+  });
+
+  it("drops a leftover outbox when delete wins before the Page claim", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+
+    expect(await retireResearchProject("alice", created.id)).toBe(true);
+
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(await loadResearchOutbox("alice", created.id)).toBeNull();
+    expect(await getResearchProject("alice", created.id)).toBeNull();
+  });
+
+  it("drops a leftover outbox when cancel wins after the outbox is saved", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    await cancelResearchProject("alice", created.id);
+
+    expect(await commitResearchPage("alice", created.id, OUTBOX)).toBeNull();
+    expect(mockedWritePage).not.toHaveBeenCalled();
     expect(await loadResearchOutbox("alice", created.id)).toBeNull();
   });
 });

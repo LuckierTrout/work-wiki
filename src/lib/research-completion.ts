@@ -234,17 +234,35 @@ export async function commitResearchPage(
     return null;
   }
   if ((existing.cancelRequested || existing.status === "cancelled") && !existing.completion) {
+    await deleteResearchOutbox(owner, id);
     return null;
   }
 
   await saveResearchOutbox(owner, id, outbox);
-
-  if (existing.completion?.phase === "sources" || existing.completion?.phase === "done") {
-    return existing;
+  const afterSave = await getResearchProject(owner, id);
+  if (!afterSave) {
+    await deleteResearchOutbox(owner, id);
+    return null;
+  }
+  if (
+    afterSave.deleteRequested
+    && !researchWriteClaimIsFresh(afterSave.completion?.writeClaimedAt)
+  ) {
+    await deleteResearchOutbox(owner, id);
+    await deleteResearchProject(owner, id);
+    return null;
+  }
+  if ((afterSave.cancelRequested || afterSave.status === "cancelled") && !afterSave.completion) {
+    await deleteResearchOutbox(owner, id);
+    return null;
   }
 
-  const sources = existing.completion?.sources?.length
-    ? existing.completion.sources
+  if (afterSave.completion?.phase === "sources" || afterSave.completion?.phase === "done") {
+    return afterSave;
+  }
+
+  const sources = afterSave.completion?.sources?.length
+    ? afterSave.completion.sources
     : await completionSourcesFromOutbox(outbox);
 
   const claimId = crypto.randomUUID();
@@ -267,7 +285,26 @@ export async function commitResearchPage(
     };
     return project;
   });
-  if (!claimed) return getResearchProject(owner, id);
+  if (!claimed) {
+    const latest = await getResearchProject(owner, id);
+    if (!latest) {
+      await deleteResearchOutbox(owner, id);
+      return null;
+    }
+    if (
+      latest.deleteRequested
+      && !researchWriteClaimIsFresh(latest.completion?.writeClaimedAt)
+    ) {
+      await deleteResearchOutbox(owner, id);
+      await deleteResearchProject(owner, id);
+      return null;
+    }
+    if ((latest.cancelRequested || latest.status === "cancelled") && !latest.completion) {
+      await deleteResearchOutbox(owner, id);
+      return null;
+    }
+    return latest;
+  }
   if (claimed.deleteRequested) {
     await deleteResearchOutbox(owner, id);
     await deleteResearchProject(owner, id);
@@ -564,7 +601,14 @@ async function drainOrphanOutbox(
   if (!await claimOrphanWrite(owner, claimPath)) return;
   const stopHeartbeat = startOrphanClaimHeartbeat(claimPath);
   try {
-    await writeResearchPage(owner, outbox);
+    const writtenPath = `${outboxPath(owner, id)}.page-written`;
+    try {
+      await getStorage().readFile(writtenPath);
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+      await writeResearchPage(owner, outbox);
+      await getStorage().writeFile(writtenPath, JSON.stringify({ at: new Date().toISOString() }));
+    }
     const sources = await completionSourcesFromOutbox(outbox);
     let failed = 0;
     for (const meta of sources) {
@@ -582,7 +626,14 @@ async function drainOrphanOutbox(
         logger.warn("research", `orphan source ingest skipped for ${meta.url}`, error);
       }
     }
-    if (failed === 0) await deleteResearchOutbox(owner, id);
+    if (failed === 0) {
+      await deleteResearchOutbox(owner, id);
+      try {
+        await getStorage().deleteFile(`${outboxPath(owner, id)}.page-written`);
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+      }
+    }
   } finally {
     stopHeartbeat();
     try {

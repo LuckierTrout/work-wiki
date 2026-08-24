@@ -288,7 +288,7 @@ export async function retireResearchProject(owner: string, id: string): Promise<
     await drainResearchQueue(owner);
     return true;
   }
-  if (remaining.completion?.phase === "done") {
+  if (remaining.completion?.phase === "done" || !remaining.completion) {
     await deleteResearchOutbox(owner, id);
   }
   await releaseResearchSlot(owner, id);
