@@ -960,6 +960,7 @@ describe("deep research — remediations", () => {
         text: "THE WHOLE PAGE BODY.",
       }],
       evidence: [{ url: "https://example.com/launch/brief", title: "Launch brief" }],
+      claimed: true,
     });
     expect(await deleteResearchProject("alice", created.id)).toBe(true);
     mockedWritePage.mockClear();

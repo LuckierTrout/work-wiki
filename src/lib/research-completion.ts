@@ -49,6 +49,11 @@ interface ResearchOutbox {
   thinking: string[];
   sources: FetchedSource[];
   evidence: Array<{ url: string; title: string; snippet?: string; query?: string }>;
+  /**
+   * True only after this run won the Page-write claim. An unclaimed outbox
+   * is a pre-write staging file: if the project is gone, drop it.
+   */
+  claimed?: boolean;
 }
 
 function outboxDir(owner: string): string {
@@ -238,7 +243,7 @@ export async function commitResearchPage(
     return null;
   }
 
-  await saveResearchOutbox(owner, id, outbox);
+  await saveResearchOutbox(owner, id, { ...outbox, claimed: false });
   const afterSave = await getResearchProject(owner, id);
   if (!afterSave) {
     await deleteResearchOutbox(owner, id);
@@ -305,6 +310,7 @@ export async function commitResearchPage(
     }
     return latest;
   }
+  await saveResearchOutbox(owner, id, { ...outbox, claimed: true });
   if (claimed.deleteRequested) {
     await deleteResearchOutbox(owner, id);
     await deleteResearchProject(owner, id);
@@ -597,6 +603,10 @@ async function drainOrphanOutbox(
   id: string,
   outbox: ResearchOutbox,
 ): Promise<void> {
+  if (outbox.claimed !== true) {
+    await deleteResearchOutbox(owner, id);
+    return;
+  }
   const claimPath = `${outboxPath(owner, id)}.writing`;
   if (!await claimOrphanWrite(owner, claimPath)) return;
   const stopHeartbeat = startOrphanClaimHeartbeat(claimPath);

@@ -43,6 +43,7 @@ const OUTBOX = {
     text: "THE WHOLE PAGE BODY.",
   }],
   evidence: [{ url: "https://example.com/launch/brief", title: "Launch brief" }],
+  claimed: true,
 };
 
 let tmpDir: string;
@@ -388,6 +389,20 @@ describe("research completion outbox", () => {
     await drainResearchOutbox("alice", created.id);
     expect(mockedWritePage).toHaveBeenCalledTimes(1);
     expect(mockedEnqueue).toHaveBeenCalledWith(expect.objectContaining({ kind: "ingest" }));
+    expect(await loadResearchOutbox("alice", created.id)).toBeNull();
+  });
+
+  it("drops an unclaimed orphan outbox instead of writing a Page", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, { ...OUTBOX, claimed: false });
+    expect(await deleteResearchProject("alice", created.id)).toBe(true);
+
+    await drainResearchOutbox("alice", created.id);
+
+    expect(mockedWritePage).not.toHaveBeenCalled();
     expect(await loadResearchOutbox("alice", created.id)).toBeNull();
   });
 
