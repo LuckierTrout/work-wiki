@@ -1,6 +1,11 @@
 import { serializeFrontmatter, type Frontmatter } from "./frontmatter";
 import { isEnoent } from "./errors";
-import { createIngestJobIfAbsent, getIngestJob } from "./ingest-jobs";
+import {
+  createIngestJobIfAbsent,
+  getIngestJob,
+  updateIngestJob,
+  type IngestJob,
+} from "./ingest-jobs";
 import { writeWikiPageWithSideEffects } from "./lifecycle";
 import { logger } from "./logger";
 import { saveRawSourceFor } from "./raw";
@@ -136,6 +141,13 @@ const RESEARCH_PAGE_WRITE_HEARTBEAT_MS = Math.max(
   5_000,
   Math.floor(RESEARCH_PAGE_WRITE_STALE_MS / 6),
 );
+/** A queued job younger than this is assumed to have a sibling about to enqueue. */
+const RESEARCH_INGEST_QUEUE_FRESH_MS = 15_000;
+
+function ingestJobIsFresh(job: Pick<IngestJob, "updatedAt">, now = Date.now()): boolean {
+  const age = now - Date.parse(job.updatedAt);
+  return Number.isFinite(age) && age < RESEARCH_INGEST_QUEUE_FRESH_MS;
+}
 
 /** Stable Ingest job id: same project + source + body always mint the same id. */
 export async function researchIngestJobId(
@@ -340,6 +352,7 @@ async function checkpointSource(
     if (index < 0) return null;
     const current = project.completion.sources[index];
     if (patch.jobId && current.jobId && current.jobId !== patch.jobId) return project;
+    if (current.ingested && patch.ingested === false) return project;
     const sources = project.completion.sources.slice();
     sources[index] = { ...current, ...patch, jobId: current.jobId ?? patch.jobId };
     project.completion = { ...project.completion, sources };
@@ -395,7 +408,9 @@ async function dispatchSourceIngest(
   if (existingJob?.status === "done" || existingJob?.status === "skipped") return;
   if (existingJob?.status === "processing" || existingJob?.status === "retrying") return;
   const retryQueued = options?.retryQueuedJob === true || Boolean(meta.error);
-  if (existingJob?.status === "queued" && !retryQueued) return;
+  if (existingJob?.status === "queued" && !retryQueued && ingestJobIsFresh(existingJob)) {
+    throw new Error("Ingest job is being queued.");
+  }
   if (!existingJob) {
     const minted = await createIngestJobIfAbsent({
       jobId,
@@ -406,7 +421,12 @@ async function dispatchSourceIngest(
       contentSha256: meta.sha,
       ...(wikiId ? { wikiId } : {}),
     });
-    if (!minted.created && !retryQueued) return;
+    if (!minted.created && !retryQueued) {
+      throw new Error("Ingest job is being queued.");
+    }
+  }
+  if (existingJob?.status === "failed") {
+    await updateIngestJob(jobId, { status: "queued", error: undefined });
   }
   const title = source.title || source.url;
   const enqueued = await enqueueTask({
