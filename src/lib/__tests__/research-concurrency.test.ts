@@ -15,8 +15,11 @@ import path from "path";
 import {
   MAX_CONCURRENT_RESEARCH,
   RESEARCH_SLOT_TTL_MS,
+  ResearchLeaseError,
   acquireResearchSlot,
   activeResearchCount,
+  applyResearchLeaseMutation,
+  holdsResearchSlot,
   releaseResearchSlot,
   renewResearchSlot,
 } from "../research-concurrency";
@@ -132,13 +135,36 @@ describe("research concurrency lease", () => {
     expect(await activeResearchCount("alice")).toBe(0);
   });
 
-  it("admits rather than refuses when the lease file is unreadable", async () => {
-    // FAIL-OPEN. The ceiling is a throttle, not a correctness invariant: a
-    // workspace whose lease file got mangled should still be able to research.
+  it("refuses rather than admits when the lease file is unreadable", async () => {
     const target = path.join(tmpDir, "tenants", "alice", "research-leases.json");
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(target, "{ not json", "utf-8");
 
-    expect((await acquireResearchSlot("alice", "p1")).granted).toBe(true);
+    await expect(acquireResearchSlot("alice", "p1")).rejects.toBeInstanceOf(ResearchLeaseError);
+    expect(await holdsResearchSlot("alice", "p1")).toBe(true);
+  });
+
+  it("admits only one of two last-slot racers without the in-process lock", async () => {
+    await acquireResearchSlot("alice", "p1");
+    await acquireResearchSlot("alice", "p2");
+
+    const tryTake = (id: string) =>
+      applyResearchLeaseMutation<{ granted: boolean; active: number }>("alice", (slots, now) => {
+        if (slots.some((slot) => slot.projectId === id)) {
+          return { slots, result: { granted: true as const, active: slots.length } };
+        }
+        if (slots.length >= MAX_CONCURRENT_RESEARCH) {
+          return { slots, result: { granted: false as const, active: slots.length } };
+        }
+        const next = [
+          ...slots,
+          { projectId: id, acquiredAt: now, expiresAt: now + RESEARCH_SLOT_TTL_MS },
+        ];
+        return { slots: next, result: { granted: true as const, active: next.length } };
+      });
+
+    const [first, second] = await Promise.all([tryTake("p3"), tryTake("p4")]);
+    expect([first.granted, second.granted].filter(Boolean)).toHaveLength(1);
+    expect(await activeResearchCount("alice")).toBe(3);
   });
 });

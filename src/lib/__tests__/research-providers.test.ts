@@ -294,4 +294,17 @@ describe("extracting a source URL", () => {
     await expect(extractResearchSourceText("https://example.com/b")).resolves.toBeNull();
     vi.doUnmock("../fetch");
   });
+
+  it("asks the kernel extract for the uncapped body", async () => {
+    const fetchMod = await import("../fetch");
+    const spy = vi.spyOn(fetchMod, "fetchUrlContent").mockResolvedValue({
+      title: "Page",
+      content: "Body",
+    });
+
+    await extractResearchSourceText("https://example.com/c");
+
+    expect(spy).toHaveBeenCalledWith("https://example.com/c", { maxContentLength: null });
+    spy.mockRestore();
+  });
 });

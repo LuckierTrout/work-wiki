@@ -97,6 +97,8 @@ export interface IngestJob {
   sourceType?: string;
   contentSha256?: string;
   kind?: IngestJobKind;
+  /** Workbench Wiki the job was confirmed from. Observability only — not a vault id. */
+  wikiId?: string;
   cancelled?: boolean;
   /** Source was cascade-deleted; workers must not write Pages. */
   sourceDeleted?: boolean;
@@ -130,6 +132,7 @@ export async function createIngestJob(input: {
   sourceType?: string;
   contentSha256?: string;
   kind?: IngestJobKind;
+  wikiId?: string;
   status?: IngestJobStatus;
 }): Promise<IngestJob> {
   const now = new Date().toISOString();
@@ -147,6 +150,7 @@ export async function createIngestJob(input: {
     ...(input.sourceType ? { sourceType: input.sourceType } : {}),
     ...(input.contentSha256 ? { contentSha256: input.contentSha256 } : {}),
     ...(input.kind ? { kind: input.kind } : {}),
+    ...(input.wikiId ? { wikiId: input.wikiId } : {}),
     status,
     stage: status === "skipped" ? "complete" : "queued",
     createdAt: now,

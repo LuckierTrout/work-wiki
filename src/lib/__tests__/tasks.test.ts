@@ -163,6 +163,20 @@ describe("parseTask", () => {
     expect(parseTask({ kind: "deliver-integration", outboxId: "out_bad", owner: "alice" })).toBeNull();
   });
 
+  it("accepts a run-research delivery and rejects a malformed id", () => {
+    expect(parseTask({
+      kind: "run-research",
+      projectId: "6f1b7e10-0000-4000-8000-000000000001",
+      owner: "alice",
+    })).toEqual({
+      kind: "run-research",
+      projectId: "6f1b7e10-0000-4000-8000-000000000001",
+      owner: "alice",
+    });
+    expect(parseTask({ kind: "run-research", projectId: "p1", owner: "alice" })).toBeNull();
+    expect(parseTask({ kind: "run-research", projectId: "6f1b7e10-0000-4000-8000-000000000001", owner: "" })).toBeNull();
+  });
+
   it("accepts owner-scoped backup tasks", () => {
     expect(parseTask({ kind: "create-backup", owner: "alice" })).toEqual({ kind: "create-backup", owner: "alice" });
     expect(parseTask({ kind: "create-backup", owner: "" })).toBeNull();

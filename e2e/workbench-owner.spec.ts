@@ -317,6 +317,58 @@ test.describe("private Workbench owner journey", () => {
       .poll(() => readE2ePageOrEmpty("e2e-create-page"))
       .toContain("# E2E create page");
   });
+
+  test("Research Panel shows concurrent rows, cancel, reduced motion, and Wiki scope", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    const wikiA = await createOwnWiki(page, `E2E research A ${Date.now()}`);
+    const createdB = await page.request.post("/api/wikis", {
+      data: { name: `E2E research B ${Date.now()}`, scenario: "general" },
+    });
+    expect(createdB.status()).toBe(201);
+    const wikiB = ((await createdB.json()) as { wiki?: { id?: string } }).wiki?.id;
+    expect(wikiB).toBeTruthy();
+    const now = new Date().toISOString();
+    const row = (title: string, vaultId: string, extra: Record<string, unknown> = {}) => ({
+      id: crypto.randomUUID(),
+      title,
+      question: title,
+      queries: ["q"],
+      sourceUrls: [],
+      pageSlugs: [],
+      status: "collecting",
+      createdAt: now,
+      updatedAt: now,
+      vaultId,
+      progress: { completedQueries: 1, totalQueries: 2, message: "Searching the web." },
+      ...extra,
+    });
+    await fs.mkdir(E2E_TENANT_DIR, { recursive: true });
+    await fs.writeFile(
+      path.join(E2E_TENANT_DIR, "research-projects.json"),
+      JSON.stringify([
+        row("Alpha topic", wikiA, { thinking: ["weighing two dates"] }),
+        row("Beta topic", wikiA),
+        row("Other wiki topic", wikiB as string),
+      ], null, 2),
+    );
+    await page.reload();
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.getByLabel("Active wiki").selectOption(wikiA);
+    await page.getByRole("button", { name: "Deep Research", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Alpha topic" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Beta topic" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Other wiki topic" })).toHaveCount(0);
+    await expect(page.locator(".wb-chat-thinking--live")).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).first().click();
+    await page.getByLabel("Active wiki").selectOption(wikiB as string);
+    await page.getByRole("button", { name: "Deep Research", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Other wiki topic" })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByRole("heading", { name: "Alpha topic" })).toHaveCount(0);
+  });
 });
 
 unsignedTest.describe("signed-out boundary", () => {

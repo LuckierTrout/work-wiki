@@ -44,11 +44,34 @@ export interface ResearchProject {
    * line emitted while nobody was looking still has to be there when they look.
    */
   thinking?: string[];
+  /**
+   * Durable completion record. Present once synthesis has produced a Page
+   * payload; drained until Sources and Ingest jobs exist. Survives a crash
+   * between the Page write and terminal `complete`.
+   */
+  completion?: ResearchCompletion;
   proposalId?: string;
   cancelRequested?: boolean;
   error?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ResearchCompletionSource {
+  url: string;
+  title: string;
+  slug: string;
+  sha: string;
+  jobId?: string;
+  ingested?: boolean;
+  error?: string;
+}
+
+export interface ResearchCompletion {
+  phase: "page" | "sources" | "done";
+  pageSlug: string;
+  wikiId?: string;
+  sources: ResearchCompletionSource[];
 }
 
 export interface ResearchProjectInput {
@@ -150,6 +173,16 @@ export async function listResearchProjects(owner: string): Promise<ResearchProje
   return (await readProjects(owner)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+/** Projects recorded against one Workbench Wiki, or none when `wikiId` is empty. */
+export function filterResearchProjects(
+  projects: readonly ResearchProject[],
+  wikiId: string | null | undefined,
+): ResearchProject[] {
+  const scope = wikiId?.trim();
+  if (!scope) return [...projects];
+  return projects.filter((project) => project.vaultId === scope);
+}
+
 export async function getResearchProject(
   owner: string,
   id: string,
@@ -213,12 +246,40 @@ export async function updateResearchProject(
     proposalId?: string | null;
     cancelRequested?: boolean;
     error?: string | null;
+    completion?: ResearchCompletion | null;
   },
+): Promise<ResearchProject | null> {
+  return mutateProject(owner, id, () => true, patch);
+}
+
+/**
+ * Apply `patch` only when `predicate` holds against the stored project.
+ *
+ * The lost race returns `null` so a second Queue delivery cannot both search.
+ * Same-isolate callers still serialize on the file lock; the predicate is what
+ * makes the queued→collecting claim atomic for two isolates that both read
+ * `queued`.
+ */
+export async function updateResearchProjectIf(
+  owner: string,
+  id: string,
+  predicate: (project: ResearchProject) => boolean,
+  patch: Parameters<typeof updateResearchProject>[2],
+): Promise<ResearchProject | null> {
+  return mutateProject(owner, id, predicate, patch);
+}
+
+async function mutateProject(
+  owner: string,
+  id: string,
+  predicate: (project: ResearchProject) => boolean,
+  patch: Parameters<typeof updateResearchProject>[2],
 ): Promise<ResearchProject | null> {
   return withFileLock(lockKey(owner), async () => {
     const projects = await readProjects(owner);
     const project = projects.find((item) => item.id === id);
     if (!project) return null;
+    if (!predicate(project)) return null;
     if (patch.title !== undefined || patch.question !== undefined) {
       const cleaned = cleanInput({
         title: patch.title ?? project.title,
@@ -287,6 +348,10 @@ export async function updateResearchProject(
     if (patch.error !== undefined) {
       if (patch.error?.trim()) project.error = patch.error.trim().slice(0, 2_000);
       else delete project.error;
+    }
+    if (patch.completion !== undefined) {
+      if (patch.completion) project.completion = patch.completion;
+      else delete project.completion;
     }
     project.updatedAt = new Date().toISOString();
     await writeProjects(owner, projects);

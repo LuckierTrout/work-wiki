@@ -662,7 +662,6 @@ function ResearchPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ urls: project.sourceUrls, ...(project.vaultId ? { vaultId: project.vaultId } : {}) }),
       });
-      await patchProject(project.id, { status: "collecting" });
       setFeedback({ ok: true, message: `${project.sourceUrls.length} research source${project.sourceUrls.length === 1 ? " is" : "s are"} entering the ingest pipeline.` });
     } catch (error) {
       setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t collect the research sources." });
@@ -677,7 +676,7 @@ function ResearchPanel({
       const data = await requestJson<{ project: ResearchProject }>(`/api/research/${encodeURIComponent(project.id)}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...(provider ? { provider } : {}) }),
+        body: JSON.stringify({}),
       });
       setProjects((current) => current.map((item) => item.id === project.id ? data.project : item));
       setFeedback({ ok: true, message: data.project.status === "complete" ? "Research draft is ready in Review." : "Automated research started." });

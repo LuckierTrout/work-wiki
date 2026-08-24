@@ -174,6 +174,47 @@ describe("Research Panel — the task board", () => {
 
     vi.useRealTimers();
   });
+
+  it("keeps rows and keeps polling after a transient load failure", async () => {
+    send
+      .mockResolvedValueOnce({ projects: [project({ status: "collecting" })] })
+      .mockRejectedValueOnce(new Error("network blip"))
+      .mockResolvedValue({
+        projects: [project({
+          status: "collecting",
+          progress: { completedQueries: 1, totalQueries: 2, message: "Still going." },
+        })],
+      });
+    vi.useFakeTimers();
+
+    render(<ResearchCanvas wikiId="current" />);
+    const tick = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    };
+
+    await tick(0);
+    expect(screen.getByRole("heading", { name: "Launch evidence" })).toBeTruthy();
+    await tick(RESEARCH_POLL_MS + 10);
+    expect(screen.getByRole("heading", { name: "Launch evidence" })).toBeTruthy();
+    expect(screen.getByText("network blip")).toBeTruthy();
+    await tick(RESEARCH_POLL_MS + 10);
+    expect(screen.getByText("Still going. (1 of 2)")).toBeTruthy();
+
+    vi.useRealTimers();
+  });
+
+  it("asks the list door for the rail's wiki", async () => {
+    send.mockResolvedValue({ projects: [] });
+
+    render(<ResearchCanvas wikiId="6f1b7e10-0000-4000-8000-000000000000" />);
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith(
+      "/api/research?wikiId=6f1b7e10-0000-4000-8000-000000000000",
+      expect.objectContaining({ method: "GET" }),
+    ));
+  });
 });
 
 describe("Research Panel — thinking", () => {

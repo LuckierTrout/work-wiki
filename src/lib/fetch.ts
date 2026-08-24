@@ -76,6 +76,12 @@ export interface FetchUrlOptions {
    * guard eventually gets left out of one of them.
    */
   allowedContentTypes?: readonly string[];
+  /**
+   * Cap on extracted text. `null` means do not truncate. Deep Research passes
+   * null so synthesis sees the full extracted body; every other door keeps the
+   * kernel default ({@link MAX_CONTENT_LENGTH}).
+   */
+  maxContentLength?: number | null;
 }
 
 /**
@@ -325,9 +331,11 @@ export async function fetchUrlContent(
     throw new Error("No text content could be extracted from the URL");
   }
 
-  // Truncate very long extracted text to a reasonable size for LLM processing
-  if (content.length > MAX_CONTENT_LENGTH) {
-    content = content.slice(0, MAX_CONTENT_LENGTH) + "\n\n[Content truncated]";
+  const contentCap = options?.maxContentLength === null
+    ? null
+    : (options?.maxContentLength ?? MAX_CONTENT_LENGTH);
+  if (contentCap !== null && content.length > contentCap) {
+    content = content.slice(0, contentCap) + "\n\n[Content truncated]";
   }
 
   // Readability prunes figures that look decorative (lazy-loaded, empty alt, SVG

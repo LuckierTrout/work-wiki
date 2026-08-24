@@ -136,8 +136,17 @@ export function ReviewCanvas({
           ...(researchWikiId(originWikiId) ? { vaultId: researchWikiId(originWikiId) } : {}),
         }),
       });
-      if (seq !== researchSeq.current || wikiScope.current !== originWikiId) return;
       created = body.project?.id ?? null;
+      if (seq !== researchSeq.current || wikiScope.current !== originWikiId) {
+        // The confirm is spent. Always start the run so a Wiki switch cannot
+        // leave an orphan draft; the UI fence below still drops the dialog.
+        if (created) {
+          await send(`/api/research/${encodeURIComponent(created)}/run`, { method: "POST" }).catch(
+            () => undefined,
+          );
+        }
+        return;
+      }
       if (!created) {
         setResearchError("Deep Research did not return a project.");
         return;

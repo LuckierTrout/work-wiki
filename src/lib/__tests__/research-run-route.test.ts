@@ -15,10 +15,12 @@ vi.mock("@/lib/research-runtime", () => ({
   queueResearchProject: vi.fn(),
   runResearchProject: vi.fn(),
   cancelResearchProject: vi.fn(),
+  retireResearchProject: vi.fn(),
 }));
 vi.mock("@/lib/research-projects", () => ({
   deleteResearchProject: vi.fn(),
   updateResearchProject: vi.fn(),
+  getResearchProject: vi.fn(),
 }));
 vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn() }));
 
@@ -27,10 +29,11 @@ import { DELETE, PATCH } from "@/app/api/research/[id]/route";
 import { getPrincipal } from "@/lib/auth";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { ResearchProviderUnconfiguredError } from "@/lib/research-providers";
-import { deleteResearchProject, updateResearchProject } from "@/lib/research-projects";
+import { getResearchProject, updateResearchProject } from "@/lib/research-projects";
 import {
   cancelResearchProject,
   queueResearchProject,
+  retireResearchProject,
   runResearchProject,
 } from "@/lib/research-runtime";
 import { enqueueTask } from "@/lib/tasks";
@@ -41,7 +44,8 @@ const mockedRun = vi.mocked(runResearchProject);
 const mockedCancel = vi.mocked(cancelResearchProject);
 const mockedEnqueue = vi.mocked(enqueueTask);
 const mockedUpdate = vi.mocked(updateResearchProject);
-const mockedDelete = vi.mocked(deleteResearchProject);
+const mockedDelete = vi.mocked(retireResearchProject);
+const mockedGet = vi.mocked(getResearchProject);
 
 const params = Promise.resolve({ id: "p1" });
 const ctx = () => ({ params: Promise.resolve({ id: "p1" }) });
@@ -198,6 +202,9 @@ describe("PATCH and DELETE /api/research/[id]", () => {
   });
 
   it("still writes on a writable deployment", async () => {
+    mockedGet.mockResolvedValue({ id: "p1", status: "draft" } as Awaited<
+      ReturnType<typeof getResearchProject>
+    >);
     mockedUpdate.mockResolvedValue({ id: "p1", title: "New" } as Awaited<
       ReturnType<typeof updateResearchProject>
     >);
@@ -206,5 +213,55 @@ describe("PATCH and DELETE /api/research/[id]", () => {
 
     expect(response.status).toBe(200);
     expect(mockedUpdate).toHaveBeenCalled();
+  });
+
+  it("refuses a client-supplied status or synthesis", async () => {
+    mockedGet.mockResolvedValue({ id: "p1", status: "draft" } as Awaited<
+      ReturnType<typeof getResearchProject>
+    >);
+
+    expect((await PATCH(patchRequest({ status: "complete" }), { params })).status).toBe(400);
+    expect((await PATCH(patchRequest({ synthesis: "# Invented" }), { params })).status).toBe(400);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
+  it("refuses an edit of a running project", async () => {
+    mockedGet.mockResolvedValue({ id: "p1", status: "collecting" } as Awaited<
+      ReturnType<typeof getResearchProject>
+    >);
+
+    expect((await PATCH(patchRequest({ title: "New" }), { params })).status).toBe(409);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
+  it("retires on DELETE so the lease is released", async () => {
+    mockedDelete.mockResolvedValue(true);
+
+    const response = await DELETE(new Request("http://localhost/api/research/p1", {
+      method: "DELETE",
+    }), { params });
+
+    expect(response.status).toBe(200);
+    expect(mockedDelete).toHaveBeenCalledWith("alice", "p1");
+  });
+});
+
+describe("POST /api/research/[id]/run — owner lifecycle only", () => {
+  it("400s an unknown action instead of treating it as start", async () => {
+    const response = await POST(runRequest({ action: "retry" }), ctx());
+
+    expect(response.status).toBe(400);
+    expect(mockedQueue).not.toHaveBeenCalled();
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("400s a provider override — Settings is the source of record", async () => {
+    const response = await POST(runRequest({ provider: "serpapi" }), ctx());
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: "The search provider is chosen in Settings, not on the run.",
+    });
+    expect(mockedQueue).not.toHaveBeenCalled();
   });
 });

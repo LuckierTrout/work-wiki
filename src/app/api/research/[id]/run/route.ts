@@ -35,14 +35,16 @@ export async function POST(request: Request, { params }: RouteContext) {
     if (body.action === "cancel") {
       return NextResponse.json({ project: await cancelResearchProject(principal.handle, id) });
     }
-    if (body.provider !== undefined && typeof body.provider !== "string") {
-      return NextResponse.json({ error: "provider must be text" }, { status: 400 });
+    if (body.action !== undefined && body.action !== "start") {
+      return NextResponse.json({ error: "action must be cancel or omitted." }, { status: 400 });
     }
-    const project = await queueResearchProject(
-      principal.handle,
-      id,
-      typeof body.provider === "string" ? body.provider : undefined,
-    );
+    if (body.provider !== undefined) {
+      return NextResponse.json(
+        { error: "The search provider is chosen in Settings, not on the run." },
+        { status: 400 },
+      );
+    }
+    const project = await queueResearchProject(principal.handle, id);
     const enqueued = await enqueueTask({
       kind: "run-research",
       projectId: id,

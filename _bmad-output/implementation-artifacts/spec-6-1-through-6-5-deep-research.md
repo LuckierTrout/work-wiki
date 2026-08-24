@@ -296,3 +296,14 @@ Status: done
 **Verification:** Research Vitest set (providers, runtime, concurrency, routes, panel, Graph/Review, Settings, portable archive) 12 files / 172 tests green. Playwright `workbench-owner` Settings External Sources + Deep Research empty copy + Graph confirm handoff 3/3 green. Live provider keys were absent; fetch/synthesis is covered by mocked kernel tests; the browser path exercised unconfigured refusal (Failed row, no-credential copy) and Settings Tavily default + Firecrawl Capture copy.
 
 **Residual risks:** `POST …/run` still enqueues without claiming a slot; a poll drain can enqueue a second `run-research` for the same queued id. The re-entry guard makes the second task a no-op. Lease last-write-wins and DELETE-without-release are recorded under `deferred`. Same-title `research-{slug}` overwrite is the locked slug assumption. Heartbeat failure plus a stale `updatedAt` can still let reconcile fail a live `ready` run after `2 × TTL`.
+
+## Epic 6 retrospective remediations (2026-08-24)
+
+Closed outside `<intent-contract>`. `followup_review_recommended` stays true until a fresh same-SHA review. The retrospective verdict stays `rejected` until that review.
+
+- Max-three admission is compare-and-set and fail-closed; `queued`→`collecting` is an atomic predicate claim.
+- Page / Source / Ingest completion is an idempotent outbox. Frontmatter `sources` come from fetched evidence. Partial ingest is `complete` with a pending sentence, never “Nothing was written” after a Page exists.
+- DELETE retires the lease. Cancel of `ready` does not release the slot. PATCH is title/question/queries on draft/failed/cancelled only. `/run` refuses unknown actions and provider overrides.
+- `vaultId` is the Workbench Wiki UUID. List, Page `wiki:`, Ingest `wikiId`, and Activity tags honour it. Graph/Review always start a created run, then fence only the UI.
+- Synthesis thinking persists from `callLLMStream`. A failed poll keeps rows and keeps polling. Research extract uses `maxContentLength: null`.
+- Race, fault, delivery, and browser-path gates live beside the existing research suites. The live Tavily row skips when no key is present.

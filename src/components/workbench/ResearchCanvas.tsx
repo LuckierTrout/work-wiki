@@ -68,19 +68,27 @@ export function ResearchCanvas({
   const [openThinking, setOpenThinking] = useState<Record<string, boolean>>({});
   const loadSeq = useRef(0);
 
+  useEffect(() => {
+    setProjects([]);
+    setError(null);
+  }, [wikiId]);
+
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
     try {
-      const body = await send<ResearchResponse>("/api/research", { method: "GET" });
+      const wiki = researchWikiId(wikiId);
+      const path = wiki
+        ? `/api/research?wikiId=${encodeURIComponent(wiki)}`
+        : "/api/research";
+      const body = await send<ResearchResponse>(path, { method: "GET" });
       if (seq !== loadSeq.current) return;
       setProjects(body.projects ?? []);
       setError(null);
     } catch (cause) {
       if (seq !== loadSeq.current) return;
-      setProjects([]);
       setError(cause instanceof Error ? cause.message : "Couldn’t load Deep Research.");
     }
-  }, []);
+  }, [wikiId]);
 
   useEffect(() => {
     if (!active) return;

@@ -304,18 +304,17 @@ async function searxngSearch(
  * because a single site 403'd a bot is a run the owner cannot get through, and
  * "zero usable sources" is already handled as its own failure by the caller.
  *
- * The 100 000-character bound inside `fetchUrlContent` still applies, and that
- * is deliberate — it is the kernel clip path's own limit, applied identically to
- * every Source in the wiki, not an app cap invented for research. What the spec
- * forbids is passing the 4 000-character SEARCH SNIPPET to synthesis as if it
- * were the document, and that is what this helper exists to avoid.
+ * The kernel clip path's 100 000-character cap is lifted here (`maxContentLength:
+ * null`). The locked Deep Research criterion forbids any app-imposed truncation
+ * of fetched source text before synthesis; the 4 000-character snippet remains
+ * the persisted excerpt only.
  */
 export async function extractResearchSourceText(
   url: string,
 ): Promise<{ title: string; content: string } | null> {
   try {
     const { fetchUrlContent } = await import("./fetch");
-    const fetched = await fetchUrlContent(url);
+    const fetched = await fetchUrlContent(url, { maxContentLength: null });
     const content = fetched.content.trim();
     return content ? { title: fetched.title, content } : null;
   } catch {

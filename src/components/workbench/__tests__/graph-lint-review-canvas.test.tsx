@@ -544,7 +544,10 @@ describe("Review canvas", () => {
     );
     resolveResearch({ project: { id: "stale-project" } });
     await screen.findByText("Wiki B judgment");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitFor(() => expect(send).toHaveBeenCalledWith(
+      "/api/research/stale-project/run",
+      expect.objectContaining({ method: "POST" }),
+    ));
     expect(onOpenResearch).not.toHaveBeenCalled();
   });
 
@@ -773,6 +776,41 @@ describe("Deep Research confirm", () => {
     ));
     const [, createInit] = send.mock.calls.find(([url]) => url === "/api/research")!;
     expect(JSON.parse(String((createInit as RequestInit).body))).not.toHaveProperty("vaultId");
+  });
+
+  it("still starts a Graph confirm after the Wiki changes", async () => {
+    let resolveResearch!: (value: unknown) => void;
+    const pendingResearch = new Promise((resolve) => { resolveResearch = resolve; });
+    send.mockImplementation(async (url: string) => {
+      if (url === "/api/research") return pendingResearch;
+      return {
+        nodes: [{ id: "alone", label: "Alone", tenant: "yopedia", linkCount: 0, tags: [] }],
+        edges: [],
+        insights: [isolatedInsight],
+        communities: [],
+        types: [],
+      };
+    });
+    const onOpenResearch = vi.fn();
+    const { rerender } = render(
+      <GraphCanvas wikiId="wiki-a" onDockPreview={vi.fn()} onOpenResearch={onOpenResearch} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /Alone is isolated/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(send).toHaveBeenCalledWith(
+      "/api/research",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    rerender(
+      <GraphCanvas wikiId="wiki-b" onDockPreview={vi.fn()} onOpenResearch={onOpenResearch} />,
+    );
+    resolveResearch({ project: { id: "proj-switch" } });
+    await waitFor(() => expect(send).toHaveBeenCalledWith(
+      "/api/research/proj-switch/run",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    expect(onOpenResearch).not.toHaveBeenCalled();
   });
 
   it("counts the queries the store would keep, not the lines that were typed", async () => {

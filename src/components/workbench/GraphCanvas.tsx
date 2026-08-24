@@ -96,6 +96,16 @@ export function GraphCanvas({
   const [researchBusy, setResearchBusy] = useState(false);
   const [researchError, setResearchError] = useState<string | null>(null);
   const loadSeq = useRef(0);
+  const researchSeq = useRef(0);
+  const wikiScope = useRef(wikiId);
+
+  useEffect(() => {
+    wikiScope.current = wikiId;
+    researchSeq.current += 1;
+    setResearch(null);
+    setResearchBusy(false);
+    setResearchError(null);
+  }, [wikiId]);
 
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
@@ -365,9 +375,11 @@ export function GraphCanvas({
   }
 
   async function confirmResearch(values: { topic: string; queries: string[] }) {
+    const originWikiId = wikiScope.current;
+    const seq = ++researchSeq.current;
     setResearchBusy(true);
     setResearchError(null);
-    const vaultId = researchWikiId(wikiId);
+    const vaultId = researchWikiId(originWikiId);
     let created: string | null = null;
     try {
       const body = await send<{ project?: { id: string } }>("/api/research", {
@@ -377,13 +389,21 @@ export function GraphCanvas({
           question: values.topic,
           queries: values.queries,
           pageSlugs: research?.slugs ?? [],
-          // The active wiki, recorded so the run's auto-Ingest lands here even
-          // if the rail moves on before it finishes. Omitted when the rail has no
-          // real wiki yet — never the `"current"` sentinel.
+          // The wiki the confirm came FROM, recorded so the run's auto-Ingest
+          // lands there even if the rail moves on before it finishes. Omitted
+          // when the rail has no real wiki yet — never the `"current"` sentinel.
           ...(vaultId ? { vaultId } : {}),
         }),
       });
       created = body.project?.id ?? null;
+      if (seq !== researchSeq.current || wikiScope.current !== originWikiId) {
+        if (created) {
+          await send(`/api/research/${encodeURIComponent(created)}/run`, { method: "POST" }).catch(
+            () => undefined,
+          );
+        }
+        return;
+      }
       if (!created) {
         setResearchError("Deep Research did not return a project.");
         return;
@@ -399,13 +419,17 @@ export function GraphCanvas({
       // opens on the project, where `queueResearchProject` has already recorded
       // why the start failed. Only a failed CREATE keeps the dialog, because then
       // there is no project to look at.
+      if (seq !== researchSeq.current || wikiScope.current !== originWikiId) return;
       if (!created) {
         setResearchError(writeFailure(cause, "open Deep Research").message);
         return;
       }
     } finally {
-      setResearchBusy(false);
+      if (seq === researchSeq.current && wikiScope.current === originWikiId) {
+        setResearchBusy(false);
+      }
     }
+    if (seq !== researchSeq.current || wikiScope.current !== originWikiId) return;
     setResearch(null);
     onOpenResearch?.(created);
   }

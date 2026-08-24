@@ -6,8 +6,10 @@ import {
   MAX_PROJECTS,
   createResearchProject,
   deleteResearchProject,
+  filterResearchProjects,
   listResearchProjects,
   updateResearchProject,
+  updateResearchProjectIf,
 } from "../research-projects";
 import { ClientInputError } from "../errors";
 import { _resetLocks } from "../lock";
@@ -168,5 +170,33 @@ describe("research projects", () => {
         "seed-0",
       ]);
     });
+  });
+
+  it("filters the list to one Workbench Wiki and leaves unscoped lists intact", async () => {
+    const projects = [
+      { id: "a", vaultId: "wiki-a" },
+      { id: "b", vaultId: "wiki-b" },
+      { id: "c" },
+    ] as Awaited<ReturnType<typeof listResearchProjects>>;
+    expect(filterResearchProjects(projects, "wiki-a").map((project) => project.id)).toEqual(["a"]);
+    expect(filterResearchProjects(projects, "").map((project) => project.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("makes the queued-to-collecting claim atomic", async () => {
+    const created = await createResearchProject("alice", { title: "Claim", question: "Once?" });
+    const first = await updateResearchProjectIf(
+      "alice",
+      created.id,
+      (project) => project.status === "draft",
+      { status: "collecting" },
+    );
+    const second = await updateResearchProjectIf(
+      "alice",
+      created.id,
+      (project) => project.status === "draft",
+      { status: "collecting" },
+    );
+    expect(first?.status).toBe("collecting");
+    expect(second).toBeNull();
   });
 });

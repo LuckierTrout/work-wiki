@@ -3,7 +3,7 @@ import {
   isUrl,
   fetchUrlContent,
 } from "../fetch";
-import { MAX_RESPONSE_SIZE, MAX_PDF_SIZE } from "../constants";
+import { MAX_CONTENT_LENGTH, MAX_RESPONSE_SIZE, MAX_PDF_SIZE } from "../constants";
 import { INTAKE_ALLOWED_CONTENT_TYPES } from "../workbench-intake";
 
 // ---------------------------------------------------------------------------
@@ -393,6 +393,23 @@ describe("fetchUrlContent", () => {
     });
     expect(result.title).toBeTruthy();
     expect(result.content).toContain("Workbench");
+  });
+
+  it("does not truncate when maxContentLength is null", async () => {
+    const long = "A".repeat(MAX_CONTENT_LENGTH + 4_000);
+    const html = articleHtml("Long Page", long);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockResponse(html, { headers: { "content-type": "text/html" } }),
+      ),
+    );
+
+    const capped = await fetchUrlContent("https://example.com/long");
+    expect(capped.content).toContain("[Content truncated]");
+    const full = await fetchUrlContent("https://example.com/long", { maxContentLength: null });
+    expect(full.content).not.toContain("[Content truncated]");
+    expect(full.content.length).toBeGreaterThan(MAX_CONTENT_LENGTH);
   });
 
   it("rejects image content types", async () => {

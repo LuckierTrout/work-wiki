@@ -5,18 +5,21 @@ import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import {
   createResearchProject,
+  filterResearchProjects,
   listResearchProjects,
 } from "@/lib/research-projects";
+import { listWikis } from "@/lib/wikis";
 import {
   availableResearchProviders,
   selectResearchProvider,
 } from "@/lib/research-providers";
 import { reconcileResearchProjects } from "@/lib/research-runtime";
 
-export async function GET() {
+export async function GET(request: Request) {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
+    const wikiId = new URL(request.url).searchParams.get("wikiId")?.trim() || null;
     const availableProviders = availableResearchProviders();
     // WHICH provider is selected, beside which ones are configured. Two facts,
     // because they disagree exactly when the panel most needs to say so: a
@@ -39,7 +42,7 @@ export async function GET() {
           await listResearchProjects(principal.handle),
         );
     return NextResponse.json({
-      projects,
+      projects: filterResearchProjects(projects, wikiId),
       availableProviders,
       activeProvider,
       activeProviderConfigured: availableProviders.includes(activeProvider),
@@ -84,11 +87,7 @@ export async function POST(request: Request) {
       // Graph/Review/mode-direct all read it from there. Accepting both spellings
       // beats making three call sites remember to rename it — and `vaultId`
       // wins when both ride, because it is the field's own name.
-      ...(typeof body.vaultId === "string"
-        ? { vaultId: body.vaultId }
-        : typeof body.wikiId === "string"
-          ? { vaultId: body.wikiId }
-          : {}),
+      ...(await researchWikiField(principal.handle, body)),
     });
     return NextResponse.json({ project }, { status: 201 });
   } catch (error) {
@@ -103,4 +102,22 @@ export async function POST(request: Request) {
         : 500;
     return NextResponse.json({ error: message }, { status });
   }
+}
+
+async function researchWikiField(
+  owner: string,
+  body: Record<string, unknown>,
+): Promise<{ vaultId: string } | Record<string, never>> {
+  const raw = typeof body.vaultId === "string"
+    ? body.vaultId
+    : typeof body.wikiId === "string"
+      ? body.wikiId
+      : "";
+  const wikiId = raw.trim();
+  if (!wikiId) return {};
+  const known = (await listWikis(owner)).some((wiki) => wiki.id === wikiId);
+  if (!known) {
+    throw new ClientInputError("That Wiki is not in this workspace.");
+  }
+  return { vaultId: wikiId };
 }

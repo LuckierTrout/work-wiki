@@ -33,11 +33,20 @@ vi.mock("../research-providers", () => ({
     }
   },
 }));
-vi.mock("../llm", () => ({ callLLM: vi.fn(), hasLLMKey: vi.fn(() => true) }));
+vi.mock("../llm", () => ({
+  callLLM: vi.fn(),
+  callLLMStream: vi.fn(async () => {
+    throw new Error("stream unavailable in unit tests");
+  }),
+  hasLLMKey: vi.fn(() => true),
+}));
 vi.mock("../lifecycle", () => ({ writeWikiPageWithSideEffects: vi.fn() }));
 vi.mock("../raw", () => ({ saveRawSourceFor: vi.fn() }));
 vi.mock("../ingest-jobs", () => ({ createIngestJob: vi.fn() }));
-vi.mock("../tasks", () => ({ enqueueTask: vi.fn(async () => true) }));
+vi.mock("../tasks", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../tasks")>();
+  return { ...actual, enqueueTask: vi.fn(async () => true) };
+});
 vi.mock("../schema", () => ({ loadPageConventions: vi.fn(async () => "") }));
 vi.mock("../vault", () => ({ addToVault: vi.fn() }));
 // The REAL `../wiki` with one function swapped: `research-projects` resolves its
@@ -51,7 +60,7 @@ vi.mock("../wiki", async (importOriginal) => {
 
 import { createIngestJob } from "../ingest-jobs";
 import { writeWikiPageWithSideEffects } from "../lifecycle";
-import { callLLM } from "../llm";
+import { callLLM, callLLMStream } from "../llm";
 import { _resetLocks } from "../lock";
 import { saveRawSourceFor } from "../raw";
 import {
@@ -80,11 +89,12 @@ import {
   reconcileResearchProjects,
   researchPageSlug,
   researchSourceSlug,
+  retireResearchProject,
   runResearchProject,
 } from "../research-runtime";
 import { loadPageConventions } from "../schema";
 import { _resetStorage } from "../storage";
-import { enqueueTask } from "../tasks";
+import { enqueueTask, parseTask } from "../tasks";
 import type { IndexEntry } from "../types";
 import { addToVault } from "../vault";
 import { listWikiPages } from "../wiki";
@@ -93,6 +103,7 @@ const mockedSearch = vi.mocked(searchResearchProvider);
 const mockedExtract = vi.mocked(extractResearchSourceText);
 const mockedResolve = vi.mocked(resolveResearchProvider);
 const mockedLLM = vi.mocked(callLLM);
+const mockedStream = vi.mocked(callLLMStream);
 const mockedWritePage = vi.mocked(writeWikiPageWithSideEffects);
 const mockedSaveRaw = vi.mocked(saveRawSourceFor);
 const mockedIngestJob = vi.mocked(createIngestJob);
@@ -134,6 +145,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   mockedResolve.mockReturnValue("tavily");
   mockedEnqueue.mockResolvedValue(true);
+  mockedStream.mockRejectedValue(new Error("stream unavailable in unit tests"));
   mockedWritePage.mockImplementation(async ({ slug }) => ({ slug, updatedSlugs: [] }));
   mockedSearch.mockResolvedValue([
     {
@@ -181,17 +193,20 @@ describe("deep research run — success", () => {
       owner: "alice",
       url: "https://example.com/launch/brief",
       sourceType: "url",
+      wikiId: "alice--launch",
     });
     const ingestTask = mockedEnqueue.mock.calls
       .map(([task]) => task)
       .find((task) => task.kind === "ingest");
     expect(ingestTask).toBeDefined();
+    expect(ingestTask).toMatchObject({ tags: ["research", "wiki:alice--launch"] });
     // NO VAULT, either as a task field or as a call. `project.vaultId` is the
     // Workbench WIKI id (a registry UUID); `addToVault` and the ingest task's
     // `vaultId` both want a Knowledge Studio id (`tenant--name`). Passing one as
     // the other was a filing step that silently did nothing, every time.
     expect(ingestTask).not.toHaveProperty("vaultId");
     expect(mockedVault).not.toHaveBeenCalled();
+    expect(String(mockedWritePage.mock.calls[0][0].content)).toMatch(/wiki:\s*alice--launch/);
   });
 
   it("keeps the confirm's wiki on the project without treating it as a vault", async () => {
@@ -602,6 +617,23 @@ describe("deep research — thinking is the model's, progress is the kernel's", 
     expect(finished.progress?.message).toMatch(/Wrote research-launch-evidence/);
   });
 
+  it("persists thinking while the synthesis stream is still open", async () => {
+    mockedStream.mockResolvedValue({
+      textStream: (async function* () {
+        yield "<thinking>step one\n";
+        yield "step two</thinking>\n# Launch evidence\n\nA brief.";
+      })(),
+      text: Promise.resolve("<thinking>step one\nstep two</thinking>\n# Launch evidence\n\nA brief."),
+    } as unknown as Awaited<ReturnType<typeof callLLMStream>>);
+    const created = await project();
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.thinking).toEqual(["step one", "step two"]);
+    expect(mockedLLM).not.toHaveBeenCalled();
+    expect(mockedWritePage.mock.calls[0][0].content).not.toContain("step one");
+  });
+
   it("keeps a model's think-tokens off the Page and on the project", async () => {
     mockedLLM.mockResolvedValue(
       "<thinking>Weighing two dates.</thinking>\n# Launch evidence\n\nA brief.",
@@ -764,6 +796,125 @@ describe("deep research — an interrupted run gets an answer", () => {
 
     expect(mockedEnqueue).not.toHaveBeenCalled();
   });
+});
+
+describe("deep research — remediations", () => {
+  it("executes a create → queue → parseTask → run delivery once", async () => {
+    const created = await project();
+    const queued = await queueResearchProject("alice", created.id);
+    expect(parseTask({
+      kind: "run-research",
+      projectId: queued.id,
+      owner: "alice",
+    })).toEqual({ kind: "run-research", projectId: queued.id, owner: "alice" });
+
+    const finished = await runResearchProject("alice", queued.id);
+
+    expect(finished.status).toBe("complete");
+    expect(mockedSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets only one of two concurrent deliveries search", async () => {
+    const created = await project();
+    await queueResearchProject("alice", created.id);
+
+    await Promise.all([
+      runResearchProject("alice", created.id),
+      runResearchProject("alice", created.id),
+    ]);
+
+    expect(mockedSearch).toHaveBeenCalledTimes(1);
+    expect(mockedWritePage).toHaveBeenCalledTimes(1);
+    expect((await getResearchProject("alice", created.id))?.status).toBe("complete");
+  });
+
+  it("does not release a ready run's slot when cancel lands during synthesis", async () => {
+    const created = await project();
+    mockedLLM.mockImplementation(async () => {
+      const cancelled = await cancelResearchProject("alice", created.id);
+      expect(cancelled.status).toBe("ready");
+      expect(cancelled.cancelRequested).toBe(true);
+      expect(await activeResearchCount("alice")).toBe(1);
+      return "# Launch evidence\n\nA brief.";
+    });
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.status).toBe("cancelled");
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(await activeResearchCount("alice")).toBe(0);
+  });
+
+  it("releases a held lease when the project is deleted", async () => {
+    const created = await project();
+    await updateResearchProject("alice", created.id, { status: "collecting" });
+    await acquireResearchSlot("alice", created.id);
+
+    expect(await retireResearchProject("alice", created.id)).toBe(true);
+    expect(await getResearchProject("alice", created.id)).toBeNull();
+    expect(await activeResearchCount("alice")).toBe(0);
+  });
+
+  it("keeps the Page and tells the truth when Source ingest fails after the write", async () => {
+    mockedSaveRaw.mockRejectedValue(new Error("disk full"));
+    const created = await project();
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(mockedWritePage).toHaveBeenCalledTimes(1);
+    expect(finished.status).toBe("complete");
+    expect(finished.progress?.message).toMatch(/still pending|Wrote/);
+    expect(finished.error).toMatch(/did not ingest|Page was written/);
+    expect(finished.progress?.message).not.toMatch(/Nothing was written/);
+  });
+
+  it("does not claim the Page was written when the lifecycle writer fails", async () => {
+    mockedWritePage.mockRejectedValue(new Error("registry down"));
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(/registry down/);
+
+    const stored = await getResearchProject("alice", created.id);
+    expect(stored?.status).toBe("failed");
+    expect(stored?.progress?.message).toMatch(/Nothing was written/);
+    expect(stored?.completion).toBeUndefined();
+  });
+
+  it("resolves the current Settings provider on retry, not a stale project pin", async () => {
+    const created = await project();
+    await updateResearchProject("alice", created.id, { provider: "serpapi", status: "failed" });
+    mockedResolve.mockReturnValue("tavily");
+
+    const queued = await queueResearchProject("alice", created.id);
+
+    expect(mockedResolve).toHaveBeenCalledWith();
+    expect(queued.provider).toBe("tavily");
+  });
+
+  it("drops invented citation URLs before the Page is written", async () => {
+    mockedLLM.mockResolvedValue(
+      "# Launch evidence\n\nSee [ok](https://example.com/launch/brief) and [nope](https://evil.example/x).",
+    );
+    const created = await project();
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.synthesis).toContain("[ok](https://example.com/launch/brief)");
+    expect(finished.synthesis).toContain("nope");
+    expect(finished.synthesis).not.toContain("https://evil.example/x");
+  });
+
+  it.skipIf(!process.env.TAVILY_API_KEY)(
+    "runs one live Tavily search when a key is present",
+    async () => {
+      const { searchResearchProvider } = await vi.importActual<
+        typeof import("../research-providers")
+      >("../research-providers");
+      const results = await searchResearchProvider("tavily", "TypeScript", 1);
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0].url).toMatch(/^https?:/);
+    },
+  );
 });
 
 describe("research slugs", () => {

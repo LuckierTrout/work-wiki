@@ -34,7 +34,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-24-2026 10:55
+last_updated: 08-24-2026 15:13
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
@@ -107,7 +107,7 @@ development_status:
   6-3-research-panel-streams-progress: done
   6-4-own-queue-max-3-concurrent: done
   6-5-research-page-thinking-auto-ingest: done
-  epic-6-retrospective: optional
+  epic-6-retrospective: done
 
   epic-7: backlog
   7-1-sidecar-claims-kernel-extract-jobs: backlog
@@ -215,8 +215,8 @@ action_items:
   - id: "epic-2-retro-orchestration"
     epic: 2
     action: "After correctness, extract shared dispatch contracts and move Intake
-      and delete orchestration out of the Workbench shell. Linked from
-      epic-5-retro-delivery-review-gate (Action 10); remains open."
+      and delete orchestration out of the Workbench shell. Linked from epic-5-retro-delivery-review-gate
+      (Action 10); remains open."
     owner: "Architecture / maintainers"
     status: open
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
@@ -391,10 +391,75 @@ action_items:
     epic: 5
     action: "Decompose Graph, Lint, and Review into reviewable story or feature commits
       and do not mark the bundle done while followup review is recommended or exact-head
-      build, full-suite, and browser gates are absent. Linked open item:
-      epic-2-retro-orchestration. Story done means implementation complete, not
-      accepted; followup_review_recommended stays true until a fresh review."
+      build, full-suite, and browser gates are absent. Linked open item: epic-2-retro-orchestration.
+      Story done means implementation complete, not accepted; followup_review_recommended
+      stays true until a fresh review."
     owner: "Delivery / architecture"
     status: in-progress
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
     links: "epic-2-retro-orchestration"
+  - id: "epic-6-retro-linearizable-admission"
+    epic: 6
+    action: "Implement durable per-owner max-three admission and atomic per-attempt
+      execution claims; fail closed on lease storage faults and prove duplicate delivery
+      and cross-isolate races cannot execute twice or exceed three."
+    owner: "Queue / runtime maintainers"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-durable-completion"
+    epic: 6
+    action: "Make Page, exact-evidence Sources, Ingest jobs, Activity, and terminal
+      project state one idempotently reconcilable durable operation with truthful
+      retry and partial-failure states."
+    owner: "Wiki kernel / Ingest"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-cancel-delete-state-machine"
+    epic: 6
+    action: "Atomically fence cancel, delete, restart recovery, and Page commit; release
+      and drain leases on deletion; restrict PATCH and run actions to valid owner
+      lifecycle commands."
+    owner: "Research API / kernel"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-wiki-scope"
+    epic: 6
+    action: "Resolve the authoritative Workbench Wiki UUID contract and enforce it
+      through project listing, Page and Source routing, Ingest and Activity jobs,
+      and Wiki-switch stale-response fences, or obtain explicit approval to revise
+      the locked contract and UI copy."
+    owner: "Product / architecture"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-observable-progress"
+    epic: 6
+    action: "Provide real persisted synthesis-thinking progress or reconcile the promise
+      to post-completion thinking; make polling recoverable and prove concurrent rows,
+      reduced motion, cancellation, and Wiki-switch behavior in rendered browser tests."
+    owner: "Workbench / LLM runtime"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-provider-evidence-contracts"
+    epic: 6
+    action: "Remove unaudited provider override and stale retry pinning, validate
+      provider configuration and citation URLs, harden thinking stripping, and obtain
+      a ruling on the 100000-character extraction cap versus the full-content criterion."
+    owner: "Research / product"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-race-fault-delivery-gates"
+    epic: 6
+    action: "Add successful create-to-Queue-to-consumer execution, cross-isolate admission,
+      duplicate delivery, synthesis cancel, claimed restart, held-lease delete, post-Page
+      fault, and live provider-backed Cloudflare lifecycle gates."
+    owner: "QA / platform"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-delivery-review-gate"
+    epic: 6
+    action: "Split research orchestration along state-machine boundaries and retain
+      followup_review_recommended until a fresh independent same-SHA review plus typecheck,
+      lint, full Vitest, production, Cloudflare, and authenticated browser gates pass."
+    owner: "Delivery / architecture"
+    status: in-progress
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"

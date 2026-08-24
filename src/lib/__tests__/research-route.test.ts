@@ -10,10 +10,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
-vi.mock("@/lib/research-projects", () => ({
-  createResearchProject: vi.fn(),
-  listResearchProjects: vi.fn(async () => []),
-}));
+vi.mock("@/lib/research-projects", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/research-projects")>();
+  return {
+    ...actual,
+    createResearchProject: vi.fn(),
+    listResearchProjects: vi.fn(async () => []),
+  };
+});
+vi.mock("@/lib/wikis", () => ({ listWikis: vi.fn(async () => []) }));
 vi.mock("@/lib/research-runtime", () => ({
   reconcileResearchProjects: vi.fn(async (_owner, projects) => projects),
 }));
@@ -21,13 +26,16 @@ vi.mock("@/lib/research-runtime", () => ({
 import { GET, POST } from "@/app/api/research/route";
 import { getPrincipal } from "@/lib/auth";
 import { ClientInputError } from "@/lib/errors";
-import { createResearchProject } from "@/lib/research-projects";
+import { createResearchProject, listResearchProjects } from "@/lib/research-projects";
 import { reconcileResearchProjects } from "@/lib/research-runtime";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
+import { listWikis } from "@/lib/wikis";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedCreate = vi.mocked(createResearchProject);
+const mockedList = vi.mocked(listResearchProjects);
 const mockedReconcile = vi.mocked(reconcileResearchProjects);
+const mockedWikis = vi.mocked(listWikis);
 
 const request = (body: unknown) =>
   new Request("http://localhost/api/research", {
@@ -143,7 +151,7 @@ describe("POST /api/research failure classification", () => {
   it("reconciles interrupted runs on the panel's read", async () => {
     // SM-3: the poll is where a queued project whose wake-up was lost gets
     // re-dispatched and an abandoned `collecting` one gets failed visibly.
-    await GET();
+    await GET(new Request("http://localhost/api/research"));
 
     expect(mockedReconcile).toHaveBeenCalledWith("alice", []);
   });
@@ -153,9 +161,47 @@ describe("POST /api/research failure classification", () => {
     // quietly performed one would be the single exception.
     process.env.YOPEDIA_READONLY = "1";
 
-    const response = await GET();
+    const response = await GET(new Request("http://localhost/api/research"));
 
     expect(response.status).toBe(200);
     expect(mockedReconcile).not.toHaveBeenCalled();
+  });
+
+  it("filters the list to one Workbench Wiki", async () => {
+    mockedList.mockResolvedValue([
+      { id: "a", vaultId: "wiki-a" },
+      { id: "b", vaultId: "wiki-b" },
+    ] as Awaited<ReturnType<typeof listResearchProjects>>);
+    mockedReconcile.mockImplementation(async (_owner, projects) => [...projects]);
+
+    const response = await GET(new Request("http://localhost/api/research?wikiId=wiki-a"));
+    const body = await response.json() as { projects: Array<{ id: string }> };
+
+    expect(body.projects.map((project) => project.id)).toEqual(["a"]);
+  });
+
+  it("400s a create aimed at a Wiki this workspace does not have", async () => {
+    mockedWikis.mockResolvedValue([]);
+
+    const response = await POST(request({ ...BODY, vaultId: "missing-wiki" }));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "That Wiki is not in this workspace." });
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it("records a known Wiki on the create", async () => {
+    mockedWikis.mockResolvedValue([{ id: "wiki-a" }] as Awaited<ReturnType<typeof listWikis>>);
+    mockedCreate.mockResolvedValue({ id: "p1" } as Awaited<
+      ReturnType<typeof createResearchProject>
+    >);
+
+    const response = await POST(request({ ...BODY, vaultId: "wiki-a" }));
+
+    expect(response.status).toBe(201);
+    expect(mockedCreate).toHaveBeenCalledWith(
+      "alice",
+      expect.objectContaining({ vaultId: "wiki-a" }),
+    );
   });
 });

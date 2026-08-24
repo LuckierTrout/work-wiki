@@ -7,28 +7,16 @@ import { tenantForOwner, validateTenant } from "./wiki";
  * The Deep Research concurrency lease: at most {@link MAX_CONCURRENT_RESEARCH}
  * runs per workspace at once, everything else queued.
  *
- * WHY A LEASE AND NOT A LOCK. `withDurableLock` is one holder — it is the AD-9
- * ingest compile lock's shape, and research deliberately does NOT take that
- * lock (a research run must not block ingest, and three research runs must not
- * serialise behind each other). This is a counted lease over the same
- * primitives: an in-process lock for same-isolate serialisation of the
- * read-modify-write, and a file the other isolates can see.
+ * LINEARIZABLE ADMISSION. Same-isolate callers serialize on {@link withFileLock}.
+ * Cross-isolate callers race `readFileWithEtag` / `writeFileIfMatch`. A lost
+ * compare-and-set retries; after the budget it refuses rather than granting a
+ * slot the durable file never recorded. Unreadable or unwritable lease state
+ * fails closed — a mangled counter must not admit a fourth search.
  *
- * WHY SLOTS EXPIRE. A run that dies between acquire and release — an isolate
- * evicted mid-flight, a queue delivery that never returns — would otherwise
- * hold a slot until someone edited a JSON file by hand, and three such deaths
- * would wedge Deep Research permanently with no surface to unwedge it from.
- * A TTL is what makes the failure self-healing; {@link renewResearchSlot} is
- * what keeps a long but LIVE run from being reaped by that same TTL.
- *
- * NOT LINEARIZABLE, and it does not need to be. `withDurableLock` says the same
- * of itself. R2 gives no compare-and-set here, so two isolates racing the
- * read-modify-write can both see two active slots and both take the third: the
- * ceiling can be exceeded by the number of racing isolates, briefly. The
- * ceiling exists to stop a burst of confirmations from opening twenty
- * simultaneous provider searches and twenty LLM syntheses, and it does that at
- * 3-or-occasionally-4 exactly as well as at a hard 3. What it must never do is
- * DROP a run, and it does not: a refused acquire queues.
+ * WHY SLOTS EXPIRE. A run that dies between acquire and release would otherwise
+ * hold a slot until someone edited a JSON file by hand. A TTL is what makes
+ * that failure self-healing; {@link renewResearchSlot} keeps a long but live
+ * run from being reaped by that same TTL.
  */
 
 /** AD-18: at most three concurrent research runs per workspace. */
@@ -42,6 +30,15 @@ export const MAX_CONCURRENT_RESEARCH = 3;
  * runs recovers inside a coffee break rather than needing an operator.
  */
 export const RESEARCH_SLOT_TTL_MS = 10 * 60 * 1000;
+
+const CAS_ATTEMPTS = 8;
+
+export class ResearchLeaseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResearchLeaseError";
+  }
+}
 
 interface ResearchSlot {
   projectId: string;
@@ -76,86 +73,110 @@ function isSlot(value: unknown): value is ResearchSlot {
   );
 }
 
-/**
- * Read the lease file, dropping expired and malformed entries.
- *
- * A corrupt or unreadable file reads as EMPTY rather than throwing. The
- * alternative is refusing every research run on a workspace whose lease file
- * got mangled, which is a worse failure than briefly over-admitting: the file
- * holds no user data, it is rewritten by the next acquire, and the ceiling it
- * enforces is a throttle rather than a correctness invariant.
- */
-async function readSlots(owner: string, now: number): Promise<ResearchSlot[]> {
+function parseSlots(raw: string, now: number): ResearchSlot[] {
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(await getStorage().readFile(leasePath(owner)));
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isSlot).filter((slot) => slot.expiresAt > now);
-  } catch (error) {
-    if (isEnoent(error)) return [];
-    return [];
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new ResearchLeaseError("Research lease file is unreadable.");
   }
+  if (!Array.isArray(parsed)) {
+    throw new ResearchLeaseError("Research lease file is not a list.");
+  }
+  return parsed.filter(isSlot).filter((slot) => slot.expiresAt > now);
 }
 
-async function writeSlots(owner: string, slots: ResearchSlot[]): Promise<void> {
-  await getStorage().writeFile(leasePath(owner), JSON.stringify(slots, null, 2));
+/**
+ * Compare-and-set mutation of the lease file.
+ *
+ * Exported so tests can race two callers without the in-process lock, which is
+ * the cross-isolate shape Cloudflare Workers actually have.
+ */
+export async function applyResearchLeaseMutation<T>(
+  owner: string,
+  mutate: (slots: ResearchSlot[], now: number) => { slots: ResearchSlot[]; result: T },
+): Promise<T> {
+  const storage = getStorage();
+  const path = leasePath(owner);
+  let lastError: Error = new ResearchLeaseError("Research lease was busy; retry the request.");
+  for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
+    const now = Date.now();
+    let etag: string | null = null;
+    let slots: ResearchSlot[] = [];
+    try {
+      const read = await storage.readFileWithEtag(path);
+      etag = read.etag;
+      slots = parseSlots(read.content, now);
+    } catch (error) {
+      if (error instanceof ResearchLeaseError) throw error;
+      if (!isEnoent(error)) {
+        throw new ResearchLeaseError("Research lease file could not be read.");
+      }
+    }
+    const next = mutate(slots, now);
+    const body = JSON.stringify(next.slots, null, 2);
+    const wrote = etag === null
+      ? await storage.writeFileIfAbsent(path, body)
+      : await storage.writeFileIfMatch(path, body, etag);
+    if (wrote) return next.result;
+    lastError = new ResearchLeaseError("Research lease was busy; retry the request.");
+  }
+  throw lastError;
+}
+
+async function lockedMutation<T>(
+  owner: string,
+  mutate: (slots: ResearchSlot[], now: number) => { slots: ResearchSlot[]; result: T },
+): Promise<T> {
+  return withFileLock(lockKey(owner), () => applyResearchLeaseMutation(owner, mutate));
 }
 
 /**
  * Take a slot for `projectId`, or report that the workspace is at its ceiling.
  *
- * IDEMPOTENT PER PROJECT. A project that already holds a slot gets it RENEWED
- * and granted again rather than counted twice — Cloudflare Queues can deliver
- * the same task more than once, and a redelivery that consumed a second slot
- * would let one project eat the ceiling by itself.
+ * IDEMPOTENT PER PROJECT. A project that already holds a slot gets it renewed
+ * and granted again rather than counted twice.
  *
- * FAIL-OPEN on a storage fault, which is the same choice `readSlots` makes and
- * for the same reason: this is a throttle, and a workspace whose R2 is briefly
- * unwritable should still be able to research. The alternative refuses the
- * user's action to protect a counter.
+ * FAIL-CLOSED on a storage fault: a grant the durable file never recorded is
+ * how a fourth run starts.
  */
 export async function acquireResearchSlot(
   owner: string,
   projectId: string,
 ): Promise<ResearchSlotGrant> {
-  return withFileLock(lockKey(owner), async () => {
-    const now = Date.now();
-    const slots = await readSlots(owner, now);
+  return lockedMutation<ResearchSlotGrant>(owner, (slots, now) => {
     const existing = slots.find((slot) => slot.projectId === projectId);
     if (existing) {
       existing.expiresAt = now + RESEARCH_SLOT_TTL_MS;
-      try {
-        await writeSlots(owner, slots);
-      } catch {
-        // The slot is already ours; a failed renewal only shortens its life.
-      }
-      return { granted: true, active: slots.length, limit: MAX_CONCURRENT_RESEARCH };
+      return {
+        slots,
+        result: { granted: true, active: slots.length, limit: MAX_CONCURRENT_RESEARCH },
+      };
     }
     if (slots.length >= MAX_CONCURRENT_RESEARCH) {
-      return { granted: false, active: slots.length, limit: MAX_CONCURRENT_RESEARCH };
+      return {
+        slots,
+        result: { granted: false, active: slots.length, limit: MAX_CONCURRENT_RESEARCH },
+      };
     }
-    const next = [...slots, { projectId, acquiredAt: now, expiresAt: now + RESEARCH_SLOT_TTL_MS }];
-    try {
-      await writeSlots(owner, next);
-    } catch {
-      // Fail open — see the docblock.
-    }
-    return { granted: true, active: next.length, limit: MAX_CONCURRENT_RESEARCH };
+    const next = [
+      ...slots,
+      { projectId, acquiredAt: now, expiresAt: now + RESEARCH_SLOT_TTL_MS },
+    ];
+    return {
+      slots: next,
+      result: { granted: true, active: next.length, limit: MAX_CONCURRENT_RESEARCH },
+    };
   });
 }
 
 /** Push this project's slot expiry out. Called as a run makes progress. */
 export async function renewResearchSlot(owner: string, projectId: string): Promise<void> {
-  await withFileLock(lockKey(owner), async () => {
-    const now = Date.now();
-    const slots = await readSlots(owner, now);
+  await lockedMutation(owner, (slots, now) => {
     const existing = slots.find((slot) => slot.projectId === projectId);
-    if (!existing) return;
+    if (!existing) return { slots, result: undefined };
     existing.expiresAt = now + RESEARCH_SLOT_TTL_MS;
-    try {
-      await writeSlots(owner, slots);
-    } catch {
-      // The TTL is the backstop.
-    }
+    return { slots, result: undefined };
   });
 }
 
@@ -163,38 +184,47 @@ export async function renewResearchSlot(owner: string, projectId: string): Promi
  * Give the slot back.
  *
  * Never throws: this runs in a `finally`, and a release that threw would
- * replace the run's real outcome — success or a useful error — with a storage
- * complaint about a counter. The TTL covers a release that does not land.
+ * replace the run's real outcome with a storage complaint about a counter.
+ * The TTL covers a release that does not land.
  */
 export async function releaseResearchSlot(owner: string, projectId: string): Promise<void> {
-  await withFileLock(lockKey(owner), async () => {
-    const now = Date.now();
-    const slots = await readSlots(owner, now);
-    const next = slots.filter((slot) => slot.projectId !== projectId);
-    if (next.length === slots.length) return;
-    try {
-      await writeSlots(owner, next);
-    } catch {
-      // The TTL is the backstop.
-    }
-  });
+  try {
+    await lockedMutation(owner, (slots) => {
+      const next = slots.filter((slot) => slot.projectId !== projectId);
+      return { slots: next, result: undefined };
+    });
+  } catch {
+    // The TTL is the backstop.
+  }
 }
 
 /** How many runs currently hold a slot, expired ones excluded. */
 export async function activeResearchCount(owner: string): Promise<number> {
-  return (await readSlots(owner, Date.now())).length;
+  const storage = getStorage();
+  try {
+    const read = await storage.readFileWithEtag(leasePath(owner));
+    return parseSlots(read.content, Date.now()).length;
+  } catch (error) {
+    if (isEnoent(error)) return 0;
+    throw error instanceof ResearchLeaseError
+      ? error
+      : new ResearchLeaseError("Research lease file could not be read.");
+  }
 }
 
 /**
- * Is a LIVE run holding a slot for this project?
+ * Is a live run holding a slot for this project?
  *
- * The one honest signal that a project the store still calls `collecting` is
- * actually being worked on. False means either the run released the slot — so
- * the terminal status is already written — or the isolate died and the TTL
- * reaped it, which is the case `reconcileResearchProjects` turns into a visible
- * failure rather than a row that says "collecting" forever.
+ * Unreadable lease state is treated as held: fail closed so reconcile cannot
+ * reap a run whose counter it cannot read.
  */
 export async function holdsResearchSlot(owner: string, projectId: string): Promise<boolean> {
-  const slots = await readSlots(owner, Date.now());
-  return slots.some((slot) => slot.projectId === projectId);
+  try {
+    const storage = getStorage();
+    const read = await storage.readFileWithEtag(leasePath(owner));
+    return parseSlots(read.content, Date.now()).some((slot) => slot.projectId === projectId);
+  } catch (error) {
+    if (isEnoent(error)) return false;
+    return true;
+  }
 }
