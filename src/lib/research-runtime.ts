@@ -15,6 +15,7 @@ import {
   evidenceFromFetched,
   listResearchOutboxIds,
   loadResearchOutbox,
+  researchWriteClaimIsFresh,
   type FetchedSource,
 } from "./research-completion";
 import {
@@ -252,27 +253,42 @@ export async function cancelResearchProject(owner: string, id: string): Promise<
 export async function retireResearchProject(owner: string, id: string): Promise<boolean> {
   const project = await getResearchProject(owner, id);
   if (!project) return false;
-  if (project.status !== "complete") {
-    await mutateResearchProject(owner, id, (current) => {
-      current.cancelRequested = true;
-      if (!current.completion || current.completion.phase === "page") {
-        current.status = "cancelled";
-      }
-      current.progress = {
-        completedQueries: current.progress?.completedQueries ?? 0,
-        totalQueries: current.progress?.totalQueries ?? Math.max(1, current.queries.length),
-        message: "Deleted.",
-      };
-      return current;
-    });
-  }
+  await mutateResearchProject(owner, id, (current) => {
+    current.deleteRequested = true;
+    current.cancelRequested = true;
+    if (!current.completion || current.completion.phase === "page") {
+      current.status = current.completion?.phase === "page"
+        && researchWriteClaimIsFresh(current.completion.writeClaimedAt)
+        ? current.status
+        : "cancelled";
+    }
+    current.progress = {
+      completedQueries: current.progress?.completedQueries ?? 0,
+      totalQueries: current.progress?.totalQueries ?? Math.max(1, current.queries.length),
+      message: "Deleted.",
+    };
+    return current;
+  });
   if (project.completion && project.completion.phase !== "done") {
     await drainResearchOutbox(owner, id).catch(() => undefined);
   } else if (await loadResearchOutbox(owner, id)) {
     await drainResearchOutbox(owner, id).catch(() => undefined);
   }
   const remaining = await getResearchProject(owner, id);
-  if (remaining?.completion?.phase === "done") {
+  if (!remaining) {
+    await releaseResearchSlot(owner, id);
+    await drainResearchQueue(owner);
+    return true;
+  }
+  if (
+    remaining.completion?.phase === "page"
+    && researchWriteClaimIsFresh(remaining.completion.writeClaimedAt)
+  ) {
+    await releaseResearchSlot(owner, id);
+    await drainResearchQueue(owner);
+    return true;
+  }
+  if (remaining.completion?.phase === "done") {
     await deleteResearchOutbox(owner, id);
   }
   await releaseResearchSlot(owner, id);

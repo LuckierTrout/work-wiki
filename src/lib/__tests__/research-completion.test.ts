@@ -10,6 +10,7 @@ vi.mock("../tasks", () => ({ enqueueTask: vi.fn(async () => true) }));
 import { writeWikiPageWithSideEffects } from "../lifecycle";
 import { _resetLocks } from "../lock";
 import {
+  RESEARCH_PAGE_WRITE_STALE_MS,
   commitResearchPage,
   drainResearchOutbox,
   listResearchOutboxIds,
@@ -23,9 +24,10 @@ import {
   getResearchProject,
   updateResearchProject,
 } from "../research-projects";
-import { cancelResearchProject } from "../research-runtime";
-import { _resetStorage } from "../storage";
+import { cancelResearchProject, retireResearchProject } from "../research-runtime";
+import { _resetStorage, getStorage } from "../storage";
 import { enqueueTask } from "../tasks";
+import { tenantForOwner } from "../wiki";
 
 const mockedWritePage = vi.mocked(writeWikiPageWithSideEffects);
 const mockedEnqueue = vi.mocked(enqueueTask);
@@ -208,6 +210,86 @@ describe("research completion outbox", () => {
     expect(mockedEnqueue).not.toHaveBeenCalled();
   });
 
+  it("keeps the row when delete lands during the Page write", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    let finishWrite: () => void = () => undefined;
+    let resolveStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => { resolveStarted = resolve; });
+    mockedWritePage.mockImplementation(async ({ slug }) => {
+      resolveStarted();
+      await new Promise<void>((resolve) => { finishWrite = resolve; });
+      return { slug, updatedSlugs: [] };
+    });
+
+    const commitP = commitResearchPage("alice", created.id, OUTBOX);
+    await started;
+    expect(await retireResearchProject("alice", created.id)).toBe(true);
+    expect(await getResearchProject("alice", created.id)).not.toBeNull();
+    expect(mockedWritePage).toHaveBeenCalledTimes(1);
+
+    finishWrite();
+    await commitP;
+    expect(mockedWritePage).toHaveBeenCalledTimes(1);
+    await drainResearchOutbox("alice", created.id);
+    expect(await getResearchProject("alice", created.id)).toBeNull();
+  });
+
+  it("does not steal a fresh Page-write claim just because another drain arrived", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "page",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [{
+          url: OUTBOX.sources[0].url,
+          title: OUTBOX.sources[0].title,
+          slug: "research-example-com-launch-brief",
+          sha: "abc",
+        }],
+        writeClaimedAt: new Date().toISOString(),
+        writeClaimId: "writer-1",
+      },
+    });
+
+    await commitResearchPage("alice", created.id, OUTBOX);
+
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect((await getResearchProject("alice", created.id))?.completion?.writeClaimId)
+      .toBe("writer-1");
+  });
+
+  it("steals a stale claim only when the Page is still missing", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "page",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [{
+          url: OUTBOX.sources[0].url,
+          title: OUTBOX.sources[0].title,
+          slug: "research-example-com-launch-brief",
+          sha: "abc",
+        }],
+        writeClaimedAt: new Date(Date.now() - RESEARCH_PAGE_WRITE_STALE_MS - 1_000).toISOString(),
+        writeClaimId: "dead-writer",
+      },
+    });
+
+    await commitResearchPage("alice", created.id, OUTBOX);
+
+    expect(mockedWritePage).toHaveBeenCalledTimes(1);
+    expect((await getResearchProject("alice", created.id))?.completion?.phase).toBe("sources");
+  });
+
   it("drains an orphan outbox after the project row is gone", async () => {
     const created = await createResearchProject("alice", {
       title: "Launch evidence",
@@ -220,6 +302,29 @@ describe("research completion outbox", () => {
 
     expect(mockedWritePage).toHaveBeenCalledTimes(1);
     expect(mockedEnqueue).toHaveBeenCalledWith(expect.objectContaining({ kind: "ingest" }));
+    expect(await loadResearchOutbox("alice", created.id)).toBeNull();
+  });
+
+  it("retries an orphan outbox after a stale write claim and a failed ingest", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    await getStorage().writeFile(
+      `tenants/${tenantForOwner("alice")}/research-outbox/${created.id}.json.writing`,
+      JSON.stringify({
+        at: new Date(Date.now() - RESEARCH_PAGE_WRITE_STALE_MS - 1_000).toISOString(),
+      }),
+    );
+    expect(await deleteResearchProject("alice", created.id)).toBe(true);
+    mockedEnqueue.mockRejectedValue(new Error("queue down"));
+
+    await drainResearchOutbox("alice", created.id);
+    expect(await loadResearchOutbox("alice", created.id)).not.toBeNull();
+
+    mockedEnqueue.mockResolvedValue(true);
+    await drainResearchOutbox("alice", created.id);
     expect(await loadResearchOutbox("alice", created.id)).toBeNull();
   });
 });

@@ -182,6 +182,10 @@ describe("research projects", () => {
     ] as Awaited<ReturnType<typeof listResearchProjects>>;
     expect(filterResearchProjects(projects, "wiki-a").map((project) => project.id)).toEqual(["a"]);
     expect(filterResearchProjects(projects, "").map((project) => project.id)).toEqual(["a", "b", "c"]);
+    expect(filterResearchProjects(
+      [...projects, { id: "gone", vaultId: "wiki-a", deleteRequested: true } as (typeof projects)[number]],
+      "wiki-a",
+    ).map((project) => project.id)).toEqual(["a"]);
   });
 
   it("makes the queued-to-collecting claim atomic", async () => {

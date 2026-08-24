@@ -5,6 +5,7 @@ import { writeWikiPageWithSideEffects } from "./lifecycle";
 import { logger } from "./logger";
 import { saveRawSourceFor } from "./raw";
 import {
+  deleteResearchProject,
   getResearchProject,
   mutateResearchProject,
   updateResearchProject,
@@ -19,7 +20,7 @@ import { sourceSha256 } from "./source-sha256";
 import { buildSourceEntry, serializeSources } from "./sources";
 import { getStorage } from "./storage";
 import { enqueueTask } from "./tasks";
-import { tenantForOwner, validateTenant } from "./wiki";
+import { readWikiPage, tenantForOwner, validateTenant } from "./wiki";
 
 /**
  * Durable Page / Source / Ingest completion.
@@ -157,10 +158,21 @@ async function completionSourcesFromOutbox(
   return sources;
 }
 
-function writeClaimIsFresh(claimedAt: string | undefined, now: number): boolean {
+export function researchWriteClaimIsFresh(
+  claimedAt: string | undefined,
+  now = Date.now(),
+): boolean {
   if (!claimedAt) return false;
   const age = now - Date.parse(claimedAt);
   return Number.isFinite(age) && age < RESEARCH_PAGE_WRITE_STALE_MS;
+}
+
+async function researchPageWritten(slug: string): Promise<boolean> {
+  try {
+    return (await readWikiPage(slug, { fresh: true })) != null;
+  } catch {
+    return false;
+  }
 }
 
 async function writeResearchPage(owner: string, outbox: ResearchOutbox): Promise<void> {
@@ -186,11 +198,11 @@ async function writeResearchPage(owner: string, outbox: ResearchOutbox): Promise
 /**
  * Persist the outbox and write the Page, or refuse if cancel won the claim.
  *
- * The exclusive fence is `completion.writeClaimedAt`. Winning that CAS owns
+ * The exclusive fence is `completion.writeClaimId`. Winning that CAS owns
  * the Page write. A concurrent loser returns without touching the lifecycle
- * writer. A crash leaves a claim that becomes stealable after
- * {@link RESEARCH_PAGE_WRITE_STALE_MS}, or immediately if this isolate
- * clears it after a failed write.
+ * writer. If this run already materialised the Page, later drains advance
+ * the phase without writing again. A claim is stealable only when it is
+ * stale (or missing) AND the Page file is still absent.
  */
 export async function commitResearchPage(
   owner: string,
@@ -199,6 +211,11 @@ export async function commitResearchPage(
 ): Promise<ResearchProject | null> {
   const existing = await getResearchProject(owner, id);
   if (!existing) return null;
+  if (existing.deleteRequested && !existing.completion) {
+    await deleteResearchOutbox(owner, id);
+    await deleteResearchProject(owner, id);
+    return null;
+  }
   if ((existing.cancelRequested || existing.status === "cancelled") && !existing.completion) {
     return null;
   }
@@ -213,43 +230,78 @@ export async function commitResearchPage(
     ? existing.completion.sources
     : await completionSourcesFromOutbox(outbox);
 
+  if (existing.completion?.phase === "page" && await researchPageWritten(outbox.pageSlug)) {
+    return markResearchPageWritten(owner, id, existing, outbox, sources);
+  }
+
+  const claimId = crypto.randomUUID();
   const claimed = await mutateResearchProject(owner, id, (project) => {
+    if (project.deleteRequested && !project.completion) return null;
     if ((project.cancelRequested || project.status === "cancelled") && !project.completion) {
       return null;
     }
     if (project.completion?.phase === "sources" || project.completion?.phase === "done") {
       return null;
     }
-    if (writeClaimIsFresh(project.completion?.writeClaimedAt, Date.now())) return null;
+    if (researchWriteClaimIsFresh(project.completion?.writeClaimedAt)) return null;
     project.completion = {
       phase: "page",
       pageSlug: outbox.pageSlug,
       ...(outbox.wikiId ? { wikiId: outbox.wikiId } : {}),
       sources: project.completion?.sources?.length ? project.completion.sources : sources,
       writeClaimedAt: new Date().toISOString(),
+      writeClaimId: claimId,
     };
     return project;
   });
   if (!claimed) return getResearchProject(owner, id);
+  if (claimed.deleteRequested) {
+    await deleteResearchOutbox(owner, id);
+    await deleteResearchProject(owner, id);
+    return null;
+  }
 
-  const claimedAt = claimed.completion?.writeClaimedAt;
   try {
+    const latest = await getResearchProject(owner, id);
+    if (!latest || latest.completion?.writeClaimId !== claimId) return latest;
+    if (latest.deleteRequested) {
+      await deleteResearchOutbox(owner, id);
+      await deleteResearchProject(owner, id);
+      return null;
+    }
+    if (await researchPageWritten(outbox.pageSlug)) {
+      return markResearchPageWritten(owner, id, latest, outbox, sources, claimId);
+    }
     await writeResearchPage(owner, outbox);
   } catch (error) {
     await mutateResearchProject(owner, id, (project) => {
       const completion = project.completion;
-      if (!completion || completion.writeClaimedAt !== claimedAt) return null;
+      if (!completion || completion.writeClaimId !== claimId) return null;
       delete completion.writeClaimedAt;
+      delete completion.writeClaimId;
       return project;
     }).catch(() => undefined);
     throw error;
   }
 
+  return markResearchPageWritten(owner, id, existing, outbox, sources, claimId);
+}
+
+async function markResearchPageWritten(
+  owner: string,
+  id: string,
+  existing: ResearchProject,
+  outbox: ResearchOutbox,
+  sources: ResearchCompletionSource[],
+  claimId?: string,
+): Promise<ResearchProject | null> {
   const latest = await getResearchProject(owner, id);
   return updateResearchProjectIf(
     owner,
     id,
-    (project) => project.completion?.phase === "page",
+    (project) =>
+      project.completion?.phase === "page"
+      && (claimId === undefined || project.completion.writeClaimId === claimId),
     {
       completion: {
         phase: "sources",
@@ -398,6 +450,10 @@ export async function drainResearchOutbox(
   }
   if (project.completion?.phase === "done") {
     if (outbox) await deleteResearchOutbox(owner, id);
+    if (project.deleteRequested) {
+      await deleteResearchProject(owner, id);
+      return null;
+    }
     return project;
   }
   if (!outbox) return project;
@@ -445,6 +501,9 @@ export async function drainResearchOutbox(
       },
     });
     await deleteResearchOutbox(owner, id);
+    if (updated?.deleteRequested || current.deleteRequested) {
+      await deleteResearchProject(owner, id);
+    }
     return updated;
   }
 
@@ -466,28 +525,53 @@ async function drainOrphanOutbox(
   outbox: ResearchOutbox,
 ): Promise<void> {
   const claimPath = `${outboxPath(owner, id)}.writing`;
-  const claimed = await getStorage().writeFileIfAbsent(
-    claimPath,
-    JSON.stringify({ at: new Date().toISOString() }),
-  );
-  if (!claimed) return;
+  if (!await claimOrphanWrite(owner, claimPath)) return;
   try {
-    await writeResearchPage(owner, outbox);
+    if (!await researchPageWritten(outbox.pageSlug)) {
+      await writeResearchPage(owner, outbox);
+    }
     const sources = await completionSourcesFromOutbox(outbox);
+    let failed = 0;
     for (const meta of sources) {
       const fetched = outbox.sources.find((source) => source.url === meta.url);
-      if (!fetched) continue;
-      await dispatchSourceIngest(owner, id, fetched, meta, outbox.wikiId).catch((error) => {
+      if (!fetched) {
+        failed += 1;
+        continue;
+      }
+      try {
+        await dispatchSourceIngest(owner, id, fetched, meta, outbox.wikiId);
+      } catch (error) {
+        failed += 1;
         logger.warn("research", `orphan source ingest skipped for ${meta.url}`, error);
-      });
+      }
     }
-    await deleteResearchOutbox(owner, id);
+    if (failed === 0) await deleteResearchOutbox(owner, id);
   } finally {
     try {
       await getStorage().deleteFile(claimPath);
     } catch (error) {
       if (!isEnoent(error)) throw error;
     }
+  }
+}
+
+async function claimOrphanWrite(owner: string, claimPath: string): Promise<boolean> {
+  const storage = getStorage();
+  const body = JSON.stringify({ at: new Date().toISOString(), owner });
+  try {
+    const read = await storage.readFileWithEtag(claimPath);
+    let claimedAt: string | undefined;
+    try {
+      const parsed = JSON.parse(read.content) as { at?: unknown };
+      claimedAt = typeof parsed.at === "string" ? parsed.at : undefined;
+    } catch {
+      claimedAt = undefined;
+    }
+    if (researchWriteClaimIsFresh(claimedAt)) return false;
+    return storage.writeFileIfMatch(claimPath, body, read.etag);
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+    return storage.writeFileIfAbsent(claimPath, body);
   }
 }
 

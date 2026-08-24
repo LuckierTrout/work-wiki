@@ -11,9 +11,10 @@ import path from "path";
 vi.mock("../raw", () => ({ saveRawSourceFor: vi.fn() }));
 vi.mock("../tasks", () => ({ enqueueTask: vi.fn(async () => true) }));
 
+import * as lifecycle from "../lifecycle";
 import { commitResearchPage } from "../research-completion";
 import { _resetLocks } from "../lock";
-import { createResearchProject, getResearchProject } from "../research-projects";
+import { createResearchProject, getResearchProject, updateResearchProject } from "../research-projects";
 import { _resetStorage } from "../storage";
 import { ensureDirectories, readWikiPage } from "../wiki";
 
@@ -71,5 +72,46 @@ describe("research completion lifecycle write", () => {
     expect(page?.content).toContain("A brief.");
     expect((await getResearchProject("alice", created.id))?.pageSlugs)
       .toContain(OUTBOX.pageSlug);
+  });
+
+  it("lets only one concurrent commit materialise the Page", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    const spy = vi.spyOn(lifecycle, "writeWikiPageWithSideEffects");
+
+    await Promise.all([
+      commitResearchPage("alice", created.id, OUTBOX),
+      commitResearchPage("alice", created.id, OUTBOX),
+    ]);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect((await readWikiPage(OUTBOX.pageSlug))?.content).toContain("A brief.");
+    spy.mockRestore();
+  });
+
+  it("does not rewrite a Page that this run already materialised", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    const first = await commitResearchPage("alice", created.id, OUTBOX);
+    const spy = vi.spyOn(lifecycle, "writeWikiPageWithSideEffects");
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "page",
+        pageSlug: OUTBOX.pageSlug,
+        sources: first?.completion?.sources ?? [],
+        writeClaimedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+        writeClaimId: "dead-writer",
+      },
+    });
+
+    await commitResearchPage("alice", created.id, OUTBOX);
+
+    expect(spy).not.toHaveBeenCalled();
+    expect((await getResearchProject("alice", created.id))?.completion?.phase).toBe("sources");
+    spy.mockRestore();
   });
 });

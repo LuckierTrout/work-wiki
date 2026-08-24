@@ -54,6 +54,12 @@ export interface ResearchProject {
   completion?: ResearchCompletion;
   proposalId?: string;
   cancelRequested?: boolean;
+  /**
+   * DELETE landed while a Page write or drain was still in flight. Hidden
+   * from the panel; the row stays until the writer finishes or the claim
+   * goes stale so an orphan outbox can complete ingest.
+   */
+  deleteRequested?: boolean;
   error?: string;
   createdAt: string;
   updatedAt: string;
@@ -76,9 +82,12 @@ export interface ResearchCompletion {
   sources: ResearchCompletionSource[];
   /**
    * When this isolate claimed the Page write. A fresh claim blocks every
-   * other writer; a stale one can be stolen after a crash.
+   * other writer; a stale one can be stolen after a crash only if the Page
+   * file is still missing.
    */
   writeClaimedAt?: string;
+  /** Opaque id for the isolate that currently owns {@link writeClaimedAt}. */
+  writeClaimId?: string;
 }
 
 export interface ResearchProjectInput {
@@ -226,9 +235,10 @@ export function filterResearchProjects(
   projects: readonly ResearchProject[],
   wikiId: string | null | undefined,
 ): ResearchProject[] {
+  const visible = projects.filter((project) => !project.deleteRequested);
   const scope = wikiId?.trim();
-  if (!scope) return [...projects];
-  return projects.filter((project) => project.vaultId === scope);
+  if (!scope) return visible;
+  return visible.filter((project) => project.vaultId === scope);
 }
 
 export async function getResearchProject(
