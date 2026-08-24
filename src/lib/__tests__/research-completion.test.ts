@@ -159,9 +159,14 @@ describe("research completion outbox", () => {
     expect(first?.completion?.phase).toBe("sources");
 
     mockedEnqueue.mockResolvedValue(true);
+    mockedEnqueue.mockClear();
     const second = await drainResearchOutbox("alice", created.id);
     expect(second?.completion?.sources[0]?.jobId).toBe(jobId);
     expect(second?.error).toBeUndefined();
+    expect(mockedEnqueue).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "ingest",
+      jobId,
+    }));
   });
 
   it("lets only one of two concurrent commits write the Page", async () => {
@@ -324,7 +329,9 @@ describe("research completion outbox", () => {
     expect(await loadResearchOutbox("alice", created.id)).not.toBeNull();
 
     mockedEnqueue.mockResolvedValue(true);
+    mockedEnqueue.mockClear();
     await drainResearchOutbox("alice", created.id);
+    expect(mockedEnqueue).toHaveBeenCalledWith(expect.objectContaining({ kind: "ingest" }));
     expect(await loadResearchOutbox("alice", created.id)).toBeNull();
   });
 });

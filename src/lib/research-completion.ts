@@ -386,22 +386,28 @@ async function dispatchSourceIngest(
   source: FetchedSource,
   meta: ResearchCompletionSource,
   wikiId?: string,
+  options?: { retryQueuedJob?: boolean },
 ): Promise<void> {
   const jobId = meta.jobId ?? await researchIngestJobId(projectId, meta.slug, meta.sha);
   await saveRawSourceFor(meta.slug, meta.sha, source.text, { owner });
   const sourcePath = `raw/sources/${meta.slug}/${meta.sha}.md`;
   const existingJob = await getIngestJob(jobId);
-  if (existingJob) return;
-  const minted = await createIngestJobIfAbsent({
-    jobId,
-    owner,
-    title: source.title || source.url,
-    url: source.url,
-    sourceType: "url",
-    contentSha256: meta.sha,
-    ...(wikiId ? { wikiId } : {}),
-  });
-  if (!minted.created) return;
+  if (existingJob?.status === "done" || existingJob?.status === "skipped") return;
+  if (existingJob?.status === "processing" || existingJob?.status === "retrying") return;
+  const retryQueued = options?.retryQueuedJob === true || Boolean(meta.error);
+  if (existingJob?.status === "queued" && !retryQueued) return;
+  if (!existingJob) {
+    const minted = await createIngestJobIfAbsent({
+      jobId,
+      owner,
+      title: source.title || source.url,
+      url: source.url,
+      sourceType: "url",
+      contentSha256: meta.sha,
+      ...(wikiId ? { wikiId } : {}),
+    });
+    if (!minted.created && !retryQueued) return;
+  }
   const title = source.title || source.url;
   const enqueued = await enqueueTask({
     kind: "ingest",
@@ -541,7 +547,9 @@ async function drainOrphanOutbox(
         continue;
       }
       try {
-        await dispatchSourceIngest(owner, id, fetched, meta, outbox.wikiId);
+        await dispatchSourceIngest(owner, id, fetched, meta, outbox.wikiId, {
+          retryQueuedJob: true,
+        });
       } catch (error) {
         failed += 1;
         logger.warn("research", `orphan source ingest skipped for ${meta.url}`, error);
