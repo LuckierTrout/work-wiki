@@ -121,6 +121,7 @@ import { SplitHandle } from "./SplitHandle";
 import { TreePanel } from "./TreePanel";
 import { WikiSwitcher } from "./WikiSwitcher";
 import { useWorkbenchData } from "./WorkbenchData";
+import { useReviewBadge } from "./useReviewBadge";
 
 /**
  * The Workbench shell — rail, left column, canvas, and the Preview column that
@@ -204,8 +205,11 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   } = useWorkbenchData();
   const [todoCount, setTodoCount] = useState(todoCountProp);
   const todoBadgeSeq = useRef(0);
-  const [reviewCount, setReviewCount] = useState(reviewCountProp);
-  const reviewBadgeSeq = useRef(0);
+  const [reviewCount, handleReviewCountChange] = useReviewBadge(
+    currentWikiId,
+    dataVersion,
+    reviewCountProp,
+  );
   const [researchFillId, setResearchFillId] = useState<string | null>(null);
   const [mode, setModeState] = useState<WorkbenchModeId>(DEFAULT_WORKBENCH_MODE);
   const [collapsed, setCollapsed] = useState(false);
@@ -376,33 +380,12 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   }, [todoCountProp]);
 
   useEffect(() => {
-    setReviewCount(reviewCountProp);
-  }, [reviewCountProp]);
-
-  useEffect(() => {
     let cancelled = false;
     const seq = ++todoBadgeSeq.current;
     send<{ pendingCount?: number }>("/api/todos", { method: "GET" })
       .then((body) => {
         if (!cancelled && seq === todoBadgeSeq.current && typeof body.pendingCount === "number") {
           setTodoCount(body.pendingCount);
-        }
-      })
-      .catch(() => {
-        /* Badge stays at the last known count. */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [dataVersion]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const seq = ++reviewBadgeSeq.current;
-    send<{ pendingCount?: number }>("/api/review-queue", { method: "GET" })
-      .then((body) => {
-        if (!cancelled && seq === reviewBadgeSeq.current && typeof body.pendingCount === "number") {
-          setReviewCount(body.pendingCount);
         }
       })
       .catch(() => {
@@ -1614,11 +1597,11 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
         sidecar={sidecar}
         headingId={headingId}
         hidden={settingsOpen}
-        wikiId={currentWikiId ?? "current"}
+        wikiId={currentWikiId}
         readOnly={readOnly}
         onDockPreview={selectRow}
         onTodoCountChange={setTodoCount}
-        onReviewCountChange={setReviewCount}
+        onReviewCountChange={handleReviewCountChange}
         onOpenResearch={openResearch}
         dataVersion={dataVersion}
         researchFillId={researchFillId}

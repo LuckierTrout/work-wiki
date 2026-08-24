@@ -60,6 +60,38 @@ describe("inbound-wikilink orphans", () => {
     expect(found).not.toContain("log");
     expect(found).not.toContain("overview");
   });
+
+  it("does not count a self-link as inbound reachability", async () => {
+    await writeWikiPage("loop", "# Loop\n\nThis page only points at [[loop]].\n");
+    const issues = await checkInboundWikilinkOrphans(["loop"]);
+    expect(issues.map((issue) => issue.slug)).toContain("loop");
+  });
+
+  it("counts an alias inbound link toward the canonical page", async () => {
+    await writeWikiPage(
+      "current-name",
+      "---\ntitle: Current\naliases: [old-name]\n---\n\n# Current\n\nCanonical page.\n",
+    );
+    await writeWikiPage("hub", "# Hub\n\nSee [[old-name]].\n");
+    await updateIndex([
+      { slug: "current-name", title: "Current", summary: "canonical" },
+      { slug: "hub", title: "Hub", summary: "linker" },
+    ]);
+    resetAliasIndex();
+    const issues = await checkInboundWikilinkOrphans(["current-name", "hub"]);
+    expect(issues.map((issue) => issue.slug)).not.toContain("current-name");
+  });
+
+  it("does not count an alias-resolved self-link as inbound reachability", async () => {
+    await writeWikiPage(
+      "current-name",
+      "---\ntitle: Current\naliases: [old-name]\n---\n\n# Current\n\nOnly [[old-name]] points here.\n",
+    );
+    await updateIndex([{ slug: "current-name", title: "Current", summary: "canonical" }]);
+    resetAliasIndex();
+    const issues = await checkInboundWikilinkOrphans(["current-name"]);
+    expect(issues.map((issue) => issue.slug)).toContain("current-name");
+  });
 });
 
 describe("runWorkbenchLint", () => {
@@ -92,6 +124,35 @@ describe("runWorkbenchLint", () => {
     const renamed = issues.filter((issue) => issue.type === "renamed-slug" && issue.target === "old-name");
     const broken = issues.filter((issue) => issue.type === "broken-link" && issue.target === "old-name");
     expect(renamed.length).toBeGreaterThan(0);
+    expect(renamed.every((issue) => issue.fix === "renamed-slug")).toBe(true);
     expect(broken).toHaveLength(0);
+  });
+
+  it("only offers a dangling-link fix for a real prose wikilink", async () => {
+    await writeWikiPage(
+      "linker",
+      "# Linker\n\nSee [Markdown only](missing-markdown.md) and [[missing-wiki]].\n",
+    );
+    await updateIndex([{ slug: "linker", title: "Linker", summary: "broken links" }]);
+    const issues = await runWorkbenchLint({ semantic: false });
+    const markdown = issues.find(
+      (issue) => issue.type === "broken-link" && issue.target === "missing-markdown",
+    );
+    const wikilink = issues.find(
+      (issue) => issue.type === "broken-link" && issue.target === "missing-wiki",
+    );
+    expect(markdown).toBeDefined();
+    expect(markdown?.fix).toBeUndefined();
+    expect(wikilink?.fix).toBe("dangling-wikilink");
+  });
+
+  it("points semantic gaps at Graph Insights instead of listing them", async () => {
+    await writeWikiPage("alpha", "# Alpha\n\nA short page with enough words to stay.");
+    await updateIndex([{ slug: "alpha", title: "Alpha", summary: "A page" }]);
+    const issues = await runWorkbenchLint({ semantic: true });
+    const types = new Set(issues.map((issue) => issue.type));
+    expect(types.has("missing-concept-page")).toBe(false);
+    expect(types.has("incomplete-coverage")).toBe(false);
+    expect(types.has("insight-pointer")).toBe(true);
   });
 });

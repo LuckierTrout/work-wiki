@@ -12,6 +12,8 @@ import { updateIngestJob } from "./ingest-jobs";
 import { getErrorMessage } from "./errors";
 import { logger } from "./logger";
 import { dispatchMeetingTodoExtract } from "./todo-dispatch";
+import { enqueueReviewAfterIngest, ReviewDeliveryUnretainedError } from "./review-queue";
+import { hasIngestAnalysis } from "./ingest-analysis";
 
 /** Mark a job failed (best-effort; a status-write blip must not mask the real
  *  error we're about to rethrow — but log it rather than swallowing silently). */
@@ -56,6 +58,46 @@ export async function enqueueOrInline(
     throw e;
   }
   if (result.skipped) {
+    const retryOwner =
+      task.kind === "ingest"
+        ? task.triggeredBy?.trim() || task.owner?.trim() || task.author?.trim()
+        : undefined;
+    if (retryOwner && result.primarySlug) {
+      let shouldRetry = false;
+      try {
+        shouldRetry = await hasIngestAnalysis(jobId);
+      } catch (err) {
+        // The compile result is already known. Let the delivery helper perform
+        // its own read and durable outbox fallback without failing the job.
+        shouldRetry = true;
+        logger.warn("ingest", `analysis check failed after skipped job ${jobId}`, err);
+      }
+      if (shouldRetry) {
+        try {
+          await enqueueReviewAfterIngest({
+            owner: retryOwner,
+            pageSlug: result.primarySlug,
+            jobId,
+          });
+        } catch (err) {
+          logger.warn("ingest", `review-queue retry after skip failed for ${jobId}`, err);
+          if (err instanceof ReviewDeliveryUnretainedError) {
+            await updateIngestJob(jobId, {
+              status: "failed",
+              error: err.message,
+              ...(result.primarySlug ? { slug: result.primarySlug } : {}),
+            });
+            return NextResponse.json({
+              queued: false,
+              skipped: true,
+              jobId,
+              ...(result.primarySlug ? { slug: result.primarySlug } : {}),
+              error: err.message,
+            });
+          }
+        }
+      }
+    }
     await updateIngestJob(jobId, {
       status: "skipped",
       stage: "complete",
@@ -69,7 +111,7 @@ export async function enqueueOrInline(
     });
   }
   const extractOwner = task.kind === "ingest"
-    ? task.triggeredBy?.trim() || task.owner?.trim()
+    ? task.triggeredBy?.trim() || task.owner?.trim() || task.author?.trim()
     : undefined;
   if (extractOwner && result.primarySlug && task.kind === "ingest") {
     await dispatchMeetingTodoExtract(
@@ -81,6 +123,28 @@ export async function enqueueOrInline(
       },
       { failSoft: true },
     );
+    try {
+      await enqueueReviewAfterIngest({
+        owner: extractOwner,
+        pageSlug: result.primarySlug,
+        jobId,
+      });
+    } catch (err) {
+      logger.warn("ingest", `review-queue enqueue failed for ${jobId}`, err);
+      if (err instanceof ReviewDeliveryUnretainedError) {
+        await updateIngestJob(jobId, {
+          status: "failed",
+          error: err.message,
+          ...(result.primarySlug ? { slug: result.primarySlug } : {}),
+        });
+        return NextResponse.json({
+          queued: true,
+          jobId,
+          ...(result.primarySlug ? { slug: result.primarySlug } : {}),
+          error: err.message,
+        });
+      }
+    }
   }
   await updateIngestJob(jobId, {
     status: "done",

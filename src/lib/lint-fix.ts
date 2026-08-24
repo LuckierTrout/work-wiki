@@ -1,9 +1,12 @@
 import { resolveAlias } from "./alias-index";
-import { readWikiPage, readWikiPageWithFrontmatter, listWikiPages, updateIndex, appendToLog, isArtifactType } from "./wiki";
-import { writeWikiPageWithSideEffects, deleteWikiPage } from "./lifecycle";
+import { readWikiPage, readWikiPageWithFrontmatter, isArtifactType } from "./wiki";
+import { pruneStaleIndexEntry, writeWikiPageWithSideEffects, deleteWikiPage } from "./lifecycle";
 import { callLLM, hasLLMKey } from "./llm";
-import { escapeRegex } from "./links";
 import { slugify } from "./slugify";
+import {
+  rewriteMarkdownLinksByTarget,
+  rewriteWikilinksByTarget,
+} from "./markdown-link-rewrite";
 import { serializeFrontmatter } from "./frontmatter";
 import type { AutoFixableCheckType } from "./lint-types";
 import type { LintIssue } from "./types";
@@ -54,7 +57,7 @@ export async function fixOrphanPage(slug: string, author = "lint-fix"): Promise<
     throw new FixValidationError("Missing required field: slug");
   }
 
-  const page = await readWikiPage(slug);
+  const page = await readWikiPage(slug, { fresh: true, strict: true });
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -72,6 +75,7 @@ export async function fixOrphanPage(slug: string, author = "lint-fix"): Promise<
     logDetails: () => "auto-fix: added orphan page to index",
     crossRefSource: null,
     author,
+    expectedContent: page.content,
   });
 
   return {
@@ -86,7 +90,7 @@ export async function fixOrphanPage(slug: string, author = "lint-fix"): Promise<
  *
  * If the slug is not found in the index, returns a no-op success result.
  */
-export async function fixStaleIndex(slug: string, _author = "lint-fix"): Promise<FixResult> {
+export async function fixStaleIndex(slug: string, author = "lint-fix"): Promise<FixResult> {
   if (!slug) {
     throw new FixValidationError("Missing required field: slug");
   }
@@ -94,7 +98,7 @@ export async function fixStaleIndex(slug: string, _author = "lint-fix"): Promise
   // Re-verify the page file is genuinely missing before dropping its index
   // entry — never remove a valid entry on a transient read miss or a retry
   // after the page was (re)created.
-  if (await readWikiPage(slug)) {
+  if (await readWikiPage(slug, { fresh: true, strict: true })) {
     return {
       success: false,
       slug,
@@ -102,26 +106,14 @@ export async function fixStaleIndex(slug: string, _author = "lint-fix"): Promise
     };
   }
 
-  const entries = await listWikiPages();
-  const filtered = entries.filter((e) => e.slug !== slug);
-
-  if (filtered.length === entries.length) {
+  const result = await pruneStaleIndexEntry(slug, author);
+  if (!result.removed) {
     return {
       success: true,
       slug,
       message: `Entry for ${slug} not found in index — no changes needed`,
     };
   }
-
-  await updateIndex(filtered);
-  // Keep the page-metadata index in sync (this removes index.md membership
-  // outside the lifecycle op). Harmless if absent — the entry is just dropped.
-  await (await import("./page-index")).removePageIndexForSlug(slug);
-  await appendToLog(
-    "edit",
-    slug,
-    `auto-fix: removed stale index entry for ${slug}`,
-  );
 
   return {
     success: true,
@@ -420,25 +412,21 @@ export async function fixBrokenLink(
     throw new FixValidationError("Missing required field: targetSlug");
   }
 
-  const page = await readWikiPage(slug);
+  const page = await readWikiPage(slug, { fresh: true, strict: true });
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
 
-  // Escape the target slug for use in regex
-  const escaped = targetSlug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const linkRe = new RegExp(
-    `\\[([^\\]]*)\\]\\(${escaped}\\.md\\)`,
-    "g",
+  let updatedContent = rewriteMarkdownLinksByTarget(
+    page.content,
+    targetSlug,
+    ({ label }) => label,
   );
-  const wikiRe = new RegExp(
-    `\\[\\[${escaped}(?:#[^\\]|]+)?(?:\\|([^\\]]+))?\\]\\]`,
-    "g",
+  updatedContent = rewriteWikilinksByTarget(
+    updatedContent,
+    targetSlug,
+    ({ rawTarget, fragment, label }) => label || `${rawTarget.trim()}${fragment}`,
   );
-
-  const updatedContent = page.content
-    .replace(linkRe, "$1")
-    .replace(wikiRe, (_, label: string | undefined) => label || targetSlug);
 
   if (updatedContent === page.content) {
     return {
@@ -462,12 +450,60 @@ export async function fixBrokenLink(
       `auto-fix: removed broken link(s) to "${targetSlug}.md"`,
     crossRefSource: null,
     author,
+    expectedContent: page.content,
   });
 
   return {
     success: true,
     slug,
     message: `Removed broken link(s) to ${targetSlug}.md from ${slug}.md`,
+  };
+}
+
+/**
+ * Workbench dangling-link fix: drop authorized `[[slug]]` / `[[slug|text]]`
+ * wikilinks only. Markdown links and fenced examples stay put.
+ */
+export async function fixDanglingWikilink(
+  slug: string,
+  targetSlug: string,
+  author = "lint-fix",
+): Promise<FixResult> {
+  if (!slug) throw new FixValidationError("Missing required field: slug");
+  if (!targetSlug) throw new FixValidationError("Missing required field: targetSlug");
+  const [page, target] = await Promise.all([
+    readWikiPage(slug, { fresh: true, strict: true }),
+    readWikiPage(targetSlug, { fresh: true, strict: true }),
+  ]);
+  if (!page) throw new FixNotFoundError(`Page not found: ${slug}`);
+  if (target) {
+    throw new FixValidationError(`Target page now exists: ${targetSlug}`);
+  }
+  const updatedContent = rewriteWikilinksByTarget(
+    page.content,
+    targetSlug,
+    ({ rawTarget, fragment, label }) => label || `${rawTarget.trim()}${fragment}`,
+  );
+  if (updatedContent === page.content) {
+    throw new FixValidationError(`No dangling wikilink to ${targetSlug} remains in ${slug}.md`);
+  }
+  const summaryMatch = updatedContent.match(/^#\s+.+\n+(.+)/m);
+  const summary = summaryMatch ? summaryMatch[1].slice(0, 120) : slug;
+  await writeWikiPageWithSideEffects({
+    slug,
+    title: page.title,
+    content: updatedContent,
+    summary,
+    logOp: "edit",
+    logDetails: () => `auto-fix: removed dangling wikilink(s) to "${targetSlug}"`,
+    crossRefSource: null,
+    author,
+    expectedContent: page.content,
+  });
+  return {
+    success: true,
+    slug,
+    message: `Removed dangling wikilink(s) to ${targetSlug} from ${slug}.md`,
   };
 }
 
@@ -485,19 +521,21 @@ export async function fixRenamedSlug(
   if (!canonical || canonical === targetSlug) {
     throw new FixValidationError(`No renamed-slug target for ${targetSlug}`);
   }
-  const page = await readWikiPage(slug);
+  const page = await readWikiPage(slug, { fresh: true, strict: true });
   if (!page) throw new FixNotFoundError(`Page not found: ${slug}`);
-  const escaped = escapeRegex(targetSlug);
-  const mdRe = new RegExp(`\\[([^\\]]*)\\]\\(${escaped}\\.md\\)`, "g");
-  const wikiRe = new RegExp(
-    `\\[\\[${escaped}(?:#[^\\]|]+)?(?:\\|([^\\]]+))?\\]\\]`,
-    "g",
+  let updatedContent = rewriteMarkdownLinksByTarget(
+    page.content,
+    targetSlug,
+    ({ label, fragment }) => `[${label}](${canonical}.md${fragment})`,
   );
-  const updatedContent = page.content
-    .replace(mdRe, `[$1](${canonical}.md)`)
-    .replace(wikiRe, (_, label: string | undefined) =>
-      label ? `[[${canonical}|${label}]]` : `[[${canonical}]]`,
-    );
+  updatedContent = rewriteWikilinksByTarget(
+    updatedContent,
+    targetSlug,
+    ({ fragment, label }) => {
+      const dest = `${canonical}${fragment}`;
+      return label ? `[[${dest}|${label}]]` : `[[${dest}]]`;
+    },
+  );
   if (updatedContent === page.content) {
     return {
       success: true,
@@ -516,6 +554,7 @@ export async function fixRenamedSlug(
     logDetails: () => `auto-fix: rewrote renamed slug "${targetSlug}" → "${canonical}"`,
     crossRefSource: null,
     author,
+    expectedContent: page.content,
   });
   return {
     success: true,

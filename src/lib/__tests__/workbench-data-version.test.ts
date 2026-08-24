@@ -72,6 +72,19 @@ function readSource(relative: string): Promise<string> {
   return fs.readFile(path.join(SRC, relative), "utf8");
 }
 
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
+function topLevelFunctionBody(source: string, declaration: string): string {
+  const code = stripComments(source);
+  const at = code.indexOf(declaration);
+  expect(at, `${declaration} exists`).toBeGreaterThan(-1);
+  const close = code.indexOf("\n}\n", at);
+  expect(close, `${declaration} has a top-level close`).toBeGreaterThan(at);
+  return code.slice(at, close + 2);
+}
+
 // ---------------------------------------------------------------------------
 // The counter, against a real filesystem provider
 // ---------------------------------------------------------------------------
@@ -992,20 +1005,58 @@ describe("the immediate-check nudge", () => {
 // The wiring a node suite cannot execute
 // ---------------------------------------------------------------------------
 
-describe("the bump lives at exactly one site", () => {
-  it("sits between the log append and the pipeline's return, inside a try/catch", async () => {
+describe("the bump lives at the exact write-owner tails", () => {
+  it("pins both lifecycle owners and their fail-soft tails", async () => {
     const source = await readSource("lib/lifecycle.ts");
-    expect(source).toMatch(
+    const pipeline = topLevelFunctionBody(source, "async function runPageLifecycleOp(");
+    const stalePrune = topLevelFunctionBody(
+      source,
+      "export async function pruneStaleIndexEntry(",
+    );
+
+    expect(source.match(/bumpDataVersion\(\)/g) ?? []).toHaveLength(2);
+    expect(pipeline.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(1);
+    expect(stalePrune.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(1);
+    expect(pipeline).toMatch(
       /await appendToLog\(logOp, op\.title, details\);[\s\S]{0,1200}try \{\s*\n\s*await bumpDataVersion\(\);\s*\n\s*\} catch \(err\) \{[\s\S]{0,160}logger\.warn\("data-version"/,
     );
-    const bump = source.indexOf("await bumpDataVersion();");
-    expect(bump).toBeGreaterThan(source.indexOf("await appendToLog(logOp"));
-    expect(bump).toBeLessThan(
-      source.indexOf("return { slug, crossRefedSlugs, strippedBacklinksFrom, removedFromIndex };"),
+    expect(stalePrune).toMatch(
+      /await appendToLog\("edit", slug,[\s\S]{0,240}try \{\s*await bumpDataVersion\(\);\s*\} catch \(err\) \{[\s\S]{0,180}logger\.warn\("data-version"/,
     );
-    // Not in the two wrappers, and not in `writeWikiPage`, which the pipeline
-    // itself calls 2–4× per op.
-    expect(source.match(/bumpDataVersion\(\)/g) ?? []).toHaveLength(1);
+    expect(pipeline.indexOf("await bumpDataVersion();")).toBeLessThan(
+      pipeline.indexOf("return { slug, crossRefedSlugs, strippedBacklinksFrom, removedFromIndex };")
+    );
+    expect(stalePrune.indexOf("await bumpDataVersion();")).toBeLessThan(
+      stalePrune.indexOf("return { removed: true };")
+    );
+  });
+
+  it("pins Review queue and Graph dismissal bumps to their CAS owner tails", async () => {
+    for (const owner of [
+      {
+        file: "lib/review-queue.ts",
+        declaration: "async function withQueue<",
+        warning: "review-queue",
+      },
+      {
+        file: "lib/graph-insight-dismissals.ts",
+        declaration: "async function withStore<",
+        warning: "graph-insights",
+      },
+    ]) {
+      const source = await readSource(owner.file);
+      const body = topLevelFunctionBody(source, owner.declaration);
+      expect(source.match(/bumpDataVersion\s*\(/g) ?? [], owner.file).toHaveLength(1);
+      expect(body.match(/await bumpDataVersion\(\);/g) ?? [], owner.file).toHaveLength(1);
+      expect(body).toMatch(
+        new RegExp(
+          `const result = await withFileLock[\\s\\S]+try \\{\\s*await bumpDataVersion\\(\\);\\s*\\} catch \\(error\\) \\{[\\s\\S]{0,180}logger\\.warn\\("${owner.warning}"`,
+        ),
+      );
+      expect(body.indexOf("await bumpDataVersion();")).toBeLessThan(
+        body.lastIndexOf("return result;")
+      );
+    }
   });
 
   it("is called from nowhere else in the app", async () => {
@@ -1021,14 +1072,19 @@ describe("the bump lives at exactly one site", () => {
     // (`schema.md` has no slug and no page-index entry) — and, since Story 2.1,
     // `lib/raw.ts`, which owns another: a Source stored under `raw/sources/` is
     // not a page write, so the pipeline never sees it, and the Workbench's
-    // trees would only catch up on a full reload. WHICH functions in `wikis.ts`
-    // bump is pinned by the next test, since this list is file-granular;
-    // `seedWikiArtifacts` is not one of them, and every other writer that
-    // bypasses all three paths is still deliberately absent.
+    // trees would only catch up on a full reload. `lib/todos.ts`,
+    // `lib/review-queue.ts`, and `lib/graph-insight-dismissals.ts` are the
+    // same class: kernel JSON stores that never enter the page pipeline, so
+    // each carries the fail-soft bump tail Todos established. WHICH functions
+    // in `wikis.ts` bump is pinned by the next test, since this list is
+    // file-granular; `seedWikiArtifacts` is not one of them, and every other
+    // writer that bypasses those paths is still deliberately absent.
     expect(offenders.sort()).toEqual([
       "lib/data-version.ts",
+      "lib/graph-insight-dismissals.ts",
       "lib/lifecycle.ts",
       "lib/raw.ts",
+      "lib/review-queue.ts",
       "lib/todos.ts",
       "lib/wikis.ts",
     ]);

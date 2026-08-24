@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -2315,6 +2315,23 @@ describe("silo-primary reads", () => {
 
     const exists = await (await import("../wiki")).wikiPageExists("exists-flat");
     expect(exists).toBe(true);
+  });
+
+  it("wikiPageExists rethrows an indeterminate authoritative-silo read", async () => {
+    const storage = (await import("../storage")).getStorage();
+    await storage.putIndex("pages", {
+      guarded: { slug: "guarded", title: "G", summary: "g", owner: "erin" },
+    });
+    await storage.writeFile("wiki/guarded.md", "# Guarded\n\nFlat compatibility copy.");
+    const originalRead = storage.readFile.bind(storage);
+    const read = vi.spyOn(storage, "readFile").mockImplementation(async (filePath) => {
+      if (filePath === "tenants/erin/wiki/guarded.md") throw new Error("silo unavailable");
+      return originalRead(filePath);
+    });
+
+    await expect((await import("../wiki")).wikiPageExists("guarded"))
+      .rejects.toThrow("silo unavailable");
+    expect(read).not.toHaveBeenCalledWith("wiki/guarded.md");
   });
 });
 

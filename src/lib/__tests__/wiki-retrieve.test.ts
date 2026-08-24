@@ -45,6 +45,7 @@ import {
 } from "../wiki-retrieve";
 import { CHAT_COVERAGE_MISSING_COPY } from "../workbench-modes";
 import { tokenize } from "../bm25";
+import { INTERNAL_LINK_FIXTURE, INTERNAL_LINK_TARGETS } from "./internal-link-fixture";
 
 const mockedVector = vi.mocked(searchByVector);
 const mockedVectorSettings = vi.mocked(getVectorSearchSettings);
@@ -147,6 +148,52 @@ describe("assemble and search", () => {
     const { hits } = await retrieveHits("backpropagation", { principal: null });
     expect(hits[0]?.path).toBe("wiki/backpropagation.md");
     expect(hits.some((hit) => hit.path.startsWith("raw/sources/"))).toBe(true);
+  });
+
+  it("expands a human-readable [[wikilink]] the same way Graph does", async () => {
+    await seedPages([
+      {
+        slug: "seed",
+        title: "Seed",
+        body: "backpropagation primer. See [[Foo Bar]].",
+      },
+      {
+        slug: "foo-bar",
+        title: "Foo Bar",
+        body: "unrelated filler words with no query token.",
+      },
+    ]);
+    const { hits } = await retrieveHits("backpropagation", { principal: null });
+    expect(hits.map((hit) => hit.id)).toEqual(expect.arrayContaining(["seed", "foo-bar"]));
+  });
+
+  it("treats the shared Graph fixture as the same Chat direct-link evidence", async () => {
+    await seedPages([
+      {
+        slug: "seed",
+        title: "Seed",
+        body: `backpropagation primer. ${INTERNAL_LINK_FIXTURE}`,
+      },
+      {
+        slug: "foo-bar",
+        title: "Foo Bar",
+        body: "unrelated filler words with no query token.",
+      },
+      {
+        slug: "leaf",
+        title: "Leaf",
+        body: "unrelated filler words with no query token.",
+      },
+      {
+        slug: "old-name",
+        title: "Old Name",
+        body: "unrelated filler words with no query token.",
+      },
+    ]);
+    const { hits } = await retrieveHits("backpropagation", { principal: null });
+    expect(hits.map((hit) => hit.id)).toEqual(
+      expect.arrayContaining(["seed", ...INTERNAL_LINK_TARGETS]),
+    );
   });
 
   it("expands a wikilinked neighbor on the second hop", async () => {

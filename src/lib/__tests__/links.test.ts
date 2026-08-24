@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   escapeRegex,
   extractAllInternalLinks,
+  extractAllInternalTargets,
   extractWikiLinks,
   hasLinkTo,
   DEFAULT_TENANT,
@@ -12,6 +13,7 @@ import {
   rawPath,
   resolveSlugPath,
 } from "../links";
+import { INTERNAL_LINK_FIXTURE, INTERNAL_LINK_TARGETS } from "./internal-link-fixture";
 
 describe("escapeRegex", () => {
   it("escapes all special regex characters", () => {
@@ -70,6 +72,13 @@ describe("extractWikiLinks", () => {
   it("does NOT match non-.md links", () => {
     const content = "[Example](https://example.com)";
     expect(extractWikiLinks(content)).toEqual([]);
+  });
+
+  it("does not classify remote .md URLs as internal Wiki links", () => {
+    const content =
+      "[Remote](https://example.com/topic.md) [CDN](//cdn.example.com/other.md)";
+    expect(extractWikiLinks(content)).toEqual([]);
+    expect(extractAllInternalTargets(content)).toEqual([]);
   });
 
   it("does NOT match bare text without link syntax", () => {
@@ -274,5 +283,13 @@ describe("resolveSlugPath", () => {
         `/u/yuanhao/${slug}`,
       );
     }
+  });
+});
+
+describe("extractAllInternalTargets", () => {
+  it("normalizes the shared Graph/Chat fixture to the same slugs", () => {
+    expect(extractAllInternalTargets(INTERNAL_LINK_FIXTURE)).toEqual([
+      ...INTERNAL_LINK_TARGETS,
+    ]);
   });
 });

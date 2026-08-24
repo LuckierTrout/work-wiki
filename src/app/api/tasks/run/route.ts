@@ -21,9 +21,8 @@ import {
   DEFAULT_AGENT_NAME,
   listAgentsForOwner,
 } from "@/lib/agents";
-import { hasIngestAnalysis, loadIngestAnalysis } from "@/lib/ingest-analysis";
-import { enqueueReviewFromAnalysis } from "@/lib/review-queue";
-import { getWikiRegistry } from "@/lib/wikis";
+import { hasIngestAnalysis } from "@/lib/ingest-analysis";
+import { enqueueReviewAfterIngest, ReviewDeliveryUnretainedError } from "@/lib/review-queue";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { getVectorSearchSettings, isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
@@ -355,6 +354,14 @@ export async function POST(req: Request) {
     // triggeredBy defaults to author (the common case); agent ingests pass it
     // explicitly so author=agent while triggeredBy=human owner.
     const triggeredBy = task.triggeredBy ?? task.author;
+    let storedAnalysis = false;
+    if (task.jobId) {
+      try {
+        storedAnalysis = await hasIngestAnalysis(task.jobId);
+      } catch (err) {
+        logger.warn("tasks", `analysis reuse check failed for job ${task.jobId}`, err);
+      }
+    }
     const opts = {
       ...(task.owner ? { owner: task.owner } : {}),
       ...(task.author ? { author: task.author } : {}),
@@ -373,8 +380,7 @@ export async function POST(req: Request) {
       ...(task.title && task.title.trim() ? { title: task.title.trim() } : {}),
       ...(task.origin ? { origin: task.origin } : {}),
       ...(task.jobId ? { jobId: task.jobId } : {}),
-      ...((task.reuseAnalysis ||
-        (task.jobId ? await hasIngestAnalysis(task.jobId) : false))
+      ...((task.reuseAnalysis || storedAnalysis)
         ? { reuseAnalysis: true }
         : {}),
       ...(task.contentSha256 ? { contentSha256: task.contentSha256 } : {}),
@@ -462,6 +468,41 @@ export async function POST(req: Request) {
     }
 
     if (result.skipped) {
+      const retryOwner = task.triggeredBy?.trim() || task.owner?.trim() || task.author?.trim();
+      if (retryOwner && result.primarySlug && task.jobId) {
+        let shouldRetry = false;
+        try {
+          shouldRetry = await hasIngestAnalysis(task.jobId);
+        } catch (err) {
+          shouldRetry = true;
+          logger.warn("tasks", `analysis check failed after skipped job ${task.jobId}`, err);
+        }
+        if (shouldRetry) {
+          try {
+            await enqueueReviewAfterIngest({
+              owner: retryOwner,
+              pageSlug: result.primarySlug,
+              jobId: task.jobId,
+            });
+          } catch (err) {
+            logger.warn("tasks", `review-queue retry after skip failed for slug="${result.primarySlug}"`, err);
+            if (err instanceof ReviewDeliveryUnretainedError && task.jobId) {
+              await updateIngestJob(task.jobId, {
+                status: "failed",
+                error: getErrorMessage(err),
+                slug: result.primarySlug,
+              });
+              await Promise.all(stagedKeys.map((key) => deleteStaged(key)));
+              return NextResponse.json({
+                ok: true,
+                skipped: true,
+                slug: result.primarySlug,
+                error: getErrorMessage(err),
+              });
+            }
+          }
+        }
+      }
       if (task.jobId) {
         await updateIngestJob(task.jobId, {
           status: "skipped",
@@ -515,7 +556,8 @@ export async function POST(req: Request) {
     // Proposals belong to the accountable HUMAN. Agent-routed email ingests set
     // owner=agent-id and triggeredBy=human; prefer the latter so the private
     // inbox and after-ingest agents stay in the human tenant silo.
-    const actionOwner = task.triggeredBy?.trim() || task.owner?.trim();
+    const actionOwner = task.triggeredBy?.trim() || task.owner?.trim() || task.author?.trim();
+    let reviewDeliveryUnretained = false;
     if (actionOwner) {
       if (task.jobId) await updateIngestJob(task.jobId, { stage: "deriving-knowledge" });
       try {
@@ -557,25 +599,26 @@ export async function POST(req: Request) {
         );
       }
       try {
-        const analysis = task.jobId ? await loadIngestAnalysis(task.jobId) : null;
-        if (analysis) {
-          let wikiId = "current";
-          try {
-            wikiId = (await getWikiRegistry(actionOwner)).currentId ?? "current";
-          } catch {
-            wikiId = "current";
-          }
-          await enqueueReviewFromAnalysis(actionOwner, {
-            wikiId,
-            pageSlug: result.primarySlug,
-            analysis,
-          });
-        }
+        await enqueueReviewAfterIngest({
+          owner: actionOwner,
+          pageSlug: result.primarySlug,
+          jobId: task.jobId,
+        });
       } catch (err) {
         logger.warn(
           "tasks",
           `review-queue enqueue failed for slug="${result.primarySlug}": ${getErrorMessage(err)}`,
         );
+        if (err instanceof ReviewDeliveryUnretainedError) {
+          reviewDeliveryUnretained = true;
+          if (task.jobId) {
+            await updateIngestJob(task.jobId, {
+              status: "failed",
+              error: getErrorMessage(err),
+              slug: result.primarySlug,
+            });
+          }
+        }
       }
       try {
         await enqueueTask({
@@ -609,7 +652,7 @@ export async function POST(req: Request) {
       }
     }
 
-    if (task.jobId) {
+    if (task.jobId && !reviewDeliveryUnretained) {
       await updateIngestJob(task.jobId, {
         status: "done",
         stage: "complete",

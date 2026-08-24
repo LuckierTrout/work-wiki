@@ -8,7 +8,7 @@ import {
   WORKBENCH_LINT_IDLE,
   workbenchCanAutoFix,
   type WorkbenchLintIssue,
-} from "@/lib/workbench-lint";
+} from "@/lib/workbench-lint-types";
 
 export interface LintCanvasProps {
   wikiId: string;
@@ -52,7 +52,7 @@ export function LintCanvas({
   }, [semantic]);
 
   async function fix(issue: WorkbenchLintIssue) {
-    if (readOnly || !workbenchCanAutoFix(issue.type, readOnly)) return;
+    if (readOnly || !workbenchCanAutoFix(issue, readOnly)) return;
     setBusy(true);
     setError(null);
     try {
@@ -102,15 +102,19 @@ export function LintCanvas({
           {issues.map((issue, index) => (
             <li key={`${issue.type}:${issue.slug}:${issue.target ?? ""}:${index}`} className="wb-todos-card">
               <p className="wb-lint-type">{issue.type}</p>
-              <button
-                type="button"
-                className="wb-todos-link"
-                onClick={() => onDockPreview(selectionFromContentPath(`wiki/${issue.slug}.md`))}
-              >
-                wiki/{issue.slug}.md
-              </button>
+              {issue.slug ? (
+                <button
+                  type="button"
+                  className="wb-todos-link"
+                  onClick={() => onDockPreview(selectionFromContentPath(`wiki/${issue.slug}.md`))}
+                >
+                  wiki/{issue.slug}.md
+                </button>
+              ) : (
+                <p className="wb-todos-link">{issue.type === "insight-pointer" ? "Graph Insights" : issue.type}</p>
+              )}
               <p className="wb-todos-rationale">{issue.message}</p>
-              {workbenchCanAutoFix(issue.type, readOnly) && (
+              {workbenchCanAutoFix(issue, readOnly) && (
                 <button
                   type="button"
                   className="wb-todos-btn"

@@ -1,8 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { FilesystemStorageProvider } from "../storage/filesystem";
+import {
+  FilesystemStorageProvider,
+  withFilesystemPublicationLockForTest,
+  writeSyncedAndPublish,
+  writeSyncedNewFile,
+} from "../storage/filesystem";
 
 describe("FilesystemStorageProvider", () => {
   let tmpDir: string;
@@ -199,6 +204,70 @@ describe("FilesystemStorageProvider", () => {
     it("fails for non-existent file", async () => {
       const ok = await provider.writeFileIfMatch("nope.txt", "v1", "any");
       expect(ok).toBe(false);
+    });
+
+    it("serializes a competing normal write ahead of stale CAS publication", async () => {
+      const competitor = new FilesystemStorageProvider(tmpDir);
+      await provider.writeFile("cas.txt", "v1");
+      const { etag } = await provider.readFileWithEtag("cas.txt");
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let locked!: () => void;
+      const entered = new Promise<void>((resolve) => { locked = resolve; });
+      const holder = withFilesystemPublicationLockForTest(tmpDir, "cas.txt", async () => {
+        locked();
+        await gate;
+      });
+      await entered;
+      const competingWrite = competitor.writeFile("cas.txt", "competing");
+      await Promise.resolve();
+      const staleCas = provider.writeFileIfMatch("cas.txt", "stale", etag);
+      release();
+      await holder;
+      await competingWrite;
+      await expect(staleCas).resolves.toBe(false);
+      await expect(provider.readFile("cas.txt")).resolves.toBe("competing");
+    });
+  });
+
+  describe("writeFileIfAbsent", () => {
+    it("allows exactly one concurrent creator and publishes one whole value", async () => {
+      const values = ["first", "second"];
+      const results = await Promise.all(
+        values.map((value) => provider.writeFileIfAbsent("create.txt", value)),
+      );
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results.findIndex(Boolean);
+      expect(await provider.readFile("create.txt")).toBe(values[winner]);
+      expect(
+        (await fs.readdir(tmpDir)).filter((name) => /^\.tmp-.*\.tmp$/.test(name)),
+      ).toEqual([]);
+    });
+
+    it("does not replace a file that already exists", async () => {
+      await provider.writeFile("create.txt", "already here");
+
+      await expect(
+        provider.writeFileIfAbsent("create.txt", "replacement"),
+      ).resolves.toBe(false);
+
+      await expect(provider.readFile("create.txt")).resolves.toBe("already here");
+      expect(
+        (await fs.readdir(tmpDir)).filter((name) => /^\.tmp-.*\.tmp$/.test(name)),
+      ).toEqual([]);
+    });
+
+    it("keeps a write or sync error ahead of a later close error", async () => {
+      const writeError = new Error("write failed first");
+      const closeError = new Error("close failed later");
+      const handle = {
+        writeFile: vi.fn().mockRejectedValue(writeError),
+        sync: vi.fn(),
+        close: vi.fn().mockRejectedValue(closeError),
+      };
+
+      await expect(writeSyncedNewFile(handle, "bytes")).rejects.toBe(writeError);
+      expect(handle.close).toHaveBeenCalledOnce();
     });
   });
 
@@ -485,39 +554,15 @@ describe("FilesystemStorageProvider", () => {
       expect(await tmpArtifactsIn(".indexes")).toEqual([]);
     });
 
-    /**
-     * The fsync has NO in-process observable: remove `handle.sync()` and every
-     * other row here still passes, because within one process the page cache
-     * serves the same bytes either way. What it buys is crash behaviour, which
-     * a unit test cannot stage — so it is pinned STRUCTURALLY instead, the way
-     * `wiki-schema-edit.test.ts` pins route shape.
-     *
-     * Ordering is the whole point, not presence: syncing AFTER the rename would
-     * publish the name before the bytes are durable, which is the exact bug the
-     * sync exists to prevent.
-     */
     it("fsyncs the tmp file BEFORE the rename publishes it", async () => {
-      const source = await fs.readFile(
-        path.resolve(__dirname, "../storage/filesystem.ts"),
-        "utf8",
-      );
-      // Comments stripped first: this docblock and `atomicWrite`'s both discuss
-      // `sync()` and the rename in prose, and a substring scan would otherwise
-      // be satisfied by the explanation rather than by the code it explains.
-      const code = source
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        .replace(/^\s*\/\/.*$/gm, "");
-      const body = code.slice(
-        code.indexOf("private async atomicWrite("),
-        code.indexOf("async readFile("),
-      );
-      expect(body).not.toBe("");
-
-      const sync = body.indexOf("handle.sync()");
-      const rename = body.indexOf("fs.rename(tmp, absPath)");
-      expect(sync).toBeGreaterThan(-1);
-      expect(rename).toBeGreaterThan(-1);
-      expect(sync).toBeLessThan(rename);
+      const events: string[] = [];
+      const handle = {
+        writeFile: vi.fn(async () => { events.push("write"); }),
+        sync: vi.fn(async () => { events.push("sync"); }),
+        close: vi.fn(async () => { events.push("close"); }),
+      };
+      await writeSyncedAndPublish(handle, "bytes", async () => { events.push("rename"); });
+      expect(events).toEqual(["write", "sync", "close", "rename"]);
     });
 
     it("keeps listIndexKeys free of tmp artifacts", async () => {

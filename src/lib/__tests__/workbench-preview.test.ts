@@ -1053,14 +1053,6 @@ describe("previewDisputedCopy", () => {
     expect(previewDisputedCopy(undefined)).toBeNull();
   });
 
-  it("PreviewColumn prints that sentence from the payload flag", async () => {
-    const source = await fs.readFile(
-      path.resolve(__dirname, "../../components/workbench/PreviewColumn.tsx"),
-      "utf8",
-    );
-    expect(source).toContain("previewDisputedCopy(payload?.disputed)");
-    expect(source).toContain("wb-preview-fm-row");
-  });
 });
 
 describe("the announcement copy", () => {

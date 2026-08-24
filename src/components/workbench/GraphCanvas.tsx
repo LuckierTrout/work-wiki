@@ -13,6 +13,7 @@ import {
   writeStoredGraphLayout,
 } from "@/lib/workbench-state";
 import { selectionFromContentPath, type TreeSelection } from "@/lib/workbench-tree";
+import { cameraStateToFitNodes, stableNodePositions } from "@/lib/graph-camera-fit";
 import { DeepResearchConfirm } from "./DeepResearchConfirm";
 
 export interface GraphCanvasProps {
@@ -31,6 +32,7 @@ interface GraphResponse {
   communityBySlug?: Record<string, number>;
   types?: Array<{ id: string; label: string; count: number }>;
   insights?: WorkbenchInsight[];
+  prefill?: { limit: number; attempted: number; applied: number; failed: number; remaining: number };
 }
 
 type ColorMode = "type" | "community";
@@ -59,13 +61,22 @@ export function GraphCanvas({
 }: GraphCanvasProps) {
   const empty = workbenchMode("graph").emptyState ?? "No graph yet. Ingest sources to build one.";
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const sigmaRef = useRef<{ kill: () => void; refresh: () => void; getCamera: () => {
-    getState: () => { x: number; y: number; ratio: number };
-    setState: (state: { x: number; y: number; ratio: number }) => void;
-    animatedZoom: (opts: { duration: number }) => void;
-    animatedUnzoom: (opts: { duration: number }) => void;
-    animate: (state: { x: number; y: number; ratio: number }, opts: { duration: number }) => void;
-  } } | null>(null);
+  const sigmaRef = useRef<{
+    kill: () => void;
+    refresh: () => void;
+    getGraph: () => import("graphology").default;
+    getNodeDisplayData: (node: string) => { x: number; y: number } | undefined;
+    getDimensions: () => { width: number; height: number };
+    getBBox: () => { x: [number, number]; y: [number, number] };
+    getCustomBBox: () => { x: [number, number]; y: [number, number] } | null;
+    getCamera: () => {
+      getState: () => { x: number; y: number; ratio: number };
+      setState: (state: { x: number; y: number; ratio: number }) => void;
+      animatedZoom: (opts: { duration: number }) => void;
+      animatedUnzoom: (opts: { duration: number }) => void;
+      animate: (state: { x: number; y: number; ratio: number }, opts: { duration: number }) => void;
+    };
+  } | null>(null);
   const graphRef = useRef<import("graphology").default | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nodes, setNodes] = useState<GraphNode[]>([]);
@@ -74,6 +85,7 @@ export function GraphCanvas({
   const [communityBySlug, setCommunityBySlug] = useState<Record<string, number>>({});
   const [types, setTypes] = useState<Array<{ id: string; label: string; count: number }>>([]);
   const [insights, setInsights] = useState<WorkbenchInsight[]>([]);
+  const [prefill, setPrefill] = useState<GraphResponse["prefill"]>(undefined);
   const [colorMode, setColorMode] = useState<ColorMode>("community");
   const [showInsights, setShowInsights] = useState(true);
   const hoveredRef = useRef<string | null>(null);
@@ -95,6 +107,7 @@ export function GraphCanvas({
       setCommunityBySlug(body.communityBySlug ?? {});
       setTypes(body.types ?? []);
       setInsights(body.insights ?? []);
+      setPrefill(body.prefill);
       setError(null);
     } catch (cause) {
       if (seq !== loadSeq.current) return;
@@ -104,6 +117,7 @@ export function GraphCanvas({
       setCommunityBySlug({});
       setTypes([]);
       setInsights([]);
+      setPrefill(undefined);
       setError(cause instanceof Error ? cause.message : "Couldn’t load Graph.");
     }
   }, []);
@@ -139,6 +153,10 @@ export function GraphCanvas({
       const graph = new Graph({ type: "undirected", allowSelfLoops: false });
       const cached = readStoredGraphLayout();
       const cachedOrigin = Object.values(cached.positions)[0] ?? { x: 0, y: 0 };
+      const reducedPositions = stableNodePositions(
+        nodes.filter((node) => !cached.positions[node.id]).map((node) => node.id),
+        cachedOrigin,
+      );
       const degree = new Map<string, number>();
       for (const node of nodes) degree.set(node.id, 0);
       for (const edge of edges) {
@@ -150,10 +168,13 @@ export function GraphCanvas({
         const deg = degree.get(node.id) ?? 0;
         const pos = cached.positions[node.id];
         const comm = communityBySlug[node.id] ?? 0;
+        const fallback = reduced
+          ? reducedPositions.get(node.id) ?? { x: cachedOrigin.x, y: cachedOrigin.y }
+          : { x: Math.random(), y: Math.random() };
         graph.addNode(node.id, {
           label: node.label,
-          x: pos?.x ?? (reduced ? cachedOrigin.x : Math.random()),
-          y: pos?.y ?? (reduced ? cachedOrigin.y : Math.random()),
+          x: pos?.x ?? fallback.x,
+          y: pos?.y ?? fallback.y,
           size: Math.max(4, Math.sqrt(Math.max(deg, 0)) * 6 || 4),
           color: colorMode === "community" ? communityColor(comm) : typeColor(node.type),
           typeName: node.type ?? "page",
@@ -308,22 +329,24 @@ export function GraphCanvas({
       camera.animatedUnzoom({ duration });
       return;
     }
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    graph.forEachNode((_id, attr) => {
-      if (typeof attr.x !== "number" || typeof attr.y !== "number") return;
-      minX = Math.min(minX, attr.x);
-      maxX = Math.max(maxX, attr.x);
-      minY = Math.min(minY, attr.y);
-      maxY = Math.max(maxY, attr.y);
+    const renderer = sigmaRef.current;
+    const ids = graph.nodes();
+    if (!renderer || ids.length === 0) return;
+    const fitted = [];
+    for (const id of ids) {
+      const display = renderer.getNodeDisplayData(id);
+      if (!display) continue;
+      fitted.push({
+        framedX: display.x,
+        framedY: display.y,
+      });
+    }
+    if (fitted.length === 0) return;
+    const { width, height } = renderer.getDimensions();
+    const bbox = renderer.getCustomBBox() ?? renderer.getBBox();
+    camera.animate(cameraStateToFitNodes({ nodes: fitted, graphBBox: bbox, width, height }), {
+      duration,
     });
-    if (!Number.isFinite(minX)) return;
-    const x = (minX + maxX) / 2;
-    const y = (minY + maxY) / 2;
-    const span = Math.max(maxX - minX, maxY - minY, 1);
-    camera.animate({ x, y, ratio: span / 80 }, { duration });
   }
 
   async function dismissInsight(insight: WorkbenchInsight) {
@@ -448,6 +471,13 @@ export function GraphCanvas({
               </aside>
               {showInsights && (
                 <aside className="wb-graph-insights" aria-label="Insights">
+                  {prefill && (prefill.remaining > 0 || prefill.failed > 0) && (
+                    <p className="wb-todos-meta">
+                      Research context prepared for {prefill.applied} insights
+                      {prefill.failed > 0 ? `; ${prefill.failed} could not be prepared` : ""}
+                      {prefill.remaining > 0 ? `; ${prefill.remaining} use default queries` : ""}.
+                    </p>
+                  )}
                   {insights.length === 0 ? (
                     <p className="wb-empty">No insights yet.</p>
                   ) : (

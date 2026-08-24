@@ -81,12 +81,16 @@ vi.mock("@/lib/todo-extract", () => ({
 vi.mock("@/lib/todos", () => ({
   recordTodoExtractError: vi.fn(async () => {}),
 }));
-vi.mock("@/lib/review-queue", () => ({
+vi.mock("@/lib/review-queue", async (orig) => ({
+  ...(await orig<typeof import("@/lib/review-queue")>()),
   enqueueReviewFromAnalysis: vi.fn(async () => []),
+  enqueueReviewAfterIngest: vi.fn(async () => {}),
+  rememberReviewOutbox: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/ingest-analysis", async (orig) => ({
   ...(await orig<typeof import("@/lib/ingest-analysis")>()),
   loadIngestAnalysis: vi.fn(async () => null),
+  hasIngestAnalysis: vi.fn(async () => false),
 }));
 
 import { getServicePrincipal } from "@/lib/auth";
@@ -142,10 +146,11 @@ const mockedAddToVault = vi.mocked(addToVault);
 import { addAgentLearningPage } from "@/lib/agents";
 const mockedAddLearning = vi.mocked(addAgentLearningPage);
 
-import { enqueueReviewFromAnalysis } from "@/lib/review-queue";
-import { loadIngestAnalysis } from "@/lib/ingest-analysis";
-const mockedEnqueueReview = vi.mocked(enqueueReviewFromAnalysis);
+import { enqueueReviewAfterIngest, ReviewDeliveryUnretainedError } from "@/lib/review-queue";
+import { hasIngestAnalysis, loadIngestAnalysis } from "@/lib/ingest-analysis";
+const mockedEnqueueReview = vi.mocked(enqueueReviewAfterIngest);
 const mockedLoadAnalysis = vi.mocked(loadIngestAnalysis);
+const mockedHasAnalysis = vi.mocked(hasIngestAnalysis);
 
 async function run(body: unknown, headers?: Record<string, string>) {
   const { POST } = await import("@/app/api/tasks/run/route");
@@ -827,15 +832,8 @@ describe("POST /api/tasks/run", () => {
     expect(mockedEnqueueReview).not.toHaveBeenCalled();
   });
 
-  it("does not enqueue Review items when ingest is skipped", async () => {
-    mockedLoadAnalysis.mockResolvedValue({
-      entities: [],
-      concepts: [],
-      arguments: [],
-      existingLinks: [],
-      tensions: ["Would have been a Review card."],
-      recommendedStructure: "",
-    });
+  it("does not enqueue Review items when ingest is skipped and no analysis exists", async () => {
+    mockedHasAnalysis.mockResolvedValue(false);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockedIngest.mockResolvedValue({ primarySlug: "existing", skipped: true } as any);
     const res = await run({
@@ -846,6 +844,44 @@ describe("POST /api/tasks/run", () => {
     });
     expect(res.status).toBe(200);
     expect(mockedEnqueueReview).not.toHaveBeenCalled();
+  });
+
+  it("retries Review enqueue when a skipped ingest already has analysis", async () => {
+    mockedHasAnalysis.mockResolvedValue(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngest.mockResolvedValue({ primarySlug: "existing", skipped: true } as any);
+    const res = await run({
+      kind: "ingest",
+      content: "same bytes",
+      owner: "alice",
+      jobId: "job-skip-review-retry",
+    });
+    expect(res.status).toBe(200);
+    expect(mockedEnqueueReview).toHaveBeenCalledWith({
+      owner: "alice",
+      pageSlug: "existing",
+      jobId: "job-skip-review-retry",
+    });
+  });
+
+  it("keeps a skipped ingest successful when the Analysis existence read fails", async () => {
+    mockedHasAnalysis
+      .mockResolvedValueOnce(false)
+      .mockRejectedValueOnce(new Error("analysis unavailable"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngest.mockResolvedValue({ primarySlug: "existing", skipped: true } as any);
+    const res = await run({
+      kind: "ingest",
+      content: "same bytes",
+      owner: "alice",
+      jobId: "job-skip-analysis-fail",
+    });
+    expect(res.status).toBe(200);
+    expect(mockedEnqueueReview).toHaveBeenCalledWith({
+      owner: "alice",
+      pageSlug: "existing",
+      jobId: "job-skip-analysis-fail",
+    });
   });
 
   it("enqueues Review items after a successful compile with analysis", async () => {
@@ -867,13 +903,50 @@ describe("POST /api/tasks/run", () => {
       jobId: "job-review",
     });
     expect(res.status).toBe(200);
-    expect(mockedEnqueueReview).toHaveBeenCalledWith(
-      "alice",
-      expect.objectContaining({
-        pageSlug: "topic",
-        analysis: expect.objectContaining({ tensions: ["Sources disagree."] }),
-      }),
+    expect(mockedEnqueueReview).toHaveBeenCalledWith({
+      owner: "alice",
+      pageSlug: "topic",
+      jobId: "job-review",
+    });
+  });
+
+  it("does not mark a compile done when Review delivery is not retained", async () => {
+    mockedEnqueueReview.mockRejectedValueOnce(new ReviewDeliveryUnretainedError());
+    mockedIngest.mockResolvedValue({ primarySlug: "topic" } as never);
+    const res = await run({
+      kind: "ingest",
+      content: "body",
+      title: "Topic",
+      owner: "alice",
+      jobId: "job-unretained",
+    });
+    expect(res.status).toBe(200);
+    expect(mockedUpdateJob).toHaveBeenCalledWith("job-unretained", {
+      status: "failed",
+      error: "Review delivery was not retained",
+      slug: "topic",
+    });
+    expect(mockedUpdateJob).not.toHaveBeenCalledWith(
+      "job-unretained",
+      expect.objectContaining({ status: "done" }),
     );
+  });
+
+  it("enqueues Review under the author when triggeredBy and owner are absent", async () => {
+    mockedIngest.mockResolvedValue({ primarySlug: "topic" } as never);
+    const res = await run({
+      kind: "ingest",
+      content: "body",
+      title: "Topic",
+      author: "solo-author",
+      jobId: "job-author-only",
+    });
+    expect(res.status).toBe(200);
+    expect(mockedEnqueueReview).toHaveBeenCalledWith({
+      owner: "solo-author",
+      pageSlug: "topic",
+      jobId: "job-author-only",
+    });
   });
 
   it("does not enqueue extract-todo-candidates for a non-meeting ingest", async () => {

@@ -80,6 +80,7 @@ const WRITER_EXPORTS: Record<string, readonly string[]> = {
     "fixContradiction",
     "fixMissingConceptPage",
     "fixBrokenLink",
+    "fixDanglingWikilink",
     "fixRenamedSlug",
     "fixStalePage",
     "fixUnmigratedPage",

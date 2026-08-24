@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assignCommunities, COHESION_WARN, cohesionOf } from "../graph-louvain";
+import { assignCommunities, COHESION_WARN, cohesionOf, cohesionWarns } from "../graph-louvain";
 import type { GraphEdge, GraphNode } from "../graph-build";
 
 function node(id: string, type?: string): GraphNode {
@@ -25,15 +25,39 @@ describe("Louvain communities", () => {
     expect(bySlug.a).not.toBe(bySlug.c);
   });
 
-  it("warns on cohesion below 0.15 when a community has at least 3 pages", () => {
-    const three = ["p1", "p2", "p3"];
-    const noEdges: GraphEdge[] = [];
-    expect(cohesionOf(three, noEdges)).toBe(0);
-    const assigned = assignCommunities([node("p1"), node("p2"), node("p3")], noEdges);
-    for (const community of assigned.communities) {
-      if (community.count >= 3 && community.cohesion < COHESION_WARN) {
-        expect(community.warn).toBe(true);
-      }
-    }
+  it("warns on cohesion below 0.15 regardless of community size", () => {
+    expect(cohesionWarns(0)).toBe(true);
+    expect(cohesionWarns(0.149)).toBe(true);
+    expect(cohesionWarns(COHESION_WARN)).toBe(false);
+    expect(cohesionOf(["p1", "p2"], [])).toBe(0);
+  });
+
+  it("assigns the same communities for the same topology", () => {
+    const nodes = ["a", "b", "c", "d", "e", "f", "g", "h"].map((id) => node(id));
+    const edges = [
+      edge("a", "b"),
+      edge("b", "c"),
+      edge("c", "a"),
+      edge("d", "e"),
+      edge("e", "f"),
+      edge("f", "d"),
+      edge("g", "h"),
+    ];
+    const first = assignCommunities(nodes, edges);
+    const second = assignCommunities(nodes.slice().reverse(), edges.slice().reverse());
+    expect(first.bySlug).toEqual(second.bySlug);
+  });
+
+  it("seeds and scores only the canonical effective graph", () => {
+    const nodes = [node("a"), node("b"), node("c"), node("d")];
+    const clean = [edge("a", "b"), edge("c", "d")];
+    const noisy = [
+      edge("d", "c", 99),
+      edge("a", "a", 99),
+      edge("missing", "a", 99),
+      edge("b", "a", 1),
+      ...clean,
+    ];
+    expect(assignCommunities([...nodes, node("a")], noisy)).toEqual(assignCommunities(nodes, clean));
   });
 });

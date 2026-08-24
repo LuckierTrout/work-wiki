@@ -149,6 +149,64 @@ New (expected):
 - Given a renamed-slug, dangling `[[slug]]`, or `index.md` drift issue, when I auto-fix from Workbench Lint, then the wiki writes through lifecycle with history. Other issue classes have no Workbench auto-fix button.
 - Given ingest analysis needs human judgment and compile succeeds, when I open Review, then items persist (warning or lightbulb, `wiki/…` paths), actions are only Deep Research · Create Page · Skip, Skip writes nothing, Create Page is constrained create, extra model actions are not Accept/Reject/Revise, the badge shows pending count (`Review, N pending reviews`) and hides at 0, and items survive restart. Failed/skipped compile adds none. Ingest success may leave Review items pending.
 
+### Review Findings
+
+- [x] [Review][Patch] Correct Sigma Fit camera math and verify the renderer-to-camera integration [src/lib/graph-camera-fit.ts:25]
+- [x] [Review][Patch] Make uncached reduced-motion positions id-stable and collision-safe [src/lib/graph-camera-fit.ts:8]
+- [x] [Review][Patch] Seed and order Louvain from the canonical effective graph [src/lib/graph-louvain.ts:85]
+- [x] [Review][Patch] Include every incident endpoint edge in Surprise dismissal fingerprints [src/lib/graph-surprise.ts:149]
+- [x] [Review][Patch] Reject malformed dismissal rows and validate timestamp-based retention [src/lib/graph-insight-dismissals.ts:47]
+- [x] [Review][Patch] Quarantine corrupt dismissal bytes once without rereading a changed primary [src/lib/graph-insight-dismissals.ts:73]
+- [x] [Review][Patch] Add atomic conditional first-create semantics for the dismissal store [src/lib/graph-insight-dismissals.ts:130]
+- [x] [Review][Patch] Preserve an available Wiki Purpose source when its paired profile/artifact read fails [src/lib/research-prefill.ts:24]
+- [x] [Review][Patch] Guarantee Overview and Insight Page context cannot be crowded out by profile questions [src/lib/research-prefill.ts:69]
+- [x] [Review][Patch] Load shared Wiki prefill context once per Graph request instead of once per Insight [src/app/api/graph/workbench/route.ts:28]
+- [x] [Review][Patch] Surface the prefill cap and remaining count in the Graph contract and UI [src/components/workbench/GraphCanvas.tsx:28]
+- [x] [Review][Patch] Verify the Graph route forwards the authenticated owner into Research prefill [src/lib/__tests__/epic5-routes.test.ts:117]
+- [x] [Review][Patch] Clear a prior Wiki's Review badge when the new scoped request fails [src/components/workbench/Workbench.tsx:399]
+- [x] [Review][Patch] Stabilize the Review-count callback and execute its stale-response fencing [src/components/workbench/Workbench.tsx:1622]
+- [x] [Review][Patch] Use fresh Page reads for stale-index destructive preconditions [src/lib/lifecycle.ts:687]
+- [x] [Review][Patch] Distinguish fixable dangling wikilinks from markdown-only broken-link reports [src/lib/workbench-lint-types.ts:27]
+- [x] [Review][Patch] Rewrite raw wikilink spellings by normalized target instead of exact normalized text [src/lib/lint-fix.ts:61]
+- [x] [Review][Patch] Ignore alias-resolved self-links when computing inbound reachability [src/lib/workbench-lint.ts:59]
+- [x] [Review][Patch] Make protected-region rewrites cover valid Markdown code forms without sentinel collisions [src/lib/lint-fix.ts:42]
+- [x] [Review][Patch] Replace whole-wiki stale validation with an exact fresh targeted validator and production tests [src/lib/workbench-lint-fix.ts:27]
+- [x] [Review][Patch] Exercise the real stale-index lifecycle and keep derived page-index cleanup fail-soft [src/lib/lifecycle.ts:691]
+- [x] [Review][Patch] Mount Preview with a disputed Files selection instead of source-position assertions [src/lib/__tests__/workbench-preview.test.ts:1056]
+- [x] [Review][Patch] Add a lease and state-checked transitions so live Create Page claims are never recovered or skipped as crashed work [src/lib/review-queue.ts:133]
+- [x] [Review][Patch] Add operation identity and fresh Page reads so recovery, post-write failure, and idempotent retry converge on the right Page [src/lib/review-queue.ts:139]
+- [x] [Review][Patch] Publish Review-created Pages with an atomic create-only lifecycle operation instead of check-then-overwrite [src/lib/review-queue.ts:393]
+- [x] [Review][Patch] Count `creating` rows as active capacity, preserve them from terminal retention, and verify newest-terminal retention [src/lib/review-queue.ts:206]
+- [x] [Review][Patch] Use authoritative conditional first-create semantics for the Review queue file [src/lib/review-queue.ts:260]
+- [x] [Review][Patch] Serialize Review outbox append and drain with CAS and include `wikiId` in outbox identity [src/lib/review-queue.ts:558]
+- [x] [Review][Patch] Preserve full-queue proposals as durable backpressure instead of treating an empty enqueue result as delivery [src/lib/review-queue.ts:498]
+- [x] [Review][Patch] Treat any malformed Review row as store corruption instead of silently filtering it out [src/lib/review-queue.ts:94]
+- [x] [Review][Patch] Keep Review GET strictly read-only when the deployment is read-only [src/lib/review-queue.ts:284]
+- [x] [Review][Patch] Make successful and post-compile-skipped Review delivery fail-soft and durable when Analysis reads fail [src/lib/review-queue.ts:607]
+- [x] [Review][Patch] Normalize and enforce the submitted Wiki scope on Review actions while preserving the legacy unscoped-card ruling [src/app/api/review-queue/[id]/route.ts:25]
+- [x] [Review][Patch] Fence in-flight Review actions so an old Wiki response cannot replace the newly selected Wiki queue [src/components/workbench/ReviewCanvas.tsx:64]
+- [x] [Review][Patch] Honor an explicit ingest `wikiId` and directly verify current-Wiki assignment through the real helper [src/lib/review-queue.ts:601]
+- [x] [Review][Patch] Build Review list/count responses from one repair snapshot and keep a successful action successful if count refresh fails [src/app/api/review-queue/route.ts:13]
+- [x] [Review][Patch] Quarantine the exact corrupt Review bytes already read and verify the recovery copy [src/lib/review-queue.ts:188]
+- [x] [Review][Patch] Put the Graph browser-test timeout on the Playwright test body instead of unsupported `TestDetails` [e2e/workbench-owner.spec.ts:114]
+- [x] [Review][Patch] Make the rail-mode browser journey create its own Wiki instead of depending on test order [e2e/workbench-owner.spec.ts:79]
+- [x] [Review][Patch] Make Page seeding verify or replace conflicting fixture content instead of accepting any 409 [e2e/workbench-owner.spec.ts:20]
+- [x] [Review][Patch] Verify the Graph canvas returns after leaving the narrow layout [e2e/workbench-owner.spec.ts:129]
+- [x] [Review][Patch] Assert a positively identified Research draft after Graph handoff [e2e/workbench-owner.spec.ts:147]
+- [x] [Review][Patch] Require Lint Auto-fix to run and verify the stored Page was repaired [e2e/workbench-owner.spec.ts:167]
+- [x] [Review][Patch] Reload after Review Skip and prove the skipped card stays absent [e2e/workbench-owner.spec.ts:197]
+- [x] [Review][Patch] Verify Review Create Page writes the expected Page content instead of only hiding the card [e2e/workbench-owner.spec.ts:222]
+- [x] [Review][Patch] Invalidate badge requests when initial scope data changes and preserve the new Wiki's valid initial count [src/components/workbench/useReviewBadge.ts:16]
+- [x] [Review][Patch] Short-circuit the Review badge to zero without an unscoped request when no Wiki is current [src/components/workbench/useReviewBadge.ts:20]
+- [x] [Review][Patch] Normalize API and canvas badge counts to finite non-negative integers [src/components/workbench/useReviewBadge.ts:29]
+- [x] [Review][Patch] Cover successful scoped badge refresh, data-version refresh, prop races, and no-Wiki behavior [src/components/workbench/__tests__/review-badge.test.tsx:19]
+- [x] [Review][Patch] Preserve the first filesystem create failure when temporary-handle close also fails [src/lib/storage/filesystem.ts:285]
+- [x] [Review][Patch] Verify conditional creation concurrently, bind stored bytes to the winner, and cover pre-existing paths and scratch cleanup [src/lib/__tests__/storage-fs.test.ts:205]
+- [x] [Review][Patch] Pin exact data-version bump owners and fail-soft tails instead of broad file exemptions and a raw count [src/lib/__tests__/workbench-data-version.test.ts:995]
+- [x] [Review][Patch] Relabel the retained closure logs as a superseded working-tree snapshot instead of exact-head evidence and explain the later test-count delta [_bmad-output/implementation-artifacts/epic-5-retro-closure/README.md:3]
+- [x] [Review][Patch] Keep the delivery/review gate in progress while its own same-SHA review and flag-clear conditions remain open [_bmad-output/implementation-artifacts/sprint-status.yaml:390]
+- [x] [Review][Patch] Point closure readers to the authoritative decision ledger recorded in the implementable spec [_bmad-output/implementation-artifacts/epic-5-retro-closure/README.md:32]
+
 ## Verification
 
 **Commands:**
@@ -159,8 +217,59 @@ New (expected):
 ## Spec Change Log
 
 - 2026-08-23 — Implementation added Verification commands and review pins. No `<intent-contract>` edits.
+- 2026-08-23 — Feature-area review chunk 1 applied all 14 Graph/Relevance/Insights/Research patches. No `<intent-contract>` edits.
+- 2026-08-23 — Feature-area review chunk 2 applied all 8 Lint/Preview patches. No `<intent-contract>` edits.
+- 2026-08-23 — Feature-area review chunk 3 applied all 15 Review/Ingest patches. No `<intent-contract>` edits.
+- 2026-08-23 — Feature-area review chunk 4 applied all 15 Workbench delivery/browser/storage patches. No `<intent-contract>` edits.
+- 2026-08-23 — Final full-diff chunk applied all 3 delivery-metadata/evidence patches. No `<intent-contract>` edits.
 
 ## Review Triage Log
+
+### 2026-08-23 — Final full-diff metadata/evidence follow-up
+- scope: hooks / agent instructions / sprint state / retrospective / retained closure evidence
+- patch: 3 applied
+- defer: 0
+- decision_needed: 0
+- dismissed: 9
+- verification: hooks JSON and sprint YAML parse clean; retained-log counts match their historical files; current working-tree gates are TypeScript clean, production build clean, full lint exit 0, 6,590/6,590 Vitest green, and 17/17 Playwright green
+- remaining_gate: commit the final diff, rerun all gates at that immutable SHA from a clean tree, and obtain the reviewer step that can clear `followup_review_recommended`
+
+### 2026-08-23 — Feature-area chunk 4 follow-up
+- scope: Workbench delivery / browser journeys / storage / refresh wiring
+- patch: 15 applied
+- defer: 0
+- decision_needed: 0
+- dismissed: 11
+- failed_layer: acceptance-auditor stopped before returning findings; the other three configured layers completed
+- verification: TypeScript clean; affected ESLint clean; focused 174 tests green; full 6,590-test suite green; all 17 Playwright tests green
+- remaining_gate: none for Chunk 4
+
+### 2026-08-23 — Feature-area chunk 3 follow-up
+- scope: Review / Ingest
+- patch: 15 applied
+- defer: 0
+- decision_needed: 0
+- dismissed: 5
+- verification: affected ESLint clean; full lint clean; focused Review/Ingest suite green; full 6,580-test suite green
+- remaining_gate: repository TypeScript check is blocked by the separately modified `e2e/workbench-owner.spec.ts:115` (`timeout` is not a `TestDetails` field)
+
+### 2026-08-23 — Feature-area chunk 2 follow-up
+- scope: Lint / Preview
+- patch: 8 applied
+- defer: 0
+- decision_needed: 0
+- dismissed: 7
+- verification: affected ESLint clean; focused 331 tests green; full 6,563-test suite green
+- remaining_gate: repository TypeScript check is blocked by the separately modified `e2e/workbench-owner.spec.ts:115` (`timeout` is not a `TestDetails` field)
+
+### 2026-08-23 — Feature-area chunk 1 follow-up
+- scope: Graph / Relevance / Insights / Research
+- patch: 14 applied
+- defer: 0
+- decision_needed: 0
+- dismissed: 5
+- verification: affected ESLint clean; focused 151 tests green; full 6,557-test suite green
+- remaining_gate: repository TypeScript check is blocked by the separately modified `e2e/workbench-owner.spec.ts:115` (`timeout` is not a `TestDetails` field)
 
 ### 2026-08-23 — Review pass
 - intent_gap: 0
@@ -196,3 +305,25 @@ Status: done
 **Verification:** `pnpm exec tsc --noEmit` clean. Spec suite plus review pins: 662 tests green. No signed-in browser E2E; closest substitute is canvas/RTL + authenticated route/kernel tests. Confirm Deep Research never POSTs `/api/research/[id]/run`.
 
 **Residual risks:** Graph WebGL (hover/zoom/FA2) is not exercised in jsdom. Extract/Lint semantic still need an LLM key. Deep Research web search remains Epic 6.
+
+**2026-08-23 retrospective remediations:** Implementation work for the ten `epic-5-retro-*` actions is recorded below. Nine actions are marked implementation-complete; `epic-5-retro-delivery-review-gate` remains `in-progress` because its same-SHA reviewer step is still open. Story and action `done` means implementation complete, not retrospective acceptance. The Epic 5 retrospective remains `verdict: rejected` until a fresh exact-head review of retained gate output. This note does not clear `followup_review_recommended`.
+
+## Recorded product rulings (Epic 5 retrospective)
+
+These rulings sit outside `<intent-contract>` and are the authoritative answers to the decision-required actions in `epic-5-retro-2026-08-23.md`.
+
+- **Semantic Lint gaps (`epic-5-retro-lint-product-reconcile`):** `missing-concept-page` and `incomplete-coverage` are not a second gap list. Workbench Lint drops those rows. When Semantic is on, Lint adds one `insight-pointer` row: “Knowledge gaps are listed under Graph Insights.”
+- **Review `wikiId` (`epic-5-retro-review-scope-create`):** Review is a current-Wiki view. List, count, and badge filter by `wikiId`. Items with no `wikiId` still show. Pages are shared; `wikiId` is queue scope, not a write destination.
+- **Dismissal fingerprints (`epic-5-retro-graph-correctness`):** A dismissed Insight stays hidden only while these fields match: kind, sorted slugs, community IDs of those slugs, incident undirected edges and weights, and the kind-specific extra (surprise classes / isolated degree / sparse cohesion / bridge neighbor communities). Invalidation happens only when those fields change. The executable list is `DISMISSAL_FINGERPRINT_FIELDS` in `src/lib/graph-surprise.ts`.
+- **Stale `index.md` (`epic-5-retro-lint-write-contract`):** The authoritative lifecycle/history operation is `pruneStaleIndexEntry` in `src/lib/lifecycle.ts` (index lock, `updateIndexUnsafe`, page-index drop, log, fail-soft `bumpDataVersion`).
+- **Corrupt Review and dismissal stores (`epic-5-retro-durable-store-atomicity`):** Fail closed. Quarantine the first unreadable dismissal bytes once to `{path}.corrupt`, without rereading a possibly changed primary or accumulating timestamped copies; Review retains its existing quarantine behavior. Do not treat corrupt JSON as empty and overwrite it.
+- **Story `done` (`epic-5-retro-delivery-review-gate`):** In `sprint-status.yaml`, story `done` means implementation complete. It is not retrospective acceptance and does not imply Epic 5 passed. `epic-5-retrospective: done` means the retrospective ran. The machine-readable verdict stays in `epic-5-retro-2026-08-23.md`.
+- **Epic 4 retrospective absence:** Waived. Epic 4 has no retrospective document; `epic-4-retrospective` stays `optional`. That absence is intentional, not an unfinished gate.
+- **Semantic Lint with a live provider (`epic-5-retro-executed-workbench-contracts`):** Explicitly remains unaccepted. v1 CI and Playwright do not run Semantic Lint against a real configured LLM. Kernel and canvas coverage prove the insight-pointer mapping only.
+- **Worker/R2 multi-isolate (`epic-5-retro-durable-store-atomicity`):** Local evidence is the same CAS / first-create / restart path (`writeFileIfMatch`, verify-after-create, `_resetStorage`). This repo cannot spawn Cloudflare Worker isolates or an R2 replica in Vitest. Those production runtimes share the storage helpers under test.
+
+## Planning metadata
+
+`followup_review_recommended` stays `true` until a fresh review at the same SHA as the retained release-gate output records no unresolved acceptance findings. Action 10's closure that would clear this flag is a reviewer step, not an implementer step.
+
+Retained gate output for this working tree lives at `_bmad-output/implementation-artifacts/epic-5-retro-closure/`.

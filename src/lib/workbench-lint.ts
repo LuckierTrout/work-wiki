@@ -1,37 +1,31 @@
 /**
  * Workbench Lint report: reuse kernel lint, add inbound-wikilink orphans
  * and renamed-slug detection. Semantic (LLM) classes stay behind a toggle.
+ * Gap classes point at Graph Insights — they are not a second gap product.
  */
 
 import { resolveAlias } from "./alias-index";
 import { extractAllInternalLinks } from "./links";
 import { lint } from "./lint";
 import { INFRASTRUCTURE_FILES, getOnDiskSlugs } from "./lint-checks";
-import { readWikiPage } from "./wiki";
+import { hasMarkdownLinkTarget, hasWikilinkTarget } from "./markdown-link-rewrite";
+import { listWikiPages, readWikiPage } from "./wiki";
 import type { LintIssue } from "./types";
+import {
+  WORKBENCH_LINT_IDLE,
+  WORKBENCH_MECHANICAL_FIX,
+  workbenchCanAutoFix,
+  type WorkbenchLintIssue,
+  type WorkbenchLintType,
+} from "./workbench-lint-types";
 
-export const WORKBENCH_LINT_IDLE = "Run lint to check wiki health.";
-
-export type WorkbenchLintType =
-  | LintIssue["type"]
-  | "inbound-orphan"
-  | "renamed-slug";
-
-export interface WorkbenchLintIssue {
-  type: WorkbenchLintType;
-  slug: string;
-  target?: string;
-  message: string;
-  severity: LintIssue["severity"];
-  suggestion?: string;
-}
-
-export const WORKBENCH_MECHANICAL_FIX = new Set<WorkbenchLintType>([
-  "renamed-slug",
-  "broken-link",
-  "orphan-page",
-  "stale-index",
-]);
+export {
+  WORKBENCH_LINT_IDLE,
+  WORKBENCH_MECHANICAL_FIX,
+  workbenchCanAutoFix,
+  type WorkbenchLintIssue,
+  type WorkbenchLintType,
+};
 
 const BOOKKEEPING = new Set(["purpose", "schema", "index", "log", "overview"]);
 
@@ -44,16 +38,16 @@ const BASE_CHECKS: LintIssue["type"][] = [
   "stale-index",
 ];
 
-const SEMANTIC_CHECKS: LintIssue["type"][] = [
-  "contradiction",
-  "missing-concept-page",
-  "incomplete-coverage",
-  "uncited-claims",
-];
+/** Semantic classes that stay on Lint. Gap rows are Insights, not this list. */
+const SEMANTIC_CHECKS: LintIssue["type"][] = ["contradiction", "uncited-claims"];
 
-export function workbenchCanAutoFix(type: WorkbenchLintType, readOnly: boolean): boolean {
-  return !readOnly && WORKBENCH_MECHANICAL_FIX.has(type);
-}
+const GAP_POINTER: WorkbenchLintIssue = {
+  type: "insight-pointer",
+  slug: "",
+  message: "Knowledge gaps are listed under Graph Insights.",
+  severity: "info",
+  suggestion: "Open Graph → Insights for isolated, sparse, and bridge pages.",
+};
 
 export async function checkInboundWikilinkOrphans(
   diskSlugs: readonly string[],
@@ -63,8 +57,10 @@ export async function checkInboundWikilinkOrphans(
     const page = await readWikiPage(slug);
     if (!page) continue;
     for (const { targetSlug } of extractAllInternalLinks(page.content)) {
-      if (!inbound.has(targetSlug)) continue;
-      inbound.set(targetSlug, (inbound.get(targetSlug) ?? 0) + 1);
+      const canonical = (await resolveAlias(targetSlug)) ?? targetSlug;
+      if (canonical === slug) continue;
+      if (!inbound.has(canonical)) continue;
+      inbound.set(canonical, (inbound.get(canonical) ?? 0) + 1);
     }
   }
   const issues: WorkbenchLintIssue[] = [];
@@ -94,7 +90,15 @@ async function promoteRenamedSlugs(
       continue;
     }
     const canonical = await resolveAlias(issue.target);
-    if (canonical && canonical !== issue.target && diskSlugs.has(canonical)) {
+    const source = await readWikiPage(issue.slug);
+    const hasWikilink = source ? hasWikilinkTarget(source.content, issue.target) : false;
+    const hasMarkdownLink = source ? hasMarkdownLinkTarget(source.content, issue.target) : false;
+    if (
+      canonical &&
+      canonical !== issue.target &&
+      diskSlugs.has(canonical) &&
+      (hasWikilink || hasMarkdownLink)
+    ) {
       out.push({
         type: "renamed-slug",
         slug: issue.slug,
@@ -102,12 +106,88 @@ async function promoteRenamedSlugs(
         message: `Page "${issue.slug}.md" still links to renamed slug "${issue.target}" (now "${canonical}")`,
         severity: "warning",
         suggestion: `Rewrite the link to "${canonical}.md".`,
+        fix: "renamed-slug",
       });
       continue;
     }
-    out.push(issue);
+    out.push(hasWikilink ? { ...issue, fix: "dangling-wikilink" } : issue);
   }
   return out;
+}
+
+export async function validateWorkbenchLintIssue(
+  type: string,
+  slug: string,
+  target?: string,
+): Promise<WorkbenchLintIssue | undefined> {
+  if (type === "broken-link") {
+    if (!target) return undefined;
+    const [source, destination] = await Promise.all([
+      readWikiPage(slug, { fresh: true, strict: true }),
+      readWikiPage(target, { fresh: true, strict: true }),
+    ]);
+    if (!source || destination || !hasWikilinkTarget(source.content, target)) return undefined;
+    return {
+      type: "broken-link",
+      slug,
+      target,
+      message: `Page "${slug}.md" links to missing page "${target}.md"`,
+      severity: "warning",
+      fix: "dangling-wikilink",
+    };
+  }
+  if (type === "renamed-slug") {
+    if (!target) return undefined;
+    const canonical = await resolveAlias(target);
+    if (!canonical || canonical === target) return undefined;
+    const [source, destination] = await Promise.all([
+      readWikiPage(slug, { fresh: true, strict: true }),
+      readWikiPage(canonical, { fresh: true, strict: true }),
+    ]);
+    if (
+      !source ||
+      !destination ||
+      (!hasWikilinkTarget(source.content, target) &&
+        !hasMarkdownLinkTarget(source.content, target))
+    ) {
+      return undefined;
+    }
+    return {
+      type: "renamed-slug",
+      slug,
+      target,
+      message: `Page "${slug}.md" still links to renamed slug "${target}" (now "${canonical}")`,
+      severity: "warning",
+      suggestion: `Rewrite the link to "${canonical}.md".`,
+      fix: "renamed-slug",
+    };
+  }
+  if (type === "orphan-page" || type === "stale-index") {
+    const [page, entries] = await Promise.all([
+      readWikiPage(slug, { fresh: true, strict: true }),
+      listWikiPages({ strict: true }),
+    ]);
+    const indexed = entries.some((entry) => entry.slug === slug);
+    if (type === "orphan-page" && page && !indexed) {
+      return {
+        type,
+        slug,
+        message: `Page "${slug}.md" is not listed in index.md`,
+        severity: "warning",
+        fix: "orphan-page",
+      };
+    }
+    if (type === "stale-index" && !page && indexed) {
+      return {
+        type,
+        slug,
+        message: `index.md lists missing page "${slug}.md"`,
+        severity: "warning",
+        fix: "stale-index",
+      };
+    }
+  }
+  return undefined;
 }
 
 export async function runWorkbenchLint(options: {
@@ -123,6 +203,14 @@ export async function runWorkbenchLint(options: {
   ]);
   const diskSet = new Set(diskSlugs);
   const inbound = await checkInboundWikilinkOrphans(diskSlugs);
-  const combined: WorkbenchLintIssue[] = [...result.issues, ...inbound];
+  const combined: WorkbenchLintIssue[] = [
+    ...result.issues.map((issue): WorkbenchLintIssue => {
+      if (issue.type === "orphan-page") return { ...issue, fix: "orphan-page" };
+      if (issue.type === "stale-index") return { ...issue, fix: "stale-index" };
+      return issue;
+    }),
+    ...inbound,
+  ];
+  if (options.semantic) combined.push(GAP_POINTER);
   return promoteRenamedSlugs(combined, diskSet);
 }

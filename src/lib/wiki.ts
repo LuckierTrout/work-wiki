@@ -317,9 +317,7 @@ export async function wikiPageExists(slug: string): Promise<boolean> {
       await storage.readFile(siloPath);
       return true;
     } catch (e) {
-      if (!isEnoent(e)) {
-        logger.warn("wiki", `silo existence check failed for "${slug}", falling back to flat:`, e);
-      }
+      if (!isEnoent(e)) throw e;
       // Fall through to flat
     }
   }
@@ -369,6 +367,12 @@ export interface ReadWikiPageOptions {
    * Default `false`: caching stays exactly as it was for every existing caller.
    */
   fresh?: boolean;
+  /**
+   * Surface non-ENOENT storage failures instead of converting them to a
+   * missing Page. Mechanical write preconditions use this so a transient
+   * provider error can never authorize a destructive fix.
+   */
+  strict?: boolean;
 }
 
 /**
@@ -390,6 +394,7 @@ export async function readWikiPage(
   }
 
   const fresh = options?.fresh === true;
+  const strict = options?.strict === true;
 
   // Check cache first (when active, and when this read may use it)
   if (!fresh && pageCache !== null && pageCache.has(slug)) {
@@ -416,6 +421,7 @@ export async function readWikiPage(
       actualPath = path.join(getDataDir(), siloPath);
     } catch (e) {
       if (!isEnoent(e)) {
+        if (strict) throw e;
         logger.warn("wiki", `silo read failed for "${slug}", falling back to flat:`, e);
       }
       // Fall through to flat fallback
@@ -429,6 +435,7 @@ export async function readWikiPage(
       actualPath = flatPath;
     } catch (err) {
       if (!isEnoent(err)) {
+        if (strict) throw err;
         logger.warn("wiki", `readWikiPage failed for "${slug}":`, err);
       }
       // A fresh read leaves the cache as it found it — see
@@ -523,6 +530,63 @@ export async function writeWikiPage(
   }
 }
 
+/**
+ * Atomically create a wiki page without overwriting an existing page.
+ *
+ * Returns `false` when the target already exists. Unlike `writeWikiPage`, this
+ * intentionally does not create a revision because a successful call is the
+ * first write for the path.
+ */
+export async function createWikiPage(
+  slug: string,
+  content: string,
+  tenant?: string,
+): Promise<boolean> {
+  validateSlug(slug);
+  const storagePath = tenant
+    ? tenantWikiRelPath(tenant, `${slug}.md`)
+    : wikiRelPath(`${slug}.md`);
+  const created = await getStorage().writeFileIfAbsent(storagePath, content);
+  if (created && pageCache !== null) pageCache.delete(slug);
+  return created;
+}
+
+/**
+ * Replace a Page only when the provider still holds the exact bytes the
+ * caller transformed. The content comparison binds the caller's source bytes
+ * to the provider etag; the conditional write closes the read/write race.
+ */
+export async function writeWikiPageIfContentMatches(
+  slug: string,
+  content: string,
+  expectedContent: string,
+  author?: string,
+  reason?: string,
+  tenant?: string,
+): Promise<boolean> {
+  validateSlug(slug);
+  const storagePath = tenant
+    ? tenantWikiRelPath(tenant, `${slug}.md`)
+    : wikiRelPath(`${slug}.md`);
+  const storage = getStorage();
+  let current: { content: string; etag: string };
+  try {
+    current = await storage.readFileWithEtag(storagePath);
+  } catch (error) {
+    if (isEnoent(error)) return false;
+    throw error;
+  }
+  if (current.content !== expectedContent) return false;
+
+  // Preserve the source snapshot before publication, matching writeWikiPage's
+  // history contract. A losing CAS may leave a harmless duplicate snapshot,
+  // but it can never overwrite the competing Page.
+  await saveRevision(slug, expectedContent, author, reason, tenant);
+  const written = await storage.writeFileIfMatch(storagePath, content, current.etag);
+  if (written && pageCache !== null) pageCache.delete(slug);
+  return written;
+}
+
 // ---------------------------------------------------------------------------
 // Index management
 // ---------------------------------------------------------------------------
@@ -606,13 +670,14 @@ export function enrichEntry(
 }
 
 /** Parse the ordered base entries (title/slug/summary) from `wiki/index.md`. */
-async function readIndexBaseEntries(): Promise<IndexEntry[]> {
+async function readIndexBaseEntries(options?: { strict?: boolean }): Promise<IndexEntry[]> {
   const storagePath = wikiRelPath("index.md");
   let raw: string;
   try {
     raw = await getStorage().readFile(storagePath);
   } catch (err: unknown) {
     if (!isEnoent(err)) {
+      if (options?.strict) throw err;
       // A transient read failure on index.md makes the WHOLE wiki look empty to
       // every list surface — surface it at error level (ENOENT = genuinely no
       // index yet, which is the normal empty-state and stays quiet).
@@ -635,8 +700,8 @@ async function readIndexBaseEntries(): Promise<IndexEntry[]> {
  * rebuild. A page that fails to parse falls back to its plain index entry so one
  * malformed page never breaks the whole list.
  */
-export async function scanWikiPagesUncached(): Promise<IndexEntry[]> {
-  const baseEntries = await readIndexBaseEntries();
+export async function scanWikiPagesUncached(options?: { strict?: boolean }): Promise<IndexEntry[]> {
+  const baseEntries = await readIndexBaseEntries(options);
   return Promise.all(
     baseEntries.map(async (entry): Promise<IndexEntry> => {
       try {
@@ -665,12 +730,12 @@ export async function scanWikiPagesUncached(): Promise<IndexEntry[]> {
  *
  * Expected `index.md` line format: `- [Title](slug.md) — summary`
  */
-export async function listWikiPages(): Promise<IndexEntry[]> {
+export async function listWikiPages(options?: { strict?: boolean }): Promise<IndexEntry[]> {
   const { getPageIndex } = await import("./page-index");
   const meta = await getPageIndex();
-  if (meta === null) return scanWikiPagesUncached();
+  if (meta === null) return scanWikiPagesUncached(options);
 
-  const baseEntries = await readIndexBaseEntries();
+  const baseEntries = await readIndexBaseEntries(options);
   return baseEntries.map((b) => {
     const m = meta[b.slug];
     // index.md stays authoritative for title/summary; the metadata index

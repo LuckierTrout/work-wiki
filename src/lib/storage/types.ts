@@ -260,6 +260,13 @@ export interface StorageProvider {
   readFileWithEtag(path: string): Promise<FileWithEtag>;
 
   /**
+   * Create a whole file only when the path does not exist. The existence check
+   * and publication are one provider operation, so concurrent creators cannot
+   * both win. Returns `true` for the creator and `false` when the path exists.
+   */
+  writeFileIfAbsent(path: string, content: string): Promise<boolean>;
+
+  /**
    * Write a file only if the current version matches the given etag.
    * Returns `true` if the write succeeded, `false` if the etag didn't match
    * (meaning someone else wrote to the file since you read it).

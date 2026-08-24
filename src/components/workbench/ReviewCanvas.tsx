@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { normalizeReviewCount } from "@/lib/review-count";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { workbenchMode } from "@/lib/workbench-modes";
 import { selectionFromContentPath, type TreeSelection } from "@/lib/workbench-tree";
@@ -8,7 +9,7 @@ import type { ReviewItem } from "@/lib/review-queue";
 import { DeepResearchConfirm } from "./DeepResearchConfirm";
 
 export interface ReviewCanvasProps {
-  wikiId: string;
+  wikiId: string | null;
   readOnly?: boolean;
   active?: boolean;
   dataVersion?: number;
@@ -23,7 +24,7 @@ interface ReviewResponse {
 }
 
 export function ReviewCanvas({
-  wikiId: _wikiId,
+  wikiId,
   readOnly = false,
   active = true,
   dataVersion = 0,
@@ -33,27 +34,54 @@ export function ReviewCanvas({
 }: ReviewCanvasProps) {
   const empty = workbenchMode("review").emptyState ?? "No pending cards.";
   const [items, setItems] = useState<ReviewItem[]>([]);
+  const [itemsWikiId, setItemsWikiId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busyWikiId, setBusyWikiId] = useState<string | null>(null);
+  const busy = busyWikiId === wikiId;
   const [research, setResearch] = useState<ReviewItem | null>(null);
   const [researchBusy, setResearchBusy] = useState(false);
   const [researchError, setResearchError] = useState<string | null>(null);
   const loadSeq = useRef(0);
+  const actionSeq = useRef(0);
+  const researchSeq = useRef(0);
+  const wikiScope = useRef(wikiId);
+
+  useEffect(() => {
+    wikiScope.current = wikiId;
+    loadSeq.current += 1;
+    actionSeq.current += 1;
+    researchSeq.current += 1;
+    setBusyWikiId(null);
+    setResearch(null);
+    setResearchBusy(false);
+    setResearchError(null);
+  }, [wikiId]);
 
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
+    if (!wikiId) {
+      setItems([]);
+      setItemsWikiId(null);
+      setError(null);
+      onPendingCountChange?.(0);
+      return;
+    }
     try {
-      const body = await send<ReviewResponse>("/api/review-queue", { method: "GET" });
+      const query = `?wikiId=${encodeURIComponent(wikiId)}`;
+      const body = await send<ReviewResponse>(`/api/review-queue${query}`, { method: "GET" });
       if (seq !== loadSeq.current) return;
       setItems(body.items ?? []);
-      if (typeof body.pendingCount === "number") onPendingCountChange?.(body.pendingCount);
+      setItemsWikiId(wikiId);
+      const next = normalizeReviewCount(body.pendingCount);
+      if (next !== null) onPendingCountChange?.(next);
       setError(null);
     } catch (cause) {
       if (seq !== loadSeq.current) return;
       setItems([]);
+      setItemsWikiId(wikiId);
       setError(cause instanceof Error ? cause.message : "Couldn’t load Review.");
     }
-  }, [onPendingCountChange]);
+  }, [onPendingCountChange, wikiId]);
 
   useEffect(() => {
     if (!active) return;
@@ -61,24 +89,33 @@ export function ReviewCanvas({
   }, [active, load, dataVersion]);
 
   async function act(id: string, action: "skip" | "create-page") {
-    if (readOnly) return;
-    setBusy(true);
+    if (readOnly || !wikiId) return;
+    const actedWikiId = wikiId;
+    const seq = ++actionSeq.current;
+    setBusyWikiId(actedWikiId);
     setError(null);
     try {
       const body = await send<ReviewResponse>(`/api/review-queue/${encodeURIComponent(id)}`, {
         method: "POST",
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, wikiId }),
       });
-      if (typeof body.pendingCount === "number") onPendingCountChange?.(body.pendingCount);
+      if (seq !== actionSeq.current || wikiScope.current !== actedWikiId) return;
+      const next = normalizeReviewCount(body.pendingCount);
+      if (next !== null) onPendingCountChange?.(next);
       await load();
     } catch (cause) {
+      if (seq !== actionSeq.current || wikiScope.current !== actedWikiId) return;
       setError(writeFailure(cause, action === "skip" ? "skip the review" : "create the page").message);
     } finally {
-      setBusy(false);
+      if (seq === actionSeq.current && wikiScope.current === actedWikiId) setBusyWikiId(null);
     }
   }
 
   async function confirmResearch(values: { topic: string; queries: string[] }) {
+    const originWikiId = wikiScope.current;
+    const originPageSlug = research?.pageSlug;
+    const seq = ++researchSeq.current;
+    if (!originWikiId) return;
     setResearchBusy(true);
     setResearchError(null);
     try {
@@ -88,9 +125,10 @@ export function ReviewCanvas({
           title: values.topic,
           question: values.topic,
           queries: values.queries,
-          pageSlugs: research?.pageSlug ? [research.pageSlug] : [],
+          pageSlugs: originPageSlug ? [originPageSlug] : [],
         }),
       });
+      if (seq !== researchSeq.current || wikiScope.current !== originWikiId) return;
       const id = body.project?.id;
       if (!id) {
         setResearchError("Deep Research did not return a project.");
@@ -99,20 +137,23 @@ export function ReviewCanvas({
       setResearch(null);
       onOpenResearch?.(id);
     } catch (cause) {
+      if (seq !== researchSeq.current || wikiScope.current !== originWikiId) return;
       setResearchError(writeFailure(cause, "open Deep Research").message);
     } finally {
-      setResearchBusy(false);
+      if (seq === researchSeq.current && wikiScope.current === originWikiId) {
+        setResearchBusy(false);
+      }
     }
   }
 
   return (
     <div className="wb-review">
       {error && <p className="wb-todos-error">{error}</p>}
-      {items.length === 0 ? (
+      {(itemsWikiId === wikiId ? items : []).length === 0 ? (
         <p className="wb-empty">{empty}</p>
       ) : (
         <ul className="wb-todos-cards">
-          {items.map((item) => (
+          {(itemsWikiId === wikiId ? items : []).map((item) => (
             <li key={item.id} className="wb-todos-card">
               <span className="wb-review-kind" aria-hidden="true">
                 {item.kind === "warning" ? (
@@ -151,7 +192,7 @@ export function ReviewCanvas({
                   <button
                     type="button"
                     className="wb-todos-btn wb-todos-btn--primary"
-                    disabled={readOnly || busy}
+                    disabled={readOnly || busy || item.status === "creating"}
                     onClick={() => {
                       setResearchError(null);
                       setResearch(item);
@@ -163,7 +204,7 @@ export function ReviewCanvas({
                 <button
                   type="button"
                   className="wb-todos-btn"
-                  disabled={readOnly || busy}
+                  disabled={readOnly || busy || item.status === "creating"}
                   onClick={() => void act(item.id, "create-page")}
                 >
                   Create Page
@@ -171,7 +212,7 @@ export function ReviewCanvas({
                 <button
                   type="button"
                   className="wb-todos-btn"
-                  disabled={readOnly || busy}
+                  disabled={readOnly || busy || item.status === "creating"}
                   onClick={() => void act(item.id, "skip")}
                 >
                   Skip

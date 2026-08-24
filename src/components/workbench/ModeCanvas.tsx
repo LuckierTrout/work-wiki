@@ -227,7 +227,7 @@ export function ModeCanvas({
           </h2>
         ) : null}
         <ReviewCanvas
-          wikiId={wikiId ?? "current"}
+          wikiId={wikiId ?? null}
           readOnly={readOnly}
           active={mode === "review" && !hidden}
           dataVersion={dataVersion}

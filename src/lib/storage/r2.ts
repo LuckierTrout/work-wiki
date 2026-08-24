@@ -222,6 +222,13 @@ export class R2StorageProvider implements StorageProvider {
     };
   }
 
+  async writeFileIfAbsent(path: string, content: string): Promise<boolean> {
+    const result = await this.bucket.put(path, content, {
+      onlyIf: { etagDoesNotMatch: "*" },
+    });
+    return result !== null;
+  }
+
   async writeFileIfMatch(
     path: string,
     content: string,

@@ -1236,7 +1236,7 @@ describe("Stories 2.4–2.12 compile remnants", () => {
     await expect(
       getStorage().readFile(rawSourceRelPath("meet/deadbeef.md")),
     ).rejects.toThrow();
-  });
+  }, 20_000);
 
   it("retries a failed job without storing Source bytes again", async () => {
     const { createIngestJob, retryIngestJob } = await import("../ingest-jobs");

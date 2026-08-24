@@ -280,6 +280,30 @@ describe("docking and undocking announce themselves (DW-34)", () => {
     expect(announced()).toBe("Preview, Alpha");
   });
 
+  it("shows disputed metadata for a mounted Files selection", async () => {
+    answer = () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        name: "x.md",
+        path: "raw/x.md",
+        format: "markdown" as const,
+        body: "# X",
+        truncated: false,
+        editable: false,
+        disputed: true,
+      }),
+    });
+    await renderShell();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+    fireEvent.click(row("x.md"));
+    await act(async () => {});
+
+    expect(preview()).toBeTruthy();
+    expect(screen.getByText("disputed: true")).toBeTruthy();
+  });
+
   it("says the column closed when the owner re-clicks the same row", async () => {
     await renderShell();
     fireEvent.click(row("Alpha"));

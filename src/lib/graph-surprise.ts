@@ -8,10 +8,24 @@ import {
   type CommunityAssignment,
   type CommunityInfo,
 } from "./graph-louvain";
+import { contentVersion } from "./write-precondition";
+import { MAX_INSIGHT_ID_LENGTH } from "./graph-insight-contract";
 
 export type WorkbenchInsightKind = "surprise" | "isolated" | "sparse" | "bridge";
 
 export type SurpriseClass = "cross-community" | "cross-type" | "peripheral-hub";
+
+/**
+ * A dismissal stays hidden only while these fields still match. Any change
+ * among them mints a new Insight; fields outside this list do not.
+ */
+export const DISMISSAL_FINGERPRINT_FIELDS = [
+  "kind",
+  "sorted slugs",
+  "community ids of those slugs",
+  "incident undirected edges and weights",
+  "kind-specific extra: surprise classes | isolated degree | sparse cohesion | bridge neighbor communities",
+] as const;
 
 export interface WorkbenchInsight {
   id: string;
@@ -25,12 +39,61 @@ export interface WorkbenchInsight {
   offersDeepResearch: boolean;
   /** Stable while the same structure is present; dismissal keys on this. */
   fingerprint: string;
+  /** Pre-remediation fingerprint, used server-side for one-time migration. */
+  legacyFingerprint?: string;
+  /** Pre-hash readable id, used server-side when the live id was bounded. */
+  legacyId?: string;
   topic: string;
   queries: string[];
 }
 
 function edgeKey(a: string, b: string): string {
   return a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
+}
+
+function codeUnitCompare(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function boundedInsightId(readable: string): string {
+  if (readable.length <= MAX_INSIGHT_ID_LENGTH) return readable;
+  const kind = readable.slice(0, readable.indexOf(":"));
+  return `${kind}:${contentVersion(readable)}`;
+}
+
+function insightIdFields(readable: string): Pick<WorkbenchInsight, "id" | "legacyId"> {
+  const id = boundedInsightId(readable);
+  return id === readable ? { id } : { id, legacyId: readable };
+}
+
+function legacyTopologyFingerprint(
+  kind: string,
+  slugs: readonly string[],
+  communities: CommunityAssignment,
+  edges: readonly GraphEdge[],
+  extra = "",
+): string {
+  const members = [...slugs].sort(codeUnitCompare);
+  const memberSet = new Set(members);
+  const comms = members.map((slug) => String(communities.bySlug[slug] ?? -1)).join(",");
+  const incident = edges
+    .filter((edge) => memberSet.has(edge.source) || memberSet.has(edge.target))
+    .map((edge) => `${edgeKey(edge.source, edge.target)}:${edge.weight}`)
+    .sort(codeUnitCompare)
+    .join("|");
+  return `${kind}:${members.join(":")}:${comms}:${incident}:${extra}`;
+}
+
+function topologyFingerprint(
+  kind: string,
+  slugs: readonly string[],
+  communities: CommunityAssignment,
+  edges: readonly GraphEdge[],
+  extra = "",
+): string {
+  return `graph:${contentVersion(
+    legacyTopologyFingerprint(kind, slugs, communities, edges, extra),
+  )}`;
 }
 
 function degreeMap(
@@ -96,12 +159,12 @@ export function computeWorkbenchInsights(
     if (!a || !b) continue;
     const { score, classes } = surpriseScore(edge, a, b, communities, degree);
     if (classes.length === 0) continue;
-    const slugs = [a.id, b.id].sort((left, right) => left.localeCompare(right));
+    const slugs = [a.id, b.id].sort(codeUnitCompare);
     const primary = classes[0];
     surprises.push({
       score,
       insight: {
-        id: `surprise:${slugs.join(":")}:${primary}`,
+        ...insightIdFields(`surprise:${slugs.join(":")}:${primary}`),
         kind: "surprise",
         title: `${labelOf(byId, slugs[0])} ↔ ${labelOf(byId, slugs[1])}`,
         summary: classes
@@ -117,14 +180,21 @@ export function computeWorkbenchInsights(
         edges: [{ source: edge.source, target: edge.target }],
         class: primary,
         offersDeepResearch: false,
-        fingerprint: `surprise:${slugs.join(":")}:${classes.slice().sort().join(",")}`,
+        fingerprint: topologyFingerprint(
+          "surprise",
+          slugs,
+          communities,
+          edges,
+          classes.slice().sort().join(","),
+        ),
+        legacyFingerprint: `surprise:${slugs.join(":")}:${classes.slice().sort(codeUnitCompare).join(",")}`,
         topic: `${labelOf(byId, slugs[0])} and ${labelOf(byId, slugs[1])}`,
         queries: [],
       },
     });
   }
   surprises
-    .sort((a, b) => b.score - a.score || a.insight.id.localeCompare(b.insight.id))
+    .sort((a, b) => b.score - a.score || codeUnitCompare(a.insight.id, b.insight.id))
     .slice(0, 12)
     .forEach((row) => insights.push(row.insight));
 
@@ -132,7 +202,7 @@ export function computeWorkbenchInsights(
     const deg = degree.get(node.id) ?? 0;
     if (deg > 1) continue;
     insights.push({
-      id: `isolated:${node.id}`,
+      ...insightIdFields(`isolated:${node.id}`),
       kind: "isolated",
       title: `${node.label} is isolated`,
       summary:
@@ -144,7 +214,8 @@ export function computeWorkbenchInsights(
         .filter((edge) => edge.source === node.id || edge.target === node.id)
         .map((edge) => ({ source: edge.source, target: edge.target })),
       offersDeepResearch: true,
-      fingerprint: `isolated:${node.id}:${deg}`,
+      fingerprint: topologyFingerprint("isolated", [node.id], communities, edges, String(deg)),
+      legacyFingerprint: `isolated:${node.id}:${deg}`,
       topic: node.label,
       queries: [`What else should connect to ${node.label}?`],
     });
@@ -153,9 +224,9 @@ export function computeWorkbenchInsights(
   for (const community of communities.communities) {
     if (community.count < 3) continue;
     if (community.cohesion >= COHESION_WARN) continue;
-    const slugs = community.slugs.slice().sort((a, b) => a.localeCompare(b));
+    const slugs = community.slugs.slice().sort(codeUnitCompare);
     insights.push({
-      id: `sparse:${community.id}`,
+      ...insightIdFields(`sparse:${community.id}`),
       kind: "sparse",
       title: `${community.label} is sparse`,
       summary: `Cohesion ${community.cohesion.toFixed(2)} across ${community.count} pages.`,
@@ -164,7 +235,14 @@ export function computeWorkbenchInsights(
         .filter((edge) => slugs.includes(edge.source) && slugs.includes(edge.target))
         .map((edge) => ({ source: edge.source, target: edge.target })),
       offersDeepResearch: true,
-      fingerprint: `sparse:${slugs.join(",")}:${community.cohesion.toFixed(2)}`,
+      fingerprint: topologyFingerprint(
+        "sparse",
+        slugs,
+        communities,
+        edges,
+        community.cohesion.toFixed(2),
+      ),
+      legacyFingerprint: `sparse:${slugs.join(",")}:${community.cohesion.toFixed(2)}`,
       topic: community.label,
       queries: [`What is missing from the ${community.label} cluster?`],
     });
@@ -182,7 +260,7 @@ export function computeWorkbenchInsights(
     if (neighborCommunities.size < 3) continue;
     const slugs = [node.id];
     insights.push({
-      id: `bridge:${node.id}`,
+      ...insightIdFields(`bridge:${node.id}`),
       kind: "bridge",
       title: `${node.label} is a bridge`,
       summary: `Links ${neighborCommunities.size} communities.`,
@@ -191,7 +269,14 @@ export function computeWorkbenchInsights(
         .filter((edge) => edge.source === node.id || edge.target === node.id)
         .map((edge) => ({ source: edge.source, target: edge.target })),
       offersDeepResearch: true,
-      fingerprint: `bridge:${node.id}:${[...neighborCommunities].sort((a, b) => a - b).join(",")}`,
+      fingerprint: topologyFingerprint(
+        "bridge",
+        [node.id],
+        communities,
+        edges,
+        [...neighborCommunities].sort((a, b) => a - b).join(","),
+      ),
+      legacyFingerprint: `bridge:${node.id}:${[...neighborCommunities].sort((a, b) => a - b).join(",")}`,
       topic: node.label,
       queries: [`How does ${node.label} connect these areas of the wiki?`],
     });
@@ -204,7 +289,13 @@ export function filterDismissedInsights(
   insights: readonly WorkbenchInsight[],
   dismissed: ReadonlyMap<string, string>,
 ): WorkbenchInsight[] {
-  return insights.filter((insight) => dismissed.get(insight.id) !== insight.fingerprint);
+  return insights.filter((insight) => {
+    const stored =
+      dismissed.get(insight.id) ??
+      (insight.legacyId ? dismissed.get(insight.legacyId) : undefined);
+    if (stored === undefined) return true;
+    return stored !== insight.fingerprint && stored !== insight.legacyFingerprint;
+  });
 }
 
 export function typeLegend(

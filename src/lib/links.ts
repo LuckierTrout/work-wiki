@@ -7,7 +7,13 @@
 
 import { slugify } from "./slugify";
 
-function normalizeWikilinkTarget(raw: string): string {
+/** Whether a Markdown destination names a remote resource, not a Wiki Page. */
+export function isExternalLinkTarget(raw: string): boolean {
+  const target = raw.trim();
+  return /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("//");
+}
+
+export function normalizeWikilinkTarget(raw: string): string {
   const trimmed = raw.trim().replace(/\.md$/i, "");
   const last =
     trimmed
@@ -44,6 +50,7 @@ export function extractWikiLinks(content: string): WikiLink[] {
   const re = /\[([^\]]*)\]\(([^)]+)\.md\)/g;
   let match;
   while ((match = re.exec(content)) !== null) {
+    if (isExternalLinkTarget(`${match[2]}.md`)) continue;
     results.push({ text: match[1], targetSlug: match[2] });
   }
   return results;

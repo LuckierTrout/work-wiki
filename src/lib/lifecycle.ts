@@ -5,6 +5,8 @@ import { deleteDiscussions } from "./talk";
 import {
   validateSlug,
   writeWikiPage,
+  writeWikiPageIfContentMatches,
+  createWikiPage,
   readWikiPage,
   readWikiPageWithFrontmatter,
   listWikiPages,
@@ -23,7 +25,7 @@ import { bumpDataVersion } from "./data-version";
 import { getStorage } from "./storage";
 import { withFileLock } from "./lock";
 import { escapeRegex } from "./links";
-import { getErrorMessage } from "./errors";
+import { getErrorMessage, isEnoent } from "./errors";
 import { getVectorSearchSettings } from "./config";
 import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 import { mapWithConcurrency } from "./concurrency";
@@ -79,6 +81,10 @@ export interface WritePageOptions {
   crossRefSource?: string | null;
   /** Who made this change — stored in the revision sidecar for attribution. */
   author?: string;
+  /** Refuse to overwrite the tenant-primary Page when it already exists. */
+  createOnly?: boolean;
+  /** Refuse to overwrite unless the authoritative Page still has these bytes. */
+  expectedContent?: string;
 }
 
 /** Result of a {@link writeWikiPageWithSideEffects} call. */
@@ -134,6 +140,8 @@ type PageLifecycleOp =
       crossRefSource?: string | null;
       /** Who made this change — stored in the revision sidecar. */
       author?: string;
+      createOnly?: boolean;
+      expectedContent?: string;
     }
   | {
       kind: "delete";
@@ -192,6 +200,19 @@ function stripBacklinksTo(slug: string, content: string): string {
 /** Max concurrent R2 reads/writes during a page lifecycle op. */
 const LIFECYCLE_CONCURRENCY = 12;
 
+const LIFECYCLE_STALE_PAGE = (slug: string) =>
+  `Page "${slug}" changed; run Lint again`;
+
+async function storageFileExists(relPath: string): Promise<boolean> {
+  try {
+    await getStorage().readFile(relPath);
+    return true;
+  } catch (error) {
+    if (isEnoent(error)) return false;
+    throw error;
+  }
+}
+
 async function runPageLifecycleOp(
   slug: string,
   op: PageLifecycleOp,
@@ -228,18 +249,98 @@ async function runPageLifecycleOp(
 
   // 2. Mutate the page file.
   if (op.kind === "write") {
-    try {
-      const pre = await readWikiPage(slug);
-      prevContent = pre?.content;
-    } catch {
-      // No prior page (new) or unreadable → treat as no previous links.
+    if (op.expectedContent !== undefined) {
+      prevContent = op.expectedContent;
+    } else {
+      try {
+        const pre = await readWikiPage(slug);
+        prevContent = pre?.content;
+      } catch {
+        // No prior page (new) or unreadable → treat as no previous links.
+      }
     }
-    // Silo-primary: write to tenants/<tenant>/wiki/<slug>.md
-    await writeWikiPage(slug, op.content, op.author, undefined, writeTenant);
-    // Also write flat copy (transition — removable after #869) so readWikiPage
-    // can find the page without a page index. writeWikiPage without tenant
-    // targets the flat path.
-    await writeWikiPage(slug, op.content, op.author);
+    if (op.createOnly) {
+      // The tenant silo is authoritative. Its conditional write is the
+      // create-only boundary: Review must never overwrite an unrelated Page.
+      const created = await createWikiPage(slug, op.content, writeTenant);
+      if (!created) throw new Error(`Page "${slug}" already exists`);
+      // The flat file is transitional. Preserve an unexpected pre-existing
+      // flat Page rather than overwriting it; the page index will route reads
+      // to the newly-created authoritative silo copy.
+      const flatCreated = await createWikiPage(slug, op.content);
+      if (!flatCreated) {
+        logger.warn("wiki", `flat compatibility copy already exists for "${slug}"`);
+      }
+    } else if (op.expectedContent !== undefined) {
+      const updated = await writeWikiPageIfContentMatches(
+        slug,
+        op.content,
+        op.expectedContent,
+        op.author,
+        "conditional lifecycle edit",
+        writeTenant,
+      );
+      if (!updated) {
+        const siloPath = tenantWikiRelPath(
+          writeTenant ?? tenantForOwner(undefined),
+          `${slug}.md`,
+        );
+        if (await storageFileExists(siloPath)) {
+          throw new Error(LIFECYCLE_STALE_PAGE(slug));
+        }
+        // readWikiPage still falls back to the flat tree for pre-migration
+        // pages. CAS those bytes instead of treating a missing silo as a
+        // concurrent edit, then promote the new body into the silo once.
+        const flatUpdated = await writeWikiPageIfContentMatches(
+          slug,
+          op.content,
+          op.expectedContent,
+          op.author,
+          "conditional lifecycle edit",
+        );
+        if (!flatUpdated) {
+          throw new Error(LIFECYCLE_STALE_PAGE(slug));
+        }
+        const siloCreated = await createWikiPage(slug, op.content, writeTenant);
+        if (!siloCreated) {
+          logger.warn("wiki", `silo appeared during flat CAS for "${slug}"; left untouched`);
+        }
+      } else {
+        // The flat copy is compatibility-only. Update it conditionally when it
+        // still mirrors the source bytes, but never overwrite divergent bytes.
+        // A missing flat copy is not a conflict: createOnly already writes
+        // both trees, and readWikiPage still falls back to flat when the
+        // page index is unseeded.
+        try {
+          const flatUpdated = await writeWikiPageIfContentMatches(
+            slug,
+            op.content,
+            op.expectedContent,
+            op.author,
+            "conditional lifecycle edit",
+          );
+          if (!flatUpdated) {
+            if (await storageFileExists(wikiRelPath(`${slug}.md`))) {
+              logger.warn("wiki", `flat compatibility copy changed for "${slug}"; left untouched`);
+            } else {
+              const flatCreated = await createWikiPage(slug, op.content);
+              if (!flatCreated) {
+                logger.warn("wiki", `flat compatibility copy appeared for "${slug}"`);
+              }
+            }
+          }
+        } catch (error) {
+          logger.warn("wiki", `flat compatibility copy update failed for "${slug}"`, error);
+        }
+      }
+    } else {
+      // Silo-primary: write to tenants/<tenant>/wiki/<slug>.md
+      await writeWikiPage(slug, op.content, op.author, undefined, writeTenant);
+      // Also write flat copy (transition — removable after #869) so readWikiPage
+      // can find the page without a page index. writeWikiPage without tenant
+      // targets the flat path.
+      await writeWikiPage(slug, op.content, op.author);
+    }
   } else {
     try {
       const pre = await readWikiPageWithFrontmatter(slug);
@@ -361,7 +462,7 @@ async function runPageLifecycleOp(
   let postIndexEntries: IndexEntry[];
   let removedFromIndex = false;
   await withFileLock("index.md", async () => {
-    const entries = await listWikiPages();
+    const entries = await listWikiPages({ strict: true });
     if (op.kind === "write") {
       const existingIdx = entries.findIndex((e) => e.slug === slug);
       if (existingIdx !== -1) {
@@ -675,6 +776,43 @@ async function runPageLifecycleOp(
 }
 
 /**
+ * Drop a stale `index.md` membership under the index lock, with log + data-version
+ * history. Used when the referenced Page no longer exists.
+ */
+export async function pruneStaleIndexEntry(
+  slug: string,
+  _author?: string,
+): Promise<{ removed: boolean }> {
+  assertWritable(READ_ONLY_REFUSAL.pageWrite);
+  validateSlug(slug);
+  if (await readWikiPage(slug, { fresh: true, strict: true })) {
+    return { removed: false };
+  }
+  let removed = false;
+  await withFileLock("index.md", async () => {
+    if (await readWikiPage(slug, { fresh: true, strict: true })) return;
+    const entries = await listWikiPages({ strict: true });
+    const filtered = entries.filter((entry) => entry.slug !== slug);
+    if (filtered.length === entries.length) return;
+    await updateIndexUnsafe(filtered);
+    removed = true;
+  });
+  if (!removed) return { removed: false };
+  try {
+    await removePageIndexForSlug(slug);
+  } catch (err) {
+    logger.warn("page-index", `cleanup skipped for stale index "${slug}":`, err);
+  }
+  await appendToLog("edit", slug, `auto-fix: removed stale index entry for ${slug}`);
+  try {
+    await bumpDataVersion();
+  } catch (err) {
+    logger.warn("data-version", `bump skipped for stale index "${slug}":`, err);
+  }
+  return { removed: true };
+}
+
+/**
  * Delete a wiki page and clean up references to it.
  *
  * Thin wrapper over {@link runPageLifecycleOp} — the actual 5-step dance
@@ -759,6 +897,8 @@ export async function writeWikiPageWithSideEffects(
       summary,
       crossRefSource: opts.crossRefSource,
       author: opts.author,
+      createOnly: opts.createOnly,
+      expectedContent: opts.expectedContent,
     },
     logOp,
     ({ crossRefedSlugs }) => logDetails?.({ updatedSlugs: crossRefedSlugs }),

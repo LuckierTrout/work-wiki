@@ -516,6 +516,28 @@ describe("R2StorageProvider", () => {
     });
   });
 
+  describe("writeFileIfAbsent", () => {
+    it("allows exactly one concurrent creator and preserves that winner", async () => {
+      const values = ["first", "second"];
+      const results = await Promise.all(
+        values.map((value) => provider.writeFileIfAbsent("create.md", value)),
+      );
+
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results.findIndex(Boolean);
+      expect(await provider.readFile("create.md")).toBe(values[winner]);
+    });
+
+    it("does not replace a pre-existing object", async () => {
+      await provider.writeFile("create.md", "already here");
+
+      await expect(
+        provider.writeFileIfAbsent("create.md", "replacement"),
+      ).resolves.toBe(false);
+      await expect(provider.readFile("create.md")).resolves.toBe("already here");
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Derived indexes (KV)
   // -------------------------------------------------------------------------

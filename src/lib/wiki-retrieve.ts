@@ -36,6 +36,7 @@ import { loadPageConventions } from "./schema";
 import { parseSources } from "./sources";
 import type { IndexEntry } from "./types";
 import { CHAT_COVERAGE_MISSING_COPY, CHAT_VECTOR_FALLBACK_COPY } from "./workbench-modes";
+import { extractAllInternalTargets } from "./links";
 import {
   isArtifactType,
   listReadableWikiPages,
@@ -52,9 +53,6 @@ const SPECIAL_SLUGS = new Set(["purpose", "index"]);
 const DEFAULT_SEARCH_TOP_K = 10;
 const DEFAULT_SEED_LIMIT = 24;
 const PAGE_READ_CONCURRENCY = 8;
-const WIKI_LINK_RE = /\[([^\]]*)\]\(([^)]+)\.md\)/g;
-const WIKILINK_RE = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g;
-
 export type RetrieveDocKind = "page" | "source" | "purpose" | "index";
 
 export interface RetrieveDocument {
@@ -375,16 +373,7 @@ async function mergeVectorHits(
 }
 
 function extractWikiTargets(body: string, allowed: ReadonlySet<string>): string[] {
-  const targets: string[] = [];
-  for (const match of body.matchAll(WIKI_LINK_RE)) {
-    const slug = match[2];
-    if (slug && allowed.has(slug)) targets.push(slug);
-  }
-  for (const match of body.matchAll(WIKILINK_RE)) {
-    const slug = match[1]?.trim();
-    if (slug && allowed.has(slug)) targets.push(slug);
-  }
-  return targets;
+  return extractAllInternalTargets(body).filter((slug) => allowed.has(slug));
 }
 
 async function expandHits(

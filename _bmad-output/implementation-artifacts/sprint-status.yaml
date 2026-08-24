@@ -10,16 +10,21 @@
 #   - ready-for-dev: Story file created, ready for development
 #   - in-progress: Developer actively working on implementation
 #   - review: Implementation complete, ready for review
-#   - done: Story completed
+#   - done: Implementation complete. This is not retrospective acceptance.
+#     Epic 5 stories 5.1–5.10 stay done while epic-5-retro-2026-08-23.md
+#     remains verdict: rejected.
 
 # Retrospective Status:
-#   - optional: Can be completed but not required
-#   - done: Retrospective has been completed
+#   - optional: Can be completed but not required. Epic 4 has no retro
+#     document; epic-4-retrospective stays optional by explicit waiver
+#     recorded in spec-5-1-through-5-10-see-the-wikis-shape.md.
+#   - done: The retrospective ran. This is not an accepted verdict.
 
 # Action Item Status:
 #   - open: Committed during a retrospective, not yet addressed
 #   - in-progress: Actively being worked on
-#   - done: Completed
+#   - done: Remediation implemented. Does not change a rejected
+#     retrospective verdict.
 
 # WORKFLOW NOTES:
 # ===============
@@ -29,7 +34,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-23-2026 14:35
+last_updated: 08-23-2026 22:45
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
@@ -94,7 +99,7 @@ development_status:
   5-8-lint-report: done
   5-9-mechanical-auto-fix: done
   5-10-review-queue: done
-  epic-5-retrospective: optional
+  epic-5-retrospective: done
 
   epic-6: backlog
   6-1-configure-deep-research-providers: backlog
@@ -210,10 +215,12 @@ action_items:
   - id: "epic-2-retro-orchestration"
     epic: 2
     action: "After correctness, extract shared dispatch contracts and move Intake
-      and delete orchestration out of the Workbench shell."
+      and delete orchestration out of the Workbench shell. Linked from
+      epic-5-retro-delivery-review-gate (Action 10); remains open."
     owner: "Architecture / maintainers"
     status: open
     ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+    linked_from: "epic-5-retro-delivery-review-gate"
   - id: "epic-2-retro-contract-rulings"
     epic: 2
     action: "Resolve and reconcile strict-versus-fail-soft vector embedding, dataVersion,
@@ -307,3 +314,87 @@ action_items:
     owner: "QA / maintainers"
     status: done
     ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-5-retro-release-boundary"
+    epic: 5
+    action: "Move Lint client contracts into a client-safe module, restore the enforced
+      data-version writer invariant, and require green production build, full Vitest,
+      lint, TypeScript, and clean authenticated Playwright at exact head."
+    owner: "Workbench / QA"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-graph-correctness"
+    epic: 5
+    action: "Give uncached reduced-motion Graph nodes distinct stable positions, implement
+      a real Sigma Fit, make Louvain and community IDs deterministic, separate legend-warning
+      and sparse thresholds, and stabilize insight fingerprints."
+    owner: "Graph / Workbench"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-relevance-prefill"
+    epic: 5
+    action: "Use one canonical internal-link parser for Graph and Chat, read the current
+      Wiki Purpose and profile, and replace the silent twelve-prefill cutoff with
+      an explicit bounded or paginated contract."
+    owner: "Retrieval / Graph"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-durable-store-atomicity"
+    epic: 5
+    action: "Add conditional first-create semantics, fail-closed or quarantine corruption
+      handling, bounded retention and backpressure, and the authoritative data-version
+      invalidation path for Review and dismissals."
+    owner: "Kernel / storage"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-lint-write-contract"
+    epic: 5
+    action: "Revalidate live Lint issues and canonical targets, restrict dangling
+      fixes to authorized wikilinks, preserve fragments and code examples, add content
+      preconditions, and route stale-index repair through an atomic lifecycle and
+      history contract."
+    owner: "Wiki kernel / Lint"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-lint-product-reconcile"
+    epic: 5
+    action: "Remove or map semantic gap rows to Graph Insights, exclude self-links,
+      resolve aliases for inbound reachability, and show disputed status for the same
+      page from both Knowledge and Files."
+    owner: "Product / Workbench"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-review-delivery"
+    epic: 5
+    action: "Cover queued and inline or off-Worker ingest, author fallback, post-compile
+      skipped retries, and transient Review queue failures with idempotent durable
+      retry or outbox semantics."
+    owner: "Ingest / Queues"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-review-scope-create"
+    epic: 5
+    action: "Enforce the authoritative wikiId view and action contract, write owner
+      metadata, preserve source provenance, prevent slug collisions, and recover safely
+      from process loss and failed Review page writes."
+    owner: "Wiki kernel / Review"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-executed-workbench-contracts"
+    epic: 5
+    action: "Add rendered and browser coverage for non-empty Sigma interactions, narrow
+      mode, Lint semantic and auto-fix routes, Review counts and Create Page rollback,
+      Research handoff and status, malformed inputs, and stale-response fencing."
+    owner: "Workbench / QA"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-delivery-review-gate"
+    epic: 5
+    action: "Decompose Graph, Lint, and Review into reviewable story or feature commits
+      and do not mark the bundle done while followup review is recommended or exact-head
+      build, full-suite, and browser gates are absent. Linked open item:
+      epic-2-retro-orchestration. Story done means implementation complete, not
+      accepted; followup_review_recommended stays true until a fresh review."
+    owner: "Delivery / architecture"
+    status: in-progress
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+    links: "epic-2-retro-orchestration"

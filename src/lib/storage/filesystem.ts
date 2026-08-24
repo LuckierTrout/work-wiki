@@ -9,6 +9,8 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
+import { setTimeout as wait } from "node:timers/promises";
 
 import type {
   StorageProvider,
@@ -40,6 +42,127 @@ import { withFileLock } from "../lock";
  * that accept externally-supplied paths own that check.
  */
 const TMP_ARTIFACT = /^\.tmp-[0-9a-f-]+\.tmp$/i;
+const LOCK_DIR = ".storage-locks";
+const LOCK_WAIT_MS = 5;
+const LOCK_TIMEOUT_MS = 15_000;
+const STALE_LOCK_MS = 5 * 60_000;
+
+function contentEtag(content: string | Buffer): string {
+  return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+}
+
+function publicationLockKey(absPath: string): string {
+  return `filesystem-publication:${absPath}`;
+}
+
+function publicationLockPath(basePath: string, absPath: string): string {
+  const digest = createHash("sha256").update(absPath).digest("hex");
+  return path.join(basePath, LOCK_DIR, `${digest}.lock`);
+}
+
+async function withFilesystemPublicationLock<T>(
+  basePath: string,
+  absPath: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return withFileLock(publicationLockKey(absPath), async () => {
+    const lockPath = publicationLockPath(basePath, absPath);
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    const started = Date.now();
+    let handle: fs.FileHandle | null = null;
+    while (!handle) {
+      try {
+        const candidate = await fs.open(lockPath, "wx");
+        try {
+          await candidate.writeFile(JSON.stringify({
+            pid: process.pid,
+            createdAt: new Date().toISOString(),
+          }));
+          await candidate.sync();
+          handle = candidate;
+        } catch (error) {
+          try {
+            await candidate.close();
+          } catch {
+            // Preserve the acquisition failure.
+          }
+          await fs.rm(lockPath, { force: true }).catch(() => {});
+          throw error;
+        }
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error &&
+          (error as NodeJS.ErrnoException).code === "EEXIST")) throw error;
+        const stale = await fs.stat(lockPath).then(
+          (stat) => Date.now() - stat.mtimeMs > STALE_LOCK_MS,
+          () => false,
+        );
+        if (stale) {
+          await fs.rm(lockPath, { force: true }).catch(() => {});
+          continue;
+        }
+        if (Date.now() - started >= LOCK_TIMEOUT_MS) {
+          throw new Error(`Timed out waiting for filesystem publication lock: ${absPath}`);
+        }
+        await wait(LOCK_WAIT_MS);
+      }
+    }
+    try {
+      return await fn();
+    } finally {
+      try {
+        await handle.close();
+      } catch {
+        // Lock cleanup cannot replace the publication result.
+      }
+      await fs.rm(lockPath, { force: true }).catch(() => {});
+    }
+  });
+}
+
+/** Test-only deterministic interleaving seam for cooperating provider writers. */
+export async function withFilesystemPublicationLockForTest<T>(
+  basePath: string,
+  filePath: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return withFilesystemPublicationLock(basePath, path.resolve(basePath, filePath), fn);
+}
+
+interface NewFileHandle {
+  writeFile(content: string | Buffer): Promise<unknown>;
+  sync(): Promise<unknown>;
+  close(): Promise<unknown>;
+}
+
+/** Write, sync and close while preserving the first publication failure. */
+export async function writeSyncedNewFile(
+  handle: NewFileHandle,
+  content: string | Buffer,
+): Promise<void> {
+  let failure: { error: unknown } | null = null;
+  try {
+    await handle.writeFile(content);
+    await handle.sync();
+  } catch (error) {
+    failure = { error };
+  }
+  try {
+    await handle.close();
+  } catch (error) {
+    failure ??= { error };
+  }
+  if (failure) throw failure.error;
+}
+
+/** Sync and close a complete replacement before publishing its name. */
+export async function writeSyncedAndPublish(
+  handle: NewFileHandle,
+  content: string | Buffer,
+  publish: () => Promise<unknown>,
+): Promise<void> {
+  await writeSyncedNewFile(handle, content);
+  await publish();
+}
 
 /** Cosine similarity between two equal-length vectors. */
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -124,7 +247,7 @@ export class FilesystemStorageProvider implements StorageProvider {
    *     create and rename the tmp file), not just on the destination, and it
    *     needs transient free space for BOTH copies at once.
    */
-  private async atomicWrite(
+  private async atomicWriteUnlocked(
     absPath: string,
     data: string | Buffer,
   ): Promise<void> {
@@ -135,35 +258,25 @@ export class FilesystemStorageProvider implements StorageProvider {
     );
     try {
       const handle = await fs.open(tmp, "wx");
-      // Boxed rather than a bare `unknown`, so a thrown `undefined` is still
-      // distinguishable from "nothing failed".
-      let failure: { error: unknown } | null = null;
-      try {
-        // Carry the destination's mode over when it already exists; a brand-new
-        // file keeps the default `fs.writeFile` would have given it.
-        const mode = await fs.stat(absPath).then(
-          (st) => st.mode & 0o777,
-          () => null,
-        );
-        if (mode !== null) await handle.chmod(mode);
-        await handle.writeFile(data);
-        await handle.sync();
-      } catch (error) {
-        failure = { error };
+      // Carry the destination's mode over when it already exists; a brand-new
+      // file keeps the default `fs.writeFile` would have given it.
+      const mode = await fs.stat(absPath).then(
+        (st) => st.mode & 0o777,
+        () => null,
+      );
+      if (mode !== null) {
+        try {
+          await handle.chmod(mode);
+        } catch (error) {
+          try {
+            await handle.close();
+          } catch {
+            // Preserve the chmod failure as the first publication error.
+          }
+          throw error;
+        }
       }
-      // A `finally { await handle.close() }` would let a close rejection
-      // REPLACE the write or sync error already in flight — the caller would
-      // then see EBADF instead of the ENOSPC that actually stopped the write.
-      // The first error wins; a close failure on the otherwise-clean path still
-      // surfaces, and still throws BEFORE the rename, so a handle that could
-      // not be closed never gets published.
-      try {
-        await handle.close();
-      } catch (error) {
-        failure ??= { error };
-      }
-      if (failure) throw failure.error;
-      await fs.rename(tmp, absPath);
+      await writeSyncedAndPublish(handle, data, () => fs.rename(tmp, absPath));
     } catch (error) {
       // Cleanup must never change what propagates. `force` only suppresses
       // ENOENT, so an EPERM/EACCES/EBUSY unlink would otherwise replace the
@@ -189,11 +302,14 @@ export class FilesystemStorageProvider implements StorageProvider {
   }
 
   async writeFile(filePath: string, content: string): Promise<void> {
-    await this.atomicWrite(this.resolve(filePath), content);
+    const abs = this.resolve(filePath);
+    await withFilesystemPublicationLock(this.basePath, abs, () =>
+      this.atomicWriteUnlocked(abs, content));
   }
 
   async deleteFile(filePath: string): Promise<void> {
-    await fs.unlink(this.resolve(filePath));
+    const abs = this.resolve(filePath);
+    await withFilesystemPublicationLock(this.basePath, abs, () => fs.unlink(abs));
   }
 
   async listFiles(prefix: string): Promise<FileEntry[]> {
@@ -204,7 +320,7 @@ export class FilesystemStorageProvider implements StorageProvider {
         // In-flight and crash-leftover `atomicWrite` scratch files are not
         // content and must never surface. Every OTHER dot-prefixed entry still
         // does — `.discarded` is a real marker `sweepOrphans` depends on.
-        .filter((entry) => !TMP_ARTIFACT.test(entry.name))
+        .filter((entry) => !TMP_ARTIFACT.test(entry.name) && entry.name !== LOCK_DIR)
         .map((entry) => ({
           name: entry.name,
           isDirectory: entry.isDirectory(),
@@ -229,8 +345,10 @@ export class FilesystemStorageProvider implements StorageProvider {
 
   async appendFile(filePath: string, content: string): Promise<void> {
     const abs = this.resolve(filePath);
-    await this.ensureParent(abs);
-    await fs.appendFile(abs, content, "utf-8");
+    await withFilesystemPublicationLock(this.basePath, abs, async () => {
+      await this.ensureParent(abs);
+      await fs.appendFile(abs, content, "utf-8");
+    });
   }
 
   async stat(filePath: string): Promise<FileInfo> {
@@ -250,7 +368,9 @@ export class FilesystemStorageProvider implements StorageProvider {
   // -------------------------------------------------------------------------
 
   async writeAsset(filePath: string, data: ArrayBuffer): Promise<void> {
-    await this.atomicWrite(this.resolve(filePath), Buffer.from(data));
+    const abs = this.resolve(filePath);
+    await withFilesystemPublicationLock(this.basePath, abs, () =>
+      this.atomicWriteUnlocked(abs, Buffer.from(data)));
   }
 
   async readAsset(filePath: string): Promise<ArrayBuffer> {
@@ -267,14 +387,40 @@ export class FilesystemStorageProvider implements StorageProvider {
 
   async readFileWithEtag(filePath: string): Promise<FileWithEtag> {
     const abs = this.resolve(filePath);
-    const [content, st] = await Promise.all([
-      fs.readFile(abs, "utf-8"),
-      fs.stat(abs),
-    ]);
+    const content = await fs.readFile(abs, "utf-8");
     return {
       content,
-      etag: `${st.mtime.getTime()}-${st.size}`,
+      etag: contentEtag(content),
     };
+  }
+
+  async writeFileIfAbsent(filePath: string, content: string): Promise<boolean> {
+    const abs = this.resolve(filePath);
+    return withFilesystemPublicationLock(this.basePath, abs, async () => {
+      await this.ensureParent(abs);
+      const tmp = path.join(path.dirname(abs), `.tmp-${crypto.randomUUID()}.tmp`);
+      try {
+        const handle = await fs.open(tmp, "wx");
+        await writeSyncedNewFile(handle, content);
+        try {
+          // Hard-linking the complete tmp inode publishes the name atomically and
+          // fails with EEXIST without replacing a concurrent creator's bytes.
+          await fs.link(tmp, abs);
+          return true;
+        } catch (error) {
+          if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "EEXIST") {
+            return false;
+          }
+          throw error;
+        }
+      } finally {
+        try {
+          await fs.rm(tmp, { force: true });
+        } catch {
+          // Scratch cleanup must not replace the create result.
+        }
+      }
+    });
   }
 
   async writeFileIfMatch(
@@ -283,22 +429,20 @@ export class FilesystemStorageProvider implements StorageProvider {
     etag: string,
   ): Promise<boolean> {
     const abs = this.resolve(filePath);
-    try {
-      const st = await fs.stat(abs);
-      const currentEtag = `${st.mtime.getTime()}-${st.size}`;
-      if (currentEtag !== etag) {
-        return false;
+    return withFilesystemPublicationLock(this.basePath, abs, async () => {
+      try {
+        const current = await fs.readFile(abs);
+        if (contentEtag(current) !== etag) return false;
+      } catch (err: unknown) {
+        // File doesn't exist — etag can't match
+        if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
+          return false;
+        }
+        throw err;
       }
-    } catch (err: unknown) {
-      // File doesn't exist — etag can't match
-      if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
-        return false;
-      }
-      throw err;
-    }
-
-    await this.atomicWrite(abs, content);
-    return true;
+      await this.atomicWriteUnlocked(abs, content);
+      return true;
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -322,7 +466,9 @@ export class FilesystemStorageProvider implements StorageProvider {
   }
 
   async putIndex<T = unknown>(key: string, value: T): Promise<void> {
-    await this.atomicWrite(this.indexPath(key), JSON.stringify(value));
+    const abs = this.indexPath(key);
+    await withFilesystemPublicationLock(this.basePath, abs, () =>
+      this.atomicWriteUnlocked(abs, JSON.stringify(value)));
   }
 
   async incrementIndex(key: string): Promise<number> {
@@ -378,7 +524,9 @@ export class FilesystemStorageProvider implements StorageProvider {
   }
 
   private async saveEmbeddings(entries: EmbeddingEntry[]): Promise<void> {
-    await this.atomicWrite(this.embeddingsPath(), JSON.stringify(entries));
+    const abs = this.embeddingsPath();
+    await withFilesystemPublicationLock(this.basePath, abs, () =>
+      this.atomicWriteUnlocked(abs, JSON.stringify(entries)));
   }
 
   async upsertEmbedding(

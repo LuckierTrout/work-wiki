@@ -3,6 +3,22 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { GRAPH_NARROW_COPY, workbenchMode } from "@/lib/workbench-modes";
 
 const { send } = vi.hoisted(() => ({ send: vi.fn() }));
+const sigmaState = vi.hoisted(() => ({
+  animate: vi.fn(),
+  animatedZoom: vi.fn(),
+  animatedUnzoom: vi.fn(),
+  refresh: vi.fn(),
+  instances: 0,
+  handlers: {} as Record<string, (payload?: { node: string }) => void>,
+  settings: {} as Record<
+    string,
+    (id: string, data: Record<string, unknown>) => Record<string, unknown>
+  >,
+  graph: null as null | {
+    edges: () => string[];
+  },
+  missingDisplayNodes: new Set<string>(),
+}));
 vi.mock("@/lib/workbench-request", () => ({
   send,
   writeFailure: (cause: unknown, action: string) => ({
@@ -10,15 +26,63 @@ vi.mock("@/lib/workbench-request", () => ({
     unconfirmed: false,
   }),
 }));
+vi.mock("sigma", () => ({
+  default: class MockSigma {
+    constructor(graph: { edges: () => string[] }) {
+      sigmaState.instances += 1;
+      sigmaState.graph = graph;
+    }
+    kill() {}
+    refresh() { sigmaState.refresh(); }
+    on(event: string, handler: (payload?: { node: string }) => void) {
+      sigmaState.handlers[event] = handler;
+    }
+    setSetting(
+      setting: string,
+      reducer: (id: string, data: Record<string, unknown>) => Record<string, unknown>,
+    ) {
+      sigmaState.settings[setting] = reducer;
+    }
+    getNodeDisplayData(node: string) {
+      if (sigmaState.missingDisplayNodes.has(node)) return undefined;
+      return node === "a" ? { x: 0, y: 0 } : { x: 1, y: 0.5 };
+    }
+    getDimensions() {
+      return { width: 800, height: 400 };
+    }
+    getBBox() {
+      return { x: [0, 1] as [number, number], y: [0, 0.5] as [number, number] };
+    }
+    getCustomBBox() {
+      return null;
+    }
+    getCamera() {
+      return {
+        getState: () => ({ x: 0.5, y: 0.5, ratio: 1 }),
+        setState: vi.fn(),
+        animatedZoom: sigmaState.animatedZoom,
+        animatedUnzoom: sigmaState.animatedUnzoom,
+        animate: sigmaState.animate,
+        on: vi.fn(),
+      };
+    }
+  },
+}));
 
 import { DeepResearchConfirm } from "@/components/workbench/DeepResearchConfirm";
 import { GraphCanvas } from "@/components/workbench/GraphCanvas";
 import { LintCanvas } from "@/components/workbench/LintCanvas";
+import { ResearchCanvas } from "@/components/workbench/ResearchCanvas";
 import { ReviewCanvas } from "@/components/workbench/ReviewCanvas";
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  sigmaState.instances = 0;
+  sigmaState.handlers = {};
+  sigmaState.settings = {};
+  sigmaState.graph = null;
+  sigmaState.missingDisplayNodes.clear();
 });
 
 beforeEach(() => {
@@ -30,11 +94,221 @@ beforeEach(() => {
   });
 });
 
+const isolatedInsight = {
+  id: "isolated:alone",
+  kind: "isolated" as const,
+  title: "Alone is isolated",
+  summary: "Degree 0",
+  slugs: ["alone"],
+  edges: [],
+  offersDeepResearch: true,
+  fingerprint: "isolated:alone:0::0",
+  topic: "Alone",
+  queries: ["What belongs with Alone?"],
+};
+
 describe("Graph canvas", () => {
   it("shows the empty sentence and the narrow copy", async () => {
     render(<GraphCanvas wikiId="current" onDockPreview={vi.fn()} />);
     expect(await screen.findByText(workbenchMode("graph").emptyState!)).toBeTruthy();
     expect(screen.getByText(GRAPH_NARROW_COPY)).toBeTruthy();
+  });
+
+  it("renders chrome, Fit, and Insight highlight for a non-empty graph", async () => {
+    send.mockResolvedValue({
+      nodes: [{ id: "alone", label: "Alone", tenant: "yopedia", linkCount: 0, tags: [] }],
+      edges: [],
+      insights: [isolatedInsight],
+      communities: [],
+      types: [{ id: "page", label: "page", count: 1 }],
+    });
+    render(<GraphCanvas wikiId="current" onDockPreview={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "Fit" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Zoom in" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Alone is isolated/ }));
+    expect(screen.getByRole("button", { name: /Alone is isolated/ }).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
+    expect(screen.getByRole("dialog", { name: "Deep Research" })).toBeTruthy();
+  });
+
+  it("passes a full-graph ratio of 1 from renderer coordinates to the camera", async () => {
+    send.mockResolvedValue({
+      nodes: [
+        { id: "a", label: "A", tenant: "yopedia", linkCount: 0, tags: [] },
+        { id: "b", label: "B", tenant: "yopedia", linkCount: 0, tags: [] },
+      ],
+      edges: [],
+      insights: [],
+      communities: [],
+      types: [],
+    });
+    render(<GraphCanvas wikiId="current" onDockPreview={vi.fn()} />);
+    await waitFor(() => expect(sigmaState.instances).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole("button", { name: "Fit" }));
+    expect(sigmaState.animate).toHaveBeenCalledWith(
+      { x: 0.5, y: 0.25, ratio: 1 },
+      { duration: 200 },
+    );
+  });
+
+  it("wires Zoom in and Zoom out to Sigma camera animations", async () => {
+    send.mockResolvedValue({
+      nodes: [{ id: "a", label: "A", tenant: "yopedia", linkCount: 0, tags: [] }],
+      edges: [],
+      insights: [],
+      communities: [],
+      types: [],
+    });
+    render(<GraphCanvas wikiId="current" onDockPreview={vi.fn()} />);
+    await waitFor(() => expect(sigmaState.instances).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    fireEvent.click(screen.getByRole("button", { name: "Zoom out" }));
+    expect(sigmaState.animatedZoom).toHaveBeenCalledWith({ duration: 200 });
+    expect(sigmaState.animatedUnzoom).toHaveBeenCalledWith({ duration: 200 });
+  });
+
+  it("fits the remaining display records when one node is temporarily missing", async () => {
+    sigmaState.missingDisplayNodes.add("b");
+    send.mockResolvedValue({
+      nodes: [
+        { id: "a", label: "A", tenant: "yopedia", linkCount: 0, tags: [] },
+        { id: "b", label: "B", tenant: "yopedia", linkCount: 0, tags: [] },
+      ],
+      edges: [],
+      insights: [],
+      communities: [],
+      types: [],
+    });
+    render(<GraphCanvas wikiId="current" onDockPreview={vi.fn()} />);
+    await waitFor(() => expect(sigmaState.instances).toBeGreaterThan(0));
+    const before = sigmaState.animate.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Fit" }));
+    expect(sigmaState.animate.mock.calls.length).toBe(before + 1);
+  });
+
+  it("refreshes and applies hover node/edge reducers on enter and leave", async () => {
+    send.mockResolvedValue({
+      nodes: ["a", "b", "c"].map((id) => ({
+        id, label: id.toUpperCase(), tenant: "yopedia", linkCount: 0, tags: [],
+      })),
+      edges: [{ source: "a", target: "b", weight: 1, signals: [] }],
+      insights: [], communities: [], types: [],
+    });
+    render(<GraphCanvas wikiId="current" onDockPreview={vi.fn()} />);
+    await waitFor(() => expect(sigmaState.handlers.enterNode).toBeTypeOf("function"));
+    sigmaState.handlers.enterNode({ node: "a" });
+    const dimmed = sigmaState.settings.nodeReducer("c", { color: "#111", label: "C" });
+    const highlightedEdge = sigmaState.settings.edgeReducer(
+      sigmaState.graph!.edges()[0]!,
+      { color: "#111", label: "" },
+    );
+    expect(dimmed).toEqual(expect.objectContaining({ color: "#e5e7eb", label: "" }));
+    expect(highlightedEdge).toEqual(expect.objectContaining({ forceLabel: true }));
+    sigmaState.handlers.leaveNode();
+    const restored = sigmaState.settings.nodeReducer("c", { color: "#111", label: "C" });
+    expect(restored).toEqual({ color: "#111", label: "C" });
+    expect(sigmaState.refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses selected Insight node and edge reducers to retain members and hide nonmembers", async () => {
+    const insight = {
+      ...isolatedInsight,
+      id: "bridge:a",
+      kind: "bridge" as const,
+      title: "A bridges",
+      slugs: ["a", "b"],
+      edges: [{ source: "a", target: "b" }],
+    };
+    send.mockResolvedValue({
+      nodes: ["a", "b", "c"].map((id) => ({
+        id, label: id.toUpperCase(), tenant: "yopedia", linkCount: 0, tags: [],
+      })),
+      edges: [
+        { source: "a", target: "b", weight: 1, signals: [] },
+        { source: "b", target: "c", weight: 1, signals: [] },
+      ],
+      insights: [insight], communities: [], types: [],
+    });
+    render(<GraphCanvas wikiId="current" onDockPreview={vi.fn()} />);
+    await waitFor(() => expect(sigmaState.settings.edgeReducer).toBeTypeOf("function"));
+    fireEvent.click(screen.getByRole("button", { name: /A bridges/ }));
+    const member = sigmaState.settings.nodeReducer("a", { color: "#111", label: "A" });
+    const nonmember = sigmaState.settings.nodeReducer("c", { color: "#111", label: "C" });
+    const reducedEdges = sigmaState.graph!.edges().map((edgeId) =>
+      sigmaState.settings.edgeReducer(edgeId, { color: "#111", label: "" }));
+    expect(member).toEqual({ color: "#111", label: "A" });
+    expect(nonmember).toEqual(expect.objectContaining({ color: "#e5e7eb", label: "" }));
+    expect(reducedEdges.some((edge) => edge.forceLabel === true)).toBe(true);
+    expect(reducedEdges.some((edge) => edge.hidden === true)).toBe(true);
+  });
+
+  it("docks Preview when Sigma emits a node click", async () => {
+    send.mockResolvedValue({
+      nodes: [{ id: "a", label: "A", tenant: "yopedia", linkCount: 0, tags: [] }],
+      edges: [],
+      insights: [],
+      communities: [],
+      types: [],
+    });
+    const onDockPreview = vi.fn();
+    render(<GraphCanvas wikiId="current" onDockPreview={onDockPreview} />);
+    await waitFor(() => expect(sigmaState.handlers.clickNode).toBeTypeOf("function"));
+
+    sigmaState.handlers.clickNode({ node: "a" });
+
+    expect(onDockPreview).toHaveBeenCalledWith({ kind: "page", slug: "a" });
+  });
+
+  it("surfaces prefill cap and failure metadata beside Insights", async () => {
+    send.mockResolvedValue({
+      nodes: [{ id: "alone", label: "Alone", tenant: "yopedia", linkCount: 0, tags: [] }],
+      edges: [],
+      insights: [isolatedInsight],
+      communities: [],
+      types: [],
+      prefill: { limit: 12, attempted: 12, applied: 11, failed: 1, remaining: 2 },
+    });
+    render(<GraphCanvas wikiId="current" onDockPreview={vi.fn()} />);
+    expect(
+      (await screen.findByText(/Research context prepared for 11 insights/)).textContent,
+    ).toContain("1 could not be prepared; 2 use default queries");
+  });
+
+  it("keeps the newer Graph payload when a stale response lands late", async () => {
+    let finishFirst: ((value: unknown) => void) | undefined;
+    const first = new Promise((resolve) => {
+      finishFirst = resolve;
+    });
+    let calls = 0;
+    send.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        await first;
+        return { nodes: [], edges: [], insights: [] };
+      }
+      return {
+        nodes: [{ id: "alone", label: "Alone", tenant: "yopedia", linkCount: 0, tags: [] }],
+        edges: [],
+        insights: [isolatedInsight],
+      };
+    });
+    const { rerender } = render(
+      <GraphCanvas wikiId="current" dataVersion={1} onDockPreview={vi.fn()} />,
+    );
+    rerender(<GraphCanvas wikiId="current" dataVersion={2} onDockPreview={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "Fit" })).toBeTruthy();
+    finishFirst?.({});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByRole("button", { name: "Fit" })).toBeTruthy();
+    expect(screen.queryByText(workbenchMode("graph").emptyState!)).toBeNull();
+  });
+
+  it("surfaces a malformed Graph response", async () => {
+    send.mockRejectedValue(new Error("bad graph json"));
+    render(<GraphCanvas wikiId="current" onDockPreview={vi.fn()} />);
+    expect(await screen.findByText("bad graph json")).toBeTruthy();
   });
 });
 
@@ -45,9 +319,66 @@ describe("Lint canvas", () => {
     const semantic = screen.getByRole("checkbox", { name: "Semantic" }) as HTMLInputElement;
     expect(semantic.checked).toBe(false);
   });
+
+  it("points semantic gaps at Graph Insights and can auto-fix a mechanical row", async () => {
+    send.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/lint/workbench" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body ?? "{}")) as { semantic?: boolean };
+        return {
+          issues: [
+            ...(body.semantic
+              ? [
+                  {
+                    type: "insight-pointer",
+                    slug: "",
+                    message: "Knowledge gaps are listed under Graph Insights.",
+                    severity: "info",
+                  },
+                ]
+              : []),
+            {
+              type: "broken-link",
+              slug: "src",
+              target: "gone",
+              message: "Dangling wikilink",
+              severity: "warning",
+              fix: "dangling-wikilink",
+            },
+          ],
+        };
+      }
+      if (url === "/api/lint/workbench-fix") {
+        return { success: true, slug: "src", message: "fixed" };
+      }
+      return {};
+    });
+    render(<LintCanvas wikiId="current" onDockPreview={vi.fn()} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Semantic" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run lint" }));
+    expect(await screen.findByText("Graph Insights")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Auto-fix" }));
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(
+        "/api/lint/workbench-fix",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ type: "broken-link", slug: "src", target: "gone" }),
+        }),
+      );
+    });
+  });
 });
 
 describe("Review canvas", () => {
+  it("does not issue an unscoped request when no Wiki is current", async () => {
+    const onCount = vi.fn();
+    render(
+      <ReviewCanvas wikiId={null} onDockPreview={vi.fn()} onPendingCountChange={onCount} />,
+    );
+    await waitFor(() => expect(onCount).toHaveBeenCalledWith(0));
+    expect(send).not.toHaveBeenCalledWith("/api/review-queue", expect.anything());
+  });
+
   const item = {
     id: "r1",
     kind: "warning" as const,
@@ -61,15 +392,37 @@ describe("Review canvas", () => {
     pageSlug: "topic",
   };
 
+  it("does not forward a malformed pendingCount to the badge", async () => {
+    send.mockResolvedValue({ items: [item], pendingCount: -3 });
+    const onCount = vi.fn();
+    render(
+      <ReviewCanvas wikiId="wiki-a" onDockPreview={vi.fn()} onPendingCountChange={onCount} />,
+    );
+    await screen.findByText("Need a judgment");
+    expect(onCount).not.toHaveBeenCalled();
+  });
+
+  it("keeps a creating card visible and disables Skip and Create Page", async () => {
+    send.mockResolvedValue({
+      items: [{ ...item, status: "creating" }],
+      pendingCount: 1,
+    });
+    render(<ReviewCanvas wikiId="wiki-a" onDockPreview={vi.fn()} />);
+    await screen.findByText("Need a judgment");
+    expect((screen.getByRole("button", { name: "Create Page" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Skip" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Deep Research" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("skips a pending item without a wiki write and never Accepts", async () => {
     send.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === "/api/review-queue" && (!init || init.method === "GET")) {
+      if (String(url).startsWith("/api/review-queue") && (!init || init.method === "GET")) {
         return { items: [item], pendingCount: 1 };
       }
       if (typeof url === "string" && url.startsWith("/api/review-queue/r1")) {
         return { item: { ...item, status: "skipped" }, pendingCount: 0 };
       }
-      if (url === "/api/review-queue") return { items: [], pendingCount: 0 };
+      if (String(url).startsWith("/api/review-queue")) return { items: [], pendingCount: 0 };
       return {};
     });
     const onCount = vi.fn();
@@ -85,7 +438,7 @@ describe("Review canvas", () => {
         "/api/review-queue/r1",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ action: "skip" }),
+          body: JSON.stringify({ action: "skip", wikiId: "current" }),
         }),
       );
     });
@@ -94,6 +447,128 @@ describe("Review canvas", () => {
       .join("\n");
     expect(bodies).not.toContain("/run");
     expect(bodies).not.toContain("accept");
+  });
+
+  it("loads the current Wiki queue and Create Page does not Accept", async () => {
+    send.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (String(url).startsWith("/api/review-queue") && (!init || init.method === "GET")) {
+        return { items: [item], pendingCount: 1 };
+      }
+      if (typeof url === "string" && url.startsWith("/api/review-queue/r1")) {
+        return { item: { ...item, status: "created" }, slug: "need-a-judgment", pendingCount: 0 };
+      }
+      return {};
+    });
+    render(<ReviewCanvas wikiId="wiki-a" onDockPreview={vi.fn()} />);
+    await screen.findByText("Need a judgment");
+    fireEvent.click(screen.getByRole("button", { name: "Create Page" }));
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(
+        "/api/review-queue/r1",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ action: "create-page", wikiId: "wiki-a" }),
+        }),
+      );
+    });
+    expect(send.mock.calls.some((call) => String(call[0]).startsWith("/api/review-queue?wikiId=wiki-a"))).toBe(
+      true,
+    );
+  });
+
+  it("ignores an in-flight Review action after the active Wiki changes", async () => {
+    let resolveAction: ((value: unknown) => void) | undefined;
+    const action = new Promise((resolve) => {
+      resolveAction = resolve;
+    });
+    const wikiBItem = { ...item, id: "r2", title: "Wiki B judgment", wikiId: "wiki-b" };
+    send.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/review-queue/r1" && init?.method === "POST") return action;
+      if (String(url).includes("wikiId=wiki-b")) return { items: [wikiBItem], pendingCount: 1 };
+      if (String(url).includes("wikiId=wiki-a")) return { items: [item], pendingCount: 1 };
+      return { items: [], pendingCount: 0 };
+    });
+    const onCount = vi.fn();
+    const { rerender } = render(
+      <ReviewCanvas wikiId="wiki-a" onDockPreview={vi.fn()} onPendingCountChange={onCount} />,
+    );
+    await screen.findByText("Need a judgment");
+    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+    rerender(
+      <ReviewCanvas wikiId="wiki-b" onDockPreview={vi.fn()} onPendingCountChange={onCount} />,
+    );
+    await screen.findByText("Wiki B judgment");
+    resolveAction?.({ item: { ...item, status: "skipped" }, pendingCount: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByText("Wiki B judgment")).toBeTruthy();
+    expect(onCount).not.toHaveBeenCalledWith(0);
+  });
+
+  it("closes the Deep Research modal immediately when the Wiki changes", async () => {
+    const wikiBItem = { ...item, id: "r2", title: "Wiki B judgment", wikiId: "wiki-b" };
+    send.mockImplementation(async (url: string) =>
+      String(url).includes("wikiId=wiki-b")
+        ? { items: [wikiBItem], pendingCount: 1 }
+        : { items: [item], pendingCount: 1 });
+    const { rerender } = render(<ReviewCanvas wikiId="wiki-a" onDockPreview={vi.fn()} />);
+    await screen.findByText("Need a judgment");
+    fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
+    expect(screen.getByRole("dialog", { name: "Deep Research" })).toBeTruthy();
+    rerender(<ReviewCanvas wikiId="wiki-b" onDockPreview={vi.fn()} />);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Deep Research" })).toBeNull());
+    expect(await screen.findByText("Wiki B judgment")).toBeTruthy();
+  });
+
+  it("ignores a late Deep Research result from the prior Wiki", async () => {
+    let resolveResearch!: (value: unknown) => void;
+    const pendingResearch = new Promise((resolve) => { resolveResearch = resolve; });
+    const wikiBItem = { ...item, id: "r2", title: "Wiki B judgment", wikiId: "wiki-b" };
+    send.mockImplementation(async (url: string) => {
+      if (url === "/api/research") return pendingResearch;
+      if (String(url).includes("wikiId=wiki-b")) return { items: [wikiBItem], pendingCount: 1 };
+      return { items: [item], pendingCount: 1 };
+    });
+    const onOpenResearch = vi.fn();
+    const { rerender } = render(
+      <ReviewCanvas wikiId="wiki-a" onDockPreview={vi.fn()} onOpenResearch={onOpenResearch} />,
+    );
+    await screen.findByText("Need a judgment");
+    fireEvent.click(screen.getByRole("button", { name: "Deep Research" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(send).toHaveBeenCalledWith(
+      "/api/research",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    rerender(
+      <ReviewCanvas wikiId="wiki-b" onDockPreview={vi.fn()} onOpenResearch={onOpenResearch} />,
+    );
+    resolveResearch({ project: { id: "stale-project" } });
+    await screen.findByText("Wiki B judgment");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(onOpenResearch).not.toHaveBeenCalled();
+  });
+
+  it("does not restore an old action busy state after switching away and back", async () => {
+    let resolveAction!: (value: unknown) => void;
+    const pendingAction = new Promise((resolve) => { resolveAction = resolve; });
+    const wikiBItem = { ...item, id: "r2", title: "Wiki B judgment", wikiId: "wiki-b" };
+    send.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/review-queue/r1" && init?.method === "POST") return pendingAction;
+      if (String(url).includes("wikiId=wiki-b")) return { items: [wikiBItem], pendingCount: 1 };
+      return { items: [item], pendingCount: 1 };
+    });
+    const { rerender } = render(<ReviewCanvas wikiId="wiki-a" onDockPreview={vi.fn()} />);
+    await screen.findByText("Need a judgment");
+    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+    expect((screen.getByRole("button", { name: "Skip" }) as HTMLButtonElement).disabled).toBe(true);
+    rerender(<ReviewCanvas wikiId="wiki-b" onDockPreview={vi.fn()} />);
+    await screen.findByText("Wiki B judgment");
+    rerender(<ReviewCanvas wikiId="wiki-a" onDockPreview={vi.fn()} />);
+    await screen.findByText("Need a judgment");
+    expect((screen.getByRole("button", { name: "Skip" }) as HTMLButtonElement).disabled).toBe(false);
+    resolveAction({ item: { ...item, status: "skipped" }, pendingCount: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect((screen.getByRole("button", { name: "Skip" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
 
@@ -130,7 +605,7 @@ describe("Deep Research confirm", () => {
       pageSlug: "topic",
     };
     send.mockImplementation(async (url: string) => {
-      if (url === "/api/review-queue") return { items: [item], pendingCount: 1 };
+      if (String(url).startsWith("/api/review-queue")) return { items: [item], pendingCount: 1 };
       if (url === "/api/research") return { project: { id: "proj-1", status: "draft" } };
       return {};
     });
@@ -150,5 +625,52 @@ describe("Deep Research confirm", () => {
     const urls = send.mock.calls.map((call) => String(call[0]));
     expect(urls.some((url) => url.includes("/run"))).toBe(false);
     expect(onOpen).toHaveBeenCalledWith("proj-1");
+  });
+});
+
+describe("Research canvas", () => {
+  it("shows the empty Deep Research sentence", async () => {
+    send.mockResolvedValue({ projects: [] });
+    render(<ResearchCanvas wikiId="current" />);
+    expect(await screen.findByText(workbenchMode("research").emptyState!)).toBeTruthy();
+  });
+
+  it("keeps the filled draft when a stale empty list lands late", async () => {
+    let finishFirst: ((value: unknown) => void) | undefined;
+    const first = new Promise((resolve) => {
+      finishFirst = resolve;
+    });
+    let calls = 0;
+    send.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        await first;
+        return { projects: [] };
+      }
+      return {
+        projects: [
+          {
+            id: "proj-1",
+            title: "Filled topic",
+            question: "Filled topic",
+            queries: ["What belongs here?"],
+            status: "draft",
+          },
+        ],
+      };
+    });
+    const { rerender } = render(<ResearchCanvas wikiId="current" filledId={null} />);
+    rerender(<ResearchCanvas wikiId="current" filledId="proj-1" />);
+    expect(await screen.findByRole("heading", { name: "Filled topic" })).toBeTruthy();
+    finishFirst?.({});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByRole("heading", { name: "Filled topic" })).toBeTruthy();
+    expect(screen.queryByText(workbenchMode("research").emptyState!)).toBeNull();
+  });
+
+  it("surfaces a malformed Research response", async () => {
+    send.mockRejectedValue(new Error("bad research json"));
+    render(<ResearchCanvas wikiId="current" />);
+    expect(await screen.findByText("bad research json")).toBeTruthy();
   });
 });

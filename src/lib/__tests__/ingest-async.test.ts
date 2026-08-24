@@ -5,15 +5,27 @@ vi.mock("@/lib/ingest-jobs", () => ({ updateIngestJob: vi.fn(async () => null) }
 vi.mock("@/lib/todo-dispatch", () => ({
   dispatchMeetingTodoExtract: vi.fn(async () => "skipped"),
 }));
+vi.mock("@/lib/review-queue", async (orig) => ({
+  ...(await orig<typeof import("@/lib/review-queue")>()),
+  enqueueReviewAfterIngest: vi.fn(async () => {}),
+  rememberReviewOutbox: vi.fn(async () => {}),
+}));
+vi.mock("@/lib/ingest-analysis", () => ({
+  hasIngestAnalysis: vi.fn(async () => false),
+}));
 
 import { enqueueTask } from "@/lib/tasks";
 import { updateIngestJob } from "@/lib/ingest-jobs";
 import { dispatchMeetingTodoExtract } from "@/lib/todo-dispatch";
+import { hasIngestAnalysis } from "@/lib/ingest-analysis";
+import { enqueueReviewAfterIngest, ReviewDeliveryUnretainedError } from "@/lib/review-queue";
 import { enqueueOrInline } from "@/lib/ingest-async";
 
 const mockedEnqueue = vi.mocked(enqueueTask);
 const mockedUpdate = vi.mocked(updateIngestJob);
 const mockedDispatch = vi.mocked(dispatchMeetingTodoExtract);
+const mockedReview = vi.mocked(enqueueReviewAfterIngest);
+const mockedHasAnalysis = vi.mocked(hasIngestAnalysis);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -114,5 +126,101 @@ describe("enqueueOrInline", () => {
       skipped: true,
     }));
     expect(mockedDispatch).not.toHaveBeenCalled();
+    expect(mockedReview).not.toHaveBeenCalled();
+  });
+
+  it("enqueues Review after a successful owner inline compile", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    const owned = {
+      kind: "ingest" as const,
+      jobId: "j-review",
+      owner: "alice",
+    };
+    await enqueueOrInline("j-review", owned, async () => ({ primarySlug: "topic" }));
+    expect(mockedReview).toHaveBeenCalledWith({
+      owner: "alice",
+      pageSlug: "topic",
+      jobId: "j-review",
+    });
+  });
+
+  it("enqueues Review under the author when that is the only owner", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    const authored = {
+      kind: "ingest" as const,
+      jobId: "j-author",
+      author: "solo-author",
+    };
+    await enqueueOrInline("j-author", authored, async () => ({ primarySlug: "topic" }));
+    expect(mockedReview).toHaveBeenCalledWith({
+      owner: "solo-author",
+      pageSlug: "topic",
+      jobId: "j-author",
+    });
+  });
+
+  it("retries Review enqueue on a skipped inline ingest that already has analysis", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    mockedHasAnalysis.mockResolvedValueOnce(true);
+    const owned = {
+      kind: "ingest" as const,
+      jobId: "j-skip",
+      owner: "alice",
+    };
+    await enqueueOrInline("j-skip", owned, async () => ({
+      primarySlug: "existing",
+      skipped: true,
+    }));
+    expect(mockedReview).toHaveBeenCalledWith({
+      owner: "alice",
+      pageSlug: "existing",
+      jobId: "j-skip",
+    });
+  });
+
+  it("keeps a skipped compile successful when the Analysis existence read fails", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    mockedHasAnalysis.mockRejectedValueOnce(new Error("analysis unavailable"));
+    const owned = { kind: "ingest" as const, jobId: "j-skip-read", owner: "alice" };
+    const res = await enqueueOrInline("j-skip-read", owned, async () => ({
+      primarySlug: "existing",
+      skipped: true,
+    }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).skipped).toBe(true);
+    expect(mockedReview).toHaveBeenCalledWith({
+      owner: "alice",
+      pageSlug: "existing",
+      jobId: "j-skip-read",
+    });
+  });
+
+  it("does not mark compile done when Review delivery is not retained", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    mockedReview.mockRejectedValueOnce(new ReviewDeliveryUnretainedError());
+    const owned = { kind: "ingest" as const, jobId: "j-unretained", owner: "alice" };
+    const res = await enqueueOrInline("j-unretained", owned, async () => ({ primarySlug: "topic" }));
+    expect(res.status).toBe(200);
+    expect(mockedUpdate).toHaveBeenCalledWith("j-unretained", {
+      status: "failed",
+      error: "Review delivery was not retained",
+      slug: "topic",
+    });
+    expect(mockedUpdate).not.toHaveBeenCalledWith(
+      "j-unretained",
+      expect.objectContaining({ status: "done" }),
+    );
+  });
+
+  it("keeps a successful compile done when Review delivery fails", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    mockedReview.mockRejectedValueOnce(new Error("review unavailable"));
+    const owned = { kind: "ingest" as const, jobId: "j-review-fail", owner: "alice" };
+    const res = await enqueueOrInline("j-review-fail", owned, async () => ({ primarySlug: "topic" }));
+    expect(res.status).toBe(200);
+    expect(mockedUpdate).toHaveBeenCalledWith("j-review-fail", {
+      status: "done",
+      slug: "topic",
+    });
   });
 });

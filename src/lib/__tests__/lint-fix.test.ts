@@ -24,6 +24,16 @@ vi.mock("../lifecycle", () => ({
     removedFromIndex: true,
     strippedBacklinksFrom: [],
   })),
+  pruneStaleIndexEntry: vi.fn(async (slug: string) => {
+    const { listWikiPages, updateIndex, appendToLog } = await import("../wiki");
+    const index = await listWikiPages();
+    if (!index.some((entry) => entry.slug === slug)) {
+      return { removed: false };
+    }
+    await updateIndex(index.filter((entry) => entry.slug !== slug));
+    await appendToLog("edit", slug, `auto-fix: removed stale index entry for ${slug}`);
+    return { removed: true };
+  }),
 }));
 
 vi.mock("../llm", () => ({
@@ -60,6 +70,7 @@ import {
   fixMissingConceptPage,
   fixStalePage,
   fixUnmigratedPage,
+  fixBrokenLink,
   fixLintIssue,
   FixValidationError,
   FixNotFoundError,
@@ -853,6 +864,17 @@ describe("fixLintIssue", () => {
     // cross-ref handler ran instead.
     expect(written.content).not.toContain("## Related");
     expect(written.content).toContain("[a live one](tgt.md)");
+    expect(mockedReadWikiPage).toHaveBeenCalledWith("src", { fresh: true, strict: true });
+    expect(written.expectedContent).toBe(
+      "# Src\n\nSee [the target](gone.md) and [a live one](tgt.md).",
+    );
+  });
+
+  it("fails closed when fixBrokenLink cannot read fresh source bytes", async () => {
+    mockedReadWikiPage.mockRejectedValue(new Error("source read unavailable"));
+    await expect(fixBrokenLink("src", "gone")).rejects.toThrow("source read unavailable");
+    expect(mockedReadWikiPage).toHaveBeenCalledWith("src", { fresh: true, strict: true });
+    expect(mockedWriteWikiPageWithSideEffects).not.toHaveBeenCalled();
   });
 
   it("drops a dangling [[slug]] when fixing a broken-link", async () => {

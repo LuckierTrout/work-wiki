@@ -1128,14 +1128,14 @@ function PreviewPane({
             {typeof page?.sourceCount === "number" && (
               <p className="wb-preview-fm-row">sources: {page.sourceCount}</p>
             )}
-            {previewDisputedCopy(payload?.disputed) && (
-              <p className="wb-preview-fm-row">{previewDisputedCopy(payload?.disputed)}</p>
-            )}
           </>
         ) : (
           <p className="wb-preview-fm-row">
             <code className="wb-preview-path">{selection.path}</code>
           </p>
+        )}
+        {previewDisputedCopy(payload?.disputed) && (
+          <p className="wb-preview-fm-row">{previewDisputedCopy(payload?.disputed)}</p>
         )}
         {selection.kind === "file" && workbenchSourcePath(selection.path) && (
           <MarkMeetingControl path={selection.path} readOnly={readOnly} />
