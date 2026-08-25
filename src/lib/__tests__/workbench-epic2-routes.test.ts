@@ -286,7 +286,7 @@ describe("POST /api/workbench/activity", () => {
       content?: string;
     };
     expect(task.sourcePath).toBe("raw/sources/meet/abc.md");
-    expect(task.content).toBe("# stored source\n");
+    expect(task.content).toBeUndefined();
   });
 
   it("retries a failed embed job as vector-on backfill", async () => {

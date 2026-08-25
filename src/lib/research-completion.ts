@@ -9,6 +9,7 @@ import {
 import { writeWikiPageWithSideEffects } from "./lifecycle";
 import { logger } from "./logger";
 import { saveRawSourceFor } from "./raw";
+import { withFileLock } from "./lock";
 import {
   deleteResearchProject,
   getResearchProject,
@@ -23,7 +24,7 @@ import { sourceSha256 } from "./source-sha256";
 import { buildSourceEntry, serializeSources } from "./sources";
 import { getStorage } from "./storage";
 import { enqueueTask } from "./tasks";
-import { tenantForOwner, validateTenant } from "./wiki";
+import { readWikiPage, tenantForOwner, validateTenant } from "./wiki";
 
 /**
  * Durable Page / Source / Ingest completion.
@@ -38,7 +39,16 @@ import { tenantForOwner, validateTenant } from "./wiki";
 export interface FetchedSource {
   url: string;
   title: string;
-  text: string;
+  text?: string;
+}
+
+export interface ResearchOutboxSource {
+  url: string;
+  title: string;
+  slug: string;
+  sha: string;
+  sourcePath: string;
+  length: number;
 }
 
 interface ResearchOutbox {
@@ -47,7 +57,8 @@ interface ResearchOutbox {
   title: string;
   synthesis: string;
   thinking: string[];
-  sources: FetchedSource[];
+  /** Durable references only. Full bodies live in immutable Source snapshots. */
+  sources: ResearchOutboxSource[];
   evidence: Array<{ url: string; title: string; snippet?: string; query?: string }>;
   /**
    * True only after this run won the Page-write claim. An unclaimed outbox
@@ -91,9 +102,65 @@ async function clearPageWrittenMarker(owner: string, id: string): Promise<void> 
 export async function saveResearchOutbox(
   owner: string,
   id: string,
-  outbox: ResearchOutbox,
+  outbox: Omit<ResearchOutbox, "sources"> & { sources: Array<ResearchOutboxSource | FetchedSource> },
 ): Promise<void> {
-  await getStorage().writeFile(outboxPath(owner, id), JSON.stringify(outbox));
+  const sources: ResearchOutboxSource[] = [];
+  for (const source of outbox.sources) {
+    if ("sourcePath" in source) {
+      sources.push(source);
+      continue;
+    }
+    sources.push(await persistResearchSource(owner, source));
+  }
+  await getStorage().writeFile(outboxPath(owner, id), JSON.stringify({ ...outbox, sources }));
+}
+
+/** Stage a fetched body outside the Source tree until synthesis succeeds. */
+export async function stageResearchSource(
+  owner: string,
+  projectId: string,
+  source: FetchedSource,
+): Promise<ResearchOutboxSource> {
+  if (typeof source.text !== "string") throw new Error(`Source body missing for ${source.url}`);
+  const slug = researchSourceSlug(source.url);
+  if (!slug) throw new Error(`Invalid research Source URL: ${source.url}`);
+  const sha = await sourceSha256(source.text);
+  const sourcePath = `${outboxDir(owner)}/staging-${projectId}-${slug}-${sha}.md`;
+  await getStorage().writeFile(sourcePath, source.text);
+  return { url: source.url, title: source.title, slug, sha, sourcePath, length: source.text.length };
+}
+
+export async function clearResearchStaging(
+  sources: readonly Partial<ResearchOutboxSource>[],
+): Promise<void> {
+  for (const source of sources) {
+    if (!source.sourcePath?.includes("/research-outbox/staging-")) continue;
+    try {
+      await getStorage().deleteFile(source.sourcePath);
+    } catch (error) {
+      if (!isEnoent(error)) logger.warn("research", `staging cleanup skipped for ${source.sourcePath}`, error);
+    }
+  }
+}
+
+/** Spill one fetched body to its immutable Source snapshot. */
+export async function persistResearchSource(
+  owner: string,
+  source: FetchedSource,
+): Promise<ResearchOutboxSource> {
+  if (typeof source.text !== "string") throw new Error(`Source body missing for ${source.url}`);
+  const slug = researchSourceSlug(source.url);
+  if (!slug) throw new Error(`Invalid research Source URL: ${source.url}`);
+  const sha = await sourceSha256(source.text);
+  await saveRawSourceFor(slug, sha, source.text, { owner });
+  return {
+    url: source.url,
+    title: source.title,
+    slug,
+    sha,
+    sourcePath: `raw/sources/${slug}/${sha}.md`,
+    length: source.text.length,
+  };
 }
 
 export async function deleteResearchOutbox(owner: string, id: string): Promise<void> {
@@ -186,18 +253,7 @@ export async function researchIngestJobId(
 async function completionSourcesFromOutbox(
   outbox: ResearchOutbox,
 ): Promise<ResearchCompletionSource[]> {
-  const sources: ResearchCompletionSource[] = [];
-  for (const source of outbox.sources) {
-    const slug = researchSourceSlug(source.url);
-    if (!slug) continue;
-    sources.push({
-      url: source.url,
-      title: source.title,
-      slug,
-      sha: await sourceSha256(source.text),
-    });
-  }
-  return sources;
+  return outbox.sources.map(({ url, title, slug, sha }) => ({ url, title, slug, sha }));
 }
 
 export function researchWriteClaimIsFresh(
@@ -220,11 +276,15 @@ function startWriteClaimHeartbeat(owner: string, id: string, claimId: string): (
   return () => clearInterval(timer);
 }
 
-async function writeResearchPage(owner: string, outbox: ResearchOutbox): Promise<void> {
-  const body = serializeFrontmatter(
+function researchPageBody(owner: string, outbox: ResearchOutbox): string {
+  return serializeFrontmatter(
     researchFrontmatter(owner, outbox.evidence, outbox.wikiId),
     outbox.synthesis,
   );
+}
+
+async function writeResearchPage(owner: string, outbox: ResearchOutbox): Promise<void> {
+  const body = researchPageBody(owner, outbox);
   await writeWikiPageWithSideEffects({
     slug: outbox.pageSlug,
     title: outbox.title,
@@ -232,6 +292,10 @@ async function writeResearchPage(owner: string, outbox: ResearchOutbox): Promise
     summary: `Research brief from ${outbox.sources.length} web sources.`,
     logOp: "other",
     author: "research-agent",
+    // A recovery must never overwrite an owner edit. The project-specific
+    // slug is a create boundary; exact-content recovery is handled before this
+    // call and an unrelated existing Page is a hard conflict.
+    createOnly: true,
     crossRefSource: outbox.synthesis,
     logDetails: ({ updatedSlugs }) =>
       `Deep Research wrote ${outbox.pageSlug} from ${outbox.sources.length} sources${
@@ -251,7 +315,7 @@ async function writeResearchPage(owner: string, outbox: ResearchOutbox): Promise
 export async function commitResearchPage(
   owner: string,
   id: string,
-  outbox: ResearchOutbox,
+  input: Omit<ResearchOutbox, "sources"> & { sources: Array<ResearchOutboxSource | FetchedSource> },
 ): Promise<ResearchProject | null> {
   const existing = await getResearchProject(owner, id);
   if (!existing) return null;
@@ -265,7 +329,9 @@ export async function commitResearchPage(
     return null;
   }
 
-  await saveResearchOutbox(owner, id, { ...outbox, claimed: false });
+  await saveResearchOutbox(owner, id, { ...input, claimed: false });
+  const outbox = await loadResearchOutbox(owner, id);
+  if (!outbox) throw new Error("Research outbox could not be persisted");
   const afterSave = await getResearchProject(owner, id);
   if (!afterSave) {
     await deleteResearchOutbox(owner, id);
@@ -341,31 +407,57 @@ export async function commitResearchPage(
 
   const stopHeartbeat = startWriteClaimHeartbeat(owner, id, claimId);
   try {
-    const latest = await getResearchProject(owner, id);
-    if (!latest || latest.completion?.writeClaimId !== claimId) return latest;
-    if (latest.deleteRequested) {
+    const authorized = await mutateResearchProject(owner, id, (project) => {
+      if (project.completion?.writeClaimId !== claimId) return null;
+      if (project.cancelRequested || project.status === "cancelled" || project.deleteRequested) {
+        return null;
+      }
+      project.completion.writeAuthorizedAt = new Date().toISOString();
+      return project;
+    });
+    if (!authorized) {
+      const latest = await getResearchProject(owner, id);
+      if (!latest) return null;
+      if (latest.deleteRequested) {
+        await deleteResearchOutbox(owner, id);
+        await deleteResearchProject(owner, id);
+        return null;
+      }
+      if (latest.cancelRequested || latest.status === "cancelled") {
+        const cancelled = await mutateResearchProject(owner, id, (project) => {
+          if (project.completion?.writeClaimId !== claimId) return null;
+          delete project.completion;
+          project.status = "cancelled";
+          project.progress = {
+            completedQueries: project.progress?.completedQueries ?? 0,
+            totalQueries: project.progress?.totalQueries ?? project.queries.length,
+            message: "Cancelled before the Page write.",
+          };
+          return project;
+        });
+        await deleteResearchOutbox(owner, id);
+        await clearPageWrittenMarker(owner, id);
+        return cancelled;
+      }
+      return latest;
+    }
+    if (authorized.deleteRequested) {
       await deleteResearchOutbox(owner, id);
       await deleteResearchProject(owner, id);
       return null;
     }
-    if (latest.cancelRequested || latest.status === "cancelled") {
-      const cancelled = await mutateResearchProject(owner, id, (project) => {
-        if (project.completion?.writeClaimId !== claimId) return null;
-        delete project.completion;
-        project.status = "cancelled";
-        project.progress = {
-          completedQueries: project.progress?.completedQueries ?? 0,
-          totalQueries: project.progress?.totalQueries ?? project.queries.length,
-          message: "Cancelled before the Page write.",
-        };
-        return project;
-      });
-      await deleteResearchOutbox(owner, id);
-      await clearPageWrittenMarker(owner, id);
-      return cancelled;
-    }
     if (!await pageWriteAlreadyCompleted(owner, id)) {
-      await writeResearchPage(owner, outbox);
+      const existingPage = await readWikiPage(outbox.pageSlug, { fresh: true, strict: true });
+      if (existingPage) {
+        if (existingPage.content !== researchPageBody(owner, outbox)) {
+          throw new Error(`Page "${outbox.pageSlug}" already exists with different content`);
+        }
+        // The lifecycle call completed but the process died before its receipt.
+        // Exact bytes prove this operation's immutable create landed; do not
+        // replay lifecycle side effects or overwrite a later owner edit.
+      } else {
+        await writeResearchPage(owner, outbox);
+      }
       await getStorage().writeFile(
         pageWrittenPath(owner, id),
         JSON.stringify({ completedAt: new Date().toISOString(), claimId }),
@@ -453,7 +545,7 @@ async function checkpointSource(
 async function ingestOneSource(
   owner: string,
   projectId: string,
-  source: FetchedSource,
+  source: ResearchOutboxSource,
   meta: ResearchCompletionSource,
   wikiId?: string,
 ): Promise<ResearchCompletionSource> {
@@ -485,39 +577,40 @@ async function ingestOneSource(
 async function dispatchSourceIngest(
   owner: string,
   projectId: string,
-  source: FetchedSource,
+  source: ResearchOutboxSource,
   meta: ResearchCompletionSource,
   wikiId?: string,
 ): Promise<void> {
   const jobId = meta.jobId ?? await researchIngestJobId(projectId, meta.slug, meta.sha);
-  await saveRawSourceFor(meta.slug, meta.sha, source.text, { owner });
+  const stagedPath = source.sourcePath;
+  const text = await getStorage().readFile(stagedPath);
+  await saveRawSourceFor(meta.slug, meta.sha, text, { owner });
   const sourcePath = `raw/sources/${meta.slug}/${meta.sha}.md`;
-  const existingJob = await getIngestJob(jobId);
-  if (existingJob?.status === "done" || existingJob?.status === "skipped") return;
-  if (existingJob?.status === "processing" || existingJob?.status === "retrying") return;
-  if (existingJob?.status === "queued" && ingestJobIsFresh(existingJob)) {
-    return;
-  }
-  if (!existingJob) {
-    const minted = await createIngestJobIfAbsent({
-      jobId,
-      owner,
-      title: source.title || source.url,
-      url: source.url,
-      sourceRel: sourcePath,
-      sourceType: "url",
-      contentSha256: meta.sha,
-      ...(wikiId ? { wikiId } : {}),
-    });
-    if (!minted.created) return;
-  }
-  if (existingJob?.status === "failed" || existingJob?.status === "queued") {
-    await updateIngestJob(jobId, { status: "queued", error: undefined });
-  }
-  const title = source.title || source.url;
-  let enqueued: boolean;
-  try {
-    enqueued = await enqueueTask({
+  await withFileLock(`research-ingest-dispatch:${jobId}`, async () => {
+    const existingJob = await getIngestJob(jobId);
+    if (existingJob?.status === "done" || existingJob?.status === "skipped") return;
+    if (existingJob?.status === "processing" || existingJob?.status === "retrying") return;
+    if (existingJob?.status === "queued" && existingJob.stage === "queued" && ingestJobIsFresh(existingJob)) return;
+    if (!existingJob) {
+      const minted = await createIngestJobIfAbsent({
+        jobId,
+        owner,
+        title: source.title || source.url,
+        url: source.url,
+        sourceRel: sourcePath,
+        sourceType: "url",
+        contentSha256: meta.sha,
+        stage: "dispatch-pending",
+        ...(wikiId ? { wikiId } : {}),
+      });
+      if (!minted.created) return;
+    } else if (existingJob.status === "failed") {
+      await updateIngestJob(jobId, { status: "queued", stage: "dispatch-pending", error: undefined });
+    }
+    const title = source.title || source.url;
+    let enqueued: boolean;
+    try {
+      enqueued = await enqueueTask({
       kind: "ingest",
       title,
       owner,
@@ -529,15 +622,19 @@ async function dispatchSourceIngest(
       sourceUrl: source.url,
       sourcePath,
       contentSha256: meta.sha,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await updateIngestJob(jobId, { status: "failed", error: message }).catch(() => undefined);
-    throw error;
-  }
-  if (!enqueued) {
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await updateIngestJob(jobId, { status: "failed", error: message }).catch(() => undefined);
+      throw error;
+    }
+    if (enqueued) {
+      await updateIngestJob(jobId, { status: "queued", stage: "queued", error: undefined });
+      return;
+    }
     const { ingest } = await import("./ingest");
-    const result = await ingest(title, source.text, {
+    try {
+      const result = await ingest(title, text, {
       owner,
       author: owner,
       triggeredBy: owner,
@@ -547,14 +644,19 @@ async function dispatchSourceIngest(
       sourcePath,
       contentSha256: meta.sha,
       jobId,
-    });
-    await updateIngestJob(jobId, {
-      status: result.skipped ? "skipped" : "done",
-      stage: "complete",
-      slug: result.primarySlug,
-      error: undefined,
-    });
-  }
+      });
+      await updateIngestJob(jobId, {
+        status: result.skipped ? "skipped" : "done",
+        stage: "complete",
+        slug: result.primarySlug,
+        error: undefined,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await updateIngestJob(jobId, { status: "failed", error: message }).catch(() => undefined);
+      throw error;
+    }
+  });
 }
 
 /**
@@ -594,8 +696,15 @@ export async function drainResearchOutbox(
     current = committed;
   }
 
-  const completion = current.completion;
+    const completion = current.completion;
   if (!completion) return current;
+
+  if (current.deleteRequested) {
+    await deleteResearchOutbox(owner, id);
+    await clearPageWrittenMarker(owner, id);
+    await deleteResearchProject(owner, id);
+    return null;
+  }
 
   const byUrl = new Map(outbox.sources.map((source) => [source.url, source]));
   const nextSources: ResearchCompletionSource[] = [];
@@ -647,6 +756,7 @@ export async function drainResearchOutbox(
 
   const done = updated?.completion?.phase === "done";
   if (done) {
+    await clearResearchStaging(outbox.sources);
     await deleteResearchOutbox(owner, id);
     await clearPageWrittenMarker(owner, id);
     if (updated.deleteRequested || current.deleteRequested) {
@@ -693,6 +803,7 @@ async function drainOrphanOutbox(
       }
     }
     if (failed === 0) {
+      await clearResearchStaging(outbox.sources);
       await deleteResearchOutbox(owner, id);
       try {
         await getStorage().deleteFile(`${outboxPath(owner, id)}.page-written`);

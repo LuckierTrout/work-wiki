@@ -162,6 +162,14 @@ export function restrictResearchCitations(
   for (const edit of ordered) {
     next = `${next.slice(0, edit.start)}${edit.replacement}${next.slice(edit.end)}`;
   }
+  // Replacement labels are data too. A model can put a second invented URL in
+  // the visible label/alt text, which structural removal would otherwise
+  // reintroduce after the mdast walk. A final whole-output pass also catches
+  // permissive raw HTML such as `href = "…"` and image `src` attributes.
+  next = next.replace(/https?:\/\/[^\s<>"']+/gi, (candidate) => {
+    const [href, suffix] = splitTrailingPunctuation(candidate);
+    return isAllowed(href, allowed) ? candidate : suffix;
+  });
   return next.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
 }
 

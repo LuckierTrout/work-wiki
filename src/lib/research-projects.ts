@@ -88,6 +88,8 @@ export interface ResearchCompletion {
   writeClaimedAt?: string;
   /** Opaque id for the isolate that currently owns {@link writeClaimedAt}. */
   writeClaimId?: string;
+  /** Atomic cancel/write linearization point immediately before lifecycle. */
+  writeAuthorizedAt?: string;
 }
 
 export interface ResearchProjectInput {

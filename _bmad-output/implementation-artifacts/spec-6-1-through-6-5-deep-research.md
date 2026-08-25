@@ -5,7 +5,7 @@ created: 2026-08-24
 status: done
 stepsCompleted: [1, 3, 4]
 followup_review_recommended: true
-review_loop_iteration: 1
+review_loop_iteration: 2
 baseline_revision: 6df2c30573d0a2dcbeabb3a0f65315d82a7698d9
 context:
   - AGENTS.md
@@ -240,6 +240,19 @@ Context7 before changing Tavily/SerpApi/SearXNG request shapes (`/websites/tavil
 - [x] [Review][Patch] Fence Activity polling so a late response from the prior Wiki cannot replace the current Wiki's jobs [`src/components/workbench/ActivityDock.tsx:37`]
 - [x] [Review][Patch] Fail closed when the durable research lease contains malformed active entries [`src/lib/research-concurrency.ts:76`]
 - [x] [Review][Patch] Make Page-write recovery idempotent across a crash between lifecycle write and completion checkpoint [`src/lib/research-completion.ts:314`]
+- [x] [Review][Patch] Keep a duplicate delivery from releasing the project-scoped lease held by the sibling worker that won the collecting claim [`src/lib/research-runtime.ts:800`]
+- [x] [Review][Patch] Persist a distinct dispatch-pending Ingest stage so recovery queues a job created before a process crash [`src/lib/research-completion.ts:550`]
+- [x] [Review][Patch] Make the research Page an immutable create and recover exact bytes without replaying lifecycle or overwriting a later owner edit [`src/lib/research-completion.ts:250`]
+- [x] [Review][Patch] Linearize cancellation against Page authorization in the project CAS, and stop Source delivery after DELETE [`src/lib/research-completion.ts:390`]
+- [x] [Review][Patch] Bound the mapped-evidence reduce prompt and check cancellation between every paid condensation/final-synthesis call [`src/lib/research-runtime.ts:700`]
+- [x] [Review][Patch] Rescan citation replacement labels and permissive raw HTML so invented URLs cannot survive structural removal [`src/lib/research-text.ts:160`]
+- [x] [Review][Patch] Spill fetched bodies outside the Source tree, reload them one at a time, and promote them only after successful synthesis so neither Worker memory nor the durable outbox holds the full stack [`src/lib/research-runtime.ts:525`]
+- [x] [Review][Patch] Raise task-consumer concurrency above the kernel three-run lease while retaining one lane for unrelated queue work [`workers/task-consumer/wrangler.jsonc:31`]
+- [x] [Review][Patch] Queue only stored Source paths on Activity Retry; keep full bytes in the inline fallback closure [`src/app/api/workbench/activity/route.ts:124`]
+- [x] [Review][Patch] Expose Start/Retry for a draft stranded by create-then-run transport failure [`src/components/workbench/ResearchCanvas.tsx:420`]
+- [x] [Review][Patch] Fence mutation-triggered refreshes as well as polls when the active Wiki changes [`src/components/workbench/ActivityDock.tsx:140`]
+- [x] [Review][Patch] Surface malformed lease admission as a failed project instead of leaving an unstartable Waiting row [`src/lib/research-runtime.ts:780`]
+- [x] [Review][Patch] Retry an active queue delivery and reclaim it only after its durable lease and abandonment window expire [`src/app/api/tasks/run/route.ts:253`]
 - [x] [Review][Defer] Legacy manual `sourceUrls` are accepted but automated runs replace them — deferred, pre-existing [`src/lib/research-runtime.ts:682`]
 - [x] [Review][Defer] The shared kernel URL guard does not resolve DNS before fetch, leaving a DNS-rebinding SSRF gap — deferred, pre-existing [`src/lib/url-safety.ts:95`]
 
@@ -276,6 +289,14 @@ None that block implementation. If an assumption is wrong, record the override i
 - independent verdict: pending against the final committed SHA
 - release gates: pending against that same SHA
 - acceptance effect: none yet; `followup_review_recommended` remains true and the Epic 6 retrospective remains rejected until both pending proof sets pass
+
+### 2026-08-24 — Exact-head review remediation pass 2
+
+- patch: 13 additional full-stack findings applied with forced race, crash-recovery, cancellation, URL-fence, prompt-bound, and Source-reference tests
+- defer: the same 2 pre-existing items only; no new deferral was added
+- independent verdict: pending against the replacement committed SHA
+- release gates: pending against that same replacement SHA
+- acceptance effect: none yet; the prior green gates at `d0c6833d` do not transfer to the replacement SHA
 
 ### 2026-08-24 — Review pass
 - intent_gap: 0

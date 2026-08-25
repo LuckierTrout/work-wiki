@@ -34,6 +34,7 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestSequence = useRef(0);
+  const wikiScope = useRef(wikiId);
 
   const refresh = useCallback(async () => {
     const sequence = ++requestSequence.current;
@@ -53,6 +54,7 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
   }, [wikiId]);
 
   useEffect(() => {
+    wikiScope.current = wikiId;
     requestSequence.current += 1;
     setRows([]);
   }, [wikiId]);
@@ -130,6 +132,7 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
                             if (retryingId === row.jobId) return;
                             setRetryingId(row.jobId);
                             setError(null);
+                            const originWikiId = wikiScope.current;
                             void send(ACTIVITY_ROUTE, {
                               method: "POST",
                               body: JSON.stringify({
@@ -137,7 +140,9 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
                                 jobId: row.jobId,
                               }),
                             })
-                              .then(() => refresh())
+                              .then(() => {
+                                if (wikiScope.current === originWikiId) return refresh();
+                              })
                               .catch((cause: unknown) => {
                                 setError(
                                   cause instanceof Error
@@ -172,6 +177,7 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
         }}
         onConfirm={() => {
           if (!cancelling) return;
+          const originWikiId = wikiScope.current;
           setBusy(true);
           setError(null);
           void send(ACTIVITY_ROUTE, {
@@ -180,7 +186,7 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
           })
             .then(() => {
               setCancelId(null);
-              return refresh();
+              if (wikiScope.current === originWikiId) return refresh();
             })
             .catch((cause: unknown) => {
               setError(cause instanceof Error ? cause.message : "Cancel failed.");

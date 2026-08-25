@@ -49,6 +49,7 @@ vi.mock("../ingest-jobs", () => ({
     created: true,
   })),
   getIngestJob: vi.fn(async () => null),
+  updateIngestJob: vi.fn(async () => null),
 }));
 vi.mock("../tasks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../tasks")>();
@@ -104,7 +105,7 @@ import {
   runResearchProject,
 } from "../research-runtime";
 import { loadPageConventions } from "../schema";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 import { enqueueTask, parseTask } from "../tasks";
 import type { IndexEntry } from "../types";
 import { addToVault } from "../vault";
@@ -159,7 +160,11 @@ beforeEach(async () => {
   mockedStream.mockRejectedValue(new Error("stream unavailable in unit tests"));
   mockedWritePage.mockImplementation(async ({ slug }) => ({ slug, updatedSlugs: [] }));
   mockedSaveRaw.mockReset();
-  mockedSaveRaw.mockResolvedValue("");
+  mockedSaveRaw.mockImplementation(async (slug, sha, content) => {
+    const rel = `raw/sources/${slug}/${sha}.md`;
+    await getStorage().writeFile(rel, content);
+    return rel;
+  });
   mockedSearch.mockResolvedValue([
     {
       title: "Launch brief",
@@ -371,6 +376,30 @@ describe("deep research run — success", () => {
     expect(mapPrompts.join("")).toContain("BEGIN-");
     expect(mapPrompts.join("")).toContain("-END");
     expect(mockedLLM.mock.calls.at(-1)?.[1]).toContain("condensed evidence");
+    expect(mockedLLM.mock.calls.at(-1)?.[1].length).toBeLessThanOrEqual(101_000);
+  });
+
+  it("stops chunk reduction before another paid call after cancellation", async () => {
+    mockedSearch.mockResolvedValue([{
+      title: "Large source",
+      url: "https://example.com/large",
+      snippet: "s",
+      content: `BEGIN-${"x".repeat(300_000)}-END`,
+    }]);
+    const created = await project();
+    mockedLLM.mockImplementation(async (system) => {
+      if (system.startsWith("Extract only evidence")) {
+        await cancelResearchProject("alice", created.id);
+        return "first condensed part";
+      }
+      return "# Launch evidence\n\nA brief.";
+    });
+
+    const stopped = await runResearchProject("alice", created.id);
+
+    expect(stopped.status).toBe("cancelled");
+    expect(mockedLLM).toHaveBeenCalledTimes(1);
+    expect(mockedWritePage).not.toHaveBeenCalled();
   });
 
   it("gives its slot back", async () => {
@@ -950,7 +979,7 @@ describe("deep research — remediations", () => {
     expect(await activeResearchCount("alice")).toBe(0);
   });
 
-  it("keeps the Page and tells the truth when Source ingest fails after the write", async () => {
+  it("keeps the Page and reports pending Source promotion after a storage failure", async () => {
     mockedSaveRaw.mockRejectedValue(new Error("disk full"));
     const created = await project();
 
@@ -958,9 +987,8 @@ describe("deep research — remediations", () => {
 
     expect(mockedWritePage).toHaveBeenCalledTimes(1);
     expect(finished.status).toBe("complete");
-    expect(finished.progress?.message).toMatch(/still pending|Wrote/);
+    expect(finished.completion?.phase).toBe("sources");
     expect(finished.error).toMatch(/did not ingest|Page was written/);
-    expect(finished.progress?.message).not.toMatch(/Nothing was written/);
   });
 
   it("does not claim the Page was written when the lifecycle writer fails", async () => {

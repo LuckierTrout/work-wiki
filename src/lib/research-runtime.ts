@@ -7,16 +7,20 @@ import {
   renewResearchSlot,
   MAX_CONCURRENT_RESEARCH,
   RESEARCH_SLOT_TTL_MS,
+  type ResearchSlotGrant,
 } from "./research-concurrency";
 import {
   commitResearchPage,
   deleteResearchOutbox,
   drainResearchOutbox,
   evidenceFromFetched,
+  stageResearchSource,
+  clearResearchStaging,
   listResearchOutboxIds,
   loadResearchOutbox,
   researchWriteClaimIsFresh,
   type FetchedSource,
+  type ResearchOutboxSource,
 } from "./research-completion";
 import {
   deleteResearchProject,
@@ -79,6 +83,17 @@ export const RESEARCH_SOURCE_FETCH_MAX = 8;
 // window. Larger evidence is mapped in ~20k-token pieces before synthesis.
 const RESEARCH_EVIDENCE_DIRECT_MAX = 100_000;
 const RESEARCH_EVIDENCE_CHUNK_MAX = 80_000;
+
+class ResearchCancelledError extends Error {
+  constructor() {
+    super("Research cancelled");
+    this.name = "ResearchCancelledError";
+  }
+}
+
+async function requireResearchActive(owner: string, id: string): Promise<void> {
+  if (await cancelled(owner, id)) throw new ResearchCancelledError();
+}
 
 /**
  * The statuses that mean "a run is already working on this project".
@@ -234,6 +249,14 @@ export async function queueResearchProject(
 
 export async function cancelResearchProject(owner: string, id: string): Promise<ResearchProject> {
   const updated = await mutateResearchProject(owner, id, (project) => {
+    if (project.completion?.phase === "page" && project.completion.writeAuthorizedAt) {
+      project.progress = {
+        completedQueries: project.progress?.completedQueries ?? 0,
+        totalQueries: project.progress?.totalQueries ?? Math.max(1, project.queries.length),
+        message: "The Page commit has already started.",
+      };
+      return project;
+    }
     project.cancelRequested = true;
     const queuedIdle = project.status === "queued" && !project.completion;
     if (queuedIdle) project.status = "cancelled";
@@ -513,9 +536,11 @@ async function fetchSources(
   id: string,
   results: readonly (ResearchProjectResult & { content?: string })[],
   provider: ResearchProvider,
-): Promise<FetchedSource[]> {
+): Promise<Array<ResearchOutboxSource & { text?: string }>> {
   const targets = results.slice(0, RESEARCH_SOURCE_FETCH_MAX);
-  const fetched: FetchedSource[] = [];
+  const fetched: Array<ResearchOutboxSource & { text?: string }> = [];
+  let retainedLength = 0;
+  let spillOnly = false;
   for (let index = 0; index < targets.length; index += 1) {
     if (await cancelled(owner, id)) return fetched;
     const result = targets[index];
@@ -529,7 +554,17 @@ async function fetchSources(
     const existing = result.content?.trim();
     if (existing) {
       // Already in hand from the provider (Tavily `raw_content`): no fetch.
-      fetched.push({ url: result.url, title: result.title, text: existing });
+      const stored = await stageResearchSource(owner, id, {
+        url: result.url,
+        title: result.title,
+        text: existing,
+      });
+      retainedLength += existing.length;
+      if (retainedLength > RESEARCH_EVIDENCE_DIRECT_MAX) {
+        spillOnly = true;
+        for (const prior of fetched) delete prior.text;
+      }
+      fetched.push({ ...stored, ...(spillOnly ? {} : { text: existing }) });
       continue;
     }
     const extracted = await extractResearchSourceText(result.url);
@@ -539,11 +574,17 @@ async function fetchSources(
         `Could not read source ${position} of ${targets.length}; skipping it.`);
       continue;
     }
-    fetched.push({
+    const stored = await stageResearchSource(owner, id, {
       url: result.url,
       title: extracted.title || result.title,
       text: extracted.content,
     });
+    retainedLength += extracted.content.length;
+    if (retainedLength > RESEARCH_EVIDENCE_DIRECT_MAX) {
+      spillOnly = true;
+      for (const prior of fetched) delete prior.text;
+    }
+    fetched.push({ ...stored, ...(spillOnly ? {} : { text: extracted.content }) });
     await renewResearchSlot(owner, id);
   }
   logger.info("research", `${provider} run ${id} read ${fetched.length}/${targets.length} sources`);
@@ -628,6 +669,7 @@ async function synthesizeResearchBrief(
     let raw = "";
     let lastFlush = 0;
     for await (const chunk of stream.textStream) {
+      await requireResearchActive(owner, id);
       raw += chunk;
       const now = Date.now();
       if (now - lastFlush < 400) continue;
@@ -642,7 +684,9 @@ async function synthesizeResearchBrief(
       }
     }
     return raw || await stream.text;
-  } catch {
+  } catch (error) {
+    if (error instanceof ResearchCancelledError) throw error;
+    await requireResearchActive(owner, id);
     return callLLM(system, user, { maxOutputTokens: 7_000 });
   }
 }
@@ -652,22 +696,38 @@ async function researchEvidenceForSynthesis(
   id: string,
   question: string,
   provider: ResearchProvider,
-  sources: readonly FetchedSource[],
+  sources: readonly (FetchedSource & Partial<ResearchOutboxSource>)[],
 ): Promise<string> {
-  const directLength = sources.reduce((total, source) => total + source.text.length, 0);
+  const loadText = async (source: FetchedSource & Partial<ResearchOutboxSource>): Promise<string> => {
+    if (typeof source.text === "string") return source.text;
+    if (!source.sourcePath) throw new Error(`Source body missing for ${source.url}`);
+    const { getStorage } = await import("./storage");
+    return getStorage().readFile(source.sourcePath);
+  };
+  const directLength = sources.reduce(
+    (total, source) => total + (source.length ?? source.text?.length ?? 0),
+    0,
+  );
   if (directLength <= RESEARCH_EVIDENCE_DIRECT_MAX) {
-    return sources.map((source, index) => wrapUntrusted(
-      `[${index + 1}] ${source.title}\nURL: ${source.url}\n${source.text}`,
-      { source: `web-research:${provider}` },
-    )).join("\n\n");
+    const direct: string[] = [];
+    for (let index = 0; index < sources.length; index += 1) {
+      const source = sources[index];
+      direct.push(wrapUntrusted(
+        `[${index + 1}] ${source.title}\nURL: ${source.url}\n${await loadText(source)}`,
+        { source: `web-research:${provider}` },
+      ));
+    }
+    return direct.join("\n\n");
   }
 
   const summaries: string[] = [];
   for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
     const source = sources[sourceIndex];
-    const chunks = Math.max(1, Math.ceil(source.text.length / RESEARCH_EVIDENCE_CHUNK_MAX));
+    const sourceText = await loadText(source);
+    const chunks = Math.max(1, Math.ceil(sourceText.length / RESEARCH_EVIDENCE_CHUNK_MAX));
     for (let chunkIndex = 0; chunkIndex < chunks; chunkIndex += 1) {
-      const chunk = source.text.slice(
+      await requireResearchActive(owner, id);
+      const chunk = sourceText.slice(
         chunkIndex * RESEARCH_EVIDENCE_CHUNK_MAX,
         (chunkIndex + 1) * RESEARCH_EVIDENCE_CHUNK_MAX,
       );
@@ -690,11 +750,18 @@ async function researchEvidenceForSynthesis(
       await renewResearchSlot(owner, id);
     }
   }
-  return summaries.join("\n\n");
+  await requireResearchActive(owner, id);
+  // Every byte was mapped above, but provider output is not trusted to stay
+  // within its requested token budget. Give every mapped part an equal share
+  // of the bounded reduce prompt so a huge source cannot rebuild an unbounded
+  // final synthesis request from otherwise bounded chunks.
+  const perSummary = Math.max(256, Math.floor(RESEARCH_EVIDENCE_DIRECT_MAX / summaries.length));
+  return summaries.map((summary) => summary.slice(0, perSummary)).join("\n\n")
+    .slice(0, RESEARCH_EVIDENCE_DIRECT_MAX);
 }
 
 export async function runResearchProject(owner: string, id: string): Promise<ResearchProject> {
-  const initial = await getResearchProject(owner, id);
+  let initial = await getResearchProject(owner, id);
   if (!initial) throw new Error("Research project not found");
   if (initial.status === "cancelled" || initial.cancelRequested) return initial;
   if (initial.completion && initial.completion.phase !== "done") {
@@ -703,7 +770,25 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
   if (initial.status === "complete") return initial;
 
   if (RESEARCH_IN_FLIGHT_STATUSES.includes(initial.status)) {
-    return initial;
+    if (await holdsResearchSlot(owner, id)) return initial;
+    const age = Date.now() - Date.parse(initial.updatedAt);
+    if (!Number.isFinite(age) || age < RESEARCH_ABANDONED_AFTER_MS) return initial;
+    const recovered = await updateResearchProjectIf(
+      owner,
+      id,
+      (project) => RESEARCH_IN_FLIGHT_STATUSES.includes(project.status),
+      {
+        status: "queued",
+        error: null,
+        progress: {
+          completedQueries: initial.progress?.completedQueries ?? 0,
+          totalQueries: initial.progress?.totalQueries ?? Math.max(1, initial.queries.length),
+          message: "Recovering an interrupted research run.",
+        },
+      },
+    );
+    if (!recovered) return (await getResearchProject(owner, id)) ?? initial;
+    initial = recovered;
   }
 
   let provider: ResearchProvider;
@@ -735,7 +820,27 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
     return (await getResearchProject(owner, id)) ?? initial;
   }
 
-  const grant = await acquireResearchSlot(owner, id);
+  let grant: ResearchSlotGrant;
+  try {
+    grant = await acquireResearchSlot(owner, id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failed = await updateResearchProjectIf(
+      owner,
+      id,
+      (project) => project.status === "queued" || project.status === "draft",
+      {
+        status: "failed",
+        error: message,
+        progress: {
+          completedQueries: 0,
+          totalQueries: Math.max(1, initial.queries.length || 1),
+          message: "Research admission failed. Retry after repairing the lease state.",
+        },
+      },
+    );
+    return failed ?? (await getResearchProject(owner, id)) ?? initial;
+  }
   if (!grant.granted) {
     const waiting = await updateResearchProjectIf(
       owner,
@@ -763,15 +868,22 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
     { status: "collecting" },
   );
   if (!claimed) {
-    if (grant.acquired) await releaseResearchSlot(owner, id);
     const current = await getResearchProject(owner, id);
     if (!current) throw new Error("Research project not found");
+    // A duplicate delivery may have reused our existing lease and won the
+    // collecting claim between admission and this CAS. The lease belongs to
+    // the project, not to this invocation: never release it from under an
+    // active sibling worker. Release only when no active state owns the slot.
+    if (grant.acquired && !RESEARCH_IN_FLIGHT_STATUSES.includes(current.status)) {
+      await releaseResearchSlot(owner, id);
+    }
     return current;
   }
 
   const queries = initial.queries.length > 0 ? initial.queries : [initial.question];
   let committed = false;
   let outcome: ResearchProject = claimed;
+  let stagedSources: Array<ResearchOutboxSource & { text?: string }> = [];
 
   try {
     await updateResearchProject(owner, id, {
@@ -814,6 +926,10 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       }
       collected.push(...results.map(({ content: _content, ...rest }) => ({ ...rest, query })));
       const unique = uniqueResults(collected);
+      const retained = new Set(balancedResearchResults(unique, queries).map((result) => result.url));
+      for (const url of fullText.keys()) {
+        if (!retained.has(url)) fullText.delete(url);
+      }
       await updateResearchProject(owner, id, {
         results: unique,
         sourceUrls: unique.map((result) => result.url),
@@ -836,6 +952,7 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       return text ? { ...result, content: text } : result;
     });
     const sources = await fetchSources(owner, id, withContent, provider);
+    stagedSources = sources;
     if (await cancelled(owner, id)) {
       const stopped = await updateResearchProject(owner, id, {
         status: "cancelled",
@@ -865,6 +982,7 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
     // provider output cannot overflow one model request or Worker memory.
     const evidence = await withSlotRenewal(owner, id, () =>
       researchEvidenceForSynthesis(owner, id, initial.question, provider, sources));
+    await requireResearchActive(owner, id);
     const conventions = await loadPageConventions();
     const candidates = await wikilinkCandidates(owner);
     // RENEWED ACROSS THE CALL, not before it — see `withSlotRenewal`. This is
@@ -918,6 +1036,17 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
     committed = true;
     outcome = committedPage;
   } catch (error) {
+    if (error instanceof ResearchCancelledError) {
+      const stopped = await updateResearchProject(owner, id, {
+        status: "cancelled",
+        progress: {
+          completedQueries: queries.length,
+          totalQueries: queries.length,
+          message: "Cancelled.",
+        },
+      });
+      return stopped ?? initial;
+    }
     const message = error instanceof Error ? error.message : String(error);
     const current = await getResearchProject(owner, id);
     const phase = current?.completion?.phase;
@@ -937,6 +1066,13 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
     });
     throw error;
   } finally {
+    // A failed/cancelled run must leave no Source. Successful commit promotes
+    // staging files into immutable Sources and clears them first, so this is a
+    // no-op on the happy path and crash debris cleanup otherwise.
+    const latest = await getResearchProject(owner, id).catch(() => null);
+    if (!latest?.completion && !committed) {
+      await clearResearchStaging(stagedSources).catch(() => undefined);
+    }
     await releaseResearchSlot(owner, id);
     await drainResearchQueue(owner);
   }

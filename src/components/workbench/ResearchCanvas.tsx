@@ -181,14 +181,28 @@ export function ResearchCanvas({
 
   async function cancel(id: string) {
     if (readOnly) return;
+    const originWikiId = wikiScope.current;
     try {
       await send(`/api/research/${encodeURIComponent(id)}/run`, {
         method: "POST",
         body: JSON.stringify({ action: "cancel" }),
       });
-      await load();
+      if (wikiScope.current === originWikiId) await load();
     } catch (cause) {
       setError(writeFailure(cause, "cancel Deep Research").message);
+    }
+  }
+
+  async function runExisting(id: string) {
+    if (readOnly) return;
+    const originWikiId = wikiScope.current;
+    try {
+      await send(`/api/research/${encodeURIComponent(id)}/run`, { method: "POST" });
+      if (wikiScope.current === originWikiId) await load();
+    } catch (cause) {
+      if (wikiScope.current === originWikiId) {
+        setError(writeFailure(cause, "start Deep Research").message);
+      }
     }
   }
 
@@ -268,6 +282,7 @@ export function ResearchCanvas({
                   setOpenThinking((current) => ({ ...current, [project.id]: open }))
                 }
                 onCancel={() => void cancel(project.id)}
+                onRun={() => void runExisting(project.id)}
               />
             </li>
           ))}
@@ -284,6 +299,7 @@ interface ResearchTaskProps {
   thinkingOpen: boolean;
   onToggleThinking: (open: boolean) => void;
   onCancel: () => void;
+  onRun: () => void;
 }
 
 /**
@@ -302,6 +318,7 @@ function ResearchTask({
   thinkingOpen,
   onToggleThinking,
   onCancel,
+  onRun,
 }: ResearchTaskProps) {
   const liveRef = useRef<HTMLDivElement | null>(null);
   const thinking = Array.isArray(project.thinking) ? project.thinking : [];
@@ -383,6 +400,11 @@ function ResearchTask({
       {live && !readOnly ? (
         <button type="button" className="wb-set-action" onClick={onCancel}>
           Cancel
+        </button>
+      ) : null}
+      {!live && !readOnly && ["draft", "failed", "cancelled"].includes(project.status) ? (
+        <button type="button" className="wb-set-action" onClick={onRun}>
+          {project.status === "draft" ? "Start" : "Retry"}
         </button>
       ) : null}
     </article>

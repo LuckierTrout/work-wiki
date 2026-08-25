@@ -222,8 +222,11 @@ export default {
       return;
     }
 
-    // Sequential (not Promise.all): each task triggers an LLM call in the main
-    // app; serial processing keeps us within provider rate limits.
+    // Sequential inside one batch. The queue trigger runs up to three Worker
+    // instances concurrently (wrangler.jsonc), while max_batch_size stays one.
+    // Three can exercise the kernel's per-owner research lease and one remains
+    // available for unrelated queue work; a fourth same-owner research run is
+    // still held in durable `queued` state by the kernel lease.
     for (const message of batch.messages) {
       await runTask(env, message);
     }

@@ -123,7 +123,6 @@ export async function POST(request: NextRequest) {
       const reuseAnalysis = job.jobId ? await hasIngestAnalysis(job.jobId) : false;
       const task: Task = {
         kind: "ingest",
-        content: text,
         owner: principal.handle,
         author: principal.handle,
         triggeredBy: principal.handle,

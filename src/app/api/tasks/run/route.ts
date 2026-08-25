@@ -252,6 +252,12 @@ export async function POST(req: Request) {
 
     if (task.kind === "run-research") {
       const project = await runResearchProject(task.owner, task.projectId);
+      if (project.status === "collecting" || project.status === "ready") {
+        return NextResponse.json(
+          { ok: false, error: "Research run is still active; retry delivery." },
+          { status: 409 },
+        );
+      }
       return NextResponse.json({ ok: true, project });
     }
 

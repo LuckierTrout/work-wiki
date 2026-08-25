@@ -23,6 +23,7 @@ export type IngestJobStatus =
   | "failed"
   | "skipped";
 export type IngestJobStage =
+  | "dispatch-pending"
   | "queued"
   | "extracting"
   | "analysis"
@@ -132,6 +133,7 @@ function buildIngestJob(input: {
   kind?: IngestJobKind;
   wikiId?: string;
   status?: IngestJobStatus;
+  stage?: IngestJobStage;
 }): IngestJob {
   const now = new Date().toISOString();
   const status = input.status ?? "queued";
@@ -150,7 +152,7 @@ function buildIngestJob(input: {
     ...(input.kind ? { kind: input.kind } : {}),
     ...(input.wikiId ? { wikiId: input.wikiId } : {}),
     status,
-    stage: status === "skipped" ? "complete" : "queued",
+    stage: input.stage ?? (status === "skipped" ? "complete" : "queued"),
     createdAt: now,
     updatedAt: now,
   };

@@ -17,7 +17,9 @@ import {
   loadResearchOutbox,
   researchIngestJobId,
   saveResearchOutbox,
+  researchFrontmatter,
 } from "../research-completion";
+import { createIngestJobIfAbsent } from "../ingest-jobs";
 import {
   createResearchProject,
   deleteResearchProject,
@@ -27,10 +29,14 @@ import {
 import { cancelResearchProject, retireResearchProject } from "../research-runtime";
 import { _resetStorage, getStorage } from "../storage";
 import { enqueueTask } from "../tasks";
-import { tenantForOwner } from "../wiki";
+import { saveRawSourceFor } from "../raw";
+import { tenantForOwner, writeWikiPage } from "../wiki";
+import { sourceSha256 } from "../source-sha256";
+import { serializeFrontmatter } from "../frontmatter";
 
 const mockedWritePage = vi.mocked(writeWikiPageWithSideEffects);
 const mockedEnqueue = vi.mocked(enqueueTask);
+const mockedSaveRaw = vi.mocked(saveRawSourceFor);
 
 const OUTBOX = {
   pageSlug: "research-launch-evidence",
@@ -58,6 +64,11 @@ beforeEach(async () => {
   vi.clearAllMocks();
   mockedWritePage.mockImplementation(async ({ slug }) => ({ slug, updatedSlugs: [] }));
   mockedEnqueue.mockResolvedValue(true);
+  mockedSaveRaw.mockImplementation(async (slug, sha, content) => {
+    const rel = `raw/sources/${slug}/${sha}.md`;
+    await getStorage().writeFile(rel, content);
+    return rel;
+  });
 });
 
 afterEach(async () => {
@@ -80,19 +91,22 @@ describe("research completion outbox", () => {
     expect(mockedWritePage).not.toHaveBeenCalled();
   });
 
-  it("keeps the Page when cancel lands after the commit claim", async () => {
+  it("linearizes Page authorization before a later cancel request", async () => {
     const created = await createResearchProject("alice", {
       title: "Launch evidence",
       question: "What supports the launch date?",
     });
+    const cancelsDuringWrite: Awaited<ReturnType<typeof cancelResearchProject>>[] = [];
     mockedWritePage.mockImplementation(async ({ slug }) => {
-      await cancelResearchProject("alice", created.id);
+      cancelsDuringWrite.push(await cancelResearchProject("alice", created.id));
       return { slug, updatedSlugs: [] };
     });
 
     const committed = await commitResearchPage("alice", created.id, OUTBOX);
 
     expect(mockedWritePage).toHaveBeenCalledTimes(1);
+    expect(cancelsDuringWrite[0]?.cancelRequested).not.toBe(true);
+    expect(cancelsDuringWrite[0]?.progress?.message).toMatch(/commit has already started/i);
     expect(committed?.completion?.phase).toBe("sources");
     expect(committed?.pageSlugs).toContain("research-launch-evidence");
   });
@@ -158,6 +172,38 @@ describe("research completion outbox", () => {
     expect(ingest[0]).not.toHaveProperty("content");
     expect((await getResearchProject("alice", created.id))?.completion?.sources[0]?.jobId)
       .toBe(expected);
+  });
+
+  it("dispatches a durable dispatch-pending job after a crash before queue send", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    const sha = await sourceSha256(OUTBOX.sources[0].text);
+    const slug = "research-example-com-launch-brief";
+    const jobId = await researchIngestJobId(created.id, slug, sha);
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "sources",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [{ url: OUTBOX.sources[0].url, title: OUTBOX.sources[0].title, slug, sha, jobId }],
+      },
+    });
+    await createIngestJobIfAbsent({
+      jobId,
+      owner: "alice",
+      title: OUTBOX.sources[0].title,
+      sourceRel: `raw/sources/${slug}/${sha}.md`,
+      sourceType: "url",
+      stage: "dispatch-pending",
+    });
+
+    await drainResearchOutbox("alice", created.id);
+
+    expect(mockedEnqueue).toHaveBeenCalledTimes(1);
+    expect(mockedEnqueue).toHaveBeenCalledWith(expect.objectContaining({ jobId }));
+    expect((await getResearchProject("alice", created.id))?.completion?.phase).toBe("done");
   });
 
   it("does not let a concurrent drain un-ingest a source the other drain finished", async () => {
@@ -395,6 +441,33 @@ describe("research completion outbox", () => {
       `tenants/${tenantForOwner("alice")}/research-outbox/${created.id}.json.page-written`,
       JSON.stringify({ completedAt: new Date().toISOString(), claimId: "dead-writer" }),
     );
+
+    const resumed = await commitResearchPage("alice", created.id, OUTBOX);
+
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(resumed?.completion?.phase).toBe("sources");
+  });
+
+  it("recognizes exact Page bytes when lifecycle finished but its receipt did not", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    const body = serializeFrontmatter(
+      researchFrontmatter("alice", OUTBOX.evidence),
+      OUTBOX.synthesis,
+    );
+    await writeWikiPage(OUTBOX.pageSlug, body, undefined, undefined, tenantForOwner("alice"));
+    await writeWikiPage(OUTBOX.pageSlug, body);
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "page",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [],
+        writeClaimedAt: new Date(Date.now() - RESEARCH_PAGE_WRITE_STALE_MS - 1_000).toISOString(),
+        writeClaimId: "dead-writer",
+      },
+    });
 
     const resumed = await commitResearchPage("alice", created.id, OUTBOX);
 

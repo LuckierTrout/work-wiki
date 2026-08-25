@@ -26,6 +26,17 @@ describe("restrictResearchCitations", () => {
       .toBe("See [ok](https://example.com/a) and nope.");
   });
 
+  it("rescans link labels and permissive raw HTML for invented URLs", () => {
+    const fenced = restrictResearchCitations([
+      "[https://evil.example/label](https://evil.example/dest)",
+      "![https://evil.example/alt](https://evil.example/img)",
+      '<a href = "https://evil.example/html">claim</a>',
+      '<img src="https://evil.example/image">',
+    ].join("\n"), ["https://example.com/allowed"]);
+
+    expect(fenced).not.toContain("evil.example");
+  });
+
   it("strips autolinks, images, reference links, HTML anchors, and bare URLs", () => {
     const markdown = [
       "See <https://evil.example/auto> and ![pic](https://evil.example/img).",
