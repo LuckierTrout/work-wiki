@@ -90,11 +90,32 @@ export function _resetLocks(): void {
   locks.clear();
 }
 
+interface DurableLease {
+  token: string;
+  until: number;
+}
+
+const DURABLE_LOCK_CAS_ATTEMPTS = 8;
+
+function parseDurableLease(raw: string): DurableLease | null {
+  try {
+    const value = JSON.parse(raw) as Partial<DurableLease>;
+    return typeof value.token === "string" && typeof value.until === "number"
+      ? { token: value.token, until: value.until }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Durable owner-serial lease on top of the in-process lock. The file lease
- * is visible to other isolates; the in-process lock serializes same-isolate
- * callers. Not a linearizable lock on R2, but it fences overlapping LLM
- * work when combined with the consumer's max_concurrency: 1.
+ * Durable owner-serial lease on top of the in-process lock.
+ *
+ * Same-isolate callers serialize through {@link withFileLock}. Cross-isolate
+ * callers acquire and renew with provider compare-and-set operations, so a
+ * raised queue concurrency cannot start two owner-scoped Ingest compiles. A
+ * release CASes the lease to an expired tombstone instead of deleting it; that
+ * prevents an old holder from deleting a newer holder's lease.
  */
 export async function withDurableLock<T>(
   key: string,
@@ -108,29 +129,72 @@ export async function withDurableLock<T>(
 
   return withFileLock(key, async () => {
     const storage = getStorage();
-    const now = Date.now();
-    try {
-      const raw = await storage.readFile(rel);
-      const lease = JSON.parse(raw) as { until?: number };
-      if (typeof lease.until === "number" && lease.until > now) {
-        throw new Error("ingest lock busy");
+    const token = crypto.randomUUID();
+    let acquired = false;
+
+    for (let attempt = 0; attempt < DURABLE_LOCK_CAS_ATTEMPTS; attempt += 1) {
+      const now = Date.now();
+      let etag: string | null = null;
+      let lease: DurableLease | null = null;
+      try {
+        const read = await storage.readFileWithEtag(rel);
+        etag = read.etag;
+        lease = parseDurableLease(read.content);
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
       }
-    } catch (error) {
-      if (error instanceof Error && error.message === "ingest lock busy") {
-        throw error;
-      }
-      if (!isEnoent(error)) {
-        // Unreadable or corrupt lease — take it.
-      }
+
+      if (lease && lease.until > now) throw new Error("ingest lock busy");
+      const body = JSON.stringify({ token, until: now + ttlMs });
+      acquired = etag === null
+        ? await storage.writeFileIfAbsent(rel, body)
+        : await storage.writeFileIfMatch(rel, body, etag);
+      if (acquired) break;
     }
-    await storage.writeFile(rel, JSON.stringify({ until: now + ttlMs }));
+
+    if (!acquired) throw new Error("ingest lock busy");
+
+    let renewing = false;
+    const heartbeat = setInterval(() => {
+      if (renewing) return;
+      renewing = true;
+      void (async () => {
+        try {
+          const read = await storage.readFileWithEtag(rel);
+          const current = parseDurableLease(read.content);
+          if (current?.token !== token) return;
+          await storage.writeFileIfMatch(
+            rel,
+            JSON.stringify({ token, until: Date.now() + ttlMs }),
+            read.etag,
+          );
+        } catch {
+          // Acquisition remains fail-closed until the current expiry. A later
+          // heartbeat retries; TTL is the crash-recovery backstop.
+        } finally {
+          renewing = false;
+        }
+      })();
+    }, Math.max(1_000, Math.floor(ttlMs / 3)));
+
     try {
       return await fn();
     } finally {
+      clearInterval(heartbeat);
       try {
-        await storage.deleteFile(rel);
-      } catch {
-        // lease expiry is the backstop
+        const read = await storage.readFileWithEtag(rel);
+        const current = parseDurableLease(read.content);
+        if (current?.token === token) {
+          await storage.writeFileIfMatch(
+            rel,
+            JSON.stringify({ token, until: 0 }),
+            read.etag,
+          );
+        }
+      } catch (error) {
+        if (!isEnoent(error)) {
+          // Lease expiry is the backstop; never replace the callback outcome.
+        }
       }
     }
   });

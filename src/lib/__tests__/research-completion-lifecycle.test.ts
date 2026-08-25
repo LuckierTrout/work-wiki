@@ -14,7 +14,7 @@ vi.mock("../tasks", () => ({ enqueueTask: vi.fn(async () => true) }));
 import * as lifecycle from "../lifecycle";
 import { commitResearchPage } from "../research-completion";
 import { _resetLocks } from "../lock";
-import { createResearchProject, getResearchProject } from "../research-projects";
+import { createResearchProject, getResearchProject, updateResearchProject } from "../research-projects";
 import { _resetStorage } from "../storage";
 import { ensureDirectories, readWikiPage } from "../wiki";
 
@@ -104,5 +104,55 @@ describe("research completion lifecycle write", () => {
     expect(spy).not.toHaveBeenCalled();
     expect((await getResearchProject("alice", created.id))?.completion?.phase).toBe("sources");
     spy.mockRestore();
+  });
+
+  it("conditionally replaces the same stable Page on an explicit rerun", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await commitResearchPage("alice", created.id, OUTBOX);
+    await updateResearchProject("alice", created.id, {
+      status: "queued",
+      completion: null,
+    });
+
+    const rerun = await commitResearchPage("alice", created.id, {
+      ...OUTBOX,
+      synthesis: "# Launch evidence\n\nA newer brief.",
+    });
+
+    expect(rerun?.completion?.phase).toBe("sources");
+    expect((await readWikiPage(OUTBOX.pageSlug))?.content).toContain("A newer brief.");
+    expect((await getResearchProject("alice", created.id))?.pageSlugs)
+      .toEqual([OUTBOX.pageSlug]);
+  });
+
+  it("refuses a rerun when the owner changed the captured Page bytes", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await commitResearchPage("alice", created.id, OUTBOX);
+    const prior = await readWikiPage(OUTBOX.pageSlug);
+    expect(prior).not.toBeNull();
+    await updateResearchProject("alice", created.id, {
+      status: "queued",
+      completion: null,
+    });
+    await lifecycle.writeWikiPageWithSideEffects({
+      slug: OUTBOX.pageSlug,
+      title: OUTBOX.title,
+      content: `${prior!.content}\n\nOwner note.`,
+      summary: "Owner edit",
+      logOp: "edit",
+    });
+
+    await expect(commitResearchPage("alice", created.id, {
+      ...OUTBOX,
+      synthesis: "# Launch evidence\n\nA newer brief.",
+      previousPageContent: prior!.content,
+    })).rejects.toThrow(/changed; run Lint again/i);
+    expect((await readWikiPage(OUTBOX.pageSlug))?.content).toContain("Owner note.");
   });
 });

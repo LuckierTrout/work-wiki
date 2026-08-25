@@ -407,6 +407,31 @@ describe("Research Panel — starting a run", () => {
     expect(screen.queryByText(/no credential|Deep Research did not return/)).toBeNull();
   });
 
+  it("does not paint a cancel failure onto the Wiki selected afterward", async () => {
+    let rejectCancel: ((reason: unknown) => void) | undefined;
+    send.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes("/run") && init?.body) {
+        return new Promise((_resolve, reject) => { rejectCancel = reject; });
+      }
+      if (String(url).includes("000000000000")) {
+        return Promise.resolve({ projects: [project({ status: "collecting" })] });
+      }
+      return Promise.resolve({ projects: [] });
+    });
+
+    const view = render(
+      <ResearchCanvas wikiId="6f1b7e10-0000-4000-8000-000000000000" />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(rejectCancel).toBeTypeOf("function"));
+    view.rerender(
+      <ResearchCanvas wikiId="6f1b7e10-0000-4000-8000-000000000001" />,
+    );
+    await act(async () => { rejectCancel?.(new Error("Wiki A cancel failed")); });
+
+    expect(screen.queryByText("Wiki A cancel failed")).toBeNull();
+  });
+
   it("keeps polling a complete row whose ingest is still draining", async () => {
     send.mockResolvedValue({
       projects: [project({

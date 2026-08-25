@@ -28,6 +28,26 @@ const ALLOWED_LOG_OPERATIONS: readonly LogOperation[] = [
   "other",
 ];
 
+function validateLogEntry(operation: LogOperation, title: string): void {
+  if (!ALLOWED_LOG_OPERATIONS.includes(operation)) {
+    throw new Error(
+      `Invalid log operation: "${operation}" (must be one of ${ALLOWED_LOG_OPERATIONS.join(", ")})`,
+    );
+  }
+  if (typeof title !== "string" || title.trim().length === 0) {
+    throw new Error("Invalid log title: must be a non-empty string");
+  }
+}
+
+function logBlock(operation: LogOperation, title: string, details?: string, marker?: string): string {
+  const date = new Date().toISOString().slice(0, 10);
+  const heading = `## [${date}] ${operation} | ${title.trim()}`;
+  let block = `${heading}\n\n`;
+  if (details && details.trim().length > 0) block += `${details.trim()}\n\n`;
+  if (marker) block += `${marker}\n\n`;
+  return block;
+}
+
 /**
  * Append a structured entry to `wiki/log.md`, following the founding-spec format:
  *
@@ -50,25 +70,36 @@ export async function appendToLog(
   title: string,
   details?: string,
 ): Promise<void> {
-  if (!ALLOWED_LOG_OPERATIONS.includes(operation)) {
-    throw new Error(
-      `Invalid log operation: "${operation}" (must be one of ${ALLOWED_LOG_OPERATIONS.join(", ")})`,
-    );
-  }
-  if (typeof title !== "string" || title.trim().length === 0) {
-    throw new Error("Invalid log title: must be a non-empty string");
-  }
+  validateLogEntry(operation, title);
 
   await withFileLock("log.md", async () => {
     await ensureDirectories();
-    const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const heading = `## [${date}] ${operation} | ${title.trim()}`;
+    await getStorage().appendFile(wikiRelPath("log.md"), logBlock(operation, title, details));
+  });
+}
 
-    let block = `${heading}\n\n`;
-    if (details && details.trim().length > 0) {
-      block += `${details.trim()}\n\n`;
+/** Append one lifecycle log entry at most once across crash recovery. */
+export async function appendToLogOnce(
+  operation: LogOperation,
+  title: string,
+  details: string | undefined,
+  idempotencyKey: string,
+): Promise<void> {
+  validateLogEntry(operation, title);
+  const marker = `<!-- lifecycle-op:${idempotencyKey.replace(/--/g, "-")} -->`;
+  await withFileLock("log.md", async () => {
+    await ensureDirectories();
+    let existing = "";
+    try {
+      existing = await getStorage().readFile(wikiRelPath("log.md"));
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
     }
-    await getStorage().appendFile(wikiRelPath("log.md"), block);
+    if (existing.includes(marker)) return;
+    await getStorage().appendFile(
+      wikiRelPath("log.md"),
+      logBlock(operation, title, details, marker),
+    );
   });
 }
 

@@ -220,8 +220,9 @@ export async function activeResearchCount(owner: string): Promise<number> {
 /**
  * Is a live run holding a slot for this project?
  *
- * Unreadable lease state is treated as held: fail closed so reconcile cannot
- * reap a run whose counter it cannot read.
+ * Unreadable lease state throws. Admission still fails closed, while callers
+ * can turn the storage fault into a visible project failure instead of
+ * silently treating every queued waiter as already dispatched forever.
  */
 export async function holdsResearchSlot(owner: string, projectId: string): Promise<boolean> {
   try {
@@ -230,6 +231,8 @@ export async function holdsResearchSlot(owner: string, projectId: string): Promi
     return parseSlots(read.content, Date.now()).some((slot) => slot.projectId === projectId);
   } catch (error) {
     if (isEnoent(error)) return false;
-    return true;
+    throw error instanceof ResearchLeaseError
+      ? error
+      : new ResearchLeaseError("Research lease file could not be read.");
   }
 }

@@ -94,6 +94,28 @@ async function readIndex(): Promise<string> {
 // ===========================================================================
 
 describe("writeWikiPageWithSideEffects", () => {
+  it("resumes side effects when Page bytes landed before the lifecycle receipt", async () => {
+    const content = "# Recovered Page\n\nThe Page bytes landed first.\n";
+    await writeWikiPage("recovered-page", content);
+    const receiptPath = "lifecycle-receipts/recovered-page.json";
+    const options = makeOpts({
+      slug: "recovered-page",
+      title: "Recovered Page",
+      content,
+      summary: "Recovered lifecycle",
+      createOnly: true,
+      idempotency: { key: "research-recovered-page-v1", receiptPath },
+    });
+
+    await writeWikiPageWithSideEffects(options);
+    await writeWikiPageWithSideEffects(options);
+
+    expect((await listWikiPages()).filter((entry) => entry.slug === "recovered-page"))
+      .toHaveLength(1);
+    expect(await getStorage().readFile(receiptPath)).toContain("research-recovered-page-v1");
+    expect((await readLog())?.match(/ingest \| Recovered Page/g)).toHaveLength(1);
+  });
+
   // 1. Creates page file
   it("creates the wiki page file with correct content", async () => {
     const opts = makeOpts();

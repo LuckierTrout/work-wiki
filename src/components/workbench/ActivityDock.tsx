@@ -57,6 +57,10 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
     wikiScope.current = wikiId;
     requestSequence.current += 1;
     setRows([]);
+    setCancelId(null);
+    setRetryingId(null);
+    setBusy(false);
+    setError(null);
   }, [wikiId]);
 
   useEffect(() => {
@@ -144,13 +148,16 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
                                 if (wikiScope.current === originWikiId) return refresh();
                               })
                               .catch((cause: unknown) => {
+                                if (wikiScope.current !== originWikiId) return;
                                 setError(
                                   cause instanceof Error
                                     ? cause.message
                                     : "Retry failed.",
                                 );
                               })
-                              .finally(() => setRetryingId(null));
+                              .finally(() => {
+                                if (wikiScope.current === originWikiId) setRetryingId(null);
+                              });
                           }}
                         >
                           {ACTIVITY_RETRY_LABEL}
@@ -183,15 +190,19 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
           void send(ACTIVITY_ROUTE, {
             method: "POST",
             body: JSON.stringify({ action: "cancel", jobId: cancelling.jobId }),
-          })
+            })
             .then(() => {
+              if (wikiScope.current !== originWikiId) return;
               setCancelId(null);
-              if (wikiScope.current === originWikiId) return refresh();
+              return refresh();
             })
             .catch((cause: unknown) => {
+              if (wikiScope.current !== originWikiId) return;
               setError(cause instanceof Error ? cause.message : "Cancel failed.");
             })
-            .finally(() => setBusy(false));
+            .finally(() => {
+              if (wikiScope.current === originWikiId) setBusy(false);
+            });
         }}
       />
     </div>

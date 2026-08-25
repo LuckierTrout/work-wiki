@@ -42,6 +42,7 @@ import { normalizeActor } from "./agent-handle";
 import { parseFrontmatter } from "./frontmatter";
 import { parseSources, newestSourceType } from "./sources";
 import type { LogOperation } from "./wiki";
+import { appendToLogOnce } from "./wiki-log";
 import { logger } from "./logger";
 
 // ---------------------------------------------------------------------------
@@ -85,6 +86,12 @@ export interface WritePageOptions {
   createOnly?: boolean;
   /** Refuse to overwrite unless the authoritative Page still has these bytes. */
   expectedContent?: string;
+  /**
+   * Durable crash-recovery receipt. When the target Page already has `content`
+   * but this exact receipt is absent, lifecycle resumes its idempotent side
+   * effects instead of mistaking Page bytes for completion.
+   */
+  idempotency?: { key: string; receiptPath: string };
 }
 
 /** Result of a {@link writeWikiPageWithSideEffects} call. */
@@ -221,6 +228,7 @@ async function runPageLifecycleOp(
     crossRefedSlugs: string[];
     strippedBacklinksFrom: string[];
   }) => string | undefined,
+  recovery?: { pageAlreadyWritten: boolean; previousContent?: string; logIdempotencyKey?: string },
 ): Promise<LifecycleOpResult> {
   // 1. Validate — the per-step helpers also validate, but we want to fail
   //    fast before any filesystem mutation happens.
@@ -249,7 +257,9 @@ async function runPageLifecycleOp(
 
   // 2. Mutate the page file.
   if (op.kind === "write") {
-    if (op.expectedContent !== undefined) {
+    if (recovery?.pageAlreadyWritten) {
+      prevContent = recovery.previousContent;
+    } else if (op.expectedContent !== undefined) {
       prevContent = op.expectedContent;
     } else {
       try {
@@ -259,7 +269,42 @@ async function runPageLifecycleOp(
         // No prior page (new) or unreadable → treat as no previous links.
       }
     }
-    if (op.createOnly) {
+    if (recovery?.pageAlreadyWritten) {
+      // The authoritative bytes for this exact operation already landed, but
+      // its lifecycle receipt did not. Resume derived indexes, cross-links,
+      // log and version without rewriting the authoritative Page or creating a
+      // revision. Repair a compatibility copy that the crash interrupted.
+      const tenant = writeTenant ?? tenantForOwner(undefined);
+      const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
+      try {
+        const silo = await getStorage().readFile(siloPath);
+        if (silo !== op.content) throw new Error(LIFECYCLE_STALE_PAGE(slug));
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+        const created = await createWikiPage(slug, op.content, tenant);
+        if (!created) throw new Error(LIFECYCLE_STALE_PAGE(slug));
+      }
+
+      const flatPath = wikiRelPath(`${slug}.md`);
+      try {
+        const flat = await getStorage().readFile(flatPath);
+        if (flat !== op.content && op.expectedContent !== undefined && flat === op.expectedContent) {
+          await writeWikiPageIfContentMatches(
+            slug,
+            op.content,
+            op.expectedContent,
+            op.author,
+            "conditional lifecycle compatibility repair",
+          );
+        } else if (flat !== op.content) {
+          logger.warn("wiki", `flat compatibility copy changed for "${slug}"; left untouched`);
+        }
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+        const created = await createWikiPage(slug, op.content);
+        if (!created) logger.warn("wiki", `flat compatibility copy appeared for "${slug}"`);
+      }
+    } else if (op.createOnly) {
       // The tenant silo is authoritative. Its conditional write is the
       // create-only boundary: Review must never overwrite an unrelated Page.
       const created = await createWikiPage(slug, op.content, writeTenant);
@@ -748,7 +793,11 @@ async function runPageLifecycleOp(
 
   // 5. Log.
   const details = logDetails?.({ crossRefedSlugs, strippedBacklinksFrom });
-  await appendToLog(logOp, op.title, details);
+  if (recovery?.logIdempotencyKey) {
+    await appendToLogOnce(logOp, op.title, details, recovery.logIdempotencyKey);
+  } else {
+    await appendToLog(logOp, op.title, details);
+  }
 
   // 6. Bump the Workbench's refresh signal (Story 1.7).
   //
@@ -888,6 +937,29 @@ export async function writeWikiPageWithSideEffects(
 
   const { slug, title, content, summary, logOp, logDetails } = opts;
 
+  if (opts.idempotency) {
+    try {
+      const parsed = JSON.parse(await getStorage().readFile(opts.idempotency.receiptPath)) as {
+        key?: unknown;
+        result?: WritePageResult;
+      };
+      if (
+        parsed.key === opts.idempotency.key
+        && parsed.result?.slug === slug
+        && Array.isArray(parsed.result.updatedSlugs)
+      ) {
+        return parsed.result;
+      }
+    } catch (error) {
+      if (!isEnoent(error) && !(error instanceof SyntaxError)) throw error;
+    }
+  }
+
+  const current = opts.idempotency
+    ? await readWikiPage(slug, { fresh: true, strict: true })
+    : null;
+  const pageAlreadyWritten = !!opts.idempotency && current?.content === content;
+
   const result = await runPageLifecycleOp(
     slug,
     {
@@ -902,7 +974,25 @@ export async function writeWikiPageWithSideEffects(
     },
     logOp,
     ({ crossRefedSlugs }) => logDetails?.({ updatedSlugs: crossRefedSlugs }),
+    opts.idempotency
+      ? {
+          pageAlreadyWritten,
+          previousContent: opts.expectedContent,
+          logIdempotencyKey: opts.idempotency.key,
+        }
+      : undefined,
   );
 
-  return { slug: result.slug, updatedSlugs: result.crossRefedSlugs };
+  const publicResult = { slug: result.slug, updatedSlugs: result.crossRefedSlugs };
+  if (opts.idempotency) {
+    await getStorage().writeFile(
+      opts.idempotency.receiptPath,
+      JSON.stringify({
+        key: opts.idempotency.key,
+        completedAt: new Date().toISOString(),
+        result: publicResult,
+      }),
+    );
+  }
+  return publicResult;
 }

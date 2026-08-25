@@ -60,6 +60,10 @@ interface ResearchOutbox {
   /** Durable references only. Full bodies live in immutable Source snapshots. */
   sources: ResearchOutboxSource[];
   evidence: Array<{ url: string; title: string; snippet?: string; query?: string }>;
+  /** Page bytes this run is allowed to replace. `null` means create. */
+  previousPageContent?: string | null;
+  /** Stable identity for the Page plus its complete lifecycle receipt. */
+  pageOperationId?: string;
   /**
    * True only after this run won the Page-write claim. An unclaimed outbox
    * is a pre-write staging file: if the project is gone, drop it.
@@ -81,14 +85,32 @@ function pageWrittenPath(owner: string, id: string): string {
   return `${outboxPath(owner, id)}.page-written`;
 }
 
-async function pageWriteAlreadyCompleted(owner: string, id: string): Promise<boolean> {
-  try {
-    await getStorage().readFile(pageWrittenPath(owner, id));
-    return true;
-  } catch (error) {
-    if (isEnoent(error)) return false;
-    throw error;
-  }
+function stagingManifestPath(owner: string, id: string): string {
+  return `${outboxDir(owner)}/staging-${id}.manifest`;
+}
+
+async function recordResearchStaging(
+  owner: string,
+  projectId: string,
+  source: ResearchOutboxSource,
+): Promise<void> {
+  await withFileLock(`research-staging:${owner}:${projectId}`, async () => {
+    const path = stagingManifestPath(owner, projectId);
+    let sources: ResearchOutboxSource[] = [];
+    try {
+      const parsed = JSON.parse(await getStorage().readFile(path)) as unknown;
+      if (Array.isArray(parsed)) {
+        sources = parsed.filter((value): value is ResearchOutboxSource =>
+          !!value && typeof value === "object" && typeof value.sourcePath === "string");
+      }
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+    }
+    if (!sources.some((value) => value.sourcePath === source.sourcePath)) {
+      sources.push(source);
+      await getStorage().writeFile(path, JSON.stringify(sources));
+    }
+  });
 }
 
 async function clearPageWrittenMarker(owner: string, id: string): Promise<void> {
@@ -126,20 +148,40 @@ export async function stageResearchSource(
   if (!slug) throw new Error(`Invalid research Source URL: ${source.url}`);
   const sha = await sourceSha256(source.text);
   const sourcePath = `${outboxDir(owner)}/staging-${projectId}-${slug}-${sha}.md`;
+  const reference = { url: source.url, title: source.title, slug, sha, sourcePath, length: source.text.length };
+  // Record the cleanup reference BEFORE the body. A crash can leave an empty
+  // manifest entry, which cleanup tolerates; it cannot leave an undiscoverable
+  // body containing source data.
+  await recordResearchStaging(owner, projectId, reference);
   await getStorage().writeFile(sourcePath, source.text);
-  return { url: source.url, title: source.title, slug, sha, sourcePath, length: source.text.length };
+  return reference;
 }
 
 export async function clearResearchStaging(
-  sources: readonly Partial<ResearchOutboxSource>[],
+  owner: string,
+  projectId: string,
+  sources: readonly Partial<ResearchOutboxSource>[] = [],
 ): Promise<void> {
-  for (const source of sources) {
+  let recorded: Partial<ResearchOutboxSource>[] = [];
+  try {
+    const parsed = JSON.parse(await getStorage().readFile(stagingManifestPath(owner, projectId))) as unknown;
+    if (Array.isArray(parsed)) recorded = parsed as Partial<ResearchOutboxSource>[];
+  } catch (error) {
+    if (!isEnoent(error)) logger.warn("research", `staging manifest unreadable for ${projectId}`, error);
+  }
+  const candidates = [...sources, ...recorded];
+  for (const source of candidates) {
     if (!source.sourcePath?.includes("/research-outbox/staging-")) continue;
     try {
       await getStorage().deleteFile(source.sourcePath);
     } catch (error) {
       if (!isEnoent(error)) logger.warn("research", `staging cleanup skipped for ${source.sourcePath}`, error);
     }
+  }
+  try {
+    await getStorage().deleteFile(stagingManifestPath(owner, projectId));
+  } catch (error) {
+    if (!isEnoent(error)) logger.warn("research", `staging manifest cleanup skipped for ${projectId}`, error);
   }
 }
 
@@ -164,6 +206,7 @@ export async function persistResearchSource(
 }
 
 export async function deleteResearchOutbox(owner: string, id: string): Promise<void> {
+  await clearResearchStaging(owner, id);
   try {
     await getStorage().deleteFile(outboxPath(owner, id));
   } catch (error) {
@@ -283,19 +326,22 @@ function researchPageBody(owner: string, outbox: ResearchOutbox): string {
   );
 }
 
-async function writeResearchPage(owner: string, outbox: ResearchOutbox): Promise<void> {
+async function writeResearchPage(owner: string, id: string, outbox: ResearchOutbox): Promise<void> {
   const body = researchPageBody(owner, outbox);
+  const operationId = outbox.pageOperationId ?? await sourceSha256(`${id}:${body}`);
   await writeWikiPageWithSideEffects({
     slug: outbox.pageSlug,
     title: outbox.title,
     content: body,
     summary: `Research brief from ${outbox.sources.length} web sources.`,
     logOp: "other",
-    author: "research-agent",
-    // A recovery must never overwrite an owner edit. The project-specific
-    // slug is a create boundary; exact-content recovery is handled before this
-    // call and an unrelated existing Page is a hard conflict.
-    createOnly: true,
+    // The frontmatter records research-agent authorship. Omitting lifecycle's
+    // edit-counter author keeps crash recovery idempotent for this private Page;
+    // the contributor index is for human/public contribution activity.
+    ...(typeof outbox.previousPageContent === "string"
+      ? { expectedContent: outbox.previousPageContent }
+      : { createOnly: true }),
+    idempotency: { key: operationId, receiptPath: pageWrittenPath(owner, id) },
     crossRefSource: outbox.synthesis,
     logDetails: ({ updatedSlugs }) =>
       `Deep Research wrote ${outbox.pageSlug} from ${outbox.sources.length} sources${
@@ -329,7 +375,25 @@ export async function commitResearchPage(
     return null;
   }
 
-  await saveResearchOutbox(owner, id, { ...input, claimed: false });
+  const inputBody = serializeFrontmatter(
+    researchFrontmatter(owner, input.evidence, input.wikiId),
+    input.synthesis,
+  );
+  let previousPageContent = input.previousPageContent;
+  if (!("previousPageContent" in input)) {
+    const currentPage = await readWikiPage(input.pageSlug, { fresh: true, strict: true });
+    previousPageContent = existing.pageSlugs.includes(input.pageSlug)
+      ? currentPage?.content ?? null
+      : currentPage
+        ? undefined
+        : null;
+  }
+  const prepared = {
+    ...input,
+    previousPageContent,
+    pageOperationId: input.pageOperationId ?? await sourceSha256(`${id}:${inputBody}`),
+  };
+  await saveResearchOutbox(owner, id, { ...prepared, claimed: false });
   const outbox = await loadResearchOutbox(owner, id);
   if (!outbox) throw new Error("Research outbox could not be persisted");
   const afterSave = await getResearchProject(owner, id);
@@ -446,23 +510,10 @@ export async function commitResearchPage(
       await deleteResearchProject(owner, id);
       return null;
     }
-    if (!await pageWriteAlreadyCompleted(owner, id)) {
-      const existingPage = await readWikiPage(outbox.pageSlug, { fresh: true, strict: true });
-      if (existingPage) {
-        if (existingPage.content !== researchPageBody(owner, outbox)) {
-          throw new Error(`Page "${outbox.pageSlug}" already exists with different content`);
-        }
-        // The lifecycle call completed but the process died before its receipt.
-        // Exact bytes prove this operation's immutable create landed; do not
-        // replay lifecycle side effects or overwrite a later owner edit.
-      } else {
-        await writeResearchPage(owner, outbox);
-      }
-      await getStorage().writeFile(
-        pageWrittenPath(owner, id),
-        JSON.stringify({ completedAt: new Date().toISOString(), claimId }),
-      );
-    }
+    // The lifecycle owns the receipt. Exact Page bytes without that receipt
+    // trigger an idempotent side-effect resume; they are never accepted as proof
+    // that the full lifecycle completed.
+    await writeResearchPage(owner, id, outbox);
   } catch (error) {
     await mutateResearchProject(owner, id, (project) => {
       const completion = project.completion;
@@ -587,7 +638,7 @@ async function dispatchSourceIngest(
   await saveRawSourceFor(meta.slug, meta.sha, text, { owner });
   const sourcePath = `raw/sources/${meta.slug}/${meta.sha}.md`;
   await withFileLock(`research-ingest-dispatch:${jobId}`, async () => {
-    const existingJob = await getIngestJob(jobId);
+    let existingJob = await getIngestJob(jobId);
     if (existingJob?.status === "done" || existingJob?.status === "skipped") return;
     if (existingJob?.status === "processing" || existingJob?.status === "retrying") return;
     if (existingJob?.status === "queued" && existingJob.stage === "queued" && ingestJobIsFresh(existingJob)) return;
@@ -603,7 +654,19 @@ async function dispatchSourceIngest(
         stage: "dispatch-pending",
         ...(wikiId ? { wikiId } : {}),
       });
-      if (!minted.created) return;
+      if (!minted.created) {
+        existingJob = minted.job;
+        if (existingJob.status === "done" || existingJob.status === "skipped") return;
+        if (existingJob.status === "processing" || existingJob.status === "retrying") return;
+        if (
+          existingJob.status === "queued"
+          && existingJob.stage === "queued"
+          && ingestJobIsFresh(existingJob)
+        ) return;
+        // A sibling may have won only the durable `dispatch-pending` record and
+        // died before enqueueing. Continue the dispatch here. Duplicate queue
+        // delivery is safe because the stable job id is claimed by Ingest.
+      }
     } else if (existingJob.status === "failed") {
       await updateIngestJob(jobId, { status: "queued", stage: "dispatch-pending", error: undefined });
     }
@@ -756,7 +819,7 @@ export async function drainResearchOutbox(
 
   const done = updated?.completion?.phase === "done";
   if (done) {
-    await clearResearchStaging(outbox.sources);
+    await clearResearchStaging(owner, id, outbox.sources);
     await deleteResearchOutbox(owner, id);
     await clearPageWrittenMarker(owner, id);
     if (updated.deleteRequested || current.deleteRequested) {
@@ -779,14 +842,7 @@ async function drainOrphanOutbox(
   if (!await claimOrphanWrite(owner, claimPath)) return;
   const stopHeartbeat = startOrphanClaimHeartbeat(claimPath);
   try {
-    const writtenPath = `${outboxPath(owner, id)}.page-written`;
-    try {
-      await getStorage().readFile(writtenPath);
-    } catch (error) {
-      if (!isEnoent(error)) throw error;
-      await writeResearchPage(owner, outbox);
-      await getStorage().writeFile(writtenPath, JSON.stringify({ at: new Date().toISOString() }));
-    }
+    await writeResearchPage(owner, id, outbox);
     const sources = await completionSourcesFromOutbox(outbox);
     let failed = 0;
     for (const meta of sources) {
@@ -803,7 +859,7 @@ async function drainOrphanOutbox(
       }
     }
     if (failed === 0) {
-      await clearResearchStaging(outbox.sources);
+      await clearResearchStaging(owner, id, outbox.sources);
       await deleteResearchOutbox(owner, id);
       try {
         await getStorage().deleteFile(`${outboxPath(owner, id)}.page-written`);

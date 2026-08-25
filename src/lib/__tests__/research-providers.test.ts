@@ -145,7 +145,7 @@ describe("refusing to fall back", () => {
 });
 
 describe("searching", () => {
-  it("asks Tavily for raw content and keeps it unsliced", async () => {
+  it("keeps Tavily raw bodies out of the aggregate response", async () => {
     const long = "x".repeat(12_000);
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({
       results: [
@@ -173,17 +173,14 @@ describe("searching", () => {
       snippet: "A finding",
       score: 0.8,
     });
-    // The persisted snippet is bounded; the synthesis text is NOT — 12 000
-    // characters through a 4 000-character cap is the exact regression the spec
-    // names.
-    expect(results[0].content).toHaveLength(long.length);
+    expect(results[0].content).toBeUndefined();
 
     const [, init] = vi.mocked(fetch).mock.calls[0];
     expect(JSON.parse(String(init?.body))).toMatchObject({
       query: "launch evidence",
       max_results: 10,
       search_depth: "advanced",
-      include_raw_content: true,
+      include_raw_content: false,
     });
   });
 

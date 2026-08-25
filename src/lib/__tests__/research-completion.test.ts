@@ -17,6 +17,7 @@ import {
   loadResearchOutbox,
   researchIngestJobId,
   saveResearchOutbox,
+  stageResearchSource,
   researchFrontmatter,
 } from "../research-completion";
 import { createIngestJobIfAbsent } from "../ingest-jobs";
@@ -62,7 +63,16 @@ beforeEach(async () => {
   _resetLocks();
   _resetStorage();
   vi.clearAllMocks();
-  mockedWritePage.mockImplementation(async ({ slug }) => ({ slug, updatedSlugs: [] }));
+  mockedWritePage.mockImplementation(async ({ slug, idempotency }) => {
+    const result = { slug, updatedSlugs: [] };
+    if (idempotency) {
+      await getStorage().writeFile(
+        idempotency.receiptPath,
+        JSON.stringify({ key: idempotency.key, result }),
+      );
+    }
+    return result;
+  });
   mockedEnqueue.mockResolvedValue(true);
   mockedSaveRaw.mockImplementation(async (slug, sha, content) => {
     const rel = `raw/sources/${slug}/${sha}.md`;
@@ -174,7 +184,7 @@ describe("research completion outbox", () => {
       .toBe(expected);
   });
 
-  it("dispatches a durable dispatch-pending job after a crash before queue send", async () => {
+  it("dispatches when another isolate created only the dispatch-pending job", async () => {
     const created = await createResearchProject("alice", {
       title: "Launch evidence",
       question: "What supports the launch date?",
@@ -197,6 +207,16 @@ describe("research completion outbox", () => {
       sourceRel: `raw/sources/${slug}/${sha}.md`,
       sourceType: "url",
       stage: "dispatch-pending",
+    });
+    const storage = getStorage();
+    const readFile = storage.readFile.bind(storage);
+    let hideExistingOnce = true;
+    vi.spyOn(storage, "readFile").mockImplementation(async (relPath) => {
+      if (hideExistingOnce && relPath === `ingest-jobs/${jobId}.json`) {
+        hideExistingOnce = false;
+        throw Object.assign(new Error("not found"), { code: "ENOENT" });
+      }
+      return readFile(relPath);
     });
 
     await drainResearchOutbox("alice", created.id);
@@ -423,7 +443,7 @@ describe("research completion outbox", () => {
     expect((await getResearchProject("alice", created.id))?.completion?.phase).toBe("sources");
   });
 
-  it("resumes after a crash checkpoint without replaying Page lifecycle side effects", async () => {
+  it("rejects a stale caller checkpoint and asks lifecycle to verify its own receipt", async () => {
     const created = await createResearchProject("alice", {
       title: "Launch evidence",
       question: "What supports the launch date?",
@@ -444,11 +464,11 @@ describe("research completion outbox", () => {
 
     const resumed = await commitResearchPage("alice", created.id, OUTBOX);
 
-    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(mockedWritePage).toHaveBeenCalledTimes(1);
     expect(resumed?.completion?.phase).toBe("sources");
   });
 
-  it("recognizes exact Page bytes when lifecycle finished but its receipt did not", async () => {
+  it("resumes lifecycle side effects when exact Page bytes exist without its receipt", async () => {
     const created = await createResearchProject("alice", {
       title: "Launch evidence",
       question: "What supports the launch date?",
@@ -471,7 +491,7 @@ describe("research completion outbox", () => {
 
     const resumed = await commitResearchPage("alice", created.id, OUTBOX);
 
-    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(mockedWritePage).toHaveBeenCalledTimes(1);
     expect(resumed?.completion?.phase).toBe("sources");
   });
 
@@ -511,7 +531,10 @@ describe("research completion outbox", () => {
     mockedEnqueue.mockResolvedValue(true);
     mockedEnqueue.mockClear();
     await drainResearchOutbox("alice", created.id);
-    expect(mockedWritePage).toHaveBeenCalledTimes(1);
+    // The caller always re-enters lifecycle; the real writer consumes its
+    // receipt and returns without replaying side effects. This unit mocks that
+    // boundary, so both calls are observable here.
+    expect(mockedWritePage).toHaveBeenCalledTimes(2);
     expect(mockedEnqueue).toHaveBeenCalledWith(expect.objectContaining({ kind: "ingest" }));
     expect(await loadResearchOutbox("alice", created.id)).toBeNull();
   });
@@ -528,6 +551,24 @@ describe("research completion outbox", () => {
 
     expect(mockedWritePage).not.toHaveBeenCalled();
     expect(await loadResearchOutbox("alice", created.id)).toBeNull();
+  });
+
+  it("removes staged source bytes when DELETE retires a project before commit", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    const staged = await stageResearchSource("alice", created.id, {
+      url: "https://example.com/private-draft",
+      title: "Private draft",
+      text: "SECRET_BODY",
+    });
+    expect(await getStorage().readFile(staged.sourcePath)).toBe("SECRET_BODY");
+
+    await retireResearchProject("alice", created.id);
+
+    await expect(getStorage().readFile(staged.sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await getResearchProject("alice", created.id)).toBeNull();
   });
 
   it("drops a leftover outbox when delete wins before the Page claim", async () => {

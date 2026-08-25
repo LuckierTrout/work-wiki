@@ -189,7 +189,9 @@ export function ResearchCanvas({
       });
       if (wikiScope.current === originWikiId) await load();
     } catch (cause) {
-      setError(writeFailure(cause, "cancel Deep Research").message);
+      if (wikiScope.current === originWikiId) {
+        setError(writeFailure(cause, "cancel Deep Research").message);
+      }
     }
   }
 

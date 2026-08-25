@@ -141,7 +141,7 @@ describe("research concurrency lease", () => {
     await fs.writeFile(target, "{ not json", "utf-8");
 
     await expect(acquireResearchSlot("alice", "p1")).rejects.toBeInstanceOf(ResearchLeaseError);
-    expect(await holdsResearchSlot("alice", "p1")).toBe(true);
+    await expect(holdsResearchSlot("alice", "p1")).rejects.toBeInstanceOf(ResearchLeaseError);
   });
 
   it("fails closed when one entry in an otherwise valid lease list is malformed", async () => {

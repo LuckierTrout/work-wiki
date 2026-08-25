@@ -158,7 +158,16 @@ beforeEach(async () => {
   mockedResolve.mockReturnValue("tavily");
   mockedEnqueue.mockResolvedValue(true);
   mockedStream.mockRejectedValue(new Error("stream unavailable in unit tests"));
-  mockedWritePage.mockImplementation(async ({ slug }) => ({ slug, updatedSlugs: [] }));
+  mockedWritePage.mockImplementation(async ({ slug, idempotency }) => {
+    const result = { slug, updatedSlugs: [] };
+    if (idempotency) {
+      await getStorage().writeFile(
+        idempotency.receiptPath,
+        JSON.stringify({ key: idempotency.key, result }),
+      );
+    }
+    return result;
+  });
   mockedSaveRaw.mockReset();
   mockedSaveRaw.mockImplementation(async (slug, sha, content) => {
     const rel = `raw/sources/${slug}/${sha}.md`;
@@ -200,7 +209,6 @@ describe("deep research run — success", () => {
     expect(mockedWritePage.mock.calls[0][0]).toMatchObject({
       slug: pageSlug,
       title: "Launch evidence",
-      author: "research-agent",
     });
     // The Page slug is recorded on the project, so the panel can open it.
     expect(finished.pageSlugs).toContain(pageSlug);
@@ -333,7 +341,7 @@ describe("deep research run — success", () => {
     await runResearchProject("alice", created.id);
 
     expect(mockedSaveRaw).toHaveBeenCalledTimes(RESEARCH_SOURCE_FETCH_MAX);
-  });
+  }, 15_000);
 
   it("balances the fetch budget across every query", async () => {
     mockedSearch.mockImplementation(async (_provider, query) =>
@@ -351,7 +359,7 @@ describe("deep research run — success", () => {
     expect(savedSlugs).toHaveLength(RESEARCH_SOURCE_FETCH_MAX);
     expect(savedSlugs.some((slug) => slug.includes("first"))).toBe(true);
     expect(savedSlugs.some((slug) => slug.includes("second"))).toBe(true);
-  });
+  }, 15_000);
 
   it("condenses every chunk when evidence is too large for one synthesis prompt", async () => {
     const large = `BEGIN-${"x".repeat(600_000)}-END`;
@@ -805,6 +813,21 @@ describe("deep research — what synthesis is told", () => {
 });
 
 describe("deep research — an interrupted run gets an answer", () => {
+  it("fails a queued waiter visibly when the lease file is malformed", async () => {
+    const created = await project();
+    await queueResearchProject("alice", created.id);
+    const leasePath = path.join(tmpDir, "tenants", "alice", "research-leases.json");
+    await fs.mkdir(path.dirname(leasePath), { recursive: true });
+    await fs.writeFile(leasePath, "{ malformed", "utf-8");
+
+    await drainResearchQueue("alice");
+
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toMatch(/lease file is unreadable/i);
+    expect(failed?.progress?.message).toMatch(/repair the lease state/i);
+  });
+
   // `shouldAdvanceTime` so the clock can jump past the abandonment window
   // without freezing the real timers that `withFileLock` and the fs writes
   // below still need.

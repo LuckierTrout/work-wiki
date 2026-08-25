@@ -31,16 +31,8 @@ export interface ResearchSearchResult {
    * project.
    */
   snippet: string;
-  /**
-   * The provider's FULL text for this result, when it returned one.
-   *
-   * Deliberately unbounded and deliberately NOT persisted: synthesis reads it,
-   * and slicing it before synthesis is exactly the truncation the spec forbids —
-   * a brief written from 4 000 characters of a long page is a brief about the
-   * page's introduction. It rides in memory beside the bounded `snippet` rather
-   * than replacing it, because the two have different jobs and different
-   * lifetimes.
-   */
+  /** Legacy adapter field. Runtime discards provider-inline bodies and reads
+   * selected sources sequentially through the bounded staging path. */
   content?: string;
   score?: number;
   publishedAt?: string;
@@ -48,11 +40,6 @@ export interface ResearchSearchResult {
 
 function boundedText(value: unknown, max: number): string {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, max) : "";
-}
-
-/** The full body, whitespace-normalised but NEVER sliced. See `content`. */
-function fullText(value: unknown): string {
-  return typeof value === "string" ? value.trim().replace(/[ \t]+/g, " ") : "";
 }
 
 /** The persisted snippet's cap — one constant, so all three providers agree. */
@@ -188,11 +175,10 @@ async function tavilySearch(
       search_depth: "advanced",
       max_results: limit,
       include_answer: false,
-      // TRUE now. Tavily returns the page's own text in `raw_content` when this
-      // is set, which is the difference between synthesising from a search
-      // engine's two-sentence blurb and synthesising from the sources — and it
-      // saves a second fetch per result for every page Tavily already has.
-      include_raw_content: true,
+      // Full inline bodies make `response.json()` retain every selected page at
+      // once. Read chosen URLs sequentially through the kernel extractor so the
+      // Worker holds and stages only one body at a time.
+      include_raw_content: false,
     }),
     signal: AbortSignal.timeout(45_000),
   });
@@ -203,12 +189,10 @@ async function tavilySearch(
     const item = value as Record<string, unknown>;
     const url = safeUrl(item.url);
     if (!url) return [];
-    const raw = fullText(item.raw_content);
     return [{
       title: boundedText(item.title, 300) || url,
       url,
       snippet: boundedText(item.content, RESEARCH_SNIPPET_MAX),
-      ...(raw ? { content: raw } : {}),
       ...(typeof item.score === "number" ? { score: item.score } : {}),
       ...(boundedText(item.published_date, 80) ? { publishedAt: boundedText(item.published_date, 80) } : {}),
     }];

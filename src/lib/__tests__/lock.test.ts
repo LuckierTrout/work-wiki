@@ -1,5 +1,9 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { withFileLock, _resetLocks } from "../lock";
+import { afterEach, describe, it, expect, beforeEach } from "vitest";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
+import { withDurableLock, withFileLock, _resetLocks } from "../lock";
+import { _resetStorage } from "../storage";
 
 // ---------------------------------------------------------------------------
 // Reset locks between tests
@@ -250,5 +254,42 @@ describe("_resetLocks", () => {
 
     await Promise.all([p1, p2]);
     expect(order).toEqual([1, 2, 3, 4]);
+  });
+});
+
+describe("withDurableLock", () => {
+  let tempDir: string;
+  let previousDataDir: string | undefined;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "durable-lock-"));
+    previousDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tempDir;
+    _resetStorage();
+  });
+
+  afterEach(async () => {
+    if (previousDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = previousDataDir;
+    _resetStorage();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("rejects a simulated second isolate while the durable lease is held", async () => {
+    let release!: () => void;
+    const held = withDurableLock("ingest-llm:alice", async () =>
+      new Promise<void>((resolve) => { release = resolve; }), 30_000);
+    while (!release) await sleep(1);
+
+    // A different Worker isolate has a different in-process lock map.
+    _resetLocks();
+    await expect(withDurableLock("ingest-llm:alice", async () => undefined, 30_000))
+      .rejects.toThrow(/ingest lock busy/i);
+
+    release();
+    await held;
+    _resetLocks();
+    await expect(withDurableLock("ingest-llm:alice", async () => "next", 30_000))
+      .resolves.toBe("next");
   });
 });
