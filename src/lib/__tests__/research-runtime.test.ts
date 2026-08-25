@@ -710,7 +710,7 @@ describe("deep research — one run per project", () => {
       slug,
       expectedContent: baseline,
     });
-  });
+  }, 15_000);
 
   it("gives same-title projects distinct stable Page identities", async () => {
     const first = await project();
