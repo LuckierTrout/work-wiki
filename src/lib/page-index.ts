@@ -24,8 +24,35 @@ import type { IndexEntry } from "./types";
 const PAGE_INDEX_KEY = "pages";
 const PAGE_INDEX_LOCK = "page-index";
 const PAGE_INDEX_PATH = "derived-indexes/pages.json";
+const PAGE_INDEX_DIRTY_PATH = "derived-indexes/pages-dirty";
 
 export type PageMetaIndex = Record<string, IndexEntry>;
+
+export async function markPageIndexDirty(slug: string): Promise<void> {
+  await getStorage().writeFile(`${PAGE_INDEX_DIRTY_PATH}/${slug}`, "1");
+}
+
+export async function clearPageIndexDirty(slug: string): Promise<void> {
+  try {
+    await getStorage().deleteFile(`${PAGE_INDEX_DIRTY_PATH}/${slug}`);
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+  }
+}
+
+export async function getPageIndexDirtySlugs(): Promise<Set<string>> {
+  try {
+    const entries = await getStorage().listFiles(PAGE_INDEX_DIRTY_PATH);
+    return new Set(
+      entries.filter((entry) => !entry.isDirectory).map((entry) => entry.name),
+    );
+  } catch (error) {
+    if (isEnoent(error)) return new Set();
+    // Failure to read the invalidation set must never make stale visibility
+    // metadata authoritative. Force callers onto the full Page scan.
+    throw error;
+  }
+}
 
 /** The metadata map, or `null` when the index has never been seeded (caller
  *  should fall back to {@link scanWikiPagesUncached}). */

@@ -52,6 +52,7 @@
 
 const locks = new Map<string, Promise<unknown>>();
 let forceDurableLocksForTests = false;
+let forceCloudflareMigrationGateForTests = false;
 
 /**
  * Execute `fn` while holding an in-process lock for `key`.
@@ -94,6 +95,11 @@ export function _resetLocks(): void {
 /** Force the R2 lease path under the filesystem test provider. Test-only. */
 export function _setDurableLocksForTests(enabled: boolean): void {
   forceDurableLocksForTests = enabled;
+}
+
+/** Exercise the Cloudflare rolling-deploy readiness gate on fs. Test-only. */
+export function _setCloudflareMigrationGateForTests(enabled: boolean): void {
+  forceCloudflareMigrationGateForTests = enabled;
 }
 
 interface DurableLease {
@@ -165,6 +171,17 @@ export async function withDurableLock<T>(
     if (_getProviderType() !== "cloudflare-r2" && !forceDurableLocksForTests) {
       return fn();
     }
+    const cloudflareMigrationGateApplies =
+      _getProviderType() === "cloudflare-r2" || forceCloudflareMigrationGateForTests;
+    if (
+      cloudflareMigrationGateApplies
+      && process.env.WORKWIKI_DURABLE_LOCK_V2_READY !== "1"
+    ) {
+      throw new Error(
+        "Durable lock v2 is fail-closed until legacy Workers are drained; "
+        + "set WORKWIKI_DURABLE_LOCK_V2_READY=1 only after the two-stage rollout",
+      );
+    }
     const token = crypto.randomUUID();
     const waitStartedAt = Date.now();
     const acquire = async (path: string, acceptsTokenlessLegacy: boolean): Promise<void> => {
@@ -185,7 +202,14 @@ export async function withDurableLock<T>(
         const until = parsed?.kind === "current" || parsed?.kind === "legacy"
           ? parsed.lease.until
           : 0;
-        if (until > now) {
+        // A tokenless v1 holder releases with an unconditional delete. Never
+        // replace that file, even after its advertised deadline: a stalled old
+        // callback could later delete our bridge and let another v1 worker enter
+        // during the v2 callback. Wait for the old holder's finally block to
+        // remove it. If it crashed, fail closed after the normal wait ceiling;
+        // an operator can then remove the orphan deliberately.
+        const legacyHolderStillOwnsPath = parsed?.kind === "legacy" && acceptsTokenlessLegacy;
+        if (legacyHolderStillOwnsPath || until > now) {
           if (now - waitStartedAt >= DURABLE_LOCK_WAIT_MAX_MS) {
             throw new Error(`Durable lock ${key} did not become available`);
           }

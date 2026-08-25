@@ -14,6 +14,7 @@ import {
   readWikiPage,
   writeWikiPage,
   listWikiPages,
+  listReadableWikiPages,
   readLog,
 } from "../wiki";
 import { updateIndex } from "../wiki";
@@ -22,7 +23,8 @@ import { resolveAlias, buildAliasIndex, resetAliasIndex } from "../alias-index";
 import { serializeFrontmatter } from "../frontmatter";
 import { getStorage, _resetStorage } from "../storage";
 import { registerAgent, getAgent } from "../agents";
-import { _resetLocks, _setDurableLocksForTests } from "../lock";
+import { _resetLocks, _setDurableLocksForTests, withDurableLock } from "../lock";
+import { rebuildPageIndex } from "../page-index";
 
 // ---------------------------------------------------------------------------
 // Temp directory setup — mirrors wiki.test.ts approach
@@ -439,6 +441,40 @@ describe("writeWikiPageWithSideEffects", () => {
       .toMatchObject({ title: "Owner title", summary: "Owner summary", owner: "alice", visibility: "private" });
   }, 15_000);
 
+  it("rejects a stale flat merge base when the authoritative silo has newer bytes", async () => {
+    const initial = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Page\n\nInitial.\n",
+    );
+    await writeWikiPageWithSideEffects(makeOpts({
+      slug: "stale-flat",
+      title: "Page",
+      content: initial,
+      crossRefSource: null,
+      createOnly: true,
+    }));
+    await rebuildPageIndex();
+    const ownerEdit = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Page\n\nOwner edit.\n",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/stale-flat.md", ownerEdit);
+    const staleAutomation = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Page\n\nStale automation.\n",
+    );
+
+    await expect(writeWikiPageWithSideEffects(makeOpts({
+      slug: "stale-flat",
+      title: "Page",
+      content: staleAutomation,
+      crossRefSource: null,
+      expectedContent: initial,
+    }))).rejects.toThrow(/changed/i);
+    expect(await getStorage().readFile("tenants/alice/wiki/stale-flat.md"))
+      .toBe(ownerEdit);
+  });
+
   it("crossRefSource defaults to content when undefined", async () => {
     // Without an LLM key, findRelatedPages returns []. We just verify
     // it doesn't throw and completes successfully (exercising the
@@ -541,6 +577,126 @@ describe("deleteWikiPage", () => {
     const result = await deleteWikiPage("victim");
     expect(result.strippedBacklinksFrom).toContain("linker");
     expect(result.strippedBacklinksFrom).not.toContain("bystander");
+  });
+
+  it("does not strip a backlink after the deleted target has been recreated", async () => {
+    await writeWikiPage("linker", "# Linker\n\nSee [Target](target.md).\n");
+    await writeWikiPage("target", "# Target\n\nOld target.\n");
+    await updateIndex([
+      { title: "Linker", slug: "linker", summary: "Has link" },
+      { title: "Target", slug: "target", summary: "Target" },
+    ]);
+
+    let releaseLinker!: () => void;
+    let markLinkerHeld!: () => void;
+    const linkerHeld = new Promise<void>((resolve) => { markLinkerHeld = resolve; });
+    const held = withDurableLock("page-lifecycle:linker", async () => {
+      markLinkerHeld();
+      await new Promise<void>((resolve) => { releaseLinker = resolve; });
+    });
+    await linkerHeld;
+
+    const deleting = deleteWikiPage("target");
+    while (await readWikiPage("target", { fresh: true })) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    await writeWikiPageWithSideEffects({
+      slug: "target",
+      title: "Target",
+      content: "# Target\n\nRecreated target.\n",
+      summary: "Recreated",
+      logOp: "edit",
+      crossRefSource: null,
+      createOnly: true,
+    });
+    releaseLinker();
+    await held;
+    const result = await deleting;
+
+    expect((await readWikiPage("linker"))!.content).toContain("target.md");
+    expect(result.strippedBacklinksFrom).not.toContain("linker");
+  }, 15_000);
+
+  it("retries backlink stripping against a concurrent owner edit", async () => {
+    await writeWikiPage("linker", "# Linker\n\nSee [Target](target.md).\n");
+    await writeWikiPage("target", "# Target\n\nOld target.\n");
+    await updateIndex([
+      { title: "Linker", slug: "linker", summary: "Has link" },
+      { title: "Target", slug: "target", summary: "Target" },
+    ]);
+
+    let releaseLinker!: () => void;
+    let markLinkerHeld!: () => void;
+    const linkerHeld = new Promise<void>((resolve) => { markLinkerHeld = resolve; });
+    const held = withDurableLock("page-lifecycle:linker", async () => {
+      markLinkerHeld();
+      await new Promise<void>((resolve) => { releaseLinker = resolve; });
+    });
+    await linkerHeld;
+
+    const deleting = deleteWikiPage("target");
+    while (await readWikiPage("target", { fresh: true })) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    await writeWikiPage(
+      "linker",
+      "# Linker\n\nOwner edit retained [Target](target.md).\n",
+    );
+    releaseLinker();
+    await held;
+    const result = await deleting;
+
+    const linker = await readWikiPage("linker");
+    expect(linker!.content).toContain("Owner edit retained");
+    expect(linker!.content).not.toContain("target.md");
+    expect(result.strippedBacklinksFrom).toContain("linker");
+  }, 15_000);
+
+  it("fails closed on stale visibility metadata after a page-index sync failure", async () => {
+    const publicContent = serializeFrontmatter(
+      { owner: "alice", visibility: "public" },
+      "# Secret\n\nSensitive body.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "secret",
+      title: "Secret",
+      content: publicContent,
+      summary: "Sensitive",
+      logOp: "edit",
+      crossRefSource: null,
+      createOnly: true,
+    });
+    await rebuildPageIndex();
+
+    const storage = getStorage();
+    const originalWrite = storage.writeFile.bind(storage);
+    const writeSpy = vi.spyOn(storage, "writeFile").mockImplementation(
+      async (target, content) => {
+        if (target === "derived-indexes/pages.json") {
+          throw new Error("page index unavailable");
+        }
+        return originalWrite(target, content);
+      },
+    );
+    const privateContent = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Secret\n\nSensitive body.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "secret",
+      title: "Secret",
+      content: privateContent,
+      summary: "Sensitive",
+      logOp: "edit",
+      crossRefSource: null,
+      expectedContent: publicContent,
+    });
+    writeSpy.mockRestore();
+
+    expect((await listReadableWikiPages(null)).map((entry) => entry.slug))
+      .not.toContain("secret");
+    expect((await listReadableWikiPages({ id: "alice-id", handle: "alice" }))
+      .map((entry) => entry.slug)).toContain("secret");
   });
 
   // 14b. Backlink-strip revisions carry author="system"

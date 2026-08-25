@@ -7,6 +7,7 @@ import {
   withFileLock,
   _resetLocks,
   _setDurableLocksForTests,
+  _setCloudflareMigrationGateForTests,
 } from "../lock";
 import { _resetStorage, getStorage } from "../storage";
 
@@ -265,10 +266,12 @@ describe("_resetLocks", () => {
 describe("withDurableLock", () => {
   let tempDir: string;
   let previousDataDir: string | undefined;
+  let previousMigrationReady: string | undefined;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "durable-lock-"));
     previousDataDir = process.env.DATA_DIR;
+    previousMigrationReady = process.env.WORKWIKI_DURABLE_LOCK_V2_READY;
     process.env.DATA_DIR = tempDir;
     _resetStorage();
     _setDurableLocksForTests(true);
@@ -276,10 +279,30 @@ describe("withDurableLock", () => {
 
   afterEach(async () => {
     _setDurableLocksForTests(false);
+    _setCloudflareMigrationGateForTests(false);
     if (previousDataDir === undefined) delete process.env.DATA_DIR;
     else process.env.DATA_DIR = previousDataDir;
+    if (previousMigrationReady === undefined) {
+      delete process.env.WORKWIKI_DURABLE_LOCK_V2_READY;
+    } else {
+      process.env.WORKWIKI_DURABLE_LOCK_V2_READY = previousMigrationReady;
+    }
     _resetStorage();
     await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("fails closed on Cloudflare until an operator confirms legacy Workers are drained", async () => {
+    _setCloudflareMigrationGateForTests(true);
+    delete process.env.WORKWIKI_DURABLE_LOCK_V2_READY;
+    let entered = false;
+    await expect(withDurableLock("rolling-gate", async () => {
+      entered = true;
+    }, 100)).rejects.toThrow(/fail-closed.*legacy Workers are drained/i);
+    expect(entered).toBe(false);
+
+    process.env.WORKWIKI_DURABLE_LOCK_V2_READY = "1";
+    await expect(withDurableLock("rolling-gate", async () => "ready", 100))
+      .resolves.toBe("ready");
   });
 
   it("waits for a simulated first isolate and then enters", async () => {
@@ -329,13 +352,21 @@ describe("withDurableLock", () => {
     expect(entered).toBe(true);
   });
 
-  it("reclaims an expired legacy lease in the isolated v2 namespace", async () => {
+  it("waits for an expired tokenless legacy holder to delete instead of taking it over", async () => {
     const lockPath = path.join(tempDir, "locks", "ingest-llm:alice.json");
     await fs.mkdir(path.dirname(lockPath), { recursive: true });
     await fs.writeFile(lockPath, JSON.stringify({ until: Date.now() - 1 }), "utf-8");
 
-    await expect(withDurableLock("ingest-llm:alice", async () => "reclaimed", 100))
-      .resolves.toBe("reclaimed");
+    let entered = false;
+    const waiting = withDurableLock("ingest-llm:alice", async () => {
+      entered = true;
+      return "after-delete";
+    }, 100);
+    await sleep(25);
+    expect(entered).toBe(false);
+
+    await fs.rm(lockPath);
+    await expect(waiting).resolves.toBe("after-delete");
     expect(JSON.parse(await fs.readFile(lockPath, "utf-8"))).toMatchObject({ until: expect.any(Number) });
   });
 

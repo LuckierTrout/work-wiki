@@ -731,18 +731,43 @@ export async function scanWikiPagesUncached(options?: { strict?: boolean }): Pro
  * Expected `index.md` line format: `- [Title](slug.md) — summary`
  */
 export async function listWikiPages(options?: { strict?: boolean }): Promise<IndexEntry[]> {
-  const { getPageIndex } = await import("./page-index");
+  const { getPageIndex, getPageIndexDirtySlugs } = await import("./page-index");
   const meta = await getPageIndex();
   if (meta === null) return scanWikiPagesUncached(options);
 
+  let dirty: Set<string>;
+  try {
+    dirty = await getPageIndexDirtySlugs();
+  } catch (error) {
+    if (options?.strict) throw error;
+    logger.warn("page-index", "dirty-set read failed; falling back to scan", error);
+    return scanWikiPagesUncached(options);
+  }
+
   const baseEntries = await readIndexBaseEntries(options);
-  return baseEntries.map((b) => {
+  return Promise.all(baseEntries.map(async (b) => {
+    if (dirty.has(b.slug)) {
+      try {
+        const page = await readWikiPageWithFrontmatter(
+          b.slug,
+          { fresh: true, strict: true },
+        );
+        // Missing/unreadable authoritative bytes are not permission to expose
+        // a stale public row. Private + unowned is denied to every non-admin.
+        return page
+          ? enrichEntry(b, page.frontmatter)
+          : { ...b, visibility: "private" as const };
+      } catch (error) {
+        logger.warn("page-index", `dirty Page read failed for "${b.slug}"; hiding it`, error);
+        return { ...b, visibility: "private" as const };
+      }
+    }
     const m = meta[b.slug];
     // index.md stays authoritative for title/summary; the metadata index
     // supplies the enriched fields. A slug missing from the index (just added,
     // pre-rebuild) falls back to its plain base entry.
     return m ? { ...m, title: b.title, slug: b.slug, summary: b.summary } : b;
-  });
+  }));
 }
 
 /**

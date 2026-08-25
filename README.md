@@ -173,6 +173,15 @@ must also be created with 1,024 dimensions. Generation-provider keys remain
 independent and can be switched in Settings without changing the embedding
 model.
 
+The durable-lock v2 migration requires a two-stage rollout because older
+Workers publish and delete the legacy lease without compare-and-set fencing.
+First deploy the new build with `WORKWIKI_DURABLE_LOCK_V2_READY` absent; page
+mutations then fail closed while reads stay available. After every request and
+queue delivery running the previous build has drained, set
+`WORKWIKI_DURABLE_LOCK_V2_READY=1` and deploy the same build again. Never set
+the flag during the first rolling deployment: an old Worker that already read
+an absent lease can otherwise enter alongside a v2 holder.
+
 Structured Knowledge extraction can also use its own provider and model from
 **Settings → Knowledge extraction**. When no workload override is saved, it
 inherits the primary generation route. The selection is non-secret config; the

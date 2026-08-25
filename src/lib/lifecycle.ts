@@ -20,7 +20,13 @@ import {
   isArtifactType,
   enrichEntry,
 } from "./wiki";
-import { syncPageIndexForPage, removePageIndexForSlug } from "./page-index";
+import {
+  clearPageIndexDirty,
+  getPageIndex,
+  markPageIndexDirty,
+  syncPageIndexForPage,
+  removePageIndexForSlug,
+} from "./page-index";
 import { bumpDataVersion } from "./data-version";
 import { getStorage } from "./storage";
 import { withDurableLock } from "./lock";
@@ -227,6 +233,21 @@ async function storageFileExists(relPath: string): Promise<boolean> {
   }
 }
 
+async function withPageLifecycleLocks<T>(
+  slugs: string[],
+  fn: () => Promise<T>,
+): Promise<T> {
+  const keys = [...new Set(slugs)]
+    .map((pageSlug) => `page-lifecycle:${pageSlug}`)
+    .sort();
+  const acquire = (index: number): Promise<T> => (
+    index === keys.length
+      ? fn()
+      : withDurableLock(keys[index], () => acquire(index + 1))
+  );
+  return acquire(0);
+}
+
 async function runPageLifecycleOp(
   slug: string,
   op: PageLifecycleOp,
@@ -236,13 +257,14 @@ async function runPageLifecycleOp(
     strippedBacklinksFrom: string[];
   }) => string | undefined,
   recovery?: { pageAlreadyWritten: boolean; previousContent?: string; logIdempotencyKey?: string },
+  pageLockAlreadyHeld = false,
 ): Promise<LifecycleOpResult> {
   // 1. Validate — the per-step helpers also validate, but we want to fail
   //    fast before any filesystem mutation happens.
   validateSlug(slug);
   let postIndexEntries!: IndexEntry[];
   let removedFromIndex = false;
-  await withDurableLock(`page-lifecycle:${slug}`, async () => {
+  const mutatePrimaryAndIndexes = async (): Promise<void> => {
 
   // --- Silo-primary: resolve the write tenant from content frontmatter ---
   let writeTenant: string | undefined;
@@ -267,6 +289,11 @@ async function runPageLifecycleOp(
 
   // 2. Mutate the page file.
   if (op.kind === "write") {
+    // Mark this metadata entry untrusted BEFORE authoritative Page bytes can
+    // change. If the derived-index sync later fails or the Worker crashes,
+    // listWikiPages re-reads this Page instead of trusting stale visibility or
+    // ownership metadata.
+    await markPageIndexDirty(slug);
     if (recovery?.pageAlreadyWritten) {
       prevContent = recovery.previousContent;
     } else if (op.expectedContent !== undefined) {
@@ -329,11 +356,16 @@ async function runPageLifecycleOp(
     } else if (op.expectedContent !== undefined) {
       const tenant = writeTenant ?? tenantForOwner(undefined);
       const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
+      const pageIndex = await getPageIndex();
+      const siloIsAuthoritative = pageIndex?.[slug] !== undefined;
       let siloMatches = false;
+      let siloExists = false;
       try {
+        siloExists = true;
         siloMatches = await getStorage().readFile(siloPath) === op.expectedContent;
       } catch (error) {
         if (!isEnoent(error)) throw error;
+        siloExists = false;
       }
       if (siloMatches) {
         const siloUpdated = await writeWikiPageIfContentMatches(
@@ -359,6 +391,10 @@ async function runPageLifecycleOp(
         } catch (error) {
           logger.warn("wiki", `flat compatibility copy update failed for "${slug}"`, error);
         }
+      } else if (siloExists && siloIsAuthoritative) {
+        // A silo copy is authoritative whenever it exists. Never let a stale
+        // transitional flat copy authorize overwriting newer owner bytes.
+        throw new LifecyclePageConflictError(slug);
       } else {
         // Before the page-metadata index is seeded, reads intentionally fall
         // back to the flat tree. CAS that exact merge base, then repair/promote
@@ -692,6 +728,7 @@ async function runPageLifecycleOp(
         enrichEntry({ title: op.title, slug, summary: op.summary }, fm),
       );
     }
+    await clearPageIndexDirty(slug);
   } catch (err) {
     logger.warn("page-index", `page index sync skipped for "${slug}":`, err);
   }
@@ -732,7 +769,12 @@ async function runPageLifecycleOp(
       logger.warn("vault", `vault cleanup skipped for "${slug}":`, err);
     }
   }
-  });
+  };
+  if (pageLockAlreadyHeld) {
+    await mutatePrimaryAndIndexes();
+  } else {
+    await withDurableLock(`page-lifecycle:${slug}`, mutatePrimaryAndIndexes);
+  }
 
   // 4. Cross-reference other pages.
   //    - write: discover related pages and add backlinks TO this slug.
@@ -764,13 +806,25 @@ async function runPageLifecycleOp(
     const linkers = pages.filter(
       ({ page }) => page && page.content.includes(`${slug}.md`),
     );
-    await mapWithConcurrency(linkers, LIFECYCLE_CONCURRENCY, async ({ entry, page }) => {
-      const updated = stripBacklinksTo(slug, page!.content);
-      if (updated !== page!.content) {
-        try {
-          await writeWikiPageWithSideEffects({
+    await mapWithConcurrency(linkers, LIFECYCLE_CONCURRENCY, async ({ entry }) => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const changed = await withPageLifecycleLocks([slug, entry.slug], async () => {
+          // Holding both locks makes the target-absence decision and the linker
+          // CAS one operation. Lexical acquisition order prevents two deletes
+          // of mutually linked Pages from deadlocking.
+          if (await readWikiPage(slug, { fresh: true, strict: true })) return false;
+          const current = await readWikiPageWithFrontmatter(
+            entry.slug,
+            { fresh: true, strict: true },
+          );
+          if (!current) return false;
+          const updated = stripBacklinksTo(slug, current.content);
+          if (updated === current.content) return false;
+          await writeWikiPageWithSideEffectsInternal({
             slug: entry.slug,
-            title: entry.title,
+            title: typeof current.frontmatter.title === "string"
+              ? current.frontmatter.title
+              : entry.title,
             content: updated,
             summary: entry.summary,
             logOp: "edit",
@@ -778,16 +832,20 @@ async function runPageLifecycleOp(
             crossRefSource: null,
             author: "system",
             revisionReason: "backlink strip",
-            expectedContent: page!.content,
-          });
+            expectedContent: current.content,
+          }, true);
+          return true;
+        });
+        if (changed) {
           strippedBacklinksFrom.push(entry.slug);
-        } catch (error) {
-          if (!(error instanceof Error && error.name === "LifecyclePageConflictError")) {
-            throw error;
-          }
-          logger.warn("wiki", `backlink strip skipped after concurrent edit of "${entry.slug}"`);
+          return;
         }
+        const targetExists = await readWikiPage(slug, { fresh: true, strict: true });
+        if (targetExists) return;
+        const current = await readWikiPage(entry.slug, { fresh: true, strict: true });
+        if (!current?.content.includes(`${slug}.md`)) return;
       }
+      logger.warn("wiki", `backlink strip exhausted retries for "${entry.slug}"`);
     });
   }
 
@@ -925,8 +983,9 @@ export async function deleteWikiPage(
  * Thin wrapper over {@link runPageLifecycleOp} — the actual 5 steps live in
  * the shared pipeline, which `deleteWikiPage` also flows through.
  */
-export async function writeWikiPageWithSideEffects(
+async function writeWikiPageWithSideEffectsInternal(
   opts: WritePageOptions,
+  pageLockAlreadyHeld = false,
 ): Promise<WritePageResult> {
   // Deployment read-only (DW-188), answered before anything is read, validated
   // or written. Every page create, edit, revert, re-ingest, lint-fix and merge
@@ -1000,6 +1059,7 @@ export async function writeWikiPageWithSideEffects(
           logIdempotencyKey: opts.idempotency.key,
         }
       : undefined,
+    pageLockAlreadyHeld,
   );
 
   const publicResult = { slug: result.slug, updatedSlugs: result.crossRefedSlugs };
@@ -1014,4 +1074,10 @@ export async function writeWikiPageWithSideEffects(
     );
   }
   return publicResult;
+}
+
+export async function writeWikiPageWithSideEffects(
+  opts: WritePageOptions,
+): Promise<WritePageResult> {
+  return writeWikiPageWithSideEffectsInternal(opts);
 }

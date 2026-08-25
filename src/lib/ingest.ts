@@ -164,7 +164,7 @@ import {
   INGEST_CANCELLED_COPY,
   updateIngestJob,
 } from "./ingest-jobs";
-import { withDurableLock, withFileLock } from "./lock";
+import { withDurableLock } from "./lock";
 import { sourceRestFromPath, workbenchSourcePath } from "./source-delete";
 
 // ---------------------------------------------------------------------------
@@ -2038,7 +2038,15 @@ export async function ingest(
     frontmatter.tags = newTags;
   }
 
-  const existing = await readWikiPageWithFrontmatter(slug);
+  // Serialize the authoritative read/merge/write by the RESOLVED page slug.
+  // A job id is unique per delivery, so it cannot fence two independent jobs
+  // that converge onto the same new concept. Keeping this lock around the
+  // fresh merge base and lifecycle commit prevents two first-ingests from both
+  // observing "missing" and then overwriting one another.
+  const commitLock = `ingest-commit:${slug}`;
+  const { updatedSlugs } = await withDurableLock(commitLock, async () => {
+  await assertNotCancelled(options?.jobId);
+  const existing = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
   if (existing) {
     const existingCreated = existing.frontmatter.created;
     if (typeof existingCreated === "string" && existingCreated !== "") {
@@ -2148,7 +2156,8 @@ export async function ingest(
   // new source contradicts what's there. Skipped without an LLM key (fall back
   // to the prior overwrite behaviour) and for a prebuilt image body (already
   // final). The page summary is computed from the raw source, so it is unaffected.
-  if (existing && hasLLMKey() && !prebuiltContent) {
+  const canReconcileWithLlm = hasLLMKey();
+  if (existing && canReconcileWithLlm && !prebuiltContent) {
     try {
       // Reconcile against the frontmatter-STRIPPED body (existing.content still
       // carries the YAML block; existing.body is the markdown) so page metadata
@@ -2169,6 +2178,16 @@ export async function ingest(
       // overwrite behaviour (keep the freshly synthesized body, disputed
       // untouched).
       logger.warn("ingest", "reconcile-on-merge failed; using new body", err);
+    }
+  } else if (existing && !canReconcileWithLlm && !prebuiltContent) {
+    // The no-provider fallback must still be lossless. Preserve both compiled
+    // bodies when distinct Sources converge on one slug; raw snapshots remain
+    // authoritative, while this deterministic join keeps neither Source from
+    // disappearing from the Page merely because reconciliation is unavailable.
+    const priorBody = existing.body.trim();
+    const nextBody = wikiContent.trim();
+    if (priorBody !== "" && nextBody !== "" && priorBody !== nextBody) {
+      wikiContent = `${priorBody}\n\n---\n\n${nextBody}\n`;
     }
   }
 
@@ -2216,9 +2235,6 @@ export async function ingest(
 
   const contentWithFm = serializeFrontmatter(frontmatter, wikiContent);
 
-  const commitLock = options?.jobId ? `ingest-job:${options.jobId}` : `ingest-commit:${slug}`;
-  const { updatedSlugs } = await withFileLock(commitLock, async () => {
-    await assertNotCancelled(options?.jobId);
     return writeWikiPageWithSideEffects({
       slug,
       title: pageTitle,

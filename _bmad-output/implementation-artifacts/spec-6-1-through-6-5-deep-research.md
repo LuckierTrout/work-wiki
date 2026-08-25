@@ -5,7 +5,7 @@ created: 2026-08-24
 status: done
 stepsCompleted: [1, 3, 4]
 followup_review_recommended: true
-review_loop_iteration: 6
+review_loop_iteration: 7
 baseline_revision: 6df2c30573d0a2dcbeabb3a0f65315d82a7698d9
 context:
   - AGENTS.md
@@ -336,6 +336,15 @@ None that block implementation. If an assumption is wrong, record the override i
 - patch: all findings from the `480d73fa` full-stack review applied: cross-reference lock-order deadlock removal, conditional/retried related-Page and backlink-strip writes, metadata and owner PUT stale-write fencing, v1-to-v2 durable-lock bridge fencing, and rendered-citation validation
 - hardening: every production lifecycle read-modify-write caller now supplies its exact source bytes, while create-only doors refuse a concurrent creator; a conflict fails closed instead of restoring stale Page content
 - evidence: focused tests force the related-Page owner race, metadata race, post-header-check PUT race, and stale-v1-heartbeat race; Markdown tests reject URLs in comments, code, and unused definitions
+- independent verdict: pending against the next committed SHA
+- release gates: pending against that same next SHA
+- acceptance effect: none yet; the rejected retrospective verdict and in-progress delivery-review gate remain unchanged
+
+### 2026-08-24 — Exact-head review remediation pass 7
+
+- patch: all findings from the `4cae4ee1` full-stack review applied: resolved-slug first-ingest serialization with lossless no-provider accumulation, authoritative-silo stale-flat rejection, dirty-before-write Page-metadata invalidation for privacy-safe reads, deterministic two-Page backlink-strip locking plus fresh retries, and an operator-enforced two-stage Cloudflare durable-lock migration gate
+- rollout safety: Cloudflare page mutations fail closed until `WORKWIKI_DURABLE_LOCK_V2_READY=1`; the flag may be set only after the prior Worker version's requests and Queue deliveries are drained, because its unconditional legacy lease publication cannot be fenced after a stale absent read
+- evidence: focused tests force concurrent same-slug first-ingests, stale flat versus newer silo bytes, public-to-private metadata sync failure, owner-edit and target-recreation backlink races, expired tokenless lease release, and the Cloudflare migration readiness refusal
 - independent verdict: pending against the next committed SHA
 - release gates: pending against that same next SHA
 - acceptance effect: none yet; the rejected retrospective verdict and in-progress delivery-review gate remain unchanged

@@ -341,6 +341,20 @@ describe("ingest", () => {
     expect(entries[0].summary).toBe("Updated content about the topic.");
   });
 
+  it("serializes concurrent first-ingests that converge on one slug without losing either body", async () => {
+    const [first, second] = await Promise.all([
+      ingest("Collision", "FIRST UNIQUE BODY", { owner: "alice", author: "alice" }),
+      ingest("Collision", "SECOND UNIQUE BODY", { owner: "alice", author: "alice" }),
+    ]);
+
+    expect(first.primarySlug).toBe("collision");
+    expect(second.primarySlug).toBe("collision");
+    const page = await readWikiPageWithFrontmatter("collision");
+    expect(page!.content).toContain("FIRST UNIQUE BODY");
+    expect(page!.content).toContain("SECOND UNIQUE BODY");
+    expect(Number(page!.frontmatter.source_count)).toBe(2);
+  });
+
   it("updates title on re-ingest when slug matches but title differs", async () => {
     // The slug for both is "hello-world"
     await ingest("Hello World", "First version of the doc. Details here.");
