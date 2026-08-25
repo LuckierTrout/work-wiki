@@ -77,6 +77,7 @@ import {
   acquireResearchSlot,
   activeResearchCount,
   releaseResearchSlot,
+  renewResearchSlot,
   RESEARCH_SLOT_TTL_MS,
 } from "../research-concurrency";
 import {
@@ -545,7 +546,8 @@ describe("deep research run — failure and cancellation", () => {
 
   it("releases a slot preclaimed by the dispatcher when provider resolution fails", async () => {
     const created = await project();
-    await acquireResearchSlot("alice", created.id);
+    const grant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, { runAttemptId: grant.attemptId });
     mockedResolve.mockImplementation(() => {
       throw new Error("Deep Research provider override is invalid.");
     });
@@ -970,8 +972,11 @@ describe("deep research — an interrupted run gets an answer", () => {
 
   it("fails and releases the retained expired claim of an abandoned worker", async () => {
     const created = await project();
-    await updateResearchProject("alice", created.id, { status: "collecting" });
-    await acquireResearchSlot("alice", created.id);
+    const grant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, {
+      status: "collecting",
+      runAttemptId: grant.attemptId,
+    });
     vi.setSystemTime(new Date(Date.now() + RESEARCH_ABANDONED_AFTER_MS + 1_000));
 
     await reconcileResearchProjects("alice", await listResearchProjects("alice"));
@@ -1057,6 +1062,27 @@ describe("deep research — an interrupted run gets an answer", () => {
     );
   });
 
+  it("retires an expired previous-release lease and dispatches its queued project", async () => {
+    const created = await project();
+    await queueResearchProject("alice", created.id);
+    await getStorage().writeFile(
+      "tenants/alice/research-leases.json",
+      JSON.stringify([{
+        projectId: created.id,
+        acquiredAt: Date.now() - RESEARCH_SLOT_TTL_MS * 2,
+        expiresAt: Date.now() - 1,
+      }]),
+    );
+    mockedEnqueue.mockClear();
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    expect(mockedEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "run-research", projectId: created.id }),
+    );
+    expect((await getResearchProject("alice", created.id))?.runAttemptId).toBeTruthy();
+  });
+
   it("does not re-dispatch when the workspace is already at its ceiling", async () => {
     await acquireResearchSlot("alice", "other-1");
     await acquireResearchSlot("alice", "other-2");
@@ -1072,6 +1098,82 @@ describe("deep research — an interrupted run gets an answer", () => {
 });
 
 describe("deep research — remediations", () => {
+  it("rotates the attempt fence before recovering an abandoned run", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const created = await project();
+    const oldGrant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, {
+      status: "collecting",
+      runAttemptId: oldGrant.attemptId,
+    });
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_ABANDONED_AFTER_MS + 1_000));
+    let observedAttempt: string | undefined;
+    mockedSearch.mockImplementation(async () => {
+      observedAttempt = (await getResearchProject("alice", created.id))?.runAttemptId;
+      return [{
+        title: "Launch brief",
+        url: "https://example.com/launch/brief",
+        snippet: "short excerpt",
+        content: "THE WHOLE PAGE BODY.",
+      }];
+    });
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.status).toBe("complete");
+    expect(observedAttempt).toBeTruthy();
+    expect(observedAttempt).not.toBe(oldGrant.attemptId);
+    vi.useRealTimers();
+  });
+
+  it("does not let a stale terminal snapshot revoke a replacement attempt", async () => {
+    const created = await project();
+    const oldGrant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, {
+      status: "complete",
+      runAttemptId: oldGrant.attemptId,
+      completion: { phase: "done", pageSlug: "research-old", sources: [] },
+    });
+    const stale = await listResearchProjects("alice");
+    await updateResearchProject("alice", created.id, {
+      status: "queued",
+      runAttemptId: null,
+      completion: null,
+    });
+    await releaseResearchSlot("alice", created.id, oldGrant.attemptId);
+    const replacement = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, { runAttemptId: replacement.attemptId });
+
+    await reconcileResearchProjects("alice", stale);
+
+    await expect(renewResearchSlot("alice", created.id, replacement.attemptId!))
+      .resolves.toBeUndefined();
+    expect((await getResearchProject("alice", created.id))?.runAttemptId)
+      .toBe(replacement.attemptId);
+  });
+
+  it("isolates a damaged project and still dispatches the next recoverable row", async () => {
+    const recoverable = await project({ title: "Recoverable" });
+    await queueResearchProject("alice", recoverable.id);
+    const damaged = await project({ title: "Damaged" });
+    await updateResearchProject("alice", damaged.id, {
+      status: "failed",
+      completion: { phase: "page", pageSlug: "research-damaged", sources: [] },
+    });
+    await getStorage().writeFile(
+      `tenants/alice/research-outbox/${damaged.id}.json`,
+      "{ malformed",
+    );
+    mockedEnqueue.mockClear();
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    expect((await getResearchProject("alice", damaged.id))?.deliveryBlocked).toBe(true);
+    expect(mockedEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "run-research", projectId: recoverable.id }),
+    );
+  });
+
   it("executes a create → queue → parseTask → run delivery once", async () => {
     const created = await project();
     const queued = await queueResearchProject("alice", created.id);
@@ -1131,7 +1233,8 @@ describe("deep research — remediations", () => {
 
     const running = runResearchProject("alice", created.id);
     await started;
-    await releaseResearchSlot("alice", created.id);
+    const active = await getResearchProject("alice", created.id);
+    await releaseResearchSlot("alice", created.id, active?.runAttemptId);
     finishSynthesis(
       "# Launch evidence\n\nA brief [from the source](https://example.com/launch/brief).",
     );
@@ -1143,13 +1246,16 @@ describe("deep research — remediations", () => {
 
   it("keeps a collecting worker's lease until that worker exits", async () => {
     const created = await project();
-    await updateResearchProject("alice", created.id, { status: "collecting" });
-    await acquireResearchSlot("alice", created.id);
+    const grant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, {
+      status: "collecting",
+      runAttemptId: grant.attemptId,
+    });
 
     expect(await retireResearchProject("alice", created.id)).toBe(true);
     expect(await getResearchProject("alice", created.id)).toBeNull();
     expect(await activeResearchCount("alice")).toBe(1);
-    await releaseResearchSlot("alice", created.id);
+    await releaseResearchSlot("alice", created.id, grant.attemptId);
     expect(await activeResearchCount("alice")).toBe(0);
   });
 
@@ -1161,8 +1267,12 @@ describe("deep research — remediations", () => {
 
     expect(mockedWritePage).toHaveBeenCalledTimes(1);
     expect(finished.status).toBe("failed");
+    expect(finished.deliveryBlocked).toBe(true);
     expect(finished.completion?.phase).toBe("sources");
     expect(finished.error).toMatch(/did not ingest|Page was written/);
+    const attempts = mockedSaveRaw.mock.calls.length;
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+    expect(mockedSaveRaw).toHaveBeenCalledTimes(attempts);
   });
 
   it("does not claim the Page was written when the lifecycle writer fails", async () => {
@@ -1233,11 +1343,12 @@ describe("deep research — remediations", () => {
 
   it("retries cleanup of a terminal project's retained lease", async () => {
     const created = await project();
+    const grant = await acquireResearchSlot("alice", created.id);
     await updateResearchProject("alice", created.id, {
       status: "complete",
+      runAttemptId: grant.attemptId,
       completion: { phase: "done", pageSlug: "research-launch-evidence", sources: [] },
     });
-    await acquireResearchSlot("alice", created.id);
     expect(await activeResearchCount("alice")).toBe(1);
 
     await reconcileResearchProjects("alice", await listResearchProjects("alice"));

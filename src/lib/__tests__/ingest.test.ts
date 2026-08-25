@@ -1924,6 +1924,33 @@ describe("cross-referencing", () => {
       expect(aiPage!.content).toContain("[Deep Learning](deep-learning.md)");
     });
 
+    it("does not discover or mutate a related Page owned by another tenant", async () => {
+      const bobPage = serializeFrontmatter(
+        { owner: "bob", visibility: "private" },
+        "# Bob roadmap\n\nPrivate roadmap.",
+      );
+      await writeWikiPage("bob-roadmap", bobPage);
+      const { updateIndex } = await import("../wiki");
+      await updateIndex([{
+        title: "Bob roadmap",
+        slug: "bob-roadmap",
+        summary: "Private roadmap",
+        owner: "bob",
+      }]);
+      mockedHasLLMKey.mockReturnValue(true);
+      mockedCallLLM
+        .mockResolvedValueOnce("# Alice launch\n\n## Summary\n\nLaunch notes.")
+        .mockResolvedValueOnce('["bob-roadmap"]');
+
+      const result = await ingest("Alice launch", "Private launch details.", {
+        owner: "alice",
+        author: "alice",
+      });
+
+      expect(result.relatedUpdated).toEqual([]);
+      expect((await readWikiPage("bob-roadmap"))?.content).not.toContain("Alice launch");
+    });
+
     it("returns only the new page when no LLM key (existing behavior)", async () => {
       mockedHasLLMKey.mockReturnValue(false);
       const result = await ingest("Solo Page", "Content for a solo page. More text.");

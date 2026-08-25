@@ -5,7 +5,7 @@ import path from "node:path";
 import { serializeFrontmatter } from "../frontmatter";
 import { buildPortableArchive, importPortableArchive, inspectPortableArchive } from "../portable-archive";
 import { _resetStorage, getStorage } from "../storage";
-import { updateIndex, writeWikiPage } from "../wiki";
+import { listWikiPages, updateIndex, writeWikiPage } from "../wiki";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -88,6 +88,26 @@ describe("portable owner archive", () => {
 
     expect(await getStorage().readFile("tenants/alice/wiki/queries/saved-answer.md")).toBe(page);
     expect(await getStorage().readFile("wiki/queries/saved-answer.md")).toBe(page);
+    expect(await listWikiPages({ strict: true })).toContainEqual(
+      expect.objectContaining({ slug: "queries/saved-answer", owner: "alice" }),
+    );
+  });
+
+  it("rejects foreign-owner Page bytes before mutating either storage path", async () => {
+    const foreign = serializeFrontmatter(
+      { owner: "bob", visibility: "private" },
+      "# Foreign\n\nBob.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/queries/foreign.md", foreign);
+    const archive = await buildPortableArchive("alice");
+    await getStorage().deleteDirectory("tenants/alice");
+
+    await expect(importPortableArchive("alice", buffer(archive.bytes), "overwrite"))
+      .rejects.toThrow(/owner.*archive tenant/i);
+    await expect(getStorage().fileExists("tenants/alice/wiki/queries/foreign.md"))
+      .resolves.toBe(false);
+    await expect(getStorage().fileExists("wiki/queries/foreign.md"))
+      .resolves.toBe(false);
   });
 
   it("refuses a nested queries Page already owned by another tenant", async () => {

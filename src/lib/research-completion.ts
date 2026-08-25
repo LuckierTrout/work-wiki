@@ -857,6 +857,7 @@ export async function drainResearchOutbox(
       sources,
     };
     project.status = failed.length === 0 ? "complete" : "failed";
+    project.deliveryBlocked = failed.length > 0;
     delete project.proposalId;
     if (failed.length === 0) {
       delete project.error;

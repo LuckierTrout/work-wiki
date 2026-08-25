@@ -64,11 +64,11 @@ describe("research concurrency lease", () => {
 
   it("frees the ceiling when a run releases", async () => {
     await acquireResearchSlot("alice", "p1");
-    await acquireResearchSlot("alice", "p2");
+    const second = await acquireResearchSlot("alice", "p2");
     await acquireResearchSlot("alice", "p3");
     expect((await acquireResearchSlot("alice", "p4")).granted).toBe(false);
 
-    await releaseResearchSlot("alice", "p2");
+    await releaseResearchSlot("alice", "p2", second.attemptId);
 
     expect(await activeResearchCount("alice")).toBe(2);
     expect((await acquireResearchSlot("alice", "p4")).granted).toBe(true);

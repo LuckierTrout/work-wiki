@@ -91,6 +91,43 @@ afterEach(async () => {
 });
 
 describe("research completion outbox", () => {
+  it("refuses a stale attempt before staging Source bytes", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await updateResearchProject("alice", created.id, {
+      status: "collecting",
+      runAttemptId: "replacement-attempt",
+    });
+
+    await expect(stageResearchSource(
+      "alice",
+      created.id,
+      OUTBOX.sources[0],
+      "stale-attempt",
+    )).rejects.toThrow(/retired/i);
+    expect(await getStorage().listFiles("tenants/alice/research-outbox")).toEqual([]);
+  });
+
+  it("refuses a stale attempt before persisting an outbox or Page", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await updateResearchProject("alice", created.id, {
+      status: "ready",
+      runAttemptId: "replacement-attempt",
+    });
+
+    await expect(commitResearchPage("alice", created.id, {
+      ...OUTBOX,
+      attemptId: "stale-attempt",
+    })).rejects.toThrow(/attempt was replaced/i);
+    expect(await loadResearchOutbox("alice", created.id)).toBeNull();
+    expect(mockedWritePage).not.toHaveBeenCalled();
+  });
+
   it("discovers staged bodies when their manifest is malformed", async () => {
     const created = await createResearchProject("alice", {
       title: "Launch evidence",

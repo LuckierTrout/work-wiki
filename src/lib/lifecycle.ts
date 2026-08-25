@@ -177,6 +177,8 @@ type PageLifecycleOp =
       title: string;
       /** Who performed the deletion — used for contributor-index cleanup. */
       author?: string;
+      /** Refuse deletion unless the authoritative Page still has these bytes. */
+      expectedContent?: string;
     };
 
 /** Internal result of a lifecycle op — a superset of Write/Delete result shapes. */
@@ -486,7 +488,10 @@ async function runPageLifecycleOp(
     }
   } else {
     try {
-      const pre = await readWikiPageWithFrontmatter(slug);
+      const pre = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+      if (op.expectedContent !== undefined && pre?.content !== op.expectedContent) {
+        throw new LifecyclePageConflictError(slug, "Page changed before delete");
+      }
       deletedOwner =
         typeof pre?.frontmatter.owner === "string"
           ? pre.frontmatter.owner
@@ -496,7 +501,10 @@ async function runPageLifecycleOp(
             (c): c is string => typeof c === "string",
           )
         : [];
-    } catch {
+    } catch (error) {
+      if (error instanceof LifecyclePageConflictError || op.expectedContent !== undefined) {
+        throw error;
+      }
       // Owner/contributors unknown → falls back to the default tenant in step 3c.
     }
     // Delete from silo (primary target).
@@ -1020,6 +1028,7 @@ export async function pruneStaleIndexEntry(
 export async function deleteWikiPage(
   slug: string,
   author?: string,
+  expectedContent?: string,
 ): Promise<DeletePageResult> {
   // Deployment read-only (DW-188), answered BEFORE `validateSlug` and before
   // the read below. This is the ENFORCEMENT POINT, not a convenience: REST,
@@ -1040,7 +1049,7 @@ export async function deleteWikiPage(
 
   const result = await runPageLifecycleOp(
     slug,
-    { kind: "delete", title, author },
+    { kind: "delete", title, author, expectedContent },
     "delete",
     ({ strippedBacklinksFrom }) =>
       `deleted · stripped backlinks from ${strippedBacklinksFrom.length} page(s)`,

@@ -849,6 +849,77 @@ describe("updateRelatedPages", () => {
       .not.toContain("[Source Race](source-race.md)");
   });
 
+  it("does not inject after the source slug is recreated under another owner", async () => {
+    await ensureDirectories();
+    const aliceSource = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Source Race\n\nAlice.\n",
+    );
+    const aliceTarget = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Linker Race\n\nKeep me.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "owner-source-race",
+      title: "Source Race",
+      content: aliceSource,
+      summary: "Alice",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    await writeWikiPageWithSideEffects({
+      slug: "owner-linker-race",
+      title: "Linker Race",
+      content: aliceTarget,
+      summary: "Keep me",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let relatedRead!: () => void;
+    let resumeRelatedRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => { relatedRead = resolve; });
+    const resume = new Promise<void>((resolve) => { resumeRelatedRead = resolve; });
+    let pauseOnce = true;
+    vi.spyOn(storage, "readFile").mockImplementation(async (rel) => {
+      const value = await originalRead(rel);
+      if (pauseOnce && String(rel).endsWith("wiki/owner-linker-race.md")) {
+        pauseOnce = false;
+        relatedRead();
+        await resume;
+      }
+      return value;
+    });
+
+    const crossRef = updateRelatedPages(
+      "owner-source-race",
+      "Alice secret",
+      ["owner-linker-race"],
+      { requireSource: true, tenant: "alice" },
+    );
+    await readStarted;
+    await deleteWikiPage("owner-source-race", "alice");
+    await writeWikiPageWithSideEffects({
+      slug: "owner-source-race",
+      title: "Replacement",
+      content: serializeFrontmatter(
+        { owner: "bob", visibility: "private" },
+        "# Replacement\n\nBob.\n",
+      ),
+      summary: "Bob",
+      logOp: "ingest",
+      crossRefSource: null,
+      createOnly: true,
+    });
+    resumeRelatedRead();
+
+    await expect(crossRef).resolves.toEqual([]);
+    expect((await readWikiPage("owner-linker-race"))?.content)
+      .not.toContain("Alice secret");
+  });
+
   it("does not inject a private source title into another tenant's Page", async () => {
     await ensureDirectories();
     await writeWikiPageWithSideEffects({

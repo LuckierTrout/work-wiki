@@ -240,12 +240,41 @@ export async function releaseResearchSlot(
     return await lockedMutation(owner, (slots) => {
       const next = slots.filter((slot) =>
         slot.projectId !== projectId
-        || (attemptId !== undefined && slot.attemptId !== attemptId));
+        || (attemptId !== undefined
+          ? slot.attemptId !== attemptId
+          // An unfenced cleanup may retire only a previous-release lease.
+          // Letting it delete a current token means a stale list/reaper can
+          // revoke a replacement Worker that acquired after its read.
+          : slot.attemptId !== undefined));
       return { slots: next, result: next.length !== slots.length };
     });
   } catch {
     // Reconciliation retries terminal releases. Never replace the run's real
     // outcome with this cleanup failure.
+    return false;
+  }
+}
+
+/**
+ * Retire an expired claim without knowing its attempt token.
+ *
+ * This is the rolling-upgrade bridge for queued projects created before the
+ * registry stored `runAttemptId`. Expiry is checked inside the lease-file CAS,
+ * so a concurrent renewal wins by changing the etag and the retry then keeps
+ * the live replacement.
+ */
+export async function releaseExpiredResearchSlot(
+  owner: string,
+  projectId: string,
+): Promise<boolean> {
+  try {
+    return await lockedMutation(owner, (slots, now) => {
+      const next = slots.filter(
+        (slot) => slot.projectId !== projectId || slot.expiresAt > now,
+      );
+      return { slots: next, result: next.length !== slots.length };
+    });
+  } catch {
     return false;
   }
 }
@@ -271,13 +300,19 @@ export async function activeResearchCount(owner: string): Promise<number> {
  * can turn the storage fault into a visible project failure instead of
  * silently treating every queued waiter as already dispatched forever.
  */
-export async function holdsResearchSlot(owner: string, projectId: string): Promise<boolean> {
+export async function holdsResearchSlot(
+  owner: string,
+  projectId: string,
+  attemptId?: string,
+): Promise<boolean> {
   try {
     const storage = getStorage();
     const read = await storage.readFileWithEtag(leasePath(owner));
     const now = Date.now();
     return parseSlots(read.content).some(
-      (slot) => slot.projectId === projectId && slot.expiresAt > now,
+      (slot) => slot.projectId === projectId
+        && (attemptId === undefined || slot.attemptId === attemptId)
+        && slot.expiresAt > now,
     );
   } catch (error) {
     if (isEnoent(error)) return false;

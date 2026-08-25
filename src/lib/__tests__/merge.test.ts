@@ -95,6 +95,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const k of ["DATA_DIR", "WIKI_DIR", "RAW_DIR"]) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
@@ -201,6 +202,102 @@ describe("mergePages", () => {
     expect(await readWikiPage("harness-ai-agents")).not.toBeNull();
     matchSpy.mockRestore();
   });
+
+  it("resumes a partial merge without folding the absorbed body twice", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("agent-harness", {
+      title: "Agent Harness",
+      body: "# Agent Harness\n\nSURVIVOR UNIQUE.",
+    });
+    await seedPage("harness-ai-agents", {
+      title: "Harness (AI agents)",
+      body: "# Harness (AI agents)\n\nABSORBED UNIQUE.",
+    });
+    await seedPage("other", {
+      title: "Other",
+      body: "# Other\n\nSee [harness](harness-ai-agents.md).",
+    });
+    const storage = getStorage();
+    const originalMatch = storage.writeFileIfMatch.bind(storage);
+    let failLinker = true;
+    const matchSpy = vi.spyOn(storage, "writeFileIfMatch").mockImplementation(
+      async (target, content, etag) => {
+        if (failLinker && target === "tenants/alice/wiki/other.md") {
+          failLinker = false;
+          return false;
+        }
+        return originalMatch(target, content, etag);
+      },
+    );
+
+    await expect(mergePages({
+      from: "harness-ai-agents",
+      into: "agent-harness",
+      actor: "alice",
+    })).rejects.toThrow(/changed/i);
+    await mergePages({
+      from: "harness-ai-agents",
+      into: "agent-harness",
+      actor: "alice",
+    });
+
+    const survivor = await readWikiPageWithFrontmatter("agent-harness");
+    expect(survivor?.body.match(/ABSORBED UNIQUE\./g)).toHaveLength(1);
+    expect((await readWikiPage("other"))?.content).toContain("](agent-harness.md)");
+    expect(await readWikiPage("harness-ai-agents")).toBeNull();
+    matchSpy.mockRestore();
+  });
+
+  it("does not delete an absorbed Page that changed after the merge plan", async () => {
+    await seedPage("agent-harness", { title: "Agent Harness" });
+    await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
+    await seedPage("other", {
+      title: "Other",
+      body: "# Other\n\nSee [harness](harness-ai-agents.md).",
+    });
+    const originalFrom = await readWikiPageWithFrontmatter("harness-ai-agents");
+    const storage = getStorage();
+    const originalMatch = storage.writeFileIfMatch.bind(storage);
+    let linkerWrite!: () => void;
+    let resumeLinker!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { linkerWrite = resolve; });
+    const resume = new Promise<void>((resolve) => { resumeLinker = resolve; });
+    let pauseOnce = true;
+    vi.spyOn(storage, "writeFileIfMatch").mockImplementation(async (target, content, etag) => {
+      if (pauseOnce && target === "tenants/alice/wiki/other.md") {
+        pauseOnce = false;
+        linkerWrite();
+        await resume;
+      }
+      return originalMatch(target, content, etag);
+    });
+
+    const merging = mergePages({
+      from: "harness-ai-agents",
+      into: "agent-harness",
+      actor: "alice",
+    });
+    await writeStarted;
+    const edited = originalFrom!.content.replace(
+      "Content about Harness (AI agents).",
+      "OWNER EDIT MUST SURVIVE.",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "harness-ai-agents",
+      title: "Harness (AI agents)",
+      content: edited,
+      summary: "Owner edit",
+      logOp: "edit",
+      crossRefSource: null,
+      expectedContent: originalFrom!.content,
+      author: "alice",
+    });
+    resumeLinker();
+
+    await expect(merging).rejects.toThrow(/changed before delete/i);
+    expect((await readWikiPage("harness-ai-agents"))?.content)
+      .toContain("OWNER EDIT MUST SURVIVE.");
+  }, 15_000);
 
   it("re-points via the precomputed backlink index when it's present (the production fast path)", async () => {
     await seedPage("agent-harness", { title: "Agent Harness" });

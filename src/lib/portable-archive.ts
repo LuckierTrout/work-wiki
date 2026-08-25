@@ -143,6 +143,15 @@ async function parseArchive(owner: string, bytes: ArrayBuffer): Promise<{
     if (!data || data.byteLength !== entry.size || await sha256(bytesBuffer(data)) !== entry.sha256) {
       throw new Error(`Archive checksum failed: ${entry.path}`);
     }
+    const pageMatch = /^wiki\/(.+)\.md$/.exec(entry.path);
+    if (pageMatch && !["index", "log"].includes(pageMatch[1])) {
+      validateSlug(pageMatch[1]);
+      const parsed = parseFrontmatter(new TextDecoder().decode(data));
+      const pageOwner = typeof parsed.data.owner === "string" ? parsed.data.owner : undefined;
+      if (tenantForOwner(pageOwner) !== tenant(owner)) {
+        throw new Error(`Archive page owner does not match archive tenant: ${pageMatch[1]}`);
+      }
+    }
     totalBytes += data.byteLength;
     if (totalBytes > MAX_BYTES) throw new Error("Archive expands beyond the 500 MB safety limit");
     try {

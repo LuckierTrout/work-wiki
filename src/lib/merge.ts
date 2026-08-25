@@ -32,10 +32,13 @@ import {
   extractSummary,
 } from "./ingest";
 import { parseSources, serializeSources } from "./sources";
-import { serializeFrontmatter, type Frontmatter } from "./frontmatter";
+import { parseFrontmatter, serializeFrontmatter, type Frontmatter } from "./frontmatter";
 import { writeWikiPageWithSideEffects, deleteWikiPage } from "./lifecycle";
 import { getBacklinkIndex } from "./backlink-index";
 import { escapeRegex } from "./links";
+import { getStorage } from "./storage";
+import { isEnoent } from "./errors";
+import { sourceSha256 } from "./source-sha256";
 
 export interface MergePagesArgs {
   /** Slug of the page to absorb — deleted after the merge. */
@@ -147,6 +150,49 @@ async function repointBacklinks(
   return repointed;
 }
 
+interface MergeOperationReceipt {
+  version: 1;
+  fromSlug: string;
+  intoSlug: string;
+  fromContent: string;
+  intoContent: string;
+  mergedContent: string;
+  summary: string;
+  disputed: boolean;
+}
+
+function pageSnapshot(content: string, slug: string) {
+  const parsed = parseFrontmatter(content);
+  return {
+    content,
+    frontmatter: parsed.data,
+    body: parsed.body,
+    title: parsed.body.match(/^#\s+(.+)$/m)?.[1]?.trim() || slug,
+  };
+}
+
+async function readMergeReceipt(path: string): Promise<MergeOperationReceipt | null> {
+  try {
+    const parsed = JSON.parse(await getStorage().readFile(path)) as MergeOperationReceipt;
+    if (
+      parsed.version !== 1
+      || typeof parsed.fromSlug !== "string"
+      || typeof parsed.intoSlug !== "string"
+      || typeof parsed.fromContent !== "string"
+      || typeof parsed.intoContent !== "string"
+      || typeof parsed.mergedContent !== "string"
+      || typeof parsed.summary !== "string"
+      || typeof parsed.disputed !== "boolean"
+    ) {
+      throw new Error("merge operation receipt is invalid");
+    }
+    return parsed;
+  } catch (error) {
+    if (isEnoent(error)) return null;
+    throw error;
+  }
+}
+
 /**
  * Merge `from` into `into`: fold the bodies, union provenance, re-point
  * backlinks, then delete `from`. `into` survives as the canonical page. Throws
@@ -163,9 +209,19 @@ export async function mergePages({
   if (fromSlug === intoSlug) {
     throw new Error("cannot merge a page into itself");
   }
-  const from = await readWikiPageWithFrontmatter(fromSlug);
-  if (!from) throw new Error(`page not found: ${fromSlug}`);
-  const into = await readWikiPageWithFrontmatter(intoSlug);
+
+  const operationId = await sourceSha256(`${fromSlug}\u0000${intoSlug}`);
+  const operationPath = `derived-indexes/merge-operations/${operationId}.json`;
+  let receipt = await readMergeReceipt(operationPath);
+  let from = receipt
+    ? pageSnapshot(receipt.fromContent, fromSlug)
+    : await readWikiPageWithFrontmatter(fromSlug, { fresh: true, strict: true });
+  if (!from) {
+    throw new Error(`page not found: ${fromSlug}`);
+  }
+  let into = receipt
+    ? pageSnapshot(receipt.intoContent, intoSlug)
+    : await readWikiPageWithFrontmatter(intoSlug, { fresh: true, strict: true });
   if (!into) throw new Error(`page not found: ${intoSlug}`);
 
   // Guard: the survivor must be a normal markdown page — reconciling into an
@@ -195,82 +251,129 @@ export async function mergePages({
     );
   }
 
-  // 1. Fold the bodies (accumulate-and-reconcile). `disputed` only escalates.
-  let mergedBody = `${into.body}\n\n${from.body}`;
-  let disputed =
-    into.frontmatter.disputed === true || from.frontmatter.disputed === true;
-  if (hasLLMKey()) {
-    try {
-      const reconciled = await reconcilePage(into.body, from.body);
-      mergedBody = reconciled.body;
-      if (reconciled.disputed) disputed = true;
-    } catch (err) {
-      logger.warn(
-        "merge",
-        `reconcile failed for "${fromSlug}"→"${intoSlug}"; appending bodies`,
-        err,
-      );
+  if (!receipt) {
+    // Fold exactly once. The durable operation receipt below preserves this
+    // plan across backlink/delete failures, so Retry never folds the absorbed
+    // Page into an already-merged survivor a second time.
+    let mergedBody = `${into.body}\n\n${from.body}`;
+    let disputed =
+      into.frontmatter.disputed === true || from.frontmatter.disputed === true;
+    if (hasLLMKey()) {
+      try {
+        const reconciled = await reconcilePage(into.body, from.body);
+        mergedBody = reconciled.body;
+        if (reconciled.disputed) disputed = true;
+      } catch (err) {
+        logger.warn(
+          "merge",
+          `reconcile failed for "${fromSlug}"→"${intoSlug}"; appending bodies`,
+          err,
+        );
+      }
     }
+
+    const fm: Frontmatter = { ...into.frontmatter };
+    let sources = parseSources(asSourcesInput(into.frontmatter.sources));
+    for (const s of parseSources(asSourcesInput(from.frontmatter.sources))) {
+      sources = mergeSourceEntry(sources, s);
+    }
+    fm.sources = serializeSources(sources);
+    fm.source_count = sources.length;
+    fm.contributors = unionStrings(
+      asStringArray(into.frontmatter.contributors),
+      asStringArray(from.frontmatter.contributors),
+    );
+    fm.authors = unionStrings(
+      asStringArray(into.frontmatter.authors),
+      asStringArray(from.frontmatter.authors),
+    );
+    fm.aliases = unionStrings(
+      asStringArray(into.frontmatter.aliases),
+      asStringArray(from.frontmatter.aliases),
+      [from.title, fromSlug],
+    ).filter((alias) => alias.toLowerCase() !== into!.title.toLowerCase());
+    fm.disputed = disputed;
+    fm.confidence = computeConfidence(sources, disputed);
+    const earliestCreated = earlierDate(into.frontmatter.created, from.frontmatter.created);
+    if (earliestCreated) fm.created = earliestCreated;
+    const today = new Date().toISOString().slice(0, 10);
+    const expiry = new Date();
+    expiry.setDate(expiry.getDate() + 90);
+    fm.updated = today;
+    fm.valid_from = today;
+    fm.expiry = expiry.toISOString().slice(0, 10);
+    mergedBody = mergedBody.replace(
+      new RegExp(`\\]\\(${escapeRegex(fromSlug)}\\.md\\)`, "g"),
+      `](${intoSlug}.md)`,
+    );
+    const summary = extractSummary(mergedBody.replace(/^#\s+.+$/m, "").trim());
+    const candidate: MergeOperationReceipt = {
+      version: 1,
+      fromSlug,
+      intoSlug,
+      fromContent: from.content,
+      intoContent: into.content,
+      mergedContent: serializeFrontmatter(fm, mergedBody),
+      summary,
+      disputed,
+    };
+
+    // The receipt is the linearization point for the immutable merge inputs.
+    // Recheck both Pages immediately before publishing it.
+    const [freshFrom, freshInto] = await Promise.all([
+      readWikiPageWithFrontmatter(fromSlug, { fresh: true, strict: true }),
+      readWikiPageWithFrontmatter(intoSlug, { fresh: true, strict: true }),
+    ]);
+    if (freshFrom?.content !== from.content || freshInto?.content !== into.content) {
+      throw new Error("merge input changed while the merge plan was being prepared");
+    }
+    const created = await getStorage().writeFileIfAbsent(
+      operationPath,
+      JSON.stringify(candidate, null, 2),
+    );
+    receipt = created ? candidate : await readMergeReceipt(operationPath);
+    if (!receipt) throw new Error("merge operation receipt disappeared");
+    from = pageSnapshot(receipt.fromContent, fromSlug);
+    into = pageSnapshot(receipt.intoContent, intoSlug);
   }
 
-  // 2. Build the merged frontmatter from `into`, unioning provenance.
-  const fm: Frontmatter = { ...into.frontmatter };
-  let sources = parseSources(asSourcesInput(into.frontmatter.sources));
-  for (const s of parseSources(asSourcesInput(from.frontmatter.sources))) {
-    sources = mergeSourceEntry(sources, s);
+  if (receipt.fromSlug !== fromSlug || receipt.intoSlug !== intoSlug) {
+    throw new Error("merge operation receipt does not match this request");
   }
-  fm.sources = serializeSources(sources);
-  fm.source_count = sources.length;
-  fm.contributors = unionStrings(
-    asStringArray(into.frontmatter.contributors),
-    asStringArray(from.frontmatter.contributors),
-  );
-  fm.authors = unionStrings(
-    asStringArray(into.frontmatter.authors),
-    asStringArray(from.frontmatter.authors),
-  );
-  // Record `from`'s title AND slug as aliases of `into` so a later ingest under
-  // that name converges here. This no longer affects routing — see the module
-  // header: alias URL forwarding went with the retired commons route.
-  fm.aliases = unionStrings(
-    asStringArray(into.frontmatter.aliases),
-    asStringArray(from.frontmatter.aliases),
-    [from.title, fromSlug],
-  ).filter((a) => a.toLowerCase() !== into.title.toLowerCase());
-  fm.disputed = disputed;
-  fm.confidence = computeConfidence(sources, disputed);
-  const earliestCreated = earlierDate(
-    into.frontmatter.created,
-    from.frontmatter.created,
-  );
-  if (earliestCreated) fm.created = earliestCreated;
-  // A merge re-verifies the page: bump `updated`, reset the staleness window.
-  const today = new Date().toISOString().slice(0, 10);
-  const expiry = new Date();
-  expiry.setDate(expiry.getDate() + 90);
-  fm.updated = today;
-  fm.valid_from = today;
-  fm.expiry = expiry.toISOString().slice(0, 10);
+  const [currentFrom, currentInto] = await Promise.all([
+    readWikiPageWithFrontmatter(fromSlug, { fresh: true, strict: true }),
+    readWikiPageWithFrontmatter(intoSlug, { fresh: true, strict: true }),
+  ]);
+  if (!currentFrom) {
+    if (currentInto?.content !== receipt.mergedContent) {
+      throw new Error("merge survivor changed after the absorbed Page was deleted");
+    }
+    await getStorage().deleteFile(operationPath).catch(() => undefined);
+    return { fromSlug, intoSlug, disputed: receipt.disputed, repointedBacklinksFrom: [] };
+  }
+  if (currentFrom.content !== receipt.fromContent) {
+    throw new Error(`merge aborted: absorbed Page "${fromSlug}" changed`);
+  }
+  if (
+    !currentInto
+    || (currentInto.content !== receipt.intoContent && currentInto.content !== receipt.mergedContent)
+  ) {
+    throw new Error(`merge aborted: survivor Page "${intoSlug}" changed`);
+  }
 
-  // 3. Write the survivor before touching linkers. If its compare-and-set loses
-  // to an owner edit, no backlink has moved away from the still-existing
-  // absorbed Page. Defensive: if the folded body itself references the
-  // absorbed slug, re-point that too — the delete-strip below only touches
-  // OTHER pages, never the survivor.
-  mergedBody = mergedBody.replace(
-    new RegExp(`\\]\\(${escapeRegex(fromSlug)}\\.md\\)`, "g"),
-    `](${intoSlug}.md)`,
-  );
-  const summary = extractSummary(mergedBody.replace(/^#\s+.+$/m, "").trim());
   await writeWikiPageWithSideEffects({
     slug: intoSlug,
     title: into.title,
-    content: serializeFrontmatter(fm, mergedBody),
-    summary,
+    content: receipt.mergedContent,
+    summary: receipt.summary,
     logOp: "edit",
     crossRefSource: null,
     author: actor,
-    expectedContent: into.content,
+    expectedContent: receipt.intoContent,
+    idempotency: {
+      key: `merge-survivor:${operationId}`,
+      receiptPath: `${operationPath}.survivor`,
+    },
   });
 
   // 4. Re-point backlinks only after the survivor is durable, and before
@@ -294,7 +397,8 @@ export async function mergePages({
     "merge",
     `merged "${fromSlug}" into "${intoSlug}" — deleting "${fromSlug}" (its revisions + discussion threads are hard-deleted)`,
   );
-  await deleteWikiPage(fromSlug, actor);
+  await deleteWikiPage(fromSlug, actor, receipt.fromContent);
+  await getStorage().deleteFile(operationPath).catch(() => undefined);
 
-  return { fromSlug, intoSlug, disputed, repointedBacklinksFrom };
+  return { fromSlug, intoSlug, disputed: receipt.disputed, repointedBacklinksFrom };
 }

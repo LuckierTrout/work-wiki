@@ -490,6 +490,30 @@ describe("Research Panel — starting a run", () => {
     vi.useRealTimers();
   });
 
+  it("retries an operator-blocked delivery through the run route and reloads", async () => {
+    const blocked = project({
+      id: "blocked-1",
+      status: "failed",
+      deliveryBlocked: true,
+      completion: { phase: "sources", pageSlug: "research-x", sources: [] },
+    });
+    send.mockImplementation(async (_url: string, init?: RequestInit) => (
+      init?.method === "POST" ? { project: blocked } : { projects: [blocked] }
+    ));
+
+    render(<ResearchCanvas wikiId="current" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(
+        "/api/research/blocked-1/run",
+        { method: "POST" },
+      );
+    });
+    expect(send.mock.calls.filter(([, init]) => init?.method === "GET").length)
+      .toBeGreaterThanOrEqual(2);
+  });
+
   it("sends the real wiki id when the rail has one", async () => {
     send.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url === "/api/research" && init?.method === "POST") return { project: { id: "new-1" } };

@@ -4,6 +4,7 @@ import {
   acquireResearchSlot,
   holdsResearchSlot,
   releaseResearchSlot,
+  releaseExpiredResearchSlot,
   renewResearchSlot,
   MAX_CONCURRENT_RESEARCH,
   RESEARCH_SLOT_TTL_MS,
@@ -243,13 +244,23 @@ async function markResearchDeliveryBlocked(
   error: unknown,
 ): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
-  await updateResearchProject(owner, project.id, {
+  const latest = await getResearchProject(owner, project.id);
+  if (!latest) return;
+  const hasPendingCompletion = latest.completion !== undefined
+    && latest.completion.phase !== "done";
+  const hasOutbox = (await listResearchOutboxIds(owner)).includes(project.id);
+  if (!hasPendingCompletion && !hasOutbox) return;
+  await updateResearchProjectIf(owner, project.id, (current) => (
+    current.updatedAt === latest.updatedAt
+    && current.deliveryBlocked !== false
+    && (current.completion?.phase !== "done" || hasOutbox)
+  ), {
     status: "failed",
     deliveryBlocked: true,
     error: message,
     progress: {
-      completedQueries: project.progress?.completedQueries ?? 0,
-      totalQueries: project.progress?.totalQueries ?? Math.max(1, project.queries.length),
+      completedQueries: latest.progress?.completedQueries ?? 0,
+      totalQueries: latest.progress?.totalQueries ?? Math.max(1, latest.queries.length),
       message: "Research delivery is blocked. Repair the reported lock, then retry.",
     },
   });
@@ -348,6 +359,7 @@ export async function queueResearchProject(
     current.status = "queued";
     current.provider = provider;
     current.cancelRequested = false;
+    current.deliveryBlocked = false;
     delete current.runAttemptId;
     if (runPageBaseline) current.runPageBaseline = runPageBaseline;
     else delete current.runPageBaseline;
@@ -362,6 +374,7 @@ export async function queueResearchProject(
     return current;
   });
   if (!updated) throw new Error("Research project not found");
+  await releaseResearchSlot(owner, id, project.runAttemptId);
   return updated;
 }
 
@@ -389,7 +402,7 @@ export async function cancelResearchProject(owner: string, id: string): Promise<
   // Only a queued project never started a worker. Releasing a `ready` slot
   // here is what let a fourth run in while synthesis was still running.
   if (updated.status === "cancelled" && !updated.completion) {
-    await releaseResearchSlot(owner, id);
+    await releaseResearchSlot(owner, id, updated.runAttemptId);
     await drainResearchQueue(owner);
   }
   return updated;
@@ -429,7 +442,7 @@ export async function retireResearchProject(owner: string, id: string): Promise<
   }
   const remaining = await getResearchProject(owner, id);
   if (!remaining) {
-    await releaseResearchSlot(owner, id);
+    await releaseResearchSlot(owner, id, retired.runAttemptId);
     await drainResearchQueue(owner);
     return true;
   }
@@ -443,7 +456,7 @@ export async function retireResearchProject(owner: string, id: string): Promise<
     await deleteResearchOutbox(owner, id);
   }
   if (!workerStillRunning) {
-    await releaseResearchSlot(owner, id);
+    await releaseResearchSlot(owner, id, remaining.runAttemptId);
     await drainResearchQueue(owner);
   }
   return deleteResearchProject(owner, id);
@@ -495,8 +508,12 @@ export async function reconcileResearchProjects(
   let changed = false;
   try {
     const outboxIds = new Set(await listResearchOutboxIds(owner));
-    for (const project of projects) {
+    for (const snapshot of projects) {
       try {
+      // The panel supplied a list snapshot. Every cleanup decision must use a
+      // fresh generation or it can revoke a Retry that started after GET read.
+      const project = await getResearchProject(owner, snapshot.id);
+      if (!project) continue;
       // A completed delivery owns no live research slot. Finish its cleanup
       // before reading lease state so a malformed queue file cannot rewrite a
       // durable success into `failed`.
@@ -504,7 +521,8 @@ export async function reconcileResearchProjects(
         // Release is deliberately retried on every reconciliation. A failed
         // finally-write must not leave an expired terminal claim consuming one
         // of the three workspace slots forever.
-        await releaseResearchSlot(owner, project.id);
+        await releaseResearchSlot(owner, project.id, project.runAttemptId);
+        if (!project.runAttemptId) await releaseExpiredResearchSlot(owner, project.id);
         if (outboxIds.has(project.id)) {
           await deleteResearchOutbox(owner, project.id);
           outboxIds.delete(project.id);
@@ -513,6 +531,13 @@ export async function reconcileResearchProjects(
           await deleteResearchProject(owner, project.id);
           changed = true;
         }
+        continue;
+      }
+      if (project.deliveryBlocked) {
+        // Only the explicit Retry command clears this fence. A GET/reconcile
+        // must not turn an operator-blocked delivery back into a poll-driven
+        // storage or queue retry loop.
+        outboxIds.delete(project.id);
         continue;
       }
       if (project.completion || outboxIds.has(project.id)) {
@@ -528,13 +553,13 @@ export async function reconcileResearchProjects(
       const needsLease = project.status === "queued"
         || RESEARCH_IN_FLIGHT_STATUSES.includes(project.status);
       if (!needsLease) {
-        await releaseResearchSlot(owner, project.id);
+        await releaseResearchSlot(owner, project.id, project.runAttemptId);
         if (project.cancelRequested) await clearResearchStaging(owner, project.id);
         continue;
       }
       let held: boolean;
       try {
-        held = await holdsResearchSlot(owner, project.id);
+        held = await holdsResearchSlot(owner, project.id, project.runAttemptId);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await updateResearchProject(owner, project.id, {
@@ -553,14 +578,35 @@ export async function reconcileResearchProjects(
       if (project.cancelRequested && !held) {
         await clearResearchStaging(owner, project.id);
         if (project.status !== "cancelled" && project.status !== "complete") {
-          await updateResearchProject(owner, project.id, {
-            status: "cancelled",
-            progress: {
-              completedQueries: project.progress?.completedQueries ?? 0,
-              totalQueries: project.progress?.totalQueries ?? Math.max(1, project.queries.length),
-              message: "Cancelled.",
+          const cancelled = await updateResearchProjectIf(
+            owner,
+            project.id,
+            (current) => current.updatedAt === project.updatedAt
+              && current.runAttemptId === project.runAttemptId,
+            {
+              status: "cancelled",
+              runAttemptId: null,
+              progress: {
+                completedQueries: project.progress?.completedQueries ?? 0,
+                totalQueries: project.progress?.totalQueries ?? Math.max(1, project.queries.length),
+                message: "Cancelled.",
+              },
             },
-          });
+          );
+          if (cancelled) {
+            await releaseResearchSlot(owner, project.id, project.runAttemptId);
+            changed = true;
+          }
+        }
+        continue;
+      }
+      if (project.status === "queued" && !held) {
+        // Rolling upgrade: old builds wrote project-only leases. Once such a
+        // claim expires, retire only that legacy entry; a tokened replacement
+        // can never be removed by this unfenced cleanup.
+        if (!project.runAttemptId) {
+          await releaseResearchSlot(owner, project.id);
+          await releaseExpiredResearchSlot(owner, project.id);
           changed = true;
         }
         continue;
@@ -571,20 +617,29 @@ export async function reconcileResearchProjects(
       if (now - touched < RESEARCH_ABANDONED_AFTER_MS) continue;
       if (held) continue;
       await clearResearchStaging(owner, project.id);
-      await updateResearchProject(owner, project.id, {
-        status: "failed",
-        runAttemptId: null,
-        error: "This run stopped before it finished — the worker restarted. Start it again.",
-        progress: {
-          completedQueries: project.progress?.completedQueries ?? 0,
-          totalQueries: project.progress?.totalQueries ?? Math.max(1, project.queries.length),
-          message: "Interrupted.",
+      const interrupted = await updateResearchProjectIf(
+        owner,
+        project.id,
+        (current) => current.updatedAt === project.updatedAt
+          && current.status === project.status
+          && current.runAttemptId === project.runAttemptId,
+        {
+          status: "failed",
+          runAttemptId: null,
+          error: "This run stopped before it finished — the worker restarted. Start it again.",
+          progress: {
+            completedQueries: project.progress?.completedQueries ?? 0,
+            totalQueries: project.progress?.totalQueries ?? Math.max(1, project.queries.length),
+            message: "Interrupted.",
+          },
         },
-      });
-      await releaseResearchSlot(owner, project.id);
-      changed = true;
+      );
+      if (interrupted) {
+        await releaseResearchSlot(owner, project.id, project.runAttemptId);
+        changed = true;
+      }
       } catch (error) {
-        logger.warn("research", `reconcile skipped damaged project ${project.id}`, error);
+        logger.warn("research", `reconcile skipped damaged project ${snapshot.id}`, error);
       }
     }
     for (const orphanId of outboxIds) {
@@ -651,7 +706,7 @@ export async function drainResearchQueue(owner: string): Promise<void> {
     let next: ResearchProject | null = null;
     for (const candidate of waiting) {
       try {
-        if (await holdsResearchSlot(owner, candidate.id)) continue;
+        if (await holdsResearchSlot(owner, candidate.id, candidate.runAttemptId)) continue;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await updateResearchProject(owner, candidate.id, {
@@ -672,13 +727,36 @@ export async function drainResearchQueue(owner: string): Promise<void> {
     const claimed = next;
     const grant = await acquireResearchSlot(owner, claimed.id);
     if (!grant.granted) return;
+    const attemptId = grant.attemptId;
+    if (!attemptId) {
+      await releaseResearchSlot(owner, claimed.id);
+      return;
+    }
+    const reserved = await updateResearchProjectIf(
+      owner,
+      claimed.id,
+      (project) => project.status === "queued"
+        && !project.cancelRequested
+        && !project.runAttemptId,
+      { runAttemptId: attemptId },
+    );
+    if (!reserved) {
+      if (grant.acquired) await releaseResearchSlot(owner, claimed.id, attemptId);
+      return;
+    }
     let enqueued = false;
     try {
       enqueued = await enqueueTask({ kind: "run-research", projectId: claimed.id, owner });
     } catch (error) {
       // The claim must not outlive a dispatch that never happened, or this
       // project holds a slot nothing will ever renew until the TTL.
-      await releaseResearchSlot(owner, claimed.id);
+      await updateResearchProjectIf(
+        owner,
+        claimed.id,
+        (project) => project.status === "queued" && project.runAttemptId === attemptId,
+        { runAttemptId: null },
+      );
+      await releaseResearchSlot(owner, claimed.id, attemptId);
       throw error;
     }
     if (!enqueued) {
@@ -1031,15 +1109,19 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
   if (initial.status === "complete") return initial;
 
   if (RESEARCH_IN_FLIGHT_STATUSES.includes(initial.status)) {
-    if (await holdsResearchSlot(owner, id)) return initial;
+    if (await holdsResearchSlot(owner, id, initial.runAttemptId)) return initial;
     const age = Date.now() - Date.parse(initial.updatedAt);
     if (!Number.isFinite(age) || age < RESEARCH_ABANDONED_AFTER_MS) return initial;
+    const interruptedSnapshot = initial;
     const recovered = await updateResearchProjectIf(
       owner,
       id,
-      (project) => RESEARCH_IN_FLIGHT_STATUSES.includes(project.status),
+      (project) => project.updatedAt === interruptedSnapshot.updatedAt
+        && project.status === interruptedSnapshot.status
+        && project.runAttemptId === interruptedSnapshot.runAttemptId,
       {
         status: "queued",
+        runAttemptId: null,
         error: null,
         progress: {
           completedQueries: initial.progress?.completedQueries ?? 0,
@@ -1049,6 +1131,7 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       },
     );
     if (!recovered) return (await getResearchProject(owner, id)) ?? initial;
+    await releaseResearchSlot(owner, id, interruptedSnapshot.runAttemptId);
     initial = recovered;
   }
 
@@ -1065,6 +1148,7 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
         && !project.cancelRequested,
       {
         status: "failed",
+        runAttemptId: null,
         error: message,
         progress: {
           completedQueries: 0,
@@ -1074,7 +1158,7 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       },
     );
     if (failed) {
-      await releaseResearchSlot(owner, id);
+      await releaseResearchSlot(owner, id, initial.runAttemptId);
       await drainResearchQueue(owner);
       return failed;
     }
@@ -1092,6 +1176,7 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       (project) => project.status === "queued" || project.status === "draft",
       {
         status: "failed",
+        runAttemptId: null,
         error: message,
         progress: {
           completedQueries: 0,
@@ -1130,7 +1215,9 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
     owner,
     id,
     (project) =>
-      (project.status === "queued" || project.status === "draft") && !project.cancelRequested,
+      (project.status === "queued" || project.status === "draft")
+        && !project.cancelRequested
+        && (!project.runAttemptId || project.runAttemptId === attemptId),
     { status: "collecting", runAttemptId: attemptId },
   );
   if (!claimed) {

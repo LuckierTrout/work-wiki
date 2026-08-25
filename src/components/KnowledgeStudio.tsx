@@ -730,7 +730,7 @@ function ResearchPanel({
               <h3>{project.title}</h3><p>{project.question}</p>
             </button>
             <div className="studio-project-actions">
-              <button className="btn primary" type="button" onClick={() => void runAutomated(project)} disabled={busy !== null || providers.length === 0 || ["queued", "collecting", "ready"].includes(project.status) || (!!project.completion && !project.deliveryBlocked)}>{busy === `run:${project.id}` ? "Starting…" : project.status === "failed" || project.status === "cancelled" ? "Retry research" : "Run research"}</button>
+              <button className="btn primary" type="button" onClick={() => void runAutomated(project)} disabled={busy !== null || (providers.length === 0 && !project.deliveryBlocked) || ["queued", "collecting", "ready"].includes(project.status) || (!!project.completion && !project.deliveryBlocked)}>{busy === `run:${project.id}` ? "Starting…" : project.status === "failed" || project.status === "cancelled" ? "Retry research" : "Run research"}</button>
               {["queued", "collecting", "ready"].includes(project.status) ? <button className="btn ghost" type="button" onClick={() => void cancel(project)} disabled={busy !== null}>{busy === `cancel:${project.id}` ? "Cancelling…" : "Cancel"}</button> : null}
               <button className="btn ghost" type="button" onClick={() => void collect(project)} disabled={busy !== null}>{busy === `collect:${project.id}` ? "Collecting…" : `Collect ${project.sourceUrls.length} URLs`}</button>
               <button className="studio-danger-button" type="button" onClick={() => void remove(project)} disabled={busy !== null}>Delete</button>
