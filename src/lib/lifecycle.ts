@@ -200,7 +200,10 @@ interface LifecycleOpResult {
 function stripBacklinksTo(slug: string, content: string): string {
   const escapedSlug = escapeRegex(slug);
   // `g` flag: declared at narrowest scope to avoid cross-call `lastIndex` leaks.
-  const linkRe = new RegExp(`\\[[^\\]]+\\]\\(${escapedSlug}\\.md\\)`, "g");
+  const linkRe = new RegExp(
+    `\\[[^\\]]+\\]\\(${escapedSlug}\\.md(?:#[^\\s)]*)?(?:\\s+["'][^)]*["'])?\\)`,
+    "g",
+  );
 
   // 1. Strip the actual link occurrences.
   let updated = content.replace(linkRe, "");
@@ -300,9 +303,11 @@ async function runPageLifecycleOp(
     primaryDeleteAlreadyApplied?: boolean;
     previousContent?: string;
     logIdempotencyKey?: string;
+    contributorIdempotencyPath?: string;
   },
   pageLockAlreadyHeld = false,
   skipDeleteBacklinks = false,
+  mergeCoordinatorAlreadyHeld = false,
 ): Promise<LifecycleOpResult> {
   // 1. Validate — the per-step helpers also validate, but we want to fail
   //    fast before any filesystem mutation happens.
@@ -747,7 +752,18 @@ async function runPageLifecycleOp(
     if (op.kind === "delete") {
       // Decrement per-author edit counts when the delete op carries an author.
       if (op.author) {
-        await reverseEditForAuthor(op.author, slug);
+        if (recovery?.contributorIdempotencyPath) {
+          // Claim before the fail-soft derived-index mutation. A crash can make
+          // the daily rebuild repair a missed decrement, but can never apply the
+          // non-idempotent decrement twice on lifecycle Retry.
+          const claimed = await getStorage().writeFileIfAbsent(
+            recovery.contributorIdempotencyPath,
+            new Date().toISOString(),
+          );
+          if (claimed) await reverseEditForAuthor(op.author, slug);
+        } else {
+          await reverseEditForAuthor(op.author, slug);
+        }
       }
     } else if (op.author) {
       await recordEditForAuthor(op.author, slug);
@@ -883,13 +899,21 @@ async function runPageLifecycleOp(
   };
   if (pageLockAlreadyHeld) {
     await mutatePrimaryAndIndexes();
-  } else if (op.kind === "write" && op.requiresExistingSlug) {
-    await acquirePageLifecycleLocks(
-      [slug, op.requiresExistingSlug],
-      mutatePrimaryAndIndexes,
+  } else if (mergeCoordinatorAlreadyHeld) {
+    await (
+      op.kind === "write" && op.requiresExistingSlug
+        ? acquirePageLifecycleLocks([slug, op.requiresExistingSlug], mutatePrimaryAndIndexes)
+        : withDurableLock(`page-lifecycle:${slug}`, mutatePrimaryAndIndexes)
     );
   } else {
-    await withDurableLock(`page-lifecycle:${slug}`, mutatePrimaryAndIndexes);
+    // Global coordinator first, then Page locks. A merge holds the same global
+    // lock through its final physical backlink scan, so ordinary writes/deletes
+    // cannot publish a dangling link inside that completion window.
+    await withDurableLock("merge-pages", () => (
+      op.kind === "write" && op.requiresExistingSlug
+        ? acquirePageLifecycleLocks([slug, op.requiresExistingSlug], mutatePrimaryAndIndexes)
+        : withDurableLock(`page-lifecycle:${slug}`, mutatePrimaryAndIndexes)
+    ));
   }
 
   // 4. Cross-reference other pages.
@@ -1088,13 +1112,17 @@ export async function deleteWikiPage(
   }
   const title = page.title ?? slug;
 
-  const result = await runPageLifecycleOp(
+  const result = await withDurableLock("merge-pages", () => runPageLifecycleOp(
     slug,
     { kind: "delete", title, author, expectedContent },
     "delete",
     ({ strippedBacklinksFrom }) =>
       `deleted · stripped backlinks from ${strippedBacklinksFrom.length} page(s)`,
-  );
+    undefined,
+    false,
+    false,
+    true,
+  ));
 
   return {
     slug: result.slug,
@@ -1110,6 +1138,7 @@ export async function deleteWikiPageWhileLocked(
   author?: string,
   expectedContent?: string,
   idempotency?: { key: string; receiptPath: string },
+  skipDeleteBacklinks = false,
 ): Promise<DeletePageResult> {
   assertWritable(READ_ONLY_REFUSAL.pageDelete);
   validateSlug(slug);
@@ -1155,10 +1184,11 @@ export async function deleteWikiPageWhileLocked(
           primaryDeleteAlreadyApplied,
           previousContent: expectedContent,
           logIdempotencyKey: idempotency.key,
+          contributorIdempotencyPath: `${idempotency.receiptPath}.contributor`,
         }
       : undefined,
     true,
-    false,
+    skipDeleteBacklinks,
   );
   const publicResult = {
     slug: result.slug,

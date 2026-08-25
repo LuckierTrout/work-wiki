@@ -375,6 +375,9 @@ export async function queueResearchProject(
         content: (await readWikiPage(queuedSlug, { fresh: true, strict: true }))?.content ?? null,
       }
     : undefined;
+  if (!await releaseResearchSlotAndConfirmGone(owner, id, project.runAttemptId)) {
+    throw new ResearchLeaseError("The previous research lease could not be retired; retry after storage recovers.");
+  }
   const updated = await mutateResearchProject(owner, id, (current) => {
     if (RESEARCH_IN_FLIGHT_STATUSES.includes(current.status)) {
       throw new Error("Research project is already running");
@@ -404,7 +407,6 @@ export async function queueResearchProject(
     return current;
   });
   if (!updated) throw new Error("Research project not found");
-  await releaseResearchSlot(owner, id, project.runAttemptId);
   return updated;
 }
 
@@ -432,7 +434,15 @@ export async function cancelResearchProject(owner: string, id: string): Promise<
   // Only a queued project never started a worker. Releasing a `ready` slot
   // here is what let a fourth run in while synthesis was still running.
   if (updated.status === "cancelled" && !updated.completion) {
-    await releaseResearchSlot(owner, id, updated.runAttemptId);
+    if (await releaseResearchSlotAndConfirmGone(owner, id, updated.runAttemptId)) {
+      await updateResearchProjectIf(
+        owner,
+        id,
+        (current) => current.status === "cancelled"
+          && current.runAttemptId === updated.runAttemptId,
+        { runAttemptId: null },
+      );
+    }
     await drainResearchQueue(owner);
   }
   return updated;
@@ -607,7 +617,6 @@ export async function reconcileResearchProjects(
         const message = error instanceof Error ? error.message : String(error);
         await updateResearchProject(owner, project.id, {
           status: "failed",
-          runAttemptId: null,
           error: message,
           progress: {
             completedQueries: project.progress?.completedQueries ?? 0,
@@ -625,9 +634,13 @@ export async function reconcileResearchProjects(
           // unsafe revocation or an unreapable orphan if that worker crashes.
           continue;
         }
-        await releaseResearchSlot(owner, project.id, project.runAttemptId);
+        const slotGone = await releaseResearchSlotAndConfirmGone(
+          owner,
+          project.id,
+          project.runAttemptId,
+        );
         if (project.cancelRequested) await clearResearchStaging(owner, project.id);
-        if (project.deleteRequested && !project.completion) {
+        if (project.deleteRequested && !project.completion && slotGone) {
           await deleteResearchProject(owner, project.id);
           changed = true;
         }
@@ -636,9 +649,14 @@ export async function reconcileResearchProjects(
       if (project.cancelRequested && !held) {
         await clearResearchStaging(owner, project.id);
         if (project.deleteRequested && !project.completion) {
-          await releaseResearchSlot(owner, project.id, project.runAttemptId);
-          await deleteResearchProject(owner, project.id);
-          changed = true;
+          if (await releaseResearchSlotAndConfirmGone(
+            owner,
+            project.id,
+            project.runAttemptId,
+          )) {
+            await deleteResearchProject(owner, project.id);
+            changed = true;
+          }
           continue;
         }
         if (project.status !== "cancelled" && project.status !== "complete") {
@@ -649,7 +667,6 @@ export async function reconcileResearchProjects(
               && current.runAttemptId === project.runAttemptId,
             {
               status: "cancelled",
-              runAttemptId: null,
               progress: {
                 completedQueries: project.progress?.completedQueries ?? 0,
                 totalQueries: project.progress?.totalQueries ?? Math.max(1, project.queries.length),
@@ -658,7 +675,19 @@ export async function reconcileResearchProjects(
             },
           );
           if (cancelled) {
-            await releaseResearchSlot(owner, project.id, project.runAttemptId);
+            if (await releaseResearchSlotAndConfirmGone(
+              owner,
+              project.id,
+              project.runAttemptId,
+            )) {
+              await updateResearchProjectIf(
+                owner,
+                project.id,
+                (current) => current.status === "cancelled"
+                  && current.runAttemptId === project.runAttemptId,
+                { runAttemptId: null },
+              );
+            }
             changed = true;
           }
         }
@@ -689,7 +718,9 @@ export async function reconcileResearchProjects(
             { runAttemptId: replacementAttemptId },
           );
           if (!reserved) {
-            await releaseResearchSlot(owner, project.id, replacementAttemptId);
+            if (replacement.acquired) {
+              await releaseResearchSlot(owner, project.id, replacementAttemptId);
+            }
             continue;
           }
           try {
@@ -1261,7 +1292,9 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       },
     );
     if (!recovered) {
-      if (replacement?.attemptId) await releaseResearchSlot(owner, id, replacement.attemptId);
+      if (replacement?.acquired && replacement.attemptId) {
+        await releaseResearchSlot(owner, id, replacement.attemptId);
+      }
       return (await getResearchProject(owner, id)) ?? initial;
     }
     initial = recovered;
@@ -1280,7 +1313,6 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
         && !project.cancelRequested,
       {
         status: "failed",
-        runAttemptId: null,
         error: message,
         progress: {
           completedQueries: 0,
@@ -1290,9 +1322,18 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       },
     );
     if (failed) {
-      await releaseResearchSlot(owner, id, initial.runAttemptId);
+      let result = failed;
+      if (await releaseResearchSlotAndConfirmGone(owner, id, initial.runAttemptId)) {
+        result = (await updateResearchProjectIf(
+          owner,
+          id,
+          (project) => project.status === "failed"
+            && project.runAttemptId === initial.runAttemptId,
+          { runAttemptId: null },
+        )) ?? failed;
+      }
       await drainResearchQueue(owner);
-      return failed;
+      return result;
     }
     return (await getResearchProject(owner, id)) ?? initial;
   }
@@ -1308,7 +1349,6 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       (project) => project.status === "queued" || project.status === "draft",
       {
         status: "failed",
-        runAttemptId: null,
         error: message,
         progress: {
           completedQueries: 0,

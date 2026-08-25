@@ -20,6 +20,7 @@ import {
   type ResearchProject,
   type ResearchProjectResult,
 } from "./research-projects";
+import { hasResearchSlot, releaseResearchSlot } from "./research-concurrency";
 import { researchPageSlug, researchSourceSlug } from "./research-slug";
 import { sourceSha256 } from "./source-sha256";
 import { buildSourceEntry, serializeSources } from "./sources";
@@ -41,6 +42,21 @@ export interface FetchedSource {
   url: string;
   title: string;
   text?: string;
+}
+
+/** Delete a requested project only after its durable execution claim is gone. */
+async function deleteRetiredProjectIfLeaseGone(
+  owner: string,
+  id: string,
+  attemptId?: string | null,
+): Promise<boolean> {
+  await releaseResearchSlot(owner, id, attemptId ?? undefined);
+  try {
+    if (await hasResearchSlot(owner, id, attemptId ?? undefined)) return false;
+  } catch {
+    return false;
+  }
+  return deleteResearchProject(owner, id);
 }
 
 export interface ResearchOutboxSource {
@@ -395,7 +411,7 @@ export async function commitResearchPage(
   }
   if (existing.deleteRequested && !existing.completion) {
     await deleteResearchOutbox(owner, id);
-    await deleteResearchProject(owner, id);
+    await deleteRetiredProjectIfLeaseGone(owner, id, existing.runAttemptId);
     return null;
   }
   if ((existing.cancelRequested || existing.status === "cancelled") && !existing.completion) {
@@ -437,7 +453,7 @@ export async function commitResearchPage(
     && !researchWriteClaimIsFresh(afterSave.completion?.writeClaimedAt)
   ) {
     await deleteResearchOutbox(owner, id);
-    await deleteResearchProject(owner, id);
+    await deleteRetiredProjectIfLeaseGone(owner, id, afterSave.runAttemptId);
     return null;
   }
   if ((afterSave.cancelRequested || afterSave.status === "cancelled") && !afterSave.completion) {
@@ -486,7 +502,7 @@ export async function commitResearchPage(
       && !researchWriteClaimIsFresh(latest.completion?.writeClaimedAt)
     ) {
       await deleteResearchOutbox(owner, id);
-      await deleteResearchProject(owner, id);
+      await deleteRetiredProjectIfLeaseGone(owner, id, latest.runAttemptId);
       return null;
     }
     if ((latest.cancelRequested || latest.status === "cancelled") && !latest.completion) {
@@ -498,7 +514,7 @@ export async function commitResearchPage(
   await saveResearchOutbox(owner, id, { ...outbox, claimed: true });
   if (claimed.deleteRequested) {
     await deleteResearchOutbox(owner, id);
-    await deleteResearchProject(owner, id);
+    await deleteRetiredProjectIfLeaseGone(owner, id, claimed.runAttemptId);
     return null;
   }
 
@@ -518,7 +534,7 @@ export async function commitResearchPage(
       if (!latest) return null;
       if (latest.deleteRequested) {
         await deleteResearchOutbox(owner, id);
-        await deleteResearchProject(owner, id);
+        await deleteRetiredProjectIfLeaseGone(owner, id, latest.runAttemptId);
         return null;
       }
       if (latest.cancelRequested || latest.status === "cancelled") {
@@ -541,7 +557,7 @@ export async function commitResearchPage(
     }
     if (authorized.deleteRequested) {
       await deleteResearchOutbox(owner, id);
-      await deleteResearchProject(owner, id);
+      await deleteRetiredProjectIfLeaseGone(owner, id, authorized.runAttemptId);
       return null;
     }
     // The lifecycle owns the receipt. Exact Page bytes without that receipt
@@ -796,7 +812,7 @@ export async function drainResearchOutbox(
   if (project.completion?.phase === "done") {
     if (outbox) await deleteResearchOutbox(owner, id);
     if (project.deleteRequested) {
-      await deleteResearchProject(owner, id);
+      await deleteRetiredProjectIfLeaseGone(owner, id, project.runAttemptId);
       return null;
     }
     return project;
@@ -804,7 +820,7 @@ export async function drainResearchOutbox(
   if (!outbox) {
     if (project.deleteRequested) {
       await clearPageWrittenMarker(owner, id);
-      await deleteResearchProject(owner, id);
+      await deleteRetiredProjectIfLeaseGone(owner, id, project.runAttemptId);
       return null;
     }
     return project;
@@ -834,7 +850,7 @@ export async function drainResearchOutbox(
   if (current.deleteRequested) {
     await deleteResearchOutbox(owner, id);
     await clearPageWrittenMarker(owner, id);
-    await deleteResearchProject(owner, id);
+    await deleteRetiredProjectIfLeaseGone(owner, id, current.runAttemptId);
     return null;
   }
 
@@ -895,7 +911,7 @@ export async function drainResearchOutbox(
     await deleteResearchOutbox(owner, id);
     await clearPageWrittenMarker(owner, id);
     if (updated.deleteRequested || current.deleteRequested) {
-      await deleteResearchProject(owner, id);
+      await deleteRetiredProjectIfLeaseGone(owner, id, updated.runAttemptId);
     }
   }
   return updated ?? getResearchProject(owner, id);

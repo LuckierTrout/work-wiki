@@ -22,7 +22,7 @@
 
 import { logger } from "./logger";
 import { hasLLMKey } from "./llm";
-import { listWikiPages, readWikiPageWithFrontmatter } from "./wiki";
+import { listWikiPages, readWikiPageWithFrontmatter, wikiRelPath } from "./wiki";
 import { isArtifactType } from "./page-types";
 import {
   reconcilePage,
@@ -34,7 +34,6 @@ import {
 import { parseSources, serializeSources } from "./sources";
 import { parseFrontmatter, serializeFrontmatter, type Frontmatter } from "./frontmatter";
 import {
-  writeWikiPageWithSideEffects,
   writeWikiPageWithSideEffectsWhileLocked,
   deleteWikiPageWhileLocked,
   withPageLifecycleLocks,
@@ -123,9 +122,26 @@ async function repointBacklinks(
   // keeps the re-point correct rather than silently stripping links on delete.
   // Merge correctness cannot trust the fail-soft backlink index. This path is
   // rare, so scan every current Page and let expected-content CAS fence edits.
-  const candidates = (await listWikiPages({ strict: true })).map((e) => e.slug);
+  const physical = async (prefix: string, relative = ""): Promise<string[]> => {
+    const slugs: string[] = [];
+    for (const entry of await getStorage().listFiles(prefix)) {
+      if (entry.name.startsWith(".")) continue;
+      const path = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory) {
+        slugs.push(...await physical(`${prefix}/${entry.name}`, path));
+      } else if (path.endsWith(".md")) {
+        const slug = path.slice(0, -3);
+        if (slug !== "index" && slug !== "log") slugs.push(slug);
+      }
+    }
+    return slugs;
+  };
+  const candidates = [...new Set([
+    ...(await listWikiPages({ strict: true })).map((e) => e.slug),
+    ...await physical(wikiRelPath("")),
+  ])];
   const linkers = candidates.filter((s) => s !== fromSlug && s !== intoSlug);
-  const re = new RegExp(`\\]\\(${escapeRegex(fromSlug)}\\.md\\)`, "g");
+  const re = new RegExp(`(\\]\\()${escapeRegex(fromSlug)}\\.md(?=[#)\\s])`, "g");
   const repointed: string[] = [];
   for (const src of linkers) {
     const page = await readWikiPageWithFrontmatter(src, { fresh: true, strict: true });
@@ -138,18 +154,19 @@ async function repointBacklinks(
         `merge aborted: backlink source "${src}" could not be read while re-pointing links from "${fromSlug}" to "${intoSlug}"`,
       );
     }
-    const updated = page.content.replace(re, `](${intoSlug}.md)`);
+    const updated = page.content.replace(re, `$1${intoSlug}.md`);
     if (updated === page.content) continue;
-    await writeWikiPageWithSideEffects({
-      slug: src,
-      title: page.title,
-      content: updated,
-      summary: extractSummary(page.body.replace(/^#\s+.+$/m, "").trim()),
-      logOp: "edit",
-      crossRefSource: null, // a link re-point shouldn't re-run cross-ref
-      author: actor,
-      expectedContent: page.content,
-    });
+    await withPageLifecycleLocks([src], (held) =>
+      writeWikiPageWithSideEffectsWhileLocked({
+        slug: src,
+        title: page.title,
+        content: updated,
+        summary: extractSummary(page.body.replace(/^#\s+.+$/m, "").trim()),
+        logOp: "edit",
+        crossRefSource: null, // a link re-point shouldn't re-run cross-ref
+        author: actor,
+        expectedContent: page.content,
+      }, held));
     repointed.push(src);
   }
   return repointed;
@@ -253,6 +270,9 @@ async function mergePagesWhileSourceLocked({
       await getStorage()
         .deleteFile(`${operationPath}.${receipt.generation}.delete`)
         .catch(() => undefined);
+      await getStorage()
+        .deleteFile(`${operationPath}.${receipt.generation}.delete.contributor`)
+        .catch(() => undefined);
       return {
         fromSlug,
         intoSlug,
@@ -269,6 +289,9 @@ async function mergePagesWhileSourceLocked({
       .catch(() => undefined);
     await getStorage()
       .deleteFile(`${operationPath}.${receipt.generation}.delete`)
+      .catch(() => undefined);
+    await getStorage()
+      .deleteFile(`${operationPath}.${receipt.generation}.delete.contributor`)
       .catch(() => undefined);
     receipt = null;
   }
@@ -405,9 +428,7 @@ async function mergePagesWhileSourceLocked({
     readWikiPageWithFrontmatter(intoSlug, { fresh: true, strict: true }),
   ]);
   if (!currentFrom) {
-    if (currentInto?.content !== receipt.mergedContent) {
-      throw new Error("merge survivor changed after the absorbed Page was deleted");
-    }
+    if (!currentInto) throw new Error("merge survivor disappeared after the absorbed Page was deleted");
     await deleteWikiPageWhileLocked(
       fromSlug,
       sourceLock,
@@ -417,6 +438,7 @@ async function mergePagesWhileSourceLocked({
         key: `merge-delete:${receipt.generation}`,
         receiptPath: `${operationPath}.${receipt.generation}.delete`,
       },
+      true,
     );
     await repointBacklinks(fromSlug, intoSlug, actor);
     await completeMergeOperation(operationPath, receipt);
@@ -477,6 +499,7 @@ async function mergePagesWhileSourceLocked({
       key: `merge-delete:${receipt.generation}`,
       receiptPath: `${operationPath}.${receipt.generation}.delete`,
     },
+    true,
   );
   // Catch a linker edit that landed after the pre-delete repoint snapshot.
   for (const slug of await repointBacklinks(fromSlug, intoSlug, actor)) {
@@ -501,5 +524,8 @@ async function completeMergeOperation(
     .catch(() => undefined);
   await getStorage()
     .deleteFile(`${operationPath}.${receipt.generation}.delete`)
+    .catch(() => undefined);
+  await getStorage()
+    .deleteFile(`${operationPath}.${receipt.generation}.delete.contributor`)
     .catch(() => undefined);
 }

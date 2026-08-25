@@ -30,6 +30,7 @@ export interface PortableArchiveInspection {
 
 const MAX_FILES = 10_000;
 const MAX_BYTES = 500 * 1024 * 1024;
+const MAX_MANIFEST_BYTES = 5 * 1024 * 1024;
 const ARCHIVE_INFRASTRUCTURE_PATHS = new Set(["wiki/index.md", "wiki/log.md"]);
 
 function tenant(owner: string): string {
@@ -124,7 +125,37 @@ async function parseArchive(owner: string, bytes: ArrayBuffer): Promise<{
 }> {
   if (bytes.byteLength > MAX_BYTES) throw new Error("Archive exceeds the 500 MB safety limit");
   let files: Record<string, Uint8Array>;
-  try { files = unzipSync(new Uint8Array(bytes)); } catch { throw new Error("The file is not a valid ZIP archive"); }
+  let safetyError: Error | null = null;
+  let expandedBytes = 0;
+  let expandedFiles = 0;
+  try {
+    files = unzipSync(new Uint8Array(bytes), {
+      filter: (file) => {
+        expandedFiles += 1;
+        if (expandedFiles > MAX_FILES + 1) {
+          safetyError = new Error("Archive exceeds the file-count safety limit");
+          throw safetyError;
+        }
+        if (!Number.isSafeInteger(file.originalSize) || file.originalSize < 0) {
+          safetyError = new Error("Archive contains an invalid expanded size");
+          throw safetyError;
+        }
+        if (file.name === "manifest.json" && file.originalSize > MAX_MANIFEST_BYTES) {
+          safetyError = new Error("Archive manifest exceeds the safety limit");
+          throw safetyError;
+        }
+        expandedBytes += file.originalSize;
+        if (expandedBytes > MAX_BYTES + MAX_MANIFEST_BYTES) {
+          safetyError = new Error("Archive expands beyond the 500 MB safety limit");
+          throw safetyError;
+        }
+        return true;
+      },
+    });
+  } catch {
+    if (safetyError) throw safetyError;
+    throw new Error("The file is not a valid ZIP archive");
+  }
   const manifestBytes = files["manifest.json"];
   if (!manifestBytes) throw new Error("Archive manifest is missing");
   const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as PortableArchiveManifest;
@@ -235,14 +266,28 @@ export async function importPortableArchive(
     };
     const pageMatch = /^wiki\/(.+)\.md$/.exec(entry.path);
     if (pageMatch && !["index", "log"].includes(pageMatch[1])) {
-      await withDurableLock(`page-lifecycle:${pageMatch[1]}`, async () => {
-        const current = (await listWikiPages({ strict: true }))
-          .find((candidate) => candidate.slug === pageMatch[1]);
-        if (current && tenantForOwner(current.owner) !== tenant(owner)) {
-          throw new Error(`Archive page conflicts with another owner: ${pageMatch[1]}`);
-        }
-        await writeEntry();
-      });
+      await withDurableLock("merge-pages", () =>
+        withDurableLock(`page-lifecycle:${pageMatch[1]}`, async () => {
+          // The flat compatibility Page is authoritative during the transition.
+          // An interrupted index update must not let an archive overwrite another
+          // owner's bytes merely because the slug is absent from index.md.
+          try {
+            const flat = await getStorage().readFile(wikiRelPath(`${pageMatch[1]}.md`));
+            const parsed = parseFrontmatter(flat);
+            const flatOwner = typeof parsed.data.owner === "string" ? parsed.data.owner : undefined;
+            if (tenantForOwner(flatOwner) !== tenant(owner)) {
+              throw new Error(`Archive page conflicts with another owner: ${pageMatch[1]}`);
+            }
+          } catch (error) {
+            if (!isEnoent(error)) throw error;
+          }
+          const current = (await listWikiPages({ strict: true }))
+            .find((candidate) => candidate.slug === pageMatch[1]);
+          if (current && tenantForOwner(current.owner) !== tenant(owner)) {
+            throw new Error(`Archive page conflicts with another owner: ${pageMatch[1]}`);
+          }
+          await writeEntry();
+        }));
     } else {
       await writeEntry();
     }

@@ -12,6 +12,7 @@ vi.mock("../llm", () => ({
 import { mergePages } from "../merge";
 import { aliasRedirectForMissing } from "../page-redirect";
 import {
+  deleteWikiPage,
   deleteWikiPageWhileLocked,
   withPageLifecycleLocks,
   writeWikiPageWithSideEffects,
@@ -22,6 +23,7 @@ import {
   readWikiPage,
   readWikiPageWithFrontmatter,
   serializeFrontmatter,
+  updateIndex,
 } from "../wiki";
 import { serializeSources } from "../sources";
 import { extractSummary } from "../ingest";
@@ -398,6 +400,26 @@ describe("mergePages", () => {
     expect(settled.every((result) => result.status === "fulfilled")).toBe(true);
   }, 15_000);
 
+  it("serializes a cross-linked merge and ordinary delete without a lock cycle", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("alpha", {
+      title: "Alpha",
+      body: "# Alpha\n\nSee [zeta](zeta.md).",
+    });
+    await seedPage("zeta", {
+      title: "Zeta",
+      body: "# Zeta\n\nSee [alpha](alpha.md).",
+    });
+    await seedPage("omega", { title: "Omega" });
+
+    const settled = await Promise.allSettled([
+      mergePages({ from: "zeta", into: "omega", actor: "alice" }),
+      deleteWikiPage("alpha", "alice"),
+    ]);
+
+    expect(settled.every((result) => result.status === "fulfilled")).toBe(true);
+  }, 15_000);
+
   it("refuses a completed delete receipt when the source Page reappears", async () => {
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     const original = await readWikiPage("harness-ai-agents");
@@ -452,10 +474,27 @@ describe("mergePages", () => {
     })).rejects.toThrow(/index unavailable/i);
     expect(await readWikiPage("harness-ai-agents")).toBeNull();
 
+    const survivor = await readWikiPageWithFrontmatter("agent-harness", {
+      fresh: true,
+      strict: true,
+    });
+    await writeWikiPageWithSideEffects({
+      slug: "agent-harness",
+      title: "Agent Harness",
+      content: `${survivor!.content.trimEnd()}\n\nOwner edit after partial delete.\n`,
+      summary: "Owner-edited survivor",
+      logOp: "edit",
+      crossRefSource: null,
+      expectedContent: survivor!.content,
+      author: "alice",
+    });
+
     await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
 
     expect((await listWikiPages({ strict: true })).map((entry) => entry.slug))
       .not.toContain("harness-ai-agents");
+    expect((await readWikiPage("agent-harness"))?.content)
+      .toContain("Owner edit after partial delete.");
   }, 15_000);
 
   it("removes a backlink added after the merge repoint pass", async () => {
@@ -486,7 +525,7 @@ describe("mergePages", () => {
     });
     await deleteStarted;
     const linker = await readWikiPageWithFrontmatter("late-linker");
-    await writeWikiPageWithSideEffects({
+    const writing = writeWikiPageWithSideEffects({
       slug: "late-linker",
       title: "Late linker",
       content: linker!.content.replace(
@@ -498,12 +537,39 @@ describe("mergePages", () => {
       crossRefSource: null,
       expectedContent: linker!.content,
       author: "alice",
+      requiresExistingSlug: "harness-ai-agents",
+      requiresExistingTenant: "alice",
+      requiredTargetTenant: "alice",
     });
     resumeDelete();
     await merging;
+    await expect(writing).rejects.toThrow(/missing|replaced/i);
 
     expect((await readWikiPage("late-linker"))?.content)
       .not.toContain("harness-ai-agents.md");
+  }, 15_000);
+
+  it("re-points a fragment backlink from a physical Page missing from index.md", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("agent-harness", { title: "Agent Harness" });
+    await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
+    await seedPage("orphan-linker", {
+      title: "Orphan linker",
+      body: "# Orphan linker\n\nSee [details](harness-ai-agents.md#details).",
+    });
+    await updateIndex(
+      (await listWikiPages({ strict: true })).filter((entry) => entry.slug !== "orphan-linker"),
+    );
+
+    const result = await mergePages({
+      from: "harness-ai-agents",
+      into: "agent-harness",
+      actor: "alice",
+    });
+
+    expect(result.repointedBacklinksFrom).toContain("orphan-linker");
+    expect((await readWikiPage("orphan-linker"))?.content)
+      .toContain("agent-harness.md#details");
   }, 15_000);
 
   it("re-points via the precomputed backlink index when it's present (the production fast path)", async () => {

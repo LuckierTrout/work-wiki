@@ -35,6 +35,7 @@ import { saveRawSourceFor } from "../raw";
 import { tenantForOwner, writeWikiPage } from "../wiki";
 import { sourceSha256 } from "../source-sha256";
 import { serializeFrontmatter } from "../frontmatter";
+import { acquireResearchSlot, activeResearchCount } from "../research-concurrency";
 
 const mockedWritePage = vi.mocked(writeWikiPageWithSideEffects);
 const mockedEnqueue = vi.mocked(enqueueTask);
@@ -732,6 +733,34 @@ describe("research completion outbox", () => {
     expect(mockedWritePage).not.toHaveBeenCalled();
     expect(await loadResearchOutbox("alice", created.id)).toBeNull();
     expect(await getResearchProject("alice", created.id)).toBeNull();
+  });
+
+  it("retains the DELETE tombstone when completion cannot release its live lease", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    const grant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, {
+      status: "collecting",
+      runAttemptId: grant.attemptId,
+    });
+    expect(await retireResearchProject("alice", created.id)).toBe(true);
+    const storage = getStorage();
+    const originalMatch = storage.writeFileIfMatch.bind(storage);
+    vi.spyOn(storage, "writeFileIfMatch").mockImplementation(
+      async (target, content, etag) => target.endsWith("research-leases.json")
+        ? false
+        : originalMatch(target, content, etag),
+    );
+
+    expect(await commitResearchPage("alice", created.id, OUTBOX)).toBeNull();
+
+    expect(await getResearchProject("alice", created.id)).toMatchObject({
+      deleteRequested: true,
+      runAttemptId: grant.attemptId,
+    });
+    expect(await activeResearchCount("alice")).toBe(1);
   });
 
   it("drops a leftover outbox when cancel wins after the outbox is saved", async () => {

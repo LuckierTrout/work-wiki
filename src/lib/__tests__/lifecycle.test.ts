@@ -714,7 +714,7 @@ describe("deleteWikiPage", () => {
     expect(result.strippedBacklinksFrom).not.toContain("bystander");
   });
 
-  it("does not strip a backlink after the deleted target has been recreated", async () => {
+  it("serializes target recreation after delete backlink cleanup", async () => {
     await writeWikiPage("linker", "# Linker\n\nSee [Target](target.md).\n");
     await writeWikiPage("target", "# Target\n\nOld target.\n");
     await updateIndex([
@@ -735,7 +735,7 @@ describe("deleteWikiPage", () => {
     while (await readWikiPage("target", { fresh: true })) {
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
-    await writeWikiPageWithSideEffects({
+    const recreating = writeWikiPageWithSideEffects({
       slug: "target",
       title: "Target",
       content: "# Target\n\nRecreated target.\n",
@@ -747,9 +747,11 @@ describe("deleteWikiPage", () => {
     releaseLinker();
     await held;
     const result = await deleting;
+    await recreating;
 
-    expect((await readWikiPage("linker"))!.content).toContain("target.md");
-    expect(result.strippedBacklinksFrom).not.toContain("linker");
+    expect((await readWikiPage("target"))!.content).toContain("Recreated target");
+    expect((await readWikiPage("linker"))!.content).not.toContain("target.md");
+    expect(result.strippedBacklinksFrom).toContain("linker");
   }, 15_000);
 
   it("retries backlink stripping against a concurrent owner edit", async () => {

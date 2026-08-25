@@ -559,6 +559,30 @@ describe("deep research run — failure and cancellation", () => {
     expect(await activeResearchCount("alice")).toBe(0);
   });
 
+  it("keeps the attempt fence when provider-failure lease cleanup cannot land", async () => {
+    const created = await project();
+    const grant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, { runAttemptId: grant.attemptId });
+    mockedResolve.mockImplementation(() => {
+      throw new Error("Deep Research provider override is invalid.");
+    });
+    const storage = getStorage();
+    const originalMatch = storage.writeFileIfMatch.bind(storage);
+    vi.spyOn(storage, "writeFileIfMatch").mockImplementation(
+      async (target, content, etag) => target.endsWith("research-leases.json")
+        ? false
+        : originalMatch(target, content, etag),
+    );
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished).toMatchObject({
+      status: "failed",
+      runAttemptId: grant.attemptId,
+    });
+    expect(await activeResearchCount("alice")).toBe(1);
+  });
+
   it("stops before the Page write when a cancel lands during collection", async () => {
     const created = await project();
     // The cancel arrives while the provider is answering the first query.
@@ -1119,10 +1143,15 @@ describe("deep research — an interrupted run gets an answer", () => {
     expect(rotated?.attemptId).toBeTruthy();
     mockedEnqueue.mockClear();
 
-    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+    const snapshot = await listResearchProjects("alice");
+    await Promise.all([
+      reconcileResearchProjects("alice", snapshot),
+      reconcileResearchProjects("alice", snapshot),
+    ]);
 
     expect((await getResearchProject("alice", created.id))?.runAttemptId)
       .toBe(rotated?.attemptId);
+    expect(await activeResearchCount("alice")).toBe(1);
     expect(mockedEnqueue).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "run-research", projectId: created.id }),
     );
@@ -1343,6 +1372,7 @@ describe("deep research — remediations", () => {
     await getStorage().writeFile("tenants/alice/research-leases.json", "{ malformed");
 
     expect(await retireResearchProject("alice", created.id)).toBe(true);
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
 
     expect(await getResearchProject("alice", created.id)).toMatchObject({
       deleteRequested: true,
@@ -1368,6 +1398,7 @@ describe("deep research — remediations", () => {
     );
 
     expect(await retireResearchProject("alice", created.id)).toBe(true);
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
 
     expect(await getResearchProject("alice", created.id)).toMatchObject({
       deleteRequested: true,

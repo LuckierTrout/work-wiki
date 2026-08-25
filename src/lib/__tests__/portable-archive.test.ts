@@ -173,6 +173,35 @@ describe("portable owner archive", () => {
     await expect(importPortableArchive("alice", buffer(archive.bytes), "overwrite"))
       .rejects.toThrow(/another owner/i);
   });
+
+  it("refuses an unindexed flat Page owned by another tenant", async () => {
+    const alice = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Atlas\n\nAlice.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/atlas.md", alice);
+    const archive = await buildPortableArchive("alice");
+    await getStorage().deleteDirectory("tenants/alice");
+    const bob = serializeFrontmatter(
+      { owner: "bob", visibility: "private" },
+      "# Atlas\n\nBob's unindexed bytes.",
+    );
+    await writeWikiPage("atlas", bob);
+    await updateIndex([]);
+
+    await expect(importPortableArchive("alice", buffer(archive.bytes), "overwrite"))
+      .rejects.toThrow(/another owner/i);
+    expect(await getStorage().readFile("wiki/atlas.md")).toBe(bob);
+  });
+
+  it("rejects an oversized manifest before allocating its expanded payload", async () => {
+    const oversized = zipSync({
+      "manifest.json": new Uint8Array(5 * 1024 * 1024 + 1),
+    }, { level: 9 });
+
+    await expect(inspectPortableArchive("alice", buffer(oversized)))
+      .rejects.toThrow(/manifest exceeds the safety limit/i);
+  });
 });
 
 function buffer(value: Uint8Array): ArrayBuffer {
