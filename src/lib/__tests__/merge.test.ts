@@ -497,6 +497,45 @@ describe("mergePages", () => {
       .toContain("Owner edit after partial delete.");
   }, 15_000);
 
+  it("rejects a recreated survivor after the absorbed Page was already deleted", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("agent-harness", { title: "Agent Harness" });
+    await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
+    const storage = getStorage();
+    const originalWrite = storage.writeFile.bind(storage);
+    let failDeleteIndex = true;
+    vi.spyOn(storage, "writeFile").mockImplementation(async (target, content) => {
+      if (
+        failDeleteIndex
+        && target === "wiki/index.md"
+        && !await storage.fileExists("tenants/alice/wiki/harness-ai-agents.md")
+      ) {
+        failDeleteIndex = false;
+        throw new Error("index unavailable after Page delete");
+      }
+      return originalWrite(target, content);
+    });
+
+    await expect(mergePages({
+      from: "harness-ai-agents",
+      into: "agent-harness",
+      actor: "alice",
+    })).rejects.toThrow(/index unavailable/i);
+    await deleteWikiPage("agent-harness", "alice");
+    await seedPage("agent-harness", {
+      title: "Replacement",
+      owner: "bob",
+      body: "# Replacement\n\nBob's unrelated Page.",
+    });
+
+    await expect(mergePages({
+      from: "harness-ai-agents",
+      into: "agent-harness",
+      actor: "alice",
+    })).rejects.toThrow(/replaced/i);
+    expect((await readWikiPage("agent-harness"))?.content).toContain("Bob's unrelated Page.");
+  }, 15_000);
+
   it("removes a backlink added after the merge repoint pass", async () => {
     mockedHasLLMKey.mockReturnValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
@@ -537,9 +576,6 @@ describe("mergePages", () => {
       crossRefSource: null,
       expectedContent: linker!.content,
       author: "alice",
-      requiresExistingSlug: "harness-ai-agents",
-      requiresExistingTenant: "alice",
-      requiredTargetTenant: "alice",
     });
     resumeDelete();
     await merging;
@@ -570,6 +606,38 @@ describe("mergePages", () => {
     expect(result.repointedBacklinksFrom).toContain("orphan-linker");
     expect((await readWikiPage("orphan-linker"))?.content)
       .toContain("agent-harness.md#details");
+  }, 15_000);
+
+  it("re-points a fragment backlink from a canonical-only tenant Page", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("agent-harness", { title: "Agent Harness" });
+    await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
+    const linker = serializeFrontmatter(
+      { owner: "alice", authors: ["alice"], contributors: ["alice"] },
+      "# Canonical orphan\n\nSee [details](harness-ai-agents.md#details).",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/canonical-orphan.md", linker);
+
+    await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
+
+    expect(await getStorage().readFile("tenants/alice/wiki/canonical-orphan.md"))
+      .toContain("agent-harness.md#details");
+  }, 15_000);
+
+  it("re-points a fragment backlink inside the survivor body", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("agent-harness", {
+      title: "Agent Harness",
+      body: "# Agent Harness\n\nSee [details](harness-ai-agents.md#details).",
+    });
+    await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
+
+    await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
+
+    expect((await readWikiPage("agent-harness"))?.content)
+      .toContain("agent-harness.md#details");
+    expect((await readWikiPage("agent-harness"))?.content)
+      .not.toContain("harness-ai-agents.md#details");
   }, 15_000);
 
   it("re-points via the precomputed backlink index when it's present (the production fast path)", async () => {

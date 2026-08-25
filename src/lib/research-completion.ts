@@ -52,7 +52,7 @@ async function deleteRetiredProjectIfLeaseGone(
 ): Promise<boolean> {
   await releaseResearchSlot(owner, id, attemptId ?? undefined);
   try {
-    if (await hasResearchSlot(owner, id, attemptId ?? undefined)) return false;
+    if (await hasResearchSlot(owner, id)) return false;
   } catch {
     return false;
   }

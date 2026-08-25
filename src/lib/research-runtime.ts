@@ -288,7 +288,7 @@ async function releaseResearchSlotAndConfirmGone(
 ): Promise<boolean> {
   await releaseResearchSlot(owner, projectId, attemptId);
   try {
-    return !(await hasResearchSlot(owner, projectId, attemptId));
+    return !(await hasResearchSlot(owner, projectId));
   } catch {
     return false;
   }
@@ -316,6 +316,7 @@ export async function queueResearchProject(
 ): Promise<ResearchProject> {
   const project = await getResearchProject(owner, id);
   if (!project) throw new Error("Research project not found");
+  if (project.deleteRequested) throw new Error("Research project is retired");
   if (project.completion && project.completion.phase !== "done") {
     if (!project.deliveryBlocked) {
       throw new Error("Research project completion is still being delivered");

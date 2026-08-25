@@ -29,7 +29,7 @@ import {
 import { bumpDataVersion } from "./data-version";
 import { getStorage } from "./storage";
 import { withDurableLock } from "./lock";
-import { escapeRegex } from "./links";
+import { escapeRegex, extractAllInternalTargets } from "./links";
 import { getErrorMessage, isEnoent } from "./errors";
 import { getVectorSearchSettings } from "./config";
 import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
@@ -312,6 +312,19 @@ async function runPageLifecycleOp(
   // 1. Validate — the per-step helpers also validate, but we want to fail
   //    fast before any filesystem mutation happens.
   validateSlug(slug);
+  const previousTargets = op.kind === "write" && op.expectedContent !== undefined
+    ? new Set(extractAllInternalTargets(op.expectedContent))
+    : new Set<string>();
+  const requiredExistingSlugs = op.kind === "write"
+    ? [...new Set([
+        ...(op.requiresExistingSlug ? [op.requiresExistingSlug] : []),
+        ...(op.expectedContent === undefined
+          ? []
+          : extractAllInternalTargets(op.content).filter(
+              (target) => !previousTargets.has(target),
+            )),
+      ])].filter((target) => target !== slug)
+    : [];
   let postIndexEntries!: IndexEntry[];
   let removedFromIndex = false;
   const mutatePrimaryAndIndexes = async (): Promise<void> => {
@@ -326,22 +339,24 @@ async function runPageLifecycleOp(
         throw new LifecyclePageConflictError(slug, "target Page changed owner");
       }
     }
-    if (op.kind === "write" && op.requiresExistingSlug) {
-      const source = await readWikiPageWithFrontmatter(
-        op.requiresExistingSlug,
-        { fresh: true, strict: true },
-      );
-      if (
-        !source
-        || (op.requiresExistingTenant
-          && tenantForOwner(
-            typeof source.frontmatter.owner === "string" ? source.frontmatter.owner : undefined,
-          ) !== op.requiresExistingTenant)
-      ) {
-        throw new LifecyclePageConflictError(
-          slug,
-          `cannot link to missing or replaced Page "${op.requiresExistingSlug}"`,
+    if (op.kind === "write") {
+      for (const requiredSlug of requiredExistingSlugs) {
+        const source = await readWikiPageWithFrontmatter(
+          requiredSlug,
+          { fresh: true, strict: true },
         );
+        if (
+          !source
+          || (requiredSlug === op.requiresExistingSlug && op.requiresExistingTenant
+            && tenantForOwner(
+              typeof source.frontmatter.owner === "string" ? source.frontmatter.owner : undefined,
+            ) !== op.requiresExistingTenant)
+        ) {
+          throw new LifecyclePageConflictError(
+            slug,
+            `cannot link to missing or replaced Page "${requiredSlug}"`,
+          );
+        }
       }
     }
 
@@ -901,8 +916,8 @@ async function runPageLifecycleOp(
     await mutatePrimaryAndIndexes();
   } else if (mergeCoordinatorAlreadyHeld) {
     await (
-      op.kind === "write" && op.requiresExistingSlug
-        ? acquirePageLifecycleLocks([slug, op.requiresExistingSlug], mutatePrimaryAndIndexes)
+      op.kind === "write" && requiredExistingSlugs.length > 0
+        ? acquirePageLifecycleLocks([slug, ...requiredExistingSlugs], mutatePrimaryAndIndexes)
         : withDurableLock(`page-lifecycle:${slug}`, mutatePrimaryAndIndexes)
     );
   } else {
@@ -910,8 +925,8 @@ async function runPageLifecycleOp(
     // lock through its final physical backlink scan, so ordinary writes/deletes
     // cannot publish a dangling link inside that completion window.
     await withDurableLock("merge-pages", () => (
-      op.kind === "write" && op.requiresExistingSlug
-        ? acquirePageLifecycleLocks([slug, op.requiresExistingSlug], mutatePrimaryAndIndexes)
+      op.kind === "write" && requiredExistingSlugs.length > 0
+        ? acquirePageLifecycleLocks([slug, ...requiredExistingSlugs], mutatePrimaryAndIndexes)
         : withDurableLock(`page-lifecycle:${slug}`, mutatePrimaryAndIndexes)
     ));
   }

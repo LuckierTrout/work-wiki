@@ -215,19 +215,53 @@ export async function importPortableArchive(
   collision: "skip" | "overwrite",
 ): Promise<PortableArchiveInspection & { imported: number; skipped: number; indexes: Record<string, { ok: boolean; error?: string }> }> {
   const { inspection, files } = await parseArchive(owner, bytes);
-  const collisionSet = new Set(inspection.collisions);
-  const existingEntries = await listWikiPages();
-  const archivePageSlugs = inspection.manifest.files.flatMap((entry) => {
-    const match = /^wiki\/(.+)\.md$/.exec(entry.path);
-    return match && !["index", "log"].includes(match[1]) ? [match[1]] : [];
-  });
-  for (const slug of archivePageSlugs) {
-    validateSlug(slug);
-    const conflict = existingEntries.find((entry) => entry.slug === slug);
-    if (conflict && tenantForOwner(conflict.owner) !== tenant(owner)) {
-      throw new Error(`Archive page conflicts with another owner: ${slug}`);
+  return withDurableLock("merge-pages", async () => {
+    const collisionSet = new Set(inspection.collisions);
+    const existingEntries = await listWikiPages({ strict: true });
+    const archivePageSlugs = inspection.manifest.files.flatMap((entry) => {
+      const match = /^wiki\/(.+)\.md$/.exec(entry.path);
+      return match && !["index", "log"].includes(match[1]) ? [match[1]] : [];
+    });
+    const tenantEntries = await getStorage().listFiles("tenants");
+    for (const slug of archivePageSlugs) {
+      validateSlug(slug);
+      await withDurableLock(`page-lifecycle:${slug}`, async () => {
+        for (const tenantEntry of tenantEntries) {
+          if (!tenantEntry.isDirectory || tenantEntry.name.startsWith(".")) continue;
+          try {
+            const canonical = await getStorage().readFile(
+              `tenants/${tenantEntry.name}/wiki/${slug}.md`,
+            );
+            const parsed = parseFrontmatter(canonical);
+            const canonicalOwner = typeof parsed.data.owner === "string"
+              ? parsed.data.owner
+              : undefined;
+            if (
+              tenantForOwner(canonicalOwner) !== tenantEntry.name
+              || tenantEntry.name !== tenant(owner)
+            ) {
+              throw new Error(`Archive page conflicts with another owner: ${slug}`);
+            }
+          } catch (error) {
+            if (!isEnoent(error)) throw error;
+          }
+        }
+        try {
+          const flat = await getStorage().readFile(wikiRelPath(`${slug}.md`));
+          const parsed = parseFrontmatter(flat);
+          const flatOwner = typeof parsed.data.owner === "string" ? parsed.data.owner : undefined;
+          if (tenantForOwner(flatOwner) !== tenant(owner)) {
+            throw new Error(`Archive page conflicts with another owner: ${slug}`);
+          }
+        } catch (error) {
+          if (!isEnoent(error)) throw error;
+        }
+        const conflict = existingEntries.find((entry) => entry.slug === slug);
+        if (conflict && tenantForOwner(conflict.owner) !== tenant(owner)) {
+          throw new Error(`Archive page conflicts with another owner: ${slug}`);
+        }
+      });
     }
-  }
   let imported = 0;
   let skipped = 0;
   for (const entry of inspection.manifest.files) {
@@ -266,28 +300,7 @@ export async function importPortableArchive(
     };
     const pageMatch = /^wiki\/(.+)\.md$/.exec(entry.path);
     if (pageMatch && !["index", "log"].includes(pageMatch[1])) {
-      await withDurableLock("merge-pages", () =>
-        withDurableLock(`page-lifecycle:${pageMatch[1]}`, async () => {
-          // The flat compatibility Page is authoritative during the transition.
-          // An interrupted index update must not let an archive overwrite another
-          // owner's bytes merely because the slug is absent from index.md.
-          try {
-            const flat = await getStorage().readFile(wikiRelPath(`${pageMatch[1]}.md`));
-            const parsed = parseFrontmatter(flat);
-            const flatOwner = typeof parsed.data.owner === "string" ? parsed.data.owner : undefined;
-            if (tenantForOwner(flatOwner) !== tenant(owner)) {
-              throw new Error(`Archive page conflicts with another owner: ${pageMatch[1]}`);
-            }
-          } catch (error) {
-            if (!isEnoent(error)) throw error;
-          }
-          const current = (await listWikiPages({ strict: true }))
-            .find((candidate) => candidate.slug === pageMatch[1]);
-          if (current && tenantForOwner(current.owner) !== tenant(owner)) {
-            throw new Error(`Archive page conflicts with another owner: ${pageMatch[1]}`);
-          }
-          await writeEntry();
-        }));
+      await withDurableLock(`page-lifecycle:${pageMatch[1]}`, writeEntry);
     } else {
       await writeEntry();
     }
@@ -337,5 +350,6 @@ export async function importPortableArchive(
   });
   const indexes = await rebuildDerivedIndexes();
   await Promise.all([buildAliasIndex(), buildSourceIndex()]);
-  return { ...inspection, imported, skipped, indexes };
+    return { ...inspection, imported, skipped, indexes };
+  });
 }

@@ -47,7 +47,7 @@ const WIKILINK_RE = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g;
 
 export function extractWikiLinks(content: string): WikiLink[] {
   const results: WikiLink[] = [];
-  const re = /\[([^\]]*)\]\(([^)]+)\.md\)/g;
+  const re = /\[([^\]]*)\]\(([^)\s#]+)\.md(?:#[^)\s]*)?(?:\s+["'][^)]*["'])?\)/g;
   let match;
   while ((match = re.exec(content)) !== null) {
     if (isExternalLinkTarget(`${match[2]}.md`)) continue;

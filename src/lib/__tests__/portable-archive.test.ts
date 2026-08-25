@@ -194,6 +194,32 @@ describe("portable owner archive", () => {
     expect(await getStorage().readFile("wiki/atlas.md")).toBe(bob);
   });
 
+  it("preflights every Page before writing when a later canonical-only slug conflicts", async () => {
+    const safe = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# A safe Page\n\nAlice.",
+    );
+    const conflict = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Z conflict\n\nAlice.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/a-safe.md", safe);
+    await getStorage().writeFile("tenants/alice/wiki/z-conflict.md", conflict);
+    const archive = await buildPortableArchive("alice");
+    await getStorage().deleteDirectory("tenants/alice");
+    const bob = serializeFrontmatter(
+      { owner: "bob", visibility: "private" },
+      "# Z conflict\n\nBob's canonical-only Page.",
+    );
+    await getStorage().writeFile("tenants/bob/wiki/z-conflict.md", bob);
+
+    await expect(importPortableArchive("alice", buffer(archive.bytes), "overwrite"))
+      .rejects.toThrow(/another owner/i);
+    await expect(getStorage().fileExists("tenants/alice/wiki/a-safe.md")).resolves.toBe(false);
+    await expect(getStorage().fileExists("wiki/a-safe.md")).resolves.toBe(false);
+    expect(await getStorage().readFile("tenants/bob/wiki/z-conflict.md")).toBe(bob);
+  });
+
   it("rejects an oversized manifest before allocating its expanded payload", async () => {
     const oversized = zipSync({
       "manifest.json": new Uint8Array(5 * 1024 * 1024 + 1),

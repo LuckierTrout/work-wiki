@@ -64,6 +64,15 @@ describe("extractWikiLinks", () => {
     ]);
   });
 
+  it("extracts the Page slug from fragment and titled links", () => {
+    expect(extractWikiLinks(
+      "[Details](agent-harness.md#details) [More](deep-research.md#results \"Results\")",
+    )).toEqual([
+      { text: "Details", targetSlug: "agent-harness" },
+      { text: "More", targetSlug: "deep-research" },
+    ]);
+  });
+
   it("returns empty array when no links are present", () => {
     expect(extractWikiLinks("Just plain text.")).toEqual([]);
     expect(extractWikiLinks("")).toEqual([]);

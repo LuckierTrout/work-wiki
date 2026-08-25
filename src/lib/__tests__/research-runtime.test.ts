@@ -1339,6 +1339,27 @@ describe("deep research — remediations", () => {
     expect(await activeResearchCount("alice")).toBe(0);
   });
 
+  it("rejects Retry for a retained DELETE tombstone without revoking its live lease", async () => {
+    const created = await project();
+    const grant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, {
+      status: "collecting",
+      runAttemptId: grant.attemptId,
+    });
+    expect(await retireResearchProject("alice", created.id)).toBe(true);
+
+    await expect(queueResearchProject("alice", created.id)).rejects.toThrow(/retired/i);
+
+    expect(await getResearchProject("alice", created.id)).toMatchObject({
+      deleteRequested: true,
+      cancelRequested: true,
+      runAttemptId: grant.attemptId,
+    });
+    await expect(renewResearchSlot("alice", created.id, grant.attemptId!)).resolves.toBeUndefined();
+    expect(await activeResearchCount("alice")).toBe(1);
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
   it("reaps a crashed DELETE tombstone after expiry and dispatches its successor", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const doomed = await project({ title: "Doomed" });
@@ -1359,6 +1380,31 @@ describe("deep research — remediations", () => {
     expect(mockedEnqueue).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "run-research", projectId: successor.id }),
     );
+    vi.useRealTimers();
+  });
+
+  it("retains a DELETE tombstone when its stale token has a rotated durable successor", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const created = await project();
+    const grant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, {
+      status: "collecting",
+      runAttemptId: grant.attemptId,
+    });
+    expect(await retireResearchProject("alice", created.id)).toBe(true);
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1_000));
+    const rotated = await rotateResearchSlot("alice", created.id, grant.attemptId!);
+    expect(rotated?.attemptId).toBeTruthy();
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    expect(await getResearchProject("alice", created.id)).toMatchObject({
+      deleteRequested: true,
+      runAttemptId: grant.attemptId,
+    });
+    expect(await activeResearchCount("alice")).toBe(1);
+    await expect(renewResearchSlot("alice", created.id, rotated!.attemptId!))
+      .resolves.toBeUndefined();
     vi.useRealTimers();
   });
 

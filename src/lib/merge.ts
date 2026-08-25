@@ -22,7 +22,7 @@
 
 import { logger } from "./logger";
 import { hasLLMKey } from "./llm";
-import { listWikiPages, readWikiPageWithFrontmatter, wikiRelPath } from "./wiki";
+import { listWikiPages, readWikiPageWithFrontmatter, tenantForOwner, wikiRelPath } from "./wiki";
 import { isArtifactType } from "./page-types";
 import {
   reconcilePage,
@@ -44,6 +44,7 @@ import { getStorage } from "./storage";
 import { isEnoent } from "./errors";
 import { sourceSha256 } from "./source-sha256";
 import { withDurableLock } from "./lock";
+import { listRevisions, readRevision } from "./revisions";
 
 export interface MergePagesArgs {
   /** Slug of the page to absorb — deleted after the merge. */
@@ -122,29 +123,63 @@ async function repointBacklinks(
   // keeps the re-point correct rather than silently stripping links on delete.
   // Merge correctness cannot trust the fail-soft backlink index. This path is
   // rare, so scan every current Page and let expected-content CAS fence edits.
-  const physical = async (prefix: string, relative = ""): Promise<string[]> => {
-    const slugs: string[] = [];
+  const physical = async (
+    prefix: string,
+    relative = "",
+  ): Promise<Array<{ slug: string; content: string }>> => {
+    const pages: Array<{ slug: string; content: string }> = [];
     for (const entry of await getStorage().listFiles(prefix)) {
       if (entry.name.startsWith(".")) continue;
       const path = relative ? `${relative}/${entry.name}` : entry.name;
       if (entry.isDirectory) {
-        slugs.push(...await physical(`${prefix}/${entry.name}`, path));
+        pages.push(...await physical(`${prefix}/${entry.name}`, path));
       } else if (path.endsWith(".md")) {
         const slug = path.slice(0, -3);
-        if (slug !== "index" && slug !== "log") slugs.push(slug);
+        if (slug !== "index" && slug !== "log") {
+          pages.push({ slug, content: await getStorage().readFile(`${prefix}/${entry.name}`) });
+        }
       }
     }
-    return slugs;
+    return pages;
   };
+  const physicalPages = new Map<string, { content: string; tenant?: string }>();
+  const tenants = await getStorage().listFiles("tenants");
+  for (const tenantEntry of tenants) {
+    if (!tenantEntry.isDirectory || tenantEntry.name.startsWith(".")) continue;
+    let pages: Array<{ slug: string; content: string }>;
+    try {
+      pages = await physical(`tenants/${tenantEntry.name}/wiki`);
+    } catch (error) {
+      if (isEnoent(error)) continue;
+      throw error;
+    }
+    for (const page of pages) {
+      const owner = pageSnapshot(page.content, page.slug).frontmatter.owner;
+      if (tenantForOwner(typeof owner === "string" ? owner : undefined) !== tenantEntry.name) {
+        throw new Error(`merge aborted: canonical Page "${page.slug}" is stored under the wrong tenant`);
+      }
+      const previous = physicalPages.get(page.slug);
+      if (previous?.tenant && previous.tenant !== tenantEntry.name) {
+        throw new Error(`merge aborted: Page "${page.slug}" exists in multiple tenant silos`);
+      }
+      physicalPages.set(page.slug, { content: page.content, tenant: tenantEntry.name });
+    }
+  }
+  for (const page of await physical(wikiRelPath(""))) {
+    if (!physicalPages.has(page.slug)) physicalPages.set(page.slug, { content: page.content });
+  }
   const candidates = [...new Set([
     ...(await listWikiPages({ strict: true })).map((e) => e.slug),
-    ...await physical(wikiRelPath("")),
+    ...physicalPages.keys(),
   ])];
   const linkers = candidates.filter((s) => s !== fromSlug && s !== intoSlug);
   const re = new RegExp(`(\\]\\()${escapeRegex(fromSlug)}\\.md(?=[#)\\s])`, "g");
   const repointed: string[] = [];
   for (const src of linkers) {
-    const page = await readWikiPageWithFrontmatter(src, { fresh: true, strict: true });
+    const physicalPage = physicalPages.get(src);
+    const page = physicalPage
+      ? { slug: src, ...pageSnapshot(physicalPage.content, src) }
+      : await readWikiPageWithFrontmatter(src, { fresh: true, strict: true });
     if (!page) {
       // `src` was named as a linker by the index / page list, so a null read is
       // NOT an expected "no such page" — `readWikiPage` also collapses transient
@@ -194,6 +229,18 @@ function pageSnapshot(content: string, slug: string) {
     body: parsed.body,
     title: parsed.body.match(/^#\s+(.+)$/m)?.[1]?.trim() || slug,
   };
+}
+
+async function survivorDescendsFromMergedContent(
+  slug: string,
+  currentContent: string,
+  mergedContent: string,
+): Promise<boolean> {
+  if (currentContent === mergedContent) return true;
+  for (const revision of await listRevisions(slug)) {
+    if (await readRevision(slug, revision.timestamp) === mergedContent) return true;
+  }
+  return false;
 }
 
 async function readMergeReceipt(path: string): Promise<MergeOperationReceipt | null> {
@@ -385,8 +432,8 @@ async function mergePagesWhileSourceLocked({
     fm.valid_from = today;
     fm.expiry = expiry.toISOString().slice(0, 10);
     mergedBody = mergedBody.replace(
-      new RegExp(`\\]\\(${escapeRegex(fromSlug)}\\.md\\)`, "g"),
-      `](${intoSlug}.md)`,
+      new RegExp(`(\\]\\()${escapeRegex(fromSlug)}\\.md(?=[#)\\s])`, "g"),
+      `$1${intoSlug}.md`,
     );
     const summary = extractSummary(mergedBody.replace(/^#\s+.+$/m, "").trim());
     const candidate: MergeOperationReceipt = {
@@ -429,6 +476,23 @@ async function mergePagesWhileSourceLocked({
   ]);
   if (!currentFrom) {
     if (!currentInto) throw new Error("merge survivor disappeared after the absorbed Page was deleted");
+    const originalSurvivor = pageSnapshot(receipt.intoContent, intoSlug);
+    const currentOwner = typeof currentInto.frontmatter.owner === "string"
+      ? currentInto.frontmatter.owner
+      : undefined;
+    const originalOwner = typeof originalSurvivor.frontmatter.owner === "string"
+      ? originalSurvivor.frontmatter.owner
+      : undefined;
+    if (
+      tenantForOwner(currentOwner) !== tenantForOwner(originalOwner)
+      || !await survivorDescendsFromMergedContent(
+        intoSlug,
+        currentInto.content,
+        receipt.mergedContent,
+      )
+    ) {
+      throw new Error(`merge aborted: survivor Page "${intoSlug}" was replaced after the absorbed Page was deleted`);
+    }
     await deleteWikiPageWhileLocked(
       fromSlug,
       sourceLock,
